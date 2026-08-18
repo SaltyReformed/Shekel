@@ -18,14 +18,20 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import RecurrencePatternEnum, TxnTypeEnum
+from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.ref import AccountType
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service
 from app.utils.dates import month_name
-from tests._test_helpers import make_pattern_rule
+from tests._test_helpers import make_cadence_rule
+from tests.oracles.recurrence_baseline import (
+    EVERY_PERIOD,
+    MONTHLY,
+    MONTHLY_FIRST,
+    QUARTERLY,
+)
 
 #: Named so the cycle arithmetic below is not a bare literal.
 MONTHS_IN_YEAR = 12
@@ -34,14 +40,14 @@ MONTHS_IN_YEAR = 12
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _rule(user, pattern_enum, *, day_of_month=None, starts_on=None):
-    """Author one rule of *pattern_enum* for *user*, through the write door.
+def _rule(user, cadence, *, day_of_month=None, starts_on=None):
+    """Author one rule of *cadence* for *user*, through the write door.
 
     Plan step R7c-b made the two-axis columns NOT NULL, so a rule naming only a
     pattern no longer produces a row.
     """
-    return make_pattern_rule(
-        user.id, pattern_enum,
+    return make_cadence_rule(
+        user.id, cadence,
         fires_on_day=day_of_month, starts_on=starts_on,
     )
 
@@ -105,8 +111,8 @@ class TestUnifiedRender:
         category = seed_user["categories"]["Rent"]
         savings = _savings(user)
 
-        rule_bw = _rule(user, RecurrencePatternEnum.EVERY_PERIOD)
-        rule_mo = _rule(user, RecurrencePatternEnum.MONTHLY, day_of_month=15)
+        rule_bw = _rule(user, EVERY_PERIOD)
+        rule_mo = _rule(user, MONTHLY, day_of_month=15)
         _txn(user, checking, category, rule_bw, "100.00",
              type_enum=TxnTypeEnum.EXPENSE, name="Electricity")
         _txn(user, checking, category, rule_bw, "1500.00",
@@ -133,7 +139,7 @@ class TestUnifiedRender:
         user = seed_user["user"]
         checking = seed_user["account"]
         category = seed_user["categories"]["Rent"]
-        rule = _rule(user, RecurrencePatternEnum.EVERY_PERIOD)
+        rule = _rule(user, EVERY_PERIOD)
         _txn(user, checking, category, rule, "100.00",
              type_enum=TxnTypeEnum.EXPENSE, name="Electric")
         db.session.commit()
@@ -187,7 +193,7 @@ class TestUnifiedRender:
         user = seed_user["user"]
         checking = seed_user["account"]
         category = seed_user["categories"]["Rent"]
-        rule = _rule(user, RecurrencePatternEnum.EVERY_PERIOD)
+        rule = _rule(user, EVERY_PERIOD)
         _txn(user, checking, category, rule, "100.00",
              type_enum=TxnTypeEnum.EXPENSE, name="Electric")
         db.session.commit()
@@ -220,7 +226,7 @@ class TestUnitToggle:
         user = seed_user["user"]
         checking = seed_user["account"]
         category = seed_user["categories"]["Rent"]
-        rule = _rule(user, RecurrencePatternEnum.MONTHLY, day_of_month=1)
+        rule = _rule(user, MONTHLY, day_of_month=1)
         _txn(user, checking, category, rule, "1300.00",
              type_enum=TxnTypeEnum.EXPENSE, name="Rent Bill")
         db.session.commit()
@@ -269,7 +275,7 @@ class TestUnitToggle:
         user = seed_user["user"]
         checking = seed_user["account"]
         category = seed_user["categories"]["Rent"]
-        rule = _rule(user, RecurrencePatternEnum.MONTHLY, day_of_month=1)
+        rule = _rule(user, MONTHLY, day_of_month=1)
         _txn(user, checking, category, rule, "1300.00",
              type_enum=TxnTypeEnum.EXPENSE, name="Rent Bill")
         db.session.commit()
@@ -324,8 +330,8 @@ class TestUnifiedIDOR:
         category1 = seed_user["categories"]["Rent"]
         category2 = list(second_user["categories"].values())[0]
 
-        rule1 = _rule(user1, RecurrencePatternEnum.MONTHLY, day_of_month=1)
-        rule2 = _rule(user2, RecurrencePatternEnum.MONTHLY, day_of_month=1)
+        rule1 = _rule(user1, MONTHLY, day_of_month=1)
+        rule2 = _rule(user2, MONTHLY, day_of_month=1)
         _txn(user1, checking1, category1, rule1, "1200.00",
              type_enum=TxnTypeEnum.EXPENSE, name="My Rent")
         _txn(user2, checking2, category2, rule2, "900.00",
@@ -364,7 +370,7 @@ class TestTheRenderedRecurrenceCell:
         """The paycheck-space cadence names no calendar day."""
         user = seed_user["user"]
         _txn(user, seed_user["account"], seed_user["categories"]["Rent"],
-             _rule(user, RecurrencePatternEnum.EVERY_PERIOD), "100.00",
+             _rule(user, EVERY_PERIOD), "100.00",
              type_enum=TxnTypeEnum.EXPENSE, name="Electric")
         db.session.commit()
 
@@ -378,7 +384,7 @@ class TestTheRenderedRecurrenceCell:
         """A rule that fires every month is distinguished only by its day."""
         user = seed_user["user"]
         _txn(user, seed_user["account"], seed_user["categories"]["Rent"],
-             _rule(user, RecurrencePatternEnum.MONTHLY, day_of_month=22),
+             _rule(user, MONTHLY, day_of_month=22),
              "100.00", type_enum=TxnTypeEnum.EXPENSE, name="Van Payment")
         db.session.commit()
 
@@ -392,7 +398,7 @@ class TestTheRenderedRecurrenceCell:
         """A deferring placement is named, and its implied day 1 is not."""
         user = seed_user["user"]
         _txn(user, seed_user["account"], seed_user["categories"]["Rent"],
-             _rule(user, RecurrencePatternEnum.MONTHLY_FIRST), "100.00",
+             _rule(user, MONTHLY_FIRST), "100.00",
              type_enum=TxnTypeEnum.EXPENSE, name="Phone Allowance")
         db.session.commit()
 
@@ -412,7 +418,7 @@ class TestTheRenderedRecurrenceCell:
         One function has no room for that difference.
         """
         user = seed_user["user"]
-        rule = _rule(user, RecurrencePatternEnum.QUARTERLY, day_of_month=21)
+        rule = _rule(user, QUARTERLY, day_of_month=21)
         rule.month_of_year = seed_periods_today[0].start_date.month
         db.session.flush()
         _txn(user, seed_user["account"], seed_user["categories"]["Rent"],
@@ -456,7 +462,7 @@ class TestTheRenderedRecurrenceCell:
         authored = seed_periods_today[0].start_date.replace(
             year=seed_periods_today[0].start_date.year - 1,
         ).replace(month=3, day=2)
-        rule = _rule(user, RecurrencePatternEnum.QUARTERLY, starts_on=authored)
+        rule = _rule(user, QUARTERLY, starts_on=authored)
         _txn(user, seed_user["account"], seed_user["categories"]["Rent"],
              rule, "45.00", type_enum=TxnTypeEnum.EXPENSE,
              name="Anchor Disposal")
@@ -481,7 +487,7 @@ class TestTheRenderedRecurrenceCell:
         from datetime import timedelta  # pylint: disable=import-outside-toplevel
 
         user = seed_user["user"]
-        rule = _rule(user, RecurrencePatternEnum.MONTHLY, day_of_month=1)
+        rule = _rule(user, MONTHLY, day_of_month=1)
         end = seed_periods_today[0].start_date + timedelta(days=800)
         rule.end_date = end
         db.session.flush()
@@ -507,7 +513,7 @@ class TestTheRenderedRecurrenceCell:
         user = seed_user["user"]
         tmpl = _txn(
             user, seed_user["account"], seed_user["categories"]["Rent"],
-            _rule(user, RecurrencePatternEnum.MONTHLY, day_of_month=9),
+            _rule(user, MONTHLY, day_of_month=9),
             "25.00", type_enum=TxnTypeEnum.EXPENSE, name="Retired Streaming",
         )
         tmpl.is_active = False

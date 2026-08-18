@@ -263,40 +263,42 @@ class TestCalculateSavingsMetrics:
 class TestCountPeriodsUntil:
     """Count pay periods between today and a target date."""
 
-    @patch("app.services.savings_goal_service.date")
-    def test_counts_periods_from_today_to_target(self, mock_date):
-        """Periods with start_date between today and target are counted."""
-        mock_date.today.return_value = date(2026, 2, 1)
-        mock_date.side_effect = lambda *args, **kw: date(*args, **kw)
+    def test_counts_periods_from_today_to_target(self):
+        """Paydays between the pass's day and the target are counted.
 
+        **No clock patch** since pay-calendar plan step C2-f2d-3: the day is a
+        PARAMETER now, so the case states it instead of monkeypatching the
+        module's ``date``.  A test that had to patch the producer's clock was
+        the tell that the producer read one.
+        """
         periods = [
-            SimpleNamespace(start_date=date(2026, 1, 1)),   # before today
-            SimpleNamespace(start_date=date(2026, 1, 15)),  # before today
-            SimpleNamespace(start_date=date(2026, 2, 1)),   # >= today, <= target
-            SimpleNamespace(start_date=date(2026, 2, 15)),  # >= today, <= target
-            SimpleNamespace(start_date=date(2026, 3, 1)),   # >= today, <= target
+            SimpleNamespace(start_date=date(2026, 1, 1)),   # before as_of
+            SimpleNamespace(start_date=date(2026, 1, 15)),  # before as_of
+            SimpleNamespace(start_date=date(2026, 2, 1)),   # >= as_of, <= target
+            SimpleNamespace(start_date=date(2026, 2, 15)),  # >= as_of, <= target
+            SimpleNamespace(start_date=date(2026, 3, 1)),   # >= as_of, <= target
         ]
-        result = count_periods_until(date(2026, 3, 15), periods)
+        result = count_periods_until(
+            date(2026, 3, 15), periods, date(2026, 2, 1),
+        )
         assert result == 3
 
     def test_target_date_none_returns_none(self):
         """None target date -- return None."""
-        result = count_periods_until(None, [])
+        result = count_periods_until(None, [], date(2026, 2, 1))
         assert result is None
 
-    @patch("app.services.savings_goal_service.date")
-    def test_target_date_in_past_returns_zero(self, mock_date):
-        """Target date before today -- no periods can qualify."""
-        mock_date.today.return_value = date(2026, 2, 1)
-        mock_date.side_effect = lambda *args, **kw: date(*args, **kw)
-
+    def test_target_date_in_past_returns_zero(self):
+        """Target date before the pass's day -- no periods can qualify."""
         periods = [
             SimpleNamespace(start_date=date(2026, 1, 1)),
             SimpleNamespace(start_date=date(2026, 1, 15)),
             SimpleNamespace(start_date=date(2026, 2, 1)),
             SimpleNamespace(start_date=date(2026, 2, 15)),
         ]
-        result = count_periods_until(date(2026, 1, 15), periods)
+        result = count_periods_until(
+            date(2026, 1, 15), periods, date(2026, 2, 1),
+        )
         assert result == 0
 
 
@@ -389,6 +391,7 @@ class TestNegativeAndBoundaryPaths:
         result = count_periods_until(
             target_date=date(2030, 1, 1),
             periods=[],
+            as_of=date(2026, 2, 1),
         )
         assert result == 0
 

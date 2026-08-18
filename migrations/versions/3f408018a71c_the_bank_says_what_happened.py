@@ -88,7 +88,7 @@ loses only recorded statement lines.  No app figure depends on them at this
 leaf, so a downgraded database renders every number it rendered before.
 
 Revision ID: 3f408018a71c
-Revises: d9f5c1a48b73
+Revises: b2e9a47c3f18
 Create Date: 2026-08-16
 """
 from alembic import op
@@ -96,7 +96,7 @@ import sqlalchemy as sa
 
 # Revision identifiers, used by Alembic.
 revision = '3f408018a71c'
-down_revision = 'd9f5c1a48b73'
+down_revision = 'b2e9a47c3f18'
 branch_labels = None
 depends_on = None
 

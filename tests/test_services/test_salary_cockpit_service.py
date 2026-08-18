@@ -21,11 +21,11 @@ for periods 4-6:
   6   2026-11-01   B       1650    third paycheck
 """
 
-from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
 from app.services import salary_cockpit_service as svc
+from app.services.pay_calendar import DerivedPeriod
 from app.services.paycheck_calculator import (
     DeductionBreakdown,
     DeductionLine,
@@ -38,12 +38,21 @@ from app.services.paycheck_calculator import (
 TODAY = date(2026, 6, 5)
 
 
-@dataclass
-class _FakePeriod:
-    """Minimal pay-period stand-in (the producers read id/start/end only)."""
-    id: int
-    start_date: date
-    end_date: date
+def _fake_period(period_id, start_date, end_date):
+    """A REAL :class:`DerivedPeriod` (the producers read id/start/end only).
+
+    It was a ``_FakePeriod`` dataclass with an ``id`` field until pay-calendar
+    plan step C2-f2d-3 moved these producers onto the derived calendar.  A
+    duck type with the wrong field name would have kept passing here while
+    every production caller broke, so the production value is built instead.
+    """
+    return DerivedPeriod(
+        period_id=period_id,
+        period_index=period_id - 1,
+        start_date=start_date,
+        end_date=end_date,
+        end_is_projected=False,
+    )
 
 
 def _pair(
@@ -57,7 +66,7 @@ def _pair(
     ``pre`` / ``post`` are iterables of ``(name, amount_str)`` deduction
     lines.  Every monetary value is constructed from a string.
     """
-    period = _FakePeriod(id=pid, start_date=start, end_date=end)
+    period = _fake_period(pid, start, end)
     breakdown = PaycheckBreakdown(
         period=PeriodInfo(pid, is_third_paycheck=is_third, raise_event=raise_event),
         earnings=Earnings(

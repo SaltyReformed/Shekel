@@ -133,46 +133,13 @@ class RaiseTypeEnum(enum.Enum):
     CUSTOM = "custom"
 
 
-class RecurrencePatternEnum(enum.Enum):
-    """Recurrence pattern values -- the cadences this application MODELS.
-
-    Values match ``ref.recurrence_patterns.name`` after the Commit #2
-    migration capitalizes the display names.
-
-    **This is deliberately NARROWER than the ``ref`` table** (plan step R2e-3,
-    ruling R-R11).  ``Once`` was a member and a row meaning "does not recur";
-    the member is gone and the ROW SURVIVES.  Not for this image's sake --
-    ``ref_cache.init`` iterates THIS enum and a surplus row is invisible to it
-    -- but for the PREVIOUS image's, which still names ``ONCE`` and which
-    ``shekel-deploy`` rolls back to on an unhealthy deploy.  Plan step R9 drops
-    the row with the table; migration ``d4a71f6e30bb`` carries the full
-    reasoning.
-
-    **Nothing in ``app/`` reads this enum for a cadence any more, from plan
-    step R7c-c.**  No form posts a pattern id (plan step R7b-2: a submission
-    states ``(interval_n, unit, placement)``), and that step dropped
-    ``budget.recurrence_rules.pattern_id`` along with the encode / decode pair
-    and ``modelled_pattern``, the last reader of a STORED one -- so the enum
-    names a vocabulary no surface speaks in either direction.  What is left is
-    ``ref_cache``, which seeds and caches the ``ref`` rows, and R9 is the step
-    that drops both.  "Does not recur" is ``recurrence_rule_id IS NULL``, the
-    shape transaction templates always used.
-    """
-
-    EVERY_PERIOD = "Every Period"
-    EVERY_N_PERIODS = "Every N Periods"
-    MONTHLY = "Monthly"
-    MONTHLY_FIRST = "Monthly First"
-    QUARTERLY = "Quarterly"
-    SEMI_ANNUAL = "Semi-Annual"
-    ANNUAL = "Annual"
-
-
 class RecurrenceUnitEnum(enum.Enum):
     """Recurrence cadence-unit values (recurrence redesign, step R2).
 
-    The first of the two axes that replace :class:`RecurrencePatternEnum`'s
-    closed eight-name set: a recurrence is ``every <interval_n> <unit>``.
+    The first of the two axes that replaced the closed pattern set's
+    eight-name enum, ``RecurrencePatternEnum``, deleted with
+    ``ref.recurrence_patterns`` at plan step **R9**: a recurrence is
+    ``every <interval_n> <unit>``.
     Four of the old names -- Monthly, Quarterly, Semi-Annual, Annual -- were
     the same idea with a different integer baked into the NAME (every 1, 3, 6
     or 12 months), which is why "every other month" and "every two years" had

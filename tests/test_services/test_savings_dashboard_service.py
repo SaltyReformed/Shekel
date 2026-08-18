@@ -8,7 +8,7 @@ independently of the Flask route layer.
 
 from collections import OrderedDict
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 import pytest
@@ -33,7 +33,27 @@ from app.services import balance_at, savings_dashboard_service, pay_period_servi
 from app.services import account_service
 from app.services.balance_at import BalanceContext
 from app.services.account_category import account_category
+from app.services.pay_calendar import DerivedPeriod
 from app.services.savings_dashboard_service._types import AccountProjection
+from tests.oracles.recurrence_baseline import MONTHLY
+
+
+def _derived_period(period_id, period_index=None):
+    """A REAL :class:`DerivedPeriod` for the pure reducer unit tests.
+
+    The producers in this package moved off ORM ``PayPeriod`` rows onto the
+    derived calendar at pay-calendar plan step C2-f2d-3, so a stand-in with an
+    ``id`` field would silently stop grading what they read.  Building the
+    production value is the whole point: a renamed field fails here.
+    """
+    index = period_id - 1 if period_index is None else period_index
+    return DerivedPeriod(
+        period_id=period_id,
+        period_index=index,
+        start_date=date(2026, 1, 2) + timedelta(days=14 * index),
+        end_date=date(2026, 1, 15) + timedelta(days=14 * index),
+        end_is_projected=False,
+    )
 
 
 def _projection(account, current_balance, balances=None):
@@ -80,7 +100,7 @@ class TestComputeDashboardData:
         """Return dict contains all template context keys."""
         with app.app_context():
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             expected_keys = {
                 "account_data", "grouped_accounts", "goal_data",
@@ -108,7 +128,7 @@ class TestComputeDashboardData:
         """
         with app.app_context():
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             assert result["total_savings"] == Decimal("1000.00")
             assert result["avg_monthly_expenses"] == Decimal("0.00")
@@ -120,7 +140,7 @@ class TestComputeDashboardData:
         """The seed user's checking account appears in account_data."""
         with app.app_context():
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             acct_names = [
                 ad.account.name for ad in result["account_data"]
@@ -140,7 +160,7 @@ class TestComputeDashboardData:
         """
         with app.app_context():
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             for ad in result["account_data"]:
                 assert isinstance(
@@ -157,7 +177,7 @@ class TestGroupAccountsByCategory:
         """Checking accounts are grouped under the 'asset' category."""
         with app.app_context():
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             grouped = result["grouped_accounts"]
             assert "asset" in grouped
@@ -187,7 +207,7 @@ class TestGroupAccountsByCategory:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             grouped = result["grouped_accounts"]
             asset_names = [
@@ -230,7 +250,7 @@ class TestGoalProgress:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             assert len(result["goal_data"]) == 1
             gd = result["goal_data"][0]
@@ -281,7 +301,7 @@ class TestGoalProgress:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             gd = result["goal_data"][0]
             assert gd.current_balance == Decimal("4980.00")
@@ -326,7 +346,7 @@ class TestGoalProgress:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             gd = result["goal_data"][0]
             assert gd.current_balance == Decimal("6000.00")
@@ -373,7 +393,7 @@ class TestGoalProgress:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             gd = result["goal_data"][0]
             assert gd.current_balance == Decimal("-500.00")
@@ -386,7 +406,7 @@ class TestGoalProgress:
         """User with no active goals gets an empty goal_data list."""
         with app.app_context():
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             assert result["goal_data"] == []
 
@@ -414,7 +434,7 @@ class TestIncomeRelativeGoalDashboard:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             gd = result["goal_data"][0]
             assert gd.resolved_target == Decimal("5000.00")
@@ -448,7 +468,7 @@ class TestIncomeRelativeGoalDashboard:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             gd = result["goal_data"][0]
             # pylint: disable=import-outside-toplevel
@@ -499,7 +519,7 @@ class TestIncomeRelativeGoalDashboard:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             gd = result["goal_data"][0]
             # The exact value depends on the salary profile's net pay.
@@ -532,7 +552,7 @@ class TestIncomeRelativeGoalDashboard:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             gd = result["goal_data"][0]
             assert gd.resolved_target == Decimal("0.00")
@@ -563,7 +583,7 @@ class TestIncomeRelativeGoalDashboard:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             gd = result["goal_data"][0]
             assert gd.income_descriptor == "3.00 months of salary"
@@ -606,7 +626,7 @@ class TestIncomeRelativeGoalDashboard:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             gd = result["goal_data"][0]
             # resolved_target = 1 * net_biweekly_pay > 0 (salary exists).
@@ -640,7 +660,7 @@ class TestIncomeRelativeGoalDashboard:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             gd = result["goal_data"][0]
             assert gd.progress_pct == 0
@@ -693,7 +713,7 @@ class TestGoalTrajectoryDashboard:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             gd = result["goal_data"][0]
             # pylint: disable=import-outside-toplevel
@@ -736,7 +756,7 @@ class TestGoalTrajectoryDashboard:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             gd = result["goal_data"][0]
             assert gd.monthly_contribution == Decimal("0.00")
@@ -750,8 +770,7 @@ class TestGoalTrajectoryDashboard:
         A $500/month recurring transfer into the savings account with
         $3,000 balance and $6,000 target should produce months_to_goal=6.
         """
-        from app.enums import RecurrencePatternEnum
-        from tests._test_helpers import make_pattern_rule
+        from tests._test_helpers import make_cadence_rule
 
         with app.app_context():
             savings_type = (
@@ -772,8 +791,8 @@ class TestGoalTrajectoryDashboard:
             # Authored through the write door (plan step R7c-b): the
             # two-axis columns are NOT NULL, so a rule naming only a pattern
             # cannot be stored.
-            rule = make_pattern_rule(
-                seed_user["user"].id, RecurrencePatternEnum.MONTHLY,
+            rule = make_cadence_rule(
+                seed_user["user"].id, MONTHLY,
             )
 
             from app.models.transfer_template import TransferTemplate
@@ -799,7 +818,7 @@ class TestGoalTrajectoryDashboard:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             gd = result["goal_data"][0]
             # Monthly transfer of $500 with $3,000 remaining
@@ -832,7 +851,7 @@ class TestEmergencyFundMetrics:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             # Both Checking ($1000, liquid) and Savings ($8000, liquid)
             # contribute to total_savings.
@@ -909,7 +928,7 @@ class TestPaidOffFlag:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             loan_ad = next(
                 ad for ad in result["account_data"]
@@ -925,7 +944,7 @@ class TestPaidOffFlag:
             acct = _create_small_loan(seed_user, db.session)
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             loan_ad = next(
                 ad for ad in result["account_data"]
@@ -962,7 +981,7 @@ class TestPaidOffFlag:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             loan_ad = next(
                 ad for ad in result["account_data"]
@@ -1001,7 +1020,7 @@ class TestPaidOffFlag:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             loan_ad = next(
                 ad for ad in result["account_data"]
@@ -1015,7 +1034,7 @@ class TestPaidOffFlag:
         """Non-loan accounts (checking, savings) have is_paid_off=False."""
         with app.app_context():
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             # The seed user's checking account is non-amortizing.
             checking_ad = next(
@@ -1051,7 +1070,7 @@ class TestPaidOffFlag:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             loan_ad = next(
                 ad for ad in result["account_data"]
@@ -1149,7 +1168,7 @@ class TestPaidOffReadsTheLedgerNotTheReplay:
             )
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             loan_ad = next(
                 ad for ad in result["account_data"]
@@ -1199,7 +1218,7 @@ class TestPaidOffReadsTheLedgerNotTheReplay:
             )
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             loan_ad = next(
                 ad for ad in result["account_data"]
@@ -1245,7 +1264,7 @@ class TestArchivedAccounts:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             assert "archived_accounts" in result
             assert len(result["archived_accounts"]) == 1
@@ -1273,7 +1292,7 @@ class TestArchivedAccounts:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             active_names = [
                 ad.account.name for ad in result["account_data"]
@@ -1286,7 +1305,7 @@ class TestArchivedAccounts:
         """No archived accounts yields an empty list."""
         with app.app_context():
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             assert result["archived_accounts"] == []
 
@@ -1320,7 +1339,7 @@ class TestArchivedAccounts:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             archived_row = result["archived_accounts"][0]
             assert archived_row.last_anchor_balance == Decimal("3000.00")
@@ -1347,7 +1366,7 @@ class TestDebtSummary:
         """C-5.12-3: No loan accounts yields debt_summary=None."""
         with app.app_context():
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             assert result["debt_summary"] is None
 
@@ -1384,10 +1403,10 @@ class TestDebtSummary:
             db.session.commit()
 
             full = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )["debt_summary"]
             narrow = savings_dashboard_service.compute_debt_summary(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             assert full is not None
             # The DTI leg is live, not the vacuous None == None.  $78,000 / 26
@@ -1413,7 +1432,7 @@ class TestDebtSummary:
         """
         with app.app_context():
             assert savings_dashboard_service.compute_debt_summary(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             ) is None
 
     def test_debt_summary_single_loan(
@@ -1427,7 +1446,7 @@ class TestDebtSummary:
         with app.app_context():
             acct = _create_small_loan(seed_user, db.session)
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             ds = result["debt_summary"]
             assert ds is not None
@@ -1472,7 +1491,7 @@ class TestDebtSummary:
             )
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             ds = result["debt_summary"]
             assert ds.total_debt == Decimal("225000.00")
@@ -1523,7 +1542,7 @@ class TestDebtSummary:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             ds = result["debt_summary"]
             # Only the active $2,000 loan contributes.
@@ -1564,7 +1583,7 @@ class TestDebtSummary:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             ds = result["debt_summary"]
             assert ds is not None
@@ -1603,7 +1622,7 @@ class TestDebtSummary:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             ds = result["debt_summary"]
             assert ds is not None
@@ -1639,7 +1658,7 @@ class TestDebtSummary:
             )
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             ds = result["debt_summary"]
             # The mortgage payoff is decades away; auto loan is < 2 years.
@@ -1684,7 +1703,7 @@ class TestDebtSummary:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             ds = result["debt_summary"]
             # P&I for a $200K, 6.5%, 360-month loan is ~$1,264.
@@ -1752,7 +1771,7 @@ class TestPrincipalPaidFraction:
             )
 
             summary = savings_dashboard_service.compute_debt_summary(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             # The fixture really is in that state: a loan with a debt line
             # ahead of it that owes nothing today.
@@ -1775,7 +1794,7 @@ class TestPrincipalPaidFraction:
             _create_small_loan(seed_user, db.session)
 
             summary = savings_dashboard_service.compute_debt_summary(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             fraction = summary.principal_paid_fraction
             assert isinstance(fraction, Decimal)
@@ -1805,7 +1824,7 @@ class TestPrincipalPaidFraction:
             db.session.commit()
 
             summary = savings_dashboard_service.compute_debt_summary(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             assert summary.principal_paid_fraction == Decimal("0")
 
@@ -1853,7 +1872,7 @@ class TestPrincipalPaidFraction:
 
             # The debt summary reports the active-loans-only total ($0.00) ...
             summary = savings_dashboard_service.compute_debt_summary(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             assert summary is not None
             assert summary.total_debt == Decimal("0.00")
@@ -1914,7 +1933,7 @@ class TestPrincipalPaidFraction:
             db.session.commit()
 
             fraction = savings_dashboard_service.compute_debt_summary(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             ).principal_paid_fraction
             # (orig_A + orig_B - balance_B) / (orig_A + orig_B)
             # = (1000.00 + 1000.00 - 400.00) / (1000.00 + 1000.00)
@@ -2056,7 +2075,7 @@ class TestDebtSummaryMembershipRules:
             # which is the whole hazard the three rules exist to separate.
 
             summary = savings_dashboard_service.compute_debt_summary(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             assert summary is not None
 
@@ -2085,7 +2104,7 @@ class TestDebtSummaryMembershipRules:
             # And the set itself, so the assertion above cannot pass because
             # some OTHER loan happens to date that late.
             full = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )["account_data"]
             assert {
                 ad.account.name for ad in debt_line_loans(full)
@@ -2118,7 +2137,7 @@ class TestDTI:
             _create_small_loan(seed_user, db.session)
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             ds = result["debt_summary"]
             assert ds is not None
@@ -2150,7 +2169,7 @@ class TestDTI:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             ds = result["debt_summary"]
             assert ds.dti is not None
@@ -2206,7 +2225,7 @@ class TestDTI:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             ds = result["debt_summary"]
             assert ds.dti is not None
@@ -2387,7 +2406,7 @@ class TestDTIRaiseAware:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             ds = result["debt_summary"]
 
@@ -2440,7 +2459,7 @@ class TestDTIRaiseAware:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             ds = result["debt_summary"]
             # DTI ratio matches the pre-fix calculation (no regression), and
@@ -2641,7 +2660,7 @@ class TestDTIRaiseAware:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             ds = result["debt_summary"]
             # Engine-derived gross_monthly is $4,291.67 (see class + test
@@ -2872,7 +2891,7 @@ class TestCanonicalProducerRouting:
             # Savings dashboard tile: routed through balances_for by
             # Commit 6.  Must equal the grid value exactly.
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             checking_ad = next(
                 ad for ad in result["account_data"]
@@ -2956,7 +2975,7 @@ class TestCanonicalProducerRouting:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             hysa_ad = next(
                 ad for ad in result["account_data"]
@@ -3016,7 +3035,7 @@ class TestCanonicalProducerRouting:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             checking_ad = next(
                 ad for ad in result["account_data"]
@@ -3145,7 +3164,7 @@ class TestNetWorthHero:
             )
 
             nw = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )["net_worth"]
 
             # 1000.00 + 4000.00 = 5000.00
@@ -3165,7 +3184,7 @@ class TestNetWorthHero:
             )
 
             nw = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )["net_worth"]
 
             assert nw.today.total_liabilities == Decimal("240000.00")
@@ -3207,7 +3226,7 @@ class TestNetWorthHero:
             db.session.commit()
 
             nw = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )["net_worth"]
 
             # Seed Checking only.
@@ -3238,7 +3257,7 @@ class TestNetWorthHero:
             )
 
             nw = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )["net_worth"]
 
             # 1000.00 + 4000.00 = 5000.00 (mortgage excluded from liquid).
@@ -3268,7 +3287,7 @@ class TestNetWorthSeries:
         """
         with app.app_context():
             series = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )["net_worth"].series
 
             # history tail (indices 0-3) + forward (indices 4-9) = 10 points
@@ -3316,7 +3335,7 @@ class TestNetWorthSeries:
             )
 
             series = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )["net_worth"].series
 
             assert len(series.net) > 0
@@ -3370,7 +3389,7 @@ class TestNetWorthSeries:
             db.session.commit()
 
             series = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )["net_worth"].series
 
             assert len(series.composition["liability"]) > 0
@@ -3402,7 +3421,7 @@ class TestNetWorthSeries:
             )
 
             nw = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )["net_worth"]
 
             current = nw.series.current_index
@@ -3445,7 +3464,7 @@ class TestNetWorthSeries:
             )
 
             nw = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )["net_worth"]
 
             current = nw.series.current_index
@@ -3490,13 +3509,12 @@ class TestBuildTrendPeriods:
         (``_loan_schedule_start_index``, which matches a schedule's first
         payment_date to a period by ``end_date``) resolves unambiguously.
         """
-        # pylint: disable=import-outside-toplevel
-        from datetime import timedelta
-        from types import SimpleNamespace
-        return SimpleNamespace(
-            id=100 + period_index,
+        return DerivedPeriod(
+            period_id=100 + period_index,
             period_index=period_index,
+            start_date=date(2026, 1, 1) + timedelta(days=14 * period_index),
             end_date=date(2026, 1, 14) + timedelta(days=14 * period_index),
+            end_is_projected=False,
         )
 
     @staticmethod
@@ -3979,7 +3997,7 @@ class TestNetWorthComposition:
             _add_mortgage_account(seed_user, Decimal("240000.00"))
 
             series = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )["net_worth"].series
             comp = series.composition
             asset_bands = ("asset", "retirement", "investment", "other")
@@ -4018,7 +4036,7 @@ class TestNetWorthComposition:
             )
 
             data = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             series = data["net_worth"].series
             comp = series.composition
@@ -4054,12 +4072,23 @@ class TestNetWorthHorizon:
     the horizon out of the full build.  The narrow producer is deleted; the
     horizon is read where the route reads it.  The one exception is the
     no-pay-periods test below, which calls ``build_horizon`` directly because
-    the state it needs -- a user with an empty period list -- is upstream of
+    the state it needs -- a user with no pay periods -- is upstream of
     the build rather than inside it.
     """
 
-    def test_none_without_periods(self, app, db, seed_user):
-        """No pay periods -> the horizon producer returns None (no axis)."""
+    def test_none_without_periods(self, app, db, bare_user):
+        """No pay periods -> the horizon producer returns None (no axis).
+
+        **The owner really has none**, and that is the change pay-calendar plan
+        step C2-f2d-3 forced.  This case built a ``_DashboardCoreData`` with
+        ``all_periods=[]`` beside a ``seed_user`` pass -- and ``seed_user``
+        seeds a bootstrap pay period, so the bundle stated an empty schedule
+        while the pass it carried answered a non-empty one.  Production could
+        not build that pair (one loader wrote both fields), but a test could,
+        and it was grading a state no render can be in.  The period set is off
+        the pass now, so the only way to say "no pay periods" is to have none:
+        ``bare_user``.
+        """
         with app.app_context():
             # pylint: disable=import-outside-toplevel
             from app.services.savings_dashboard_service._horizon import (
@@ -4070,8 +4099,7 @@ class TestNetWorthHorizon:
             )
             core = _DashboardCoreData(
                 accounts=[],
-                balance_ctx=BalanceContext.build(seed_user["user"].id),
-                all_periods=[], current_period=None,
+                balance_ctx=BalanceContext.build(bare_user["user"].id),
             )
             assert build_horizon(core, []) is None
 
@@ -4099,11 +4127,64 @@ class TestNetWorthHorizon:
         with app.app_context():
             user_id = bare_user["user"].id
             assert savings_dashboard_service.compute_goal_progress(
-                user_id,
+                BalanceContext.build(user_id),
             ) == []
             assert savings_dashboard_service.compute_debt_summary(
-                user_id,
+                BalanceContext.build(user_id),
             ) is None
+
+    def test_the_narrow_producers_do_not_need_a_CALENDAR_they_never_use(
+        self, app, db, seed_user,
+    ):
+        """An owner whose paydays cannot define a calendar still gets ``/``.
+
+        **The case above CANNOT fire on this defect and that is why this one
+        exists** (adversarial code review of pay-calendar plan step C2-f2d-3).
+        ``bare_user`` has no periods at all, so ``derive_periods((), None)``
+        answers the empty calendar and nothing is refused -- the arm is never
+        reached.  The state that reaches it is an owner who HAS a payday whose
+        span exceeds the 1..365 cadence range: ``derive_periods`` refuses it,
+        and every producer that touches the calendar raises.
+
+        That owner is reachable rather than contrived: ``pay_schedule`` did not
+        exist before plan step X-ad-a, so a period stored before it carries
+        whatever span it was generated with, and ``resolve_cadence``'s legacy
+        fallback infers the cadence from the periods themselves.
+
+        The defect this pins was live for one commit: C2-f2d-3 resolved the
+        current period inside ``_load_dashboard_core_data``, so
+        ``compute_debt_summary`` RAISED where it had answered ``None``.  It is
+        the pay cadence's defect from R7a-2a, on the same loader, through the
+        same two producers, one fact over -- which is why the remedy is the
+        same: the loader resolves neither, and the bundle derives on demand.
+        """
+        # pylint: disable=import-outside-toplevel
+        from datetime import timedelta
+
+        from app.models.pay_period import PayPeriod
+        from app.services.pay_calendar import PayCalendarError
+
+        with app.app_context():
+            user_id = seed_user["user"].id
+            period = (
+                db.session.query(PayPeriod).filter_by(user_id=user_id)
+                .order_by(PayPeriod.start_date).first()
+            )
+            period.end_date = period.start_date + timedelta(days=545)
+            db.session.commit()
+
+            # The premise, asserted rather than assumed: this owner's calendar
+            # really is unbuildable, so the two assertions below are about a
+            # producer NOT reaching it rather than about a benign state.
+            with pytest.raises(PayCalendarError):
+                BalanceContext.build(user_id).calendar()
+
+            assert savings_dashboard_service.compute_debt_summary(
+                BalanceContext.build(user_id),
+            ) is None
+            assert savings_dashboard_service.compute_goal_progress(
+                BalanceContext.build(user_id),
+            ) == []
 
     def test_publishes_only_the_keys_the_page_reads(
         self, app, db, seed_user, seed_periods_today,
@@ -4120,7 +4201,7 @@ class TestNetWorthHorizon:
         """
         with app.app_context():
             horizon = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )["net_worth"].horizon
 
             assert set(horizon) == {
@@ -4139,7 +4220,7 @@ class TestNetWorthHorizon:
         """
         with app.app_context():
             horizon = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )["net_worth"].horizon
             assert horizon is not None
             assert horizon["dates"][0] == date.today()
@@ -4170,7 +4251,7 @@ class TestNetWorthHorizon:
             uid = seed_user["user"].id
 
             hero = savings_dashboard_service.compute_dashboard_data(
-                uid,
+                BalanceContext.build(uid),
             )["net_worth"]
             horizon = hero.horizon
 
@@ -4217,7 +4298,9 @@ class TestNetWorthHorizon:
             )
             uid = seed_user["user"].id
 
-            data = savings_dashboard_service.compute_dashboard_data(uid)
+            data = savings_dashboard_service.compute_dashboard_data(
+                BalanceContext.build(uid),
+            )
             horizon = data["net_worth"].horizon
             band = horizon["composition"]["asset"]
             dates = horizon["dates"]
@@ -4294,7 +4377,7 @@ class TestNetWorthHorizon:
             uid = seed_user["user"].id
 
             horizon = savings_dashboard_service.compute_dashboard_data(
-                uid,
+                BalanceContext.build(uid),
             )["net_worth"].horizon
             band = horizon["composition"]["retirement"]
 
@@ -4333,7 +4416,9 @@ class TestNetWorthHorizon:
             )
             uid = seed_user["user"].id
 
-            ctx = savings_dashboard_service.compute_dashboard_data(uid)
+            ctx = savings_dashboard_service.compute_dashboard_data(
+                BalanceContext.build(uid),
+            )
             subtotals = ctx["group_subtotals"]
             horizon = ctx["net_worth"].horizon
 
@@ -4375,7 +4460,7 @@ class TestNetWorthHorizon:
             uid = seed_user["user"].id
 
             hero = savings_dashboard_service.compute_dashboard_data(
-                uid,
+                BalanceContext.build(uid),
             )["net_worth"]
             horizon = hero.horizon
             liability = horizon["composition"]["liability"]
@@ -4406,7 +4491,7 @@ class TestNetWorthHorizon:
             _add_mortgage_account(seed_user, Decimal("240000.00"))
 
             horizon = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )["net_worth"].horizon
             comp = horizon["composition"]
             asset_bands = ("asset", "retirement", "investment", "other")
@@ -4442,16 +4527,14 @@ class TestNetWorthHorizon:
             uid = seed_user["user"].id
 
             horizon = savings_dashboard_service.compute_dashboard_data(
-                uid,
+                BalanceContext.build(uid),
             )["net_worth"].horizon
 
-            all_periods = pay_period_service.get_all_periods(uid)
-            current = pay_period_service.get_current_period(uid)
             # The domain end is the last annual sample (plan step X-q2 deleted
-            # the second key that restated it).
+            # the second key that restated it).  The periods come off the pass
+            # (pay-calendar plan step C2-f2d-3) rather than being threaded in.
             ctx = retirement_projection.build_projection_context(
-                BalanceContext.build(uid), all_periods, current,
-                horizon["dates"][-1], None, None,
+                BalanceContext.build(uid), horizon["dates"][-1], None, None,
             )
             projections = retirement_projection.project_accounts_with_batch(
                 ctx,
@@ -4487,7 +4570,9 @@ class TestNetWorthHorizon:
             )
             uid = seed_user["user"].id
 
-            data = savings_dashboard_service.compute_dashboard_data(uid)
+            data = savings_dashboard_service.compute_dashboard_data(
+                BalanceContext.build(uid),
+            )
             payoff = data["debt_summary"].payoff_outlook.all_clear_on
             horizon = data["net_worth"].horizon
             liability = horizon["composition"]["liability"]
@@ -4526,7 +4611,9 @@ class TestNetWorthHorizon:
             _add_mortgage_account(seed_user, Decimal("240000.00"))
             uid = seed_user["user"].id
 
-            data = savings_dashboard_service.compute_dashboard_data(uid)
+            data = savings_dashboard_service.compute_dashboard_data(
+                BalanceContext.build(uid),
+            )
             payoff = data["debt_summary"].payoff_outlook.all_clear_on
             horizon = data["net_worth"].horizon
 
@@ -4571,7 +4658,7 @@ class TestNetWorthHorizon:
             )
 
             horizon = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )["net_worth"].horizon
             assert horizon["net"][0] < Decimal("500000")
             assert horizon["net"][-1] >= Decimal("500000")
@@ -4647,7 +4734,7 @@ class TestAMilestoneLabelCanCollide:
             db.session.commit()
 
             data = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             milestones = data["net_worth"].horizon["milestones"]
             payoff = data["debt_summary"].payoff_outlook.all_clear_on
@@ -4698,7 +4785,7 @@ class TestGroupSubtotals:
             )
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             # 1000.00 (Checking) + 4000.00 (Savings) = 5000.00
             assert result["group_subtotals"]["asset"] == Decimal("5000.00")
@@ -4719,7 +4806,7 @@ class TestGroupSubtotals:
             )
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             subtotals = result["group_subtotals"]
             assert subtotals["liability"] == Decimal("240000.00")
@@ -4743,7 +4830,7 @@ class TestGroupSubtotals:
             )
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             assert (
                 list(result["group_subtotals"].keys())
@@ -4795,9 +4882,21 @@ class TestComputeSparklines:
 
     @staticmethod
     def _period(period_id):
-        """Synthetic PayPeriod stand-in (only ``id`` is read)."""
-        from types import SimpleNamespace  # pylint: disable=import-outside-toplevel
-        return SimpleNamespace(id=period_id)
+        """A REAL :class:`DerivedPeriod` (only ``period_id`` is read).
+
+        It was a ``SimpleNamespace(id=...)`` until pay-calendar plan step
+        C2-f2d-3 moved this producer onto the derived calendar.  Building the
+        production value rather than a duck type is what makes the case grade
+        the attribute the producer actually reads: a stand-in with the wrong
+        field name would have kept passing under the old spelling.
+        """
+        return DerivedPeriod(
+            period_id=period_id,
+            period_index=period_id - 1,
+            start_date=date(2026, 1, 2) + timedelta(days=14 * (period_id - 1)),
+            end_date=date(2026, 1, 15) + timedelta(days=14 * (period_id - 1)),
+            end_is_projected=False,
+        )
 
     @staticmethod
     def _map(account_id, balances):
@@ -4932,7 +5031,7 @@ class TestPropertyEquityInContext:
             db.session.commit()
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             equity_data = result["property_equity"]
             assert len(equity_data) == 1
@@ -4950,7 +5049,7 @@ class TestPropertyEquityInContext:
         """A user with no Property account gets an empty property_equity list."""
         with app.app_context():
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             assert result["property_equity"] == []
 
@@ -4968,7 +5067,7 @@ class TestPropertyEquityInContext:
             )
 
             result = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id
+                BalanceContext.build(seed_user["user"].id),
             )
             equity_data = result["property_equity"]
             assert len(equity_data) == 1
@@ -4997,14 +5096,16 @@ class TestAccountBalanceCell:
             user_id = seed_user["user"].id
             acct_id = seed_user["account"].id
 
-            full = savings_dashboard_service.compute_dashboard_data(user_id)
+            full = savings_dashboard_service.compute_dashboard_data(
+                BalanceContext.build(user_id),
+            )
             grid_balance = next(
                 ad.current_balance for ad in full["account_data"]
                 if ad.account.id == acct_id
             )
 
             cell = savings_dashboard_service.compute_account_balance_cell(
-                user_id, acct_id,
+                BalanceContext.build(user_id), acct_id,
             )
             assert cell is not None
             assert cell.account.id == acct_id
@@ -5021,7 +5122,8 @@ class TestAccountBalanceCell:
         """
         with app.app_context():
             cell = savings_dashboard_service.compute_account_balance_cell(
-                seed_user["user"].id, seed_second_user["account"].id,
+                BalanceContext.build(seed_user["user"].id),
+                seed_second_user["account"].id,
             )
             assert cell is None
 
@@ -5041,7 +5143,7 @@ class TestAccountBalanceCell:
             db.session.commit()
 
             cell = savings_dashboard_service.compute_account_balance_cell(
-                seed_user["user"].id, acct_id,
+                BalanceContext.build(seed_user["user"].id), acct_id,
             )
             assert cell is None
 
@@ -5061,7 +5163,7 @@ class TestAccountBalanceCell:
             loan = _create_small_loan(seed_user, db.session)
 
             cell = savings_dashboard_service.compute_account_balance_cell(
-                seed_user["user"].id, loan.id,
+                BalanceContext.build(seed_user["user"].id), loan.id,
             )
             assert cell is not None
             assert cell.is_liability is True
@@ -5077,7 +5179,8 @@ class TestAccountBalanceCell:
         """
         with app.app_context():
             cell = savings_dashboard_service.compute_account_balance_cell(
-                seed_user["user"].id, seed_user["account"].id,
+                BalanceContext.build(seed_user["user"].id),
+                seed_user["account"].id,
             )
             assert cell is not None
             assert cell.is_liability is False
@@ -5136,7 +5239,7 @@ class TestOneResolutionPerLoanPerReadPass:
 
             calls = self._count_resolutions(monkeypatch)
             savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
 
             assert set(calls) == ids
@@ -5221,7 +5324,7 @@ class TestTypeDriftedLoanParamsRow:
             acct_id = acct.id
 
             data = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             entry = next(
                 ad for ad in data["account_data"] if ad.account.id == acct_id
@@ -5295,7 +5398,7 @@ class TestNoBaselineIsAnsweredOnceForEveryKind:
 
             with pytest.raises(BaselineMissingError):
                 savings_dashboard_service.compute_dashboard_data(
-                    seed_user["user"].id,
+                    BalanceContext.build(seed_user["user"].id),
                 )
 
     def test_the_hero_cannot_report_a_fabricated_zero(
@@ -5323,7 +5426,7 @@ class TestNoBaselineIsAnsweredOnceForEveryKind:
 
             with pytest.raises(BaselineMissingError) as excinfo:
                 savings_dashboard_service.compute_dashboard_data(
-                    seed_user["user"].id,
+                    BalanceContext.build(seed_user["user"].id),
                 )
             # The message names the repair, which is what makes the handler's
             # card actionable rather than decorative.
@@ -5423,7 +5526,7 @@ class TestUnclearingDebtHasNoDebtFreeDate:
             assert figures.is_retired is False
 
             data = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             summary = data["debt_summary"]
             assert summary is not None
@@ -5456,7 +5559,7 @@ class TestUnclearingDebtHasNoDebtFreeDate:
             db.session.commit()
 
             data = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             assert data["debt_summary"].payoff_outlook.all_clear_on is None
 
@@ -5486,7 +5589,7 @@ class TestUnclearingDebtHasNoDebtFreeDate:
             self._never_clearing_loan(seed_user, db.session, seed_periods)
 
             data = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             _end, debt_free = _resolve_horizon_domain(
                 data["account_data"], date(2026, 3, 20),
@@ -5594,7 +5697,7 @@ class TestTheProjectionShape:
             db.session.commit()
 
             data = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             by_id = {ad.account.id: ad for ad in data["account_data"]}
             assert by_id[loan.id].is_liability is True
@@ -5634,7 +5737,9 @@ class TestTheProjectionShape:
             }
             current = pay_period_service.get_current_period(user_id)
 
-            data = savings_dashboard_service.compute_dashboard_data(user_id)
+            data = savings_dashboard_service.compute_dashboard_data(
+                BalanceContext.build(user_id),
+            )
             by_id = {ad.account.id: ad for ad in data["account_data"]}
 
             for ad in data["account_data"]:
@@ -5721,11 +5826,11 @@ class TestTheDenseMapIsTotalAndSaysSo:
         with app.app_context():
             balances = {i: Decimal(str(1000 * i)) for i in range(1, 6)}
             ad = _projection(self._account(8), Decimal("1000.00"), balances)
-            window = [SimpleNamespace(id=i) for i in range(1, 6)]
+            window = [_derived_period(i) for i in range(1, 6)]
             assert len(compute_sparklines([ad], window)[8]) == 5
             # One period beyond the map's domain.
             with pytest.raises(KeyError):
-                compute_sparklines([ad], window + [SimpleNamespace(id=99)])
+                compute_sparklines([ad], window + [_derived_period(99)])
 
     def test_the_projection_read_raises_on_a_missing_current_period(self, app):
         """``_current_balance_from_map`` states ``Raises: KeyError`` -- it does.
@@ -5745,7 +5850,7 @@ class TestTheDenseMapIsTotalAndSaysSo:
             # ruling R-EH deleted the column, so what this case pins is the
             # arm it always graded: with a current period the map is INDEXED.
             acct = SimpleNamespace()
-            ctx = SimpleNamespace(current_period=SimpleNamespace(id=2))
+            ctx = SimpleNamespace(current_period=_derived_period(2))
             assert _current_balance_from_map(
                 {2: Decimal("42.00")}, acct, ctx,
             ) == Decimal("42.00")
@@ -5908,7 +6013,7 @@ class TestARetiredLoanHasNoDebtLine:
             assert clearing_figures.payoff_date == self._CLEARING_PAYOFF
 
             data = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             assert _resolve_horizon_domain(
                 data["account_data"], date(2026, 3, 20),
@@ -5951,7 +6056,7 @@ class TestARetiredLoanHasNoDebtLine:
             self._two_loans(seed_user, db.session, seed_periods)
 
             data = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             account_data = data["account_data"]
             # The fixed producer, on unmodified data.
@@ -6019,7 +6124,7 @@ class TestARetiredLoanHasNoDebtLine:
             db.session.commit()
 
             data = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             account_data = data["account_data"]
             assert loan_payoff_outlook(account_data).is_loan_free is True
@@ -6117,7 +6222,7 @@ class TestTheDebtFreeDateIsOneDerivation:
             )
 
             data = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             account_data = data["account_data"]
             by_name = {
@@ -6189,7 +6294,7 @@ class TestTheDebtFreeDateIsOneDerivation:
             )
 
             account_data = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )["account_data"]
             owed_today = [
                 ad for ad in account_data
@@ -6251,7 +6356,7 @@ class TestTheDebtFreeDateIsOneDerivation:
             )
 
             account_data = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )["account_data"]
             # Read at a date past BOTH payoffs.
             after_everything = date(2060, 1, 1)
@@ -6303,7 +6408,7 @@ class TestTheDebtFreeDateIsOneDerivation:
             db.session.commit()
 
             summary = savings_dashboard_service.compute_dashboard_data(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )["debt_summary"]
 
             # The card is NOT in the payoff derivation and does NOT poison it
@@ -6351,9 +6456,11 @@ class TestTheDebtFreeDateIsOneDerivation:
             user_id = seed_user["user"].id
 
             full = savings_dashboard_service.compute_dashboard_data(
-                user_id,
+                BalanceContext.build(user_id),
             )["debt_summary"]
-            narrow = savings_dashboard_service.compute_debt_summary(user_id)
+            narrow = savings_dashboard_service.compute_debt_summary(
+                BalanceContext.build(user_id),
+            )
 
             assert narrow.revolving_debt == Decimal("500.00")
             assert narrow.revolving_debt == full.revolving_debt

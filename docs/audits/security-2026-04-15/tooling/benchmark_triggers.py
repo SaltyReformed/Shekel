@@ -33,9 +33,11 @@ def run_benchmark():
     from app.models.category import Category
     from app.models.transaction import Transaction
     from app.models.transaction_template import TransactionTemplate
-    from app.models.recurrence_rule import RecurrenceRule
-    from app.models.ref import AccountType, RecurrencePattern, Status, TransactionType
+    from app.models.ref import AccountType, Status, TransactionType
+    from app.enums import RecurrenceUnitEnum
     from app.services import recurrence_engine, pay_period_service
+    from app.services.pay_calendar import calendar_for
+    from app.services.recurrence import RecurrenceSpec, author_rule
     from app.services.auth_service import hash_password
 
     app = create_app()
@@ -85,11 +87,20 @@ def run_benchmark():
         db.session.commit()
 
         expense = db.session.query(TransactionType).filter_by(name="Expense").one()
-        pattern = db.session.query(RecurrencePattern).filter_by(name="Every Period").one()
 
-        rule = RecurrenceRule(user_id=user.id, pattern_id=pattern.id)
-        db.session.add(rule)
-        db.session.flush()
+        # Authored through the write door, which is the only way to write a
+        # rule: plan step R7c-b made four cadence columns NOT NULL, R7c-c
+        # dropped the ``pattern_id`` this set, and plan step R9 dropped the
+        # ``ref.recurrence_patterns`` row it was read from.
+        calendar = calendar_for(user.id)
+        rule = author_rule(
+            RecurrenceSpec(
+                user_id=user.id,
+                unit=RecurrenceUnitEnum.PERIOD,
+                starts_on=calendar.opening_bound(),
+            ),
+            calendar,
+        )
 
         template = TransactionTemplate(
             user_id=user.id,

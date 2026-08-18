@@ -19,7 +19,6 @@ import pytest
 from app import ref_cache
 from app.enums import (
     PeriodPlacementEnum,
-    RecurrencePatternEnum,
     RecurrenceUnitEnum,
 )
 from app.extensions import db
@@ -28,7 +27,7 @@ from app.models.category import Category
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import (
-    AccountType, RecurrencePattern, Status, TransactionType,
+    AccountType, Status, TransactionType,
 )
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -52,8 +51,13 @@ from tests._test_helpers import (
     create_account_of_type,
     create_loan_account,
     end_bound_payload,
-    make_pattern_rule,
+    make_cadence_rule,
     make_transfer_template,
+)
+from tests.oracles.recurrence_baseline import (
+    EVERY_PERIOD,
+    EVERY_N_PERIODS,
+    MONTHLY,
 )
 
 
@@ -71,7 +75,7 @@ _TODAYS_PERIOD_INDEX = 4
 
 
 def _create_template(seed_user, name="Rent", amount="1200.00",
-                     txn_type="Expense", pattern_name=None):
+                     txn_type="Expense", cadence=None):
     """Create a transaction template for the test user.
 
     Args:
@@ -79,7 +83,8 @@ def _create_template(seed_user, name="Rent", amount="1200.00",
         name: Template name.
         amount: Default amount string.
         txn_type: 'income' or 'expense'.
-        pattern_name: Optional recurrence pattern name (e.g. 'every_period').
+        cadence: A ``tests.oracles.recurrence_baseline`` cadence constant,
+            or ``None`` for a template that does not repeat.
 
     Returns:
         TransactionTemplate: the created template.
@@ -88,12 +93,12 @@ def _create_template(seed_user, name="Rent", amount="1200.00",
     category = seed_user["categories"]["Rent"]
 
     rule = None
-    if pattern_name:
+    if cadence:
         # Authored through the write door, which is what plan step R7c-b made
         # the only way to make a rule: ``unit_id``, ``placement_id``,
         # ``shift_id`` and ``starts_on`` are ``NOT NULL``, so naming a pattern
         # and nothing else no longer produces a row.
-        rule = make_pattern_rule(seed_user["user"].id, pattern_name)
+        rule = make_cadence_rule(seed_user["user"].id, cadence)
 
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
@@ -527,7 +532,7 @@ class TestTemplateUpdate:
     def test_update_template_success(self, app, auth_client, seed_user, seed_periods_today):
         """POST /templates/<id> updates template fields."""
         with app.app_context():
-            template = _create_template(seed_user, pattern_name="Every Period")
+            template = _create_template(seed_user, cadence=EVERY_PERIOD)
 
             resp = auth_client.post(f"/templates/{template.id}", data={
                 "name": "Updated Rent",
@@ -636,7 +641,7 @@ class TestTemplateUpdate:
         rolled back until Apply)."""
         with app.app_context():
             template = _create_template(
-                seed_user, pattern_name="Every Period", amount="1200.00",
+                seed_user, cadence=EVERY_PERIOD, amount="1200.00",
             )
             _future_override_txn(seed_user, template, amount="1500.00")
             tid = template.id
@@ -662,7 +667,7 @@ class TestTemplateUpdate:
         template default, so the realigned instance reads $1,400.00."""
         with app.app_context():
             template = _create_template(
-                seed_user, pattern_name="Every Period", amount="1200.00",
+                seed_user, cadence=EVERY_PERIOD, amount="1200.00",
             )
             txn = _future_override_txn(seed_user, template, amount="1500.00")
             tid, txn_id = template.id, txn.id
@@ -689,7 +694,7 @@ class TestTemplateUpdate:
         $1,500.00; the template amount edit still commits."""
         with app.app_context():
             template = _create_template(
-                seed_user, pattern_name="Every Period", amount="1200.00",
+                seed_user, cadence=EVERY_PERIOD, amount="1200.00",
             )
             txn = _future_override_txn(seed_user, template, amount="1500.00")
             tid, txn_id = template.id, txn.id
@@ -717,7 +722,7 @@ class TestTemplateUpdate:
         amount and propagating the new name to it."""
         with app.app_context():
             template = _create_template(
-                seed_user, name="Rent", pattern_name="Every Period",
+                seed_user, name="Rent", cadence=EVERY_PERIOD,
                 amount="1200.00",
             )
             txn = _future_override_txn(seed_user, template, amount="1500.00")
@@ -771,7 +776,7 @@ class TestTemplateUpdate:
         with app.app_context():
             from app.services import recurrence_engine, pay_period_service
             template = _create_template(
-                seed_user, name="Rent", pattern_name="Every Period",
+                seed_user, name="Rent", cadence=EVERY_PERIOD,
                 amount="1200.00",
             )
             scenario = seed_user["scenario"]
@@ -825,7 +830,7 @@ class TestTemplateUpdate:
                 recurrence_engine,
             )
             template = _create_template(
-                seed_user, name="Groceries", pattern_name="Every Period",
+                seed_user, name="Groceries", cadence=EVERY_PERIOD,
                 amount="500.00",
             )
             template.is_envelope = True  # rows track purchases, as production
@@ -914,7 +919,7 @@ class TestTemplateUpdate:
         """
         with app.app_context():
             template = _create_template(
-                seed_user, name="Rent", pattern_name="Every Period",
+                seed_user, name="Rent", cadence=EVERY_PERIOD,
             )
 
             from app.services import recurrence_engine, pay_period_service
@@ -963,7 +968,7 @@ class TestTemplateUpdate:
         """
         with app.app_context():
             template = _create_template(
-                seed_user, name="Rent", pattern_name="Every Period",
+                seed_user, name="Rent", cadence=EVERY_PERIOD,
             )
 
             from app.services import recurrence_engine, pay_period_service
@@ -999,7 +1004,7 @@ class TestTemplateUpdate:
         """
         with app.app_context():
             template = _create_template(
-                seed_user, name="Rent", pattern_name="Every Period",
+                seed_user, name="Rent", cadence=EVERY_PERIOD,
             )
 
             from app.services import recurrence_engine, pay_period_service
@@ -1049,7 +1054,7 @@ class TestGridRowKeyBuilder:
 
         with app.app_context():
             template = _create_template(
-                seed_user, name="Rent", pattern_name="Every Period",
+                seed_user, name="Rent", cadence=EVERY_PERIOD,
             )
 
             from app.services import recurrence_engine, pay_period_service
@@ -1155,7 +1160,7 @@ class TestTemplateArchive:
     def test_archive_and_soft_deletes(self, app, auth_client, seed_user, seed_periods_today):
         """POST /templates/<id>/archive archives template and soft-deletes projected txns."""
         with app.app_context():
-            template = _create_template(seed_user, pattern_name="Every Period")
+            template = _create_template(seed_user, cadence=EVERY_PERIOD)
 
             # Generate projected transactions.
             from app.services import recurrence_engine, pay_period_service
@@ -1220,7 +1225,7 @@ class TestTemplateUnarchive:
     def test_unarchive_restores_transactions(self, app, auth_client, seed_user, seed_periods_today):
         """POST /templates/<id>/unarchive restores soft-deleted txns."""
         with app.app_context():
-            template = _create_template(seed_user, pattern_name="Every Period")
+            template = _create_template(seed_user, cadence=EVERY_PERIOD)
 
             # Generate and then delete.
             from app.services import recurrence_engine, pay_period_service
@@ -1351,11 +1356,11 @@ class TestPreviewRecurrence:
             assert b"No preview" in resp.data
 
     @pytest.mark.parametrize(
-        ("cadence_name", "unit", "interval_n", "query"),
+        ("cadence", "unit", "interval_n", "query"),
         [
             # A live 500 before plan step R4a, out of the authoring seam.
             (
-                "Every N Periods", RecurrenceUnitEnum.PERIOD, 0, {},
+                EVERY_N_PERIODS, RecurrenceUnitEnum.PERIOD, 0, {},
             ),
             # A live 500 MEASURED at plan step R7c-b, and by a route the
             # deleted ``_MAX_START_DATE_YEAR`` no longer covered: past the
@@ -1364,37 +1369,41 @@ class TestPreviewRecurrence:
             # ``date.max``.  ``OverflowError`` comes from outside the
             # recurrence package, so this endpoint's handler never saw it.
             (
-                "Every Period", RecurrenceUnitEnum.PERIOD, 1,
+                EVERY_PERIOD, RecurrenceUnitEnum.PERIOD, 1,
                 {"starts_on": "9999-12-31"},
             ),
             (
-                "Monthly", RecurrenceUnitEnum.MONTH, 1,
+                MONTHLY, RecurrenceUnitEnum.MONTH, 1,
                 {"starts_on": "9999-12-31"},
             ),
             (
-                "Monthly", RecurrenceUnitEnum.MONTH, 1,
+                MONTHLY, RecurrenceUnitEnum.MONTH, 1,
                 {"starts_on": "0001-01-01"},
             ),
             # The nominal day took the retired day / month args' place, and
             # takes their disposition: a value the date leaves no room for is
             # a second statement of a day ``starts_on`` already carries.
             (
-                "Monthly", RecurrenceUnitEnum.MONTH, 1,
+                MONTHLY, RecurrenceUnitEnum.MONTH, 1,
                 {"starts_on": "2026-04-15", "nominal_day": "30"},
             ),
             (
-                "Monthly", RecurrenceUnitEnum.MONTH, 1,
+                MONTHLY, RecurrenceUnitEnum.MONTH, 1,
                 {"starts_on": "2026-02-28", "nominal_day": "99"},
             ),
             (
-                "Monthly", RecurrenceUnitEnum.MONTH, 1,
+                MONTHLY, RecurrenceUnitEnum.MONTH, 1,
                 {"starts_on": "2026-02-28", "nominal_day": "0"},
             ),
         ],
+        # Without this every case collapses to ``cadence0``..``cadence6``: a
+        # ShapeCadence has no useful repr, and the cadence is what tells the
+        # reader which row failed.
+        ids=lambda value: getattr(value, "label", None),
     )
     def test_preview_refuses_out_of_domain_arguments_without_a_500(
         self, app, auth_client, seed_user, seed_periods_today,
-        cadence_name, unit, interval_n, query,
+        cadence, unit, interval_n, query,
     ):
         """Unbounded query args answer a muted line, never a stack trace.
 
@@ -1427,7 +1436,7 @@ class TestPreviewRecurrence:
             )
 
             assert resp.status_code == 200, (
-                f"{cadence_name} with {query} answered {resp.status_code}"
+                f"{cadence.label} with {query} answered {resp.status_code}"
             )
             assert b"No preview for this cadence" in resp.data
 
@@ -1777,7 +1786,7 @@ class TestTemplateNegativePaths:
     def test_archive_already_archived_template(self, app, auth_client, seed_user, seed_periods_today):
         """Archiving an already-archived template is idempotent."""
         with app.app_context():
-            template = _create_template(seed_user, pattern_name="Every Period")
+            template = _create_template(seed_user, cadence=EVERY_PERIOD)
             template.is_active = False
             db.session.commit()
 
@@ -1798,7 +1807,7 @@ class TestTemplateNegativePaths:
     def test_unarchive_already_active_template(self, app, auth_client, seed_user, seed_periods_today):
         """Unarchiving an already-active template is idempotent."""
         with app.app_context():
-            template = _create_template(seed_user, pattern_name="Every Period")
+            template = _create_template(seed_user, cadence=EVERY_PERIOD)
             assert template.is_active is True
 
             resp = auth_client.post(
@@ -1984,7 +1993,7 @@ class TestTemplateHardDelete:
     def test_hard_delete_template_no_history(self, app, auth_client, seed_user, seed_periods_today):
         """C-5A.5-11: Template with only Projected txns is permanently deleted."""
         with app.app_context():
-            template = _create_template(seed_user, pattern_name="Every Period")
+            template = _create_template(seed_user, cadence=EVERY_PERIOD)
 
             # Generate projected transactions.
             from app.services import recurrence_engine, pay_period_service
@@ -2032,7 +2041,7 @@ class TestTemplateHardDelete:
     def test_hard_delete_template_with_history(self, app, auth_client, seed_user, seed_periods_today):
         """C-5A.5-12: Template with Paid txn is blocked and archived instead."""
         with app.app_context():
-            template = _create_template(seed_user, pattern_name="Every Period")
+            template = _create_template(seed_user, cadence=EVERY_PERIOD)
 
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
@@ -2080,7 +2089,7 @@ class TestTemplateHardDelete:
     ):
         """C-5A.5-12b: Already-archived template with Paid history stays archived without re-archiving."""
         with app.app_context():
-            template = _create_template(seed_user, pattern_name="Every Period")
+            template = _create_template(seed_user, cadence=EVERY_PERIOD)
 
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
@@ -2114,7 +2123,7 @@ class TestTemplateHardDelete:
     def test_hard_delete_template_already_archived(self, app, auth_client, seed_user, seed_periods_today):
         """C-5A.5-13: Pre-archived template with no history is permanently deleted."""
         with app.app_context():
-            template = _create_template(seed_user, pattern_name="Every Period")
+            template = _create_template(seed_user, cadence=EVERY_PERIOD)
 
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
@@ -2369,7 +2378,7 @@ class TestTemplateHardDelete:
     def test_archive_label_in_flash(self, app, auth_client, seed_user, seed_periods_today):
         """C-5A.5-16: Archive flash message says 'archived' not 'deactivated'."""
         with app.app_context():
-            template = _create_template(seed_user, pattern_name="Every Period")
+            template = _create_template(seed_user, cadence=EVERY_PERIOD)
 
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
@@ -3159,8 +3168,8 @@ def _template_with_starts_on(seed_user, txn_type, starts_on):
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`.
     """
-    rule = make_pattern_rule(
-        seed_user["user"].id, "Every Period", starts_on=starts_on,
+    rule = make_cadence_rule(
+        seed_user["user"].id, EVERY_PERIOD, starts_on=starts_on,
     )
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
@@ -3192,8 +3201,8 @@ def _loan_payment_template(seed_user):
         The flushed :class:`~app.models.transfer_template.TransferTemplate`.
     """
     loan_account = create_loan_account(seed_user, db.session)
-    rule = make_pattern_rule(
-        seed_user["user"].id, "Monthly",
+    rule = make_cadence_rule(
+        seed_user["user"].id, MONTHLY,
         fires_on_day=1, end_date=date(2030, 1, 1),
     )
     template = TransferTemplate(

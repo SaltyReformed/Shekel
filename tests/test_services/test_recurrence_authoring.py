@@ -46,7 +46,17 @@ from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import FilingStatus
 from app.services import loan_recurrence_sync, pay_period_admin
 from app.services.pay_calendar import calendar_for
-from tests.oracles.recurrence_baseline import CADENCE_BY_LEGACY_NAME
+from tests.oracles.recurrence_baseline import (
+    BASELINE_CADENCES,
+    ShapeCadence,
+    EVERY_PERIOD,
+    EVERY_N_PERIODS,
+    MONTHLY,
+    MONTHLY_FIRST,
+    QUARTERLY,
+    SEMI_ANNUAL,
+    ANNUAL,
+)
 from app.services.recurrence import (
     RecurrenceSpec,
     ResolvedRecurrence,
@@ -177,18 +187,19 @@ def resolved_for(rule: RecurrenceRule) -> ResolvedRecurrence:
     return resolve(recurrence_spec(rule), calendar_for(rule.user_id))
 
 
-def spec_for(cadence_name: str, **overrides) -> RecurrenceSpec:
-    """Return a spec for the cadence *cadence_name* names, with *overrides*.
+def spec_for(cadence: ShapeCadence, **overrides) -> RecurrenceSpec:
+    """Return a spec for *cadence*, with *overrides*.
 
-    Keyed on the closed set's old NAMES for the reason the twin helper in
-    ``test_recurrence_resolution.py`` is: every case here was written against a
-    named pattern and re-keying them by hand would be a silent opportunity to
-    change what each one measures.  The translation goes through
-    :data:`~tests.oracles.recurrence_baseline.CADENCE_BY_LEGACY_NAME`, which is
-    where ``tests/`` states that mapping once (plan step R7c-c).
+    The cadence is a SHARED constant for the reason the twin helper in
+    ``test_recurrence_resolution.py`` records: every case here was written
+    against one of
+    :data:`~tests.oracles.recurrence_baseline.BASELINE_CADENCES` and restating
+    the axes per case would be a silent opportunity to change what each one
+    measures.  Plan step R9 replaced the closed set's display names with the
+    constants themselves, when the table those names came from was dropped.
 
-    ``interval_n`` is applied AFTER the decode, so a case may state a cadence
-    the pattern's own name does not -- which is the whole point of the two-axis
+    ``interval_n`` is applied AFTER the cadence, so a case may state an
+    interval the constant does not -- which is the whole point of the two-axis
     vocabulary.
 
     ``starts_on`` defaults to the owner's OPENING PAYDAY, which is what an
@@ -198,7 +209,7 @@ def spec_for(cadence_name: str, **overrides) -> RecurrenceSpec:
     thing they always did.
 
     Args:
-        cadence_name: One of that table's keys.
+        cadence: One of the baseline oracle's cadence constants.
         **overrides: Any :class:`~app.services.recurrence.RecurrenceSpec`
             field to set.  ``user_id`` is required, as it is on the spec.
 
@@ -206,11 +217,10 @@ def spec_for(cadence_name: str, **overrides) -> RecurrenceSpec:
         The spec.
     """
     # TWO for the reason the twin helper in ``test_recurrence_resolution.py``
-    # records: at one, ``Every N Periods`` reads identically to
-    # ``Every Period`` and drops out of every whole-vocabulary sweep built on
+    # records: at one, ``EVERY_N_PERIODS`` reads identically to
+    # ``EVERY_PERIOD`` and drops out of every whole-vocabulary sweep built on
     # this helper.
     interval_override = overrides.pop("interval_n", None)
-    cadence = CADENCE_BY_LEGACY_NAME[cadence_name]
     stated = 2 if cadence.interval_n is None else cadence.interval_n
     overrides.setdefault(
         "starts_on", calendar_for(overrides["user_id"]).opening_bound(),
@@ -395,10 +405,10 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
         """
         user_id = seed_user["user"].id
         calendar = calendar_for(user_id)
-        for cadence_name in CADENCE_BY_LEGACY_NAME:
+        for cadence in BASELINE_CADENCES:
             rule = author_rule(
                 spec_for(
-                    cadence_name, user_id=user_id,
+                    cadence, user_id=user_id,
                     starts_on=date(2026, 1, 15),
                 ),
                 calendar,
@@ -415,7 +425,7 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
                 "starts_on": resolved.starts_on,
                 "nominal_day": resolved.nominal_day,
             }, (
-                f"the {cadence_name} rule's stored cadence columns disagree "
+                f"the {cadence} rule's stored cadence columns disagree "
                 f"with what the resolver answers for it, so the table states "
                 f"its cadence twice and the two have drifted."
             )
@@ -607,7 +617,7 @@ class TestLoanPaymentTransferWriter:
         )
         rule = author_rule(
             spec_for(
-                "Monthly",
+                MONTHLY,
                 user_id=seed_user["user"].id,
                 starts_on=date(2026, 2, 1),
             ),
@@ -656,7 +666,7 @@ class TestScheduleRebuildRepoint:
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                "Every Period",
+                EVERY_PERIOD,
                 user_id=user_id,
                 starts_on=seed_periods[0].start_date,
             ),
@@ -724,7 +734,7 @@ class TestScheduleRebuildRepoint:
         stated_start = date(2026, 3, 27)
         rule = author_rule(
             spec_for(
-                "Every Period",
+                EVERY_PERIOD,
                 user_id=user_id,
                 starts_on=stated_start,
             ),
@@ -760,7 +770,7 @@ class TestScheduleRebuildRepoint:
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                "Every N Periods",
+                EVERY_N_PERIODS,
                 user_id=user_id,
                 interval_n=3,
                 starts_on=seed_periods[2].start_date,
@@ -814,7 +824,7 @@ class TestScheduleRebuildRepoint:
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                "Every Period",
+                EVERY_PERIOD,
                 user_id=user_id,
             ),
             calendar_for(user_id),
@@ -874,7 +884,7 @@ class TestTheClampIsResolvedAndStoredOnTheRule:
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                "Monthly",
+                MONTHLY,
                 user_id=user_id,
                 starts_on=date(2026, 4, 30),
                 nominal_day=31,
@@ -906,7 +916,7 @@ class TestTheClampIsResolvedAndStoredOnTheRule:
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                "Monthly",
+                MONTHLY,
                 user_id=user_id,
                 starts_on=date(2026, 4, 30),
                 nominal_day=31,
@@ -959,18 +969,19 @@ class TestTheIntervalColumnSaysWhatTheCadenceSays:
 
     @pytest.mark.usefixtures("seed_periods")
     @pytest.mark.parametrize(
-        ("cadence_name", "two_axis_interval"),
+        ("cadence", "two_axis_interval"),
         [
-            ("Every Period", 1),
-            ("Monthly", 1),
-            ("Monthly First", 1),
-            ("Quarterly", 3),
-            ("Semi-Annual", 6),
-            ("Annual", 1),
+            (EVERY_PERIOD, 1),
+            (MONTHLY, 1),
+            (MONTHLY_FIRST, 1),
+            (QUARTERLY, 3),
+            (SEMI_ANNUAL, 6),
+            (ANNUAL, 1),
         ],
+        ids=lambda value: getattr(value, "label", None),
     )
     def test_the_column_holds_the_cadences_own_interval(
-        self, seed_user, db, cadence_name, two_axis_interval,
+        self, seed_user, db, cadence, two_axis_interval,
     ):
         """The stored column and the resolved cadence name one number.
 
@@ -981,13 +992,13 @@ class TestTheIntervalColumnSaysWhatTheCadenceSays:
         Args:
             seed_user: The owner fixture.
             db: The session fixture.
-            cadence_name: The cadence to author.
+            cadence: The cadence to author.
             two_axis_interval: The interval it means.
         """
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                cadence_name, user_id=user_id, starts_on=date(2026, 1, 15),
+                cadence, user_id=user_id, starts_on=date(2026, 1, 15),
             ),
             calendar_for(user_id),
         )
@@ -1028,7 +1039,7 @@ class TestPhasePreservedAcrossAnEdit:
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                "Every N Periods",
+                EVERY_N_PERIODS,
                 user_id=user_id,
                 interval_n=3,
                 starts_on=seed_periods[2].start_date,
@@ -1087,7 +1098,7 @@ class TestWhatTheWriteDoorNORMALISES:
 
         rule = author_rule(
             spec_for(
-                "Every Period", user_id=user_id, starts_on=mid_period,
+                EVERY_PERIOD, user_id=user_id, starts_on=mid_period,
             ),
             calendar_for(user_id),
         )
@@ -1115,7 +1126,7 @@ class TestWhatTheWriteDoorNORMALISES:
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                "Monthly", user_id=user_id, interval_n=12,
+                MONTHLY, user_id=user_id, interval_n=12,
                 starts_on=date(2026, 3, 15),
             ),
             calendar_for(user_id),
@@ -1147,17 +1158,18 @@ class TestTheIntervalRoundTripsThroughTheColumn:
 
     @pytest.mark.usefixtures("seed_periods")
     @pytest.mark.parametrize(
-        ("cadence_name", "interval_n"),
+        ("cadence", "interval_n"),
         [
-            ("Every N Periods", 4),
-            ("Monthly", 2),
-            ("Monthly", 5),
-            ("Quarterly", 3),
-            ("Annual", 2),
+            (EVERY_N_PERIODS, 4),
+            (MONTHLY, 2),
+            (MONTHLY, 5),
+            (QUARTERLY, 3),
+            (ANNUAL, 2),
         ],
+        ids=lambda value: getattr(value, "label", None),
     )
     def test_an_authored_interval_reads_back_unchanged(
-        self, seed_user, db, cadence_name, interval_n,
+        self, seed_user, db, cadence, interval_n,
     ):
         """Including the intervals the closed pattern set could not name.
 
@@ -1169,13 +1181,13 @@ class TestTheIntervalRoundTripsThroughTheColumn:
         Args:
             seed_user: The owner fixture.
             db: The session fixture.
-            cadence_name: The cadence whose unit and placement to author.
+            cadence: The cadence whose unit and placement to author.
             interval_n: The interval to state.
         """
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                cadence_name, user_id=user_id, interval_n=interval_n,
+                cadence, user_id=user_id, interval_n=interval_n,
                 starts_on=date(2026, 2, 10),
             ),
             calendar_for(user_id),
@@ -1199,7 +1211,7 @@ class TestTheIntervalRoundTripsThroughTheColumn:
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                "Every N Periods",
+                EVERY_N_PERIODS,
                 user_id=user_id,
                 interval_n=4,
                 starts_on=seed_periods[0].start_date,
@@ -1232,10 +1244,10 @@ class TestEveryCadenceAuthorsAndResolves:
     """Both invariants, stated over every cadence the app can author."""
 
     @pytest.mark.parametrize(
-        "cadence_name", list(CADENCE_BY_LEGACY_NAME),
+        "cadence", BASELINE_CADENCES, ids=lambda c: c.label,
     )
     def test_an_authored_rule_resolves_and_round_trips(
-        self, seed_user, db, seed_periods, cadence_name,
+        self, seed_user, db, seed_periods, cadence,
     ):
         """Every cadence resolves completely, and re-authoring is a no-op.
 
@@ -1248,7 +1260,7 @@ class TestEveryCadenceAuthorsAndResolves:
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                cadence_name,
+                cadence,
                 user_id=user_id,
                 starts_on=seed_periods[1].start_date,
             ),
@@ -1267,7 +1279,7 @@ class TestEveryCadenceAuthorsAndResolves:
         user_id = seed_user["user"].id
         rule = author_rule(
             spec_for(
-                "Every Period",
+                EVERY_PERIOD,
                 user_id=user_id,
             ),
             calendar_for(user_id),

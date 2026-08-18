@@ -70,10 +70,10 @@
     </thead>
     <tbody>
       {% for period, bd in projection_data %}
-      {% set is_raise_start = period.id in raise_run_start_ids %}
+      {% set is_raise_start = period.period_id in raise_run_start_ids %}
       <tr class="{{ 'sal-row-raise' if is_raise_start }}{{ ' sal-row-third' if bd.period.is_third_paycheck and not is_raise_start }}">
         <td>
-          <a href="{{ url_for('salary.cockpit', profile=profile.id, period=period.id) }}">
+          <a href="{{ url_for('salary.cockpit', profile=profile.id, period=period.period_id) }}">
             {{ period.label }}
           </a>
           <small class="text-muted">{{ period.start_date.strftime('%Y') }}</small>

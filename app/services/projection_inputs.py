@@ -461,11 +461,12 @@ def build_investment_projection_inputs(
         contributions: List of
             :class:`~app.services.investment_projection.PricedContribution`
             records already filtered to this account.
-        current_period: The pay period covering the read pass's clock, or
-            ``None``.  Anything carrying a ``start_date``: an ORM
-            :class:`~app.models.pay_period.PayPeriod` on ``/retirement``, a
-            :class:`~app.services.pay_calendar.DerivedPeriod` on
-            ``/investment``.
+        current_period: The
+            :class:`~app.services.pay_calendar.DerivedPeriod` covering the read
+            pass's clock, or ``None``.  **Both callers pass that type** since
+            pay-calendar plan step C2-f2d-3; this said "an ORM ``PayPeriod`` on
+            ``/retirement``, a ``DerivedPeriod`` on ``/investment``" until then,
+            and only ``start_date`` is read either way.
         salary_gross_biweekly: Raise-aware engine gross per pay period
             (typically from
             :func:`app.services.income_service.get_current_gross_biweekly`).

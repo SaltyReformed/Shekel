@@ -276,7 +276,7 @@ def _horizon(user_id):
     """The /savings cockpit's long-horizon band composition and milestones."""
     def build():
         net_worth = savings_dashboard_service.compute_dashboard_data(
-            user_id,
+            BalanceContext.build(user_id),
         )["net_worth"]
         return _plain(net_worth.horizon)
     return _guard("horizon", build)

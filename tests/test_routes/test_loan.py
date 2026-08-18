@@ -38,7 +38,7 @@ from app.services import (
 )
 
 from tests._test_helpers import (
-    make_pattern_rule,
+    make_cadence_rule,
     add_escrow_line,
     clear_loan_ledger,
     create_account_of_type,
@@ -54,6 +54,7 @@ from tests._test_helpers import (
     posted_loan_balance_at,
     select_option_values,
 )
+from tests.oracles.recurrence_baseline import MONTHLY
 
 
 @pytest.fixture(autouse=True)
@@ -3399,15 +3400,14 @@ class TestTransferPrompt:
         self, auth_client, seed_user, db, seed_periods,
     ):
         """Dashboard with active recurring transfer template: prompt hidden."""
-        from app.enums import RecurrencePatternEnum  # pylint: disable=import-outside-toplevel
         from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
         from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
 
         acct = _create_mortgage(seed_user, db.session)
 
         # Create an active recurring transfer template targeting this account.
-        rule = make_pattern_rule(
-            seed_user["user"].id, RecurrencePatternEnum.MONTHLY,
+        rule = make_cadence_rule(
+            seed_user["user"].id, MONTHLY,
             fires_on_day=1,
         )
         tpl = TransferTemplate(
@@ -3435,14 +3435,13 @@ class TestTransferPrompt:
         The user may have deactivated a prior transfer. The prompt
         should reappear so they can create a new one.
         """
-        from app.enums import RecurrencePatternEnum  # pylint: disable=import-outside-toplevel
         from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
         from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
 
         acct = _create_mortgage(seed_user, db.session)
 
-        rule = make_pattern_rule(
-            seed_user["user"].id, RecurrencePatternEnum.MONTHLY,
+        rule = make_cadence_rule(
+            seed_user["user"].id, MONTHLY,
             fires_on_day=1,
         )
         tpl = TransferTemplate(
@@ -3852,12 +3851,11 @@ class TestPaymentDrift:
         recurrence rule and a stored ``default_amount``, and no 1:1 settings row --
         which every reader treats as manual mode (derive_from_loan False, no extra).
         """
-        from app.enums import RecurrencePatternEnum  # pylint: disable=import-outside-toplevel
         from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
         from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
 
-        rule = make_pattern_rule(
-            seed_user["user"].id, RecurrencePatternEnum.MONTHLY,
+        rule = make_cadence_rule(
+            seed_user["user"].id, MONTHLY,
             fires_on_day=1,
         )
         tpl = TransferTemplate(
@@ -5783,15 +5781,14 @@ def _create_transfer_template(seed_user, db_session, loan_account,
     Creates a monthly recurrence rule from the seed user's checking
     account to the given loan account.
     """
-    from app.enums import RecurrencePatternEnum  # pylint: disable=import-outside-toplevel
     from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
     from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
 
     if name is None:
         name = f"Loan Payment {loan_account.id}"
 
-    rule = make_pattern_rule(
-        seed_user["user"].id, RecurrencePatternEnum.MONTHLY,
+    rule = make_cadence_rule(
+        seed_user["user"].id, MONTHLY,
         fires_on_day=1, end_date=end_date,
     )
 
@@ -6009,7 +6006,6 @@ class TestRecurrenceEndDateUpdate:
         The end_date update logic is never reached because the
         dashboard returns early when params are missing.
         """
-        from app.enums import RecurrencePatternEnum  # pylint: disable=import-outside-toplevel
         from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
         from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
 
@@ -6026,8 +6022,8 @@ class TestRecurrenceEndDateUpdate:
         db.session.flush()
 
         # Create a template even though no LoanParams exist.
-        rule = make_pattern_rule(
-            seed_user["user"].id, RecurrencePatternEnum.MONTHLY,
+        rule = make_cadence_rule(
+            seed_user["user"].id, MONTHLY,
             fires_on_day=1,
         )
         tpl = TransferTemplate(
@@ -6058,15 +6054,14 @@ class TestRecurrenceEndDateUpdate:
         Confirms the ownership check prevents cross-user mutation of
         recurrence rule end_date.
         """
-        from app.enums import RecurrencePatternEnum  # pylint: disable=import-outside-toplevel
         from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
         from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
 
         other_loan = _create_other_loan(second_user, db.session, AcctTypeEnum.MORTGAGE)
 
         # Create a transfer template for the other user's loan.
-        rule = make_pattern_rule(
-            second_user["user"].id, RecurrencePatternEnum.MONTHLY,
+        rule = make_cadence_rule(
+            second_user["user"].id, MONTHLY,
             fires_on_day=1,
         )
         tpl = TransferTemplate(

@@ -88,7 +88,15 @@ from app.services.recurrence import (
     picker_model,
 )
 from tests._test_helpers import cadence_payload
-from tests.oracles.recurrence_baseline import CADENCE_BY_LEGACY_NAME
+from tests.oracles.recurrence_baseline import (
+    EVERY_PERIOD,
+    EVERY_N_PERIODS,
+    MONTHLY,
+    MONTHLY_FIRST,
+    QUARTERLY,
+    SEMI_ANNUAL,
+    ANNUAL,
+)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -237,22 +245,22 @@ def _expense_type_id():
     return ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
 
 
-def _rule_on_cadence(seed_user, cadence_name, interval_n=None, unit_id=None):
-    """Create and flush a rule of *cadence_name*, bypassing the write door.
+def _rule_on_cadence(seed_user, cadence, interval_n=None, unit_id=None):
+    """Create and flush a rule of *cadence*, bypassing the write door.
 
     Deliberately constructed rather than authored: ``author_rule`` resolves
     before it writes, so it REFUSES an unreadable cadence -- which is the guard
     under test -- and only a direct construction can produce the row a diverged
     ``ref`` seed would leave behind.
 
-    **The cadence comes from the SHARED table, not hard-coded here**, and the
+    **The cadence is a SHARED constant, not hard-coded here**, and the
     difference matters more than the fixture's convenience: a row whose columns
     disagree with each other is one no application path can write, and a sweep
     over such rows measures the fixture rather than the mapping.
 
     Args:
         seed_user: The owner fixture.
-        cadence_name: One of :data:`CADENCE_BY_LEGACY_NAME`'s keys.
+        cadence: One of :data:`BASELINE_CADENCES`.
         interval_n: The interval to store; defaults to the cadence's own.
         unit_id: A ``ref.recurrence_units`` id to store INSTEAD of the
             cadence's, for the unreadable-rule cases.
@@ -260,7 +268,6 @@ def _rule_on_cadence(seed_user, cadence_name, interval_n=None, unit_id=None):
     Returns:
         The flushed :class:`~app.models.recurrence_rule.RecurrenceRule`.
     """
-    cadence = CADENCE_BY_LEGACY_NAME[cadence_name]
     own_interval = 1 if cadence.interval_n is None else cadence.interval_n
     rule = RecurrenceRule(
         user_id=seed_user["user"].id,
@@ -279,10 +286,10 @@ def _rule_on_cadence(seed_user, cadence_name, interval_n=None, unit_id=None):
 
 
 def _template_with_cadence(
-    seed_user, cadence_name, interval_n=None, unit_id=None,
+    seed_user, cadence, interval_n=None, unit_id=None,
 ):
     """Create a committed transaction template carrying a rule of that cadence."""
-    rule = _rule_on_cadence(seed_user, cadence_name, interval_n, unit_id)
+    rule = _rule_on_cadence(seed_user, cadence, interval_n, unit_id)
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         name="Rent",
@@ -298,10 +305,10 @@ def _template_with_cadence(
 
 
 def _transfer_template_with_cadence(
-    seed_user, destination, cadence_name, unit_id=None,
+    seed_user, destination, cadence, unit_id=None,
 ):
     """Create a committed transfer template carrying that cadence."""
-    rule = _rule_on_cadence(seed_user, cadence_name, unit_id=unit_id)
+    rule = _rule_on_cadence(seed_user, cadence, unit_id=unit_id)
     template = TransferTemplate(
         user_id=seed_user["user"].id,
         name="To Savings",
@@ -641,11 +648,12 @@ class TestBothFormsRenderTheSameControls:
         assert "disabled" in _tag(body, "interval_n")
 
     @pytest.mark.parametrize(
-        "cadence_name",
-        ["Every N Periods", "Quarterly", "Annual"],
+        "cadence",
+        [EVERY_N_PERIODS, QUARTERLY, ANNUAL],
+        ids=lambda value: value.label,
     )
     def test_the_interval_box_submits_on_an_edit_form(
-        self, app, auth_client, seed_user, seed_periods_today, cadence_name,
+        self, app, auth_client, seed_user, seed_periods_today, cadence,
     ):
         """Property 3 on the form that starts with a cadence chosen.
 
@@ -659,8 +667,8 @@ class TestBothFormsRenderTheSameControls:
         assert seed_periods_today
         with app.app_context():
             template_id = _template_with_cadence(
-                seed_user, cadence_name,
-                interval_n=3 if cadence_name == "Every N Periods" else None,
+                seed_user, cadence,
+                interval_n=3 if cadence == EVERY_N_PERIODS else None,
             ).id
 
         body = auth_client.get(f"/templates/{template_id}/edit").data.decode()
@@ -706,37 +714,38 @@ class TestAnEditFormStartsOnItsRulesCadence:
     """Property 4: the controls read back what the rule actually means."""
 
     @pytest.mark.parametrize(
-        ("cadence_name", "unit", "interval", "placement"),
+        ("cadence", "unit", "interval", "placement"),
         [
             (
-                "Every Period", RecurrenceUnitEnum.PERIOD,
+                EVERY_PERIOD, RecurrenceUnitEnum.PERIOD,
                 1, PeriodPlacementEnum.CONTAINING_DATE,
             ),
             (
-                "Monthly", RecurrenceUnitEnum.MONTH,
+                MONTHLY, RecurrenceUnitEnum.MONTH,
                 1, PeriodPlacementEnum.CONTAINING_DATE,
             ),
             (
-                "Monthly First", RecurrenceUnitEnum.MONTH,
+                MONTHLY_FIRST, RecurrenceUnitEnum.MONTH,
                 1, PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
             ),
             (
-                "Quarterly", RecurrenceUnitEnum.MONTH,
+                QUARTERLY, RecurrenceUnitEnum.MONTH,
                 3, PeriodPlacementEnum.CONTAINING_DATE,
             ),
             (
-                "Semi-Annual", RecurrenceUnitEnum.MONTH,
+                SEMI_ANNUAL, RecurrenceUnitEnum.MONTH,
                 6, PeriodPlacementEnum.CONTAINING_DATE,
             ),
             (
-                "Annual", RecurrenceUnitEnum.YEAR,
+                ANNUAL, RecurrenceUnitEnum.YEAR,
                 1, PeriodPlacementEnum.CONTAINING_DATE,
             ),
         ],
+        ids=lambda value: getattr(value, "label", None),
     )
     def test_each_stored_cadence_preselects_its_own_axes(
         self, app, auth_client, seed_user, seed_periods_today,
-        cadence_name, unit, interval, placement,
+        cadence, unit, interval, placement,
     ):
         """Every named cadence, read back onto the three controls.
 
@@ -749,7 +758,7 @@ class TestAnEditFormStartsOnItsRulesCadence:
         """
         assert seed_periods_today
         with app.app_context():
-            template_id = _template_with_cadence(seed_user, cadence_name).id
+            template_id = _template_with_cadence(seed_user, cadence).id
             expected_unit = str(ref_cache.recurrence_unit_id(unit))
             expected_placement = str(ref_cache.period_placement_id(placement))
 
@@ -766,7 +775,7 @@ class TestAnEditFormStartsOnItsRulesCadence:
         assert seed_periods_today
         with app.app_context():
             template_id = _template_with_cadence(
-                seed_user, "Every N Periods", interval_n=4,
+                seed_user, EVERY_N_PERIODS, interval_n=4,
             ).id
 
         body = auth_client.get(f"/templates/{template_id}/edit").data.decode()
@@ -786,7 +795,7 @@ class TestAnEditFormStartsOnItsRulesCadence:
         assert seed_periods_today
         with app.app_context():
             template_id = _template_with_cadence(
-                seed_user, "Monthly", interval_n=2,
+                seed_user, MONTHLY, interval_n=2,
             ).id
             month_id = str(ref_cache.recurrence_unit_id(
                 RecurrenceUnitEnum.MONTH,
@@ -831,7 +840,7 @@ class TestAnUnreadableRuleCannotBeDestroyedBySavingIt:
             surplus_id = _unmodelled_unit_id()
             _assert_unreadable(surplus_id)
             template_id = _template_with_cadence(
-                seed_user, "Monthly", unit_id=surplus_id,
+                seed_user, MONTHLY, unit_id=surplus_id,
             ).id
 
         body = auth_client.get(f"/templates/{template_id}/edit").data.decode()
@@ -854,7 +863,7 @@ class TestAnUnreadableRuleCannotBeDestroyedBySavingIt:
             savings = _savings_account(seed_user)
             surplus_id = _unmodelled_unit_id()
             template_id = _transfer_template_with_cadence(
-                seed_user, savings, "Monthly", unit_id=surplus_id,
+                seed_user, savings, MONTHLY, unit_id=surplus_id,
             ).id
 
         body = auth_client.get(f"/transfers/{template_id}/edit").data.decode()
@@ -873,7 +882,7 @@ class TestAnUnreadableRuleCannotBeDestroyedBySavingIt:
         with app.app_context():
             surplus_id = _unmodelled_unit_id()
             template_id = _template_with_cadence(
-                seed_user, "Monthly", unit_id=surplus_id,
+                seed_user, MONTHLY, unit_id=surplus_id,
             ).id
 
         body = auth_client.get(f"/templates/{template_id}/edit").data.decode()
@@ -896,7 +905,7 @@ class TestAnUnreadableRuleCannotBeDestroyedBySavingIt:
         with app.app_context():
             surplus_id = _unmodelled_unit_id()
             template = _template_with_cadence(
-                seed_user, "Monthly", unit_id=surplus_id,
+                seed_user, MONTHLY, unit_id=surplus_id,
             )
             template_id, rule_id = template.id, template.recurrence_rule_id
 
@@ -942,7 +951,7 @@ class TestAnUnreadableRuleCannotBeDestroyedBySavingIt:
             savings = _savings_account(seed_user)
             surplus_id = _unmodelled_unit_id()
             template = _transfer_template_with_cadence(
-                seed_user, savings, "Monthly", unit_id=surplus_id,
+                seed_user, savings, MONTHLY, unit_id=surplus_id,
             )
             template_id = template.id
             rule_id = template.recurrence_rule_id
@@ -980,7 +989,7 @@ class TestAnUnreadableRuleCannotBeDestroyedBySavingIt:
             surplus_id = _unmodelled_unit_id()
             _assert_unreadable(surplus_id)
             template = _template_with_cadence(
-                seed_user, "Monthly", unit_id=surplus_id,
+                seed_user, MONTHLY, unit_id=surplus_id,
             )
             template_id, rule_id = template.id, template.recurrence_rule_id
             month_id = ref_cache.recurrence_unit_id(
@@ -1111,7 +1120,7 @@ class TestTheWriteDoorsRefuseAnUnstorableCadence:
             month_id = ref_cache.recurrence_unit_id(
                 RecurrenceUnitEnum.MONTH,
             )
-            template = _template_with_cadence(seed_user, "Monthly")
+            template = _template_with_cadence(seed_user, MONTHLY)
             template_id, rule_id = template.id, template.recurrence_rule_id
 
             resp = auth_client.post(f"/templates/{template_id}", data={
@@ -1169,7 +1178,7 @@ class TestAClearedIntervalBoxCannotReCadenceARule:
         """
         assert seed_periods_today
         with app.app_context():
-            template = _template_with_cadence(seed_user, "Quarterly")
+            template = _template_with_cadence(seed_user, QUARTERLY)
             template_id, rule_id = template.id, template.recurrence_rule_id
             assert template.recurrence_rule.interval_n == 3
 
@@ -1233,7 +1242,7 @@ class TestAClearedIntervalBoxCannotReCadenceARule:
         """
         assert seed_periods_today
         with app.app_context():
-            template = _template_with_cadence(seed_user, "Quarterly")
+            template = _template_with_cadence(seed_user, QUARTERLY)
             template_id = template.id
 
             resp = auth_client.post(f"/templates/{template_id}", data={
@@ -1263,7 +1272,7 @@ class TestAClearedIntervalBoxCannotReCadenceARule:
         """
         assert seed_periods_today
         with app.app_context():
-            template = _template_with_cadence(seed_user, "Quarterly")
+            template = _template_with_cadence(seed_user, QUARTERLY)
             template_id, rule_id = template.id, template.recurrence_rule_id
 
             resp = auth_client.post(f"/templates/{template_id}", data={
@@ -1359,7 +1368,7 @@ class TestADeliberateClearStillWorks:
         """A rule the form COULD show is cleared by the empty unit."""
         assert seed_periods_today
         with app.app_context():
-            template = _template_with_cadence(seed_user, "Every Period")
+            template = _template_with_cadence(seed_user, EVERY_PERIOD)
             template_id, rule_id = template.id, template.recurrence_rule_id
 
             resp = auth_client.post(f"/templates/{template_id}", data={

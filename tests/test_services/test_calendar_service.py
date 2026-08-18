@@ -12,9 +12,8 @@ from decimal import Decimal
 
 from app import ref_cache
 from app.exceptions import BaselineMissingError
-from app.enums import RecurrencePatternEnum, StatusEnum, TxnTypeEnum
+from app.enums import StatusEnum, TxnTypeEnum
 from app.models.pay_period import PayPeriod
-from app.models.ref import RecurrencePattern
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from unittest.mock import patch
@@ -28,7 +27,15 @@ from app.services import (
     pay_period_write,
     pay_schedule_service,
 )
-from tests._test_helpers import default_settle_day, make_pattern_rule
+from tests._test_helpers import default_settle_day, make_cadence_rule
+from tests.oracles.recurrence_baseline import (
+    EVERY_PERIOD,
+    EVERY_N_PERIODS,
+    MONTHLY,
+    QUARTERLY,
+    SEMI_ANNUAL,
+    ANNUAL,
+)
 from app.services.balance_at import BalanceContext
 from app.services.balance_at import _context as resolution_context
 from app.services.calendar_infrequency import is_infrequent as _is_infrequent
@@ -122,26 +129,27 @@ def _add_transaction(
     return txn
 
 
-def _make_template_with_pattern(
-    db_session, seed_user, pattern_enum, interval_n=1,
+def _make_template_with_cadence(
+    db_session, seed_user, cadence, interval_n=1,
 ):
-    """Create a template with a recurrence rule of the given pattern.
+    """Create a template with a recurrence rule of the given cadence.
 
     Args:
         db_session: Active database session.
         seed_user: The seed_user fixture dict.
-        pattern_enum: A RecurrencePatternEnum member, or ``None`` for a
-            template that does not repeat -- which since plan step R2e-3
-            means it names NO rule at all.
-        interval_n: The authored interval, read only by ``Every N Periods``.
+        cadence: A ``tests.oracles.recurrence_baseline`` cadence
+            constant, or ``None`` for a template that does not repeat --
+            which since plan step R2e-3 means it names NO rule at all.
+        interval_n: The authored interval, read only by the cadence that
+            fixes none of its own.
 
     Returns:
         The created TransactionTemplate.
     """
     rule = None
-    if pattern_enum is not None:
-        rule = make_pattern_rule(
-            seed_user["user"].id, pattern_enum, interval_n=interval_n,
+    if cadence is not None:
+        rule = make_cadence_rule(
+            seed_user["user"].id, cadence, interval_n=interval_n,
         )
 
     template = TransactionTemplate(
@@ -751,8 +759,8 @@ class TestIsInfrequent:
     def test_infrequent_annual(self, app, seed_user, seed_periods, db):
         """Template with Annual pattern is infrequent."""
         with app.app_context():
-            template = _make_template_with_pattern(
-                db.session, seed_user, RecurrencePatternEnum.ANNUAL,
+            template = _make_template_with_cadence(
+                db.session, seed_user, ANNUAL,
             )
             txn = _add_transaction(
                 db.session, seed_user, seed_periods[0], "Annual",
@@ -764,8 +772,8 @@ class TestIsInfrequent:
     def test_infrequent_quarterly(self, app, seed_user, seed_periods, db):
         """Template with Quarterly pattern is infrequent."""
         with app.app_context():
-            template = _make_template_with_pattern(
-                db.session, seed_user, RecurrencePatternEnum.QUARTERLY,
+            template = _make_template_with_cadence(
+                db.session, seed_user, QUARTERLY,
             )
             txn = _add_transaction(
                 db.session, seed_user, seed_periods[0], "Quarterly",
@@ -777,8 +785,8 @@ class TestIsInfrequent:
     def test_infrequent_semi_annual(self, app, seed_user, seed_periods, db):
         """Template with Semi-Annual pattern is infrequent."""
         with app.app_context():
-            template = _make_template_with_pattern(
-                db.session, seed_user, RecurrencePatternEnum.SEMI_ANNUAL,
+            template = _make_template_with_cadence(
+                db.session, seed_user, SEMI_ANNUAL,
             )
             txn = _add_transaction(
                 db.session, seed_user, seed_periods[0], "Semi",
@@ -799,7 +807,7 @@ class TestIsInfrequent:
         True.  Retiring the pattern is what made them agree.
         """
         with app.app_context():
-            template = _make_template_with_pattern(
+            template = _make_template_with_cadence(
                 db.session, seed_user, None,
             )
             assert template.recurrence_rule_id is None
@@ -813,8 +821,8 @@ class TestIsInfrequent:
     def test_monthly_not_infrequent(self, app, seed_user, seed_periods, db):
         """Template with Monthly pattern is NOT infrequent."""
         with app.app_context():
-            template = _make_template_with_pattern(
-                db.session, seed_user, RecurrencePatternEnum.MONTHLY,
+            template = _make_template_with_cadence(
+                db.session, seed_user, MONTHLY,
             )
             txn = _add_transaction(
                 db.session, seed_user, seed_periods[0], "Monthly",
@@ -826,8 +834,8 @@ class TestIsInfrequent:
     def test_every_period_not_infrequent(self, app, seed_user, seed_periods, db):
         """Template with Every Period pattern is NOT infrequent."""
         with app.app_context():
-            template = _make_template_with_pattern(
-                db.session, seed_user, RecurrencePatternEnum.EVERY_PERIOD,
+            template = _make_template_with_cadence(
+                db.session, seed_user, EVERY_PERIOD,
             )
             txn = _add_transaction(
                 db.session, seed_user, seed_periods[0], "Each Period",
@@ -866,9 +874,9 @@ class TestInfrequencyIsDerivedNotEnumerated:
         flow whatever its interval.  Hand-computed: 26 / 3 = 8.67 < 12.
         """
         with app.app_context():
-            template = _make_template_with_pattern(
+            template = _make_template_with_cadence(
                 db.session, seed_user,
-                RecurrencePatternEnum.EVERY_N_PERIODS, interval_n=3,
+                EVERY_N_PERIODS, interval_n=3,
             )
             txn = _add_transaction(
                 db.session, seed_user, seed_periods[0], "Every 3rd",
@@ -887,9 +895,9 @@ class TestInfrequencyIsDerivedNotEnumerated:
         tested ``<=`` would fail here.
         """
         with app.app_context():
-            template = _make_template_with_pattern(
+            template = _make_template_with_cadence(
                 db.session, seed_user,
-                RecurrencePatternEnum.EVERY_N_PERIODS, interval_n=2,
+                EVERY_N_PERIODS, interval_n=2,
             )
             txn = _add_transaction(
                 db.session, seed_user, seed_periods[0], "Every 2nd",
@@ -909,9 +917,9 @@ class TestInfrequencyIsDerivedNotEnumerated:
         PAIR is the assertion -- either alone would pass against a constant.
         """
         with app.app_context():
-            template = _make_template_with_pattern(
+            template = _make_template_with_cadence(
                 db.session, seed_user,
-                RecurrencePatternEnum.EVERY_N_PERIODS, interval_n=2,
+                EVERY_N_PERIODS, interval_n=2,
             )
             txn = _add_transaction(
                 db.session, seed_user, seed_periods[0], "Every 2nd",
@@ -931,8 +939,8 @@ class TestInfrequencyIsDerivedNotEnumerated:
         move this answer.
         """
         with app.app_context():
-            template = _make_template_with_pattern(
-                db.session, seed_user, RecurrencePatternEnum.MONTHLY,
+            template = _make_template_with_cadence(
+                db.session, seed_user, MONTHLY,
             )
             txn = _add_transaction(
                 db.session, seed_user, seed_periods[0], "Monthly",
@@ -967,9 +975,9 @@ class TestTheBadgeReadsTheOWNERSStoredCadence:
         value it is hardcoded to.
         """
         with app.app_context():
-            template = _make_template_with_pattern(
+            template = _make_template_with_cadence(
                 db.session, seed_user,
-                RecurrencePatternEnum.EVERY_N_PERIODS, interval_n=2,
+                EVERY_N_PERIODS, interval_n=2,
             )
             _add_transaction(
                 db.session, seed_user, seed_periods[0], "Every 2nd",

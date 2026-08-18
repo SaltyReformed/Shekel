@@ -13,7 +13,7 @@ The shape that leaves nothing for a writer to get half-right:
 
 * a caller states what it AUTHORS
   (:class:`~app.services.recurrence.RecurrenceSpec` -- a cadence since plan
-  step R7b, never a ``ref.recurrence_patterns`` id, and never a column);
+  step R7b, never a closed-set pattern id, and never a column);
 * :func:`_author` writes that whole spec, and it is the only function in the
   application that assigns a column of ``budget.recurrence_rules``;
 * every value derived on write is taken from the same

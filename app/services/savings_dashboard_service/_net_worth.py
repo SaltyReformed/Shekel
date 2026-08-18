@@ -52,11 +52,11 @@ from datetime import date
 from decimal import Decimal
 
 from app.models.account import Account
-from app.models.pay_period import PayPeriod
 from app.services import home_equity_service
 from app.services.home_equity_service import HomeEquity
 from app.services.amortization_engine import AmortizationRow
 from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import DerivedPeriod, PeriodWindow
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -403,7 +403,7 @@ _UNCONSTRAINED_INDEX = 0
 
 
 def _loan_schedule_start_index(
-    all_periods: list[PayPeriod],
+    all_periods: PeriodWindow,
     schedule_rows: list[AmortizationRow] | None,
 ) -> int | None:
     """Earliest period_index at which a loan's schedule gives a real balance.
@@ -429,8 +429,8 @@ def _loan_schedule_start_index(
     entirely after the user's last period.
 
     Args:
-        all_periods: All of the user's pay periods, ordered by
-            ``period_index``.
+        all_periods: The owner's saved schedule as a
+            :class:`~app.services.pay_calendar.PeriodWindow`, payday-ordered.
         schedule_rows: The loan's amortization rows
             (:func:`app.services.balance_at.debt_schedule_rows`), or ``None``
             when the context could not resolve the loan.
@@ -450,8 +450,8 @@ def _loan_schedule_start_index(
 
 def _honest_history_start_index(
     accounts: list,
-    all_periods: list[PayPeriod],
-    current_period: PayPeriod,
+    all_periods: PeriodWindow,
+    current_period: DerivedPeriod,
     debt_schedules: dict[int, list[AmortizationRow]],
 ) -> int:
     """Earliest period_index whose net worth is real for every account.
@@ -538,10 +538,10 @@ def _honest_history_start_index(
 
 def build_trend_periods(
     accounts: list,
-    all_periods: list[PayPeriod],
-    current_period: PayPeriod | None,
+    all_periods: PeriodWindow,
+    current_period: DerivedPeriod | None,
     debt_schedules: dict[int, list[AmortizationRow]],
-) -> tuple[list[PayPeriod], int, int]:
+) -> tuple[list[DerivedPeriod], int, int]:
     """Build the net-worth trend's window, current index, and honest start.
 
     The window leads with a short honest "actual" history tail, then the
@@ -569,9 +569,10 @@ def build_trend_periods(
 
     Args:
         accounts: The user's active accounts.
-        all_periods: All of the user's pay periods, ordered by
-            ``period_index``.
-        current_period: The period containing today, or ``None``.
+        all_periods: The owner's saved schedule as a
+            :class:`~app.services.pay_calendar.PeriodWindow`, payday-ordered.
+        current_period: The period containing the read pass's day, or
+            ``None``.
         debt_schedules: account_id -> the loan's amortization ROW list
             (:func:`app.services.balance_at.debt_schedule_rows`), for the loan
             gate.
@@ -600,7 +601,7 @@ def build_trend_periods(
 
 def compute_net_worth_series(
     account_data: list[AccountProjection],
-    trend_periods: list[PayPeriod],
+    trend_periods: list[DerivedPeriod],
     current_index: int,
 ) -> NetWorthSeries:
     """Build the net-worth trend over the trend window.
@@ -667,7 +668,7 @@ def compute_net_worth_series(
     }
 
     for period in trend_periods:
-        sums = _sum_composition_at_period(period.id, account_data)
+        sums = _sum_composition_at_period(period.period_id, account_data)
         period_assets = sum((sums[band] for band in _ASSET_BANDS), ZERO)
         period_liabilities = sums[LIABILITY_KEY]
         periods.append(TrendPoint(end_date=period.end_date))
@@ -784,7 +785,8 @@ def _is_informative(series: list[Decimal]) -> bool:
 
 
 def compute_sparklines(
-    account_data: list[AccountProjection], forward_periods: list[PayPeriod],
+    account_data: list[AccountProjection],
+    forward_periods: list[DerivedPeriod],
 ) -> dict[int, list[Decimal]]:
     """Build each informative account's forward sparkline series.
 
@@ -823,9 +825,9 @@ def compute_sparklines(
         # :func:`app.routes.savings._serialize_sparklines` normalizes on series
         # LENGTH (``x = (index / last) * _SPARK_VIEW_W``), so silently dropping
         # one point does not leave a gap -- it moves EVERY remaining point on
-        # that card.  The forward window is a slice of the same period list the
-        # maps are built over, so a missing column is a defect and says so.
-        series = [ad.balances[p.id] for p in window]
+        # that card.  The forward window is a slice of the same period window
+        # the maps are built over, so a missing column is a defect and says so.
+        series = [ad.balances[p.period_id] for p in window]
         if _is_informative(series):
             result[ad.account.id] = series
     return result

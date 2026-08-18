@@ -74,7 +74,7 @@ ZERO = Decimal("0")
 
 
 def _contribution_inputs_for_accounts(
-    accounts: list[Account],
+    accounts: list[Account], ctx: BalanceContext,
 ) -> dict[int, ContributionInputs]:
     """Batch-load each account's modelled-contribution feed ONCE.
 
@@ -93,26 +93,35 @@ def _contribution_inputs_for_accounts(
     ``_load_account_params`` and the year-end summary already use -- this seam
     reuses them rather than writing new inline param queries.
 
-    **It takes no** :class:`~app.services.balance_at.BalanceContext`, and the
-    honest version of why is narrower than "the concern does not need one":
-    none of the three loads it issues READS one today.  That is not the same as
-    the feed being context-free, and the difference is a cost this step does not
-    pay.  :func:`~app.services.income_service.get_current_gross_biweekly` takes
-    both ``scenario_id`` and ``as_of`` keywords; passing neither is what makes
-    the gross resolve against that helper's implicit ``date.today()`` and the
-    user's active profile across all scenarios, rather than against the read
-    pass's pinned ``ctx.as_of`` and ``ctx.scenario`` -- the unnamed-clock shape
-    :func:`._kind_correct.balance_at` describes in its own "two dates,
-    deliberately distinct" note.  The retired bundle took a context and did not
-    thread it either, so nothing regressed here; but the parameter is not
-    reinstated on the strength of a defect it would not fix, because an argument
-    nothing reads is one a caller can get wrong (plan Section 8).
+    **It TAKES a** :class:`~app.services.balance_at.BalanceContext`, and for
+    exactly one thing: the memoized pay CALENDAR it hands
+    :func:`~app.services.income_service.get_current_gross_biweekly`.  It took
+    none until pay-calendar plan step C2-f2d-3's fix pass, on the argument that
+    "an argument nothing reads is one a caller can get wrong" -- true while that
+    helper read the schedule through its own SQL, and false the moment it began
+    DERIVING a calendar, because this entry is called once per ACCOUNT and each
+    call then derived the owner's whole schedule again.  Measured on the routes:
+    `/savings` went 1 -> 7 derivations a render before the argument was
+    threaded, growing with the owner's investment-account count.
+    **The CLOCK and the SCENARIO are still not threaded**, which is the part of
+    the old paragraph that survives: that helper's ``as_of`` and ``scenario_id``
+    keywords stay unpassed, so the gross resolves against an implicit
+    ``date.today()`` and the owner's first active profile across all scenarios
+    rather than against ``ctx.as_of`` and ``ctx.scenario`` -- the unnamed-clock
+    shape :func:`._kind_correct.balance_at` describes in its own "two dates,
+    deliberately distinct" note.  Passing them MOVES MONEY on a historical read,
+    so it is ``C2-f3``'s to rule rather than a fix pass's to smuggle.
 
     Args:
         accounts: The accounts to load feeds for, each with its
             ``account_type`` relationship available for the classifier.  They
             belong to ONE user (the caller's).  An empty list returns an empty
             map without issuing any query.
+        ctx: The read pass, for its memoized pay CALENDAR alone -- the one
+            input :func:`~app.services.income_service.get_current_gross_biweekly`
+            needs and would otherwise derive again, once per call and therefore
+            once per ACCOUNT.  Its clock and its scenario are deliberately NOT
+            threaded; see above.
 
     Returns:
         ``{account_id: ContributionInputs}``, TOTAL over *accounts* -- an
@@ -159,7 +168,7 @@ def _contribution_inputs_for_accounts(
     # cheap as a direct producer call -- no O(N) paycheck regression in the
     # year-end savings-progress loop.
     salary_gross_biweekly = (
-        income_service.get_current_gross_biweekly(user_id)
+        income_service.get_current_gross_biweekly(user_id, ctx.calendar())
         if investment_params_map else ZERO
     )
 
@@ -188,7 +197,9 @@ def _contribution_inputs_for_accounts(
     }
 
 
-def _contribution_inputs_for_account(account: Account) -> ContributionInputs:
+def _contribution_inputs_for_account(
+    account: Account, ctx: BalanceContext,
+) -> ContributionInputs:
     """Return ONE account's modelled-contribution feed.
 
     The single-account entry, expressed as the batch loader over a one-element
@@ -202,6 +213,8 @@ def _contribution_inputs_for_account(account: Account) -> ContributionInputs:
         account: The account to load the feed for.  Its ``account_type`` drives
             the classifier and its ``user_id`` scopes the deduction / gross
             loaders.
+        ctx: The read pass, for its memoized pay CALENDAR alone -- see the
+            batch loader.
 
     Returns:
         The account's
@@ -209,7 +222,7 @@ def _contribution_inputs_for_account(account: Account) -> ContributionInputs:
         -- the empty bundle (:meth:`ContributionInputs.absent`'s value) for an
         account with no feed, which is a real answer and not a missing one.
     """
-    return _contribution_inputs_for_accounts([account])[account.id]
+    return _contribution_inputs_for_accounts([account], ctx)[account.id]
 
 
 def _account_balance_map(

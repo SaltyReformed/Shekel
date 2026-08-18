@@ -28,7 +28,6 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.account import Account
 from app.models.investment_params import InvestmentParams
-from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.salary_profile import SalaryProfile
 from app.services import (
@@ -49,12 +48,12 @@ from app.services.projection_inputs import (
     load_shadow_income_contributions_for_accounts,
 )
 from app.services.balance_at import BalanceContext
-from app.services.pay_calendar import PeriodWindow
+from app.services.pay_calendar import DerivedPeriod, PeriodWindow
 from app.utils.money import round_money
 
 
 @dataclass(frozen=True)
-class RetirementProjectionContext:  # pylint: disable=too-many-instance-attributes
+class RetirementProjectionContext:
     """Read-only inputs shared by the per-account projection helpers.
 
     Built by :func:`build_projection_context` and threaded through
@@ -74,25 +73,25 @@ class RetirementProjectionContext:  # pylint: disable=too-many-instance-attribut
     cannot hand this bundle a pass for one owner while its queries scope to
     another.
 
-    Pylint: ``too-many-instance-attributes`` (8/7) -- suppressed because
-    this is a cohesive read-only input bundle whose whole purpose is to
-    collapse eight independent projection inputs into one parameter (the
-    alternative is threading all eight through every projection helper).
-    Every field is a distinct input -- the read pass, the account set, the two
-    parts of the period calendar, the horizon, the pre-tax type set, the
-    slider override, and the P1b employer-base resolver -- so splitting the
-    bundle would fragment one concept for no design gain, mirroring the
-    ``growth_engine.ProjectedBalance`` value-record precedent.
+    **The owner's PERIODS are no longer fields** (pay-calendar plan step
+    C2-f2d-3).  This bundle carried ``all_periods`` and ``current_period``
+    beside the read pass that already derives both -- the pass memoizes the
+    calendar, ``saved()`` is memoized on the calendar in turn, and
+    ``period_containing`` is a bisect over it -- so two callers threaded values
+    a third could have re-derived and nothing reconciled the two.  That is the
+    shape ruling "How the seam learns WHICH periods to report" deleted at plan
+    step C2-c one tier down, and the same measurement applies: BOTH callers
+    filled the pair from the same pass, so the only thing the arguments could
+    express was a mismatch.  :func:`_periods` and :func:`_current_period` read
+    them off :attr:`balance_ctx` at the two places that ask.
 
     Attributes:
         balance_ctx: The read pass this projection runs in -- the owner, the
-            baseline scenario, the pinned ``as_of``, and the memos that resolve
-            each loan and derive the pay calendar exactly ONCE for the whole
+            baseline scenario, the pinned ``as_of``, the owner's pay CALENDAR,
+            and the memos that resolve each loan exactly ONCE for the whole
             render.  Supplied by the caller (ultimately by the route); this
             module builds none, which is what keeps a render to one pass.
         accounts: The active retirement / investment accounts to project.
-        all_periods: Every pay period for the user.
-        current_period: The current pay period, or ``None``.
         planned_retirement_date: The horizon the projection axis runs to, or
             ``None`` -- in which case it runs to the last day the owner's saved
             schedule reaches (:func:`resolve_projection_axis`).
@@ -110,8 +109,6 @@ class RetirementProjectionContext:  # pylint: disable=too-many-instance-attribut
 
     balance_ctx: BalanceContext
     accounts: list[Account]
-    all_periods: list[PayPeriod]
-    current_period: PayPeriod | None
     planned_retirement_date: date | None
     traditional_type_ids: frozenset[int]
     return_rate_override: Decimal | None
@@ -277,10 +274,8 @@ def build_employer_salary_basis(
     return _resolver
 
 
-def build_projection_context(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+def build_projection_context(
     balance_ctx: BalanceContext,
-    all_periods: list[PayPeriod],
-    current_period: PayPeriod | None,
     planned_retirement_date: date | None,
     return_rate_override: Decimal | None,
     employer_salary_basis: Callable | None,
@@ -298,21 +293,19 @@ def build_projection_context(  # pylint: disable=too-many-arguments,too-many-pos
     owner is stated once for the whole projection and a caller cannot pair one
     owner's pass with another's account query.
 
-    Pylint: ``too-many-arguments`` (6/5) / ``too-many-positional-arguments``
-    (6/5) -- suppressed because these six are heterogeneous, independently
-    varying projection inputs (the read pass, the period calendar's two parts,
-    the horizon, the slider override, the employer-base resolver), not a
-    cohesive concept.  Bundling the period calendar back into a ``_CurrentPay``
-    snapshot here would reintroduce a cross-module import cycle with
-    ``retirement_dashboard_service`` (which owns that snapshot); passing the
-    two period fields directly keeps this module a projection leaf.
+    **The two PERIOD arguments are gone** (pay-calendar plan step C2-f2d-3),
+    and with them the ``too-many-arguments`` / ``too-many-positional-arguments``
+    suppression this signature carried at 6/5.  Both callers filled them off
+    the very pass they also passed here, so the pair could express nothing but
+    a mismatch; the context reads them off ``balance_ctx`` now, where the
+    calendar is memoized for the whole render.  A fence deleted by removing its
+    subject rather than by raising a threshold.
 
     Args:
         balance_ctx: The read pass this projection runs in -- its ``user_id``
-            scopes the account query, and every producer below shares its
-            scenario, its clock and its memos.
-        all_periods: Every pay period for the user.
-        current_period: The current pay period, or ``None``.
+            scopes the account query, its ``calendar()`` is the owner's whole
+            schedule, its ``as_of`` decides which paycheck is current, and
+            every producer below shares its scenario and its memos.
         planned_retirement_date: The projection horizon, or ``None``.
         return_rate_override: Optional slider-supplied annual return.
         employer_salary_basis: Optional per-period gross resolver (P1b /
@@ -342,13 +335,65 @@ def build_projection_context(  # pylint: disable=too-many-arguments,too-many-pos
     return RetirementProjectionContext(
         balance_ctx=balance_ctx,
         accounts=accounts,
-        all_periods=all_periods,
-        current_period=current_period,
         planned_retirement_date=planned_retirement_date,
         traditional_type_ids=traditional_type_ids,
         return_rate_override=return_rate_override,
         employer_salary_basis=employer_salary_basis,
     )
+
+
+def _periods(ctx: RetirementProjectionContext) -> PeriodWindow:
+    """Return the owner's whole saved schedule for this projection.
+
+    **Off the read pass, not a field** (pay-calendar plan step C2-f2d-3).  The
+    window is memoized on the calendar and the calendar on the pass, so asking
+    here costs a dict lookup and cannot answer a different set from the one the
+    balance seam reports over in the same render.
+
+    Args:
+        ctx: The read-only projection context.
+
+    Returns:
+        The :class:`~app.services.pay_calendar.PeriodWindow` over every saved
+        period.  Empty for an owner with no pay periods, which the two callers
+        branch on.
+    """
+    return ctx.balance_ctx.reported_periods()
+
+
+def _current_period(
+    ctx: RetirementProjectionContext,
+) -> DerivedPeriod | None:
+    """Return the SAVED period covering this pass's clock, else ``None``.
+
+    ``period_containing`` rather than ``span_containing``, for the reason
+    ``investment_dashboard_service._context._current_period`` gives one package
+    over: ``None`` outside the schedule is a real answer both readers branch
+    on, and the TOTAL search would hand them a projected period whose
+    ``period_id`` is ``None`` -- which :func:`_pick_current_period_balances`
+    would then use to index a map keyed by ``budget.pay_periods.id``.
+
+    Args:
+        ctx: The read-only projection context.
+
+    **A DERIVATION, where `savings_dashboard_service` holds the same value in a
+    FIELD, and the difference is the bundle rather than the value** (an
+    adversarial review of pay-calendar plan step C2-f2d-3 asked, correctly, why
+    one commit ruled it both ways).  ``_DashboardCoreData`` is built ONCE by a
+    loader and read by a dozen producers, so holding one answer is what stops
+    two of them pairing one clock with another's calendar.  This context is
+    built once and REPLACED per plan point (``dataclasses.replace`` in
+    ``retirement_plan._derive_picture``), so a field would be copied forward
+    across every retire-later probe and would have to be proven still correct
+    at each -- while the pass it derives from is pinned and cannot move.  The
+    bisect is over a memoized window and costs no query.
+
+    Returns:
+        The covering :class:`~app.services.pay_calendar.DerivedPeriod`, whose
+        ``period_id`` is never ``None``, or ``None`` when the pass's clock
+        precedes the owner's first payday or lies past their horizon.
+    """
+    return ctx.balance_ctx.calendar().period_containing(ctx.balance_ctx.as_of)
 
 
 def project_accounts_with_batch(
@@ -474,7 +519,7 @@ def load_projection_batch(
     """
     user_id = ctx.balance_ctx.user_id
     account_ids = [a.id for a in ctx.accounts]
-    period_ids = [p.id for p in ctx.all_periods]
+    period_ids = [p.period_id for p in _periods(ctx)]
 
     # F-22 / Commit 18: shared batch loaders replace the filter-shape
     # duplicate that previously lived inline here and in
@@ -512,7 +557,7 @@ def load_projection_batch(
     # employer-match cap basis came off a clock read of its own -- twice per
     # ``/retirement`` render, once for the verdict and once for the levers.
     salary_gross_biweekly = income_service.get_current_gross_biweekly(
-        user_id, as_of=ctx.balance_ctx.as_of,
+        user_id, ctx.balance_ctx.calendar(), as_of=ctx.balance_ctx.as_of,
     )
 
     # The displayed per-account balance is the model-from-anchor value at the
@@ -563,7 +608,7 @@ def _resolve_displayed_balances(
     # The no-baseline arm of this guard went at plan step X-v2 (ruling R-BW):
     # the seam raises and one application-level handler answers, so this
     # producer decides only what it models -- a user with no pay periods.
-    if not ctx.all_periods:
+    if not _periods(ctx):
         return {}
     return _pick_current_period_balances(
         ctx,
@@ -637,7 +682,7 @@ def _resolve_seed_balances(
         axis (each account then falls back to its anchor).  The no-scenario arm
         went at plan step X-v2 (ruling R-BW) -- answered above this route now.
     """
-    if not ctx.all_periods or not projection_periods:
+    if not _periods(ctx) or not projection_periods:
         return {}
     # Keyed on the account SET as well as the date: the map is a function of
     # both, and ``ctx`` arrives separately from ``batch``, so a caller reusing
@@ -701,7 +746,8 @@ def _pick_current_period_balances(
     Returns:
         A mapping of account ID to its current-period balance.
     """
-    if ctx.current_period is None:
+    current_period = _current_period(ctx)
+    if current_period is None:
         return {
             acct.id: balance_at.balance_at(
                 acct, ctx.balance_ctx, ctx.balance_ctx.as_of,
@@ -709,7 +755,7 @@ def _pick_current_period_balances(
             for acct in ctx.accounts
         }
     return {
-        acct.id: maps_by_account[acct.id][ctx.current_period.id]
+        acct.id: maps_by_account[acct.id][current_period.period_id]
         for acct in ctx.accounts
     }
 
@@ -759,7 +805,7 @@ def _run_account_projection(  # pylint: disable=too-many-arguments,too-many-posi
     )
     inputs = build_investment_projection_inputs(
         params, adapted_deductions, acct_contributions,
-        ctx.current_period, batch.salary_gross_biweekly,
+        _current_period(ctx), batch.salary_gross_biweekly,
     )
     annual_return = (
         ctx.return_rate_override
