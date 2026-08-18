@@ -28,7 +28,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from app import ref_cache
-from app.enums import AcctTypeEnum, RecurrencePatternEnum
+from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.transfer_template import TransferTemplate
@@ -42,9 +42,10 @@ from tests._test_helpers import (
     create_loan_account,
     freeze_today,
     loan_params_for,
-    make_pattern_rule,
+    make_cadence_rule,
     seam_confirmed_view,
 )
+from tests.oracles.recurrence_baseline import MONTHLY
 
 
 # ── Hand-computed reference values ────────────────────────────────
@@ -620,8 +621,8 @@ def _add_recurring_payment_with_extra(seed_user, loan_account, extra):
     # Authored through the write door (plan step R7c-b): the day a rule fires
     # on is its first occurrence's own day, so "the 1st" is a DATE the fixture
     # schedule reaches rather than a separate column.
-    rule = make_pattern_rule(
-        user.id, RecurrencePatternEnum.MONTHLY, fires_on_day=1,
+    rule = make_cadence_rule(
+        user.id, MONTHLY, fires_on_day=1,
     )
     template = TransferTemplate(
         user_id=user.id,

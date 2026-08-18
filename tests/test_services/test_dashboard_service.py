@@ -63,13 +63,8 @@ class TestBillRowSingleBase:
         over estimated_amount / actual_amount / status.
         """
         # pylint: disable=import-outside-toplevel
-        from app.models.ref import RecurrencePattern
         from app.models.recurrence_rule import RecurrenceRule
         from app.models.transaction_template import TransactionTemplate
-        every_period = (
-            db.session.query(RecurrencePattern)
-            .filter_by(name="Every Period").one()
-        )
         rule = make_every_period_rule(db.session, seed_user["user"].id)
         template = TransactionTemplate(
             user_id=seed_user["user"].id,

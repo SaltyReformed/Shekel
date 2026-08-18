@@ -47,7 +47,7 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import AccountType, RecurrencePattern, TransactionType
+from app.models.ref import AccountType, TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
@@ -61,7 +61,8 @@ from app.services import (
     transfer_recurrence,
     transfer_service,
 )
-from tests._test_helpers import create_loan_account, make_pattern_rule
+from tests._test_helpers import create_loan_account, make_cadence_rule
+from tests.oracles.recurrence_baseline import EVERY_PERIOD
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -74,7 +75,7 @@ def _projected_id():
 
 def _every_period_rule(seed_user):
     """Build and flush an every-paycheck rule for the seed user."""
-    return make_pattern_rule(seed_user["user"].id, "Every Period")
+    return make_cadence_rule(seed_user["user"].id, EVERY_PERIOD)
 
 
 def _recurring_txn_template(seed_user, rule=None):

@@ -26,7 +26,6 @@ from app import ref_cache
 from app.enums import (
     PostingKindEnum,
     PostingSourceEnum,
-    RecurrencePatternEnum,
     StatusEnum,
 )
 from app.exceptions import (
@@ -63,10 +62,11 @@ from tests._test_helpers import (
     create_savings_account,
     make_every_period_rule,
     make_expense_template,
-    make_pattern_rule,
+    make_cadence_rule,
     make_transfer_template,
     seam_cash_balance_at,
 )
+from tests.oracles.recurrence_baseline import EVERY_PERIOD
 
 
 def _future_periods(db_session, seed_user, count=6, start=date(2026, 7, 3)):
@@ -586,8 +586,8 @@ class TestTruncateHardLocks:
             periods = _future_periods(db.session, seed_user, count=6)
             user_id = seed_user["user"].id
             stated_start = periods[2].start_date  # index 3
-            rule = make_pattern_rule(
-                user_id, RecurrencePatternEnum.EVERY_PERIOD,
+            rule = make_cadence_rule(
+                user_id, EVERY_PERIOD,
                 starts_on=stated_start,
             )
             assert rule.starts_on == stated_start, (

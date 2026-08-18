@@ -3787,7 +3787,7 @@ def first_occurrence_on_day(user_id, fires_on_day, fires_in_month=None):
 def _default_first_occurrence(user_id, calendar, unit, placement):
     """Return what the retired anchor derivation answered for a day-less rule.
 
-    :func:`make_pattern_rule`'s ``starts_on`` default, split out because it has
+    :func:`make_cadence_rule`'s ``starts_on`` default, split out because it has
     THREE answers and each is a different retired derivation.  A fixture that
     states no date is describing a cadence, not a date, so what it must get is
     the date that description produced before plan step R7c-b -- otherwise
@@ -3836,34 +3836,33 @@ def _default_first_occurrence(user_id, calendar, unit, placement):
     return first_occurrence_on_day(user_id, 1)
 
 
-def transient_pattern_rule(user_id, pattern_name, **kwargs):
-    """Author one rule of a NAMED pattern WITHOUT adding it to the session.
+def transient_cadence_rule(user_id, cadence, **kwargs):
+    """Author one rule of a stated CADENCE without adding it to the session.
 
-    :func:`make_pattern_rule`'s unsaved twin, for the tests that hand a real
+    :func:`make_cadence_rule`'s unsaved twin, for the tests that hand a real
     rule to a route helper and never persist it -- the recurrence-form helpers,
     which re-point a rule in place and are called on a bare
     ``test_request_context``.
 
     It exists for the same reason its sibling does: plan step R7c-b made the
-    two-axis columns ``NOT NULL``, so a hand-built rule naming only a pattern
-    is a shape production cannot produce, and a helper reading it would resolve
-    something the application never stores.
+    two-axis columns ``NOT NULL``, so a hand-built rule stating its cadence in
+    one field is a shape production cannot produce, and a helper reading it
+    would resolve something the application never stores.
 
     Args:
         user_id: The owner.
-        pattern_name: A ``ref.recurrence_patterns`` display name, or the
-            matching :class:`~app.enums.RecurrencePatternEnum` member.
-        **kwargs: Every other argument :func:`make_pattern_rule` takes.
+        cadence: A :class:`~tests.oracles.recurrence_baseline.ShapeCadence`.
+        **kwargs: Every other argument :func:`make_cadence_rule` takes.
 
     Returns:
         The unsaved :class:`~app.models.recurrence_rule.RecurrenceRule`.
     """
-    return make_pattern_rule(user_id, pattern_name, _flush=False, **kwargs)
+    return make_cadence_rule(user_id, cadence, _flush=False, **kwargs)
 
 
-def make_pattern_rule(
+def make_cadence_rule(
     user_id,
-    pattern_name,
+    cadence,
     *,
     starts_on=None,
     fires_on_day=None,
@@ -3874,7 +3873,7 @@ def make_pattern_rule(
     end_date=None,
     _flush=True,
 ):
-    """Author one rule of a NAMED cadence, through the write door.
+    """Author one rule of a stated CADENCE, through the write door.
 
     :func:`make_every_period_rule`'s general sibling, for the tests that need a
     cadence other than every-paycheck.  Both exist because a rule may not be
@@ -3883,24 +3882,21 @@ def make_pattern_rule(
     hand-built ``RecurrenceRule`` stating a cadence in one field is a
     constraint violation rather than a shortcut.
 
-    **The NAME is test-side SHORTHAND from plan step R7c-c**, and this docstring
-    said the opposite one leaf earlier.  It read "the two axes are DECODED from
-    the pattern rather than restated here", because ``decode_pattern`` was the
-    application's own one place a stored ``pattern_id`` became
-    ``(interval_n, unit, placement)`` and a table in a test file would have been
-    a second statement of it.  That column and that function are dropped, so the
-    mapping has exactly one home and it is
-    ``tests.oracles.recurrence_baseline.CADENCE_BY_LEGACY_NAME`` -- beside the
-    frozen shapes, whose labels use the same names, so a fixture asking for "a
-    Quarterly rule" and a captured shape labelled ``quarterly`` cannot come to
-    mean different cadences.
+    **It took a closed-set NAME until plan step R9**, resolved through a
+    ``CADENCE_BY_LEGACY_NAME`` table in the baseline oracle.  R9 drops
+    ``ref.recurrence_patterns`` and ``RecurrencePatternEnum``, and the table
+    of names went with them rather than outliving both: a caller states the
+    two axes the row actually holds, as a
+    :class:`~tests.oracles.recurrence_baseline.ShapeCadence` constant beside
+    the frozen shapes -- so a fixture asking for the quarterly cadence and a
+    captured shape labelled ``quarterly`` still cannot come to mean different
+    things, and a mistyped one is a ``NameError`` at import.
 
     Args:
         user_id: The owner.
-        pattern_name: One of the closed pattern set's old display names, as
-            shorthand for the cadence it used to encode.  Plain strings, so
-            this vocabulary does not go down with the enum plan step R9
-            deletes.
+        cadence: The :class:`~tests.oracles.recurrence_baseline.ShapeCadence`
+            to author -- one of that module's seven constants, or any other
+            ``(interval_n, unit, placement)`` a test needs.
         starts_on: The rule's FIRST OCCURRENCE (ruling R-R16).  Defaults to
             what the retired derivation answered for a rule stating no day:
             the schedule's opening payday for a PAYCHECK-space cadence, and
@@ -3915,18 +3911,18 @@ def make_pattern_rule(
             Mutually exclusive with *starts_on*.
         fires_in_month: The month half of that description, for the annual and
             semi-annual cadences.
-        interval_n: Read only for ``"Every N Periods"``, the one shorthand that
-            fixes no interval of its own; every other name carries one and this
-            argument is discarded.  (The COLUMN takes any positive interval for
-            any unit since plan step R7c-c -- what is narrow here is the
-            shorthand, not the model.)
+        interval_n: Read only when *cadence* fixes none of its own -- exactly
+            ``EVERY_N_PERIODS``; every other constant carries one and this
+            argument is discarded.  (The COLUMN takes any positive interval
+            for any unit since plan step R7c-c -- what is narrow here is the
+            constant, not the model.)
         nominal_day: The day the rule MEANS when *starts_on*'s month clamped
             it (ruling R-R3).
         due_day_of_month: Real bill due day, when it differs from the
             scheduling day.
         end_date: The rule's closing bound.  ``None`` never ends.
         _flush: Private.  ``False`` builds the rule WITHOUT adding it to
-            the session; call :func:`transient_pattern_rule` rather than
+            the session; call :func:`transient_cadence_rule` rather than
             passing it, which is why the name is underscored.
 
     Returns:
@@ -3943,32 +3939,25 @@ def make_pattern_rule(
         author_rule,
         build_transient_rule,
     )
-    from tests.oracles.recurrence_baseline import CADENCE_BY_LEGACY_NAME
+    from tests.oracles.recurrence_baseline import ShapeCadence
 
     if starts_on is not None and fires_on_day is not None:
         raise ValueError(
-            "make_pattern_rule takes starts_on OR fires_on_day, not both: "
+            "make_cadence_rule takes starts_on OR fires_on_day, not both: "
             "they are two statements of the same fact and only one can be "
             f"authored (got {starts_on!r} and day {fires_on_day!r})",
         )
-    # ``getattr(..., "value")`` so a caller may still pass a
-    # ``RecurrencePatternEnum`` member: that enum outlives its column by one
-    # step (plan step R9 drops it with ``ref.recurrence_patterns``), and
-    # rewriting ~130 call sites to unwrap it would be a large diff carrying no
-    # meaning.  The table itself is keyed by plain STRING, so nothing here goes
-    # down with the enum when R9 lands.
-    cadence = CADENCE_BY_LEGACY_NAME.get(
-        getattr(pattern_name, "value", pattern_name),
-    )
-    if cadence is None:
-        raise ValueError(
-            f"no cadence is filed under {pattern_name!r}.  This helper takes "
-            f"one of the closed pattern set's own display names as SHORTHAND "
-            f"for a cadence -- plan step R7c-c dropped the column, so the "
-            f"names are a test vocabulary now and "
-            f"tests.oracles.recurrence_baseline.CADENCE_BY_LEGACY_NAME is the "
-            f"one place they are defined.  Known: "
-            f"{sorted(CADENCE_BY_LEGACY_NAME)}.",
+    # The TYPE is checked at the door because every other read of *cadence*
+    # below is an attribute access, so a caller still passing plan step R9's
+    # retired shorthand -- the string "Monthly", or a member of the deleted
+    # ``RecurrencePatternEnum`` -- would otherwise surface as an
+    # ``AttributeError`` from three frames down naming ``interval_n``.
+    if not isinstance(cadence, ShapeCadence):
+        raise TypeError(
+            f"make_cadence_rule takes a ShapeCadence, not {cadence!r}.  Plan "
+            f"step R9 retired the closed pattern set's display names with the "
+            f"table they came from; state the two axes instead, as one of "
+            f"tests.oracles.recurrence_baseline's cadence constants.",
         )
     resolved_interval = (
         interval_n if cadence.interval_n is None else cadence.interval_n

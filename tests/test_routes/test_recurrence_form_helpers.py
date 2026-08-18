@@ -27,7 +27,6 @@ from flask import Response
 from app import ref_cache
 from app.enums import (
     PeriodPlacementEnum,
-    RecurrencePatternEnum,
     RecurrenceUnitEnum,
 )
 from app.extensions import db
@@ -57,7 +56,12 @@ from app.services.recurrence import (
 from app.routes._recurrence_form_render import (
     create_form_default_starts_on,
 )
-from tests._test_helpers import transient_pattern_rule, validated_cadence
+from tests._test_helpers import transient_cadence_rule, validated_cadence
+from tests.oracles.recurrence_baseline import (
+    EVERY_N_PERIODS,
+    MONTHLY,
+    QUARTERLY,
+)
 
 
 class TestBuildRecurrenceRuleFromForm:
@@ -354,9 +358,9 @@ class TestAnEditCannotRePhaseARule:
         occurrence three paychecks earlier.
         """
         with app.test_request_context():
-            rule = transient_pattern_rule(
+            rule = transient_cadence_rule(
                 seed_user["user"].id,
-                RecurrencePatternEnum.EVERY_N_PERIODS,
+                EVERY_N_PERIODS,
                 interval_n=4,
                 starts_on=seed_periods[3].start_date,
             )
@@ -402,9 +406,9 @@ class TestAnEditCannotRePhaseARule:
         happens to ignore.
         """
         with app.test_request_context():
-            rule = transient_pattern_rule(
+            rule = transient_cadence_rule(
                 seed_user["user"].id,
-                RecurrencePatternEnum.EVERY_N_PERIODS,
+                EVERY_N_PERIODS,
                 interval_n=4,
                 starts_on=seed_periods[3].start_date,
             )
@@ -444,9 +448,9 @@ class TestAnEditCannotRePhaseARule:
         7, so the phase is ``2 % 7 == 2``: the same opening paycheck.
         """
         with app.test_request_context():
-            rule = transient_pattern_rule(
+            rule = transient_cadence_rule(
                 seed_user["user"].id,
-                RecurrencePatternEnum.EVERY_N_PERIODS,
+                EVERY_N_PERIODS,
                 interval_n=4,
                 starts_on=seed_periods[2].start_date,
             )
@@ -696,7 +700,7 @@ class TestTheColumnSaysWhatTheCadenceSays:
 
     @staticmethod
     def _edit(
-        app, seed_user, *, unit, interval, stored_pattern, stored_interval,
+        app, seed_user, *, unit, interval, stored_cadence, stored_interval,
         placement=None,
     ):
         """Drive the UPDATE door once and return the re-authored rule.
@@ -706,7 +710,8 @@ class TestTheColumnSaysWhatTheCadenceSays:
             seed_user: The owner fixture.
             unit: The cadence unit to state.
             interval: The interval to state.
-            stored_pattern: The cadence shorthand the rule starts on.
+            stored_cadence: The cadence the rule starts on, as one of the
+                baseline oracle's constants.
             stored_interval: The interval it starts on.
             placement: The placement to state, or ``None`` for the default.
 
@@ -714,8 +719,8 @@ class TestTheColumnSaysWhatTheCadenceSays:
             The re-authored :class:`RecurrenceRule`.
         """
         with app.test_request_context():
-            rule = transient_pattern_rule(
-                seed_user["user"].id, stored_pattern,
+            rule = transient_cadence_rule(
+                seed_user["user"].id, stored_cadence,
                 interval_n=stored_interval, fires_on_day=21,
             )
             stated = (
@@ -750,7 +755,7 @@ class TestTheColumnSaysWhatTheCadenceSays:
         rule = self._edit(
             app, seed_user,
             unit=RecurrenceUnitEnum.MONTH, interval=3,
-            stored_pattern="Every N Periods",
+            stored_cadence=EVERY_N_PERIODS,
             stored_interval=4,
         )
 
@@ -774,7 +779,7 @@ class TestTheColumnSaysWhatTheCadenceSays:
         rule = self._edit(
             app, seed_user,
             unit=RecurrenceUnitEnum.MONTH, interval=6,
-            stored_pattern="Every N Periods",
+            stored_cadence=EVERY_N_PERIODS,
             stored_interval=4,
         )
 
@@ -799,7 +804,7 @@ class TestTheColumnSaysWhatTheCadenceSays:
         rule = self._edit(
             app, seed_user,
             unit=RecurrenceUnitEnum.MONTH, interval=2,
-            stored_pattern="Every N Periods",
+            stored_cadence=EVERY_N_PERIODS,
             stored_interval=4,
         )
 
@@ -825,7 +830,7 @@ class TestTheColumnSaysWhatTheCadenceSays:
             app, seed_user,
             unit=RecurrenceUnitEnum.MONTH, interval=3,
             placement=PeriodPlacementEnum.PERIOD_STARTING_ON_OR_AFTER,
-            stored_pattern="Monthly",
+            stored_cadence=MONTHLY,
             stored_interval=1,
         )
 
@@ -855,8 +860,8 @@ class TestTheColumnSaysWhatTheCadenceSays:
         field error before any of this runs; this is the last line.
         """
         with app.test_request_context():
-            rule = transient_pattern_rule(
-                seed_user["user"].id, "Quarterly", fires_on_day=21,
+            rule = transient_cadence_rule(
+                seed_user["user"].id, QUARTERLY, fires_on_day=21,
             )
             before = rule.unit_id
             data = {
@@ -891,7 +896,7 @@ class TestTheColumnSaysWhatTheCadenceSays:
         rule = self._edit(
             app, seed_user,
             unit=RecurrenceUnitEnum.PERIOD, interval=5,
-            stored_pattern=RecurrencePatternEnum.EVERY_N_PERIODS,
+            stored_cadence=EVERY_N_PERIODS,
             stored_interval=2,
         )
         assert rule.interval_n == 5, (

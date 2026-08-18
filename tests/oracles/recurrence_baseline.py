@@ -23,16 +23,15 @@ to the only two questions it is asked in production:
 
 Both are their module's public surface (their docstrings say so) and both are
 pure functions of a rule's columns plus a period list, so the baseline needs no
-database rows -- only an app context, for ``ref_cache`` to resolve a pattern
-enum to its integer id.
+database rows -- only an app context, for ``ref_cache`` to resolve each cadence
+axis to its integer id.
 
-**Why the keys are ``period_index`` and an enum NAME, never a row id.**  A
-snapshot keyed on ``pay_periods.id`` or ``ref.recurrence_patterns.id`` would
-churn every time the test template was rebuilt, and a baseline that changes for
-reasons unrelated to the code under test is a baseline nobody trusts.  Both
-keys here are stable facts: ``period_index`` is the schedule's own ordinal, and
-the enum member is the name the app compares by id at runtime but identifies by
-in source.
+**Why the keys are ``period_index`` and a shape LABEL, never a row id.**  A
+snapshot keyed on ``pay_periods.id`` or a ``ref`` table's id would churn every
+time the test template was rebuilt, and a baseline that changes for reasons
+unrelated to the code under test is a baseline nobody trusts.  Both keys here
+are stable facts: ``period_index`` is the schedule's own ordinal, and a shape's
+label is written beside the cadence it names.
 
 **Why real model instances rather than stubs.**  ``build_shape_rule`` returns an
 unsaved :class:`~app.models.recurrence_rule.RecurrenceRule` and
@@ -162,6 +161,15 @@ class ShapeCadence:
     the labels would make the diff unreadable at exactly the step whose whole
     evidence is that the diff is EMPTY.
 
+    **From plan step R9 this class IS the whole test-side cadence
+    vocabulary.**  The suite passed a ``RecurrencePatternEnum`` member or its
+    display string until then, resolved through a
+    ``CADENCE_BY_LEGACY_NAME`` table here; R9 deletes that enum with
+    ``ref.recurrence_patterns``, and the table went with it rather than
+    outliving both as a third spelling.  A fixture states the two axes now, so
+    a mistyped cadence is a ``NameError`` at import rather than a lookup that
+    fails on the first call.
+
     Attributes:
         interval_n: The interval this cadence fixes, or ``None`` when the SHAPE
             states its own -- true of exactly the paycheck-space cadence the
@@ -173,6 +181,28 @@ class ShapeCadence:
     interval_n: int | None
     unit: RecurrenceUnitEnum
     placement: PeriodPlacementEnum
+
+    @property
+    def label(self) -> str:
+        """Return a stable test id for this cadence, derived from its axes.
+
+        The parametrize id for every sweep over :data:`BASELINE_CADENCES`.
+        DERIVED rather than written down, so it cannot come to name a cadence
+        other than the one it is attached to -- which a second table keyed by
+        the same seven names could, and which is the drift that retired
+        ``CADENCE_BY_LEGACY_NAME``.  ``every_n_periods`` is the one cadence
+        fixing no interval, and it reads ``n`` where the others read a number.
+
+        Returns:
+            The id, e.g. ``every-3-month`` or
+            ``every-1-month-period_starting_on_or_after``.
+        """
+        every = "n" if self.interval_n is None else str(self.interval_n)
+        placed = (
+            "" if self.placement is PeriodPlacementEnum.CONTAINING_DATE
+            else f"-{self.placement.value}"
+        )
+        return f"every-{every}-{self.unit.value}{placed}"
 
 
 #: The seven cadences the closed pattern set could name, under its own names.
@@ -203,29 +233,34 @@ ANNUAL = ShapeCadence(
     1, RecurrenceUnitEnum.YEAR, PeriodPlacementEnum.CONTAINING_DATE,
 )
 
-#: The seven, under the display names ``ref.recurrence_patterns`` carried.
+#: The seven above as ONE sweep space, in the order the closed set held them.
 #:
-#: **The ONE place in ``tests/`` that says what a closed-set name meant**, and
-#: it lives here because this module is where the hand-checked cases are.
-#: ``tests._test_helpers.make_pattern_rule`` reads it, so a fixture asking for
-#: "a Quarterly rule" and a frozen shape labelled ``quarterly`` cannot come to
-#: mean different cadences.
+#: **What every "each cadence" sweep in the suite parametrizes over**, so a
+#: cadence added here is swept by all of them and one added to a list written
+#: out in a test file is swept by that file alone.  Its ids come from
+#: :attr:`ShapeCadence.label`.
 #:
-#: Keyed by plain STRING rather than by
-#: :class:`~app.enums.RecurrencePatternEnum`, deliberately: plan step **R9**
-#: deletes that enum with ``ref.recurrence_patterns``, and a test vocabulary
-#: that outlives the column it was named after should not take the enum down
-#: with it.  These are test-side SHORTHAND for a cadence from plan step R7c-c
-#: on, not a thing the application stores.
-CADENCE_BY_LEGACY_NAME: dict[str, ShapeCadence] = {
-    "Every Period": EVERY_PERIOD,
-    "Every N Periods": EVERY_N_PERIODS,
-    "Monthly": MONTHLY,
-    "Monthly First": MONTHLY_FIRST,
-    "Quarterly": QUARTERLY,
-    "Semi-Annual": SEMI_ANNUAL,
-    "Annual": ANNUAL,
-}
+#: **It replaced ``CADENCE_BY_LEGACY_NAME`` at plan step R9**, a dict keyed by
+#: the display names ``ref.recurrence_patterns`` carried, which the fixture
+#: helpers took as shorthand.  That table was the last place a FIXTURE
+#: resolved a closed-set name through, and R9 drops the table and the enum
+#: those names came from -- so the sweep space is the cadences themselves now.
+#: The names survive in exactly one place, legitimately:
+#: ``test_closed_pattern_set_dies_migration.py`` grades
+#: ``d9f5c1a48b73._pattern_for``, whose DOWNGRADE must keep speaking them.
+#:
+#: These seven are NOT the authorable space, which is wider and which
+#: ``test_recurrence_frequency.TestTheOfferSetIsTotal`` sweeps: they are the
+#: cadences the frozen blob's hand-checked answers were computed for.
+BASELINE_CADENCES: tuple[ShapeCadence, ...] = (
+    EVERY_PERIOD,
+    EVERY_N_PERIODS,
+    MONTHLY,
+    MONTHLY_FIRST,
+    QUARTERLY,
+    SEMI_ANNUAL,
+    ANNUAL,
+)
 
 
 @dataclass(frozen=True)
@@ -356,9 +391,11 @@ def build_shape_rule(
 ) -> RecurrenceRule:
     """Return a real, unsaved rule for *shape*.
 
-    Requires an app context: ``pattern_id`` is resolved through
-    :func:`app.ref_cache.recurrence_pattern_id`, the same lookup production
-    uses, so a shape can never name a pattern the database does not carry.
+    Requires an app context: ``unit_id``, ``placement_id`` and ``shift_id``
+    resolve through ``ref_cache``, the same lookup production uses, so a
+    shape can never name a cadence axis the database does not carry.  It
+    said ``pattern_id`` until plan step R9, four steps after the column it
+    named was dropped.
 
     ``interval_n`` is passed explicitly because SQLAlchemy applies
     ``default=`` at INSERT and this row is never inserted -- an unflushed rule
@@ -409,15 +446,14 @@ def build_shape_spec(shape: "RuleShape") -> RecurrenceSpec:
     IS set, for the shapes that state one, and it is the same reasoning read
     forward: it is now the rule's own bound rather than a window laid over it.
 
-    **The shape's PATTERN is decoded rather than passed** (plan step R7b): the
+    **The shape's CADENCE is read off its own axes** (plan step R7b): the
     spec speaks the two-axis vocabulary now, and a shape is a set of stored
-    COLUMN values.  Decoding here is what keeps the two builders on this page
-    two views of one shape -- ``build_shape_rule`` writes the columns and this
-    reads them back through the same seam the read door uses, so a shape cannot
-    mean one thing to the engine and another to the resolver.
+    COLUMN values.  Reading them here is what keeps the two builders on this
+    page two views of one shape -- ``build_shape_rule`` writes the columns and
+    this reads them back through the same seam the read door uses, so a shape
+    cannot mean one thing to the engine and another to the resolver.
 
-    Requires an app context: ``pattern_id`` resolves through
-    :func:`app.ref_cache.recurrence_pattern_id`.
+    Requires an app context: the cadence axes resolve through ``ref_cache``.
 
     Args:
         shape: The configuration to build.
@@ -437,8 +473,8 @@ def build_shape_spec(shape: "RuleShape") -> RecurrenceSpec:
         nominal_day=shape.nominal_day,
         due_day_of_month=shape.due_day_of_month,
         # Read through the same column-to-bound seam the READ DOOR uses
-        # (plan step R7b-3), for the reason the pattern is decoded rather than
-        # passed: a shape is a set of stored COLUMN values, so building the
+        # (plan step R7b-3), for the reason the cadence is read off the
+        # axes: a shape is a set of stored COLUMN values, so building the
         # spec's bound any other way would let a shape mean one thing to the
         # engine and another to the resolver.
         end_bound=end_bound_from_columns(shape.end_date, None),
@@ -994,8 +1030,8 @@ def capture_shape(
 def capture_baseline() -> str:
     """Return the whole baseline blob.
 
-    Requires an app context (``build_shape_rule`` resolves pattern ids through
-    ``ref_cache``).  Deterministic: same shapes, same schedules, same literal
+    Requires an app context (``build_shape_rule`` resolves the cadence axes
+    through ``ref_cache``).  Deterministic: same shapes, same schedules, same literal
     dates, no clock read anywhere.
 
     Returns:

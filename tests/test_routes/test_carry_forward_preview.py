@@ -33,14 +33,14 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import RecurrencePatternEnum, StatusEnum, RoleEnum
+from app.enums import StatusEnum, RoleEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import (
-    AccountType, RecurrencePattern, Status, TransactionType,
+    AccountType, Status, TransactionType,
 )
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -61,11 +61,6 @@ def _make_envelope_template(
     category_key="Groceries",
 ):
     """Create an envelope expense template with an EVERY_PERIOD rule."""
-    every_period = (
-        db.session.query(RecurrencePattern)
-        .filter_by(name=RecurrencePatternEnum.EVERY_PERIOD.value)
-        .one()
-    )
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )

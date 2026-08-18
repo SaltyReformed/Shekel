@@ -3,14 +3,14 @@
 ## Where this stands
 
 **Plan of record** for the two-axis recurrence model and the cash-date / installment-date split.
-R1-R4 ARCHIVED. Which steps are in PRODUCTION is a measurement, not a stored value:
-`git branch -r --contains <hash>` against `origin/main`. R9 waits on one -- see its own entry.
+R1-R4 ARCHIVED. Which steps are in PRODUCTION is a measurement, never a stored value:
+`git branch -r --contains <hash>` against `origin/main`, and `shekel-prod-app`'s own revision label.
 
-**R7c IS COMPLETE, and it is what this arc was for** (R-R16 / R-R18). `budget.recurrence_rules`
-states its cadence ONCE -- `interval_n` / `unit_id` / `placement_id` / `shift_id` / `starts_on` /
-`nominal_day` -- where `starts_on` is the rule's FIRST OCCURRENCE and the closed pattern set is
-DROPPED, so every interval is authorable on every unit and no reader recovers a value through a
-pattern id.
+**The closed pattern set is GONE, and that is what this arc was for** (R-R16 / R-R18 / R-R27).
+`budget.recurrence_rules` states its cadence ONCE -- `interval_n` / `unit_id` / `placement_id` /
+`shift_id` / `starts_on` / `nominal_day` -- so every interval is authorable on every unit. R7c
+dropped the column and R9 dropped `ref.recurrence_patterns`, its enum and its accessor; nothing in
+the application or the suite speaks the eight names.
 
 **R8 DECOMPOSED at R8-a (R-R23), and the split is a measurement.** Three of the four ruled add-ons
 need a generated row's own `occurs_on`, which is **R5**'s: `compute_due_date(rule, period)` never
@@ -18,8 +18,8 @@ receives the occurrence, so a weekly row, an nth-weekday row and a shifted row e
 cadence never named. R8-a shipped what does not, and closed **D20** by measuring its premise false.
 
 **What to do next is `steps.md`'s order table; do not re-derive it here.** One ruling is owed and
-section 0 states its two options. Section 4 is the steps; the findings, the index, the rules and the
-verification standard (`verification.md`) are the shared registries in `docs/plans/`.
+section 0 states its two options. Section 4 is the steps; the findings, the index, the rules and
+`verification.md` are the shared registries in `docs/plans/`.
 
 ## Rulings
 
@@ -53,6 +53,7 @@ Taken 2026-08-05 (developer):
 | **Whether a year-scale cadence may defer onto a later paycheck** | **YES. `(k, YEAR, PERIOD_STARTING_ON_OR_AFTER)` fires on its own authored date every `k` years and defers onto the next paycheck, exactly as its MONTH twin already does; the refusal cited `_first_of_month_anchor`, deleted at R7c-b. 0 of 46 live rules read differently, and a yearly cadence cannot repeat a paycheck at any `cadence_days` in 1-365. It also restores `(12, MONTH, deferred)` -> `(1, YEAR, deferred)`, so one rhythm keeps one spelling. R-R24, ruled 2026-08-16; shipped as R8-a** |
 | **Where the nth-weekday coordinate LIVES** | **On `budget.recurrence_rules`, as an EXCLUSIVE ARC of columns under one CHECK, and `budget.recurrence_weekday_anchors` is DROPPED unwritten. "A rule fires on a day-of-month OR an nth-weekday" cannot be a CHECK while the two live in different tables -- PostgreSQL CHECKs are single-table -- so the satellite form would need a trigger or a door-only fence for an invariant the column form makes structural. The same move ruling R-R16 made for `nominal_day` and R7c-c made for the unwritten `recurrence_month_anchors`. R-R25, ruled 2026-08-16; owned by R8-c** |
 | **What "non-business day" MEANS** | **Weekends plus the eleven US federal holidays, DERIVED as rules rather than seeded as rows -- they are nth-weekday-of-month rules and fixed dates with weekend observation, so there is no per-year seed to keep current and the derivation composes with R8-c's own machinery. R-R26, ruled 2026-08-16; owned by R8-d. Finding F-4, the PAY SCHEDULE's own holiday shift, is a different question and is not settled by this** |
+| **Whether the closed set's TABLE and its ENUM may go in ONE release** | **YES, and R-R11's hazard does not generalise to a dropped TABLE at all -- which an adversarial review of R9 established after the step had argued the opposite. R-R11 held the `Once` ROW because `ref_cache.init` raises for an enum member with no row in a table that EXISTS; `_load_rows` CATCHES the `ProgrammingError` a missing table raises, and `init` records it unavailable and completes, pinned by `test_ref_cache.py::test_init_records_unavailable_table_and_keeps_others_usable`. Three independent reasons the auto-rollback image is safe, in the order they fire: it never reaches `ref_cache`, because `entrypoint.sh` step 3 runs `init_database.py` with `init_ref_cache=False` and its Alembic tree cannot resolve the new revision, so `set -eEuo pipefail` aborts (finding F-8); `shekel-deploy:repin_is_safe` refuses the re-pin for the same reason, leaving the pre-deploy dump as recovery; and booted anyway it would degrade rather than die. Precedent measured the same day: R7c-a, R7c-b and R7c-c all reached production in ONE release (PR #102, `41e09dad`), and R7c-c dropped a column the previous image's ORM mapped. R-R27, ruled 2026-08-17; shipped as R9** |
 | **What a REGENERATION does to the rows it already generated** | **It MAINTAINS them; it does not destroy and rebuild them. A row the rule still names is UPDATED in place, a period the rule names with no row gets one, and a row the rule no longer names is removed only when it carries nothing of the owner's. A row holding the owner's own records -- purchases, a note, a hand-entered actual -- is RETAINED and reported, in two shapes: the rule stopped naming its period, or the template's ACCOUNT moved, which drags every purchase onto the new account and invalidates the statement link that cleared it. The delete-and-recreate this replaces was safe only while a generated row was a pure projection of `(template, period)`; `transaction_entries` CASCADE from their parent, so it destroyed `$499.82` of recorded purchases on live data. R-R19, ruled 2026-08-15; shipped as R10-a (`5fc13cdb`), closing row N-292** |
 
 ---
@@ -543,41 +544,16 @@ that has none. Whatever this step rules, it states the value honestly at both si
       `resolve` hardcodes `NONE`; 46 of 46 live rules carry `none`. Finding **F-4** (the PAY
       SCHEDULE's own holiday shift) is a different question and stays separate.
 
-- [ ] **R9 -- Drop the closed pattern set's last two artefacts.**
+- [x] **R9 -- the closed pattern set's last artefacts die.** `800671a7`, ruling **R-R27**.
+      `ref.recurrence_patterns` is DROPPED (`b2e9a47c3f18`) with `RecurrencePatternEnum`,
+      `ref_cache.recurrence_pattern_id` and the seed entry behind them, in ONE release rather than
+      the two R-R11 had reserved; the test suite's cadence vocabulary moved with them onto the two
+      axes. The rollback measurement, the production census and the clone rehearsal are in
+      `historical/recurrence_r9_as_built_2026-08-17.md`.
 
-Drops `ref.recurrence_patterns` and `RecurrencePatternEnum`, with `ref_cache.recurrence_pattern_id`
-and the seed entry behind them.
-**The step is what R7c-c left of it, and it is one table and one enum**: `pattern_id` is gone
-(`d9f5c1a48b73`), so no user-owned row can reference the table and the surviving `Once` row is
-unreachable by construction rather than by a refusal.
+### R10 -- the regeneration's own defect
 
-**It waits for its own release, and that is ruling R-R11 rather than caution**: `ref_cache.init`
-raises for an enum member with no row, so deleting the row in the same release that deletes the
-member would leave the auto-rollback image unable to boot. R7c-c is the release that stops writing
-the column; R9 is the one that removes what it pointed at.
-**That precondition is a RELEASE, and `steps.md`'s `starts` column cannot see it** -- it derives
-from step blockers, and R7c-c is shipped, so the cell reads `NOW` and is right about the graph and
-silent about the gate. Before picking this step up, MEASURE where R7c-c is:
-`git branch -r --contains ee35bca7` must name `origin/main`, and
-`docker inspect shekel-prod-app --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'`
-must resolve to a commit containing it. Noted at plan step R8-a, when the same check found it in
-`origin/dev` alone.
-
-**Three things this entry used to name and no longer can.**
-`pay_period_admin._repoint_recurrence_rules` was DELETED at plan step R7b-4, with the
-`start_period_id` capture it existed for -- so the premise about a date not surviving
-`reset_pay_schedule` has no subject: a rule's opening bound is `starts_on`, and `resolve` measures
-it against whatever schedule the owner has. The `start_date` premise (`anchor_date >= start_date`
-holds by construction) is moot with that column dropped; ledger row **D6** closed at R7c-c.
-`savings_goal_service.amount_to_monthly` was deleted at R7a-2b, and
-`calendar_service._INFREQUENT_PATTERNS` with it -- the infrequent badge derives from
-`(interval_n, unit)`.
-
-The four `Once` guards went at R2e-3; the orphan cleanup and the FK claim that used to live here
-were both wrong and belong to R-F6 (see R-R7).
-
-**R10 is the regeneration's own defect, found while X-f3b measured the ledger.** Its two leaves are
-below.
+Found while X-f3b measured the ledger. Its two leaves are below.
 
 - [x] **R10-a -- a regeneration MAINTAINS its rows.** `5fc13cdb`, ruling **R-R19**, closed **N-292**
       (`$499.82` of purchases destroyed by a rename, measured; 0 after).
@@ -627,6 +603,26 @@ word the new member or RAISE (it is total over the enum), `_parenthetical`'s day
 guarded on the deferring placement precisely so a LEAD cannot silently inherit it, and
 `fires_on_day_of_month` stays `False` for it -- so its rows are dated from the funding payday, the
 same deliberate state the deferring placement carries under **D26**. Closes **D40**.
+
+- [ ] **R12 -- the deploy script's refusals get a test.**
+**Opened at plan step R9, by two independent adversarial reviewers of it.** R-F8 built
+`deploy/shekel-deploy.sh`'s two predicates -- `preflight_migrations`, which refuses a TARGET image
+that cannot resolve the database's stamp, and `repin_is_safe`, which after a failure decides whether
+re-pinning the previous image recovers or kills. Ruling **R-R27** rests R9's one-release drop of
+`ref.recurrence_patterns` on the second of those, and R9 deleted `TestDeliberateRefSeedSurplus`,
+which was the last EXECUTABLE statement of the hazard that refusal now covers. An executable guard
+was replaced by an unexercised one.
+
+**Nothing in the repository drives the script.** `.pre-commit-config.yaml` scopes to `^app/`,
+`^scripts/` and `^tools/`; CI lints `app/` and `scripts/`; `pytest` collects `tests/` and
+`tools/plan_gate`. `shellcheck` reads it but says nothing about behaviour.
+
+The step DECIDES first where a shell harness runs -- a `tests/` module shelling out to `bash`, a
+`bats`-style suite with its own runner, or a Python port of the two predicates with the shell
+calling it -- and then covers at minimum: a stamp the target cannot resolve is refused; a stamp the
+OLD image cannot resolve refuses the re-pin; an unchanged stamp after a container that never started
+still re-pins; and an unreadable `alembic_version` is treated as unsafe. Each arm shown FIRING,
+which is the standard the arc's own verification file sets. Closes **D41**.
 
 ### Carried steps -- scheduled here so they are not merely remembered
 

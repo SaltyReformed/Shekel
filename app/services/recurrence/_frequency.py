@@ -288,11 +288,16 @@ class RecurrenceResolutionError(ShekelError):
     A broken invariant rather than bad user input, which is why it is not a
     ``ValidationError`` a route flashes: every user has had at least one pay
     period since registration bootstraps one (``auth_service.register_user``),
-    and ``pattern_id`` is written only from
-    :class:`~app.enums.RecurrencePatternEnum`.  Raised loudly so a recurrence
+    and both cadence axes are ``NOT NULL`` columns under ``RESTRICT`` foreign
+    keys onto ``ref`` tables the enums mirror.  Raised loudly so a recurrence
     can never be READ with a fabricated cadence, and -- because
     ``app.services.recurrence.author_rule`` resolves before it writes -- so a
     rule that cannot be resolved is never persisted in the first place.
+
+    The second sentence named ``pattern_id`` until plan step **R9**, four
+    steps after R7c-c dropped that column: what a broken cadence looks like
+    now is a ``unit_id`` or ``placement_id`` naming a ``ref`` row the enums do
+    not model.
     """
 
 

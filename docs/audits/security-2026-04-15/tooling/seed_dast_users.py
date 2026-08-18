@@ -55,7 +55,7 @@ from app.enums import (
     CalcMethodEnum,
     DeductionTimingEnum,
     GoalModeEnum,
-    RecurrencePatternEnum,
+    RecurrenceUnitEnum,
     RoleEnum,
     StatusEnum,
     TxnTypeEnum,
@@ -70,7 +70,6 @@ from app.models.loan_params import LoanParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.pay_period import PayPeriod
 from app.models.pension_profile import PensionProfile
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import FilingStatus, RaiseType
 from app.models.salary_profile import SalaryProfile
 from app.models.salary_raise import SalaryRaise
@@ -87,6 +86,8 @@ from app.services.auth_service import (
     hash_password,
     register_user,
 )
+from app.services.pay_calendar import calendar_for
+from app.services.recurrence import RecurrenceSpec, author_rule
 from app.utils.dates import display_today
 
 logger = logging.getLogger(__name__)
@@ -390,6 +391,32 @@ def _first_category_id(user_id: int) -> int:
     return int(row.id)
 
 
+def _every_paycheck_rule(user_id: int):
+    """Return a flushed every-paycheck recurrence rule for *user_id*.
+
+    Authored through ``recurrence.author_rule``, which is the only door that
+    can write one: plan step R7c-b made ``unit_id``, ``placement_id``,
+    ``shift_id`` and ``starts_on`` ``NOT NULL``, and R7c-c dropped the
+    ``pattern_id`` this script used to set. Plan step R9 then deleted the enum
+    it read, which is what turned a runtime failure here into an import one.
+
+    Args:
+        user_id: The owner.
+
+    Returns:
+        The flushed ``RecurrenceRule``.
+    """
+    calendar = calendar_for(user_id)
+    return author_rule(
+        RecurrenceSpec(
+            user_id=user_id,
+            unit=RecurrenceUnitEnum.PERIOD,
+            starts_on=calendar.opening_bound(),
+        ),
+        calendar,
+    )
+
+
 def create_salary_profile(
     user_id: int, scenario_id: int,
 ) -> dict[str, int]:
@@ -475,14 +502,7 @@ def create_template_and_transactions(
     entries routes have an ``entry_id`` to probe. Returns template ID,
     transaction IDs (one per period), and entry ID.
     """
-    rule = RecurrenceRule(
-        user_id=user_id,
-        pattern_id=ref_cache.recurrence_pattern_id(
-            RecurrencePatternEnum.EVERY_PERIOD,
-        ),
-    )
-    db.session.add(rule)
-    db.session.flush()
+    rule = _every_paycheck_rule(user_id)
 
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
     category_id = _first_category_id(user_id)
@@ -552,14 +572,7 @@ def create_transfer_pair(
     and 500s on a bare Transfer, that is recorded in the probe output
     as a coverage gap, not a seeding error.
     """
-    rule = RecurrenceRule(
-        user_id=user_id,
-        pattern_id=ref_cache.recurrence_pattern_id(
-            RecurrencePatternEnum.EVERY_PERIOD,
-        ),
-    )
-    db.session.add(rule)
-    db.session.flush()
+    rule = _every_paycheck_rule(user_id)
 
     tpl = TransferTemplate(
         user_id=user_id,

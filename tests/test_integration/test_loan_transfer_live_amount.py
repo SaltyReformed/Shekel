@@ -15,7 +15,7 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import AcctTypeEnum, RecurrencePatternEnum
+from app.enums import AcctTypeEnum
 from app.extensions import db
 from app.models.escrow_line import EscrowComponentVersion
 from app.models.loan_payment_settings import LoanPaymentSettings
@@ -34,8 +34,9 @@ from tests._test_helpers import (
     add_escrow_line,
     create_loan_account,
     loan_params_for,
-    make_pattern_rule,
+    make_cadence_rule,
 )
+from tests.oracles.recurrence_baseline import MONTHLY
 from app.services.row_valuation import owned_contribution
 
 
@@ -102,8 +103,8 @@ def _build_derived_loan_transfer(seed_user, escrow_annual):
     # Authored through the write door (plan step R7c-b): the day a rule fires
     # on is its first occurrence's own day, so "the 1st" is a DATE the fixture
     # schedule reaches rather than a separate column.
-    rule = make_pattern_rule(
-        user.id, RecurrencePatternEnum.MONTHLY, fires_on_day=1,
+    rule = make_cadence_rule(
+        user.id, MONTHLY, fires_on_day=1,
     )
     template = TransferTemplate(
         user_id=user.id,
