@@ -5181,6 +5181,44 @@ def period_window(periods):
     )
 
 
+def dashboard_section(user_id, as_of=None):
+    """Return what ``dashboard.page`` resolves before it calls a producer.
+
+    The test-side door onto the budget dashboard's producers, added at
+    pay-calendar plan step **C2-f2e**, when
+    ``dashboard_service.compute_pulse_section`` and
+    ``compute_balance_section`` stopped taking a ``user_id`` and started taking
+    a :class:`~app.services.dashboard_service.DashboardSection` -- the account,
+    the settings and the read pass, resolved ONCE by the route.
+
+    It performs the route's two steps and nothing else, deliberately: a helper
+    that CONSTRUCTED a section from parts would let a test exercise a
+    combination the route cannot produce (an account of one owner beside
+    another's pass), which is exactly the "test infrastructure that bypasses
+    the production door" shape ``docs/plans/lessons.md`` records.
+
+    Args:
+        user_id: The owner whose dashboard to resolve.
+        as_of: The read pass's pinned day.  Defaults to the pass's own default
+            (``date.today()``); supply one to pin a render to a day the test
+            controls, which is the same knob every other calendar-sensitive
+            fixture uses.
+
+    Returns:
+        The :class:`~app.services.dashboard_service.DashboardSection`, or
+        ``None`` when the owner has no resolvable grid account -- the same
+        ``None`` the route passes straight through to the producers.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dependency
+    # avoidance as the factories above.
+    from app.services import dashboard_service
+    from app.services.balance_at import BalanceContext
+
+    return dashboard_service.resolve_section(
+        BalanceContext.build(user_id, as_of=as_of),
+    )
+
+
 def read_pass_over_paydays(paydays, cadence_days, as_of, user_id=1):
     """Return a :class:`BalanceContext` whose pay calendar is *paydays*.
 

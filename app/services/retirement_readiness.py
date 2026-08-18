@@ -160,10 +160,12 @@ def compute_readiness_whatif(
     between them must be the POINT's effect and nothing else, so every input
     they do not vary had better be the same object rather than two equal loads.
     A panel rendered across midnight used to report a day's drift as a what-if
-    delta; one rendered across a NEW YEAR still can, because
+    delta, and one rendered across a NEW YEAR reported a year's: it took
     ``compute_pension_summary``, ``compute_gap_net_biweekly`` and
-    ``build_employer_salary_basis`` each read ``date.today().year`` for
-    themselves.  Ledger row **P55** owns that remainder.
+    ``build_employer_salary_basis`` reading ``date.today().year`` for
+    themselves.  Pay-calendar plan step C2-f2e threaded the pass's day into all
+    three and closed ledger row **P55**, so both computations now open their
+    salary path on the same year by construction.
 
     Args:
         inputs: The render's

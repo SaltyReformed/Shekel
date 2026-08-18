@@ -4112,7 +4112,7 @@ class TestNetWorthHorizon:
         then fixed: resolving the owner's pay cadence inside
         ``_load_dashboard_core_data`` made ``/`` raise ``PayCalendarError`` for
         an owner with no ``budget.pay_schedule`` row, because
-        ``dashboard_pulse_service.compute_tracks_section`` reaches that loader
+        ``dashboard_service.compute_tracks_section`` reaches that loader
         through BOTH narrow producers -- and both of them return early for an
         owner with no goals and no loans, so neither ever converts anything.
         A page must not fail for a fact it does not use.
@@ -5275,10 +5275,10 @@ class TestOneResolutionPerLoanPerReadPass:
             # Pylint: import-outside-toplevel -- deferred, matching the producer's
             # own lazy import of the savings package.
             from app.services import (  # pylint: disable=import-outside-toplevel
-                dashboard_pulse_service,
+                dashboard_service,
             )
-            dashboard_pulse_service.compute_tracks_section(
-                seed_user["user"].id,
+            dashboard_service.compute_tracks_section(
+                BalanceContext.build(seed_user["user"].id),
             )
 
             assert calls.count(loan_id) == 1

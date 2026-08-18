@@ -624,8 +624,15 @@ def _derive_picture(
         None if inputs.base_date is None
         else add_months(inputs.base_date, point.month_offset)
     )
+    # The render's ONE day, threaded into all three producers that open a
+    # salary path (pay-calendar plan step C2-f2e, ledger row **P55**).  Each
+    # read ``date.today().year`` for itself, and this function runs once per
+    # PLAN POINT -- the retire-later lever probes about ten -- so a render
+    # crossing a New Year could project the verdict card's path from year N and
+    # the lever card's from N+1.
+    as_of = inputs.balance_ctx.as_of
     pension = compute_pension_summary(
-        gap.pensions, merit_horizon, point.month_offset,
+        gap.pensions, merit_horizon, as_of, point.month_offset,
     )
     # Every point-dependent field replaced together, from a context the render
     # built once: the account query and the period calendar do not move with a
@@ -635,15 +642,14 @@ def _derive_picture(
         planned_retirement_date=retirement_date,
         return_rate_override=point.return_rate_override,
         employer_salary_basis=build_employer_salary_basis(
-            gap.salary_profiles, retirement_date, merit_horizon,
+            gap.salary_profiles, retirement_date, merit_horizon, as_of,
         ),
     )
     axis = resolve_projection_axis(ctx)
     projections = project_accounts_with_batch(ctx, inputs.batch, axis)
     net = calculate_gap(
         net_biweekly_pay=compute_gap_net_biweekly(
-            gap.salary_profiles, retirement_date, gap.pay,
-            pension.salary_by_year, merit_horizon,
+            gap, retirement_date, pension.salary_by_year, merit_horizon, as_of,
         ),
         pay_cadence=gap.pay_cadence,
         monthly_pension_income=pension.monthly_income,

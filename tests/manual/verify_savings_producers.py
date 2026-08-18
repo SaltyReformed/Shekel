@@ -17,7 +17,7 @@ proof.  This dumps the layer that step actually changes:
   cockpit balance cell for every account) plus the principal-paid fraction,
   which was a narrow producer of its own until plan step X-u;
 * the ROUTE's serialized ``data-chart`` payload (the float boundary);
-* ``dashboard_pulse_service.compute_tracks_section`` -- the debt track that
+* ``dashboard_service.compute_tracks_section`` -- the debt track that
   carries the summary.
 
 **NORMALIZED across the intended shape changes**, so a deliberate diff cannot
@@ -106,7 +106,7 @@ from app import create_app
 from app.extensions import db
 from app.models.user import User
 from app.routes.savings import _serialize_net_worth_chart, _serialize_sparklines
-from app.services import balance_at, dashboard_pulse_service
+from app.services import balance_at, dashboard_service
 from app.services import savings_dashboard_service
 from app.services.balance_at import BalanceContext
 from app.services.scenario_resolver import get_baseline_scenario
@@ -557,7 +557,9 @@ def _dump_user(user_id):
             for ad in account_data
         },
         "tracks_section": _tracks(
-            dashboard_pulse_service.compute_tracks_section(user_id),
+            dashboard_service.compute_tracks_section(
+                BalanceContext.build(user_id),
+            ),
         ),
     }
 

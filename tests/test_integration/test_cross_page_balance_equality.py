@@ -328,8 +328,17 @@ def _dashboard_value(ctx):
     period's END, and the fold made the as-of-today scalar diverge from it by
     the unpaid remainder of the period).  The fixture pins today inside the
     anchor period, so this equals the anchor-period balance.
+
+    It goes through ``resolve_section`` since pay-calendar plan step C2-f2e,
+    which is what the ROUTE does: the producer takes the resolved section
+    rather than a ``user_id``, and reading this surface any other way would
+    grade a door production does not use.  The section is built over
+    :func:`_bctx`'s pass, so every surface in this lock still shares one
+    scenario and one clock.
     """
-    data = dashboard_service.compute_balance_section(ctx["user_id"])
+    data = dashboard_service.compute_balance_section(
+        dashboard_service.resolve_section(_bctx(ctx)),
+    )
     return data["hero"]["balance"]
 
 

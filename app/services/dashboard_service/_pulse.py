@@ -1,33 +1,14 @@
 """
-Shekel Budget App -- Dashboard Pulse / Tracks Producers (Loop B B-1)
+Shekel Budget App -- Dashboard: the pulse region (canvas + street + due-soon).
 
-The narrow producers behind the Terminal Road dashboard rebuild's two
-regions:
+:func:`compute_pulse_section` is the single ``balanceChanged`` refresh
+region of the Terminal Road rebuild (Loop B B-1): the period-end hero,
+the 13-period projected end-balance chart + threshold, the full-horizon
+trough and peak, the still-due totals (current + next period), and the
+current period's due-soon rows.  Everything it returns derives from the
+same transaction state, so one producer + endpoint serves all of it.
 
-  * :func:`compute_pulse_section` -- the single ``balanceChanged`` refresh
-    region (canvas + street + due-soon list): the as-of-today hero, the
-    13-period projected end-balance chart + threshold, the full-horizon
-    trough, the still-due totals (current + next period), and the current
-    period's due-soon rows.  Everything derives from one transaction
-    state, so one producer + endpoint serves it.
-  * :func:`compute_tracks_section` -- the page-load-only position tier:
-    savings-goal metro tracks (reshaped from the /savings goal producer)
-    and the debt track (the /savings debt summary, which since plan step
-    X-u carries the honest principal-paid fraction the rail positions
-    from, so this tier passes ONE value through instead of pairing two).
-
-This module is additive (Loop B B-1).  The live page keeps running on the
-existing ``dashboard_service`` producers until the B-3 route swap.  Both
-producers reuse ``dashboard_service``'s shared row query / bill builder /
-anchor-date helpers (and the /savings producers for the tracks) rather
-than re-deriving any of them, so the new surfaces and the existing ones
-cannot disagree.
-
-Split out of ``dashboard_service`` so neither module exceeds the
-1000-line pylint cap; the savings-dashboard package set the precedent for
-extracting cohesive dashboard concerns into their own modules.
-
-Pure aggregation service -- no Flask imports, no database writes.
+Pure aggregation -- no Flask imports, no database writes.
 """
 
 from __future__ import annotations
@@ -37,37 +18,24 @@ from decimal import Decimal
 from itertools import groupby
 from typing import TYPE_CHECKING
 
-from app.models.account import Account
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.user import UserSettings
-from app.services import balance_at, cash_ledger, pay_period_service
-from app.services.balance_at import BalanceContext
-from app.services.dashboard_service import (
-    _DEFAULT_STALENESS_DAYS,
-    _get_user_settings,
-    _query_unpaid_expense_rows,
-    _resolve_section_context,
-    txn_to_bill_dict,
-)
+from app.services import balance_at, cash_ledger
 from app.services.entry_service import compute_remaining
 from app.utils.money import round_money
 
-if TYPE_CHECKING:
-    # Type-only, and that is load-bearing here: the runtime import of
-    # ``savings_dashboard_service`` inside ``compute_tracks_section`` is
-    # DEFERRED on purpose (it pulls the heaviest service chain, +27 modules
-    # measured), so annotating at module scope would undo a measured decision.
-    # ``GoalProgress`` is the package's PUBLIC re-export as of plan step X-w6
-    # (ruling R-CN), not a private module name, so this is the façade the
-    # W9910 package-privacy checker asks for -- the type hint the coding
-    # standard asks for, at no import cost.
-    from app.services.savings_dashboard_service import GoalProgress
+from ._bills import _query_unpaid_expense_rows, txn_to_bill_dict
+from ._section import _DEFAULT_STALENESS_DAYS, DashboardSection
 
-    # The pay calendar's own view of a period, carried by the two producers
-    # that took ``pay_period_service.get_next_period``'s answer before plan
-    # step C2-f.  Type-only: the value arrives from ``balance_ctx.calendar()``,
-    # which this module already reaches through ``BalanceContext``.
+if TYPE_CHECKING:
+    # The pay calendar's own view of a period.  EVERY period on this page is
+    # one since pay-calendar plan step C2-f2e -- the current one, the next
+    # one, and every point the chart, the trough and the peak read -- where
+    # the current period and the forward set were ``budget.pay_periods`` ORM
+    # rows carrying the two derived columns plan step **C4** drops.  Type-only:
+    # the values arrive from ``balance_ctx.calendar()`` and
+    # ``balance_ctx.reported_periods()``, which this module reaches through the
+    # section's ``BalanceContext``.
     from app.services.pay_calendar import DerivedPeriod
 
 _ZERO = Decimal("0")
@@ -91,7 +59,9 @@ _STREET_STATION_MAX_VISIBLE = 3
 # ── Pulse producer (canvas + street + due-soon) ────────────────────
 
 
-def compute_pulse_section(user_id: int) -> dict | None:
+def compute_pulse_section(
+    section: "DashboardSection | None",
+) -> dict | None:
     """Compute the dashboard pulse region (canvas + street + due-soon).
 
     The single ``balanceChanged`` refresh region of the Terminal Road
@@ -106,47 +76,86 @@ def compute_pulse_section(user_id: int) -> dict | None:
     narrow producers' ``None`` contract).  Otherwise returns a dict with
     keys:
 
-      * ``hero`` -- see :func:`_pulse_hero`.
-      * ``chart`` -- see :func:`_pulse_chart`.
-      * ``trough`` -- see :func:`_pulse_trough` (``None`` when no period
+      * ``hero`` -- see :func:`_hero`.
+      * ``chart`` -- see :func:`_chart`.
+      * ``trough`` -- see :func:`_trough` (``None`` when no period
         is projected): the lowest projected end balance ahead.
-      * ``peak`` -- see :func:`_pulse_peak` (``None`` in the same no-period
+      * ``peak`` -- see :func:`_peak` (``None`` in the same no-period
         case as ``trough``): the highest projected end balance ahead, the
         exact mirror of ``trough`` over the same full forward horizon.
-      * ``still_due`` -- see :func:`_pulse_still_due`.
-      * ``street`` -- see :func:`_pulse_street` (the current period's
+      * ``still_due`` -- see :func:`_still_due`.
+      * ``street`` -- see :func:`_street` (the current period's
         day-span and today's offset within it).
-      * ``due_soon`` -- see :func:`_pulse_due_soon` (the flat bill list;
+      * ``due_soon`` -- see :func:`_due_soon` (the flat bill list;
         the template's "anytime this period" shelf reads its undated
         rows).
-      * ``due_soon_stations`` -- see :func:`_pulse_due_soon_stations` (the
+      * ``due_soon_stations`` -- see :func:`_due_soon_stations` (the
         dated rows grouped per day for the street axis, so bills sharing a
         due date render as one station instead of overlapping).
 
     Args:
-        user_id: Integer ID of the current user.
+        section: The render's :class:`~._section.DashboardSection`, or ``None``
+            when the owner has no resolvable grid account.  **The read pass
+            arrives on it rather than being built here** (pay-calendar plan
+            step C2-f2e, ledger rows **P56** and **P61**): this producer and
+            :func:`~._tracks.compute_tracks_section` each opened one, so ``/``
+            held two passes and derived the owner's pay calendar twice per
+            render.  The route opens the one pass and both take it.
 
     Returns:
         The pulse-region dict, or ``None`` when the region cannot be
         computed (no account / scenario / current period).
     """
-    account, balance_ctx, current_period = _resolve_section_context(user_id)
     # The no-baseline arm this guard used to carry is GONE (plan step X-v2,
     # ruling R-BW): the seam raises and one application-level handler answers,
     # so this region no longer decides what a user with no computable balance
     # sees.  What remains are the two states this producer genuinely models --
     # no grid account, and no period containing today.
-    if account is None or current_period is None:
+    #
+    # **The account is checked FIRST and that ORDER is load-bearing.**  Reading
+    # the owner's reported window derives their calendar, which RAISES
+    # ``PayCalendarError`` for an owner whose paydays cannot define one (ledger
+    # row **P35**, a legacy period stored before ``budget.pay_schedule``
+    # existed).  A no-account owner reached no calendar before this step and
+    # must not start reaching one now, so the cheap structural refusal comes
+    # before the derivation -- the opposite of ``/grid``, which derives before
+    # it looks at an account and which P35 records as WIDENED for exactly that.
+    if section is None:
         return None
 
-    settings = _get_user_settings(user_id)
-    all_periods = pay_period_service.get_all_periods(user_id)
+    balance_ctx = section.balance_ctx
+    account = section.account
+    settings = section.settings
+    # The owner's saved schedule, from the SAME window the balance seam reports
+    # every per-period figure on this page over (pay-calendar plan step C2-f2e,
+    # ledger row **P36**).  It was ``pay_period_service.get_all_periods``: a
+    # second read of one schedule, ordered by the stored ``period_index`` where
+    # the seam's own domain is ordered by payday -- so a stored ordinal that
+    # disagreed with payday order (plan finding **P1**) plotted this chart in
+    # one order and the balances it reads in another, and a destructive
+    # pay-period write landing between the two reads left this producer
+    # indexing the map by an id the seam no longer held.  One derivation, no
+    # second spelling -- and THIS is the line that fills the pass's calendar
+    # memo, since ``reported_periods()`` is ``calendar().saved()``; every other
+    # calendar read on this render is a memo hit.
+    all_periods = balance_ctx.reported_periods()
+    # WHERE in that window the pass's day falls, and the current period is the
+    # entry AT it.  Asked of the window rather than derived from
+    # ``period_index`` (C2-f2e's adversarial code review, 2026-08-18): the two
+    # agree only because ``reported_periods()`` is the window over the WHOLE
+    # saved calendar, so its ordinals happen to equal the calendar's -- and
+    # ``PeriodWindow.containing_index``'s own docstring names that as the
+    # coincidence a caller must not rest on, being "a second rule about how a
+    # view's ordinals relate to the calendar's, stated at the caller and
+    # enforced nowhere".  It is also ONE bisect where reading
+    # ``section.current_period`` beside a ``period_index`` filter was two.
+    current_index = all_periods.containing_index(balance_ctx.as_of)
+    if current_index is None:
+        return None
+    current_period = all_periods[current_index]
     # The pass's own calendar answers "which paycheck comes next" (plan step
-    # C2-f1), and this is the call that FILLS that memo -- ``BalanceContext.build``
-    # resolves only the scenario, so the two queries are paid here and
-    # ``cash_balance_map`` below reads the same value for free.  Net for this
-    # producer: four queries down to two, where the retired ``get_next_period``
-    # and ``_next_paycheck_date`` each issued one BESIDE the map's own load.
+    # C2-f1), off the memo the window read above filled -- ``BalanceContext.build``
+    # resolves only the scenario, so the calendar's two queries are paid once.
     next_period = balance_ctx.calendar().period_starting_after(
         current_period.start_date,
     )
@@ -183,16 +192,19 @@ def compute_pulse_section(user_id: int) -> dict | None:
     # today``): the chart's first plotted point is the current period's end
     # balance, so the labeled "lowest point ahead" must be able to coincide
     # with it rather than understating the worst visible dip.
-    # ``cash_balance_map`` is a TOTAL fold (plan step X-c2b2): every requested
-    # period is in the result, replayed from the account's own assertions, so
-    # the chart / trough / peak missing-key skips below have nothing left to
-    # skip.  They stay because the forward slice is the caller's, not the
-    # producer's.
+    # **Every read of this map below is INDEXED, and the two skips that used to
+    # sit under the chart and the extremum scan are DELETED** (C2-f2e's
+    # adversarial code review, 2026-08-18).  ``cash_balance_map`` is a TOTAL
+    # fold (plan step X-c2b2) over ``ctx.reported_periods()``, and
+    # ``forward_periods`` is a SLICE of that same window, so every key is
+    # present by construction.  The skips were kept on the ground that "the
+    # forward slice is the caller's, not the producer's", which does not follow
+    # -- a caller-chosen subset of the domain is still in the domain -- and
+    # what they would have done had they ever fired is exactly what the hero's
+    # own comment below refuses: a chart quietly missing a point, or a "lowest
+    # point ahead" scanned over fewer periods than its label promises.
     end_balances = balance_at.cash_balance_map(account, balance_ctx)
-    forward_periods = [
-        p for p in all_periods
-        if p.period_index >= current_period.period_index
-    ]
+    forward_periods = list(all_periods)[current_index:]
 
     # ONE unpaid-row query for the still-due totals AND the due-soon list:
     # both read the current period's rows (due-soon is exactly that subset)
@@ -200,7 +212,7 @@ def compute_pulse_section(user_id: int) -> dict | None:
     # current+next set once -- with its single ``selectinload(entries)``
     # round trip -- and splitting it in memory avoids a second identical
     # query on the ``balanceChanged`` refresh path.
-    period_ids = [current_period.id]
+    period_ids = [current_period.period_id]
     if next_period is not None:
         period_ids.append(next_period.period_id)
     unpaid_rows = _query_unpaid_expense_rows(
@@ -225,47 +237,44 @@ def compute_pulse_section(user_id: int) -> dict | None:
     # status-dependent -- so a contribution cannot stand in for it.
     budgets = cash_ledger.amounts_by_id(unpaid_rows, balance_ctx.amounts())
 
-    due_soon = _pulse_due_soon(
-        unpaid_rows, contributions, budgets, current_period,
+    due_soon = _due_soon(
+        unpaid_rows, contributions, budgets, current_period, balance_ctx.as_of,
     )
 
     return {
-        # ``current_period`` came from ``get_current_period``, so it is a row
-        # of ``budget.pay_periods``, and since plan step C2-c the map's domain
-        # is the pass's own ``reported_periods()`` -- every saved period of the
-        # same owner -- so the key is present.  (It read "a member of the
-        # ``all_periods`` the map was built over" until that step took the
-        # period list off the seam's signature; the conclusion survives, the
-        # stated reason did not.)  Indexed rather than ``.get``-with-a-default
-        # on purpose: a default here would render SOME number for a hero whose
-        # own period the projection did not cover, which is the silent-wrong
-        # shape this arc exists to end.
-        "hero": _pulse_hero(
-            account, end_balances[current_period.id], current_period,
-            next_period, settings,
+        # The key is present BY CONSTRUCTION since pay-calendar plan step
+        # C2-f2e: ``current_period`` is now a member of the very window the map
+        # was built over (``reported_periods()``, which is
+        # ``calendar().saved()``), where it used to be a ``get_current_period``
+        # row that the map's domain merely happened to contain.  Indexed rather
+        # than ``.get``-with-a-default on purpose: a default here would render
+        # SOME number for a hero whose own period the projection did not cover,
+        # which is the silent-wrong shape this arc exists to end.
+        "hero": _hero(
+            section, end_balances[current_period.period_id], current_period,
+            next_period,
         ),
-        "chart": _pulse_chart(forward_periods, end_balances, settings),
-        "trough": _pulse_trough(
+        "chart": _chart(forward_periods, end_balances, settings),
+        "trough": _trough(
             forward_periods, end_balances, current_period,
         ),
-        "peak": _pulse_peak(
+        "peak": _peak(
             forward_periods, end_balances, current_period,
         ),
-        "still_due": _pulse_still_due(
+        "still_due": _still_due(
             unpaid_rows, contributions, budgets, current_period, next_period,
         ),
-        "street": _pulse_street(current_period),
+        "street": _street(current_period, balance_ctx.as_of),
         "due_soon": due_soon,
-        "due_soon_stations": _pulse_due_soon_stations(due_soon),
+        "due_soon_stations": _due_soon_stations(due_soon),
     }
 
 
-def _pulse_hero(
-    account: Account,
+def _hero(
+    section: DashboardSection,
     balance: Decimal,
-    current_period: PayPeriod,
+    current_period: "DerivedPeriod",
     next_period: "DerivedPeriod | None",
-    settings: UserSettings | None,
 ) -> dict:
     """Build the pulse hero block: the period-END balance and its captions.
 
@@ -298,11 +307,19 @@ def _pulse_hero(
     rebuild moves the signal onto the "last updated" caption).
 
     Args:
-        account: The resolved dashboard account (``resolve_grid_account``'s
-            pick; may be any kind).
+        section: The render's :class:`~._section.DashboardSection` -- the
+            account this hero is about (``resolve_grid_account``'s pick; may be
+            any non-amortizing kind), the settings its staleness threshold
+            reads, and the read pass whose pinned day the staleness count
+            measures from.  Taken as one value rather than as three arguments
+            because they are one value: they arrive together, from one
+            resolution, and a caller could not honestly supply a settings row
+            belonging to a different owner than the account.
         balance: The current period's projected end balance, off the same
             ``cash_balance_map`` the chart plots.
-        current_period: The period containing today.
+        current_period: The period containing the pass's day.  Passed rather
+            than re-read off *section* so the hero's dates and the balance
+            beside them come from ONE bisect of the calendar.
         next_period: The paycheck after it, or ``None`` past the schedule's
             end.  **TAKEN rather than looked up** (plan step C2-f1): this
             module held a ``_next_paycheck_date`` query of its own -- "the
@@ -311,17 +328,18 @@ def _pulse_hero(
             the current one", and the same card renders both (the hero's
             next-paycheck caption beside the still-due panel's
             ``next_period_start``).
-            **The two questions are not the same question**, which is what
+            **The two questions were not the same question**, which is what
             made keeping both a defect rather than a duplication: this one is
-            anchored on *current_period*, which ``get_current_period`` selects
+            anchored on *current_period*, which ``get_current_period`` selected
             by the STORED span, while the deleted query anchored on the clock
-            -- so wherever a stored ``end_date`` disagrees with the derived
+            -- so wherever a stored ``end_date`` disagreed with the derived
             one (plan finding **P1**, the disagreement nothing reconciles) the
-            period the card calls current need not be the period today falls
-            in, and the two captions name different paydays.  It also read its
-            own ``date.today()``, a second clock in one render.  One value
-            now, from the pass's own calendar, so neither can happen.
-        settings: The user's settings, or ``None``.
+            period the card called current need not be the period today fell
+            in, and the two captions named different paydays.  It also read its
+            own ``date.today()``, a second clock in one render.  Since
+            pay-calendar plan step C2-f2e *current_period* is itself derived
+            from the paydays at the pass's own day, so the stored span is out
+            of the question entirely and one clock answers both.
 
     Returns:
         A dict with keys ``balance``, ``period_start_date``,
@@ -341,6 +359,7 @@ def _pulse_hero(
     # ``None`` for an account with no assertion (the never-set staleness arm)
     # rather than raise, and the two are provably equal -- ``MAX(observed_on)``
     # against the last element of the same ordering, pinned by a test.
+    account = section.account
     last_observed_on = cash_ledger.reconciled_through(account.id).observed_day
 
     return {
@@ -350,7 +369,9 @@ def _pulse_hero(
         "account_name": account.name,
         "account_id": account.id,
         "last_updated_date": last_observed_on,
-        "is_stale": _anchor_is_stale(last_observed_on, settings),
+        "is_stale": _anchor_is_stale(
+            last_observed_on, section.settings, section.balance_ctx.as_of,
+        ),
         "next_paycheck_date": (
             next_period.start_date if next_period is not None else None
         ),
@@ -360,6 +381,7 @@ def _pulse_hero(
 def _anchor_is_stale(
     observed_on: date | None,
     settings: UserSettings | None,
+    as_of: date,
 ) -> bool:
     """Return whether the checking anchor is stale (the warning condition).
 
@@ -369,7 +391,7 @@ def _anchor_is_stale(
     the retired Alerts card used; the rebuild surfaces it on the "last
     updated" caption rather than as a separate alert).  A no-settings
     fallback uses ``_DEFAULT_STALENESS_DAYS``.  Extracted from
-    :func:`_pulse_hero` so the never-set branch is testable without a
+    :func:`_hero` so the never-set branch is testable without a
     resolvable anchor (the resolver hard-raises on a truly empty history,
     so the never-set state cannot reach the hero's balance call in
     production -- but the branch is defensive and worth pinning).
@@ -380,19 +402,33 @@ def _anchor_is_stale(
     today is stale on the day it names, which is what a user asking "how old is
     this number" means.
 
-    **The comparison's own clock is deliberately NOT touched here.**
-    ``date.today()`` is the process day and ``observed_on`` is a display-zone
-    civil day, so the two can differ by one across the evening window -- the
-    finding N-138 class, whose app-side conversion was BUILT AND REVERTED
-    because doing it site by site turns agreeing-but-wrong into actively
-    disagreeing and no gate can currently certify completeness.  This edit
-    changes which display-zone day arrives, not which clock it is compared
-    against, so the split is neither created nor widened here.
+    **The comparison's own clock is the READ PASS's since pay-calendar plan
+    step C2-f2e, and it is still the PROCESS day.**  What that step made true is
+    narrower than "this render reads one clock": the three reads THIS producer
+    owned now share the pass's day.  ``BalanceContext.amounts()`` still reads
+    ``date.today()`` for its loan half, which is finding **N-40** and plan step
+    **X-i2**, and this region reaches it through
+    :func:`~app.services.cash_ledger.contributions_by_id`.  That read is
+    disclosed on the memo rather than fixed here, because X-i2 MOVES MONEY.  It was a bare
+    ``date.today()`` here -- one of three this region resolved for itself,
+    beside the street's "Today" marker and the due-soon list's days-until-due
+    -- so a render crossing midnight could count staleness against one day and
+    place the marker on the next.  ``as_of`` is the same value every one of
+    them now reads, pinned once when the route built the pass and unable to
+    move under its consumers.  What this does NOT change is WHICH clock: the
+    pass defaults to ``date.today()``, the process day, while ``observed_on``
+    is a display-zone civil day, so the two can still differ by one across the
+    evening window -- the finding N-138 class, whose app-side conversion was
+    BUILT AND REVERTED because doing it site by site turns agreeing-but-wrong
+    into actively disagreeing and no gate can currently certify completeness.
+    The split is neither created nor widened here; ledger row **P55** carries
+    it.
 
     Args:
         observed_on: The civil day the latest assertion was true for, or
             ``None`` when the anchor has never been set.
         settings: The user's settings, or ``None``.
+        as_of: The read pass's pinned day -- the render's ONE clock.
 
     Returns:
         ``True`` when the anchor is never-set or older than the threshold.
@@ -403,11 +439,11 @@ def _anchor_is_stale(
         settings.anchor_staleness_days if settings
         else _DEFAULT_STALENESS_DAYS
     )
-    return (date.today() - observed_on).days > staleness_days
+    return (as_of - observed_on).days > staleness_days
 
 
-def _pulse_chart(
-    forward_periods: list[PayPeriod],
+def _chart(
+    forward_periods: "list[DerivedPeriod]",
     end_balances: dict[int, Decimal],
     settings: UserSettings | None,
 ) -> dict:
@@ -439,9 +475,8 @@ def _pulse_chart(
     """
     chart_periods = forward_periods[:_CHART_HORIZON_PERIODS]
     points = [
-        {"end_date": period.end_date, "balance": end_balances[period.id]}
+        {"end_date": period.end_date, "balance": end_balances[period.period_id]}
         for period in chart_periods
-        if period.id in end_balances
     ]
 
     threshold = None
@@ -451,15 +486,15 @@ def _pulse_chart(
     return {"points": points, "low_balance_threshold": threshold}
 
 
-def _pulse_trough(
-    forward_periods: list[PayPeriod],
+def _trough(
+    forward_periods: "list[DerivedPeriod]",
     end_balances: dict[int, Decimal],
-    current_period: PayPeriod,
+    current_period: "DerivedPeriod",
 ) -> dict | None:
     """Find the lowest projected end balance over the FULL forward horizon.
 
     The "lowest point ahead" stat -- the minimum extremum from
-    :func:`_pulse_extremum` (``find_max=False``).  See that helper for the
+    :func:`_extremum` (``find_max=False``).  See that helper for the
     full-horizon scan, the deliberate current-period inclusion, and the
     ``offset`` deep-link contract.
 
@@ -472,24 +507,26 @@ def _pulse_trough(
 
     Returns:
         A dict with keys ``balance`` (the minimum end balance),
-        ``end_date``, and ``offset`` (>= 0).  ``None`` when no forward
-        period has a projected balance (e.g. an empty projection).
+        ``end_date``, and ``offset`` (>= 0).  ``None`` only when
+        *forward_periods* is EMPTY -- an owner whose schedule ends before the
+        pass's day, which the caller's own current-period guard already
+        refuses, so in practice never.
     """
-    return _pulse_extremum(
+    return _extremum(
         forward_periods, end_balances, current_period, find_max=False,
     )
 
 
-def _pulse_peak(
-    forward_periods: list[PayPeriod],
+def _peak(
+    forward_periods: "list[DerivedPeriod]",
     end_balances: dict[int, Decimal],
-    current_period: PayPeriod,
+    current_period: "DerivedPeriod",
 ) -> dict | None:
     """Find the highest projected end balance over the FULL forward horizon.
 
     The "highest point ahead" stat -- the exact mirror of
-    :func:`_pulse_trough`, the maximum extremum from
-    :func:`_pulse_extremum` (``find_max=True``).  Scans the same full
+    :func:`_trough`, the maximum extremum from
+    :func:`_extremum` (``find_max=True``).  Scans the same full
     forward horizon (current period onward, all periods, not just the 13
     charted points) and degrades to ``None`` in the same no-projection
     case as the trough.
@@ -503,24 +540,26 @@ def _pulse_peak(
 
     Returns:
         A dict with keys ``balance`` (the maximum end balance),
-        ``end_date``, and ``offset`` (>= 0).  ``None`` when no forward
-        period has a projected balance (e.g. an empty projection).
+        ``end_date``, and ``offset`` (>= 0).  ``None`` only when
+        *forward_periods* is EMPTY -- an owner whose schedule ends before the
+        pass's day, which the caller's own current-period guard already
+        refuses, so in practice never.
     """
-    return _pulse_extremum(
+    return _extremum(
         forward_periods, end_balances, current_period, find_max=True,
     )
 
 
-def _pulse_extremum(
-    forward_periods: list[PayPeriod],
+def _extremum(
+    forward_periods: "list[DerivedPeriod]",
     end_balances: dict[int, Decimal],
-    current_period: PayPeriod,
+    current_period: "DerivedPeriod",
     find_max: bool,
 ) -> dict | None:
     """Find the extreme projected end balance over the FULL forward horizon.
 
-    The shared core of :func:`_pulse_trough` (``find_max=False``, the
-    minimum) and :func:`_pulse_peak` (``find_max=True``, the maximum):
+    The shared core of :func:`_trough` (``find_max=False``, the
+    minimum) and :func:`_peak` (``find_max=True``, the maximum):
     scans every period from the current one forward (not just the 13
     charted points), so a danger dip OR a peak beyond the chart window is
     still caught.  The horizon is the retired negative-projection alert's
@@ -544,15 +583,15 @@ def _pulse_extremum(
 
     Returns:
         A dict with keys ``balance`` (the extreme end balance),
-        ``end_date``, and ``offset`` (>= 0).  ``None`` when no forward
-        period has a projected balance (e.g. an empty projection).
+        ``end_date``, and ``offset`` (>= 0).  ``None`` only when
+        *forward_periods* is EMPTY -- an owner whose schedule ends before the
+        pass's day, which the caller's own current-period guard already
+        refuses, so in practice never.
     """
     extremum_period = None
     extremum_balance = None
     for period in forward_periods:
-        balance = end_balances.get(period.id)
-        if balance is None:
-            continue
+        balance = end_balances[period.period_id]
         if extremum_balance is None:
             extremum_balance = balance
             extremum_period = period
@@ -571,11 +610,11 @@ def _pulse_extremum(
     }
 
 
-def _pulse_still_due(
+def _still_due(
     rows: list[Transaction],
     contributions: dict[int, Decimal],
     budgets: dict[int, Decimal],
-    current_period: PayPeriod,
+    current_period: "DerivedPeriod",
     next_period: "DerivedPeriod | None",
 ) -> dict:
     """Compute the still-due totals for the current and next periods.
@@ -601,12 +640,12 @@ def _pulse_still_due(
         rows: The current+next periods' unpaid expense rows from the
             shared :func:`_query_unpaid_expense_rows` query (loaded once
             by :func:`compute_pulse_section` and shared with
-            :func:`_pulse_due_soon`); each row is bucketed by its
+            :func:`_due_soon`); each row is bucketed by its
             ``pay_period_id``.
         contributions: ``{transaction_id: Decimal}`` over exactly those
             rows, from the caller's one
             :func:`~app.services.cash_ledger.contributions_by_id` call and
-            shared with :func:`_pulse_due_soon`.  Indexed with ``[]``: a
+            shared with :func:`_due_soon`.  Indexed with ``[]``: a
             row missing from it is a caller that priced a different set,
             and a default here would be a fabricated figure in a total.
         budgets: ``{transaction_id: Decimal}`` over the same rows, from the
@@ -631,7 +670,7 @@ def _pulse_still_due(
         contribution = _row_still_due(
             txn, contributions[txn.id], budgets[txn.id],
         )
-        if txn.pay_period_id == current_period.id:
+        if txn.pay_period_id == current_period.period_id:
             current_total += contribution
         elif next_period is not None and txn.pay_period_id == next_period.period_id:
             next_total += contribution
@@ -685,13 +724,13 @@ def _row_still_due(
     return contribution
 
 
-def _pulse_street(current_period: PayPeriod) -> dict:
+def _street(current_period: "DerivedPeriod", as_of: date) -> dict:
     """Build the street band's day-span and today's offset within it.
 
     The street band lays the current period out day by day, and the
     due-soon rows already position each dated event at
     ``(due_date - current_period.start_date).days`` (see
-    :func:`_pulse_due_soon`).  These two numbers SHARE that same basis so
+    :func:`_due_soon`).  These two numbers SHARE that same basis so
     the band's percentage math lines up: the period start is day 0, the
     period end is ``days_total``, and an event due on the start sits at 0
     while one due on the end sits at ``days_total``.
@@ -699,30 +738,37 @@ def _pulse_street(current_period: PayPeriod) -> dict:
       * ``days_total`` -- ``(end_date - start_date).days``: the day span
         of the current period.  The period-end station on the street sits
         at this offset (the far right of the band).
-      * ``today_offset`` -- ``(today - start_date).days``: where the
-        "Today" marker falls on the band.  May fall outside ``[0,
-        days_total]`` only at a period boundary the producer never reaches
-        (``compute_pulse_section`` resolves the period that CONTAINS today,
-        so ``start_date <= today <= end_date`` and the offset is in range);
-        the JS clamps defensively regardless.
+      * ``today_offset`` -- ``(as_of - start_date).days``: where the
+        "Today" marker falls on the band.  It CANNOT fall outside ``[0,
+        days_total]`` since pay-calendar plan step C2-f2e: the period is the
+        one the pass's own day falls in and *as_of* is that same day, so
+        ``start_date <= as_of <= end_date`` holds by construction.  It could
+        before -- the period came from the STORED span and this offset from a
+        second ``date.today()``, so a render crossing midnight placed the
+        marker one day past a period the other clock had already left.  The JS
+        still clamps defensively.
 
     Args:
-        current_period: The period containing today.
+        current_period: The period containing the pass's day.
+        as_of: The read pass's pinned day -- the render's ONE clock, shared
+            with the due-soon list's days-until-due and the hero's staleness
+            count.
 
     Returns:
         A dict with integer keys ``days_total`` and ``today_offset``.
     """
     return {
         "days_total": (current_period.end_date - current_period.start_date).days,
-        "today_offset": (date.today() - current_period.start_date).days,
+        "today_offset": (as_of - current_period.start_date).days,
     }
 
 
-def _pulse_due_soon(
+def _due_soon(
     rows: list[Transaction],
     contributions: dict[int, Decimal],
     budgets: dict[int, Decimal],
-    current_period: PayPeriod,
+    current_period: "DerivedPeriod",
+    as_of: date,
 ) -> list[dict]:
     """Build the current period's due-soon rows (the street / mobile list).
 
@@ -748,31 +794,35 @@ def _pulse_due_soon(
         rows: The current+next periods' unpaid expense rows from the
             shared :func:`_query_unpaid_expense_rows` query (loaded once
             by :func:`compute_pulse_section` and shared with
-            :func:`_pulse_still_due`).  This helper filters to the current
+            :func:`_still_due`).  This helper filters to the current
             period's rows -- the next-period rows in the shared set are
             the still-due totals' concern, not the due-soon list's.
         contributions: ``{transaction_id: Decimal}`` over exactly those
             rows, from the caller's one
             :func:`~app.services.cash_ledger.contributions_by_id` call and
-            shared with :func:`_pulse_still_due`, so a bill's amount cell
+            shared with :func:`_still_due`, so a bill's amount cell
             and the still-due total it feeds price the row ONCE.
         budgets: ``{transaction_id: Decimal}`` over the same rows, shared the
             same way -- the E-21 base an entry-tracked bill's amount cell and
             its progress fields both answer on.
-        current_period: The period containing today.
+        current_period: The period containing the pass's day.
+        as_of: The read pass's pinned day, which each bill's
+            ``days_until_due`` counts from.  It was a ``date.today()`` of this
+            function's own until pay-calendar plan step C2-f2e -- a third clock
+            on one render, beside the street marker's and the hero staleness
+            count's -- so a bill could read "due today" under a street band
+            that had already moved to tomorrow.
 
     Returns:
         A list of bill dicts (see :func:`txn_to_bill_dict`) each carrying
         the extra ``day_offset`` and ``undated`` keys.
     """
-    today = date.today()
-
     due_soon: list[dict] = []
     for txn in rows:
-        if txn.pay_period_id != current_period.id:
+        if txn.pay_period_id != current_period.period_id:
             continue
         bill = txn_to_bill_dict(
-            txn, today, contributions[txn.id], budgets[txn.id],
+            txn, as_of, contributions[txn.id], budgets[txn.id],
         )
         if txn.due_date is not None:
             bill["day_offset"] = (txn.due_date - current_period.start_date).days
@@ -793,7 +843,7 @@ def _pulse_due_soon(
     return due_soon
 
 
-def _pulse_due_soon_stations(due_soon: list[dict]) -> list[dict]:
+def _due_soon_stations(due_soon: list[dict]) -> list[dict]:
     """Group the dated due-soon rows into per-day street stations.
 
     The street band positions each dated row at ``(day_offset / days) *
@@ -802,7 +852,7 @@ def _pulse_due_soon_stations(due_soon: list[dict]) -> list[dict]:
     single pixel (the original overlap bug).  Instead a *day* is one
     station: a single dot whose label lists that day's bills.
 
-    The input is the :func:`_pulse_due_soon` output, already sorted
+    The input is the :func:`_due_soon` output, already sorted
     ``(undated, due_date, name)``.  Dated rows therefore lead the list in
     chronological order and ``day_offset`` is monotonic across them, so
     consecutive grouping by ``day_offset`` yields one entry per calendar
@@ -816,7 +866,7 @@ def _pulse_due_soon_stations(due_soon: list[dict]) -> list[dict]:
     is reported as ``extra_count`` for a "+N more" line.
 
     Args:
-        due_soon: The sorted bill-dict list from :func:`_pulse_due_soon`.
+        due_soon: The sorted bill-dict list from :func:`_due_soon`.
 
     Returns:
         One station dict per dated day, in axis order, each with keys
@@ -840,118 +890,3 @@ def _pulse_due_soon_stations(due_soon: list[dict]) -> list[dict]:
             }
         )
     return stations
-
-
-
-# ── Tracks producer (savings goals + debt position) ────────────────
-
-
-def compute_tracks_section(user_id: int) -> dict:
-    """Compute the position tier: savings-goal tracks and the debt track.
-
-    The page-load-only position tier of the Terminal Road rebuild
-    (Loop B B-1; deliberately not on the ``balanceChanged`` refresh path,
-    per the Gate B6 rationale).  Reuses the /savings producers so both
-    screens agree on the same figures:
-
-      * ``goals`` -- one dict per active goal, reshaped from
-        ``savings_dashboard_service.compute_goal_progress`` into the metro
-        track contract (see :func:`_track_goal_datum`).
-      * ``debt`` -- the
-        ``savings_dashboard_service.compute_debt_summary`` value, passed
-        through WHOLE: the same ``DebtSummary`` ``/savings`` renders, carrying
-        both the money figures and ``principal_paid_fraction`` (the honest
-        all-loans-ever rail position, or ``None`` when no loan has originated).
-        ``None`` when the user has no loan accounts.
-
-    **This tier carried a ``DebtTrack`` wrapper until plan step X-u** (ruling
-    R-BS, finding N-109), because the fraction came from a SECOND narrow
-    producer that re-ran the whole debt pipeline to get it -- measured at two
-    debt projections and three seam-batch builds per render.  With the fraction
-    a field of the summary, the wrapper's only job was to pair two values one
-    object already carries, so it is gone and this tier adds nothing to what the
-    producer answered.  The route still maps the fraction to a rail percent;
-    that is presentation and belongs there.
-
-    No exception is caught here: the producers this delegates to are the
-    same code the /savings route runs without a guard, so a
-    ``ValueError`` / ``KeyError`` / ``AttributeError`` from that
-    computation is a programming bug that must fail loud, not be masked as
-    an empty tracks tier (CLAUDE.md rule 4); letting it propagate fails
-    loud and identically on the dashboard and /savings pages.
-
-    Args:
-        user_id: Integer ID of the current user.
-
-    Returns:
-        A dict with keys ``goals`` (a list, possibly empty) and ``debt``
-        (a ``savings_dashboard_service.DebtSummary`` or ``None``).
-    """
-    # Pylint: ``import-outside-toplevel`` -- Deferred: savings_dashboard_service
-    # pulls the heaviest service import chain (+27 modules, measured); loaded only
-    # when this path runs, not on every dashboard_pulse_service import.
-    from app.services import savings_dashboard_service  # pylint: disable=import-outside-toplevel
-
-    # ONE read pass for both producers: each loan is resolved once for the
-    # whole section rather than once per producer (they used to start
-    # independent passes, so a two-loan user paid for four resolutions here).
-    # Both producers REQUIRE it since pay-calendar plan step C2-f2d-3 (ledger
-    # row **P58**), so sharing is structural rather than a courtesy this
-    # section extends -- there is no owner id left for either of them to open a
-    # second pass from.  **This module still opens its own pass**, which is
-    # ledger row **P56**'s door for the budget dashboard and closes at
-    # ``C2-f2e``.
-    # The pass is shared; the LOADS behind it are not -- each producer still
-    # runs its own ``_load_dashboard_core_data``, which is the input-tier memo
-    # plan step X-i1 owns (finding N-72), not something this section can fix
-    # without a second sharing channel beside the context.
-    balance_ctx = BalanceContext.build(user_id)
-
-    goal_data = savings_dashboard_service.compute_goal_progress(balance_ctx)
-    goals = [_track_goal_datum(gd) for gd in goal_data]
-
-    return {
-        "goals": goals,
-        "debt": savings_dashboard_service.compute_debt_summary(balance_ctx),
-    }
-
-
-def _track_goal_datum(goal_datum: GoalProgress) -> dict:
-    """Reshape one ``compute_goal_progress`` entry into the metro-track contract.
-
-    Pulls only the fields the savings track renders -- the goal's name and
-    account name, the progress percent and balance/target, and the
-    ``calculate_trajectory`` outputs (pace, projected completion date,
-    required monthly) -- so the template reads a flat dict rather than
-    reaching into the nested ``goal`` ORM object and its
-    :class:`~app.services.savings_goal_service.GoalTrajectory`.
-
-    Args:
-        goal_datum: One
-            :class:`~app.services.savings_dashboard_service._goals.GoalProgress`
-            from ``savings_dashboard_service.compute_goal_progress`` (an untyped
-            eleven-key dict until plan step X-w4, ruling R-CI).  Read through
-            ATTRIBUTES now, so a field this producer renames fails here rather
-            than resolving to a ``KeyError`` that reads like missing data.
-
-    Returns:
-        A dict with keys ``name``, ``account_name``, ``account_id``,
-        ``progress_pct``, ``current_balance``, ``target_amount``,
-        ``target_date``, ``pace``, ``projected_completion_date``,
-        ``required_monthly``, ``monthly_contribution``.
-    """
-    goal = goal_datum.goal
-    trajectory = goal_datum.trajectory
-    return {
-        "name": goal.name,
-        "account_name": goal.account.name,
-        "account_id": goal.account_id,
-        "progress_pct": goal_datum.progress_pct,
-        "current_balance": goal_datum.current_balance,
-        "target_amount": goal_datum.resolved_target,
-        "target_date": goal.target_date,
-        "pace": trajectory.pace,
-        "projected_completion_date": trajectory.projected_completion_date,
-        "required_monthly": trajectory.required_monthly,
-        "monthly_contribution": goal_datum.monthly_contribution,
-    }

@@ -12,7 +12,7 @@ cards) and their tests were removed in the same pass -- a sanctioned
 removal of features ruled out by the developer, not test-gaming (see
 ``docs/design/dashboard_card_audit.md`` "Retirements").  The pulse / tracks
 producers that replaced them are tested in
-``tests/test_services/test_dashboard_pulse_service.py``.
+``tests/test_services/test_dashboard_pulse.py``.
 """
 
 from datetime import date
@@ -29,6 +29,7 @@ from app.models.transaction import Transaction
 from app.services import balance_at, cash_ledger, dashboard_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    dashboard_section,
     default_settle_day,
     settlement_columns,
     make_every_period_rule,
@@ -199,7 +200,7 @@ class TestBillRowSingleBase:
                 estimated="200.00",
             )
             # Non-entry-tracked bill: no template at all, so
-            # _is_entry_tracked is False and amount falls back to
+            # txn.tracks_purchases is False and amount falls back to
             # effective_amount.
             plain = _add_txn(
                 db.session, seed_user, seed_periods[0],
@@ -321,7 +322,7 @@ class TestComputeBalanceSection:
             db.session.flush()
 
             result = dashboard_service.compute_balance_section(
-                seed_user["user"].id,
+                dashboard_section(seed_user["user"].id),
             )
             assert result == {"hero": None}
 
@@ -356,7 +357,7 @@ class TestComputeBalanceSection:
 
             with pytest.raises(BaselineMissingError):
                 dashboard_service.compute_balance_section(
-                    seed_user["user"].id,
+                    dashboard_section(seed_user["user"].id),
                 )
 
     def test_no_current_period_uses_raw_anchor(self, app, seed_user):
@@ -370,7 +371,7 @@ class TestComputeBalanceSection:
         """
         with app.app_context():
             result = dashboard_service.compute_balance_section(
-                seed_user["user"].id,
+                dashboard_section(seed_user["user"].id),
             )
             hero = result["hero"]
             assert hero is not None
@@ -389,7 +390,7 @@ class TestComputeBalanceSection:
         """
         with app.app_context():
             result = dashboard_service.compute_balance_section(
-                seed_user["user"].id,
+                dashboard_section(seed_user["user"].id),
             )
             hero = result["hero"]
             assert hero is not None
@@ -429,7 +430,7 @@ class TestComputeBalanceSection:
             assert modeled > Decimal("100000.00")
 
             result = dashboard_service.compute_balance_section(
-                seed_user["user"].id,
+                dashboard_section(seed_user["user"].id),
             )
             hero = result["hero"]
             assert hero["account_id"] == inv.id
