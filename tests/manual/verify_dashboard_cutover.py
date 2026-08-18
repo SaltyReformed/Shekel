@@ -94,6 +94,29 @@ resolvable account, gets ``None`` from the pulse region and ``{"hero": None}``
 from the fragment on both sides, so the degraded arm is covered rather than
 merely unexercised.
 
+**That run was BLIND on five of the eight keys, and a SECOND run over a seeded
+clone is what covers them** (C2-f2e's adversarial code review, 2026-08-18).
+Production carries no projected expense in the current or next period today,
+so ``still_due`` was ``0.00``/``0.00``, ``due_soon`` and
+``due_soon_stations`` were empty, and every one of the chart's 13 points held
+the same number -- which means the two riskiest rewrites in the leaf (the
+``period.id`` -> ``period.period_id`` bucketing, and the forward slice moving
+from stored-ordinal order to payday order) ran over zero rows and an unordered
+constant.  ``ask which axis no case varies`` is what
+``docs/plans/lessons.md`` says about exactly this.
+
+The second run seeds four projected expenses into a copy of the clone -- two
+sharing a due day in the current period, one undated, one in the next -- and is
+**BYTE-IDENTICAL as well**, over: ``still_due`` ``$350.00`` current against
+``$1,500.00`` next (both buckets non-empty, so the ``period_id`` comparison is
+exercised on each side of its branch); a ``due_soon`` list of three carrying
+``day_offset`` 3 and ``days_until_due`` -2; one street station of count 2 (the
+same-day grouping); a chart of 13 points holding TWO distinct balances
+(``$402.62`` and ``-$1,097.38``), so the slice's order is observable; a trough
+at **offset 1** rather than the identity, which is the only run in which the
+extremum's ordinal arithmetic is graded at all; a peak at offset 0; and the
+hero and the revert fragment agreeing at ``$402.62``.
+
 The BEFORE side was captured from a ``git worktree`` at ``5ab457b7``, on the
 same civil day, with ``PYTHONPATH=.`` (these harnesses are run from the
 repository root, which the shell does not add for a script under
@@ -237,11 +260,23 @@ def _derived_vs_stored(user_id):
     """Count where this owner's stored period columns disagree with the paydays.
 
     The premise the byte-identity gate rests on, asserted rather than assumed
-    (``docs/plans/lessons.md``): if every stored ``end_date`` equals the day
-    before the next payday and every stored ``period_index`` equals the payday
-    ordinal, then the retired readers and the calendar answer the same period
-    for every day, and any moved line below is a defect.  A non-zero count here
-    is itself the finding and the diff must be read against it.
+    (``docs/plans/lessons.md``): if every stored ``end_date`` and
+    ``period_index`` equals what the owner's paydays derive, then the retired
+    readers and the calendar answer the same period for every day, and any
+    moved line below is a defect.  A non-zero count here is itself the finding
+    and the diff must be read against it.
+
+    **It asks the CALENDAR rather than the neighbouring row**, and the first
+    draft did not (C2-f2e's two adversarial reviews, 2026-08-18).  It compared
+    each stored end to the NEXT period's payday with
+    ``zip(rows, rows[1:])`` -- which never examines the LAST period's end, and
+    that is the one end ``derive_periods`` computes from ``cadence_days``
+    rather than from a payday (``DerivedPeriod.end_is_projected`` is ``True``
+    for exactly one period per calendar). It is also the end
+    ``compute_balance_section`` values the hero at for an owner in their final
+    stored period, so it was the one disagreement that could move a DOLLAR
+    figure, and the check was blind to it while its own docstring claimed to
+    say "whether this database can express a disagreement at all".
 
     Args:
         user_id: The owner to count for.
@@ -249,18 +284,28 @@ def _derived_vs_stored(user_id):
     Returns:
         A dict with ``periods``, ``end_mismatch`` and ``index_mismatch``.
     """
+    # pylint: disable=import-outside-toplevel  -- Pylint:
+    # ``import-outside-toplevel``; deferred to keep this module importable on a
+    # tree where the package has moved, the same reason :func:`_producers` gives.
+    from app.services.pay_calendar import calendar_for
+
     rows = (
         db.session.query(PayPeriod)
         .filter_by(user_id=user_id)
         .order_by(PayPeriod.start_date)
         .all()
     )
+    if not rows:
+        return {"periods": 0, "end_mismatch": 0, "index_mismatch": 0}
+
+    derived = {p.period_id: p for p in calendar_for(user_id).saved()}
     end_mismatch = sum(
-        1 for earlier, later in zip(rows, rows[1:])
-        if (later.start_date - earlier.end_date).days != 1
+        1 for row in rows
+        if row.id in derived and derived[row.id].end_date != row.end_date
     )
     index_mismatch = sum(
-        1 for ordinal, row in enumerate(rows) if row.period_index != ordinal
+        1 for row in rows
+        if row.id in derived and derived[row.id].period_index != row.period_index
     )
     return {
         "periods": len(rows),

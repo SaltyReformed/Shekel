@@ -557,7 +557,9 @@ def _dump_user(user_id):
             for ad in account_data
         },
         "tracks_section": _tracks(
-            dashboard_service.compute_tracks_section(user_id),
+            dashboard_service.compute_tracks_section(
+                BalanceContext.build(user_id),
+            ),
         ),
     }
 

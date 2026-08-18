@@ -192,12 +192,7 @@ def _gap(user_id):
     reader inferring the cause.
     """
     def build():
-        picture = retirement_plan.picture_at(
-            retirement_plan.load_retirement_inputs(
-                BalanceContext.build(user_id),
-            ),
-            retirement_plan.STORED_PLAN,
-        )
+        picture = _stored_picture(user_id)
         axis = picture.axis
         return {
             # Absent on the HEAD side -- the key is new here.  Its absence in
@@ -246,17 +241,37 @@ def _gap(user_id):
     return _guard("gap", build)
 
 
+def _stored_picture(user_id):
+    """Return the retirement picture at the owner's STORED plan.
+
+    **The two lines this replaces named `retirement_plan.STORED_PLAN`, which
+    does not exist and never did on this branch or its merge base** (found by
+    C2-f2e's adversarial code review, 2026-08-18): every probe that reached
+    them recorded an ``AttributeError`` in the dump instead of a figure, so
+    this harness's retirement surface had been silently dead. The stored plan
+    is a PROPERTY of the render's loaded inputs
+    (:attr:`~app.services.retirement_plan.RetirementInputs.stored_plan`), which
+    is also why the two must come from ONE ``load_retirement_inputs`` call --
+    a picture derived at another load's plan point is a different render.
+
+    Args:
+        user_id: The owner to picture.
+
+    Returns:
+        The :class:`~app.services.retirement_plan.RetirementPicture`.
+    """
+    inputs = retirement_plan.load_retirement_inputs(
+        BalanceContext.build(user_id),
+    )
+    return retirement_plan.picture_at(inputs, inputs.stored_plan)
+
+
 def _readiness(user_id):
     """The readiness verdict, its two chart series and its countdown."""
     return _plain(_guard(
         "readiness",
         lambda: retirement_readiness.readiness_from_picture(
-            retirement_plan.picture_at(
-                retirement_plan.load_retirement_inputs(
-                    BalanceContext.build(user_id),
-                ),
-                retirement_plan.STORED_PLAN,
-            ),
+            _stored_picture(user_id),
         ),
     ))
 

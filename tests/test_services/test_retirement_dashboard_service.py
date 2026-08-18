@@ -48,7 +48,7 @@ from app.services.retirement_plan import load_retirement_inputs, picture_at
 from tests._test_helpers import make_investment_account, mark_purchase_settled
 
 
-def _picture(user_id):
+def _picture(user_id, as_of=None):
     """The retirement picture a /retirement render derives at *point*.
 
     The route's own two steps, in one place: build the render's inputs from its
@@ -58,11 +58,15 @@ def _picture(user_id):
 
     Args:
         user_id: The owner to render for.
+        as_of: The read pass's pinned day, or ``None`` for the pass's own
+            default. Supplied by the cases that grade what the RENDER threads
+            into its producers, which is a different question from what those
+            producers do with a day handed to them directly.
 
     Returns:
         The :class:`~app.services.retirement_plan.RetirementPicture`.
     """
-    inputs = load_retirement_inputs(BalanceContext.build(user_id))
+    inputs = load_retirement_inputs(BalanceContext.build(user_id, as_of=as_of))
     return picture_at(inputs, inputs.stored_plan)
 
 
@@ -176,6 +180,35 @@ class TestThePicturesPublishedSurface:
 _AS_OF = date(2026, 3, 20)
 
 
+def _gap_inputs(profile, pay):
+    """Wrap a profile and a pay snapshot in the bundle the producer takes.
+
+    ``compute_gap_net_biweekly`` reads the owner's salary profiles and the
+    current-pay snapshot off its
+    :class:`~app.services.retirement_dashboard_service.GapInputs` since
+    pay-calendar plan step C2-f2e, so the pure-unit cases build the bundle the
+    one production caller builds rather than handing the two values in loose.
+    The other four fields are inert: the producer reads neither the settings,
+    the pensions, the bundle's STORED merit horizon (the argument carries the
+    plan point's), nor the pay cadence.
+
+    Args:
+        profile: The owner's primary :class:`SalaryProfile`.
+        pay: The ``_CurrentPay`` snapshot.
+
+    Returns:
+        The :class:`GapInputs` bundle.
+    """
+    return retirement_dashboard_service.GapInputs(
+        settings=None,
+        pensions=[],
+        salary_profiles=[profile],
+        pay=pay,
+        merit_horizon_years=5,
+        pay_cadence=PayCadence(cadence_days=14),
+    )
+
+
 class TestComputeGapNetBiweekly:
     """Pin the gap-comparison net-biweekly scaling (quality-pass B7).
 
@@ -193,26 +226,6 @@ class TestComputeGapNetBiweekly:
     on the scaling math under test.
     """
 
-
-    def _gap(self, profile, pay, merit_horizon_years=5):
-        """Wrap a profile and a pay snapshot in the bundle the producer takes.
-
-        ``compute_gap_net_biweekly`` reads the owner's salary profiles and the
-        current-pay snapshot off its :class:`GapInputs` since pay-calendar plan
-        step C2-f2e, so these cases build the bundle the one production caller
-        builds instead of handing the two values in loose.  The other four
-        fields are inert here: the producer reads neither the settings, the
-        pensions, the bundle's STORED merit horizon (the argument carries the
-        plan point's), nor the pay cadence.
-        """
-        return retirement_dashboard_service.GapInputs(
-            settings=None,
-            pensions=[],
-            salary_profiles=[profile],
-            pay=pay,
-            merit_horizon_years=merit_horizon_years,
-            pay_cadence=PayCadence(cadence_days=14),
-        )
 
     def test_scales_final_gross_by_current_take_home_rate(self):
         """Final-year gross is scaled by today's net/gross take-home rate.
@@ -249,7 +262,7 @@ class TestComputeGapNetBiweekly:
         # so the helper never recomputes it (the horizon only affects the
         # internal project_salaries_by_year call on the None branch).
         result = retirement_dashboard_service.compute_gap_net_biweekly(
-            self._gap(profile, pay), date(2055, 1, 1), salary_by_year, 5,
+            _gap_inputs(profile, pay), date(2055, 1, 1), salary_by_year, 5,
             _AS_OF,
         )
         assert result == Decimal("4030.77")
@@ -268,7 +281,7 @@ class TestComputeGapNetBiweekly:
             current_breakdown=None,
         )
         result = retirement_dashboard_service.compute_gap_net_biweekly(
-            self._gap(profile, pay), None,
+            _gap_inputs(profile, pay), None,
             [(2026, Decimal("120000.00"))], 5, _AS_OF,
         )
         assert result == Decimal("1800.00")
@@ -288,7 +301,7 @@ class TestComputeGapNetBiweekly:
             current_breakdown=None,
         )
         result = retirement_dashboard_service.compute_gap_net_biweekly(
-            self._gap(profile, pay), date(2055, 1, 1),
+            _gap_inputs(profile, pay), date(2055, 1, 1),
             [(2055, Decimal("131000.00"))], 5, _AS_OF,
         )
         assert result == Decimal("1500.00")
@@ -377,7 +390,7 @@ class TestTheRenderDayOpensTheSalaryPath:
                 ),
             ),
         )
-        gap = self.__class__._gap_bundle(self._profile(), pay)
+        gap = _gap_inputs(self._profile(), pay)
 
         # Pass pinned BEFORE the horizon: the path is walked and the final-year
         # gross ($100,000.00 / 26 = $3,846.15) is scaled by the take-home rate
@@ -395,18 +408,6 @@ class TestTheRenderDayOpensTheSalaryPath:
         )
         assert after == Decimal("2000.00")
 
-    @staticmethod
-    def _gap_bundle(profile, pay):
-        """The bundle ``compute_gap_net_biweekly`` reads its two inputs off."""
-        return retirement_dashboard_service.GapInputs(
-            settings=None,
-            pensions=[],
-            salary_profiles=[profile],
-            pay=pay,
-            merit_horizon_years=5,
-            pay_cadence=PayCadence(cadence_days=14),
-        )
-
     def test_the_employer_basis_opens_at_the_pass_year(self):
         """``build_employer_salary_basis`` projects from the pass's year.
 
@@ -423,6 +424,68 @@ class TestTheRenderDayOpensTheSalaryPath:
         assert retirement_projection.build_employer_salary_basis(
             [profile], date(2030, 6, 30), 5, date(2032, 3, 20),
         ) is None
+
+
+    def test_the_RENDER_threads_its_own_day_into_the_salary_path(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A /retirement RENDER opens its salary path at the pass's year.
+
+        **The three cases above cannot see the line this step actually
+        changed** (found by C2-f2e's adversarial design review, 2026-08-18).
+        They call each producer directly with a literal day, so they grade what
+        a producer DOES with a day it is handed -- while the fix is one
+        assignment, ``as_of = inputs.balance_ctx.as_of`` in
+        ``retirement_plan._derive_picture``, which is the only place any of the
+        three is called from in ``app/``. A regression writing ``date.today()``
+        there would leave all three green, and
+        ``TestOneReadPassPerRender`` counts passes rather than clocks.
+
+        This case goes through the route's own two steps
+        (:func:`_picture`) at two pinned days in DIFFERENT years and requires
+        the pension's projected salary path to open on each. It is what makes
+        the "this render is single-clock" claim in ``app/routes/retirement.py``
+        and ``retirement_readiness`` a graded one.
+        """
+        with app.app_context():
+            filing = db.session.query(FilingStatus).first()
+            profile = SalaryProfile(
+                user_id=seed_user["user"].id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=filing.id,
+                name="Main",
+                annual_salary=Decimal("80000"),
+                pay_periods_per_year=26,
+                state_code="NC",
+                is_active=True,
+            )
+            db.session.add(profile)
+            db.session.flush()
+            db.session.add(PensionProfile(
+                user_id=seed_user["user"].id,
+                salary_profile_id=profile.id,
+                name="State Pension",
+                benefit_multiplier=Decimal("0.01750"),
+                consecutive_high_years=4,
+                hire_date=date(2010, 1, 1),
+                planned_retirement_date=date(2030, 6, 30),
+                is_active=True,
+            ))
+            db.session.commit()
+
+            early = _picture(seed_user["user"].id, as_of=date(2027, 3, 20))
+            late = _picture(seed_user["user"].id, as_of=date(2028, 3, 20))
+
+            # The premise, asserted rather than assumed: a path was projected
+            # at all, so the years below are the projection's and not an empty
+            # list's.
+            assert early.pension.salary_by_year
+            assert [year for year, _ in early.pension.salary_by_year] == [
+                2027, 2028, 2029, 2030,
+            ]
+            assert [year for year, _ in late.pension.salary_by_year] == [
+                2028, 2029, 2030,
+            ]
 
 
 class TestTheDisplayedRates:

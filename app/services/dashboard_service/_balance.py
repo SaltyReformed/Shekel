@@ -81,6 +81,16 @@ def compute_balance_section(section: DashboardSection | None) -> dict:
     so the reverted control and the region it swaps back into cannot name
     different paychecks.
 
+    **It can now raise ``PayCalendarError`` where it could not** (ledger row
+    **P35**).  Reading ``section.current_period`` derives the owner's calendar,
+    which refuses an owner whose paydays cannot define one -- a legacy period
+    stored before ``budget.pay_schedule`` existed, whose span
+    ``resolve_cadence``'s fallback reads back as a cadence outside 1..365.  The
+    retired ``get_current_period`` was SQL and touched no calendar, so this
+    fragment derived none.  Contained rather than fixed: ``/`` itself already
+    raises for that owner on both trees, so the editor this fragment reverts
+    cannot be opened.
+
     Args:
         section: The render's :class:`~._section.DashboardSection`, or ``None``
             when the owner has no resolvable grid account.  ``None`` is a real

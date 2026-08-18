@@ -72,7 +72,6 @@ from app.services import (
     balance_at,
     cash_ledger,
     dashboard_service,
-    dashboard_service,
     home_equity_service,
     reconcile_service,
     retirement_plan,
@@ -185,13 +184,24 @@ def _user_surfaces(user_id):
         A dict of surface name to rendered figure.
     """
     return {
+        # Both take the RESOLVED SECTION since pay-calendar plan step C2-f2e,
+        # which is what the route hands them; resolving it here is the route's
+        # own two lines rather than a stand-in for them.
         "dashboard_balance_section": _guarded(
             "dashboard_balance_section",
-            lambda: dashboard_service.compute_balance_section(user_id),
+            lambda: dashboard_service.compute_balance_section(
+                dashboard_service.resolve_section(
+                    BalanceContext.build(user_id),
+                ),
+            ),
         ),
         "dashboard_pulse": _guarded(
             "dashboard_pulse",
-            lambda: dashboard_service.compute_pulse_section(user_id),
+            lambda: dashboard_service.compute_pulse_section(
+                dashboard_service.resolve_section(
+                    BalanceContext.build(user_id),
+                ),
+            ),
         ),
         "savings_dashboard": _guarded(
             "savings_dashboard",
@@ -201,14 +211,34 @@ def _user_surfaces(user_id):
         ),
         "retirement_gap": _guarded(
             "retirement_gap",
-            lambda: retirement_plan.picture_at(
-                retirement_plan.load_retirement_inputs(
-                    BalanceContext.build(user_id),
-                ),
-                retirement_plan.STORED_PLAN,
-            ),
+            lambda: _stored_picture(user_id),
         ),
     }
+
+
+def _stored_picture(user_id):
+    """Return the retirement picture at the owner's STORED plan.
+
+    **The two lines this replaces named `retirement_plan.STORED_PLAN`, which
+    does not exist and never did on this branch or its merge base** (found by
+    C2-f2e's adversarial code review, 2026-08-18): every probe that reached
+    them recorded an ``AttributeError`` in the dump instead of a figure, so
+    this harness's retirement surface had been silently dead. The stored plan
+    is a PROPERTY of the render's loaded inputs
+    (:attr:`~app.services.retirement_plan.RetirementInputs.stored_plan`), which
+    is also why the two must come from ONE ``load_retirement_inputs`` call --
+    a picture derived at another load's plan point is a different render.
+
+    Args:
+        user_id: The owner to picture.
+
+    Returns:
+        The :class:`~app.services.retirement_plan.RetirementPicture`.
+    """
+    inputs = retirement_plan.load_retirement_inputs(
+        BalanceContext.build(user_id),
+    )
+    return retirement_plan.picture_at(inputs, inputs.stored_plan)
 
 
 def main(out_path):

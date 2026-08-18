@@ -436,8 +436,9 @@ def readiness_fragment():
     passes and three loads -- the stored-settings baseline, the override, and
     the lever outcome -- and the panel's whole purpose is to state the DELTA
     between the first two, so every input the halves share had better BE
-    shared.  They are; the bare ``date.today()`` reads ledger row **P55** names
-    are not yet.
+    shared.  They are, and since pay-calendar plan step C2-f2e that includes the
+    DAY: the three producers that opened a salary path from
+    ``date.today().year`` take the pass's ``as_of``, which closed row **P55**.
     """
     if not request.headers.get("HX-Request"):
         return redirect(url_for("retirement.dashboard"))

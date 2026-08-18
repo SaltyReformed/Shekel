@@ -12,7 +12,7 @@ cards) and their tests were removed in the same pass -- a sanctioned
 removal of features ruled out by the developer, not test-gaming (see
 ``docs/design/dashboard_card_audit.md`` "Retirements").  The pulse / tracks
 producers that replaced them are tested in
-``tests/test_services/test_dashboard_service.py``.
+``tests/test_services/test_dashboard_pulse.py``.
 """
 
 from datetime import date
@@ -194,7 +194,7 @@ class TestBillRowSingleBase:
                 estimated="200.00",
             )
             # Non-entry-tracked bill: no template at all, so
-            # _is_entry_tracked is False and amount falls back to
+            # txn.tracks_purchases is False and amount falls back to
             # effective_amount.
             plain = _add_txn(
                 db.session, seed_user, seed_periods[0],

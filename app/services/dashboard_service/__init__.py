@@ -37,11 +37,14 @@ Module map:
   position tier: the savings-goal metro tracks and the debt track.
 """
 
-# ``DashboardSection`` is exported because the two producers that TAKE one
-# publicly annotate it and the route builds it: leaving it unexported is what
-# made two signatures in ``savings_dashboard_service`` drop their type hints,
-# against ``.claude/rules/coding.md`` -- an out-of-package annotation had no
-# name it was allowed to say.
+# ``DashboardSection`` is exported for the ANNOTATION, which is the test
+# ``DebtSummary``, ``GoalProgress`` and ``NetWorthRegion`` passed in
+# ``savings_dashboard_service`` and ``DtiMetrics`` failed: a type named in a
+# public signature needs a name an out-of-package reader is allowed to say.
+# **The route does NOT name it** -- it calls ``resolve_section`` and passes the
+# value anonymously -- so the export rests on the annotation alone; an earlier
+# draft of this comment claimed the route built one, and ``git grep
+# DashboardSection`` outside this package refutes that.
 from app.services.dashboard_service._balance import compute_balance_section
 from app.services.dashboard_service._bills import txn_to_bill_dict
 from app.services.dashboard_service._pulse import compute_pulse_section

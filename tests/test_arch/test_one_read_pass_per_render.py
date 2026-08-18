@@ -50,19 +50,25 @@ in.
 **The gate that WOULD be structural is a layer predicate** -- "no module under
 ``app/services/**`` calls ``BalanceContext.build``", the pass built at the HTTP
 boundary and nowhere below it (adversarial design review, 2026-08-16).  That is
-not a name list and it is the right end state; **eight service modules stand
-between here and it**, measured with ``grep -rl "BalanceContext\\.build("
-app/services/`` -- the trailing paren matters, because the bare name also
-matches the docstring in ``retirement_projection`` that records the call this
-leaf DELETED, and reports nine.  They are ``calendar_service``,
-``dashboard_service._pulse``, ``dashboard_service``,
+not a name list and it is the right end state; **FIVE service modules stand
+between here and it**, re-measured 2026-08-18 with
+``grep -rl "BalanceContext\\.build(" app/services/`` -- the trailing paren
+matters, because the bare name also matches docstrings recording calls that
+were deleted.  They are ``calendar_service``,
 ``investment_dashboard_service/_context``,
-``investment_dashboard_service/_orchestrator``, ``loan_recurrence_sync``,
-``savings_dashboard_service/_orchestrator`` and ``tax_report_service``.  The
-seventh is one of THESE two pages -- it is ``/savings``'s own door, left
-deliberately (see ``_orchestrator._pass_for``) and owned by ``C2-f2d-3``.
-Ledger row **P56** carries the layer predicate.  Asserting it here today would fail on
-eight modules this leaf does not touch, so the gate is per-render and grows a
+``investment_dashboard_service/_orchestrator``, ``loan_recurrence_sync`` and
+``tax_report_service``.
+
+**This paragraph named EIGHT and three of the names were already wrong**, which
+is why it now carries its date.  It listed
+``savings_dashboard_service/_orchestrator`` (a door ``C2-f2d-3`` had closed)
+and cited ``_orchestrator._pass_for``, a symbol ``git grep`` finds nowhere in
+``app/``; and it went on naming both dashboard modules after ``C2-f2e`` retired
+them into a package no part of which calls ``build``.  Found by that step's
+adversarial design review, in the file the step had just added 281 lines to --
+which is the residue rule's own case: editing a file clears that file's stale
+claims.  Ledger row **P56** carries the predicate, and asserting it here today
+would still fail on the five above, so the gate stays per-render and grows a
 render at a time.
 
 **What this file therefore does NOT prove.** It counts read passes, not clock
@@ -329,6 +335,14 @@ class TestOneReadPassPerRender:
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):
         """Each dashboard HTMX fragment opens exactly ONE pass.
+
+        **A PIN rather than a gate, and it says so** (C2-f2e's adversarial
+        design review, 2026-08-18): both fragments already opened exactly one
+        pass on the merge base, because each ran a single producer that built
+        one.  What moved is WHO builds it.  It is here so that a later step
+        wiring a second producer onto either fragment -- which is exactly how
+        ``/retirement`` acquired its two -- fails at that commit rather than at
+        the next measurement.
 
         The two fragments are their own entry points -- the ``balanceChanged``
         pulse refresh and the anchor editor's revert target -- so "the route is
@@ -713,14 +727,19 @@ class TestOneCalendarDerivationPerRender:
     ):
         """Each dashboard HTMX fragment derives the pay calendar exactly once.
 
-        ``/dashboard/balance`` derived it ZERO times on the merge base and
-        derives it ONCE now, which is a real +1: it answered "which period is
-        current" from ``pay_period_service.get_current_period`` -- SQL over the
-        stored span, against its own ``date.today()``.  That is the trade this
-        step makes deliberately.  The fragment is the anchor editor's revert
-        target and swaps back into the pulse region, so both must name the same
-        paycheck; one derivation is what makes that structural rather than a
-        coincidence of two queries agreeing.
+        **Only the ``/dashboard/balance`` half of this case can fail on the
+        merge base, and it fails at 0 rather than at 2** (C2-f2e's adversarial
+        design review, 2026-08-18): that fragment derived the calendar ZERO
+        times there because it answered "which period is current" from
+        ``pay_period_service.get_current_period`` -- SQL over the stored span,
+        against its own ``date.today()``.  So this case pins a +1 the step
+        deliberately INTRODUCED, not a defect it removed.  ``/dashboard/pulse``
+        derived it once on both trees; that half is a pin.
+
+        The +1 is the trade: the fragment is the anchor editor's revert target
+        and swaps back into the pulse region, so both must name the same
+        paycheck, and one derivation is what makes that structural rather than
+        a coincidence of two queries agreeing.
         """
         with app.app_context():
             _seed_dashboard_owner(db, seed_user, seed_periods_today)

@@ -315,6 +315,12 @@ def _figures_before(source):
             retirement_readiness.compute_readiness_whatif(source())
         ))),
         "whatif_override": _plain(_guard("whatif_override", lambda: (
+            # Pylint: ``unexpected-keyword-arg`` -- this call runs ONLY on the
+            # HEAD tree, where ``compute_readiness_whatif`` took the three
+            # keyword what-ifs ``_before`` documents; the signature pylint
+            # resolves is the POST tree's, which this branch never reaches.
+            # A both-sides harness names one API the checker cannot see.
+            # pylint: disable-next=unexpected-keyword-arg
             _before(retirement_readiness, "compute_readiness_whatif")(
                 source(), **_HEAD_WHATIF_KWARGS,
             )
@@ -495,7 +501,9 @@ def _savings(user_id):
         # exercises neither that sharing nor that caller (adversarial code
         # review, 2026-08-16).
         "dashboard_tracks": _plain(_guard("dashboard_tracks", lambda: (
-            dashboard_service.compute_tracks_section(user_id)
+            dashboard_service.compute_tracks_section(
+                BalanceContext.build(user_id),
+            )
         ))),
     }
 
@@ -535,6 +543,11 @@ def _render_fragment(user_id):
     """
     if retirement_plan is None:
         pass_ = BalanceContext.build(user_id)
+        # Pylint: ``unexpected-keyword-arg`` -- the same both-sides argument as
+        # the site in ``_figures_before``: this arm is guarded on the HEAD
+        # tree's own absence of ``retirement_plan``, so the signature pylint
+        # resolves is not the one this call reaches.
+        # pylint: disable-next=unexpected-keyword-arg
         _before(retirement_readiness, "compute_readiness_whatif")(
             pass_, **_HEAD_WHATIF_KWARGS,
         )

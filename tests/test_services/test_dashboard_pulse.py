@@ -466,13 +466,29 @@ class TestPulseTrough:
             assert trough["offset"] == dip_period.period_index - current.period_index
             assert trough["offset"] == 14
 
-    def test_trough_none_when_no_balances(self, app, seed_user, seed_periods, db):
-        """An empty end-balance map -> trough is None (no projection)."""
+    def test_trough_none_without_a_forward_period(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """An EMPTY forward window -> trough is None.
+
+        **This case graded an empty end-balance MAP until C2-f2e's adversarial
+        code review** (2026-08-18), and that state is now unconstructible:
+        ``cash_balance_map`` is a TOTAL fold over ``reported_periods()`` and
+        ``forward_periods`` is a slice of that same window, so every key is
+        present by construction and the scan INDEXES rather than skipping. A
+        test that builds a state production cannot reach grades the skip it
+        depends on and nothing else -- which is why deleting the skip is what
+        found it.
+
+        What remains is the arm that CAN answer ``None``: no forward period at
+        all. ``compute_pulse_section``'s own current-period guard refuses that
+        owner before this helper is reached, so the arm is defensive -- and it
+        is pinned rather than deleted because the helper is public to its
+        module and its ``Returns`` block states it.
+        """
         with app.app_context():
-            forward = list(period_window(seed_periods[_CURRENT_IDX:]))
-            trough = _pulse._trough(
-                forward, {}, forward[0],
-            )
+            current = list(period_window(seed_periods[_CURRENT_IDX:]))[0]
+            trough = _pulse._trough([], {}, current)
             assert trough is None
 
 
@@ -579,13 +595,29 @@ class TestPulsePeak:
             assert peak["offset"] == rise_period.period_index - current.period_index
             assert peak["offset"] == 14
 
-    def test_peak_none_when_no_balances(self, app, seed_user, seed_periods, db):
-        """An empty end-balance map -> peak is None (no projection)."""
+    def test_peak_none_without_a_forward_period(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """An EMPTY forward window -> peak is None.
+
+        **This case graded an empty end-balance MAP until C2-f2e's adversarial
+        code review** (2026-08-18), and that state is now unconstructible:
+        ``cash_balance_map`` is a TOTAL fold over ``reported_periods()`` and
+        ``forward_periods`` is a slice of that same window, so every key is
+        present by construction and the scan INDEXES rather than skipping. A
+        test that builds a state production cannot reach grades the skip it
+        depends on and nothing else -- which is why deleting the skip is what
+        found it.
+
+        What remains is the arm that CAN answer ``None``: no forward period at
+        all. ``compute_pulse_section``'s own current-period guard refuses that
+        owner before this helper is reached, so the arm is defensive -- and it
+        is pinned rather than deleted because the helper is public to its
+        module and its ``Returns`` block states it.
+        """
         with app.app_context():
-            forward = list(period_window(seed_periods[_CURRENT_IDX:]))
-            peak = _pulse._peak(
-                forward, {}, forward[0],
-            )
+            current = list(period_window(seed_periods[_CURRENT_IDX:]))[0]
+            peak = _pulse._peak([], {}, current)
             assert peak is None
 
     def test_peak_wired_through_compute_pulse_section(
@@ -1349,8 +1381,11 @@ class TestPulseSectionDegraded:
     def test_no_current_period_returns_none(self, app, seed_user):
         """No period contains today -> None.
 
-        seed_user (no seed_periods) has only the 2024 bootstrap period, so
-        get_current_period returns None and the producer short-circuits.
+        ``seed_user`` (no ``seed_periods``) has only the 2024 bootstrap period,
+        so no SAVED period contains the pass's day, ``containing_index``
+        answers ``None`` and the producer short-circuits.  That reader was
+        ``pay_period_service.get_current_period`` until pay-calendar plan step
+        C2-f2e; the state is the same one and the door is not.
         """
         with app.app_context():
             result = dashboard_service.compute_pulse_section(
@@ -1488,6 +1523,19 @@ class TestPeriodIsDerivedNotStored:
     paydays imply (plan finding **P1**, the disagreement nothing reconciles)
     that query and the calendar name DIFFERENT paychecks, and this page then
     labelled one period's balance with another's dates.
+
+    **The disagreement has TWO directions and only one is covered here**
+    (C2-f2e's adversarial design review, 2026-08-18).  The case below is the
+    stored span being SHORTER than the derivation, where the derivation is the
+    generous answer and the pre-cutover tree blanked the page.  The inverse --
+    a derived end EARLIER than the stored one -- can only arise on the LAST
+    period, whose end is projected from ``budget.pay_schedule.cadence_days``,
+    and it is the direction where the new code refuses where the old answered.
+    It is not tested because it is not reachable through an app write door:
+    ``pay_schedule_service.upsert_schedule`` has one caller
+    (``pay_period_write._apply``), which runs only when the batch records a
+    payday and then rewrites the derivation onto every row.  It needs
+    hand-edited rows or legacy data, which is ledger row **P35**'s owner.
     """
 
     def test_a_wrong_stored_end_date_does_not_move_the_hero(

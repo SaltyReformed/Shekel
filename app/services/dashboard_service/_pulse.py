@@ -113,7 +113,7 @@ def compute_pulse_section(
     # no grid account, and no period containing today.
     #
     # **The account is checked FIRST and that ORDER is load-bearing.**  Reading
-    # ``section.current_period`` derives the owner's calendar, which RAISES
+    # the owner's reported window derives their calendar, which RAISES
     # ``PayCalendarError`` for an owner whose paydays cannot define one (ledger
     # row **P35**, a legacy period stored before ``budget.pay_schedule``
     # existed).  A no-account owner reached no calendar before this step and
@@ -121,9 +121,6 @@ def compute_pulse_section(
     # before the derivation -- the opposite of ``/grid``, which derives before
     # it looks at an account and which P35 records as WIDENED for exactly that.
     if section is None:
-        return None
-    current_period = section.current_period
-    if current_period is None:
         return None
 
     balance_ctx = section.balance_ctx
@@ -138,13 +135,27 @@ def compute_pulse_section(
     # one order and the balances it reads in another, and a destructive
     # pay-period write landing between the two reads left this producer
     # indexing the map by an id the seam no longer held.  One derivation, no
-    # second spelling, and ``reported_periods()`` is already memoized on the
-    # calendar the line below fills.
+    # second spelling -- and THIS is the line that fills the pass's calendar
+    # memo, since ``reported_periods()`` is ``calendar().saved()``; every other
+    # calendar read on this render is a memo hit.
     all_periods = balance_ctx.reported_periods()
+    # WHERE in that window the pass's day falls, and the current period is the
+    # entry AT it.  Asked of the window rather than derived from
+    # ``period_index`` (C2-f2e's adversarial code review, 2026-08-18): the two
+    # agree only because ``reported_periods()`` is the window over the WHOLE
+    # saved calendar, so its ordinals happen to equal the calendar's -- and
+    # ``PeriodWindow.containing_index``'s own docstring names that as the
+    # coincidence a caller must not rest on, being "a second rule about how a
+    # view's ordinals relate to the calendar's, stated at the caller and
+    # enforced nowhere".  It is also ONE bisect where reading
+    # ``section.current_period`` beside a ``period_index`` filter was two.
+    current_index = all_periods.containing_index(balance_ctx.as_of)
+    if current_index is None:
+        return None
+    current_period = all_periods[current_index]
     # The pass's own calendar answers "which paycheck comes next" (plan step
-    # C2-f1).  ``BalanceContext.build`` resolves only the scenario, so the
-    # calendar's two queries are paid by whichever of these lines runs first
-    # and every other calendar read on this render is free.
+    # C2-f1), off the memo the window read above filled -- ``BalanceContext.build``
+    # resolves only the scenario, so the calendar's two queries are paid once.
     next_period = balance_ctx.calendar().period_starting_after(
         current_period.start_date,
     )
@@ -181,16 +192,19 @@ def compute_pulse_section(
     # today``): the chart's first plotted point is the current period's end
     # balance, so the labeled "lowest point ahead" must be able to coincide
     # with it rather than understating the worst visible dip.
-    # ``cash_balance_map`` is a TOTAL fold (plan step X-c2b2): every requested
-    # period is in the result, replayed from the account's own assertions, so
-    # the chart / trough / peak missing-key skips below have nothing left to
-    # skip.  They stay because the forward slice is the caller's, not the
-    # producer's.
+    # **Every read of this map below is INDEXED, and the two skips that used to
+    # sit under the chart and the extremum scan are DELETED** (C2-f2e's
+    # adversarial code review, 2026-08-18).  ``cash_balance_map`` is a TOTAL
+    # fold (plan step X-c2b2) over ``ctx.reported_periods()``, and
+    # ``forward_periods`` is a SLICE of that same window, so every key is
+    # present by construction.  The skips were kept on the ground that "the
+    # forward slice is the caller's, not the producer's", which does not follow
+    # -- a caller-chosen subset of the domain is still in the domain -- and
+    # what they would have done had they ever fired is exactly what the hero's
+    # own comment below refuses: a chart quietly missing a point, or a "lowest
+    # point ahead" scanned over fewer periods than its label promises.
     end_balances = balance_at.cash_balance_map(account, balance_ctx)
-    forward_periods = [
-        p for p in all_periods
-        if p.period_index >= current_period.period_index
-    ]
+    forward_periods = list(all_periods)[current_index:]
 
     # ONE unpaid-row query for the still-due totals AND the due-soon list:
     # both read the current period's rows (due-soon is exactly that subset)
@@ -389,7 +403,13 @@ def _anchor_is_stale(
     this number" means.
 
     **The comparison's own clock is the READ PASS's since pay-calendar plan
-    step C2-f2e, and it is still the PROCESS day.**  It was a bare
+    step C2-f2e, and it is still the PROCESS day.**  What that step made true is
+    narrower than "this render reads one clock": the three reads THIS producer
+    owned now share the pass's day.  ``BalanceContext.amounts()`` still reads
+    ``date.today()`` for its loan half, which is finding **N-40** and plan step
+    **X-i2**, and this region reaches it through
+    :func:`~app.services.cash_ledger.contributions_by_id`.  That read is
+    disclosed on the memo rather than fixed here, because X-i2 MOVES MONEY.  It was a bare
     ``date.today()`` here -- one of three this region resolved for itself,
     beside the street's "Today" marker and the due-soon list's days-until-due
     -- so a render crossing midnight could count staleness against one day and
@@ -457,7 +477,6 @@ def _chart(
     points = [
         {"end_date": period.end_date, "balance": end_balances[period.period_id]}
         for period in chart_periods
-        if period.period_id in end_balances
     ]
 
     threshold = None
@@ -488,8 +507,10 @@ def _trough(
 
     Returns:
         A dict with keys ``balance`` (the minimum end balance),
-        ``end_date``, and ``offset`` (>= 0).  ``None`` when no forward
-        period has a projected balance (e.g. an empty projection).
+        ``end_date``, and ``offset`` (>= 0).  ``None`` only when
+        *forward_periods* is EMPTY -- an owner whose schedule ends before the
+        pass's day, which the caller's own current-period guard already
+        refuses, so in practice never.
     """
     return _extremum(
         forward_periods, end_balances, current_period, find_max=False,
@@ -519,8 +540,10 @@ def _peak(
 
     Returns:
         A dict with keys ``balance`` (the maximum end balance),
-        ``end_date``, and ``offset`` (>= 0).  ``None`` when no forward
-        period has a projected balance (e.g. an empty projection).
+        ``end_date``, and ``offset`` (>= 0).  ``None`` only when
+        *forward_periods* is EMPTY -- an owner whose schedule ends before the
+        pass's day, which the caller's own current-period guard already
+        refuses, so in practice never.
     """
     return _extremum(
         forward_periods, end_balances, current_period, find_max=True,
@@ -560,15 +583,15 @@ def _extremum(
 
     Returns:
         A dict with keys ``balance`` (the extreme end balance),
-        ``end_date``, and ``offset`` (>= 0).  ``None`` when no forward
-        period has a projected balance (e.g. an empty projection).
+        ``end_date``, and ``offset`` (>= 0).  ``None`` only when
+        *forward_periods* is EMPTY -- an owner whose schedule ends before the
+        pass's day, which the caller's own current-period guard already
+        refuses, so in practice never.
     """
     extremum_period = None
     extremum_balance = None
     for period in forward_periods:
-        balance = end_balances.get(period.period_id)
-        if balance is None:
-            continue
+        balance = end_balances[period.period_id]
         if extremum_balance is None:
             extremum_balance = balance
             extremum_period = period

@@ -86,27 +86,18 @@ def _query_unpaid_expense_rows(
     )
 
 
-def _is_entry_tracked(txn: Transaction) -> bool:
-    """Return True if the transaction's template enables envelope tracking.
-
-    Per E-21 (MED-03 / F-028 / F-056) entry-tracked bill rows anchor
-    every visible figure (amount cell, remaining, over-budget flag) on
-    the row's RESOLVED amount -- the declared budget base -- so the row's
-    three numbers always answer the same question.  Centralising the
-    "is this row entry-tracked" check here keeps :func:`txn_to_bill_dict`
-    and :func:`_entry_progress_fields` from re-deriving it inline (and
-    so cannot drift apart): both call this helper.
-
-    Args:
-        txn: The Transaction to inspect.  ``txn.template`` must be
-            accessible (eager-loaded by the caller for collections).
-
-    Returns:
-        True when the transaction is purchase-tracked -- either its
-        template has ``is_envelope = True`` or, for an ad-hoc row, its
-        own ``is_envelope`` flag is set; otherwise False.
-    """
-    return txn.tracks_purchases
+# ``_is_entry_tracked`` used to live here and is DELETED (pay-calendar plan
+# step C2-f2e).  It was ``return txn.tracks_purchases`` -- a pass-through in
+# front of the model property whose OWN docstring calls itself "the single
+# source of truth for the 'is this an envelope / entry-capable row?' question
+# across services, routes, and templates".  Its stated purpose was to keep this
+# module's two readers from re-deriving the check inline "and so drift apart",
+# and that purpose was already false: ``_pulse._row_still_due`` prices the same
+# rows and reads ``txn.tracks_purchases`` directly, so there were two spellings
+# and the centralising one covered neither of the surfaces that could disagree.
+# A second door in front of a single source of truth is not centralisation; it
+# is one more thing that can be pointed somewhere else.  All three sites read
+# the property now.
 
 
 def txn_to_bill_dict(
@@ -114,7 +105,7 @@ def txn_to_bill_dict(
 ) -> dict:
     """Build a bill dict for the dashboard bills template from a Transaction.
 
-    Used by :func:`~._pulse._pulse_due_soon` to produce one
+    Used by :func:`~._pulse._due_soon` to produce one
     render-ready dict per due-soon bill.
 
     Expects txn.template and txn.entries to be accessible -- callers
@@ -164,7 +155,7 @@ def txn_to_bill_dict(
         cell uses.
     """
     days_until = (txn.due_date - today).days if txn.due_date else None
-    is_entry_tracked = _is_entry_tracked(txn)
+    is_entry_tracked = txn.tracks_purchases
     if is_entry_tracked:
         amount = budget
         amount_base = "budget"
@@ -219,7 +210,7 @@ def _entry_progress_fields(txn: Transaction, budget: Decimal) -> dict:
     Returns:
         Dict with the five entry progress fields.
     """
-    is_tracked = _is_entry_tracked(txn)
+    is_tracked = txn.tracks_purchases
     if not is_tracked or not txn.entries:
         return {
             "is_tracked": is_tracked,
