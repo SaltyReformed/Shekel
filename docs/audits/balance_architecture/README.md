@@ -459,7 +459,7 @@ hides.
     writer, and a revert releases the ASSERTION while KEEPING the fact -- so `actual_amount`, one
     column answering two questions, is gone. Both popovers correct a figure IN PLACE, transfers too.
     **A LATER leaf must obey**: a lock protects a DECISION and an observation is CORRECTED; a figure
-    and a status change are independent facts one seam call applies. Closed **N-241**, **N-242**, **N-257**, **N-259**, **N-265**, **N-282**, **N-298**; opened **N-299**-**N-302**.
+    and a status change are independent facts one seam call applies. Closed **N-241**, **N-242**, **N-257**, **N-259**, **N-265**, **N-282**, **N-298**; opened **N-301**-**N-304**.
 * [ ] **X-au-d** `refactor(salary): a projected paycheck is not stored` -- the SALARY cutover. The
   recurrence engine stops pricing salary rows, the 51 live rows go NULL, and
   `income_service.live_projected_net`, `transaction_service._freshest_amount` and

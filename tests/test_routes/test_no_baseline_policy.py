@@ -114,6 +114,38 @@ _MEASURED_FRAGMENT_DOORS = [
 #: same for a page endpoint and a fragment endpoint.
 _MEASURED_DOORS = _MEASURED_PAGE_DOORS + _MEASURED_FRAGMENT_DOORS
 
+#: The account kinds every ``<int:account_id>`` route is swept against.  The
+#: kind decides which PRODUCER runs, which is why one id would not do: the loan
+#: doors are unreachable with a checking id and the property door needs the
+#: Property.
+_ACCOUNT_KINDS = (
+    "checking", "loan", "mortgage", "property", "hysa", "card", "invest",
+)
+
+#: The sweep's arms: one per account kind, plus ``""`` for the routes that take
+#: no account id.  **This is the axis the sweep is SPLIT along, and the split is
+#: about a wall-clock budget rather than about coverage** -- the same requests
+#: are made either way.
+#:
+#: As one test the sweep made 388 requests (194 concrete URLs, each in both
+#: request shapes) inside pytest-timeout's 30 s, which covers setup, call and
+#: teardown together.  It grows with the route table, and on 2026-08-16 it
+#: crossed: `test_no_get_route_returns_5xx` timed out on four of nine CI runs.
+#: Removing the cluster cost that made CI slow (PR #106) bought headroom and
+#: did not remove the shape -- the measured call was still 24.68 s against 30 s,
+#: a margin under five seconds that the next dozen routes would spend.
+#:
+#: Split this way the largest arm is the 54 account-less routes (108 requests)
+#: and each kind arm is 40, so no single arm's runtime grows with anything but
+#: its own share of the route table.
+_SWEEP_ARMS = ("",) + _ACCOUNT_KINDS
+
+#: Ids for the COVERAGE arm, which never issues a request.  The skip list and
+#: the URL count are properties of ``url_map`` alone -- substitution cannot
+#: fail differently for a real id than for a placeholder -- so that arm is
+#: spared the seven-account fixture the request arms need.
+_PLACEHOLDER_IDS = dict.fromkeys(_ACCOUNT_KINDS + ("period",), 1)
+
 
 @pytest.fixture()
 def baseline_less_owner(app, db, seed_user, seed_periods_today):
@@ -203,8 +235,7 @@ def _concrete_urls(app, ids):
                .replace("<int:year>", str(date.today().year))
                .replace("<int:month>", str(date.today().month)))
         if "<int:account_id>" in url:
-            for kind in ("checking", "loan", "mortgage", "property",
-                         "hysa", "card", "invest"):
+            for kind in _ACCOUNT_KINDS:
                 urls.append((rule.endpoint, kind,
                              url.replace("<int:account_id>", str(ids[kind]))))
         elif "<" in url:
@@ -217,8 +248,52 @@ def _concrete_urls(app, ids):
 class TestNoRouteCrashesWithoutABaseline:
     """The sweep: no GET route may 5xx for an owner with no baseline."""
 
+    def test_the_sweep_still_covers_the_whole_url_map(self, app):
+        """The COVERAGE claim, graded apart from the requests.
+
+        Two assertions that are properties of ``url_map`` and of nothing else,
+        so they belong in one cheap arm rather than being repeated in each of
+        the eight request arms -- where they would also be eight chances to
+        rot into disagreement.
+
+        The skip list is PINNED, not merely described.  The first draft
+        asserted ``all("<" in rule for rule in skipped)`` -- true by
+        construction, since that is the branch that fills the list, so it could
+        never fail and its own docstring's promise ("an uncovered route that
+        grows a balance read would pass this suite") was exactly what it
+        allowed.  A new route this fixture cannot reach turns this RED, which
+        is the only way the sweep's coverage claim stays honest.
+        """
+        urls, skipped = _concrete_urls(app, _PLACEHOLDER_IDS)
+
+        assert len(urls) > 100, (
+            f"the sweep collapsed to {len(urls)} urls -- it is meant to cover "
+            f"the whole url_map, so this means the substitution stopped, not "
+            f"that the app shrank"
+        )
+        assert sorted(skipped) == _UNREACHED_RULES, (
+            "the set of routes this sweep cannot reach has changed. Add the "
+            "id this fixture needs and grade the route, or pin it here with "
+            "the reason it cannot be graded.\n"
+            f"  now:      {sorted(skipped)}\n"
+            f"  expected: {_UNREACHED_RULES}"
+        )
+
+        # **The hole the SPLIT opened, closed here.**  The request arms select
+        # by kind, so a URL tagged with a kind no arm names would be requested
+        # by nobody -- silently, with every arm still green, which is the exact
+        # "a silent drop reads as coverage" failure this file was built to
+        # refuse.  As one test that could not happen; the union WAS the loop.
+        assert {row[1] for row in urls} == set(_SWEEP_ARMS), (
+            "the sweep's arms no longer partition its URLs, so some route is "
+            "graded by no arm at all. Add the new kind to _ACCOUNT_KINDS.\n"
+            f"  tagged:   {sorted({row[1] for row in urls})}\n"
+            f"  arms:     {sorted(_SWEEP_ARMS)}"
+        )
+
+    @pytest.mark.parametrize("arm", _SWEEP_ARMS)
     def test_no_get_route_returns_5xx(self, app, auth_client,
-                                      baseline_less_owner):
+                                      baseline_less_owner, arm):
         """Every GET route answers a baseline-less owner without crashing.
 
         Both request shapes, because the handler branches on them and a sweep
@@ -226,16 +301,24 @@ class TestNoRouteCrashesWithoutABaseline:
         the recovery page, an HTMX request must get 204 and leave the DOM
         alone.  Before the X-v1 handler this arm reported 8 endpoints raising
         ``ValueError`` from ``require_scenario``, 6 of them GETs.
+
+        **One arm per account kind, plus one for the account-less routes.**
+        The union of the arms is the same 388 requests the single test made;
+        see :data:`_SWEEP_ARMS` for the wall-clock budget that forced the
+        split.  Filtering on the kind ``_concrete_urls`` already tags each URL
+        with is what keeps the two halves from drifting: there is still exactly
+        one place that decides which URLs exist.
         """
-        urls, skipped = _concrete_urls(app, baseline_less_owner)
-        assert len(urls) > 100, (
-            f"the sweep collapsed to {len(urls)} urls -- it is meant to cover "
-            f"the whole url_map, so this means the fixture ids stopped "
-            f"substituting, not that the app shrank"
+        urls, _ = _concrete_urls(app, baseline_less_owner)
+        arm_urls = [row for row in urls if row[1] == arm]
+        assert arm_urls, (
+            f"the {arm or 'account-less'!r} arm is empty -- every arm of "
+            f"{_SWEEP_ARMS} must select URLs, so this means the kind tag or "
+            f"the fixture ids stopped substituting, not that the app shrank"
         )
         crashed = []
         card_in_fragment = []
-        for endpoint, kind, url in urls:
+        for endpoint, kind, url in arm_urls:
             for headers in ({}, {"HX-Request": "true"}):
                 resp = auth_client.get(url, headers=headers)
                 if resp.status_code >= 500:
@@ -254,20 +337,6 @@ class TestNoRouteCrashesWithoutABaseline:
         assert not card_in_fragment, (
             f"{len(card_in_fragment)} HTMX requests received the full-page "
             f"recovery card instead of 204: {card_in_fragment}"
-        )
-        # The skip list is PINNED, not merely described.  The first draft
-        # asserted ``all("<" in rule for rule in skipped)`` -- true by
-        # construction, since that is the branch that fills the list, so it
-        # could never fail and its own docstring's promise ("an uncovered route
-        # that grows a balance read would pass this suite") was exactly what it
-        # allowed.  A new route this fixture cannot reach now turns the gate
-        # RED, which is the only way the sweep's coverage claim can stay honest.
-        assert sorted(skipped) == _UNREACHED_RULES, (
-            "the set of routes this sweep cannot reach has changed. Add the "
-            "id this fixture needs and grade the route, or pin it here with "
-            "the reason it cannot be graded.\n"
-            f"  now:      {sorted(skipped)}\n"
-            f"  expected: {_UNREACHED_RULES}"
         )
 
     @pytest.mark.parametrize("label,template", _MEASURED_PAGE_DOORS)
