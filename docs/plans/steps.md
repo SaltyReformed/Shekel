@@ -48,16 +48,16 @@ sequencing -- the balance README's ten blocks, and each plan's section 0.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**147 steps, 111 open.** The dependency graph holds 97 edges over 63 rows.
+**148 steps, 111 open.** The dependency graph holds 97 edges over 63 rows.
 
 ## The order
 
 | arc | id | also | what this step does | order | commit | starts |
 |---|---|---|---|---|---|---|
 | balance | X-f3a-2 | -- | Record that a STATEMENT was walked line by line, so a line it did not show is NOT CLEARED rather than unknown, and widen the offer set to every uncleared line including the already-settled ones, which **MOVES MONEY**; it closes **N-273** and **N-289**. | #4 | -- | after #3 / balance:X-f3c |
-| bank_import | X-f6a-3 | -- | Let a bank line the app has no row for BECOME a purchase against an envelope the owner picks, so the 156 card-swipe lines an envelope aggregates stop being unexplainable and the app's records reach the bank's own grain, which **MOVES MONEY**. | #1 | -- | NOW / bank_import:X-f6a-2 (shipped) |
+| bank_import | X-f6a-3b | -- | Let a bank line the app has no row for BECOME a purchase against an envelope the owner picks, so the 74 card-swipe lines an envelope aggregates stop being unexplainable and the app's records reach the bank's own grain, which **MOVES MONEY**; it closes **N-306**. | #1 | -- | NOW / bank_import:X-f6a-3a (shipped) |
 | bank_import | X-f6a-4 | -- | Give a recorded import a repair door -- delete this import, audited, or let the review screen resolve a divergence -- so a `StatementLineConflict` stops being terminal for the account it fires on. Closes **N-302**. | #2 | -- | NOW / bank_import:X-f6a-1 (shipped) |
-| balance | X-f3c | -- | THE CUTOVER: the assertion stops resetting the ledger, `balance(T)` becomes opening equity plus the sum of postings, and an unexplained difference becomes a recorded uncategorized transaction the user accepts. **MOVES MONEY, OWN PR, NO BACKLOG.** Closes **N-171**, **N-172**, **N-174**, **N-275**, **N-276**. | #3 | -- | after #1 / balance:X-f3b (shipped) / bank_import:X-f6a-2 (shipped) / bank_import:X-f6a-3 |
+| balance | X-f3c | -- | THE CUTOVER: the assertion stops resetting the ledger, `balance(T)` becomes opening equity plus the sum of postings, and an unexplained difference becomes a recorded uncategorized transaction the user accepts. **MOVES MONEY, OWN PR, NO BACKLOG.** Closes **N-171**, **N-172**, **N-174**, **N-275**, **N-276**. | #3 | -- | after #1 / balance:X-f3b (shipped) / bank_import:X-f6a-2 (shipped) / bank_import:X-f6a-3b |
 | balance | X-f4 | -- | Delete what the cutover orphans: `ReconciledThrough`'s coverage rule, `_anchors.py`, the correction machinery and the R-I seed compensator, a set X-f3a has already narrowed. Closes **N-176**, **N-218**, **N-161**, **N-170**. | #5 | -- | after #3 / balance:X-f3c |
 | bank_import | X-f6b | -- | Add the automated SOURCE ADAPTER -- SimpleFIN recommended on the security ground ruling R-FP states -- so a statement arrives without a manual download, deciding first where a scheduled fetch runs in an app with no scheduler. | #6 | -- | NOW / bank_import:X-f6a-2 (shipped) |
 | balance | X-au-c3 | -- | Turn X-aq's settle refresh into the FREEZE and the revert into its inverse: a settle writes the resolved figure into the row's own amount column and declares it owned, and leaving the settled band hands the declaration back. Closes **N-241**, **N-242**, **N-245**, **N-259**. | #7 | -- | NOW / balance:X-au-c2a (shipped) |
@@ -172,7 +172,7 @@ the order is workable.
 | balance | X-f3 | -- | The DECOMPOSED parent of THE CUTOVER, re-decomposed 2026-08-13 when measurement refuted two of ruling R-EB's premises. Carries **N-171**, **N-172**, **N-174**. | container | -- | ticks with #4 |
 | balance | X-f3a | -- | The DECOMPOSED parent of "clearing is a recorded fact", split 2026-08-14 (**R-FQ**) into the RECORDING half, which moves no money, and the half that makes a walked statement's SILENCE mean something, which cannot precede the cutover. Carries **N-273**. | container | -- | ticks with #4 |
 | bank_import | X-f6 | -- | The DECOMPOSED parent of the statement importer, whose first leaf moved AHEAD of the cutover because what the cutover needed was clearing facts rather than an import surface. Carries **N-173**. | container | -- | ticks with #6 |
-| bank_import | X-f6a | -- | The DECOMPOSED parent of the importer's CORE, split into three leaves 2026-08-16 because the match predicate it was specified to rule came back many-to-many in BOTH directions: the recording lands, then the match and its review, then the bank line that becomes a purchase. Carries **N-173**. | container | -- | ticks with #2 |
+| bank_import | X-f6a | -- | The DECOMPOSED parent of the importer's CORE, split into three leaves 2026-08-16 when the match predicate came back many-to-many in BOTH directions and into FOUR on 2026-08-18 when the third leaf's own premise was measured false. Carries **N-173**. | container | -- | ticks with #2 |
 | recurrence | R8 | -- | The DECOMPOSED parent of the ruled add-ons, split 2026-08-16 when measurement showed three of the four need a generated row's own `occurs_on`: `recurrence_engine.compute_due_date` dates a row from its PAY PERIOD and never from the occurrence, so a weekly row, an nth-weekday row and a shifted row would each carry a date the cadence never named. | container | -- | ticks with #25 |
 
 ## Shipped
@@ -182,6 +182,7 @@ The fuller as-built entries are in each arc's archive.
 
 | arc | id | also | what this step does | order | commit | starts |
 |---|---|---|---|---|---|---|
+| bank_import | X-f6a-3a | -- | The bank owns BOTH of a purchase's days, so a match corrects `purchased_on` where the bank refutes it and the adapter reads the swipe day SECU states in a card line's description, which turned 14 lines worth `$1,028.66` from invitations to record a purchase TWICE into ordinary corrections. Opened **N-312**. | SHIPPED | `140f1f24` | -- |
 | bank_import | X-f6a-2 | -- | A bank line IS these rows: the correspondence is a match ACT and its members over an exclusive arc, proposed from an exact amount inside a measured day window, and accepting one writes the bank's posted day onto every member -- settling a Projected row and correcting a wrongly-dated one. No clearing link (**R-FV**). Closed **N-173**. | SHIPPED | `267cb75e` | -- |
 | bank_import | X-f6a-1 | -- | A statement is RECORDED: one normalized line shape behind a source adapter, an account's identity at that source held as a fact, and a POSITIONAL identity key that reproduced the bank's own `FITID` key exactly across two exports, so re-importing an overlapping span cannot duplicate. Balance-neutral, measured. | SHIPPED | `40a490c3` | -- |
 | recurrence | R9 | -- | The closed pattern set's LAST artefacts died: `ref.recurrence_patterns` dropped with `RecurrencePatternEnum`, `ref_cache.recurrence_pattern_id` and the seed entry behind them, and the suite's cadence vocabulary moved off the closed set's display names onto the two axes. Ruling **R-R27** discharged R-R11's held release. | SHIPPED | `800671a7` | -- |
