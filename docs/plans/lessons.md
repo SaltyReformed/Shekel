@@ -31,14 +31,13 @@ no reconciler.
 - **When a rule is re-keyed, the complement must move with it**, or replay and projection stop being
   exact complements.
 - **When two sides of one problem have different SHAPES, the loose side is where the next hole is.**
-- **A RULING THAT FALSIFIES A PREMISE MUST BE GREPPED FOR THE PREMISE, NOT THE SYMPTOM.** X-f3b made
-  a Projected row able to hold ledger postings; six write paths were safe only because it could not,
-  and its own adversarial review found four of them (bulk template archive / restore / delete, the
-  conflict chooser, carry-forward's discrete move). Search for the SENTENCE the old code relied on.
+- **A RULING THAT FALSIFIES A PREMISE MUST BE GREPPED FOR THE PREMISE, NOT THE SYMPTOM.** X-f3b let
+  a Projected row hold postings; six write paths were safe only because it could not, and review
+  found four. Search for the SENTENCE the old code relied on.
 - **A BOUND JUSTIFIED BY "THIS DIRECTION IS CONSERVATIVE" INVERTS WHEN WHAT IT BOUNDS CHANGES
-  MEANING.** `TransactionEntry.settled_on` was deliberately unbounded above -- a forward posting day
-  held the whole budget back -- and the same forward day RELEASES it the moment a posting day books
-  cash (X-f3b / R-FM). Re-read every bound whose reason is a direction, not a fact.
+  MEANING.** `TransactionEntry.settled_on` was unbounded above because a forward day held the budget
+  back; the same day RELEASES it once a posting books cash (X-f3b / R-FM). Re-read every bound whose
+  reason is a direction, not a fact.
 - **WHEN TWO VALUES HAVE ALWAYS BEEN EQUAL BY CONSTRUCTION, THE CODE THAT COUPLES THEM DOES NOT
   EXIST.** Ask which values a field has silently equalled before widening what it holds (X-f1c4c).
 - **Ask what a producer says the SECOND time.** One correct on the ordinary path can be inverted on
@@ -49,14 +48,13 @@ no reconciler.
   is where the bug is.**
 - **SCORE THE RULE YOU SHIPPED, NOT THE RULE YOU DESIGNED.** Any change to a rule after it was
   scored re-opens the score; re-run the measuring script as the LAST act of the build.
-- **A RULE THAT READS A CLOCK MUST BE APPLIED ONCE**, and "the writer does not trust its caller" is
-  not a reason to apply it twice; carry "already checked" in a TYPE the checker alone can mint
-  (X-f1e2, a midnight roll between two applications of one floor).
+- **A RULE THAT READS A CLOCK MUST BE APPLIED ONCE**, and "the writer distrusts its caller" is not a
+  reason to apply it twice; carry "already checked" in a TYPE only the checker can mint (X-f1e2, a
+  midnight roll between two applications of one floor).
 - **AN APPEND-ONLY TABLE NEVER LICENSES AN UNSERIALISED READ-MODIFY-WRITE IN THE SAME TRANSACTION.**
   Name the tables the transaction WRITES, not the one the ruling is about (R-EN, N-190).
 - **IDEMPOTENCY IS A PROPERTY OF A REQUEST, NOT OF THE ROW IT CARRIES.** A unique index over the
-  row's own values must mis-classify a retry or a re-assertion; ask which way it errs and what each
-  error costs (R-EQ).
+  row's values must mis-classify a retry or a re-assertion; ask which way, and what it costs (R-EQ).
 - **WHEN TWO DOORS WRITE ONE FACT, ALIGNING THEM CAN BE WORSE THAN DELETING ONE.** Ask what each
   door's SURFACE means before making them agree (X-f1e1).
 - **AN IMPOSSIBILITY ARGUMENT THAT CONSIDERS ONE LOCK CLASS IS NOT AN IMPOSSIBILITY ARGUMENT.** Name
@@ -65,13 +63,20 @@ no reconciler.
 - **READING A LAZY RELATIONSHIP IS A FLUSH**, so where a guard SITS decides which exception net
   catches the request's first UPDATE -- a guard moved for READABILITY moved a database write (X-ap).
 - **A READ DOOR THAT GAINS A RAISE BREAKS EVERY REPAIR PATH THE UI ADVERTISES THROUGH IT.** When a
-  reader starts validating, ask which callers were about to overwrite the thing it now validates
-  (R7b-1, where the advertised remedy became a 500 with every gate green).
+  reader starts validating, ask which callers were about to overwrite what it now validates (R7b-1,
+  where the advertised remedy became a 500 with every gate green).
+  **A refusing read and a TOTAL one are two questions**, so publish the total beside it rather than
+  softening it, which would delete the refusal for every other caller (X-au-c3).
 - **NAME A WRAPPER'S FIELD SOMETHING THE WRAPPED PRIMITIVE CANNOT ANSWER.** `ObservationDay.day`
   compiled against a raw `date` and returned the day of the MONTH into an SQL bound (X-f1e2).
-- **A shared primitive reached through a private import is telling you the package boundary is
-  wrong.**
-- **A fail-CLOSED gate is scoped by module identity, so creating a module is how you escape it.**
+- **A shared primitive reached through a private import means the package boundary is wrong.**
+- **A fail-CLOSED gate is scoped by module identity, so creating a module is how you escape it** --
+  and SPLITTING one is creating several, because the allowlist matches a package PREFIX. Name the
+  ONE leaf that still needs the exemption (`transfer_service` paid; `status_seam` nearly did).
+- **TWO INDEPENDENT FACTS IN ONE REQUEST ARE NOT ALTERNATIVES**, and a door that decides which the
+  caller meant drops the other (X-au-c3: a corrected Actual archived nothing, and answered 200).
+- **A CONSTRAINT CANNOT HOLD A CONVERSATION.** The door owes the CHECK's rule in words with the
+  repair in the message, or the user meets it as "invalid reference" (X-au-c3).
 
 ## The surface a human actually sees
 
@@ -84,9 +89,8 @@ no reconciler.
 - **A FRAGMENT'S MOUNT IS PART OF ITS CORRECTNESS, AND A RESPONSE CAN DESTROY ITS OWN MESSAGE.** An
   out-of-band swap into a region that re-fetches on the event the SAME response fires is a race the
   response always loses. Ask what re-renders the target, not just whether it exists (N-199).
-- **ONE SURFACE GETTING A RULE RIGHT HIDES THAT THE SHARED PARTIAL NEVER GOT IT.** Loan balances had
-  been read-only on the cockpit for a year; the partial the other four surfaces include had not, so
-  the rule looked shipped and was one-fifth shipped.
+- **ONE SURFACE GETTING A RULE RIGHT HIDES THAT THE SHARED PARTIAL NEVER GOT IT.** Loan balances
+  were read-only on the cockpit for a year; the partial four other surfaces include was not.
 - **A JS visibility defect is invisible to pytest** -- drive it in a browser (X-f2-b: 8,556 green
   over a toast that reached the DOM and never appeared).
 
@@ -111,9 +115,8 @@ no reconciler.
   field that does not exist.
 - **A test whose fixture has no data cannot distinguish two producers.**
 - **WHEN A CHANGE MAKES THE CORRECT FIGURE EQUAL THE OLD DEFECT'S FIGURE, THE FIXTURE MUST MOVE.**
-  X-f3b made a part-spent envelope's subtotal `posted + reserved`, which for an under-budget row is
-  exactly the estimate the F-002 defect printed -- so the guard's `$500` assertion could no longer
-  tell them apart, and the fixture had to be OVERSPENT to separate all three answers.
+  X-f3b made a part-spent envelope `posted + reserved`, which for an under-budget row is exactly the
+  estimate F-002 printed, so the `$500` assertion stopped telling them apart (fixture: OVERSPEND).
 - **`hasattr` on a dataclass is not a test**, and neither is `is not None` after `isinstance`.
 - **A list returned for its COUNT must have its count asserted.**
 - **CONVERTING A SURFACE TO "RAISE" BLINDS EVERY TEST WHOSE FIXTURE CANNOT REACH IT.**
@@ -156,13 +159,11 @@ no reconciler.
 - **COUNT THE CALL GRAPH, NOT THE CALL SITES.** One finding said four spellings; the tree held 18.
 - **A COUNT IN A DOCSTRING IS A CLAIM, AND THIS ARC KEEPS WRITING IT WRONG.**
 - **BEFORE READING A CLEAN DIFF, CHECK THE FIGURE THE STEP IS ABOUT IS NOT NULL IN IT.** C2-f2c's
-  harness was byte-identical over 39,939 lines while `retirement_marker_index` -- the one figure its
-  row (**P48**) names -- was `None` on every one. A clone samples one owner's CHOICES, not the state
-  space: WRITE the state in and re-capture both sides.
+  harness was byte-identical over 39,939 lines while `retirement_marker_index` (**P48**) was `None`
+  on every one. A clone samples one owner's CHOICES: WRITE the state in and re-capture both sides.
 - **PLANT THE FIRING CONTROL AT EVERY WIRING SITE, AND CHECK THE PLANTED DEFECT IS REACHABLE ON THE
-  REAL DATA.** C2-f2a's first dropped the axis's FIRST period and moved `$0.00` -- those periods
-  precede the account's latest assertion -- so the harness read blind when it was not; at the LAST
-  period it moved `-$182.29` and `-$190.39`.
+  REAL DATA.** C2-f2a's first dropped the axis's FIRST period and moved `$0.00` (they precede the
+  latest assertion), so the harness read blind; at the LAST it moved `-$182.29` and `-$190.39`.
 
 ## Working this plan
 
