@@ -67,7 +67,7 @@ from app.models.transaction import Transaction
 from app.models.user import User
 from app.services import (
     calendar_service,
-    dashboard_pulse_service,
+    dashboard_service,
     loan_payment_service,
     loan_posting_service,
     pay_period_service,
@@ -217,7 +217,7 @@ def _pulse(user_id):
     Both read the ONE contributions map this step introduces, so a divergence
     between them would show here as well as a move in either.
     """
-    section = _guard("pulse", lambda: dashboard_pulse_service
+    section = _guard("pulse", lambda: dashboard_service
                      .compute_pulse_section(user_id))
     if section is None or "RAISED" in section:
         return section

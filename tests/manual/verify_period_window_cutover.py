@@ -29,7 +29,7 @@ check beside them.
 * ``spending_report_service.compute_spending_report`` -- its window resolution
   moved onto the same calendar, and its trailing series resolves thirteen
   windows, so an off-by-one period at a window edge moves a bar.
-* ``dashboard_pulse_service.compute_pulse_section`` -- the hero's
+* ``dashboard_service.compute_pulse_section`` -- the hero's
   next-paycheck caption and the still-due panel's next-period range now come
   from ONE value where they were two queries.
 * the companion navigation -- the prev/next links.  **Its probe went at plan
@@ -111,7 +111,7 @@ from app.models.pay_period import PayPeriod
 from app.models.user import User
 from app.services import (
     calendar_service,
-    dashboard_pulse_service,
+    dashboard_service,
     spending_report_service,
 )
 from app.services.pay_calendar import calendar_for
@@ -322,7 +322,7 @@ def _pulse_figures(user_id):
     """Dump the pulse region, whose next-paycheck answers were two queries."""
     return _guard(
         "compute_pulse_section",
-        lambda: _plain(dashboard_pulse_service.compute_pulse_section(user_id)),
+        lambda: _plain(dashboard_service.compute_pulse_section(user_id)),
     )
 
 

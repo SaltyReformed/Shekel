@@ -55,7 +55,7 @@ between here and it**, measured with ``grep -rl "BalanceContext\\.build("
 app/services/`` -- the trailing paren matters, because the bare name also
 matches the docstring in ``retirement_projection`` that records the call this
 leaf DELETED, and reports nine.  They are ``calendar_service``,
-``dashboard_pulse_service``, ``dashboard_service``,
+``dashboard_service._pulse``, ``dashboard_service``,
 ``investment_dashboard_service/_context``,
 ``investment_dashboard_service/_orchestrator``, ``loan_recurrence_sync``,
 ``savings_dashboard_service/_orchestrator`` and ``tax_report_service``.  The

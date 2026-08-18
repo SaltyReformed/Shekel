@@ -105,7 +105,7 @@ class DebtSummary:
     THE shape of the debt summary, stated ONCE (plan step X-s3, ruling R-BD,
     finding N-106).  It was a dict assembled across four modules -- six keys
     here, three more mutated in by the DTI applier, a tenth added by a copy in
-    ``dashboard_pulse_service``, an eleventh mutated in by the dashboard route
+    ``dashboard_service._pulse``, an eleventh mutated in by the dashboard route
     -- so no single place said what a consumer could read, and the contract
     lived in a comment at the top of ``dashboard/_tracks.html`` because there
     was nowhere else to put it.

@@ -10,7 +10,7 @@ the anchor true-up (the click-to-edit balance), whose Cancel / Escape
 revert target is :func:`balance_section`.
 
 Route-layer serialization lives here, NOT in the producer
-(``dashboard_pulse_service``, which is Flask-free and money-precise):
+(``dashboard_service._pulse``, which is Flask-free and money-precise):
 ``float`` exists only at this Chart.js boundary -- the projected
 end-balance series and threshold are serialized to a JSON string for the
 ``data-chart`` attribute, and the debt track's principal-paid fraction is
@@ -24,11 +24,7 @@ from flask import Blueprint, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from app.extensions import db
-from app.services import (
-    dashboard_pulse_service,
-    dashboard_service,
-    pay_period_admin,
-)
+from app.services import dashboard_service, pay_period_admin
 from app.services.account_resolver import resolve_grid_account
 from app.services.savings_dashboard_service import DebtSummary
 from app.utils.auth_helpers import require_owner
@@ -213,10 +209,10 @@ def page():
     ) is not None
 
     pulse = _serialize_pulse(
-        dashboard_pulse_service.compute_pulse_section(current_user.id)
+        dashboard_service.compute_pulse_section(current_user.id)
     )
     tracks = _serialize_tracks(
-        dashboard_pulse_service.compute_tracks_section(current_user.id)
+        dashboard_service.compute_tracks_section(current_user.id)
     )
 
     return render_template(
@@ -254,7 +250,7 @@ def pulse_section():
         return redirect(url_for("dashboard.page"))
 
     pulse = _serialize_pulse(
-        dashboard_pulse_service.compute_pulse_section(current_user.id)
+        dashboard_service.compute_pulse_section(current_user.id)
     )
     if pulse is None:
         return render_template("dashboard/_no_period.html")

@@ -20,7 +20,7 @@ next step re-writes it or skips it.  This is that probe, in the repository.
 * **The dashboard balance section and the PULSE hero** -- both resolve the
   account's assertion for their own caption and staleness test
   (``dashboard_service.compute_balance_section``,
-  ``dashboard_pulse_service.compute_pulse_section``).
+  ``dashboard_service.compute_pulse_section``).
 * **The savings dashboard, including the ARCHIVED drawer** -- an archived
   account receives no seam call at all, so its "Last Balance" line is a direct
   assertion read (``savings_dashboard_service.compute_dashboard_data``).
@@ -71,7 +71,7 @@ from app.models.user import User
 from app.services import (
     balance_at,
     cash_ledger,
-    dashboard_pulse_service,
+    dashboard_service,
     dashboard_service,
     home_equity_service,
     reconcile_service,
@@ -191,7 +191,7 @@ def _user_surfaces(user_id):
         ),
         "dashboard_pulse": _guarded(
             "dashboard_pulse",
-            lambda: dashboard_pulse_service.compute_pulse_section(user_id),
+            lambda: dashboard_service.compute_pulse_section(user_id),
         ),
         "savings_dashboard": _guarded(
             "savings_dashboard",

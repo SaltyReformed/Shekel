@@ -1,7 +1,7 @@
 """
 Shekel Budget App -- Dashboard Pulse / Tracks Producer Tests (Loop B B-1)
 
-Tests for ``dashboard_pulse_service`` -- the additive producers behind the
+Tests for ``dashboard_service._pulse`` -- the additive producers behind the
 Terminal Road dashboard rebuild:
 
   * ``compute_pulse_section`` and its helpers: the as-of-today hero
@@ -36,7 +36,8 @@ from app.models.account import AccountAnchorHistory
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
-from app.services import account_service, cash_ledger, dashboard_pulse_service, pay_period_write
+from app.services import account_service, cash_ledger, dashboard_service, pay_period_write
+from app.services.dashboard_service import _pulse
 from app.services import transfer_service
 from app.services import balance_at, pay_period_service, savings_dashboard_service
 from app.services.balance_at import BalanceContext
@@ -118,7 +119,7 @@ class TestPulseHero:
         2026-03-20); its start_date is 2026-03-13 and end_date 2026-03-26.
         """
         with app.app_context():
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             hero = result["hero"]
@@ -147,7 +148,7 @@ class TestPulseHero:
         could not have caught the divergence and the label is what settles it.
         """
         with app.app_context():
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             assert result["hero"]["balance"] == Decimal("1000.00")
@@ -159,7 +160,7 @@ class TestPulseHero:
         start_date > today is period 6 (starts 2026-03-27).
         """
         with app.app_context():
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             assert (
@@ -198,7 +199,7 @@ class TestPulseHero:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             assert result is not None
@@ -221,7 +222,7 @@ class TestPulseHero:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             assert result["hero"]["is_stale"] is False
@@ -243,7 +244,7 @@ class TestPulseHero:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             assert result["hero"]["is_stale"] is True
@@ -276,7 +277,7 @@ class TestPulseHero:
                 seed_user["account"].id,
             ).observed_day
             assert last_observed is None
-            assert dashboard_pulse_service._anchor_is_stale(
+            assert _pulse._anchor_is_stale(
                 last_observed, seed_user["settings"],
             ) is True
 
@@ -308,7 +309,7 @@ class TestPulseChart:
             db.session.commit()
             forward, balances = self._periods_and_balances(periods)
 
-            chart = dashboard_pulse_service._pulse_chart(forward, balances, None)
+            chart = _pulse._chart(forward, balances, None)
             assert len(chart["points"]) == 13
             # The points are the first 13 periods, in order.
             assert [pt["end_date"] for pt in chart["points"]] == [
@@ -327,7 +328,7 @@ class TestPulseChart:
             assert len(forward) == 5
             balances = {p.id: Decimal("250.00") for p in forward}
 
-            chart = dashboard_pulse_service._pulse_chart(forward, balances, None)
+            chart = _pulse._chart(forward, balances, None)
             assert len(chart["points"]) == 5
             assert all(
                 pt["balance"] == Decimal("250.00") for pt in chart["points"]
@@ -345,7 +346,7 @@ class TestPulseChart:
             balances = {p.id: Decimal("100.00") for p in forward}
             settings = seed_user["settings"]
 
-            chart = dashboard_pulse_service._pulse_chart(
+            chart = _pulse._chart(
                 forward, balances, settings,
             )
             assert chart["low_balance_threshold"] == Decimal("500")
@@ -366,7 +367,7 @@ class TestPulseChart:
             settings.low_balance_threshold = 800
             db.session.commit()
 
-            chart = dashboard_pulse_service._pulse_chart(
+            chart = _pulse._chart(
                 forward, balances, settings,
             )
             assert chart["low_balance_threshold"] == Decimal("800")
@@ -379,7 +380,7 @@ class TestPulseChart:
             forward = seed_periods[_CURRENT_IDX:]
             balances = {p.id: Decimal("100.00") for p in forward}
 
-            chart = dashboard_pulse_service._pulse_chart(forward, balances, None)
+            chart = _pulse._chart(forward, balances, None)
             assert chart["low_balance_threshold"] is None
 
 
@@ -400,7 +401,7 @@ class TestPulseTrough:
             values = ["500.00", "400.00", "300.00", "350.00", "450.00"]
             balances = {p.id: Decimal(v) for p, v in zip(forward, values)}
 
-            trough = dashboard_pulse_service._pulse_trough(
+            trough = _pulse._trough(
                 forward, balances, seed_periods[_CURRENT_IDX],
             )
             assert trough["balance"] == Decimal("300.00")
@@ -429,7 +430,7 @@ class TestPulseTrough:
 
             # Treat the whole generated run as the forward horizon and its
             # first period as the current (offset origin) -- this is a pure
-            # _pulse_trough / _pulse_chart test, independent of today.
+            # _trough / _chart test, independent of today.
             forward = periods
             current = forward[0]
             assert len(forward) == 15  # 15 forward periods; chart caps at 13.
@@ -439,12 +440,12 @@ class TestPulseTrough:
             balances[dip_period.id] = Decimal("-250.00")
 
             # The chart sees only the first 13 -- all positive.
-            chart = dashboard_pulse_service._pulse_chart(forward, balances, None)
+            chart = _pulse._chart(forward, balances, None)
             assert len(chart["points"]) == 13
             assert all(pt["balance"] > Decimal("0") for pt in chart["points"])
 
             # The trough scans all 15 and finds the dip beyond the chart.
-            trough = dashboard_pulse_service._pulse_trough(
+            trough = _pulse._trough(
                 forward, balances, current,
             )
             assert trough["balance"] == Decimal("-250.00")
@@ -457,7 +458,7 @@ class TestPulseTrough:
         """An empty end-balance map -> trough is None (no projection)."""
         with app.app_context():
             forward = seed_periods[_CURRENT_IDX:]
-            trough = dashboard_pulse_service._pulse_trough(
+            trough = _pulse._trough(
                 forward, {}, seed_periods[_CURRENT_IDX],
             )
             assert trough is None
@@ -487,7 +488,7 @@ class TestPulsePeak:
             values = ["300.00", "400.00", "500.00", "450.00", "350.00"]
             balances = {p.id: Decimal(v) for p, v in zip(forward, values)}
 
-            peak = dashboard_pulse_service._pulse_peak(
+            peak = _pulse._peak(
                 forward, balances, seed_periods[_CURRENT_IDX],
             )
             assert peak["balance"] == Decimal("500.00")
@@ -511,7 +512,7 @@ class TestPulsePeak:
             values = ["500.00", "400.00", "300.00", "350.00", "450.00"]
             balances = {p.id: Decimal(v) for p, v in zip(forward, values)}
 
-            peak = dashboard_pulse_service._pulse_peak(
+            peak = _pulse._peak(
                 forward, balances, seed_periods[_CURRENT_IDX],
             )
             assert peak["balance"] == Decimal("500.00")
@@ -540,7 +541,7 @@ class TestPulsePeak:
 
             # Treat the whole generated run as the forward horizon and its
             # first period as the current (offset origin) -- this is a pure
-            # _pulse_peak / _pulse_chart test, independent of today.
+            # _peak / _chart test, independent of today.
             forward = periods
             current = forward[0]
             assert len(forward) == 15  # 15 forward periods; chart caps at 13.
@@ -550,14 +551,14 @@ class TestPulsePeak:
             balances[rise_period.id] = Decimal("1250.00")
 
             # The chart sees only the first 13 -- all 500.00, none the peak.
-            chart = dashboard_pulse_service._pulse_chart(forward, balances, None)
+            chart = _pulse._chart(forward, balances, None)
             assert len(chart["points"]) == 13
             assert all(
                 pt["balance"] == Decimal("500.00") for pt in chart["points"]
             )
 
             # The peak scans all 15 and finds the rise beyond the chart.
-            peak = dashboard_pulse_service._pulse_peak(
+            peak = _pulse._peak(
                 forward, balances, current,
             )
             assert peak["balance"] == Decimal("1250.00")
@@ -570,7 +571,7 @@ class TestPulsePeak:
         """An empty end-balance map -> peak is None (no projection)."""
         with app.app_context():
             forward = seed_periods[_CURRENT_IDX:]
-            peak = dashboard_pulse_service._pulse_peak(
+            peak = _pulse._peak(
                 forward, {}, seed_periods[_CURRENT_IDX],
             )
             assert peak is None
@@ -585,7 +586,7 @@ class TestPulsePeak:
         the highest point in the all-else-flat horizon (the later periods
         carry the same 2,200.00 balance forward, so the peak is the FIRST
         such period -- the current one, offset 0).  This proves the
-        producer wires _pulse_peak through, not just the helper in
+        producer wires _peak through, not just the helper in
         isolation.
         """
         with app.app_context():
@@ -602,7 +603,7 @@ class TestPulsePeak:
             db.session.add(income)
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             peak = result["peak"]
@@ -634,7 +635,7 @@ class TestPulseStillDue:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             still = result["still_due"]
@@ -659,7 +660,7 @@ class TestPulseStillDue:
             _add_entry(db.session, seed_user, txn, "30.00", date(2026, 3, 19))
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             assert result["still_due"]["current_period"] == Decimal("120.00")
@@ -682,7 +683,7 @@ class TestPulseStillDue:
             _add_entry(db.session, seed_user, txn, "60.00", date(2026, 3, 19))
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             assert result["still_due"]["current_period"] == Decimal("0.00")
@@ -703,7 +704,7 @@ class TestPulseStillDue:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             assert result["still_due"]["current_period"] == Decimal("150.00")
@@ -748,7 +749,7 @@ class TestPulseStillDue:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             # The transfer-out shadow is the only obligation: $400.00.
@@ -773,7 +774,7 @@ class TestPulseStillDue:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             still = result["still_due"]
@@ -806,7 +807,7 @@ class TestPulseStillDue:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             still = result["still_due"]
@@ -830,7 +831,7 @@ class TestPulseStillDue:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             assert result["still_due"]["current_period"] == Decimal("0.00")
@@ -858,7 +859,7 @@ class TestPulseStreet:
             today_offset = (2026-03-20 - 2026-03-13).days = 7.
         """
         with app.app_context():
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             street = result["street"]
@@ -887,7 +888,7 @@ class TestPulseStreet:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             street = result["street"]
@@ -925,7 +926,7 @@ class TestPulseDueSoon:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             names = [b["name"] for b in result["due_soon"]]
@@ -951,7 +952,7 @@ class TestPulseDueSoon:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             due_soon = result["due_soon"]
@@ -982,7 +983,7 @@ class TestPulseDueSoon:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             assert [b["name"] for b in result["due_soon"]] == ["Early", "Late"]
@@ -1018,7 +1019,7 @@ class TestPulseDueSoonStations:
                 )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             stations = result["due_soon_stations"]
@@ -1051,7 +1052,7 @@ class TestPulseDueSoonStations:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             stations = result["due_soon_stations"]
@@ -1073,7 +1074,7 @@ class TestPulseDueSoonStations:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             stations = result["due_soon_stations"]
@@ -1099,7 +1100,7 @@ class TestPulseDueSoonStations:
                 )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             station = result["due_soon_stations"][0]
@@ -1128,7 +1129,7 @@ class TestPulseDueSoonStations:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             stations = result["due_soon_stations"]
@@ -1198,7 +1199,7 @@ class TestHeroChartIdentity:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             hero_balance = result["hero"]["balance"]
@@ -1206,8 +1207,6 @@ class TestHeroChartIdentity:
             assert hero_balance == first_point
             # The anchor-editor's revert fragment renders this same control
             # from its own producer call -- the pair that can still drift.
-            # pylint: disable=import-outside-toplevel
-            from app.services import dashboard_service
             assert dashboard_service.compute_balance_section(
                 seed_user["user"].id,
             )["hero"]["balance"] == hero_balance
@@ -1275,7 +1274,7 @@ class TestPulseCashFlowViewForAnyKindGridAccount:
             # interest, so the kind-correct map exceeds the flat cash carry.
             assert accrued[current.id] > Decimal("50000.00")
 
-            section = dashboard_pulse_service.compute_pulse_section(
+            section = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
 
@@ -1320,7 +1319,7 @@ class TestPulseCashFlowViewForAnyKindGridAccount:
             modeled = balance_at.balance_at(inv, bctx, _TODAY)
             assert modeled > Decimal("100000.00")
 
-            section = dashboard_pulse_service.compute_pulse_section(
+            section = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             # The hero is the cash carry: anchor $100,000.00 carried flat to
@@ -1342,7 +1341,7 @@ class TestPulseSectionDegraded:
         get_current_period returns None and the producer short-circuits.
         """
         with app.app_context():
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             assert result is None
@@ -1352,7 +1351,7 @@ class TestPulseSectionDegraded:
     ):
         """A populated pulse section carries exactly the eight region keys."""
         with app.app_context():
-            result = dashboard_pulse_service.compute_pulse_section(
+            result = dashboard_service.compute_pulse_section(
                 seed_user["user"].id,
             )
             assert set(result.keys()) == {
@@ -1392,7 +1391,7 @@ class TestTracksGoals:
             db.session.add(goal)
             db.session.commit()
 
-            tracks = dashboard_pulse_service.compute_tracks_section(
+            tracks = dashboard_service.compute_tracks_section(
                 seed_user["user"].id,
             )
             goal_tracks = [g for g in tracks["goals"] if g["account_id"] == acct.id]
@@ -1437,7 +1436,7 @@ class TestTracksGoals:
             db.session.add(goal)
             db.session.commit()
 
-            tracks = dashboard_pulse_service.compute_tracks_section(
+            tracks = dashboard_service.compute_tracks_section(
                 seed_user["user"].id,
             )
             track = next(
@@ -1460,7 +1459,7 @@ class TestTracksGoals:
     def test_no_goals_empty_list(self, app, seed_user, seed_periods, db):
         """No active goals -> goals is an empty list."""
         with app.app_context():
-            tracks = dashboard_pulse_service.compute_tracks_section(
+            tracks = dashboard_service.compute_tracks_section(
                 seed_user["user"].id,
             )
             assert tracks["goals"] == []
@@ -1478,7 +1477,7 @@ class TestTracksDebt:
     def test_no_debt_returns_none(self, app, seed_user, seed_periods, db):
         """No loan accounts -> debt is None (no track rendered)."""
         with app.app_context():
-            tracks = dashboard_pulse_service.compute_tracks_section(
+            tracks = dashboard_service.compute_tracks_section(
                 seed_user["user"].id,
             )
             assert tracks["debt"] is None
@@ -1502,7 +1501,7 @@ class TestTracksDebt:
         with app.app_context():
             create_loan_account(seed_user, db.session, name="Pulse Loan")
 
-            tracks = dashboard_pulse_service.compute_tracks_section(
+            tracks = dashboard_service.compute_tracks_section(
                 seed_user["user"].id,
             )
             debt = tracks["debt"]
@@ -1558,7 +1557,7 @@ class TestTracksDebt:
                 origination_date=_TODAY, payment_day=_TODAY.day,
             )
 
-            tracks = dashboard_pulse_service.compute_tracks_section(
+            tracks = dashboard_service.compute_tracks_section(
                 seed_user["user"].id,
             )
             debt = tracks["debt"]
@@ -1602,7 +1601,7 @@ class TestTracksDebt:
                 _orchestrator, "_compute_account_projections", _counting,
             )
 
-            tracks = dashboard_pulse_service.compute_tracks_section(
+            tracks = dashboard_service.compute_tracks_section(
                 seed_user["user"].id,
             )
 
@@ -1650,7 +1649,7 @@ class TestTracksIncomeRelativeGoal:
             db.session.add(goal)
             db.session.commit()
 
-            tracks = dashboard_pulse_service.compute_tracks_section(
+            tracks = dashboard_service.compute_tracks_section(
                 seed_user["user"].id,
             )
             track = next(

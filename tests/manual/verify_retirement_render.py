@@ -97,7 +97,7 @@ from app import create_app
 from app.extensions import db
 from app.models.user import User
 from app.services import (
-    dashboard_pulse_service,
+    dashboard_service,
     retirement_dashboard_service,
     retirement_levers,
     retirement_readiness,
@@ -495,7 +495,7 @@ def _savings(user_id):
         # exercises neither that sharing nor that caller (adversarial code
         # review, 2026-08-16).
         "dashboard_tracks": _plain(_guard("dashboard_tracks", lambda: (
-            dashboard_pulse_service.compute_tracks_section(user_id)
+            dashboard_service.compute_tracks_section(user_id)
         ))),
     }
 

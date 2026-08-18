@@ -1299,7 +1299,7 @@ class TestTrueUp:
         * the DASHBOARD carries one, and it was emitted there until this step.
           That was a redundant SECOND render of one fact -- ``#pulse-section``
           re-renders the same caption from ``reconciled_through``, which
-          ``dashboard_pulse_service`` states is provably equal to the
+          ``dashboard_service._pulse`` states is provably equal to the
           ``resolve_anchor`` day the snippet carries -- and it was the
           mechanism that destroyed the back-dated acknowledgement riding on it
           (finding N-199).
