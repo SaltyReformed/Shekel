@@ -283,7 +283,6 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       **P57**-**P59**, **P61**, **P65**-**P66** and three of **P56**'s eight modules (five survive);
       opened **P52**-**P54**, **P60**, **P62**-**P63**.
 
-
 - [ ] **C2-f3 -- the rest, and the module's last two readers.** Every remaining site loads
       `calendar_for` ONCE per producer and threads it; the three write-path reads in
       `pay_period_admin` that hand ORM ROWS to `pay_period_write` move into that writer, which
@@ -320,9 +319,9 @@ their last period's LENGTH when they have no `budget.pay_schedule` row, `derive_
 anything outside 1..365, and `app/error_handlers.py` leaves the raise on a bare 500. Two renders
 joined the blast radius after C2-c widened it to every balance page:
 
-* **`C2-f2b`** -- `/grid` derives the calendar BEFORE it looks at an account, so the zero-ACCOUNT
+- **`C2-f2b`** -- `/grid` derives the calendar BEFORE it looks at an account, so the zero-ACCOUNT
   render, which used to reach `empty_grid_view()` without one, raises with the rest.
-* **`C2-f2e`** -- `/` and both its fragments answer "which period is current" from the derivation,
+- **`C2-f2e`** -- `/` and both its fragments answer "which period is current" from the derivation,
   so a legacy owner whose stored span no longer covers today reaches the calendar where the pulse
   producer's `None` used to give them the "No pay period covers today" CTA. That page's ZERO-ACCOUNT
   render is deliberately still safe: the account guard runs before the derivation, which is the
