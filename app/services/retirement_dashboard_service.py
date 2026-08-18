@@ -281,6 +281,7 @@ def _resolve_merit_horizon(settings):
 def compute_pension_summary(
     pensions: list[PensionProfile],
     merit_horizon_years: int,
+    as_of: date,
     month_offset: int = 0,
 ) -> PensionSummary:
     """Aggregate the pension benefit across the user's active pensions.
@@ -296,6 +297,17 @@ def compute_pension_summary(
         merit_horizon_years: The merit-raise horizon (years) forwarded to
             :func:`~app.services.pension_calculator.project_salaries_by_year`
             so merit/custom raises stop applying after the cutoff.
+        as_of: The read pass's pinned day, whose YEAR opens the salary path.
+            It was ``date.today()`` here until pay-calendar plan step C2-f2e
+            (ledger row **P55**): one of the last three producers on
+            ``/retirement`` to resolve the clock for itself, on a render that
+            already held a pass with a pinned day.  The three are asked once
+            per plan point and the retire-later lever probes about ten, so one
+            render read the clock about thirteen times -- and the reads are
+            ``.year``, so they diverge across a NEW YEAR: the verdict card
+            projecting its salary path from year N while the lever card beside
+            it projects from N+1, which is the two-cards-two-clocks shape plan
+            step C2-f2d-1 measured at ``$4.18`` for the read pass itself.
         month_offset: Whole months added to EACH qualifying pension's
             planned retirement date before projecting (the P2b retire-later
             probes: a later retirement extends the salary path, the years
@@ -321,7 +333,7 @@ def compute_pension_summary(
             )
             salary_by_year = pension_calculator.project_profile_salaries(
                 profile,
-                date.today().year,
+                as_of.year,
                 planned.year,
                 merit_horizon_years,
             )
@@ -479,11 +491,11 @@ def resolve_planned_retirement_date(
 
 
 def compute_gap_net_biweekly(
-    salary_profiles: list[SalaryProfile],
+    gap: GapInputs,
     planned_retirement_date: date | None,
-    pay: _CurrentPay,
     salary_by_year: list[tuple[int, Decimal]] | None,
     merit_horizon_years: int,
+    as_of: date,
 ) -> Decimal:
     """Project the final-year net biweekly pay for the gap comparison.
 
@@ -496,27 +508,50 @@ def compute_gap_net_biweekly(
     projectable salary series.
 
     Args:
-        salary_profiles: The user's active salary profiles.
+        gap: The render's :class:`GapInputs`, read for the owner's active
+            salary profiles and the current-pay snapshot (net pay + the
+            breakdown the take-home rate's denominator comes from).  **The
+            BUNDLE rather than those two values** since pay-calendar plan step
+            C2-f2e: they arrive together, from one loader, at the single
+            production call site, and taking them apart is what put this
+            function one argument over the design threshold when the read
+            pass's day joined it.  Its ``merit_horizon_years`` is deliberately
+            NOT read here -- see the argument of that name below.
         planned_retirement_date: The projection horizon, or ``None``.
-        pay: The current-pay snapshot (net pay + breakdown gross source).
         salary_by_year: The pension-derived salary projection if one was
             already built, else ``None`` (recomputed here when needed).
         merit_horizon_years: The merit-raise horizon (years) forwarded to
             :func:`~app.services.pension_calculator.project_salaries_by_year`
-            when the salary series is recomputed here.
+            when the salary series is recomputed here.  **The PLAN POINT's
+            horizon, which equals ``gap.merit_horizon_years`` only for the
+            stored plan**: the what-if panel and the lever solver both probe
+            other values, so the bundle's stored figure would silently ignore
+            the override the user is looking at.
+        as_of: The read pass's pinned day, whose YEAR opens the salary path.
+            It was ``date.today()`` here until pay-calendar plan step C2-f2e
+            (ledger row **P55**): one of the last three producers on
+            ``/retirement`` to resolve the clock for itself, on a render that
+            already held a pass with a pinned day.  The three are asked once
+            per plan point and the retire-later lever probes about ten, so one
+            render read the clock about thirteen times -- and the reads are
+            ``.year``, so they diverge across a NEW YEAR: the verdict card
+            projecting its salary path from year N while the lever card beside
+            it projects from N+1, which is the two-cards-two-clocks shape plan
+            step C2-f2d-1 measured at ``$4.18`` for the read pass itself.
 
     Returns:
         The projected final-year net biweekly pay, or ``pay.net_biweekly``
         when the projection cannot be performed.
     """
+    pay = gap.pay
     if not (
-        salary_profiles
+        gap.salary_profiles
         and planned_retirement_date
         and pay.net_biweekly > 0
     ):
         return pay.net_biweekly
 
-    profile = salary_profiles[0]
+    profile = gap.salary_profiles[0]
     # F-20 / MED-06 / F-032: reuse the engine gross-biweekly the
     # ``net_biweekly`` line already paid for; this locks the
     # effective-take-home-rate denominator to the same per-period gross
@@ -534,7 +569,7 @@ def compute_gap_net_biweekly(
     effective_take_home_rate = pay.net_biweekly / current_gross_biweekly
     if salary_by_year is None:
         salary_by_year = pension_calculator.project_profile_salaries(
-            profile, date.today().year, planned_retirement_date.year,
+            profile, as_of.year, planned_retirement_date.year,
             merit_horizon_years,
         )
     if not salary_by_year:

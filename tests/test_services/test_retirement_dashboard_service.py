@@ -32,6 +32,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.user import UserSettings
 from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import PayCadence
 from app.services import (
     account_service,
     balance_at,
@@ -41,6 +42,7 @@ from app.services import (
     paycheck_calculator,
     retirement_dashboard_service,
     retirement_plan,
+    retirement_projection,
 )
 from app.services.retirement_plan import load_retirement_inputs, picture_at
 from tests._test_helpers import make_investment_account, mark_purchase_settled
@@ -167,6 +169,13 @@ class TestThePicturesPublishedSurface:
             assert picture.pension.per_pension[0]["benefit"] is not None
 
 
+#: The read pass's day these pure-unit gap cases pin.  ``compute_gap_net_biweekly``
+#: takes it since pay-calendar plan step C2-f2e; every case below supplies a
+#: series explicitly, so it reaches no projection and only the SIGNATURE
+#: depends on it -- which is why one literal serves all three.
+_AS_OF = date(2026, 3, 20)
+
+
 class TestComputeGapNetBiweekly:
     """Pin the gap-comparison net-biweekly scaling (quality-pass B7).
 
@@ -183,6 +192,27 @@ class TestComputeGapNetBiweekly:
     no ref_cache, no paycheck engine) so the asserted numbers depend only
     on the scaling math under test.
     """
+
+
+    def _gap(self, profile, pay, merit_horizon_years=5):
+        """Wrap a profile and a pay snapshot in the bundle the producer takes.
+
+        ``compute_gap_net_biweekly`` reads the owner's salary profiles and the
+        current-pay snapshot off its :class:`GapInputs` since pay-calendar plan
+        step C2-f2e, so these cases build the bundle the one production caller
+        builds instead of handing the two values in loose.  The other four
+        fields are inert here: the producer reads neither the settings, the
+        pensions, the bundle's STORED merit horizon (the argument carries the
+        plan point's), nor the pay cadence.
+        """
+        return retirement_dashboard_service.GapInputs(
+            settings=None,
+            pensions=[],
+            salary_profiles=[profile],
+            pay=pay,
+            merit_horizon_years=merit_horizon_years,
+            pay_cadence=PayCadence(cadence_days=14),
+        )
 
     def test_scales_final_gross_by_current_take_home_rate(self):
         """Final-year gross is scaled by today's net/gross take-home rate.
@@ -219,7 +249,8 @@ class TestComputeGapNetBiweekly:
         # so the helper never recomputes it (the horizon only affects the
         # internal project_salaries_by_year call on the None branch).
         result = retirement_dashboard_service.compute_gap_net_biweekly(
-            [profile], date(2055, 1, 1), pay, salary_by_year, 5,
+            self._gap(profile, pay), date(2055, 1, 1), salary_by_year, 5,
+            _AS_OF,
         )
         assert result == Decimal("4030.77")
 
@@ -237,7 +268,8 @@ class TestComputeGapNetBiweekly:
             current_breakdown=None,
         )
         result = retirement_dashboard_service.compute_gap_net_biweekly(
-            [profile], None, pay, [(2026, Decimal("120000.00"))], 5,
+            self._gap(profile, pay), None,
+            [(2026, Decimal("120000.00"))], 5, _AS_OF,
         )
         assert result == Decimal("1800.00")
 
@@ -256,9 +288,141 @@ class TestComputeGapNetBiweekly:
             current_breakdown=None,
         )
         result = retirement_dashboard_service.compute_gap_net_biweekly(
-            [profile], date(2055, 1, 1), pay, [(2055, Decimal("131000.00"))], 5,
+            self._gap(profile, pay), date(2055, 1, 1),
+            [(2055, Decimal("131000.00"))], 5, _AS_OF,
         )
         assert result == Decimal("1500.00")
+
+
+class TestTheRenderDayOpensTheSalaryPath:
+    """Every salary path on ``/retirement`` starts at the READ PASS's year.
+
+    The three producers that open one -- :func:`compute_pension_summary`,
+    :func:`compute_gap_net_biweekly` and
+    :func:`~app.services.retirement_projection.build_employer_salary_basis` --
+    each called ``date.today().year`` for themselves until pay-calendar plan
+    step **C2-f2e**, which is ledger row **P55**.  They run once per PLAN POINT
+    and the retire-later lever probes about ten, so one render read the clock
+    about thirteen times; because the reads are ``.year`` they diverge only
+    across a NEW YEAR, and then the verdict card projects its path from year N
+    while the lever card beside it projects from N+1.
+
+    Each case asserts the path MOVES with the supplied day rather than sitting
+    where the frozen fixture clock is.  Asserting "it starts this year" would
+    pass on both trees, every day but one.
+
+    **Measured on the merge base ``5ab457b7``**: the same pension, projected
+    through ``compute_pension_summary`` with the suite's own ``freeze_today``
+    set to 2026-12-31 and then to 2027-01-01, gave
+    ``[2026, 2027, 2028, 2029, 2030]`` and ``[2027, 2028, 2029, 2030]`` -- a
+    salary path one year shorter for no reason but the moment the process ran.
+    (The first attempt at that probe used ``time_machine.travel`` and PASSED:
+    these modules bind ``date`` at import, which is what
+    ``tests._test_helpers.freeze_today`` exists to reach and what a bare
+    traveller does not.)
+    """
+
+    def _profile(self):
+        """A raise-free profile, so the projected series is flat and exact."""
+        return SalaryProfile(annual_salary=Decimal("100000.00"),
+                             pay_periods_per_year=26)
+
+    def test_the_pension_path_opens_at_the_pass_year(self):
+        """``compute_pension_summary`` projects from the pass's year.
+
+        A pension retiring 2030-06-30, projected from a pass pinned to 2027
+        and again from one pinned to 2028: the series opens on the pass's year
+        both times and is one year shorter the second time.
+        """
+        pension = PensionProfile(
+            planned_retirement_date=date(2030, 6, 30),
+            salary_profile=self._profile(),
+            benefit_multiplier=Decimal("0.02"),
+            consecutive_high_years=3,
+            hire_date=date(2010, 1, 1),
+        )
+
+        early = retirement_dashboard_service.compute_pension_summary(
+            [pension], 5, date(2027, 3, 20),
+        )
+        late = retirement_dashboard_service.compute_pension_summary(
+            [pension], 5, date(2028, 3, 20),
+        )
+
+        assert [year for year, _ in early.salary_by_year] == [
+            2027, 2028, 2029, 2030,
+        ]
+        assert [year for year, _ in late.salary_by_year] == [
+            2028, 2029, 2030,
+        ]
+
+    def test_the_gap_path_opens_at_the_pass_year(self):
+        """``compute_gap_net_biweekly``'s recompute branch uses the pass's year.
+
+        The branch runs when no pension supplied a series -- an owner with a
+        retirement date in SETTINGS and no pension profile, which is reachable
+        and is why the recompute exists.  A raise-free $100,000.00 profile
+        projects flat, so the FIGURE is the same either way; what has to differ
+        is the series the projection walked, and the observable difference is
+        the horizon guard: a pass pinned PAST the retirement date projects an
+        empty series and the producer returns the current net unchanged.
+        """
+        pay = retirement_dashboard_service._CurrentPay(
+            net_biweekly=Decimal("2000.00"),
+            current_breakdown=paycheck_calculator.PaycheckBreakdown(
+                period=paycheck_calculator.PeriodInfo(period_id=1),
+                earnings=paycheck_calculator.Earnings(
+                    annual_salary=Decimal("100000.00"),
+                    gross_biweekly=Decimal("2500.00"),
+                ),
+            ),
+        )
+        gap = self.__class__._gap_bundle(self._profile(), pay)
+
+        # Pass pinned BEFORE the horizon: the path is walked and the final-year
+        # gross ($100,000.00 / 26 = $3,846.15) is scaled by the take-home rate
+        # (2000 / 2500 = 0.80) -> $3,076.92.
+        before = retirement_dashboard_service.compute_gap_net_biweekly(
+            gap, date(2030, 6, 30), None, 5, date(2027, 3, 20),
+        )
+        assert before == Decimal("3076.92")
+
+        # Pass pinned AFTER it: no year to project, so the producer falls back
+        # to the current net.  A producer reading its own clock would answer
+        # the line above for both.
+        after = retirement_dashboard_service.compute_gap_net_biweekly(
+            gap, date(2030, 6, 30), None, 5, date(2032, 3, 20),
+        )
+        assert after == Decimal("2000.00")
+
+    @staticmethod
+    def _gap_bundle(profile, pay):
+        """The bundle ``compute_gap_net_biweekly`` reads its two inputs off."""
+        return retirement_dashboard_service.GapInputs(
+            settings=None,
+            pensions=[],
+            salary_profiles=[profile],
+            pay=pay,
+            merit_horizon_years=5,
+            pay_cadence=PayCadence(cadence_days=14),
+        )
+
+    def test_the_employer_basis_opens_at_the_pass_year(self):
+        """``build_employer_salary_basis`` projects from the pass's year.
+
+        A pass pinned past the horizon leaves no year to project, so the
+        resolver is ``None`` and ``growth_engine`` falls back to the constant
+        employer gross -- the documented no-horizon behavior.  Pinned before
+        it, the resolver exists.
+        """
+        profile = self._profile()
+
+        assert retirement_projection.build_employer_salary_basis(
+            [profile], date(2030, 6, 30), 5, date(2027, 3, 20),
+        ) is not None
+        assert retirement_projection.build_employer_salary_basis(
+            [profile], date(2030, 6, 30), 5, date(2032, 3, 20),
+        ) is None
 
 
 class TestTheDisplayedRates:

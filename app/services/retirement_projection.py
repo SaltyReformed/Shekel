@@ -221,6 +221,7 @@ def build_employer_salary_basis(
     salary_profiles: list[SalaryProfile],
     planned_retirement_date: date | None,
     merit_horizon_years: int,
+    as_of: date,
 ) -> Callable | None:
     """Build the per-period employer-contribution gross basis (P1b / F3).
 
@@ -244,6 +245,17 @@ def build_employer_salary_basis(
         planned_retirement_date: The projection horizon, or ``None``.
         merit_horizon_years: The merit-raise horizon forwarded to the
             salary projection.
+        as_of: The read pass's pinned day, whose YEAR opens the salary path.
+            It was ``date.today()`` here until pay-calendar plan step C2-f2e
+            (ledger row **P55**): one of the last three producers on
+            ``/retirement`` to resolve the clock for itself, on a render that
+            already held a pass with a pinned day.  The three are asked once
+            per plan point and the retire-later lever probes about ten, so one
+            render read the clock about thirteen times -- and the reads are
+            ``.year``, so they diverge across a NEW YEAR: the verdict card
+            projecting its salary path from year N while the lever card beside
+            it projects from N+1, which is the two-cards-two-clocks shape plan
+            step C2-f2d-1 measured at ``$4.18`` for the read pass itself.
 
     Returns:
         A ``period -> Decimal gross_biweekly`` callable, or ``None``.
@@ -254,7 +266,7 @@ def build_employer_salary_basis(
     profile = salary_profiles[0]
     pay_periods_per_year = profile.pay_periods_per_year or 26
     salary_by_year = pension_calculator.project_profile_salaries(
-        profile, date.today().year, planned_retirement_date.year,
+        profile, as_of.year, planned_retirement_date.year,
         merit_horizon_years,
     )
     if not salary_by_year:
