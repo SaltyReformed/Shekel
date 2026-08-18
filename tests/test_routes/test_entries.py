@@ -19,7 +19,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import AccountType, RecurrencePattern, Status, TransactionType
+from app.models.ref import AccountType, Status, TransactionType
 from app.models.user import User, UserSettings
 from app.services import pay_period_service, pay_period_write
 from app.services.auth_service import hash_password
@@ -98,9 +98,6 @@ def _create_visible_tracked_txn(seed_user, seed_periods):
     Returns:
         dict with keys: template, transaction, category.
     """
-    every_period = db.session.query(RecurrencePattern).filter_by(
-        name="Every Period",
-    ).one()
     expense_type = db.session.query(TransactionType).filter_by(
         name="Expense",
     ).one()
@@ -1732,9 +1729,6 @@ class TestEntryTransactionMismatch:
             txn_visible = seed_entry_template["transaction"]
 
             # Create a second template that is NOT companion-visible.
-            every_period = db.session.query(
-                RecurrencePattern,
-            ).filter_by(name="Every Period").one()
             expense_type = db.session.query(
                 TransactionType,
             ).filter_by(name="Expense").one()

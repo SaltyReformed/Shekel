@@ -24,7 +24,7 @@ from app.models.scenario import Scenario
 from app.models.category import Category
 from app.models.ref import (
     AccountType, CalcMethod, DeductionTiming, FilingStatus,
-    RaiseType, RecurrencePattern, TransactionType,
+    RaiseType, TransactionType,
 )
 from app.services.auth_service import hash_password
 
@@ -60,7 +60,6 @@ def _create_profile(seed_user):
     """Helper: create a salary profile with linked template and recurrence."""
     filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
     income_type = db.session.query(TransactionType).filter_by(name="Income").one()
-    every_period = db.session.query(RecurrencePattern).filter_by(name="Every Period").one()
 
     # Find or create Salary category.
     cat = (
@@ -154,7 +153,6 @@ def _create_other_user_profile():
 
     filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
     income_type = db.session.query(TransactionType).filter_by(name="Income").one()
-    every_period = db.session.query(RecurrencePattern).filter_by(name="Every Period").one()
 
     cat = Category(user_id=other_user.id, group_name="Income", item_name="Salary")
     db.session.add(cat)
@@ -1881,7 +1879,6 @@ def _create_second_user_salary_profile(second_user_data):
     """
     filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
     income_type = db.session.query(TransactionType).filter_by(name="Income").one()
-    every_period = db.session.query(RecurrencePattern).filter_by(name="Every Period").one()
 
     cat = (
         db.session.query(Category)
@@ -3340,7 +3337,6 @@ def _create_inactive_profile(seed_user, name="Old Job"):
         SalaryProfile: the created inactive profile.
     """
     income_type = db.session.query(TransactionType).filter_by(name="Income").one()
-    every_period = db.session.query(RecurrencePattern).filter_by(name="Every Period").one()
     filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
     cat = (
         db.session.query(Category)

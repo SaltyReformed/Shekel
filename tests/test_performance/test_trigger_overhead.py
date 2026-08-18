@@ -16,7 +16,7 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import RecurrencePattern, Status, TransactionType
+from app.models.ref import Status, TransactionType
 from app.services import recurrence_engine
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import make_every_period_rule
@@ -30,10 +30,14 @@ ITERATIONS = 5
 WARMUP = 2
 
 
-def _create_template(perf_user, pattern_name="Every Period"):
-    """Create a template with a recurrence rule for benchmarking."""
+def _create_template(perf_user):
+    """Create a template with a recurrence rule for benchmarking.
+
+    It took a ``pattern_name`` until plan step R9, read by nothing but a
+    ``ref.recurrence_patterns`` lookup whose result was never used; neither
+    caller ever passed one, and the table it read is dropped.
+    """
     expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-    pattern = db.session.query(RecurrencePattern).filter_by(name=pattern_name).one()
 
     rule = make_every_period_rule(db.session, perf_user["user"].id)
 

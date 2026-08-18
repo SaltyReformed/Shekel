@@ -34,6 +34,7 @@ from app.services import account_service
 from app.services.balance_at import BalanceContext
 from app.services.account_category import account_category
 from app.services.savings_dashboard_service._types import AccountProjection
+from tests.oracles.recurrence_baseline import MONTHLY
 
 
 def _projection(account, current_balance, balances=None):
@@ -750,8 +751,7 @@ class TestGoalTrajectoryDashboard:
         A $500/month recurring transfer into the savings account with
         $3,000 balance and $6,000 target should produce months_to_goal=6.
         """
-        from app.enums import RecurrencePatternEnum
-        from tests._test_helpers import make_pattern_rule
+        from tests._test_helpers import make_cadence_rule
 
         with app.app_context():
             savings_type = (
@@ -772,8 +772,8 @@ class TestGoalTrajectoryDashboard:
             # Authored through the write door (plan step R7c-b): the
             # two-axis columns are NOT NULL, so a rule naming only a pattern
             # cannot be stored.
-            rule = make_pattern_rule(
-                seed_user["user"].id, RecurrencePatternEnum.MONTHLY,
+            rule = make_cadence_rule(
+                seed_user["user"].id, MONTHLY,
             )
 
             from app.models.transfer_template import TransferTemplate

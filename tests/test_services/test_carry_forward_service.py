@@ -21,13 +21,13 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import RecurrencePatternEnum, StatusEnum
+from app.enums import StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import (
-    AccountType, RecurrencePattern, Status, TransactionType,
+    AccountType, Status, TransactionType,
 )
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
@@ -1048,15 +1048,8 @@ class TestCarryForwardOverrideSibling:
         at two.
         """
         with app.app_context():
-            from app.enums import RecurrencePatternEnum
             from app.models.recurrence_rule import RecurrenceRule
-            from app.models.ref import RecurrencePattern
 
-            pattern = (
-                db.session.query(RecurrencePattern)
-                .filter_by(name=RecurrencePatternEnum.EVERY_PERIOD.value)
-                .one()
-            )
             expense_type = (
                 db.session.query(TransactionType)
                 .filter_by(name="Expense").one()
@@ -1240,16 +1233,9 @@ class TestCarryForwardOverrideSiblingTransfers:
         override-sibling transfer.
         """
         with app.app_context():
-            from app.enums import RecurrencePatternEnum
             from app.models.recurrence_rule import RecurrenceRule
-            from app.models.ref import RecurrencePattern
 
             savings = _create_savings(seed_user)
-            pattern = (
-                db.session.query(RecurrencePattern)
-                .filter_by(name=RecurrencePatternEnum.EVERY_PERIOD.value)
-                .one()
-            )
             # Authored through the write door (plan step R7c-b): the
             # two-axis columns are NOT NULL, so a rule naming only a pattern
             # cannot be stored.  It starts on the schedule's opening payday,
@@ -1336,11 +1322,6 @@ def _create_envelope_template(
     )
     rule = None
     if with_rule:
-        every_period_pattern = (
-            db.session.query(RecurrencePattern)
-            .filter_by(name=RecurrencePatternEnum.EVERY_PERIOD.value)
-            .one()
-        )
         rule = make_every_period_rule(db.session, seed_user["user"].id)
 
     template = TransactionTemplate(

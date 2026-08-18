@@ -23,7 +23,7 @@ from app.services import account_service
 from app.services.balance_at import BalanceContext
 from app.models.ref import (
     AccountType, CalcMethod, DeductionTiming, FilingStatus,
-    RecurrencePattern, TransactionType,
+    TransactionType,
 )
 from tests._test_helpers import make_every_period_rule
 
@@ -32,7 +32,6 @@ def _create_salary_profile(seed_user, db_session):
     """Helper to create a salary profile with all required relations."""
     filing_status = db_session.query(FilingStatus).filter_by(name="single").one()
     income_type = db_session.query(TransactionType).filter_by(name="Income").one()
-    every_period = db_session.query(RecurrencePattern).filter_by(name="Every Period").one()
 
     cat = db_session.query(Category).filter_by(
         user_id=seed_user["user"].id, item_name="Salary"

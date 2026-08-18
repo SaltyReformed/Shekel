@@ -602,7 +602,7 @@ from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.transfer_template import TransferTemplate
 from app.models.ref import (
-    AccountType, FilingStatus, RecurrencePattern, Status, TransactionType,
+    AccountType, FilingStatus, Status, TransactionType,
 )
 from app.services import account_service, pay_period_write
 from app.services.auth_service import hash_password

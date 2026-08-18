@@ -18,11 +18,10 @@ from app.models.scenario import Scenario
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
-from app.models.ref import RecurrencePattern, TransactionType, Status
+from app.models.ref import TransactionType, Status
 from app import ref_cache
 from app.enums import (
     BusinessDayShiftEnum,
-    PeriodPlacementEnum,
     RecurrenceUnitEnum,
     StatusEnum,
 )
@@ -48,17 +47,20 @@ from app.exceptions import (
 )
 from app.services import account_service
 from app.services.generation_schedule import GenerationSchedule
-from tests.oracles.recurrence_baseline import CADENCE_BY_LEGACY_NAME
+from tests.oracles.recurrence_baseline import (
+    EVERY_PERIOD,
+    EVERY_N_PERIODS,
+    MONTHLY,
+    MONTHLY_FIRST,
+    QUARTERLY,
+    SEMI_ANNUAL,
+    ANNUAL,
+)
 from tests._test_helpers import (
     make_every_period_rule,
-    make_pattern_rule,
+    make_cadence_rule,
     open_calendar_hole,
 )
-
-# Map the closed set's old display names onto cadences, for
-# use in build_rule and test helpers.  Allows tests to construct a rule
-# with a pattern name string and resolve it to the integer ID via ref_cache.
-_PATTERN_NAME_TO_CADENCE = dict(CADENCE_BY_LEGACY_NAME)
 
 
 # --- Rule / period objects for the pure pattern-matching tests ---------------
@@ -93,13 +95,10 @@ _MONTHLY_DAY = 15
 #: every hand-computed assertion in this file still measures what it measured.
 _SCHEDULE_OPENS = date(2026, 1, 2)
 
-
-
-
 _CADENCES_OWN_INTERVAL = object()
 
 
-def build_rule(pattern_name="Every Period",
+def build_rule(cadence=EVERY_PERIOD,
                interval_n=_CADENCES_OWN_INTERVAL,
                starts_on=_SCHEDULE_OPENS, nominal_day=None,
                end_date=None, due_day_of_month=None):
@@ -129,75 +128,67 @@ def build_rule(pattern_name="Every Period",
 
     **``offset_periods`` and ``start_period_id`` LEFT this signature at plan
     step R7b-4**, and not because they stopped having defaults: nothing reads
-    either column now.  A rule has ONE opening bound, ``start_date``, and the
-    ``Every N Periods`` phase is the ordinal of the paycheck that bound falls
-    in.  Keeping them here would let a case state a phase the resolver
-    ignores, which is a test that agrees with itself.
+    either column now.  A rule has ONE opening bound, ``starts_on`` -- the
+    paragraph said ``start_date`` until plan step R9, four steps after R7c-c
+    dropped that column -- and the every-N-paychecks phase is the ordinal of
+    the paycheck that bound falls in.  Keeping them here would let a case
+    state a phase the resolver ignores, which is a test that agrees with
+    itself.
 
     Args:
-        pattern_name: Display name of the recurrence pattern, resolved to
-            ``pattern_id`` through ``ref_cache`` (needs an app context, as the
-            stub's own constructor did).
+        cadence: The :class:`~tests.oracles.recurrence_baseline.ShapeCadence`
+            to build.  Resolved to ``unit_id`` and ``placement_id`` through
+            ``ref_cache``, so this needs an app context as the stub's own
+            constructor did.
         interval_n: The cadence interval to store.  Defaults to the one
-            *pattern_name* itself names -- 3 for Quarterly, 6 for
-            Semi-Annual, 1 elsewhere -- because plan step R7c-c
+            *cadence* itself names -- 3 for the quarterly constant, 6 for
+            the semi-annual one, 1 elsewhere -- because plan step R7c-c
             re-pointed the column onto the two-axis interval, so a
             builder writing a bare ``1`` would state MONTHLY for a case
             that asked for quarterly.  A caller states one to vary the
             rhythm, including the non-positive values the walk's
             refusals are handed.
-        day_of_month: Scheduling day for monthly / quarterly / annual.
-        month_of_year: Month for the annual / semi-annual patterns.
-        start_date: The rule's opening validity bound, and the whole of what
-            it says about when it begins -- including which paycheck an
-            ``Every N Periods`` rule phases on.
+        starts_on: The rule's first occurrence, and the whole of what it says
+            about when it begins -- including which paycheck an every-N-
+            paychecks rule phases on.
+        nominal_day: The day the rule MEANS when *starts_on*'s month clamped
+            it.
         end_date: The rule's closing validity bound.
-        due_day_of_month: Real bill due day when it differs from
-            ``day_of_month``.
+        due_day_of_month: Real bill due day when it differs from the
+            scheduling day.
 
     Returns:
         An unsaved :class:`~app.models.recurrence_rule.RecurrenceRule`.
     """
-    # **Read from the SHARED table, never restated.**  An authored rule gets
-    # its cadence from the write door; a TRANSIENT one built for a pure test
-    # never passes through that door, and forcing a database and a calendar
-    # into a pure test would be a worse test rather than a stricter one.  What
-    # it must not do is state the mapping a second time -- a table here saying
-    # "Quarterly means MONTH / CONTAINING_DATE" is one that can disagree with
-    # the frozen shapes -- so it reads
-    # :data:`~tests.oracles.recurrence_baseline.CADENCE_BY_LEGACY_NAME`, which
-    # is where ``tests/`` states it once (plan step R7c-c).
+    # **The cadence is STATED, never decoded.**  An authored rule gets its
+    # cadence from the write door; a TRANSIENT one built for a pure test never
+    # passes through that door, and forcing a database and a calendar into a
+    # pure test would be a worse test rather than a stricter one.
     #
-    # The fallback is the unreadable-cadence case, which has no cadence to look
-    # up; the walk refuses it either way, and a test that wants that state
-    # plants an unmodelled ``unit_id`` on the row afterwards.
+    # It took a closed-set NAME through a lookup table until plan step R9,
+    # with a ``cadence is None`` fallback for a name the table did not hold.
+    # No caller ever passed one -- the unreadable-cadence cases plant an
+    # unmodelled ``unit_id`` on the row after it is built, which is the only
+    # way to reach that state now that the write door and the picker both
+    # refuse the cadence -- so the fallback went with the table.
     #
     # **The caller's interval lands on the column verbatim**, including the
     # non-positive values ``test_every_n_periods_interval_zero_raises`` and its
     # ``None`` twin hand the WALK.  That is the rule shape those tests need,
     # and the refusal they grade belongs to the walk rather than to this
     # fixture.
-    cadence = _PATTERN_NAME_TO_CADENCE.get(pattern_name)
-    if cadence is None:
-        unit = RecurrenceUnitEnum.PERIOD
-        placement = PeriodPlacementEnum.CONTAINING_DATE
-        own_interval = 1
-    else:
-        unit = cadence.unit
-        placement = cadence.placement
-        # ``None`` for the one shorthand that fixes no interval of its
-        # own, which is the shape a caller varies.
-        own_interval = (
-            1 if cadence.interval_n is None else cadence.interval_n
-        )
+    #
+    # ``None`` for the one constant that fixes no interval of its own, which
+    # is the shape a caller varies.
+    own_interval = 1 if cadence.interval_n is None else cadence.interval_n
     return RecurrenceRule(
         user_id=_MATCH_USER_ID,
         interval_n=(
             own_interval if interval_n is _CADENCES_OWN_INTERVAL
             else interval_n
         ),
-        unit_id=ref_cache.recurrence_unit_id(unit),
-        placement_id=ref_cache.period_placement_id(placement),
+        unit_id=ref_cache.recurrence_unit_id(cadence.unit),
+        placement_id=ref_cache.period_placement_id(cadence.placement),
         shift_id=ref_cache.business_day_shift_id(BusinessDayShiftEnum.NONE),
         starts_on=starts_on,
         nominal_day=nominal_day,
@@ -233,10 +224,10 @@ def biweekly_periods():
 class TestRecurrenceGeneration:
     """Tests for generate_for_template()."""
 
-    def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
+    def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
         """Create a template whose rule is AUTHORED, not hand-built.
 
-        The rule half is ``_test_helpers.make_pattern_rule``: nine copies of
+        The rule half is ``_test_helpers.make_cadence_rule``: nine copies of
         this helper differed only in the template's name, amount and category,
         and every one of them constructed a ``RecurrenceRule`` field by field.
         Plan step R7c-b made that construction impossible -- ``unit_id``,
@@ -248,8 +239,8 @@ class TestRecurrenceGeneration:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_pattern_rule(
-            seed_user["user"].id, pattern_name, **rule_kwargs,
+        rule = make_cadence_rule(
+            seed_user["user"].id, cadence, **rule_kwargs,
         )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
@@ -271,7 +262,7 @@ class TestRecurrenceGeneration:
         """every_period creates a transaction in every pay period."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -303,7 +294,7 @@ class TestRecurrenceGeneration:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every N Periods",
+                seed_user, EVERY_N_PERIODS,
                 interval_n=2, starts_on=seed_periods[1].start_date,
             )
             created = recurrence_engine.generate_for_template(
@@ -334,7 +325,7 @@ class TestRecurrenceGeneration:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period",
+                seed_user, EVERY_PERIOD,
             )
             # Both sides plus the row itself, exactly as
             # ``_recurrence_form_helpers._clear_recurrence_rule`` does: the
@@ -358,7 +349,7 @@ class TestRecurrenceGeneration:
         """Does not create duplicates for periods that already have entries."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period",
+                seed_user, EVERY_PERIOD,
             )
 
             # First generation.
@@ -378,7 +369,7 @@ class TestRecurrenceGeneration:
         """Overridden entries are not replaced during generation."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period",
+                seed_user, EVERY_PERIOD,
             )
 
             # Generate entries.
@@ -410,7 +401,7 @@ class TestRecurrenceGeneration:
         """Done/received/credit transactions are immutable to the engine."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period",
+                seed_user, EVERY_PERIOD,
             )
 
             created = recurrence_engine.generate_for_template(
@@ -538,7 +529,7 @@ class TestMatchMonthly:
     def test_monthly_day_15(self, biweekly_periods):
         """Finds the period containing the 15th of each month."""
         matched = _matches(
-            build_rule(pattern_name="Monthly", starts_on=date(2026, 1, 15)),
+            build_rule(cadence=MONTHLY, starts_on=date(2026, 1, 15)),
             biweekly_periods,
         )
 
@@ -562,7 +553,7 @@ class TestMatchMonthly:
     def test_monthly_day_31_clamped_in_february(self, biweekly_periods):
         """fires_on_day=31 clamps to 28 in Feb 2026 (non-leap year)."""
         matched = _matches(
-            build_rule(pattern_name="Monthly", starts_on=date(2026, 1, 31)),
+            build_rule(cadence=MONTHLY, starts_on=date(2026, 1, 31)),
             biweekly_periods,
         )
 
@@ -583,7 +574,7 @@ class TestMatchMonthly:
     def test_monthly_day_30_clamped_in_february(self, biweekly_periods):
         """fires_on_day=30 also clamps to 28 in Feb 2026."""
         matched = _matches(
-            build_rule(pattern_name="Monthly", starts_on=date(2026, 1, 30)),
+            build_rule(cadence=MONTHLY, starts_on=date(2026, 1, 30)),
             biweekly_periods,
         )
 
@@ -605,7 +596,7 @@ class TestMatchMonthlyFirst:
     def test_picks_first_period_starting_in_each_month(self, biweekly_periods):
         """One period per calendar month, the earliest starting in that month."""
         matched = _matches(
-            build_rule(pattern_name="Monthly First"), biweekly_periods,
+            build_rule(cadence=MONTHLY_FIRST), biweekly_periods,
         )
 
         # 26 biweekly periods starting Jan 2 cover all 12 months of 2026.
@@ -637,7 +628,7 @@ class TestMatchQuarterly:
         """start_month=1 targets Jan, Apr, Jul, Oct."""
         matched = _matches(
             build_rule(
-                pattern_name="Quarterly", starts_on=date(2026, 1, 15),
+                cadence=QUARTERLY, starts_on=date(2026, 1, 15),
             ),
             biweekly_periods,
         )
@@ -657,7 +648,7 @@ class TestMatchQuarterly:
         """start_month=11 wraps: targets Nov, Feb, May, Aug."""
         matched = _matches(
             build_rule(
-                pattern_name="Quarterly", starts_on=date(2026, 2, 15),
+                cadence=QUARTERLY, starts_on=date(2026, 2, 15),
             ),
             biweekly_periods,
         )
@@ -680,7 +671,7 @@ class TestMatchSemiAnnual:
         """start_month=1 targets Jan and Jul."""
         matched = _matches(
             build_rule(
-                pattern_name="Semi-Annual", starts_on=date(2026, 1, 15),
+                cadence=SEMI_ANNUAL, starts_on=date(2026, 1, 15),
             ),
             biweekly_periods,
         )
@@ -699,7 +690,7 @@ class TestMatchSemiAnnual:
         """start_month=8 wraps: targets Aug and Feb."""
         matched = _matches(
             build_rule(
-                pattern_name="Semi-Annual", starts_on=date(2026, 2, 15),
+                cadence=SEMI_ANNUAL, starts_on=date(2026, 2, 15),
             ),
             biweekly_periods,
         )
@@ -722,7 +713,7 @@ class TestMatchAnnual:
         """One match per calendar year on a specific month/day."""
         matched = _matches(
             build_rule(
-                pattern_name="Annual", starts_on=date(2026, 3, 15),
+                cadence=ANNUAL, starts_on=date(2026, 3, 15),
             ),
             biweekly_periods,
         )
@@ -737,7 +728,7 @@ class TestMatchAnnual:
         """Feb 29 target in 2026 (non-leap) clamps to Feb 28."""
         matched = _matches(
             build_rule(
-                pattern_name="Annual", starts_on=date(2026, 2, 28), nominal_day=29,
+                cadence=ANNUAL, starts_on=date(2026, 2, 28), nominal_day=29,
             ),
             biweekly_periods,
         )
@@ -754,7 +745,7 @@ class TestMatchPeriodsEdgeCases:
 
     def test_effective_from_filters_earlier_periods(self, biweekly_periods):
         """Only periods on/after effective_from are candidates."""
-        rule = build_rule(pattern_name="Every Period")
+        rule = build_rule(cadence=EVERY_PERIOD)
         # Use the 4th period's start_date as effective_from.
         effective_from = biweekly_periods[3].start_date
 
@@ -781,7 +772,7 @@ class TestMatchPeriodsEdgeCases:
         enums do not model -- the same broken invariant through the column
         that replaced it.
         """
-        rule = build_rule(pattern_name="Monthly")
+        rule = build_rule(cadence=MONTHLY)
         rule.unit_id = 99999
         effective_from = biweekly_periods[0].start_date
 
@@ -825,7 +816,7 @@ class TestTheEveryNPeriodsPhase:
         re-expression rather than a new claim.
         """
         rule = build_rule(
-            pattern_name="Every N Periods",
+            cadence=EVERY_N_PERIODS,
             interval_n=3,
             starts_on=biweekly_periods[4].start_date,
         )
@@ -849,7 +840,7 @@ class TestTheEveryNPeriodsPhase:
         origination, a mid-month start) lands where they meant.
         """
         rule = build_rule(
-            pattern_name="Every N Periods",
+            cadence=EVERY_N_PERIODS,
             interval_n=3,
             starts_on=biweekly_periods[4].start_date + timedelta(days=1),
         )
@@ -881,7 +872,7 @@ class TestTheEveryNPeriodsPhase:
         """
         past_horizon = biweekly_periods[-1].end_date + timedelta(days=365)
         rule = build_rule(
-            pattern_name="Every N Periods",
+            cadence=EVERY_N_PERIODS,
             interval_n=3,
             starts_on=past_horizon,
         )
@@ -898,7 +889,7 @@ class TestMatchPeriodsFull:
 
     def test_every_period_returns_all_candidates(self, biweekly_periods):
         """every_period returns all periods after effective_from filtering."""
-        rule = build_rule(pattern_name="Every Period")
+        rule = build_rule(cadence=EVERY_PERIOD)
         effective_from = biweekly_periods[0].start_date
 
         matched = _matched_periods(rule, _calendar(biweekly_periods),
@@ -908,7 +899,7 @@ class TestMatchPeriodsFull:
 
     def test_no_periods_empty_result(self):
         """Empty periods list produces an empty result."""
-        rule = build_rule(pattern_name="Every Period")
+        rule = build_rule(cadence=EVERY_PERIOD)
 
         matched = _matched_periods(rule, _calendar([]),
                                  date(2026, 1, 1))
@@ -962,7 +953,7 @@ class TestMatchPeriodsEdgeCaseSafety:
         operator reading the traceback needs.
         """
         rule = build_rule(
-            pattern_name="Every N Periods",
+            cadence=EVERY_N_PERIODS,
             interval_n=0,
         )
         with pytest.raises(RecurrenceResolutionError, match="interval_n"):
@@ -982,7 +973,7 @@ class TestMatchPeriodsEdgeCaseSafety:
         the rule as every-period.
         """
         rule = build_rule(
-            pattern_name="Every N Periods",
+            cadence=EVERY_N_PERIODS,
             interval_n=None,
         )
         with pytest.raises(TypeError):
@@ -998,10 +989,10 @@ class TestMatchPeriodsEdgeCaseSafety:
 class TestGenerateForTemplate:
     """DB integration tests for generate_for_template()."""
 
-    def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
+    def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
         """Create a template whose rule is AUTHORED, not hand-built.
 
-        The rule half is ``_test_helpers.make_pattern_rule``: nine copies of
+        The rule half is ``_test_helpers.make_cadence_rule``: nine copies of
         this helper differed only in the template's name, amount and category,
         and every one of them constructed a ``RecurrenceRule`` field by field.
         Plan step R7c-b made that construction impossible -- ``unit_id``,
@@ -1013,8 +1004,8 @@ class TestGenerateForTemplate:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_pattern_rule(
-            seed_user["user"].id, pattern_name, **rule_kwargs,
+        rule = make_cadence_rule(
+            seed_user["user"].id, cadence, **rule_kwargs,
         )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
@@ -1069,7 +1060,7 @@ class TestGenerateForTemplate:
             )
             db.session.flush()
             template = self._make_template_with_rule(
-                seed_user, "Monthly", fires_on_day=15,
+                seed_user, MONTHLY, fires_on_day=15,
             )
 
             # The premise, asserted rather than assumed: without this the test
@@ -1149,7 +1140,7 @@ class TestGenerateForTemplate:
             )
             db.session.flush()
             template = self._make_template_with_rule(
-                seed_user, "Monthly", fires_on_day=15,
+                seed_user, MONTHLY, fires_on_day=15,
             )
             # Occupy every period the rule fires in, exactly as a previous
             # (pre-R4a) generation pass would have left them.
@@ -1181,7 +1172,7 @@ class TestGenerateForTemplate:
         """effective_from = 4th period's start → only generates from period 4."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
             effective_from = seed_periods[3].start_date
             created = recurrence_engine.generate_for_template(
@@ -1202,7 +1193,7 @@ class TestGenerateForTemplate:
         """Soft-deleted entries are not duplicated on re-generation."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
 
             # First generation.
@@ -1228,7 +1219,7 @@ class TestGenerateForTemplate:
         """Monthly pattern across 10 periods produces one per unique month."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Monthly", fires_on_day=15,
+                seed_user, MONTHLY, fires_on_day=15,
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -1268,7 +1259,7 @@ class TestThePlacedPeriodsBound:
     def _monthly_placements(self, periods):
         """Placements of a day-15 monthly rule over *periods*."""
         return rule_occurrences(
-            build_rule(pattern_name="Monthly", starts_on=date(2026, 1, 15)),
+            build_rule(cadence=MONTHLY, starts_on=date(2026, 1, 15)),
             _calendar(periods),
         )
 
@@ -1364,8 +1355,8 @@ class TestThePlacedPeriodsBound:
             ordinal if opening.day <= _MONTHLY_DAY else ordinal + 1,
             _MONTHLY_DAY,
         )
-        rule = make_pattern_rule(
-            seed_user["user"].id, "Monthly", starts_on=first_fifteenth,
+        rule = make_cadence_rule(
+            seed_user["user"].id, MONTHLY, starts_on=first_fifteenth,
         )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
@@ -1545,7 +1536,7 @@ class TestALegacyScheduleHole:
                 seed_user, seed_periods,
             )
             template = self._make_template_with_rule(
-                seed_user, "Monthly", fires_on_day=absorbed_day,
+                seed_user, MONTHLY, fires_on_day=absorbed_day,
             )
             schedule = GenerationSchedule.for_user(template.user_id)
             plan = recurrence_engine.resolve_generation_plan(
@@ -1628,7 +1619,7 @@ class TestALegacyScheduleHole:
         with app.app_context():
             self._schedule_with_a_gap(seed_user, seed_periods)
             template = self._make_template_with_rule(
-                seed_user, "Monthly", fires_on_day=5,
+                seed_user, MONTHLY, fires_on_day=5,
             )
             absorbing = next(
                 period
@@ -1691,7 +1682,7 @@ class TestALegacyScheduleHole:
                 seed_user, seed_periods,
             )
             template = self._make_template_with_rule(
-                seed_user, "Monthly", fires_on_day=absorbed_day,
+                seed_user, MONTHLY, fires_on_day=absorbed_day,
             )
             created = recurrence_engine.generate_for_template(
                 template,
@@ -1757,7 +1748,7 @@ class TestALegacyScheduleHole:
                 seed_user, seed_periods,
             )
             template = self._make_template_with_rule(
-                seed_user, "Monthly", fires_on_day=self._DAY_OF_MONTH,
+                seed_user, MONTHLY, fires_on_day=self._DAY_OF_MONTH,
             )
             schedule = GenerationSchedule.for_user(template.user_id)
 
@@ -1815,7 +1806,7 @@ class TestALegacyScheduleHole:
                 "the control needs a final period straddling a month boundary"
             )
 
-            template = self._make_template_with_rule(seed_user, "Monthly First")
+            template = self._make_template_with_rule(seed_user, MONTHLY_FIRST)
             schedule = GenerationSchedule.for_user(template.user_id)
             plan = recurrence_engine.resolve_generation_plan(
                 template, schedule, seed_user["scenario"].id, None,
@@ -1854,10 +1845,10 @@ class TestALegacyScheduleHole:
                 if placement.period is not None
             ]
 
-    def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
+    def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
         """Create a template whose rule is AUTHORED, not hand-built.
 
-        The rule half is ``_test_helpers.make_pattern_rule``: nine copies of
+        The rule half is ``_test_helpers.make_cadence_rule``: nine copies of
         this helper differed only in the template's name, amount and category,
         and every one of them constructed a ``RecurrenceRule`` field by field.
         Plan step R7c-b made that construction impossible -- ``unit_id``,
@@ -1869,8 +1860,8 @@ class TestALegacyScheduleHole:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_pattern_rule(
-            seed_user["user"].id, pattern_name, **rule_kwargs,
+        rule = make_cadence_rule(
+            seed_user["user"].id, cadence, **rule_kwargs,
         )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
@@ -1891,10 +1882,10 @@ class TestALegacyScheduleHole:
 class TestRegenerateForTemplate:
     """DB integration tests for regenerate_for_template()."""
 
-    def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
+    def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
         """Create a template whose rule is AUTHORED, not hand-built.
 
-        The rule half is ``_test_helpers.make_pattern_rule``: nine copies of
+        The rule half is ``_test_helpers.make_cadence_rule``: nine copies of
         this helper differed only in the template's name, amount and category,
         and every one of them constructed a ``RecurrenceRule`` field by field.
         Plan step R7c-b made that construction impossible -- ``unit_id``,
@@ -1906,8 +1897,8 @@ class TestRegenerateForTemplate:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_pattern_rule(
-            seed_user["user"].id, pattern_name, **rule_kwargs,
+        rule = make_cadence_rule(
+            seed_user["user"].id, cadence, **rule_kwargs,
         )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
@@ -1935,7 +1926,7 @@ class TestRegenerateForTemplate:
         building a parent production cannot produce; every test that records a
         purchase starts here instead.
         """
-        template = self._make_template_with_rule(seed_user, "Every Period")
+        template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
         template.is_envelope = True
         db.session.flush()
         return template
@@ -2133,7 +2124,7 @@ class TestRegenerateForTemplate:
         is why the predicate covers it rather than waiting for the first note.
         """
         with app.app_context():
-            template = self._make_template_with_rule(seed_user, "Every Period")
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
             schedule = GenerationSchedule.for_periods(
                 template.user_id, seed_periods,
             )
@@ -2184,7 +2175,7 @@ class TestRegenerateForTemplate:
             )
             new_category = seed_user["categories"]["Groceries"]
             template = self._make_template_with_rule(
-                seed_user, "Monthly", fires_on_day=5,
+                seed_user, MONTHLY, fires_on_day=5,
             )
             created = recurrence_engine.generate_for_template(
                 template,
@@ -2332,7 +2323,7 @@ class TestRegenerateForTemplate:
         "retire everything".
         """
         with app.app_context():
-            template = self._make_template_with_rule(seed_user, "Every Period")
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
             schedule = GenerationSchedule.for_periods(
                 template.user_id, seed_periods,
             )
@@ -2372,7 +2363,7 @@ class TestRegenerateForTemplate:
         sees the same bill twice.
         """
         with app.app_context():
-            template = self._make_template_with_rule(seed_user, "Every Period")
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
             schedule = GenerationSchedule.for_periods(
                 template.user_id, seed_periods,
             )
@@ -2419,7 +2410,7 @@ class TestRegenerateForTemplate:
         AND actual_amount" rather than either alone.
         """
         with app.app_context():
-            template = self._make_template_with_rule(seed_user, "Every Period")
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
             schedule = GenerationSchedule.for_periods(
                 template.user_id, seed_periods,
             )
@@ -2509,7 +2500,7 @@ class TestRegenerateForTemplate:
         period genuinely owes both. Pinned here because nothing else pins it.
         """
         with app.app_context():
-            template = self._make_template_with_rule(seed_user, "Every Period")
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
             schedule = GenerationSchedule.for_periods(
                 template.user_id, seed_periods,
             )
@@ -2580,7 +2571,7 @@ class TestRegenerateForTemplate:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
 
             # Generate initial entries.
@@ -2618,7 +2609,7 @@ class TestRegenerateForTemplate:
         """Regenerate with soft-deleted entry raises RecurrenceConflict."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
 
             created = recurrence_engine.generate_for_template(
@@ -2644,11 +2635,11 @@ class TestResolveConflicts:
     """DB integration tests for resolve_conflicts()."""
 
     def _make_template_with_rule(
-        self, seed_user, pattern_name, category_key=None, **rule_kwargs,
+        self, seed_user, cadence, category_key=None, **rule_kwargs,
     ):
         """Create a template whose rule is AUTHORED, not hand-built.
 
-        The rule half is ``_test_helpers.make_pattern_rule``: nine copies of
+        The rule half is ``_test_helpers.make_cadence_rule``: nine copies of
         this helper differed only in the template's name, amount and category,
         and every one of them constructed a ``RecurrenceRule`` field by field.
         Plan step R7c-b made that construction impossible -- ``unit_id``,
@@ -2660,8 +2651,8 @@ class TestResolveConflicts:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_pattern_rule(
-            seed_user["user"].id, pattern_name, **rule_kwargs,
+        rule = make_cadence_rule(
+            seed_user["user"].id, cadence, **rule_kwargs,
         )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
@@ -2683,7 +2674,7 @@ class TestResolveConflicts:
         """action='keep' leaves overridden transaction unchanged."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
 
             created = recurrence_engine.generate_for_template(
@@ -2713,7 +2704,7 @@ class TestResolveConflicts:
         """action='update' clears flags and applies new_amount."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
 
             created = recurrence_engine.generate_for_template(
@@ -2746,7 +2737,7 @@ class TestResolveConflicts:
         """action='update' with new_amount=None clears flags but keeps amount."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
 
             created = recurrence_engine.generate_for_template(
@@ -2780,7 +2771,7 @@ class TestResolveConflicts:
         """update with wrong user_id silently skips the transaction."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -2810,7 +2801,7 @@ class TestResolveConflicts:
         """keep with wrong user_id leaves transaction unchanged."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -2839,7 +2830,7 @@ class TestResolveConflicts:
         """update with correct user_id modifies the transaction."""
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -2869,7 +2860,7 @@ class TestResolveConflicts:
         with app.app_context():
             # Create template and transaction for user A.
             template_a = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
             created_a = recurrence_engine.generate_for_template(
                 template_a, GenerationSchedule.for_periods(template_a.user_id, seed_periods), seed_user["scenario"].id,
@@ -2888,7 +2879,7 @@ class TestResolveConflicts:
                 num_periods=10, cadence_days=14,
             )
             template_b = self._make_template_with_rule(
-                second_user, "Every Period", category_key="Rent",
+                second_user, EVERY_PERIOD, category_key="Rent",
             )
             created_b = recurrence_engine.generate_for_template(
                 template_b, GenerationSchedule.for_periods(template_b.user_id, periods_b), second_user["scenario"].id,
@@ -3084,11 +3075,6 @@ class TestResolveConflictsShadowGuard:
         baseline path.
         """
         with app.app_context():
-            pattern = (
-                db.session.query(RecurrencePattern)
-                .filter_by(name="Every Period")
-                .one()
-            )
             expense_type = (
                 db.session.query(TransactionType)
                 .filter_by(name="Expense")
@@ -3136,10 +3122,10 @@ class TestResolveConflictsShadowGuard:
 class TestCrossUserIsolation:
     """IDOR tests for the recurrence engine."""
 
-    def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
+    def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
         """Create a template whose rule is AUTHORED, not hand-built.
 
-        The rule half is ``_test_helpers.make_pattern_rule``: nine copies of
+        The rule half is ``_test_helpers.make_cadence_rule``: nine copies of
         this helper differed only in the template's name, amount and category,
         and every one of them constructed a ``RecurrenceRule`` field by field.
         Plan step R7c-b made that construction impossible -- ``unit_id``,
@@ -3151,8 +3137,8 @@ class TestCrossUserIsolation:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_pattern_rule(
-            seed_user["user"].id, pattern_name, **rule_kwargs,
+        rule = make_cadence_rule(
+            seed_user["user"].id, cadence, **rule_kwargs,
         )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
@@ -3183,7 +3169,7 @@ class TestCrossUserIsolation:
         with app.app_context():
             # Template belongs to seed_user (user A).
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
 
             # SECURITY: Attempt to generate into user B's
@@ -3218,12 +3204,12 @@ class TestNegativePaths:
     """
 
     def _make_template_with_rule(
-        self, seed_user, pattern_name,
+        self, seed_user, cadence,
         default_amount=Decimal("100.00"), **rule_kwargs,
     ):
         """Create a template whose rule is AUTHORED, not hand-built.
 
-        The rule half is ``_test_helpers.make_pattern_rule``: nine copies of
+        The rule half is ``_test_helpers.make_cadence_rule``: nine copies of
         this helper differed only in the template's name, amount and category,
         and every one of them constructed a ``RecurrenceRule`` field by field.
         Plan step R7c-b made that construction impossible -- ``unit_id``,
@@ -3235,8 +3221,8 @@ class TestNegativePaths:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_pattern_rule(
-            seed_user["user"].id, pattern_name, **rule_kwargs,
+        rule = make_cadence_rule(
+            seed_user["user"].id, cadence, **rule_kwargs,
         )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
@@ -3267,7 +3253,7 @@ class TestNegativePaths:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period", default_amount=Decimal("0.00")
+                seed_user, EVERY_PERIOD, default_amount=Decimal("0.00")
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -3326,7 +3312,7 @@ class TestNegativePaths:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
 
             # Initial generation.
@@ -3370,7 +3356,7 @@ class TestNegativePaths:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, []), seed_user["scenario"].id,
@@ -3391,7 +3377,7 @@ class TestNegativePaths:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
 
             created = recurrence_engine.generate_for_template(
@@ -3436,7 +3422,7 @@ class TestNegativePaths:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period"
+                seed_user, EVERY_PERIOD
             )
 
             created = recurrence_engine.generate_for_template(
@@ -3609,7 +3595,7 @@ class TestEndDate:
         """end_date stops generation after that date (every_period)."""
         # End date after the 5th period's start_date (period index 4).
         end = biweekly_periods[4].start_date
-        rule = build_rule(pattern_name="Every Period", end_date=end)
+        rule = build_rule(cadence=EVERY_PERIOD, end_date=end)
         effective_from = biweekly_periods[0].start_date
 
         matched = _matched_periods(rule, _calendar(biweekly_periods),
@@ -3621,7 +3607,7 @@ class TestEndDate:
 
     def test_end_date_none_means_indefinite(self, biweekly_periods):
         """NULL end_date generates for all periods (no change from default)."""
-        rule = build_rule(pattern_name="Every Period", end_date=None)
+        rule = build_rule(cadence=EVERY_PERIOD, end_date=None)
         effective_from = biweekly_periods[0].start_date
 
         matched = _matched_periods(rule, _calendar(biweekly_periods),
@@ -3632,7 +3618,7 @@ class TestEndDate:
     def test_end_date_with_monthly_pattern(self, biweekly_periods):
         """end_date works with monthly pattern -- only months before end."""
         # End in March 2026.
-        rule = build_rule(pattern_name="Monthly", starts_on=date(2026, 1, 15),
+        rule = build_rule(cadence=MONTHLY, starts_on=date(2026, 1, 15),
                         end_date=date(2026, 3, 31))
         effective_from = biweekly_periods[0].start_date
 
@@ -3646,7 +3632,7 @@ class TestEndDate:
 
     def test_end_date_before_first_period(self, biweekly_periods):
         """end_date before all periods returns empty list."""
-        rule = build_rule(pattern_name="Every Period",
+        rule = build_rule(cadence=EVERY_PERIOD,
                         end_date=date(2025, 12, 31))
         effective_from = biweekly_periods[0].start_date
 
@@ -3660,7 +3646,7 @@ class TestEndDate:
         # effective_from at period 5, end_date at period 10.
         effective_from = biweekly_periods[5].start_date
         end = biweekly_periods[10].start_date
-        rule = build_rule(pattern_name="Every Period", end_date=end)
+        rule = build_rule(cadence=EVERY_PERIOD, end_date=end)
 
         matched = _matched_periods(rule, _calendar(biweekly_periods),
                                  effective_from)
@@ -3674,7 +3660,7 @@ class TestEndDate:
     def test_end_date_mid_period_includes_that_period(self, biweekly_periods):
         """A period whose start_date is on the end_date is included."""
         target_period = biweekly_periods[7]
-        rule = build_rule(pattern_name="Every Period",
+        rule = build_rule(cadence=EVERY_PERIOD,
                         end_date=target_period.start_date)
         effective_from = biweekly_periods[0].start_date
 
@@ -3691,7 +3677,7 @@ class TestEndDate:
         """end_date works correctly with every_n_periods pattern."""
         # Every 3 periods, end at period 12.
         end = biweekly_periods[11].start_date
-        rule = build_rule(pattern_name="Every N Periods", interval_n=3,
+        rule = build_rule(cadence=EVERY_N_PERIODS, interval_n=3,
                         end_date=end)
         effective_from = biweekly_periods[0].start_date
 
@@ -3708,10 +3694,10 @@ class TestEndDate:
 class TestEndDateIntegration:
     """Integration tests for end_date with generate_for_template()."""
 
-    def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
+    def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
         """Create a template whose rule is AUTHORED, not hand-built.
 
-        The rule half is ``_test_helpers.make_pattern_rule``: nine copies of
+        The rule half is ``_test_helpers.make_cadence_rule``: nine copies of
         this helper differed only in the template's name, amount and category,
         and every one of them constructed a ``RecurrenceRule`` field by field.
         Plan step R7c-b made that construction impossible -- ``unit_id``,
@@ -3723,8 +3709,8 @@ class TestEndDateIntegration:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_pattern_rule(
-            seed_user["user"].id, pattern_name, **rule_kwargs,
+        rule = make_cadence_rule(
+            seed_user["user"].id, cadence, **rule_kwargs,
         )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
@@ -3748,7 +3734,7 @@ class TestEndDateIntegration:
             # Use the 5th period's start_date as end_date.
             end = seed_periods[4].start_date
             template = self._make_template_with_rule(
-                seed_user, "Every Period", end_date=end,
+                seed_user, EVERY_PERIOD, end_date=end,
             )
 
             created = recurrence_engine.generate_for_template(
@@ -3774,7 +3760,7 @@ class TestEndDateIntegration:
         with app.app_context():
             end = seed_periods[2].start_date
             template = self._make_template_with_rule(
-                seed_user, "Every Period", end_date=end,
+                seed_user, EVERY_PERIOD, end_date=end,
             )
 
             # Initial generation.
@@ -3811,10 +3797,10 @@ class TestDueDateGeneration:
     cases around leap years and month boundaries.
     """
 
-    def _make_template_with_rule(self, seed_user, pattern_name, **rule_kwargs):
+    def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
         """Create a template whose rule is AUTHORED, not hand-built.
 
-        The rule half is ``_test_helpers.make_pattern_rule``: nine copies of
+        The rule half is ``_test_helpers.make_cadence_rule``: nine copies of
         this helper differed only in the template's name, amount and category,
         and every one of them constructed a ``RecurrenceRule`` field by field.
         Plan step R7c-b made that construction impossible -- ``unit_id``,
@@ -3826,8 +3812,8 @@ class TestDueDateGeneration:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_pattern_rule(
-            seed_user["user"].id, pattern_name, **rule_kwargs,
+        rule = make_cadence_rule(
+            seed_user["user"].id, cadence, **rule_kwargs,
         )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
@@ -3886,7 +3872,7 @@ class TestDueDateGeneration:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Monthly", fires_on_day=15,
+                seed_user, MONTHLY, fires_on_day=15,
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -3909,7 +3895,7 @@ class TestDueDateGeneration:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Every Period",
+                seed_user, EVERY_PERIOD,
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
@@ -3940,7 +3926,7 @@ class TestDueDateGeneration:
                 seed_user, date(2026, 2, 1), date(2026, 2, 28),
             )
             template = self._make_template_with_rule(
-                seed_user, "Monthly", fires_on_day=30,
+                seed_user, MONTHLY, fires_on_day=30,
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
@@ -3960,7 +3946,7 @@ class TestDueDateGeneration:
                 seed_user, date(2028, 2, 1), date(2028, 2, 29),
             )
             template = self._make_template_with_rule(
-                seed_user, "Monthly", fires_on_day=29,
+                seed_user, MONTHLY, fires_on_day=29,
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
@@ -3980,7 +3966,7 @@ class TestDueDateGeneration:
                 seed_user, date(2026, 4, 1), date(2026, 4, 30),
             )
             template = self._make_template_with_rule(
-                seed_user, "Monthly", fires_on_day=31,
+                seed_user, MONTHLY, fires_on_day=31,
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
@@ -4002,7 +3988,7 @@ class TestDueDateGeneration:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Monthly",
+                seed_user, MONTHLY,
                 fires_on_day=22, due_day_of_month=1,
             )
             created = recurrence_engine.generate_for_template(
@@ -4029,7 +4015,7 @@ class TestDueDateGeneration:
                 seed_user, date(2026, 1, 1), date(2026, 1, 14),
             )
             template = self._make_template_with_rule(
-                seed_user, "Monthly",
+                seed_user, MONTHLY,
                 fires_on_day=1, due_day_of_month=15,
             )
             created = recurrence_engine.generate_for_template(
@@ -4051,7 +4037,7 @@ class TestDueDateGeneration:
                 seed_user, date(2026, 12, 15), date(2026, 12, 28),
             )
             template = self._make_template_with_rule(
-                seed_user, "Monthly",
+                seed_user, MONTHLY,
                 fires_on_day=22, due_day_of_month=1,
             )
             created = recurrence_engine.generate_for_template(
@@ -4070,7 +4056,7 @@ class TestDueDateGeneration:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Monthly",
+                seed_user, MONTHLY,
                 fires_on_day=15, due_day_of_month=None,
             )
             created = recurrence_engine.generate_for_template(
@@ -4095,7 +4081,7 @@ class TestDueDateGeneration:
         """
         with app.app_context():
             template = self._make_template_with_rule(
-                seed_user, "Monthly",
+                seed_user, MONTHLY,
                 fires_on_day=15, due_day_of_month=15,
             )
             created = recurrence_engine.generate_for_template(
@@ -4169,7 +4155,7 @@ class TestDueDateGeneration:
             ]
 
             template = self._make_template_with_rule(
-                seed_user, "Quarterly",
+                seed_user, QUARTERLY,
                 fires_in_month=1, fires_on_day=15,
             )
             created = recurrence_engine.generate_for_template(
@@ -4197,7 +4183,7 @@ class TestDueDateGeneration:
                 seed_user, date(2026, 10, 1), date(2026, 10, 31),
             )
             template = self._make_template_with_rule(
-                seed_user, "Annual",
+                seed_user, ANNUAL,
                 fires_in_month=10, fires_on_day=1,
             )
             created = recurrence_engine.generate_for_template(
@@ -4222,7 +4208,7 @@ class TestDueDateGeneration:
                 ),
             ]
             template = self._make_template_with_rule(
-                seed_user, "Semi-Annual",
+                seed_user, SEMI_ANNUAL,
                 fires_in_month=1, fires_on_day=15,
             )
             created = recurrence_engine.generate_for_template(
@@ -4248,7 +4234,7 @@ class TestDueDateGeneration:
                 seed_user, date(2026, 1, 17), date(2026, 2, 1),
             )
             template = self._make_template_with_rule(
-                seed_user, "Monthly", fires_on_day=1,
+                seed_user, MONTHLY, fires_on_day=1,
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, [period]), seed_user["scenario"].id,
@@ -4271,7 +4257,7 @@ class TestDueDateGeneration:
                 seed_user, date(2026, 4, 1), date(2026, 4, 30),
             )
             template = self._make_template_with_rule(
-                seed_user, "Monthly",
+                seed_user, MONTHLY,
                 fires_on_day=15, due_day_of_month=31,
             )
             created = recurrence_engine.generate_for_template(
@@ -4294,7 +4280,7 @@ class TestDueDateGeneration:
                 seed_user, date(2026, 1, 17), date(2026, 1, 31),
             )
             template = self._make_template_with_rule(
-                seed_user, "Monthly",
+                seed_user, MONTHLY,
                 fires_on_day=31, due_day_of_month=30,
             )
             created = recurrence_engine.generate_for_template(
@@ -4318,7 +4304,7 @@ class TestDueDateGeneration:
             from app import ref_cache
             # Test with a day-of-month cadence (monthly-style).
             rule_monthly = build_rule(
-                pattern_name="Monthly", starts_on=date(2026, 1, 20),
+                cadence=MONTHLY, starts_on=date(2026, 1, 20),
             )
             period = FakePeriod(
                 id=1,
@@ -4332,7 +4318,7 @@ class TestDueDateGeneration:
             assert result == date(2026, 3, 20)
 
             # Test with a cadence that names no day (every-period style).
-            rule_every = build_rule(pattern_name="Every Period")
+            rule_every = build_rule(cadence=EVERY_PERIOD)
             result = recurrence_engine.compute_due_date(
                 rule_every, period,
             )
@@ -4372,7 +4358,7 @@ class TestDueDateGeneration:
             # to reach this state, since the write door and the picker both
             # refuse the cadence.
             weekly = build_rule(
-                pattern_name="Monthly", starts_on=starts_on,
+                cadence=MONTHLY, starts_on=starts_on,
             )
             weekly.unit_id = ref_cache.recurrence_unit_id(
                 RecurrenceUnitEnum.WEEK,

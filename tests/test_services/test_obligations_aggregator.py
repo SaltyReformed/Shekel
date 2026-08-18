@@ -43,7 +43,11 @@ from app.services import obligations_aggregator, recurring_view
 from app.services.pay_calendar import PayCadence, PayCalendar, calendar_for
 from app.services.recurrence import RecurrenceResolutionError
 from app.utils.money import MONTHS_PER_YEAR
-from tests._test_helpers import make_pattern_rule
+from tests._test_helpers import make_cadence_rule
+from tests.oracles.recurrence_baseline import (
+    EVERY_PERIOD,
+    MONTHLY,
+)
 
 #: 14 days between paydays, 26 a year -- the cadence every hand-computed
 #: figure in this file assumes, and the one the retired
@@ -86,10 +90,10 @@ def _biweekly_calendar(user_id: int = 1) -> PayCalendar:
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _create_rule(seed_user, pattern_enum, *, interval_n=1, end_date=None):
+def _create_rule(seed_user, cadence, *, interval_n=1, end_date=None):
     """Create and flush a RecurrenceRule for the seed user."""
-    return make_pattern_rule(
-        seed_user["user"].id, pattern_enum,
+    return make_cadence_rule(
+        seed_user["user"].id, cadence,
         interval_n=interval_n, end_date=end_date,
     )
 
@@ -137,7 +141,7 @@ class TestObligationsAggregator:
         expired_end = as_of - timedelta(days=1)
         with app.app_context():
             rule = _create_rule(
-                seed_user, "Every Period",
+                seed_user, EVERY_PERIOD,
                 end_date=expired_end,
             )
             tmpl = _create_expense(
@@ -166,7 +170,7 @@ class TestObligationsAggregator:
         as_of = date(2026, 5, 20)
         with app.app_context():
             rule = _create_rule(
-                seed_user, "Every Period",
+                seed_user, EVERY_PERIOD,
             )
             tmpl = _create_expense(
                 seed_user, rule, Decimal("100.00"),
@@ -205,7 +209,7 @@ class TestObligationsAggregator:
                 name="One-Time",
             )
             recurring_rule = _create_rule(
-                seed_user, "Every Period",
+                seed_user, EVERY_PERIOD,
             )
             recurring_tmpl = _create_expense(
                 seed_user, recurring_rule, Decimal("100.00"),
@@ -244,10 +248,10 @@ class TestObligationsAggregator:
         """
         with app.app_context():
             biweekly_rule = _create_rule(
-                seed_user, "Every Period",
+                seed_user, EVERY_PERIOD,
             )
             monthly_rule = _create_rule(
-                seed_user, "Monthly",
+                seed_user, MONTHLY,
             )
             _create_expense(
                 seed_user, biweekly_rule, Decimal("100.00"),
@@ -300,10 +304,10 @@ class TestObligationsAggregator:
         literal would stop naming an unmodelled unit the day a member is added.
 
         **The unreadable COLUMN moved at plan step R7c-c.**  This planted a
-        ``pattern_id`` no ``RecurrencePatternEnum`` member named; that column is
-        dropped, and the state a rule can still reach is a ``unit_id`` the
-        enums do not model.  Same broken invariant, same disposition, on the
-        column that replaced it.
+        ``pattern_id`` the closed pattern set's enum did not name; that
+        column is dropped, and the state a rule can still reach is a
+        ``unit_id`` the enums do not model.  Same broken invariant, same
+        disposition, on the column that replaced it.
         """
         surplus = max(
             ref_cache.recurrence_unit_id(member)
@@ -499,7 +503,7 @@ class TestObligationsAggregator:
         """
         with app.app_context():
             rule = _create_rule(
-                seed_user, "Every Period",
+                seed_user, EVERY_PERIOD,
                 end_date=date.today() - timedelta(days=1),
             )
             _create_expense(
@@ -551,7 +555,7 @@ class TestASpentCountLeavesTheObligationsTotal:
             The flushed template.
         """
         rule = _create_rule(
-            seed_user, "Every Period",
+            seed_user, EVERY_PERIOD,
         )
         rule.max_occurrences = count
         db.session.flush()
@@ -663,7 +667,7 @@ class TestASpentCountLeavesTheObligationsTotal:
             calendar = calendar_for(seed_user["user"].id)
             payday = calendar.periods[1].start_date
             rule = _create_rule(
-                seed_user, "Every Period",
+                seed_user, EVERY_PERIOD,
                 end_date=payday,
             )
             template = _create_expense(
@@ -694,7 +698,7 @@ class TestASpentCountLeavesTheObligationsTotal:
             last_fired = calendar.periods[1].start_date
             next_payday = calendar.periods[2].start_date
             rule = _create_rule(
-                seed_user, "Every Period",
+                seed_user, EVERY_PERIOD,
                 end_date=next_payday - timedelta(days=1),
             )
             template = _create_expense(
