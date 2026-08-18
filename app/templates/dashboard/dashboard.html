@@ -16,13 +16,19 @@
        summary mapped to the route's _DebtTrackView (see _tracks.html) #}
 
 {% if not has_account %}
-{# Neutral copy (Gate B7): no account exists yet, so none can be named.
-   The dashboard projects whatever account resolves as the default. #}
+{# Neutral copy (Gate B7): no account this page can PROJECT, so none can be
+   named.  It does not mean the owner has entered nothing -- an owner whose
+   only account is a loan lands here, because ``resolve_grid_account`` refuses
+   an amortizing account by design (ruling D4) and this page renders a
+   cash-flow balance.  The copy says which kind is missing rather than "an
+   account", and the position tracks below still render: they are the owner's
+   whole debt and goal position and need no projectable account at all.
+   Ledger row P65, ruled 2026-08-18 (developer). #}
 <div class="text-center py-5">
   <i class="bi bi-bank fs-1 text-muted"></i>
-  <h5 class="mt-3">Set up an account to see your dashboard</h5>
-  <p class="text-muted">The dashboard projects your default account forward,
-    pay period by pay period.</p>
+  <h5 class="mt-3">Add a spending account to see your dashboard</h5>
+  <p class="text-muted">The dashboard projects a checking or savings account
+    forward, pay period by pay period. A loan on its own cannot drive it.</p>
   <a href="{{ url_for('accounts.new_account') }}" class="btn btn-primary">
     <i class="bi bi-plus-circle"></i> Create Account
   </a>
@@ -40,10 +46,14 @@
 {% include "dashboard/_no_period.html" %}
 {% endif %}
 
-{% if tracks and (tracks.goals or tracks.debt) %}
-{% include "dashboard/_tracks.html" %}
 {% endif %}
 
+{# OUTSIDE the has_account branch since ledger row P65 (2026-08-18): the
+   position tier reads no grid account and no pay period, so gating it on one
+   made an owner with a mortgage and no checking account see a setup card while
+   a full DebtSummary was computed and thrown away. #}
+{% if tracks and (tracks.goals or tracks.debt) %}
+{% include "dashboard/_tracks.html" %}
 {% endif %}
 {% endblock content %}
 

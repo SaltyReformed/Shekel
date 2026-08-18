@@ -194,6 +194,30 @@ jobs:
       - name: Lint checker package with pylint
         run: pylint tools/pylint/shekel_checkers/ --fail-under=10 --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-transaction-status-bypass,shekel-ledger-model-bypass,shekel-unclassified-fenced-export,shekel-private-module-import --output-format=colorized
 
+      # ── 5a3. Lint the manual verification harnesses (E/F only) ───
+      # `tests/manual/` holds the proof instruments every cutover in the
+      # planning arcs is verified with -- run by hand against a production
+      # CLONE, before and after, and diffed.  Nothing held them to the code
+      # they measure: pytest does not collect the directory, and every probe
+      # wraps itself in a `_guard` that records a raise AS DATA, so a
+      # signature change turns a harness into a file that dumps
+      # {"RAISED": ...} where a figure belongs -- and a before/after diff of
+      # two such runs reads BYTE-IDENTICAL over a region never measured.
+      # Measured 2026-08-18 (ledger row P66): FOUR call sites were already
+      # dead, one of them since plan step C2-f2d-3, whose own baseline
+      # harness had been reporting a TypeError where the retirement figures
+      # belong.
+      #
+      # E/F ONLY, deliberately, and NOT the 10.00/10 floor the three trees
+      # above hold: these are hand-run scripts that legitimately duplicate
+      # each other (R0801) and legitimately branch wide (R0911).  What this
+      # gate catches is exactly the class that rotted them -- a call to a
+      # function that no longer exists, or no longer takes those arguments.
+      # A both-sides harness that must name a HEAD-only API carries a scoped
+      # disable with a `Pylint:` rationale (verify_retirement_render.py).
+      - name: Lint verification harnesses with pylint
+        run: pylint tests/manual/ --fail-on=E,F --disable=all --enable=E,F --output-format=colorized
+
       # ── 5b. Custom-checker unit tests + tests/ Decimal scan ──────
       # The checkers themselves are unit-tested (every "flags" case paired with a
       # "must-not-flag" case). tests/ are out of general pylint scope, but a

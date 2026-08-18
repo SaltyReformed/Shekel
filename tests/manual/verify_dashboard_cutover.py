@@ -284,10 +284,10 @@ def _derived_vs_stored(user_id):
     Returns:
         A dict with ``periods``, ``end_mismatch`` and ``index_mismatch``.
     """
-    # pylint: disable=import-outside-toplevel  -- Pylint:
-    # ``import-outside-toplevel``; deferred to keep this module importable on a
-    # tree where the package has moved, the same reason :func:`_producers` gives.
-    from app.services.pay_calendar import calendar_for
+    # Pylint: ``import-outside-toplevel`` -- deferred to keep this module
+    # importable on a tree where the package has moved, the same reason
+    # :func:`_producers` gives for its own.
+    from app.services.pay_calendar import calendar_for  # pylint: disable=import-outside-toplevel
 
     rows = (
         db.session.query(PayPeriod)
