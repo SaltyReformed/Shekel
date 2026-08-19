@@ -21,7 +21,8 @@
    not reads as a clean sweep: lines older than the pay calendar, days too
    crowded to search for groups, and rows the amount model could not price.
 
-   Context (accounts.review_statements): account, review (ReviewSet). #}
+   Context (accounts.review_statements): account, review (ReviewSet),
+   categories (the owner's active categories, for the new-envelope arm). #}
 
 {% block content %}
 <div class="d-flex justify-content-between align-items-center gap-2 mb-3 flex-wrap">
@@ -243,6 +244,126 @@
     </button>
   </div>
 </form>
+
+{# ── Lines that are a purchase you never recorded ─────────────────────── #}
+{# Ruling R-FS's THIRD shape, plan step bank_import:X-f6a-3b.  THIS CARD MOVES
+   MONEY, and differently from the proposals above: accepting a match re-dates a
+   movement your records already held, and recording a line here ADDS one they
+   did not have.  Measured on the developer's own statement, 91 unmatched
+   outflows survive every proposal -- 74 of them card swipes worth $3,383.49 --
+   and none can ever be matched -- the app records a period's groceries
+   as one envelope and the bank records every swipe.
+
+   A line appears BOTH here and in the hand-build list above on purpose: the
+   same fact can be something to group with existing rows or something to
+   record as new, and the owner is the one who knows which.
+
+   Inflows are absent: a purchase is an expense, so a deposit or a card refund
+   can only ever be matched to a row. #}
+{% if review.creatable %}
+<div class="card mb-3">
+  <div class="card-header d-flex justify-content-between align-items-center">
+    <span><i class="bi bi-plus-square"></i> Lines that are a purchase you never recorded</span>
+    <span class="badge text-bg-secondary">{{ review.creatable | length }}</span>
+  </div>
+  <div class="card-body">
+    <p class="text-body-secondary small mb-0">
+      These are every line of money LEAVING your account that no match above
+      explains. Recording one adds a purchase your records did not have, dated
+      the day your bank took it. Whether your balance falls depends on the
+      envelope you file it under: one that had already reserved for this
+      spending absorbs it, and one that had not does not.
+    </p>
+    <p class="text-body-secondary small mb-0">
+      <strong>Some of these may already be in your budget in another shape</strong>
+      -- a card payment your app records as payback rows, an insurance premium
+      recorded as a bill. Recording one of those here would count that money a
+      second time; those belong in the match form above, not in this list.
+    </p>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm align-middle mb-0">
+      <thead>
+        <tr>
+          <th scope="col">Your bank says</th>
+          <th scope="col">Record it in</th>
+          <th scope="col"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in review.creatable %}
+        <tr>
+          <td>
+            <span class="fw-semibold">{{ money(item.line.amount) }}</span>
+            <span class="text-body-secondary">{{ item.line.posted_on }}</span>
+            {% if item.line.transaction_on %}
+            <span class="small text-body-secondary">(made {{ item.line.transaction_on }})</span>
+            {% endif %}
+            <div class="small text-body-secondary">{{ item.line.description }}</div>
+          </td>
+          <td colspan="2">
+            {% if item.pay_period_id is none %}
+            <span class="small text-warning-emphasis">
+              No pay period covers {{ item.line.transaction_on or item.line.posted_on }},
+              the day this was made, so there is no budget for it to belong to.
+              That day is usually before your pay calendar opens, which no
+              amount of extending it forward will reach.
+            </span>
+            {% else %}
+            <form method="post"
+                  action="{{ url_for('accounts.record_statement_purchase', account_id=account.id) }}"
+                  class="row g-2 align-items-center">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <input type="hidden" name="line_id" value="{{ item.line.line_id }}">
+              <div class="col-12 col-lg-5">
+                <select class="form-select form-select-sm" name="transaction_id"
+                        aria-label="Which envelope this purchase belongs to">
+                  {% for destination in item.destinations %}
+                  <option value="{{ destination.transaction_id }}">
+                    {{ destination.label }}{% if destination.is_settled %} -- closed{% endif %}
+                  </option>
+                  {% endfor %}
+                  <option value="">-- a new envelope --</option>
+                </select>
+              </div>
+              <div class="col-12 col-lg-3">
+                <input class="form-control form-control-sm" type="text"
+                       name="envelope_name" maxlength="200"
+                       value="{{ item.line.merchant }}"
+                       aria-label="Name for the new envelope">
+              </div>
+              <div class="col-8 col-lg-3">
+                <select class="form-select form-select-sm" name="category_id"
+                        aria-label="Category for the new envelope">
+                  {% for category in categories %}
+                  <option value="{{ category.id }}">{{ category.display_name }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col-4 col-lg-1 d-grid">
+                <button type="submit" class="btn btn-sm btn-primary">Record</button>
+              </div>
+              {% if not item.destinations %}
+              <div class="col-12 small text-body-secondary">
+                No envelope in this pay period can take a purchase -- every one of
+                them closed at a fixed figure, so adding to it would not record
+                this money. Leave the envelope box on "a new envelope".
+              </div>
+              {% endif %}
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <div class="card-footer small text-body-secondary">
+    The name and category are used only when you pick "a new envelope"; the new
+    row budgets $0.00, because nothing budgeted this.
+  </div>
+</div>
+{% endif %}
 
 {# ── The bounds, stated rather than left silent ──────────────────────── #}
 {% if review.bounds.any_limit %}

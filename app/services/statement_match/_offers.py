@@ -14,6 +14,7 @@ no Flask import, no query, no clock read.
 from __future__ import annotations
 
 import enum
+import re
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -124,6 +125,68 @@ class Candidates:
     unpriceable_ids: "tuple[int, ...]"
 
 
+#: The merchant SECU puts in PARENTHESES at the end of a description cell.
+#: A delimited trailing token, exactly like the ``DATE MM-DD`` field
+#: ``_secu_csv._stated_transaction_day`` reads, and better covered: it is
+#: present on **361 of 361** of the developer's recorded lines where the stated
+#: day is on 182, and 0 of those lines carry the ``Description | Memo`` join at
+#: all, so the token is the source's own field rather than a user's free text.
+_MERCHANT = re.compile(r"\(([^()]{1,100})\)\s*$")
+
+#: What the SECU CSV reader puts between a line's description and the user's own
+#: memo (``_secu_csv``).  Its presence is what makes a trailing parenthesis
+#: ambiguous, so :func:`merchant_of` declines rather than guessing whose it is.
+_MEMO_JOIN = " | "
+
+
+def merchant_of(description: str) -> str:
+    """Return what the bank called the merchant, else the whole description.
+
+    **A DISPLAY default and never logic**, which is the distinction that makes
+    reading a token out of a text column legitimate here.  Nothing branches on
+    this: it prefills the name box on the new-envelope arm and names the
+    purchase :mod:`._create` writes, both of which the owner can edit
+    afterwards, and the bank's full description stays on the statement line
+    forever with the match relation tying the two together.  A wrong parse
+    costs a badly-named row, never a figure.
+
+    **It is TOTAL, which is what lets a second adapter reach it.**  A source
+    whose descriptions carry no such token -- SECU's own OFX truncates 326 of
+    361 to 32 characters and would have no room for one -- falls back to the
+    description itself, which is the honest answer rather than an empty name a
+    NOT NULL column would then refuse.
+
+    Args:
+        description: The recorded line's description, verbatim.
+
+    Returns:
+        The bank's merchant where this description states exactly one
+        unambiguously -- a single parenthesised trailing token, no memo, not
+        blank -- else *description* unchanged.
+    """
+    if _MEMO_JOIN in description:
+        # A MEMO is the user's own free text, appended by the adapter after
+        # ``|``.  Its parentheses are indistinguishable from the bank's, so a
+        # memo ending "(anything)" would become the merchant and the envelope
+        # name.  ``_secu_csv._stated_transaction_day`` makes the same bound
+        # STRUCTURAL by reading the Description CELL; this reader only has the
+        # joined column, so it declines instead.  0 of the developer's 361
+        # lines carry a memo, which is a fact about today's data and not the
+        # bound.  Found by adversarial financial review 2026-08-19.
+        return description
+    found = _MERCHANT.findall(description)
+    # EXACTLY one, for the reason ``_stated_transaction_day`` gives for its own
+    # token: with two, which one is "the" merchant is a guess.  A first version
+    # used ``search`` and silently took the LAST.
+    if len(found) != 1:
+        return description
+    merchant = found[0].strip()
+    # An all-whitespace token is not a name.  ``transaction_entries.description``
+    # is NOT NULL and this door calls ``create_entry`` directly, so no schema
+    # length rule stands behind it.
+    return merchant or description
+
+
 @dataclass(frozen=True)
 class BankLine:
     """One recorded statement line, as a proposal needs to show it.
@@ -147,6 +210,11 @@ class BankLine:
     amount: Decimal
     description: str
     transaction_on: "date | None" = None
+
+    @property
+    def merchant(self) -> str:
+        """Return what the bank called the merchant (:func:`merchant_of`)."""
+        return merchant_of(self.description)
 
     @property
     def happened_on(self) -> date:
@@ -424,6 +492,87 @@ class MatchProposal:
         prevent.  Found by two adversarial reviews 2026-08-18.
         """
         return self.days.posts_on
+
+
+@dataclass(frozen=True)
+class PurchaseDestination:
+    """One budget line a bank line could BECOME a purchase against.
+
+    Plan step ``bank_import:X-f6a-3b``.  The offered set is
+    :func:`~._reads.destinations_for`'s, and it mirrors every guard
+    ``entry_service.create_entry`` and :func:`~._accept.accept_match` apply --
+    so the screen cannot render a destination whose submission is refused,
+    which is the failure this arc has now fixed three times.
+
+    Attributes:
+        transaction_id: The budget line.
+        label: What to call it, with its pay period's span, because the same
+            envelope name recurs every period and a reviewer picking a
+            destination for a May swipe has to see which May it is.
+        pay_period_id: The period it is budgeted under, so a caller can offer
+            the line's OWN period first without re-reading the calendar.
+        is_settled: Whether it has already closed.  Adding to a closed row
+            raises what that row RECORDS as its cost, which is a bigger thing
+            to do than filling in an open budget, so the screen says which it
+            is rather than leaving the reviewer to know.
+    """
+
+    transaction_id: int
+    label: str
+    pay_period_id: int
+    is_settled: bool
+
+
+@dataclass(frozen=True)
+class NewEnvelope:
+    """A budget line the import is being asked to CREATE for a bank line.
+
+    Only the two facts an owner can state about spending the plan did not
+    anticipate.  What it BUDGETS is not one of them -- nothing budgeted it, so
+    the figure is ``0.00`` and :mod:`._create` writes it rather than accepting
+    it, which keeps a form from proposing that unplanned spending was planned.
+
+    Attributes:
+        name: What to call the budget line.  Defaulted from what the bank
+            called the merchant, and editable, because the bank's own words are
+            the only description of this spending that exists.
+        category_id: The owner's category it files under.  A REQUIRED choice
+            and not a default: the bank's ``source_category`` is that bank's
+            opinion about a merchant, governed by no ``ref`` table, and reading
+            it as a Shekel category would be exactly the string-for-id
+            substitution the project-wide reference rule forbids.
+    """
+
+    name: str
+    category_id: int
+
+
+@dataclass(frozen=True)
+class PurchaseCreation:
+    """What the owner submitted to turn one bank line into a purchase.
+
+    Ids and a name, and deliberately no figure and no day: :mod:`._create`
+    takes both days and the amount from the recorded LINE, inside the same
+    transaction, so a stale page cannot commit a number the bank did not state.
+    The same reason :class:`MatchSubmission` carries ids only.
+
+    **Exactly one destination arm is set**, and :mod:`._create` refuses the
+    other two shapes rather than preferring one -- a door that silently picked
+    an arm would record something nobody asked for.
+
+    Attributes:
+        owner_id: The user the route proved owns the account.
+        account_id: The account the line belongs to.
+        line_id: The bank line to record.
+        transaction_id: An existing envelope to put it in, or ``None``.
+        new_envelope: An envelope to create for it, or ``None``.
+    """
+
+    owner_id: int
+    account_id: int
+    line_id: int
+    transaction_id: "int | None" = None
+    new_envelope: "NewEnvelope | None" = None
 
 
 @dataclass(frozen=True)

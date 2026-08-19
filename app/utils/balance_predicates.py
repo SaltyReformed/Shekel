@@ -595,6 +595,48 @@ def is_projected_clause(model_class):
     return model_class.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
 
 
+def not_archived_clause(model_class):
+    """Return a SQLAlchemy boolean clause EXCLUDING the archive.
+
+    :func:`is_archived`'s SQL form, and the pair exists for the reason
+    :func:`is_projected_clause` and :func:`is_projected` do: a query filtering
+    rows an in-Python predicate would refuse must ask the same question, or a
+    screen offers what a door rejects.
+
+    **Added at plan step ``bank_import:X-f6a-3b``, and the SECOND caller is
+    why.**  ``statement_match._candidates._purchase_candidates`` had spelled
+    ``Transaction.status_id != ref_cache.status_id(StatusEnum.SETTLED)``
+    inline since X-f6a-2 -- the D6-09 pattern exactly -- and the gate that
+    exists to catch that (``TestNoInlineStatusBusinessLogic``) did not, because
+    it greps LINE BY LINE and that expression is wrapped across two.  The gate
+    caught the new site at once, on the same expression written on one line.
+    Both now read this helper, so the rule is one statement rather than two
+    spellings a formatter chooses between.
+
+    **The ARCHIVE is the single terminal ``SETTLED`` status, not the settled
+    BAND**, which is the distinction :func:`is_archived` exists to name: a Paid
+    envelope is settled and still admits the edits plan step X-f6a-3b rules
+    legal, where an archived one is a historical record.  Production carries
+    ZERO rows in it (finding **N-177**), so this bounds a state the full-edit
+    Status dropdown can still reach rather than describing live data.
+
+    Args:
+        model_class: ``app.models.transaction.Transaction`` or any class with a
+            ``status_id`` column attribute, exactly as
+            :func:`is_projected_clause` is parameterised.
+
+    Returns:
+        A SQLAlchemy boolean expression equivalent to
+        ``model_class.status_id != <SETTLED.id>``, suitable for
+        ``query.filter(...)``.
+
+    Raises:
+        RuntimeError: propagated from ``ref_cache.status_id`` if the reference
+            cache has not been initialized.
+    """
+    return model_class.status_id != ref_cache.status_id(StatusEnum.SETTLED)
+
+
 def balance_contributing_clause():
     """Return a SQLAlchemy boolean clause matching ``is_balance_contributing``.
 

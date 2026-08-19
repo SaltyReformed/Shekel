@@ -36,8 +36,6 @@ from decimal import Decimal
 
 from sqlalchemy.orm import contains_eager, joinedload, selectinload
 
-from app import ref_cache
-from app.enums import StatusEnum
 from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app.models.statement_match import StatementMatchMember
@@ -45,7 +43,10 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transaction_entry import TransactionEntry
 from app.services import cash_ledger, transaction_service, transfer_service
-from app.utils.balance_predicates import balance_contributing_clause
+from app.utils.balance_predicates import (
+    balance_contributing_clause,
+    not_archived_clause,
+)
 
 from ._offers import CandidateRow, Candidates, RowKind
 
@@ -308,8 +309,7 @@ def _purchase_candidates(
             TransactionEntry.account_id == account_id,
             TransactionEntry.is_credit.is_(False),
             balance_contributing_clause(),
-            Transaction.status_id
-            != ref_cache.status_id(StatusEnum.SETTLED),
+            not_archived_clause(Transaction),
             Transaction.pay_period.has(user_id=owner_id),
         )
         .all()
