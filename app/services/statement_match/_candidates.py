@@ -159,7 +159,7 @@ def _label(txn: Transaction) -> str:
 
 
 def _transaction_candidates(
-    owner_id: int, account_id: int, matched: "set[int]",
+    account_id: int, calendar, period_ids: "set[int]", matched: "set[int]",
 ) -> "tuple[list[CandidateRow], list[int]]":
     """Return the transactions on *account_id* a statement could be showing.
 
@@ -173,8 +173,17 @@ def _transaction_candidates(
       Credit or Cancelled row is not money this account moved, and it is the
       shared gate every cash reader here narrows with rather than a filter
       written again;
-    * its pay period is this OWNER'S -- ownership, reached the way
-      ``Transaction`` is scoped (it carries no ``user_id`` of its own);
+    * its pay period is one of the OWNER'S -- ownership, reached the way
+      ``Transaction`` is scoped (it carries no ``user_id`` of its own).  **The
+      ids come from the CALENDAR rather than from a correlated subquery on
+      ``pay_periods.user_id``, and that is what makes the window lookup below
+      total**: a row this query returns names a period the calendar was built
+      from, so :meth:`~app.services.pay_calendar.PayCalendar.period_by_id`
+      cannot answer ``None`` for it.  The two reads are separate snapshots
+      under READ COMMITTED, so a concurrent period INSERT between them is
+      expressible -- and scoping by the calendar's own ids means the query
+      simply does not ask about a period the calendar has not got, rather than
+      returning a row nothing here can date;
     * a SHADOW's parent transfer still exists and is not soft-deleted -- the
       clause ``reconcile_service._transfers.arm`` carries for the same reason:
       a shadow whose parent has gone is not money this account owes, and
@@ -194,8 +203,15 @@ def _transaction_candidates(
     what-if scenarios land every arm must thread an operating scenario.
 
     Args:
-        owner_id: The user whose rows may be offered.
         account_id: The cash account the statement is for.
+        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`,
+            which each unsettled row's window is read from
+            (:attr:`~._offers.CandidateRow.expected_window`).  The DERIVED
+            span, never ``pay_periods.end_date``: that column is a stored copy
+            of a derivable fact and plan step ``pay_calendar:C4`` drops it.
+        period_ids: The saved period ids of that same calendar, resolved ONCE
+            by :func:`candidates_for` and threaded rather than re-derived per
+            arm.
         matched: The transaction ids this account has already matched, read
             ONCE by :func:`candidates_for` and threaded rather than re-queried
             per arm.
@@ -212,18 +228,17 @@ def _transaction_candidates(
         db.session.query(Transaction)
         .options(
             selectinload(Transaction.entries),
-            joinedload(Transaction.pay_period),
             joinedload(Transaction.template),
         )
         .filter(
             Transaction.account_id == account_id,
             balance_contributing_clause(),
-            Transaction.pay_period.has(user_id=owner_id),
+            Transaction.pay_period_id.in_(period_ids),
             db.or_(
                 Transaction.transfer_id.is_(None),
                 Transaction.transfer_id.in_(
                     db.session.query(Transfer.id).filter(
-                        Transfer.user_id == owner_id,
+                        Transfer.user_id == calendar.user_id,
                         Transfer.is_deleted.is_(False),
                     )
                 ),
@@ -242,6 +257,10 @@ def _transaction_candidates(
             continue
         if not amount:
             continue
+        # The row's PAY PERIOD is the whole of what the app asserts about when
+        # this money moves, so both ends travel and the proposer bounds the row
+        # by the span rather than by its opening day (finding **N-312**).
+        period = calendar.period_by_id(txn.pay_period_id)
         candidates.append(CandidateRow(
             kind=RowKind.TRANSACTION,
             row_id=txn.id,
@@ -250,7 +269,8 @@ def _transaction_candidates(
             settled_on=txn.settled_on,
             is_settled=txn.status.is_settled,
             transfer_id=txn.transfer_id,
-            expected_on=txn.pay_period.start_date,
+            expected_on=period.start_date,
+            expected_through=period.end_date,
         ))
     candidates.sort(
         key=lambda row: (row.settled_on is None, row.settled_on, row.row_id),
@@ -259,7 +279,7 @@ def _transaction_candidates(
 
 
 def _purchase_candidates(
-    owner_id: int, account_id: int, matched: "set[int]",
+    account_id: int, period_ids: "set[int]", matched: "set[int]",
 ) -> "list[CandidateRow]":
     """Return the purchases on *account_id* a statement could be showing.
 
@@ -289,8 +309,10 @@ def _purchase_candidates(
       review 2026-08-17.
 
     Args:
-        owner_id: The user whose purchases may be offered.
         account_id: The cash account the statement is for.
+        period_ids: The owner's saved pay-period ids -- the SAME scope
+            :func:`_transaction_candidates` applies, written once and threaded
+            so the two arms cannot drift about whose rows may be offered.
         matched: The purchase ids already matched, threaded for the reason
             :func:`_transaction_candidates` gives.
 
@@ -310,7 +332,7 @@ def _purchase_candidates(
             TransactionEntry.is_credit.is_(False),
             balance_contributing_clause(),
             not_archived_clause(Transaction),
-            Transaction.pay_period.has(user_id=owner_id),
+            Transaction.pay_period_id.in_(period_ids),
         )
         .all()
     )
@@ -324,7 +346,11 @@ def _purchase_candidates(
                 settled_on=entry.settled_on,
                 is_settled=entry.settled_on is not None,
                 parent_id=entry.transaction_id,
+                # A purchase's budget clock is ONE day, so both ends of its
+                # window are that day: it is not undated, it is dated on a
+                # clock the cash column does not hold (ruling **R-FW**).
                 expected_on=entry.purchased_on,
+                expected_through=entry.purchased_on,
             )
             for entry in rows
             if entry.id not in matched and entry.amount
@@ -333,7 +359,7 @@ def _purchase_candidates(
     )
 
 
-def candidates_for(owner_id: int, account_id: int) -> Candidates:
+def candidates_for(account_id: int, calendar) -> Candidates:
     """Return every row on *account_id* a statement could be showing.
 
     **The ONE entry point, and the reason it exists is that the two arms share
@@ -342,9 +368,28 @@ def candidates_for(owner_id: int, account_id: int) -> Candidates:
     as a DRY violation rather than as a cost.  It is resolved once here and
     threaded.
 
+    **The CALENDAR is a parameter for the same reason and one tier up.**  A
+    read pass holds one calendar and every producer under it takes it, exactly
+    as a balance pass threads its ``BalanceContext``: :func:`~._reads.review_set`
+    builds one and hands it to this and to its own line placer, where a first
+    version of this step had each of them ask ``calendar_for`` separately and
+    a third site answer the same question with its own ``MIN(start_date)``.
+    Three reads of one fact in one request is the defect the paragraph above
+    describes, and two of them can disagree: under READ COMMITTED a concurrent
+    payday write between the two loads would place a line by one calendar and
+    bound its candidates by another.  Found by adversarial financial review
+    2026-08-19.
+
     Args:
-        owner_id: The user whose rows may be offered.
         account_id: The cash account the statement is for.
+        calendar: The owner's
+            :class:`~app.services.pay_calendar.PayCalendar`, built by the read
+            pass.  **It IS the ownership scope**, which is why no ``owner_id``
+            sits beside it: the periods it carries are exactly that owner's, so
+            a second parameter naming the owner would be a second statement of
+            whose rows may be offered and the two could disagree.  Nothing here
+            re-derives it -- a producer that rebuilt its caller's pass would be
+            the copy this parameter exists to remove.
 
     Returns:
         A :class:`~._offers.Candidates`.  Its ``rows`` are the transactions and
@@ -353,12 +398,22 @@ def candidates_for(owner_id: int, account_id: int) -> Candidates:
         same question of both kinds: a bank line does not know which table its
         counterpart lives in.
     """
+    # The owner's SAVED periods, which are both arms' ownership scope and the
+    # source of every unsettled transaction's window.  Derived here rather than
+    # in each arm for the reason the matched ids are read here: two asks in one
+    # request is this project's DRY violation rather than a cost.
+    # ``period_id`` is nullable on a DerivedPeriod in general and never ``None``
+    # on one ``calendar_for`` built, which reads saved rows only.
+    period_ids = {
+        period.period_id for period in calendar.periods
+        if period.period_id is not None
+    }
     _, matched_transactions, matched_entries = _matched_subject_ids(account_id)
     transactions, unpriceable = _transaction_candidates(
-        owner_id, account_id, matched_transactions,
+        account_id, calendar, period_ids, matched_transactions,
     )
     return Candidates(
         rows=transactions
-        + _purchase_candidates(owner_id, account_id, matched_entries),
+        + _purchase_candidates(account_id, period_ids, matched_entries),
         unpriceable_ids=tuple(unpriceable),
     )

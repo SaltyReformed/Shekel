@@ -24,12 +24,21 @@ them by file order rather than by proximity.  :func:`_assign` minimises the
 total day distance over each amount group instead, so a pairing is the best one
 available rather than the first one found.
 
-**A GROUP is proposed only where it is unambiguous** -- N app rows sharing one
-day that sum EXACTLY to one line.  The bank shows one payroll deposit where the
-app holds three rows, and that shape is worth offering; a general subset sum
-over an account's whole history is not, because the number of subsets that hit
-a given cent is large and every one of them would be a proposal a human has to
-refute.
+**A GROUP is proposed only where it is unambiguous** -- N app rows the app
+believes could all have moved on ONE day, summing EXACTLY to one line.  The
+bank shows one payroll deposit where the app holds three rows, and that shape
+is worth offering; a general subset sum over an account's whole history is not,
+because the number of subsets that hit a given cent is large and every one of
+them would be a proposal a human has to refute.
+
+**Every row carries the WINDOW the app believes its money moved in**
+(:attr:`~._offers.CandidateRow.expected_window`), and that one accessor is what
+bounds both passes: a settled row is a point at its settle day, a purchase a
+point at the day it was made, and a bill the whole of its pay period.  Nothing
+here is unbounded, which it was until plan step ``bank_import:X-f6a-3c`` --
+finding **N-312** -- and the two constants that stood in for a bound on the
+group path (a global "undated pool" and its unrendered size) are deleted rather
+than reported, because a row that carries its own window needs neither.
 
 Services-boundary discipline: plain data in, frozen dataclasses out.
 """
@@ -37,7 +46,7 @@ Services-boundary discipline: plain data in, frozen dataclasses out.
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from itertools import combinations
 
@@ -51,21 +60,31 @@ from ._offers import BankLine, CandidateRow, MatchProposal, RowKind
 #: that a monthly commitment cannot reach its neighbour.
 DAY_WINDOW: int = 14
 
-#: The largest UNDATED pool that may join every day's group search.  An
-#: undated row has no day to be grouped by, so it composes with any day's set
-#: -- which is only affordable while there are few of them.  The developer's
-#: own account carries 674, and admitting those put every day over
-#: :data:`MAX_GROUP_DAY_ROWS` and killed the group arm entirely.  Sized to the
-#: shape the arm exists for: a split deposit whose unsettled members number a
-#: handful, not an account's whole backlog.
-MAX_GROUP_UNDATED: int = 6
-
 #: The largest number of candidate rows a single recorded DAY may hold and
 #: still be searched for groups.  Beyond it ``n choose k`` produces more
 #: coincidences than explanations, and the day is reported by
-#: :func:`skipped_group_days` rather than silently passed over.  The developer's
-#: busiest day carries 5.
-MAX_GROUP_DAY_ROWS: int = 12
+#: :func:`skipped_group_days` rather than silently passed over.
+#:
+#: **Re-measured at plan step X-f6a-3c-1, against the bucketing that replaced
+#: the undated POOL.**  A day's bucket is now the rows settled on it PLUS the
+#: unsettled rows whose window reaches it (:func:`_day_buckets`), which is a
+#: bigger set than "rows settled on this day" and a far smaller one than "every
+#: undated row on the account": measured on the developer's own clone the
+#: busiest bucket holds **31** where the busiest settled DAY holds 9 -- a
+#: figure two earlier docstrings gave as 5, counting a different population.
+#: 12 was sized against that older count and is not the number this bucketing
+#: needs.
+#:
+#: **32 is a COST bound and the cost was measured, not assumed.**  A completely
+#: full day costs ``C(32,2)+C(32,3)+C(32,4) = 41,416`` subset sums; the whole
+#: of the developer's account renders its proposals in about 70 ms against the
+#: 3.6-4.6 s ``candidates_for`` above it takes for the same rows.  It is set at
+#: the measurement rather than far above it because a day OVER it is REPORTED
+#: (:func:`skipped_group_days`) rather than silently passed over, so the cap
+#: binding is visible work rather than a hidden loss -- and because every extra
+#: row multiplies the subsets that can hit a given cent by coincidence, which
+#: is a proposal the owner has to refute.
+MAX_GROUP_DAY_ROWS: int = 32
 
 #: The largest number of app rows a GROUP proposal will combine.  The bank
 #: splits nothing further than this in the developer's own data -- a payroll
@@ -93,49 +112,6 @@ def _day_distance(row: CandidateRow, posted_on: date) -> "int | None":
     return abs((row.settled_on - posted_on).days)
 
 
-def _window_anchor(row: CandidateRow) -> "date | None":
-    """Return the day *row* sits on for the purposes of the search window.
-
-    **A PURCHASE is never truly undated, and treating one as if it were is how
-    a `$25.00` May swipe came to be offered against a `$25.00` July purchase.**
-    :func:`_day_distance` answers ``None`` for a row carrying no ``settled_on``
-    -- correct, because that column is the CASH clock and a row never observed
-    to move has no distance from a bank day.  But a purchase carries a second
-    clock, ``purchased_on``, which every purchase has.  So "undated" is true of
-    a purchase's cash clock and false of the purchase.
-
-    **What made this load-bearing is ruling R-FW.**  Until plan step X-f6a-3a
-    the purchase day bounded the pairing implicitly: a line posted before the
-    purchase was made could never be ACCEPTED, so offering it was merely
-    useless.  R-FW makes that pairing legal -- the match now CORRECTS the
-    purchase day -- which left an undated purchase with no bound at all, since
-    :data:`DAY_WINDOW` is measured from ``settled_on`` and it has none.
-    Measured on the developer's own statement, the three worst pairings then
-    re-dated a purchase by 39, 40 and 59 days on an exact-amount coincidence,
-    overwriting the one fact that would have exposed the mis-pairing.  The 14
-    pairings the step exists for are 1 to 5 days out, so every one survives the
-    bound.  Found by two independent adversarial reviews 2026-08-18.
-
-    **A TRANSACTION keeps answering ``None``, and that is not an oversight.**
-    Its ``expected_on`` is its pay period's START -- a budgeting fact, not an
-    observation of when money moved -- so bounding a bill by 14 days from it
-    would refuse exactly the arm that settles a row the app never marked as
-    having happened, 11 of them inside the developer's own statement span.
-
-    Args:
-        row: The candidate.
-
-    Returns:
-        The day to measure the window from, or ``None`` for a row that
-        genuinely has none.
-    """
-    if row.settled_on is not None:
-        return row.settled_on
-    if row.kind is RowKind.PURCHASE:
-        return row.expected_on
-    return None
-
-
 def _within_window(row: CandidateRow, line: BankLine) -> bool:
     """Return whether *row* may be paired with *line* at all.
 
@@ -143,13 +119,26 @@ def _within_window(row: CandidateRow, line: BankLine) -> bool:
     row: a distance the owner would recognise, and a pairing the write door can
     actually carry out.
 
-    **The distance**, measured from :func:`_window_anchor` rather than from
-    ``settled_on`` alone.  A TRANSACTION carrying no settle day is within the
-    window whatever its distance: the bank is the only evidence it has about
-    when that money moved, so there is nothing to be far from, and that is the
-    arm which reaches the rows inside a statement's span that had never been
-    marked as having happened.  A PURCHASE is anchored on the day it was MADE,
-    because it always has one.
+    **The distance is measured from the row's WINDOW**
+    (:attr:`~._offers.CandidateRow.expected_window`) -- the days the app
+    believes that money moved between -- widened by :data:`DAY_WINDOW` at each
+    end.  A row with no window at all is refused rather than admitted: see the
+    comment on that branch.  For a settled row and for a purchase the window is one day, so the
+    test is exactly the ``abs(anchor - posted_on) <= DAY_WINDOW`` it has always
+    been; for an unsettled TRANSACTION it is that row's whole pay period, which
+    is the whole of what the app asserts about when the money moves.
+
+    **An unsettled transaction had NO distance test at all until plan step
+    X-f6a-3c, and that was finding N-312.**  The reasoning was that the bank is
+    the only evidence such a row has, so there is nothing to be far from -- true
+    of the row's CASH clock and false of the row, which is budgeted in a
+    paycheck.  Measured on the developer's own clone: removing the settled
+    partner from an amount group makes **44 of the statement's own lines** pair
+    with a projection budgeted 48 to 148 days later, the worst a 2026-04-01
+    line taking a mortgage transfer budgeted 2026-08-27.  The arm the old
+    reasoning protected is untouched: every one of the 51 rows a proposal
+    settles today is a PURCHASE, and 0 proposals name an unsettled transaction
+    on either the first pass or the second.
 
     **The FLOOR, and forgetting one was a real defect.**  A purchase cannot
     reach the bank before it was made, so ``entry_service.update_entry``'s
@@ -194,10 +183,47 @@ def _within_window(row: CandidateRow, line: BankLine) -> bool:
         and line.posted_on < line.happened_on
     ):
         return False
-    anchor = _window_anchor(row)
-    if anchor is None:
-        return True
-    return abs((anchor - line.posted_on).days) <= DAY_WINDOW
+    window = row.expected_window
+    if window is None:
+        # A row the app can date no way at all is not offerable.  It is
+        # unconstructible through either candidate arm -- both fill
+        # ``expected_on`` from a NOT NULL column -- and the answer is stated
+        # rather than left to a default because the OTHER reading, "no window
+        # means no bound", is finding N-312 itself.  :func:`_day_buckets`
+        # declines the same row for the same reason, so the two passes cannot
+        # disagree about what an undatable row is worth.
+        return False
+    first, last = window
+    slack = timedelta(days=DAY_WINDOW)
+    return first - slack <= line.posted_on <= last + slack
+
+
+def _days_outside(window: "tuple[date, date]", day: date) -> int:
+    """Return how far *day* falls OUTSIDE *window*, in days.
+
+    ``0`` when it falls inside, which is what makes this a distance rather
+    than a signed offset: a row whose own paycheck covers the bank's day is
+    not "near", it is right, and every such row ties.
+
+    **Total over its declared domain**, which is why it takes the window
+    rather than the row: a row that has none is refused by
+    :func:`_within_window` before any distance is asked for, and a helper
+    correct only because its caller pre-filters is a contract no reader can
+    see.
+
+    Args:
+        window: The row's :attr:`~._offers.CandidateRow.expected_window`.
+        day: The day the bank posted the line.
+
+    Returns:
+        The distance in days, ``0`` inside.
+    """
+    first, last = window
+    if day < first:
+        return (first - day).days
+    if day > last:
+        return (day - last).days
+    return 0
 
 
 def _assign(
@@ -220,12 +246,16 @@ def _assign(
     pairing is order-preserving, and searching the order-preserving ones is the
     O(n*m) table in :func:`_least_cost_pairing` rather than a factorial.
 
-    **Rows carrying NO day sit outside that argument and are matched after
-    it.**  An unobserved row has no position on the line, so a dated row that
-    genuinely sits near a line always wins and only the lines nothing dated
-    could explain reach one.  That is the arm that settles a row the app never
-    marked as having happened -- 11 of them inside the developer's own
-    statement span.
+    **Rows carrying NO settle day are matched in a SECOND pass of the same
+    table, after it.**  A dated row that genuinely sits near a line always
+    wins, and only the lines nothing dated could explain reach an unsettled
+    one; that is the arm which settles a row the app never marked as having
+    happened.  **It is no longer unbounded, and it is no longer greedy**: since
+    plan step X-f6a-3c every such row carries the WINDOW the app believes the
+    money moved in (:attr:`~._offers.CandidateRow.expected_window`), so it has
+    a position, a distance and a legality test exactly as a dated row does --
+    which is what lets one table serve both and stops this arm reaching a
+    projection eighteen months out (finding **N-312**).
 
     **BOTH arms re-ask :func:`_within_window` per PAIR, and its absence was a
     shipped defect** (plan step X-f6a-3a).  The caller's filter is an ``any``
@@ -254,27 +284,37 @@ def _assign(
         (row for row in rows if row.settled_on is not None),
         key=lambda row: (row.settled_on, row.row_id),
     )
+    # **Rows with no settle day, ordered by their WINDOW**, because that is the
+    # position :func:`_least_cost_pairing` pairs against.  A row carrying no
+    # window at all sorts LAST and is refused by :func:`_within_window` like
+    # any other illegal pair -- it is not filtered out here, because filtering
+    # would be a second statement of "an undatable row is not offerable" beside
+    # the one that rule already has, and the two could then disagree.  Measured
+    # by mutation 2026-08-19: with the filter in place, inverting that rule
+    # changed no test.
     undated = sorted(
         (row for row in rows if row.settled_on is None),
-        key=lambda row: row.row_id,
+        key=lambda row: (
+            row.expected_window is None, row.expected_window or (), row.row_id,
+        ),
     )
     ordered = sorted(lines, key=lambda line: (line.posted_on, line.line_id))
 
     paired = _least_cost_pairing(ordered, dated)
     taken = {line.line_id for line, _ in paired}
-    for line in ordered:
-        if line.line_id in taken or not undated:
-            continue
-        legal = next(
-            (
-                index for index, row in enumerate(undated)
-                if _within_window(row, line)
-            ),
-            None,
-        )
-        if legal is None:
-            continue
-        paired.append((line, undated.pop(legal)))
+    # **The SAME table, over the rows the dated pass did not explain.**  It was
+    # a greedy first-legal-by-``row_id`` loop until X-f6a-3c, and then briefly a
+    # greedy NEAREST-legal loop, and both are wrong in the same way: they
+    # minimise distance one line at a time and so can strand a later line whose
+    # only legal partner the earlier one took.  Measured by adversarial design
+    # review 2026-08-19 on two same-amount purchases and two lines -- the
+    # greedy pass offered ONE proposal where a table offers two -- which
+    # violates the rule :func:`_least_cost_pairing` states in bold for the
+    # dated arm: *pairs outrank cost*, because a proposal the owner never sees
+    # cannot be reviewed.  One rule for both arms rather than two.
+    paired += _least_cost_pairing(
+        [line for line in ordered if line.line_id not in taken], undated,
+    )
     position = {line.line_id: index for index, line in enumerate(lines)}
     paired.sort(key=lambda pair: position[pair[0].line_id])
     return paired
@@ -292,13 +332,27 @@ def _least_cost_pairing(
     unexplained to save two days of distance would hide work rather than order
     it.
 
+    **The cost is :func:`_days_outside`, which is ONE rule over both arms.**
+    A settled row's window is the single day it settled on, so the distance
+    from a line is exactly what this table always measured; an unsettled row's
+    is its pay period or its purchase day, and the distance is how far the bank
+    posted OUTSIDE that -- zero when the app's own belief already covers the
+    bank's day.  Writing the two as one function is what let the undated arm
+    stop being a greedy loop.
+
     Args:
         lines: Bank lines sharing one amount, ASCENDING by day.
-        rows: Candidate rows sharing it, ASCENDING by day, every one of them
-            carrying a day.
+        rows: Candidate rows sharing it, ASCENDING by the window they occupy,
+            every one of them carrying one.
 
     Returns:
         The chosen pairs, ascending by day.  Empty when either side is.
+        Optimal among ORDER-PRESERVING pairings, which is exactly optimal while
+        the windows do not nest -- a purchase's single day can sit inside a
+        bill's fortnight, and there the table is a bound rather than the
+        minimum.  Stated rather than claimed away: what it still guarantees is
+        the property that matters, that no line is left unexplained while a
+        legal partner goes unused.
     """
     n, m = len(lines), len(rows)
     if not n or not m:
@@ -311,22 +365,23 @@ def _least_cost_pairing(
                 (table[i - 1][j], "skip-line"),
                 (table[i][j - 1], "skip-row"),
             ]
-            distance = abs(
-                (rows[j - 1].settled_on - lines[i - 1].posted_on).days
-            )
-            # **The legality test is per PAIR here too**, and its absence was
-            # the same defect the undated arm carried.  ``distance`` bounds a
-            # row by its own settle day; it says nothing about whether the
-            # write door could carry the pairing out, and the caller's filter
-            # is an ``any`` over the amount group -- so a row legal against one
-            # line could be assigned to another.  The docstring above used to
-            # claim ``DAY_WINDOW`` "subsumes the floor", which is false: the
-            # floor is about ``expected_on`` and the line's stated day, and the
-            # window is about ``settled_on``.  Found by adversarial test-quality
-            # review 2026-08-18.
-            if distance <= DAY_WINDOW and _within_window(
-                rows[j - 1], lines[i - 1],
-            ):
+            # **The legality test is per PAIR here**, and its absence was a
+            # shipped defect: the caller's filter is an ``any`` over the amount
+            # group, so a row legal against one line could be assigned to
+            # another.  Found by adversarial test-quality review 2026-08-18.
+            #
+            # ``distance <= DAY_WINDOW`` stood BESIDE this call until plan step
+            # X-f6a-3c and is gone rather than dropped by accident:
+            # :func:`_within_window` IS the distance test plus the purchase
+            # floor, now that every row carries the window the distance is
+            # measured from.  Asking both was two spellings of one bound, which
+            # is the shape that let the two disagree in the first place -- the
+            # docstring above used to claim ``DAY_WINDOW`` "subsumes the
+            # floor", which was false.
+            if _within_window(rows[j - 1], lines[i - 1]):
+                distance = _days_outside(
+                    rows[j - 1].expected_window, lines[i - 1].posted_on,
+                )
                 pairs, cost = table[i - 1][j - 1]
                 options.append(((pairs - 1, cost + distance), "pair"))
             table[i][j], move[i][j] = min(options)
@@ -392,6 +447,104 @@ def _one_to_one(
     return proposals
 
 
+def _day_buckets(
+    rows: "list[CandidateRow]",
+) -> "tuple[dict[date, list[CandidateRow]], list[date]]":
+    """Return the days a GROUP may be searched on, and the days too crowded to.
+
+    **One bucketing, two consumers**, because :func:`_day_sums` and
+    :func:`skipped_group_days` have to agree about what a day holds: they were
+    two implementations of that rule, each re-deriving the undated pool's
+    membership test, and the reporting one then blamed "crowded days" for a
+    bound that was really the pool's.
+
+    **A day's bucket is the rows the app believes could have moved on it**:
+    the rows it recorded as settling that day, plus every unsettled row whose
+    own window (:attr:`~._offers.CandidateRow.expected_window`) reaches it --
+    a purchase around the day it was made, a bill around its pay period.
+
+    **The window is widened by :data:`DAY_WINDOW` here, exactly as
+    :func:`_within_window` widens it, and the two MUST agree.**  A first
+    version of this step left the bucket strict on the reasoning that the slack
+    is the line-to-day tolerance and applying it twice is too generous.  That
+    opened a silent gap between what may be PAIRED and what may be GROUPED: a
+    bill budgeted 2026-08-13..08-26 and paid on 08-30 alongside a settled
+    partner is legal for the line and was unbuildable into a group, so a
+    proposal the previous implementation offered simply disappeared with
+    nothing to report it.  A bound that only one of two passes applies is not a
+    bound, it is a disagreement.  Found by adversarial design review
+    2026-08-19.
+
+    **What widening costs was measured rather than assumed**, because the
+    strict form was chosen to protect a real proposal: at the old cap of 20 it
+    pushed the open pay period's days over :data:`MAX_GROUP_DAY_ROWS` and lost
+    the developer's own `$2,611.90` payroll group.  The cap is what was wrong,
+    not the widening -- re-sized, the widened bucketing offers the SAME 124
+    proposals including all 3 groups, with 0 days reported crowded and
+    ``propose`` running in about 70 ms.
+
+    **The undated POOL this replaced was a global bound and could not work.**
+    A row with no settle day used to join EVERY day's bucket, which is only
+    affordable while there are few such rows -- and an account's unsettled
+    backlog is not few: the developer's carries 674, of which 600 are
+    projections dated past the statement's last day.  So the arm was switched
+    off wholesale by a ``MAX_GROUP_UNDATED`` of 6, a bound that was computed,
+    published as ``undated_pool_too_large()``, returned **674**, and was
+    rendered NOWHERE (findings **N-315** and **N-316**).  Both are deleted
+    rather than reported, because a row that carries its own window does not
+    need a pool: the 600 forward projections join no bucket at all, and the 74
+    rows the statement could actually have shown join the days they belong to.
+    Measured: the proposals this offers on the developer's own statement are
+    the SAME 124, including all 3 groups.
+
+    Args:
+        rows: The candidate rows.
+
+    Returns:
+        ``(searchable, skipped)`` -- the buckets holding at most
+        :data:`MAX_GROUP_DAY_ROWS` rows, and the days holding more, ascending.
+        The cap and the membership rule are each stated ONCE here, which is
+        what the two implementations before it could not manage.
+
+        **The two callers still bucket different POPULATIONS, and the
+        difference is one-sided.**  :func:`_groups` is handed only the rows no
+        one-to-one proposal claimed, while ``_reads`` reports over every
+        candidate -- so the reported set is a SUPERSET and a day can be named
+        crowded that was in fact searched.  It cannot go the other way, so no
+        group is silently lost; what it costs is a caption that overstates.
+        Recorded as a finding rather than fixed here: making them agree means
+        publishing the days the search actually skipped, which is a change to
+        :func:`propose`'s return.
+    """
+    buckets: "dict[date, list[CandidateRow]]" = {}
+    for row in rows:
+        if row.settled_on is not None:
+            buckets.setdefault(row.settled_on, []).append(row)
+    for row in rows:
+        if row.settled_on is not None:
+            continue
+        window = row.expected_window
+        if window is None:
+            # A row the app can date no way at all joins no day.  It is
+            # unconstructible through either candidate arm -- both fill
+            # ``expected_on`` from a NOT NULL column -- and the branch is here
+            # because the accessor is TOTAL: the alternative reading, "joins
+            # every day", is the pool this function exists to remove.
+            continue
+        first, last = window
+        slack = timedelta(days=DAY_WINDOW)
+        for day, day_rows in buckets.items():
+            if first - slack <= day <= last + slack:
+                day_rows.append(row)
+
+    searchable = {
+        day: day_rows for day, day_rows in buckets.items()
+        if len(day_rows) <= MAX_GROUP_DAY_ROWS
+    }
+    skipped = sorted(day for day in buckets if day not in searchable)
+    return searchable, skipped
+
+
 def _day_sums(
     rows: "list[CandidateRow]",
 ) -> "dict[date, dict[Decimal, list[tuple[CandidateRow, ...]]]]":
@@ -405,21 +558,10 @@ def _day_sums(
     produces more coincidences than explanations -- and a bound that is silent
     about what it dropped reads as "nothing to group here".
 
-    **A row carrying NO day joins every day's bucket, and ONLY while there are
-    few enough of them to search.**  Ruling **R-FV**'s third arm has to reach
-    the group path -- a split payroll deposit with one unsettled member is the
-    ordinary shape -- so an undated row, having no day to disagree with,
-    composes with any day's set.  But an account's undated pool is not small:
-    the developer's carries **674** of 825 candidates, and admitting all of
-    them put every day over :data:`MAX_GROUP_DAY_ROWS`, which killed the group
-    arm outright and reported 51 days as "too crowded" when the real cause was
-    this rule.  Found by adversarial financial review 2026-08-17, which
-    measured 0 groups proposed where the previous implementation proposed 3.
-
-    So the undated pool joins only when it is under
-    :data:`MAX_GROUP_UNDATED`, and :func:`undated_pool_too_large` REPORTS when
-    it is not -- for the reason :func:`skipped_group_days` exists: a bound that
-    says nothing about what it dropped reads as a clean sweep.
+    **Which rows a day holds is :func:`_day_buckets`'**, including the
+    unsettled ones: ruling **R-FV**'s third arm has to reach the group path,
+    because a split payroll deposit with one unsettled member is the ordinary
+    shape.
 
     Args:
         rows: The candidate rows.
@@ -428,18 +570,8 @@ def _day_sums(
         ``{day: {signed sum: [row sets]}}`` over sets of 2 to
         :data:`MAX_GROUP_ROWS` rows.
     """
-    dated: "dict[date, list[CandidateRow]]" = defaultdict(list)
-    undated = [row for row in rows if row.settled_on is None]
-    for row in rows:
-        if row.settled_on is not None:
-            dated[row.settled_on].append(row)
-    joinable = undated if len(undated) <= MAX_GROUP_UNDATED else []
-    by_day = {day: day_rows + joinable for day, day_rows in dated.items()}
-
     sums: "dict[date, dict[Decimal, list[tuple[CandidateRow, ...]]]]" = {}
-    for day, day_rows in by_day.items():
-        if len(day_rows) > MAX_GROUP_DAY_ROWS:
-            continue
+    for day, day_rows in _day_buckets(rows)[0].items():
         day_sums: "dict[Decimal, list[tuple[CandidateRow, ...]]]" = defaultdict(list)
         for size in range(2, min(len(day_rows), MAX_GROUP_ROWS) + 1):
             for combo in combinations(day_rows, size):
@@ -456,47 +588,19 @@ def skipped_group_days(rows: "list[CandidateRow]") -> "list[date]":
     """Return the days :func:`propose` refused to search for GROUPS.
 
     **A bound that does not say what it dropped reads as a clean sweep.**  A
-    day holding more than :data:`MAX_GROUP_DAY_ROWS` candidate rows is not
-    grouped, so a line a group on that day would have explained is listed as
-    unmatched -- and the owner has to be told that is a limit rather than an
-    absence, on the screen, so they can build the group by hand.
+    day whose bucket holds more than :data:`MAX_GROUP_DAY_ROWS` candidate rows
+    is not grouped, so a line a group on that day would have explained is
+    listed as unmatched -- and the owner has to be told that is a limit rather
+    than an absence, on the screen, so they can build the group by hand.
 
     Args:
         rows: The candidate rows the proposals were built from.
 
     Returns:
         The days that were skipped, ascending.  Empty on the developer's own
-        data, where the busiest day carries 5 candidate rows.
+        data, where the busiest bucket carries 31 against a cap of 32.
     """
-    undated = sum(1 for row in rows if row.settled_on is None)
-    joinable = undated if undated <= MAX_GROUP_UNDATED else 0
-    by_day: "dict[date, int]" = defaultdict(int)
-    for row in rows:
-        if row.settled_on is not None:
-            by_day[row.settled_on] += 1
-    # ``+ joinable`` because that is what :func:`_day_sums` actually puts in a
-    # day's bucket.  Counting the whole undated pool instead named every day on
-    # the developer's account as crowded, which was a true statement about a
-    # rule nobody wanted rather than about the day.
-    return sorted(day for day, count in by_day.items()
-                  if count + joinable > MAX_GROUP_DAY_ROWS)
-
-
-def undated_pool_too_large(rows: "list[CandidateRow]") -> int:
-    """Return how many undated rows were kept OUT of every group search.
-
-    The second bound :func:`_day_sums` applies, reported for the same reason
-    the first is.  ``0`` when the pool was small enough to search, which is the
-    only case in which a group may name a row nobody has settled.
-
-    Args:
-        rows: The candidate rows the proposals were built from.
-
-    Returns:
-        The size of the excluded pool, or ``0``.
-    """
-    undated = sum(1 for row in rows if row.settled_on is None)
-    return undated if undated > MAX_GROUP_UNDATED else 0
+    return _day_buckets(rows)[1]
 
 
 def _holds_a_parent_and_its_child(
@@ -532,9 +636,10 @@ def _groups(
     """Return the proposals where several app rows sum to one bank line.
 
     R-FS's second shape, in the direction the app can propose without guessing.
-    The rows considered for one line are those sharing a single recorded day
-    inside the window, which is what a split deposit looks like: three rows
-    that all settled the day the paycheck landed.
+    The rows considered for one line are those of a single day's bucket
+    (:func:`_day_buckets`) inside the window, which is what a split deposit
+    looks like: three rows that all settled the day the paycheck landed, or two
+    that did and one the app has not marked as having happened at all.
 
     **The other direction -- N bank lines summing to one app row -- is
     deliberately NOT proposed automatically**, and that is measured rather than
@@ -558,24 +663,52 @@ def _groups(
     sums = _day_sums(rows)
     proposals = []
     for line in lines:
-        found = [
-            (day, combo)
-            for day, day_sums in sums.items()
-            if abs((day - line.posted_on).days) <= DAY_WINDOW
-            for combo in day_sums.get(line.amount, ())
-            # Every member must be legally datable to this line's day, and no
-            # two of them may be an envelope and a purchase inside it: the
-            # accept door refuses both, so offering either is an Accept button
-            # that cannot succeed.
-            if all(_within_window(row, line) for row in combo)
-            and not _holds_a_parent_and_its_child(combo)
-        ]
+        # **Keyed by the ROW SET, not by (day, set), and that is a bug fix.**
+        # A combo holding a settled row can only appear in that row's own
+        # bucket; a combo of rows NOBODY has settled appears in every bucket
+        # its members' windows jointly cover, so counting `(day, combo)` pairs
+        # made one unambiguous set look like several and the test below
+        # refused it.  Measured: two projected bills summing to a line were
+        # proposed with one settled row on the account and REFUSED with two,
+        # the second settled row being unrelated and two days away.  Found by
+        # adversarial financial review 2026-08-19, on the arm this step's own
+        # bucketing had just switched back on.
+        found: "dict[frozenset, tuple[date, tuple[CandidateRow, ...]]]" = {}
+        for day, day_sums in sums.items():
+            if abs((day - line.posted_on).days) > DAY_WINDOW:
+                continue
+            for combo in day_sums.get(line.amount, ()):
+                # Every member must be legally datable to this line's day, and
+                # no two of them may be an envelope and a purchase inside it:
+                # the accept door refuses both, so offering either is an Accept
+                # button that cannot succeed.
+                if not all(_within_window(row, line) for row in combo):
+                    continue
+                if _holds_a_parent_and_its_child(combo):
+                    continue
+                found.setdefault(
+                    frozenset((row.kind, row.row_id) for row in combo),
+                    (day, combo),
+                )
         if len(found) != 1:
             continue
-        day, combo = found[0]
+        day, combo = next(iter(found.values()))
         proposals.append(MatchProposal(
             lines=(line,), rows=combo,
-            day_gap=abs((day - line.posted_on).days),
+            # **``None`` when NO member carries a day**, exactly as
+            # :func:`_one_to_one` answers it.  ``day`` is the bucket's key, and
+            # a bucket key belongs to the rows that SETTLED on it -- so reading
+            # it as the group's own day captioned a group of rows nobody has
+            # settled as *confirms the day you already had*, beside *marks 2
+            # row(s) as happened*: the two contradicting captions
+            # :attr:`~._offers.MatchProposal.day_gap` was made three-valued to
+            # stop.  Where any member IS settled the key is that member's own
+            # ``settled_on``, because a settled row joins only its own bucket.
+            day_gap=(
+                abs((day - line.posted_on).days)
+                if any(row.settled_on is not None for row in combo)
+                else None
+            ),
         ))
     return proposals
 

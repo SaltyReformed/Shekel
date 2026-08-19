@@ -39,6 +39,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import (
     balance_at,
+    pay_calendar,
     statement_match,
     status_seam,
     transaction_service,
@@ -723,17 +724,21 @@ class TestWhatTheScreenMayOFFER:
     ):
         """``accept_match`` refuses a purchase whose parent another match names.
 
-        The refusal is WIDER than this door needs -- a purchase born carrying
-        its posting day moves its parent's leg by zero, so the earlier match
-        still balances -- and narrowing it is a change to a money guard an
-        adversarial review put in for a measured reason.  So the screen stops
-        offering it instead, and the width is recorded as a finding.
+        **The refusal is WIDER than this door needs** (finding **N-317**), and
+        X-f6a-3c-1 re-measured how much: every destination this clause uniquely
+        removes is one a new purchase moves by `$0.00`, because a match settles
+        the envelope it names and only an envelope that settles FROM ITS
+        ENTRIES lands on the purchases basis the money clause admits.  It is
+        left whole anyway on the developer's ruling of 2026-08-19 -- a money
+        guard is not narrowed for a `$0.00` benefit -- so the screen stops
+        offering it and the width stays a finding rather than a fix.
         """
         with app.app_context():
             envelope = _closed_from_purchases(seed_user)
             statement = an_import(seed_user)
             leg = statement_match.candidates_for(
-                seed_user["user"].id, seed_user["account"].id,
+                seed_user["account"].id,
+                pay_calendar.calendar_for(seed_user["user"].id),
             )
             worth = next(
                 row.cash_amount for row in leg.rows

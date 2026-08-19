@@ -42,8 +42,8 @@ class RowKind(enum.Enum):
 class CandidateRow:  # pylint: disable=too-many-instance-attributes
     """One app row a bank line could be, priced and dated as the app holds it.
 
-    Pylint: too-many-instance-attributes -- **nine fields because the subject
-    genuinely has nine**, not because the value wants splitting.
+    Pylint: too-many-instance-attributes -- **ten fields because the subject
+    genuinely has ten**, not because the value wants splitting.
     It describes ONE row drawn from either of two tables, for five consumers
     that each read a different subset: the proposer reads the amount and the
     days, the assignment reads the days, the screen reads the label and the
@@ -76,10 +76,11 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
             purchase inside it, which the accept door always refuses because
             the envelope's figure already covers its own purchases; without it
             the screen renders an Accept button that can never succeed.
-        expected_on: The day the app PROJECTS this row on -- its pay period's
-            start for a transaction, the purchase day for a purchase.  Two
-            consumers, and for a PURCHASE it is one fact doing both jobs, which
-            is why there is one field rather than two:
+        expected_on: The FIRST day the app believes this row's money could
+            have moved -- its pay period's start for a transaction, the
+            purchase day for a purchase.  Three consumers, and for a PURCHASE
+            it is one fact doing all three jobs, which is why there is one
+            field rather than three:
 
             * it makes "the bank never showed this" answerable for a row
               carrying no settle day.  A projection dated eighteen months out
@@ -90,7 +91,15 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
               bank before it was made, so ``update_entry`` refuses that write
               (``_reject_settled_before_purchase``) and a proposal pairing one
               with an earlier line is one the accept door always rejects --
-              measured at 23 such pairs on the developer's own clone.
+              measured at 23 such pairs on the developer's own clone;
+            * it opens :attr:`expected_window`, which is what BOUNDS a row the
+              app has never settled.
+        expected_through: The LAST such day -- the pay period's END for a
+            transaction, and the purchase day again for a purchase, whose
+            budget clock is a single day rather than a span.  **It is the half
+            that was missing, and its absence had no bound at all**: plan step
+            ``bank_import:X-f6a-3c``, finding **N-312**.  See
+            :attr:`expected_window`.
     """
 
     kind: RowKind
@@ -102,6 +111,74 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
     transfer_id: "int | None" = None
     parent_id: "int | None" = None
     expected_on: "date | None" = None
+    expected_through: "date | None" = None
+
+    @property
+    def expected_window(self) -> "tuple[date, date] | None":
+        """Return the days the app believes this row's money moved between.
+
+        **The one place "when does the app think this happened" is answered**,
+        because the answer differs by row kind and by whether the row has been
+        settled, and stating it at each asking site is how a whole kind came to
+        have no answer at all.
+
+        * a SETTLED row is a point: ``settled_on`` is an OBSERVATION, and an
+          observation beats a belief, so the projection is not consulted;
+        * a PURCHASE is a point at ``purchased_on``.  Every purchase has one
+          -- ``transaction_entries.purchased_on`` is NOT NULL -- so "undated"
+          is true of a purchase's CASH clock and false of the purchase.  Plan
+          step ``bank_import:X-f6a-3a``, ruling **R-FW**;
+        * a TRANSACTION is its PAY PERIOD, start to end.  Its ``expected_on``
+          alone is a budgeting fact rather than an observation, so a rule
+          reading it as a point would be claiming the app knows a day it does
+          not; the period is the span the app actually asserts, and it is the
+          whole of what it asserts.
+
+        **The bound this produces is CADENCE-RELATIVE, and saying so is part
+        of stating it.**  ``budget.pay_schedule.cadence_days`` is
+        user-selectable 1..365, so the days a line may be posted on and still
+        claim a bill run to the period's length plus twice
+        :data:`~._propose.DAY_WINDOW`: 35 for a weekly owner, 42 for the
+        biweekly one this was measured against, 58 monthly, and 393 at an
+        annual cadence -- where it is barely a bound at all.  That is the
+        honest consequence of bounding a row by what the app itself asserts: an
+        owner who budgets in coarser blocks has asserted less about when the
+        money moves, and inventing a tighter claim on their behalf is the
+        substitution ruling **R-FW** rejected one clock over.  What keeps it
+        safe at every cadence is that a proposal is reviewed before it commits
+        (**R-FP**).
+
+        **A TRANSACTION answered ``None`` here until plan step X-f6a-3c, and
+        that was finding N-312: a bill the app has never marked as paid could
+        be claimed by a bank line of any date whatever.**  Measured on the
+        developer's own clone: 610 unsettled transactions, 600 of them
+        projections dated past the statement's last day, and when the settled
+        partner is removed from an amount group **44 of the statement's own
+        lines immediately pair with a future projection** -- the worst a
+        2026-04-01 line taking a mortgage transfer budgeted 2026-08-27, 148
+        days later.  It never fired on the first import only because a settled
+        row won every amount race; the second import is where the app's own
+        rows have run out.  The earlier reasoning -- that bounding a bill would
+        refuse the arm which settles a row nobody has marked as having happened
+        -- was re-measured and does not hold: every one of the 51 rows that arm
+        settles today is a PURCHASE, already bounded by its own day, and 0
+        proposals name an unsettled transaction on either the first pass or the
+        second.
+
+        Returns:
+            ``(first, last)``, or ``None`` for a row the app can date no way at
+            all -- which the proposer reads as NOT OFFERABLE rather than as
+            unbounded (:func:`~._propose._within_window`).  A row stating only
+            :attr:`expected_on` is read as a POINT rather than as unbounded for
+            the same reason, so a half-stated window is always TIGHTER than a
+            whole one and never looser: that is the direction a missing fact
+            has to fail in on a money path.
+        """
+        if self.settled_on is not None:
+            return (self.settled_on, self.settled_on)
+        if self.expected_on is None:
+            return None
+        return (self.expected_on, self.expected_through or self.expected_on)
 
 
 @dataclass(frozen=True)

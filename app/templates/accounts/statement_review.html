@@ -21,6 +21,13 @@
    not reads as a clean sweep: lines older than the pay calendar, days too
    crowded to search for groups, and rows the amount model could not price.
 
+   A row you have not marked as having happened shows the PAYCHECK it is
+   budgeted in (plan step bank_import:X-f6a-3c-1).  That is the fact the offer
+   rests on -- such a row is offered because its own pay period reaches the
+   bank's day -- and without it a reviewer cannot tell two months of the same
+   commitment apart, which is what R-FP's "reviewed before it commits" asks
+   them to do.
+
    Context (accounts.review_statements): account, review (ReviewSet),
    categories (the owner's active categories, for the new-envelope arm). #}
 
@@ -78,7 +85,11 @@
               <span class="fw-semibold">{{ money(row.cash_amount) }}</span>
               {{ row.label }}
               <span class="small text-body-secondary">
-                {% if row.settled_on %}({{ row.settled_on }}){% else %}(not yet recorded as happened){% endif %}
+                {# A row you have not marked as happened is offered because the
+                   paycheck it is budgeted in reaches the bank's day, so the
+                   paycheck is the fact to check -- two months of the same
+                   commitment are both called "Transfer to Mortgage". #}
+                {% if row.settled_on %}({{ row.settled_on }}){% else %}(not yet recorded as happened{% if row.expected_on %}, budgeted {{ row.expected_on }} - {{ row.expected_through }}{% endif %}){% endif %}
               </span>
             </div>
             {% endfor %}
@@ -223,6 +234,11 @@
                     <label for="row-{{ row.kind.value }}-{{ row.row_id }}" class="mb-0">
                       {% if row.settled_on %}{{ row.settled_on }}{% else %}<span class="text-body-secondary">not recorded</span>{% endif %}
                     </label>
+                    {% if not row.settled_on and row.expected_on %}
+                    <div class="small text-body-secondary">
+                      budgeted {{ row.expected_on }} - {{ row.expected_through }}
+                    </div>
+                    {% endif %}
                   </td>
                   <td class="text-end fw-semibold text-nowrap">{{ money(row.cash_amount) }}</td>
                   <td class="small">{{ row.label }}</td>
@@ -382,7 +398,10 @@
     <li>
       {{ review.bounds.crowded_days | length }} day(s) hold too many rows to search
       for combinations, so no grouped match was proposed for them:
-      {{ review.bounds.crowded_days | join(', ') }}.
+      {{ review.bounds.crowded_days | join(', ') }}. A day counts the rows you
+      recorded as happening on it AND the ones you have not marked yet whose
+      paycheck covers it, so a crowded day is usually a busy pay period rather
+      than a busy day.
     </li>
     {% endif %}
     {% if review.bounds.unpriceable_count %}
