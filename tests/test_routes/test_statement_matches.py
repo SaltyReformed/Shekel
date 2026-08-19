@@ -13,10 +13,12 @@ they pass real lists.  It was found by mutating a real browser payload through
 this route, and it is pinned here because the failure is total in a browser and
 invisible everywhere else.
 
-**The ownership tests are firing controls against an IDOR** on a door that
-MOVES MONEY: a route answering for another user's account would let one user
-re-date another's records.  All three doors are tested, because the decorators
-are applied independently and one being right proves nothing about the others.
+**The ownership tests are firing controls against an IDOR** on doors that MOVE
+MONEY: a route answering for another user's account would let one user re-date
+another's records, and -- since plan step **bank_import:X-f6a-3b** -- mint
+budget rows in their periods.  All FOUR doors are tested, because the
+decorators are applied independently and three being right proves nothing about
+the fourth.
 """
 
 from datetime import date, timedelta
@@ -27,6 +29,7 @@ import pytest
 from app.enums import StatusEnum
 from app.models.account import Account
 from app.models.statement_match import StatementMatch, StatementMatchMember
+from app.models.transaction import Transaction
 from app.models.user import User, UserSettings
 from app.services import auth_service
 from tests.test_services.test_statement_match._builders import (
@@ -445,3 +448,228 @@ class TestItRefusesAnotherUsersAccount:
         )
 
         assert response.status_code == 404
+
+    def test_the_purchase_door_answers_404(
+        self, auth_client, db, other_users_account,
+    ):
+        """The FOURTH decorator, and the one that CREATES budget rows.
+
+        Plan step **bank_import:X-f6a-3b**.  Three doors being right proves
+        nothing about a fourth, and this one can mint a transaction and a
+        purchase -- so an un-decorated route would let one user grow another's
+        budget from their own statement.
+        """
+        response = auth_client.post(
+            f"{_review_url(other_users_account)}/purchase",
+            data={"line_id": 1, "transaction_id": 1},
+        )
+
+        assert response.status_code == 404
+        assert db.session.query(StatementMatch).count() == 0
+
+
+class TestThePurchasePost:
+    """The create door end to end -- plan step **bank_import:X-f6a-3b**.
+
+    The route's own subjects, none of which the service test can see: the
+    destination ``<select>``'s EMPTY value meaning "a new envelope", the
+    ownership decorator on a third door, and the flash that says what was
+    recorded and where.
+    """
+
+    @staticmethod
+    def _purchase_url(account_id):
+        """Return the create door's URL for *account_id*."""
+        return f"{_review_url(account_id)}/purchase"
+
+    @staticmethod
+    def _an_open_envelope(seed_user):
+        """Return a Projected envelope a purchase may join."""
+        return a_transaction(
+            seed_user, name="Groceries", amount="500.00", is_envelope=True,
+        )
+
+    def test_the_page_offers_the_line_and_a_destination(
+        self, auth_client, db, seed_user,
+    ):
+        """The card is what makes the door reachable at all.
+
+        Without it the create door fires only on a crafted POST, and the 74
+        card swipes the step exists for are never put in front of the person
+        who can record them -- which is the same defect the hand-build form was
+        added to fix one leaf earlier.
+        """
+        statement = an_import(seed_user)
+        a_bank_line(
+            seed_user, statement, amount="-57.96",
+            posted_on=seed_user["bootstrap_period"].start_date,
+            description="POINT OF SALE DEBIT L340 WAL-MART (Walmart)",
+        )
+        self._an_open_envelope(seed_user)
+        db.session.commit()
+
+        response = auth_client.get(_review_url(seed_user["account"].id))
+
+        assert response.status_code == 200
+        assert b"a purchase you never recorded" in response.data
+        assert b"-- a new envelope --" in response.data
+        # The name box is prefilled with the MERCHANT, not the whole line.
+        assert b'value="Walmart"' in response.data
+
+    def test_it_records_into_an_existing_envelope_and_says_where(
+        self, auth_client, db, seed_user,
+    ):
+        """The RENDERED payload, not a hand-picked subset of it.
+
+        **This posted only ``line_id`` and ``transaction_id`` and shipped a
+        dead arm.**  Every control in the form is submitted on every POST: the
+        name box is always rendered and always prefilled from the merchant, and
+        the category select has no empty option.  Keying the arm on
+        ``envelope_name is not None`` therefore named BOTH destinations on every
+        real submission and the door refused all of them -- 66 of the
+        developer's 91 creatable lines, on the first click, with no sequence of
+        interactions that reached the arm at all.  Three independent adversarial
+        reviews found it on 2026-08-19; this file's own module docstring
+        describes the identical class one leaf earlier.
+
+        So the payload below is exactly what the template emits, and the arm is
+        the SELECT.
+        """
+        statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(seed_user, statement, amount="-57.96",
+                           posted_on=day)
+        envelope = self._an_open_envelope(seed_user)
+        db.session.commit()
+
+        response = auth_client.post(
+            self._purchase_url(seed_user["account"].id),
+            data={
+                "line_id": line.id,
+                "transaction_id": envelope.id,
+                # The two the browser sends whatever the owner picked.
+                "envelope_name": "Walmart",
+                "category_id": seed_user["categories"]["Groceries"].id,
+            },
+            follow_redirects=True,
+        )
+
+        assert response.status_code == 200
+        assert b"as a purchase in Groceries" in response.data
+        db.session.expire_all()
+        assert [entry.amount for entry in envelope.entries] == [
+            Decimal("57.96"),
+        ]
+        # The chosen envelope is NOT closed by filing a purchase into it --
+        # only a NEWLY CREATED one is.  Without this, `if created:` could
+        # become `if True:` and silently close an open budget at its
+        # purchases-to-date.
+        assert envelope.status.is_settled is False
+        assert envelope.settled_on is None
+        # ...and no envelope was invented alongside it.
+        assert db.session.query(Transaction).filter(
+            Transaction.name == "Walmart",
+        ).count() == 0
+
+    def test_an_EMPTY_destination_select_means_a_new_envelope(
+        self, auth_client, db, seed_user,
+    ):
+        """The browser submits ``""`` for the "a new envelope" option.
+
+        ``RowId`` reads an empty string as a validation error rather than as
+        "absent", so without the schema's ``@pre_load`` the whole arm 400s on
+        the ordinary path -- the failure is total in a browser and invisible to
+        a service test, which passes ``None``.
+        """
+        statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(seed_user, statement, amount="-31.41",
+                           posted_on=day, description="LOWES #00907 (Lowe's)")
+        db.session.commit()
+
+        response = auth_client.post(
+            self._purchase_url(seed_user["account"].id),
+            data={
+                "line_id": line.id,
+                "transaction_id": "",
+                "envelope_name": "Lowe's",
+                "category_id": seed_user["categories"]["Groceries"].id,
+            },
+            follow_redirects=True,
+        )
+
+        assert response.status_code == 200
+        assert b"as a purchase in a new envelope, Lowe" in response.data
+        db.session.expire_all()
+        created = db.session.query(Transaction).filter(
+            Transaction.name == "Lowe's",
+        ).one()
+        assert created.estimated_amount == Decimal("0.00")
+
+    def test_a_new_envelope_missing_its_CATEGORY_is_refused(
+        self, auth_client, db, seed_user,
+    ):
+        """A budget line with no category is invisible to every spending report.
+
+        Both-or-neither is a fact about this FORM, so the schema owns it -- and
+        without it the service would refuse with "that category is not one of
+        yours", which is a true sentence about the wrong problem.
+        """
+        statement = an_import(seed_user)
+        line = a_bank_line(
+            seed_user, statement, amount="-31.41",
+            posted_on=seed_user["bootstrap_period"].start_date,
+        )
+        db.session.commit()
+
+        response = auth_client.post(
+            self._purchase_url(seed_user["account"].id),
+            data={
+                "line_id": line.id,
+                "transaction_id": "",
+                "envelope_name": "Lowe's",
+                "category_id": "",
+            },
+            follow_redirects=True,
+        )
+
+        assert response.status_code == 200
+        assert b"needs both a name and a category" in response.data
+        assert db.session.query(Transaction).filter(
+            Transaction.name == "Lowe's",
+        ).count() == 0
+
+    def test_a_refusal_leaves_nothing_behind(
+        self, auth_client, db, seed_user,
+    ):
+        """The unit of work is the REQUEST, which is what makes the message true.
+
+        Every refusal here ends "Nothing was changed", and the new-envelope arm
+        stages a budget line before the purchase -- so a refusal arriving after
+        that has to take the row with it.
+        """
+        statement = an_import(seed_user)
+        line = a_bank_line(
+            seed_user, statement, amount="2573.42",
+            posted_on=seed_user["bootstrap_period"].start_date,
+        )
+        db.session.commit()
+
+        response = auth_client.post(
+            self._purchase_url(seed_user["account"].id),
+            data={
+                "line_id": line.id,
+                "transaction_id": "",
+                "envelope_name": "Payroll",
+                "category_id": seed_user["categories"]["Groceries"].id,
+            },
+            follow_redirects=True,
+        )
+
+        assert response.status_code == 200
+        assert b"money LEAVING" in response.data
+        db.session.expire_all()
+        assert db.session.query(Transaction).filter(
+            Transaction.name == "Payroll",
+        ).count() == 0
+        assert db.session.query(StatementMatch).count() == 0

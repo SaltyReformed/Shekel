@@ -14,6 +14,7 @@ no Flask import, no query, no clock read.
 from __future__ import annotations
 
 import enum
+import re
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -41,8 +42,8 @@ class RowKind(enum.Enum):
 class CandidateRow:  # pylint: disable=too-many-instance-attributes
     """One app row a bank line could be, priced and dated as the app holds it.
 
-    Pylint: too-many-instance-attributes -- **nine fields because the subject
-    genuinely has nine**, not because the value wants splitting.
+    Pylint: too-many-instance-attributes -- **ten fields because the subject
+    genuinely has ten**, not because the value wants splitting.
     It describes ONE row drawn from either of two tables, for five consumers
     that each read a different subset: the proposer reads the amount and the
     days, the assignment reads the days, the screen reads the label and the
@@ -75,10 +76,11 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
             purchase inside it, which the accept door always refuses because
             the envelope's figure already covers its own purchases; without it
             the screen renders an Accept button that can never succeed.
-        expected_on: The day the app PROJECTS this row on -- its pay period's
-            start for a transaction, the purchase day for a purchase.  Two
-            consumers, and for a PURCHASE it is one fact doing both jobs, which
-            is why there is one field rather than two:
+        expected_on: The FIRST day the app believes this row's money could
+            have moved -- its pay period's start for a transaction, the
+            purchase day for a purchase.  Three consumers, and for a PURCHASE
+            it is one fact doing all three jobs, which is why there is one
+            field rather than three:
 
             * it makes "the bank never showed this" answerable for a row
               carrying no settle day.  A projection dated eighteen months out
@@ -89,7 +91,15 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
               bank before it was made, so ``update_entry`` refuses that write
               (``_reject_settled_before_purchase``) and a proposal pairing one
               with an earlier line is one the accept door always rejects --
-              measured at 23 such pairs on the developer's own clone.
+              measured at 23 such pairs on the developer's own clone;
+            * it opens :attr:`expected_window`, which is what BOUNDS a row the
+              app has never settled.
+        expected_through: The LAST such day -- the pay period's END for a
+            transaction, and the purchase day again for a purchase, whose
+            budget clock is a single day rather than a span.  **It is the half
+            that was missing, and its absence had no bound at all**: plan step
+            ``bank_import:X-f6a-3c``, finding **N-312**.  See
+            :attr:`expected_window`.
     """
 
     kind: RowKind
@@ -101,6 +111,74 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
     transfer_id: "int | None" = None
     parent_id: "int | None" = None
     expected_on: "date | None" = None
+    expected_through: "date | None" = None
+
+    @property
+    def expected_window(self) -> "tuple[date, date] | None":
+        """Return the days the app believes this row's money moved between.
+
+        **The one place "when does the app think this happened" is answered**,
+        because the answer differs by row kind and by whether the row has been
+        settled, and stating it at each asking site is how a whole kind came to
+        have no answer at all.
+
+        * a SETTLED row is a point: ``settled_on`` is an OBSERVATION, and an
+          observation beats a belief, so the projection is not consulted;
+        * a PURCHASE is a point at ``purchased_on``.  Every purchase has one
+          -- ``transaction_entries.purchased_on`` is NOT NULL -- so "undated"
+          is true of a purchase's CASH clock and false of the purchase.  Plan
+          step ``bank_import:X-f6a-3a``, ruling **R-FW**;
+        * a TRANSACTION is its PAY PERIOD, start to end.  Its ``expected_on``
+          alone is a budgeting fact rather than an observation, so a rule
+          reading it as a point would be claiming the app knows a day it does
+          not; the period is the span the app actually asserts, and it is the
+          whole of what it asserts.
+
+        **The bound this produces is CADENCE-RELATIVE, and saying so is part
+        of stating it.**  ``budget.pay_schedule.cadence_days`` is
+        user-selectable 1..365, so the days a line may be posted on and still
+        claim a bill run to the period's length plus twice
+        :data:`~._propose.DAY_WINDOW`: 35 for a weekly owner, 42 for the
+        biweekly one this was measured against, 58 monthly, and 393 at an
+        annual cadence -- where it is barely a bound at all.  That is the
+        honest consequence of bounding a row by what the app itself asserts: an
+        owner who budgets in coarser blocks has asserted less about when the
+        money moves, and inventing a tighter claim on their behalf is the
+        substitution ruling **R-FW** rejected one clock over.  What keeps it
+        safe at every cadence is that a proposal is reviewed before it commits
+        (**R-FP**).
+
+        **A TRANSACTION answered ``None`` here until plan step X-f6a-3c, and
+        that was finding N-312: a bill the app has never marked as paid could
+        be claimed by a bank line of any date whatever.**  Measured on the
+        developer's own clone: 610 unsettled transactions, 600 of them
+        projections dated past the statement's last day, and when the settled
+        partner is removed from an amount group **44 of the statement's own
+        lines immediately pair with a future projection** -- the worst a
+        2026-04-01 line taking a mortgage transfer budgeted 2026-08-27, 148
+        days later.  It never fired on the first import only because a settled
+        row won every amount race; the second import is where the app's own
+        rows have run out.  The earlier reasoning -- that bounding a bill would
+        refuse the arm which settles a row nobody has marked as having happened
+        -- was re-measured and does not hold: every one of the 51 rows that arm
+        settles today is a PURCHASE, already bounded by its own day, and 0
+        proposals name an unsettled transaction on either the first pass or the
+        second.
+
+        Returns:
+            ``(first, last)``, or ``None`` for a row the app can date no way at
+            all -- which the proposer reads as NOT OFFERABLE rather than as
+            unbounded (:func:`~._propose._within_window`).  A row stating only
+            :attr:`expected_on` is read as a POINT rather than as unbounded for
+            the same reason, so a half-stated window is always TIGHTER than a
+            whole one and never looser: that is the direction a missing fact
+            has to fail in on a money path.
+        """
+        if self.settled_on is not None:
+            return (self.settled_on, self.settled_on)
+        if self.expected_on is None:
+            return None
+        return (self.expected_on, self.expected_through or self.expected_on)
 
 
 @dataclass(frozen=True)
@@ -122,6 +200,68 @@ class Candidates:
 
     rows: "list[CandidateRow]"
     unpriceable_ids: "tuple[int, ...]"
+
+
+#: The merchant SECU puts in PARENTHESES at the end of a description cell.
+#: A delimited trailing token, exactly like the ``DATE MM-DD`` field
+#: ``_secu_csv._stated_transaction_day`` reads, and better covered: it is
+#: present on **361 of 361** of the developer's recorded lines where the stated
+#: day is on 182, and 0 of those lines carry the ``Description | Memo`` join at
+#: all, so the token is the source's own field rather than a user's free text.
+_MERCHANT = re.compile(r"\(([^()]{1,100})\)\s*$")
+
+#: What the SECU CSV reader puts between a line's description and the user's own
+#: memo (``_secu_csv``).  Its presence is what makes a trailing parenthesis
+#: ambiguous, so :func:`merchant_of` declines rather than guessing whose it is.
+_MEMO_JOIN = " | "
+
+
+def merchant_of(description: str) -> str:
+    """Return what the bank called the merchant, else the whole description.
+
+    **A DISPLAY default and never logic**, which is the distinction that makes
+    reading a token out of a text column legitimate here.  Nothing branches on
+    this: it prefills the name box on the new-envelope arm and names the
+    purchase :mod:`._create` writes, both of which the owner can edit
+    afterwards, and the bank's full description stays on the statement line
+    forever with the match relation tying the two together.  A wrong parse
+    costs a badly-named row, never a figure.
+
+    **It is TOTAL, which is what lets a second adapter reach it.**  A source
+    whose descriptions carry no such token -- SECU's own OFX truncates 326 of
+    361 to 32 characters and would have no room for one -- falls back to the
+    description itself, which is the honest answer rather than an empty name a
+    NOT NULL column would then refuse.
+
+    Args:
+        description: The recorded line's description, verbatim.
+
+    Returns:
+        The bank's merchant where this description states exactly one
+        unambiguously -- a single parenthesised trailing token, no memo, not
+        blank -- else *description* unchanged.
+    """
+    if _MEMO_JOIN in description:
+        # A MEMO is the user's own free text, appended by the adapter after
+        # ``|``.  Its parentheses are indistinguishable from the bank's, so a
+        # memo ending "(anything)" would become the merchant and the envelope
+        # name.  ``_secu_csv._stated_transaction_day`` makes the same bound
+        # STRUCTURAL by reading the Description CELL; this reader only has the
+        # joined column, so it declines instead.  0 of the developer's 361
+        # lines carry a memo, which is a fact about today's data and not the
+        # bound.  Found by adversarial financial review 2026-08-19.
+        return description
+    found = _MERCHANT.findall(description)
+    # EXACTLY one, for the reason ``_stated_transaction_day`` gives for its own
+    # token: with two, which one is "the" merchant is a guess.  A first version
+    # used ``search`` and silently took the LAST.
+    if len(found) != 1:
+        return description
+    merchant = found[0].strip()
+    # An all-whitespace token is not a name.  ``transaction_entries.description``
+    # is NOT NULL and this door calls ``create_entry`` directly, so no schema
+    # length rule stands behind it.
+    return merchant or description
 
 
 @dataclass(frozen=True)
@@ -147,6 +287,11 @@ class BankLine:
     amount: Decimal
     description: str
     transaction_on: "date | None" = None
+
+    @property
+    def merchant(self) -> str:
+        """Return what the bank called the merchant (:func:`merchant_of`)."""
+        return merchant_of(self.description)
 
     @property
     def happened_on(self) -> date:
@@ -424,6 +569,87 @@ class MatchProposal:
         prevent.  Found by two adversarial reviews 2026-08-18.
         """
         return self.days.posts_on
+
+
+@dataclass(frozen=True)
+class PurchaseDestination:
+    """One budget line a bank line could BECOME a purchase against.
+
+    Plan step ``bank_import:X-f6a-3b``.  The offered set is
+    :func:`~._reads.destinations_for`'s, and it mirrors every guard
+    ``entry_service.create_entry`` and :func:`~._accept.accept_match` apply --
+    so the screen cannot render a destination whose submission is refused,
+    which is the failure this arc has now fixed three times.
+
+    Attributes:
+        transaction_id: The budget line.
+        label: What to call it, with its pay period's span, because the same
+            envelope name recurs every period and a reviewer picking a
+            destination for a May swipe has to see which May it is.
+        pay_period_id: The period it is budgeted under, so a caller can offer
+            the line's OWN period first without re-reading the calendar.
+        is_settled: Whether it has already closed.  Adding to a closed row
+            raises what that row RECORDS as its cost, which is a bigger thing
+            to do than filling in an open budget, so the screen says which it
+            is rather than leaving the reviewer to know.
+    """
+
+    transaction_id: int
+    label: str
+    pay_period_id: int
+    is_settled: bool
+
+
+@dataclass(frozen=True)
+class NewEnvelope:
+    """A budget line the import is being asked to CREATE for a bank line.
+
+    Only the two facts an owner can state about spending the plan did not
+    anticipate.  What it BUDGETS is not one of them -- nothing budgeted it, so
+    the figure is ``0.00`` and :mod:`._create` writes it rather than accepting
+    it, which keeps a form from proposing that unplanned spending was planned.
+
+    Attributes:
+        name: What to call the budget line.  Defaulted from what the bank
+            called the merchant, and editable, because the bank's own words are
+            the only description of this spending that exists.
+        category_id: The owner's category it files under.  A REQUIRED choice
+            and not a default: the bank's ``source_category`` is that bank's
+            opinion about a merchant, governed by no ``ref`` table, and reading
+            it as a Shekel category would be exactly the string-for-id
+            substitution the project-wide reference rule forbids.
+    """
+
+    name: str
+    category_id: int
+
+
+@dataclass(frozen=True)
+class PurchaseCreation:
+    """What the owner submitted to turn one bank line into a purchase.
+
+    Ids and a name, and deliberately no figure and no day: :mod:`._create`
+    takes both days and the amount from the recorded LINE, inside the same
+    transaction, so a stale page cannot commit a number the bank did not state.
+    The same reason :class:`MatchSubmission` carries ids only.
+
+    **Exactly one destination arm is set**, and :mod:`._create` refuses the
+    other two shapes rather than preferring one -- a door that silently picked
+    an arm would record something nobody asked for.
+
+    Attributes:
+        owner_id: The user the route proved owns the account.
+        account_id: The account the line belongs to.
+        line_id: The bank line to record.
+        transaction_id: An existing envelope to put it in, or ``None``.
+        new_envelope: An envelope to create for it, or ``None``.
+    """
+
+    owner_id: int
+    account_id: int
+    line_id: int
+    transaction_id: "int | None" = None
+    new_envelope: "NewEnvelope | None" = None
 
 
 @dataclass(frozen=True)

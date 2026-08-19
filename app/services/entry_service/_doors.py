@@ -25,11 +25,11 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User
 from app import ref_cache
-from app.enums import RoleEnum
+from app.enums import RoleEnum, SettlementBasisEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services import posting_service
 from app.services.entry_credit_workflow import sync_entry_payback
-from app.utils.balance_predicates import is_cancelled
+from app.utils.balance_predicates import is_archived, is_cancelled
 # ``is_credit`` from balance_predicates collides with the
 # ``is_credit: bool`` keyword argument on this module's
 # ``create_entry`` / ``update_entry`` functions.  Aliasing the
@@ -53,19 +53,51 @@ _UPDATABLE_FIELDS = frozenset({
     "amount", "description", "purchased_on", "settled_on", "is_credit",
 })
 
-#: The purchase facts that change what its PARENT ROW COST -- every field a
-#: purchase carries except ``settled_on``.
+#: The purchase facts that change what its PARENT ROW COST, named by what
+#: actually reads them.
 #:
-#: ``settled_on`` is the day the BANK took this purchase, and it is the one
-#: fact about a purchase that is an OBSERVATION rather than a restatement of
-#: what was spent: recording it moves that purchase's cash out of its
-#: envelope's close and onto its own day
-#: (``cash_ledger.settled_cash_leg``'s third term, ruling **R-FM**), and the
-#: two always sum to the same total.  That is the SAME split this whole step is
+#: **It was ``_UPDATABLE_FIELDS - {"settled_on"}`` until plan step
+#: ``bank_import:X-f6a-3b``, and defining a set by what it EXCLUDES is how it
+#: came to claim two fields that change no figure.**  A census of every reader
+#: in ``app/`` settles each one:
+#:
+#: * ``amount`` -- :func:`app.services.row_valuation.purchases_total`,
+#:   ``cash_ledger._entry_checking_impact``, ``posted_purchase_sum``,
+#:   ``credit_entry_sum``.  COST-BEARING;
+#: * ``is_credit`` -- those same four plus ``sync_entry_payback``, which moves
+#:   the purchase between this account's outflow and its CC Payback sibling.
+#:   COST-BEARING;
+#: * ``purchased_on`` -- ``Transaction.entries``' ordering, the out-of-period
+#:   WARNING (:func:`._sums.check_purchase_date_in_period`), the reconcile
+#:   panel's sort and its two OFFER predicates
+#:   (``reconcile_service._rows.lands_on_or_before``,
+#:   ``_purchases._outstanding_scope``), the matcher's ``expected_on``, three
+#:   template fields.  **No valuation reads it.**  ``_outstanding_scope`` does
+#:   admit a SETTLED parent, so this day gates which purchases the reconcile
+#:   panel offers and a tick there writes ``settled_on`` -- admitted knowingly:
+#:   ruling **R-FW** makes correcting the day a purchase was MADE the point, and
+#:   it only ever moves the day EARLIER, which makes a row more offerable.
+#:   Named by adversarial financial review 2026-08-19;
+#: * ``description`` -- templates only.
+#:
+#: **What the miscount cost is measured.**  Ruling **R-FW**'s purchase-day
+#: correction submits ``purchased_on`` beside ``settled_on`` in ONE call
+#: (``statement_match._accept._apply_day``), so on the developer's own
+#: statement 13 of the 15 corrections the review screen offered were refused by
+#: a guard about what a row COST, for a field that changes no cost -- and the
+#: 13 include the whole 2026-04-29 bookkeeping session ruling R-FW exists for.
+#: The screen rendered an Accept button that could never succeed.
+#:
+#: ``settled_on`` was already outside the set and its reason is unchanged: it
+#: is the day the BANK took this purchase, an OBSERVATION rather than a
+#: restatement of what was spent.  Recording it moves that purchase's cash out
+#: of its envelope's close and onto its own day
+#: (``cash_ledger.settled_cash_leg``'s third term, ruling **R-FM**), and the two
+#: always sum to the same total.  That is the SAME split plan step X-au-c3 is
 #: built on -- ``settled_on`` / ``reconciled_by_id`` are the ASSERTION and
 #: ``settled_amount`` / ``settled_basis_id`` are WHAT MOVED -- read one level
 #: down, on the purchase instead of on the row.
-_COST_BEARING_FIELDS = _UPDATABLE_FIELDS - {"settled_on"}
+_COST_BEARING_FIELDS = frozenset({"amount", "is_credit"})
 
 
 def _reject_settled_parent(
@@ -75,10 +107,17 @@ def _reject_settled_parent(
 
     **Finding N-229's door half, widened to the settled BAND at plan step
     X-au-c3** (developer ruling, 2026-08-17).  A settled envelope's purchases
-    are closed: the user has said this money moved, and every one of the three
-    doors would move it again.  Adding a purchase grows what the row cost,
-    deleting one shrinks it, and re-pricing one does either -- so all three
-    refuse, on Paid and Received as well as on the terminal ``Settled``.
+    are closed: the user has said this money moved, and re-pricing one or
+    removing one would move it again -- so both refuse, on Paid and Received as
+    well as on the terminal ``Settled``.
+
+    **ADDING one is a separate rule since plan step ``bank_import:X-f6a-3b``,
+    and it lives in :func:`_reject_settled_addition`.**  The two are not the
+    same question: removing a purchase shrinks a recorded cost with no evidence
+    but the user's own second thoughts, where ADDING one on a row whose figure
+    IS its purchases raises that cost by exactly the figure a bank statement
+    just showed.  Keeping them in one function meant the optimistic direction
+    and the evidenced one shared a refusal.
 
     **The reason it is the BAND and not the archive is carry-forward, and it is
     the argument that decides this.**  ``carry_forward_service`` rolls an
@@ -111,9 +150,15 @@ def _reject_settled_parent(
     prevent, and the reason ``TransactionEntry.settled_on`` deliberately bounds
     only from below: where the app must guess, it keeps the balance LOW.
 
-    **It is FIELD-AWARE, and the one field it admits is ``settled_on``**
-    (developer ruling, 2026-08-17).  Everything above is an argument about what
-    the row COST; the day the BANK took a purchase is not that.  Recording it
+    **It is FIELD-AWARE, and what it admits is every field that changes no
+    figure** (developer ruling, 2026-08-17; the set corrected at plan step
+    ``bank_import:X-f6a-3b``).  Everything above is an argument about what the
+    row COST, so :data:`_COST_BEARING_FIELDS` is now named by what reads a
+    figure rather than by subtracting the one field somebody remembered --
+    which is what let it refuse ``purchased_on`` and ``description``, neither
+    of which any money rule reads.
+
+    ``settled_on`` is the field that argument was written for.  Recording it
     changes no total -- it moves that purchase's cash out of the envelope's
     close and onto its own day, and ``settled_cash_leg`` subtracts exactly what
     the purchase's own leg books, so the two always sum to the row's whole debit
@@ -136,11 +181,12 @@ def _reject_settled_parent(
     Args:
         txn: The parent transaction the entry belongs (or would belong) to.
             Its ``status`` relationship is read (``lazy="joined"``).
-        changing: The purchase facts this act writes.  The create and delete
-            doors pass :data:`_COST_BEARING_FIELDS` -- a purchase appearing or
-            vanishing changes every one of them -- and the update door passes
-            the fields it was actually given, which is what lets a posting-day
-            edit through where a re-price is refused.
+        changing: The purchase facts this act writes.  The DELETE door passes
+            :data:`_COST_BEARING_FIELDS` -- a purchase vanishing changes every
+            one of them -- and the update door passes the fields it was
+            actually given, which is what lets a posting-day or purchase-day
+            edit through where a re-price is refused.  The CREATE door does not
+            call this at all; :func:`_reject_settled_addition` is its rule.
 
     Raises:
         ValidationError: When *txn* is in a settled status and *changing*
@@ -152,13 +198,115 @@ def _reject_settled_parent(
         return
     raise ValidationError(
         f"Transaction {txn.id} has settled; its purchases are closed and "
-        "cannot be added, removed, or re-priced. Doing so would change what "
+        "cannot be removed or re-priced. Doing so would change what "
         "the row cost after its money moved -- and a carry-forward has "
         "already rolled its leftover into a later period, so the same dollars "
         "would be counted twice. Set the row back to Projected to change a "
         "purchase, then mark it paid again. Recording the day your bank took "
-        "a purchase is still allowed: that says when this money moved, not "
-        "how much of it did."
+        "a purchase, or the day you made it, is still allowed: those say when "
+        "this money moved, not how much of it did."
+    )
+
+
+def _reject_settled_addition(
+    txn: Transaction, settled_on: "date | None",
+) -> None:
+    """Refuse a NEW purchase against a settled row that cannot record one.
+
+    **The rule is about the row's FIGURE, not its status** (plan step
+    ``bank_import:X-f6a-3b``, on measurement).  A settled row records what
+    moved in one of two ways
+    (:class:`~app.enums.SettlementBasisEnum`), and a new purchase means opposite
+    things to them:
+
+    * a ``purchases`` settlement stores NO figure -- the row's cost IS
+      ``Sigma(entries)`` (:func:`app.services.row_valuation.settled_figure`), so
+      a new POSTED purchase raises that cost by its own amount while
+      ``settled_cash_leg`` subtracts the same amount, leaving the envelope's own
+      leg unchanged and the purchase booking its own cash on its own day.
+      Measured 2026-08-18: adding `$18.64` to the 2026-05-21 Groceries close
+      shrank that day's anchor true-up by exactly `$18.64`;
+    * a ``derived`` or ``corrected`` settlement STORES its figure, fixed before
+      the purchase existed, so the gross cannot rise and ``settled_cash_leg``'s
+      third term subtracts money it never held.  Measured: adding `$367.62` to a
+      `$163.95` close moved that leg to **`+203.67`** -- an EXPENSE row
+      publishing an inflow -- while the true-up moved `$0.00`.  Both legs still
+      net to `-163.95`, which is why the balance instrument is BLIND to it.
+
+    **Nothing else keeps that state unrepresentable** (finding **N-318**):
+    :func:`app.services.cash_ledger.cash_leg_of` is total in every other
+    direction, states no precondition and cannot see one, so THIS function is
+    the guarantee.  Production holds no instance -- measured 2026-08-19, 137
+    settled rows carry a stored-figure settlement (8 of them envelopes on the
+    developer's checking account) and every one holds ZERO purchases -- and a
+    row that HAS purchases always settles on the ``purchases`` basis, because
+    ``settles_from_entries`` is ``tracks_purchases and txn.entries`` and
+    ``carry_forward``'s direct call writes that basis unconditionally.
+
+    **The purchase must state the day the BANK TOOK IT** (developer ruling,
+    2026-08-19), because the paragraph above holds only for a POSTED one: an
+    undated purchase is not in ``posted_purchase_sum``, so the gross rises with
+    nothing subtracting it and the row's own leg moves by the purchase amount
+    **on the row's original settle day** -- measured, `-50.00` to `-80.00`, on
+    a past day with no external evidence.  So the rule admits the case its
+    argument supports and no more.  The importer always supplies both days; the
+    add-purchase form has no posting-day field and keeps refusing exactly as it
+    does today.  Found by adversarial financial review 2026-08-19.
+
+    **It does NOT answer the carry-forward double count, and it does not have
+    to** (finding **N-249**, owner ``balance:X-ax``).  Every carried-forward
+    source settles on this very basis, so a purchase added afterwards leaves
+    the target period holding a leftover computed from the old sum.  The
+    developer RULED that remedy on 2026-08-12 -- reconcile the rollover --
+    and explicitly REJECTED refusing late purchases on a rolled-forward
+    source, which is the reason :func:`_reject_settled_parent`'s message still
+    gives for a refusal this rule lifts.
+
+    **The ARCHIVE is refused whatever its basis** (finding **N-229**): an
+    archived row's purchases are history, and
+    ``statement_match._candidates._purchase_candidates`` already declines to
+    offer one, so admitting a new purchase here would be the only door
+    disagreeing with that.
+
+    **What a user does when this refuses**: put the row back to Projected,
+    record the purchase, and close it again -- which restates the figure from
+    the records, exactly as :func:`_reject_settled_parent` describes.
+
+    Args:
+        txn: The parent transaction the new entry would belong to.  Its
+            ``status`` relationship is read (``lazy="joined"``) and then its
+            settlement record.
+        settled_on: The day the bank took the new purchase, or ``None`` when
+            the caller does not know it.
+
+    Raises:
+        ValidationError: When *txn* has settled and its recorded figure is not
+            its purchases, when it is archived, or when the purchase states no
+            posting day.
+    """
+    if txn.status is None or not txn.status.is_settled:
+        return
+    purchases_basis = ref_cache.settlement_basis_id(
+        SettlementBasisEnum.PURCHASES,
+    )
+    if not is_archived(txn) and txn.settled_basis_id == purchases_basis:
+        if settled_on is not None:
+            return
+        raise ValidationError(
+            f"Transaction {txn.id} has settled, so a purchase added to it has "
+            "to say when your bank took the money -- without that day its "
+            "amount comes out of this row on the day the row closed, which is "
+            "a day you may already have checked against a statement. Record "
+            "the purchase from your bank statement, or set the row back to "
+            "Projected, add it, and mark it paid again."
+        )
+    raise ValidationError(
+        f"Transaction {txn.id} has settled and records a fixed figure, so a "
+        "new purchase cannot be added to it: the row's cost would not grow by "
+        "the purchase, and the purchase's own cash would be subtracted from a "
+        "total that never contained it. Set the row back to Projected, add "
+        "the purchase, and mark it paid again -- that restates what it cost "
+        "from the purchases themselves."
     )
 
 
@@ -188,8 +336,11 @@ def _resync_after_entry_change(txn: Transaction) -> None:
         delete is refused, and a ``purchases`` row that was closed empty answers
         ``$0.00`` because that is what its records say;
       * adding a purchase to a settled row whose figure was a HUMAN's correction
-        overwrote that correction with the entry sum.  The add is refused, and
-        ruling **R-FB**'s rule -- a figure somebody read off a statement is a
+        overwrote that correction with the entry sum.  That cannot happen now
+        for two independent reasons: the hook is gone, and
+        :func:`_reject_settled_addition` admits an add only on a ``purchases``
+        settlement, which stores no figure for a human to have corrected.
+        Ruling **R-FB**'s rule -- a figure somebody read off a statement is a
         fact -- finally holds on this path too.
 
     What remains is the ledger reconcile (Build-Order Step 3).  An entry mutation
@@ -286,17 +437,31 @@ class EntryDetails:
             :func:`_reject_future_purchase_date`).
         is_credit:   Whether this was paid with a credit card.
 
-    ``settled_on`` is deliberately not here.  The day the BANK took the money
-    is an observation, and at the moment a purchase is recorded there is
-    nothing to have observed; it arrives later, through
-    :func:`app.services.reconcile_service.record_settled_days` at a balance true-up or through
-    :func:`update_entry`.
+        settled_on: The day the BANK took the money, when the caller already
+            knows it, else ``None`` -- which is the state every hand-typed
+            purchase is born in.
+
+    **``settled_on`` was deliberately NOT here until plan step
+    ``bank_import:X-f6a-3b``, and the premise that kept it out was true only of
+    the doors that existed then.**  It read: *the day the bank took the money is
+    an observation, and at the moment a purchase is recorded there is nothing to
+    have observed.*  That is exactly right for the add-purchase form, and false
+    for a purchase created FROM a bank statement line -- there the observation is
+    what caused the record to exist, and it is the more reliable of the two days
+    (**R-FW**).
+
+    Recording it here rather than through a follow-up :func:`update_entry` is
+    the difference between one act and two: the second call would re-run
+    ``sync_entry_payback`` and the posting reconcile against an intermediate
+    state in which a purchase the bank has already taken looks outstanding, and
+    it would leave that state committed if anything after it refused.
     """
 
     amount: Decimal
     description: str
     purchased_on: date
     is_credit: bool = False
+    settled_on: "date | None" = None
 
 
 def _reject_future_purchase_date(purchased_on: date) -> None:
@@ -464,7 +629,8 @@ def create_entry(
         transaction_id: Parent transaction ID.
         user_id: The creating user's ID (owner or companion).
         details: :class:`EntryDetails` -- the purchase content (amount,
-            description, purchased_on, is_credit).
+            description, purchased_on, is_credit, and the posting day where
+            the caller already has one).
 
     Returns:
         The newly created TransactionEntry (flushed, id available).
@@ -472,9 +638,12 @@ def create_entry(
     Raises:
         NotFoundError: Transaction not found or not accessible by this
             user.
-        ValidationError: Transaction not entry-capable, is a transfer,
-            is income, or has a blocked status (Cancelled, Credit, or any
-            SETTLED status -- see :func:`_reject_settled_parent`).
+        ValidationError: Transaction not entry-capable, is a transfer, is
+            income, or has a blocked status (Cancelled, Credit, the archive, or
+            a settled row whose figure is not its purchases -- see
+            :func:`_reject_settled_addition`); or a purchase day in the future,
+            a posting day in the future, or a posting day before the purchase
+            day.
     """
     owner_id = resolve_owner_id(user_id)
 
@@ -526,16 +695,28 @@ def create_entry(
     # A SETTLED parent is the third refusal, and it is finding **N-229**: an
     # entry on such a row used to be accepted, persisted, and silently inert --
     # the actual was not recomputed (that half graded ``is_done``) while the
-    # postings were reconciled anyway (that half graded the settled BAND).  A
-    # new purchase states every cost-bearing fact at once, so it is refused on
-    # the whole set rather than on any subset the caller happened to supply.
-    _reject_settled_parent(txn, _COST_BEARING_FIELDS)
+    # postings were reconciled anyway (that half graded the settled BAND).
+    # **Its own rule since plan step X-f6a-3b**: a new purchase against a row
+    # whose figure IS its purchases is what a bank statement evidences, where a
+    # row storing a fixed figure cannot record one at all.
+    _reject_settled_addition(txn, details.settled_on)
 
     # Content guard, after the ownership and transaction guards so a
     # non-owner still gets the 404 rather than a validation message that
     # confirms the row exists (ruling R-M; see
     # _reject_future_purchase_date).
     _reject_future_purchase_date(details.purchased_on)
+    # The posting day's two bounds, the SAME pair :func:`update_entry` applies
+    # and for the same reasons -- a day the bank has not reached yet (ruling
+    # **R-FM**), and a day before the purchase it belongs to
+    # (``ck_transaction_entries_settled_not_before_purchase``).  They arrived
+    # here with ``EntryDetails.settled_on`` at plan step X-f6a-3b: a door that
+    # accepts a field and leaves its rules to the OTHER door is a boundary that
+    # holds on one and not the other, which is exactly what
+    # :func:`_reject_future_purchase_date`'s own docstring warns against.  Both
+    # are no-ops for the ``None`` every hand-typed purchase is born with.
+    _reject_future_posting_day(details.settled_on)
+    _reject_settled_before_purchase(details.purchased_on, details.settled_on)
 
     entry = TransactionEntry(
         transaction_id=transaction_id,
@@ -549,6 +730,7 @@ def create_entry(
         description=details.description,
         purchased_on=details.purchased_on,
         is_credit=details.is_credit,
+        settled_on=details.settled_on,
     )
     db.session.add(entry)
     db.session.flush()
@@ -562,6 +744,15 @@ def create_entry(
         entry_id=entry.id,
         amount=str(details.amount),
         is_credit=details.is_credit,
+        # The posting day is logged because a purchase BORN with one has
+        # already moved money: it books its own dated cash leg at the reconcile
+        # below, where a purchase born without one holds its envelope's budget
+        # back instead.  A receipt that named only the amount could not tell
+        # the two apart.
+        settled_on=(
+            details.settled_on.isoformat()
+            if details.settled_on is not None else None
+        ),
     )
 
     sync_entry_payback(transaction_id, owner_id)
@@ -576,11 +767,15 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     Allowed fields: amount, description, purchased_on, settled_on, is_credit.
     Re-validates ownership through the entry's parent transaction.
 
-    ``settled_on`` is updatable HERE and not at the create door: it records the
-    day the bank took the money, which is an observation the user makes later
-    (off a statement, or by ticking the purchase at a balance true-up through
-    :func:`app.services.reconcile_service.record_settled_days`).  Passing
-    ``None`` clears it, putting the purchase back among the outstanding ones.
+    ``settled_on`` records the day the bank took the money.  For a hand-typed
+    purchase that is an observation the user makes LATER -- off a statement, or
+    by ticking the purchase at a balance true-up through
+    :func:`app.services.reconcile_service.record_settled_days` -- which is why
+    this door is where it usually arrives.  **It is no longer only this door**
+    (plan step ``bank_import:X-f6a-3b``): a purchase created FROM a bank
+    statement line is born carrying it, because there the observation is what
+    caused the record to exist.  Passing ``None`` here clears it, putting the
+    purchase back among the outstanding ones.
 
     Args:
         entry_id: The entry to update.

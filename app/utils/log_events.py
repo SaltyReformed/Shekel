@@ -480,6 +480,12 @@ EVT_STATEMENT_MATCH_RELEASED = _register(
     "An owner undid a match; the bank lines it explained are unexplained again.",
 )
 
+EVT_STATEMENT_LINE_RECORDED = _register(
+    "statement_line_recorded", BUSINESS,
+    "A bank line the app had no row for became a purchase against a budget "
+    "line, which MOVES MONEY: the app now records a movement it did not have.",
+)
+
 
 # ── Performance events (request lifecycle) ─────────────────────────
 

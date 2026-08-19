@@ -15,9 +15,19 @@ The public surface, and what each piece is for:
 * :func:`review_set` -- everything the review screen shows for one account:
   what the app proposes, what it could not explain, what is out of reach, and
   what has already been accepted.
-* :func:`accept_match` -- the ONE write door.  **It MOVES MONEY**: every member
-  row takes the bank's posted day, which settles a still-Projected row and
-  corrects a wrongly-dated settled one.
+* :func:`accept_match` -- the ONE write door for a correspondence between
+  things that already exist.  **It MOVES MONEY**: every member row takes the
+  bank's posted day, which settles a still-Projected row and corrects a
+  wrongly-dated settled one.
+* :func:`create_purchase_from_line` -- ruling **R-FS**'s THIRD shape (plan step
+  ``bank_import:X-f6a-3b``): a bank line the app has no row for BECOMES a
+  purchase against a budget line the owner picks, or against one this door
+  creates for it.  **It MOVES MONEY** in the other direction from the first --
+  it records a movement the app did not have at all, where a match re-dates one
+  it did.  It records the correspondence through :func:`accept_match`, so there
+  is still exactly one door writing a match.
+* :func:`destinations_for` -- the budget lines that door may write into, which
+  is the SAME set the screen offers.
 * :func:`release_match` -- the undo, which restores the QUESTION rather than
   the days.
 * The value types :class:`MatchProposal`, :class:`MatchSubmission`,
@@ -49,6 +59,7 @@ owner has not accepted, and :mod:`._propose` cannot write at all.
 
 from ._accept import AcceptedMatch, accept_match, release_match
 from ._candidates import candidates_for
+from ._create import CreatedPurchase, create_purchase_from_line
 from ._offers import (
     BankLine,
     CandidateRow,
@@ -56,15 +67,21 @@ from ._offers import (
     MatchDays,
     MatchProposal,
     MatchSubmission,
+    NewEnvelope,
+    PurchaseCreation,
+    PurchaseDestination,
     RowKind,
     corrected_purchase_day,
+    merchant_of,
 )
 from ._propose import DAY_WINDOW, propose
 from ._reads import (
     AcceptedGroup,
     AcceptedRow,
+    CreatableLine,
     ReviewBounds,
     ReviewSet,
+    destinations_for,
     review_set,
 )
 
@@ -75,16 +92,24 @@ __all__ = [
     "BankLine",
     "CandidateRow",
     "Candidates",
+    "CreatableLine",
+    "CreatedPurchase",
     "DAY_WINDOW",
     "MatchDays",
     "MatchProposal",
     "MatchSubmission",
+    "NewEnvelope",
+    "PurchaseCreation",
+    "PurchaseDestination",
     "ReviewBounds",
     "ReviewSet",
     "RowKind",
     "accept_match",
     "candidates_for",
     "corrected_purchase_day",
+    "create_purchase_from_line",
+    "destinations_for",
+    "merchant_of",
     "propose",
     "release_match",
     "review_set",
