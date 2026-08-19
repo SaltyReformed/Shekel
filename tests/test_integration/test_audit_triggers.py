@@ -118,7 +118,6 @@ class TestAuditTriggerInsert:
             scenario_id=seed_user["scenario"].id,
             name="Test Salary",
             annual_salary=Decimal("80000.00"),
-            pay_periods_per_year=26,
             filing_status_id=filing.id,
         )
         db.session.add(profile)

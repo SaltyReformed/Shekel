@@ -74,7 +74,8 @@ from app.services import (
     paycheck_calculator,
     tax_calculator,
 )
-from app.services.pay_calendar import calendar_for
+from app.services.pay_calendar import PayCadence, PayCalendar
+from app.services.paycheck_calculator import PayrollBasis
 from app.services.projection_inputs import (
     load_active_accounts_with_types,
     load_active_salary_profiles,
@@ -380,11 +381,20 @@ def compute_tax_report(user_id: int, year: int, today: date) -> TaxReport | None
         return None
 
     primary = profiles[0]
-    periods = _load_year_periods(user_id, year)
+    # ONE calendar derivation for the whole report: the pass memoizes it, the
+    # year's periods are a filter of it, and its cadence is the paycheck count
+    # every projection below divides by (plan step R-F16).
+    calendar = balance_ctx.calendar()
+    cadence = calendar.cadence
+    periods = _load_year_periods(calendar, year)
     configs = load_tax_configs_for_year(user_id, primary, year)
 
-    withholding = _aggregate_withholding(user_id, year, profiles, periods)
-    modeled_pretax = _aggregate_modeled_pretax(user_id, year, profiles, periods)
+    withholding = _aggregate_withholding(
+        user_id, year, profiles, periods, cadence,
+    )
+    modeled_pretax = _aggregate_modeled_pretax(
+        user_id, year, profiles, periods, cadence,
+    )
 
     liability = compute_annual_liability(
         user_id, primary, year, withholding.total.gross, modeled_pretax,
@@ -413,7 +423,7 @@ def compute_tax_report(user_id: int, year: int, today: date) -> TaxReport | None
 # ── Data loading (year-end orchestrator precedent) ────────────────
 
 
-def _load_year_periods(user_id: int, year: int) -> tuple:
+def _load_year_periods(calendar: PayCalendar, year: int) -> tuple:
     """Return the user's pay periods whose payday falls in *year*.
 
     The saved periods whose ``start_date`` is in the calendar year, in payday
@@ -422,8 +432,16 @@ def _load_year_periods(user_id: int, year: int) -> tuple:
     stored ordinal is one of the two columns plan step **C4** drops, and the
     derived order is the payday order by construction.
 
+    **It takes the calendar rather than deriving one** (plan step R-F16).  The
+    producer already holds a :class:`BalanceContext`, which memoizes exactly
+    this derivation for the whole pass, so a ``calendar_for`` here was the
+    owner's 62 paydays read and derived a second time in one render -- and the
+    cadence the withholding projection now needs would have been a THIRD read.
+    One derivation answers both.
+
     Args:
-        user_id: The owning user.
+        calendar: The owner's pay calendar, from the pass that already holds
+            one (``balance_ctx.calendar()``).
         year: The calendar/tax year to scope periods to.
 
     Returns:
@@ -434,7 +452,7 @@ def _load_year_periods(user_id: int, year: int) -> tuple:
         calendar's own four views (see that class).
     """
     return tuple(
-        period for period in calendar_for(user_id).saved()
+        period for period in calendar.saved()
         if period.start_date.year == year
     )
 
@@ -444,6 +462,7 @@ def _load_year_periods(user_id: int, year: int) -> tuple:
 
 def _aggregate_withholding(
     user_id: int, year: int, profiles: list, periods: list,
+    cadence: PayCadence,
 ) -> WithholdingSummary:
     """Sum withholding-to-date across the active profiles (one filer).
 
@@ -459,6 +478,8 @@ def _aggregate_withholding(
         year: The tax year.
         profiles: The active salary profiles.
         periods: The year's pay periods (passed to each profile's hybrid).
+        cadence: The owner's pay cadence -- the paycheck count each profile's
+            projection divides its annual salary by (plan step R-F16).
 
     Returns:
         The summed :class:`WithholdingSummary`.
@@ -470,7 +491,9 @@ def _aggregate_withholding(
     has_checkpoint = False
 
     for profile in profiles:
-        wtd = compute_withholding_to_date(user_id, profile, year, periods)
+        wtd = compute_withholding_to_date(
+            user_id, PayrollBasis(profile, cadence), year, periods,
+        )
         totals.append(wtd.total)
         measures.append(wtd.measured)
         models.append(wtd.projected)
@@ -490,6 +513,7 @@ def _aggregate_withholding(
 
 def _aggregate_modeled_pretax(
     user_id: int, year: int, profiles: list, periods: list,
+    cadence: PayCadence,
 ) -> Decimal:
     """Sum the FULL-year modeled pre-tax across the active profiles.
 
@@ -505,6 +529,8 @@ def _aggregate_modeled_pretax(
         year: The tax year (single-year config set).
         profiles: The active salary profiles.
         periods: The year's pay periods.
+        cadence: The owner's pay cadence -- the paycheck count the projection
+            divides each annual salary by (plan step R-F16).
 
     Returns:
         The summed modeled annual pre-tax (``ZERO`` when there are no
@@ -516,7 +542,8 @@ def _aggregate_modeled_pretax(
     for profile in profiles:
         tax_configs = load_tax_configs_for_year(user_id, profile, year)
         breakdowns = paycheck_calculator.project_salary(
-            profile, periods, tax_configs, calibration=profile.calibration,
+            PayrollBasis(profile, cadence), periods, tax_configs,
+            calibration=profile.calibration,
         )
         total += sum(
             (bd.deductions.total_pre_tax for bd in breakdowns), ZERO,

@@ -507,7 +507,7 @@ was the hardcoded `26` this table used to name.
 | IDOR     | GET `/salary/<id>/edit` -- other user's profile → redirect                     | ✅ `test_edit_other_users_profile_redirects`   |
 | IDOR     | POST `/salary/<id>` -- other user's profile → redirect                         | ✅ `test_update_other_users_profile_redirects` |
 | IDOR     | POST `/salary/<id>/delete` -- other user's profile → redirect                  | ✅ `test_delete_other_users_profile_redirects` |
-| FIN      | Created template amount = `annual_salary / pay_periods_per_year`              | ✅ `test_create_profile_template_amount`       |
+| FIN      | Created template amount = `annual_salary` / the owner's paycheck count      | ✅ `test_create_profile_template_amount`       |
 | IDEM     | POST `/salary` -- double-submit → 2nd attempt duplicate name or re-create      | ✅ `test_create_profile_double_submit`         |
 
 #### Raises

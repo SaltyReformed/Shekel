@@ -45,6 +45,7 @@ from typing import Optional
 from app import ref_cache
 from app.enums import CalcMethodEnum, EmployerContributionTypeEnum
 from app.services.growth_engine import ContributionRecord
+from app.services.pay_calendar import PayCadence
 from app.utils.deduction_cap import cap_period_amount
 from app.utils.money import ZERO, round_money
 
@@ -174,44 +175,66 @@ class InvestmentInputs:
 
 AdaptedDeduction = namedtuple(
     "AdaptedDeduction",
-    ["amount", "calc_method_id", "annual_salary", "pay_periods_per_year",
-     "annual_cap"],
+    ["amount", "calc_method_id", "periods_per_year", "annual_cap"],
 )
 
 
-def adapt_deductions(raw_deductions: list) -> list[AdaptedDeduction]:
+def adapt_deductions(
+    raw_deductions: list, cadence: PayCadence,
+) -> list[AdaptedDeduction]:
     """Adapt PaycheckDeduction ORM objects for calculate_investment_inputs().
 
-    Extracts the fields needed from each deduction and its parent salary
-    profile into lightweight namedtuples with no ORM dependency.  This
-    decouples the projection logic from the database layer and
-    consolidates the adaptation pattern previously duplicated across
-    year_end_summary_service, savings_dashboard_service, and
+    Extracts the fields needed from each deduction into lightweight
+    namedtuples with no ORM dependency.  This decouples the projection logic
+    from the database layer and consolidates the adaptation pattern previously
+    duplicated across year_end_summary_service, savings_dashboard_service, and
     retirement_dashboard_service.
 
+    **It stopped carrying the parent profile's salary at plan step R-F16, and
+    that was a MONEY fix rather than a tidy-up.**  Each row used to carry
+    ``annual_salary`` and ``pay_periods_per_year`` so
+    :func:`_compute_deduction_per_period` could recompute a gross as
+    ``annual_salary / pay_periods_per_year`` -- which is precisely the
+    "off-engine recompute that silently dropped any applicable SalaryRaise"
+    that F-20 / MED-06 / F-032 replaced everywhere else, still live here.  The
+    caller's raise-aware gross was consulted only as a FALLBACK when no
+    deduction supplied one, so an account WITH a deduction sized its employer
+    match off the raise-blind figure: measured at ``$3,525.96`` against a true
+    ``$3,631.74`` on the developer's own profile, understating a 5% employer
+    contribution by ``$137.51`` a year.  The gross is now an argument
+    resolved ONCE by the caller (:func:`deduction_contribution_per_period`,
+    :func:`build_contribution_timeline`) and never recomputed here.
+
+    ``periods_per_year`` stays on the row because
+    :func:`_annual_cap_averaged` spreads a calendar-year cap across the year's
+    paychecks and genuinely needs the count.  It is stamped from the ONE
+    cadence this call is given, so every row carries the same number by
+    construction -- a copy of one fact, not a second source of it.
+
     Args:
-        raw_deductions: List of PaycheckDeduction ORM objects.  Each
-            must have a loaded ``salary_profile`` relationship with
-            ``annual_salary`` and ``pay_periods_per_year`` attributes.
+        raw_deductions: List of PaycheckDeduction ORM objects.
+        cadence: The owner's :class:`~app.services.pay_calendar.PayCadence`.
+            Required: how many paychecks a year the cap is spread over is a
+            fact about the OWNER, and defaulting it to biweekly would spread a
+            weekly-paid owner's cap over half the paychecks they receive.
 
     Returns:
         List of AdaptedDeduction namedtuples ready for
         calculate_investment_inputs() or build_contribution_timeline().
     """
-    result = []
-    for ded in raw_deductions:
-        profile = ded.salary_profile
-        result.append(AdaptedDeduction(
+    periods_per_year = cadence.periods_per_year
+    return [
+        AdaptedDeduction(
             amount=ded.amount,
             calc_method_id=ded.calc_method_id,
-            annual_salary=profile.annual_salary,
-            pay_periods_per_year=profile.pay_periods_per_year or 26,
+            periods_per_year=periods_per_year,
             annual_cap=ded.annual_cap,
-        ))
-    return result
+        )
+        for ded in raw_deductions
+    ]
 
 
-def _compute_deduction_per_period(deduction, pct_id):
+def _compute_deduction_per_period(deduction, gross_biweekly, pct_id):
     """Compute the per-period contribution amount from a single deduction.
 
     Handles flat-dollar and percentage-of-salary calculation methods.
@@ -219,23 +242,20 @@ def _compute_deduction_per_period(deduction, pct_id):
     to keep the deduction amount logic in one place (DRY).
 
     Args:
-        deduction:  Object with .amount, .calc_method_id, .annual_salary,
-                    .pay_periods_per_year.
-        pct_id:     The ref ID for the PERCENTAGE calculation method.
+        deduction:      Object with .amount and .calc_method_id.
+        gross_biweekly: The owner's RAISE-AWARE gross per pay period, which a
+                        percentage deduction takes its percentage of.  Taken
+                        rather than recomputed since plan step R-F16 -- see
+                        :func:`adapt_deductions` for what the recompute cost.
+        pct_id:         The ref ID for the PERCENTAGE calculation method.
 
     Returns:
-        Tuple of (contribution_amount: Decimal, gross_biweekly: Decimal).
-        contribution_amount is the per-period dollar amount.
-        gross_biweekly is the derived gross pay per period (used by
-        calculate_investment_inputs for employer params).
+        The per-period contribution amount (Decimal).
     """
-    salary = Decimal(str(deduction.annual_salary))
-    pay_per_year = deduction.pay_periods_per_year or 26
-    gross = round_money(salary / pay_per_year)
     amt = Decimal(str(deduction.amount))
     if deduction.calc_method_id == pct_id:
-        amt = round_money(gross * amt)
-    return amt, gross
+        amt = round_money(gross_biweekly * amt)
+    return amt
 
 
 def _annual_cap_averaged(per_period_amount, deduction):
@@ -255,7 +275,7 @@ def _annual_cap_averaged(per_period_amount, deduction):
 
     Args:
         per_period_amount: Decimal uncapped per-period contribution.
-        deduction:         The deduction-like object (.pay_periods_per_year,
+        deduction:         The deduction-like object (.periods_per_year,
                            optionally .annual_cap).
 
     Returns:
@@ -264,7 +284,7 @@ def _annual_cap_averaged(per_period_amount, deduction):
     annual_cap = getattr(deduction, "annual_cap", None)
     if annual_cap is None:
         return per_period_amount
-    pay_per_year = deduction.pay_periods_per_year or 26
+    pay_per_year = deduction.periods_per_year
     annual_capped = min(per_period_amount * pay_per_year, Decimal(str(annual_cap)))
     return round_money(annual_capped / pay_per_year)
 
@@ -291,31 +311,44 @@ def deduction_contribution_per_period(deductions, salary_gross_biweekly):
 
     Args:
         deductions:            List of deduction-like objects with
-                               .amount, .calc_method_id, .annual_salary,
-                               .pay_periods_per_year, and optionally
-                               .annual_cap.
-        salary_gross_biweekly: Engine gross per pay period (Decimal or
-                               None), used as the fallback gross when no
-                               deduction supplied one.
+                               .amount, .calc_method_id, .periods_per_year,
+                               and optionally .annual_cap.
+        salary_gross_biweekly: The owner's RAISE-AWARE engine gross per pay
+                               period (Decimal or None) -- the basis a
+                               percentage deduction takes its percentage of,
+                               and the figure the employer match is sized on.
+                               ``None`` and ZERO both mean the owner has no
+                               resolvable current paycheck, which is what
+                               ``income_service.get_current_gross_biweekly``
+                               answers for an owner with no active profile or
+                               no period covering the day; a percentage
+                               deduction then contributes nothing, because
+                               there is no paycheck to take a percentage of.
 
     Returns:
         Tuple of (periodic_contribution: Decimal, gross_biweekly: Decimal).
-        gross_biweekly is the deduction-derived gross, falling back to
-        ``salary_gross_biweekly`` and then ZERO.
+
+    **The gross is the caller's, not a recompute, since plan step R-F16.**  It
+    was consulted only as a fallback for the no-deduction case while an
+    account WITH a deduction used ``annual_salary / pay_periods_per_year``
+    off the row -- raise-blind, and the basis of the employer match.  The two
+    diverge by every raise the owner has taken.  It also means one gross for
+    the owner rather than whichever deduction happened to be iterated last.
     """
     pct_id = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
-    periodic_contribution = ZERO
-    gross_biweekly = ZERO
-
-    for ded in deductions:
-        amt, gross = _compute_deduction_per_period(ded, pct_id)
-        gross_biweekly = gross
-        periodic_contribution += _annual_cap_averaged(amt, ded)
-
-    # Use salary profile gross as fallback when no deductions provided one.
-    if gross_biweekly == ZERO and salary_gross_biweekly is not None:
-        gross_biweekly = Decimal(str(salary_gross_biweekly))
-
+    gross_biweekly = (
+        ZERO if salary_gross_biweekly is None
+        else Decimal(str(salary_gross_biweekly))
+    )
+    periodic_contribution = sum(
+        (
+            _annual_cap_averaged(
+                _compute_deduction_per_period(ded, gross_biweekly, pct_id), ded,
+            )
+            for ded in deductions
+        ),
+        ZERO,
+    )
     return periodic_contribution, gross_biweekly
 
 
@@ -483,8 +516,8 @@ def calculate_investment_inputs(
         investment_params:     Object with employer fields and
                                ``annual_contribution_limit``.
         deductions:            List of deduction-like objects with
-                               .amount, .calc_method_id, .annual_salary,
-                               .pay_periods_per_year.
+                               .amount, .calc_method_id, .periods_per_year,
+                               and optionally .annual_cap.
         all_contributions:     List of :class:`PricedContribution` records
                                for this account -- shadow-income rows already
                                valued, screened and dated at the boundary.
@@ -493,9 +526,13 @@ def calculate_investment_inputs(
                                :class:`~app.models.pay_period.PayPeriod` and
                                :class:`~app.services.pay_calendar.DerivedPeriod`
                                do -- or None.
-        salary_gross_biweekly: Engine gross per pay period used as the
-                               fallback gross when no deduction supplied
-                               one (Decimal or None).
+        salary_gross_biweekly: The owner's RAISE-AWARE engine gross per pay
+                               period (Decimal or None).  Since plan step
+                               R-F16 it is the ONLY gross in this path -- the
+                               basis a percentage deduction takes its
+                               percentage of and the figure the employer match
+                               is sized on -- rather than a fallback behind an
+                               off-engine recompute.
 
     Returns:
         InvestmentInputs dataclass.
@@ -520,7 +557,9 @@ def calculate_investment_inputs(
     )
 
 
-def _deduction_contribution_records(deductions, periods, pct_id, as_of):
+def _deduction_contribution_records(
+    deductions, periods, gross_biweekly, pct_id, as_of,
+):
     """Per-period deduction ContributionRecords, each clamped to its annual cap.
 
     Deductions contribute the same raw amount every period; each is clamped to
@@ -536,18 +575,21 @@ def _deduction_contribution_records(deductions, periods, pct_id, as_of):
     treated as uncapped.
 
     Args:
-        deductions: Deduction-like objects (see build_contribution_timeline).
-        periods:    Period objects with .start_date.
-        pct_id:     The ref ID for the PERCENTAGE calculation method.
-        as_of:      The read pass's clock -- the day splitting confirmed (past)
-                    from projected periods.
+        deductions:     Deduction-like objects (see build_contribution_timeline).
+        periods:        Period objects with .start_date.
+        gross_biweekly: The owner's raise-aware gross per pay period, which a
+                        percentage deduction takes its percentage of (plan step
+                        R-F16).
+        pct_id:         The ref ID for the PERCENTAGE calculation method.
+        as_of:          The read pass's clock -- the day splitting confirmed
+                        (past) from projected periods.
 
     Returns:
         list[ContributionRecord] in period-start-date order; empty when no
         deduction contributes a positive amount.
     """
     deduction_raws = [
-        (_compute_deduction_per_period(d, pct_id)[0],
+        (_compute_deduction_per_period(d, gross_biweekly, pct_id),
          getattr(d, "annual_cap", None))
         for d in deductions
     ]
@@ -558,18 +600,9 @@ def _deduction_contribution_records(deductions, periods, pct_id, as_of):
     cap_state = [None] * len(deduction_raws)
     records = []
     for period in sorted(periods, key=lambda p: p.start_date):
-        period_year = period.start_date.year
-        period_total = ZERO
-        for i, (raw, annual_cap) in enumerate(deduction_raws):
-            if raw <= ZERO:
-                continue
-            prior = cap_state[i]
-            cumulative_before = (
-                prior[1] if prior is not None and prior[0] == period_year
-                else ZERO
-            )
-            period_total += cap_period_amount(raw, cumulative_before, annual_cap)
-            cap_state[i] = (period_year, cumulative_before + raw)
+        period_total, cap_state = _period_capped_total(
+            deduction_raws, cap_state, period.start_date.year,
+        )
         records.append(ContributionRecord(
             contribution_date=period.start_date,
             amount=period_total,
@@ -580,10 +613,54 @@ def _deduction_contribution_records(deductions, periods, pct_id, as_of):
     return records
 
 
+def _period_capped_total(deduction_raws, cap_state, period_year):
+    """Return ONE period's capped deduction total, and the advanced cap state.
+
+    The per-period half of :func:`_deduction_contribution_records`, split out
+    so each function answers one question: this one is "what does this period
+    contribute, and what does that leave the running cap at", the caller's is
+    "which periods get a record".  Each deduction's clamp is
+    ``cap_period_amount`` -- the same one the net-pay path applies -- against
+    its own calendar-year cumulative, which RESETS when the year changes
+    because a state stamped with a different year reads as no cumulative at
+    all.
+
+    Returns a NEW state list rather than mutating the caller's: the caller
+    rebinds it each period, so the running total is threaded rather than
+    hidden in a shared mutable the two functions would both have to remember
+    the rules for.
+
+    Args:
+        deduction_raws: ``(raw_amount, annual_cap)`` per deduction, in a fixed
+            order the state list is indexed by.
+        cap_state: ``(year, raw_cumulative)`` per deduction, or ``None`` for a
+            deduction that has not contributed yet.
+        period_year: The calendar year of the period being valued.
+
+    Returns:
+        ``(period_total, advanced_state)`` -- the capped sum across every
+        deduction, and the state to value the next period against.
+    """
+    total = ZERO
+    advanced = list(cap_state)
+    for i, (raw, annual_cap) in enumerate(deduction_raws):
+        if raw <= ZERO:
+            continue
+        prior = cap_state[i]
+        cumulative_before = (
+            prior[1] if prior is not None and prior[0] == period_year
+            else ZERO
+        )
+        total += cap_period_amount(raw, cumulative_before, annual_cap)
+        advanced[i] = (period_year, cumulative_before + raw)
+    return total, advanced
+
+
 def build_contribution_timeline(
     deductions,
     contribution_transactions,
     periods,
+    gross_biweekly,
     as_of,
 ):
     """Build ContributionRecords from deductions and shadow transactions.
@@ -620,10 +697,9 @@ def build_contribution_timeline(
 
     Args:
         deductions:                 List of deduction-like objects with
-                                    .amount, .calc_method_id,
-                                    .annual_salary, .pay_periods_per_year,
-                                    and optionally .annual_cap (the
-                                    calendar-year ceiling; absent = uncapped).
+                                    .amount, .calc_method_id, and optionally
+                                    .annual_cap (the calendar-year ceiling;
+                                    absent = uncapped).
         contribution_transactions:  List of :class:`PricedContribution`
                                     records -- shadow-income rows already
                                     valued, screened and dated at the boundary.
@@ -631,6 +707,11 @@ def build_contribution_timeline(
                                     a ``start_date``, one record emitted per
                                     period for the deduction path and any
                                     contribution outside them dropped.
+        gross_biweekly:             The owner's raise-aware gross per pay
+                                    period, which a percentage deduction takes
+                                    its percentage of.  Taken rather than
+                                    recomputed off the deduction's parent
+                                    profile since plan step R-F16.
         as_of:                      The read pass's clock; a period opening
                                     strictly before it is confirmed.
 
@@ -644,7 +725,9 @@ def build_contribution_timeline(
     # Path 1: Paycheck deductions -- same raw amount every period, each
     # clamped to its own calendar-year cap.
     records.extend(
-        _deduction_contribution_records(deductions, periods, pct_id, as_of)
+        _deduction_contribution_records(
+            deductions, periods, gross_biweekly, pct_id, as_of,
+        )
     )
 
     # Path 2: Transfer-based contributions -- per-transaction amounts.

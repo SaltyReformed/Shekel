@@ -145,7 +145,6 @@ class TestThePicturesPublishedSurface:
                 filing_status_id=filing.id,
                 name="Main",
                 annual_salary=Decimal("80000"),
-                pay_periods_per_year=26,
                 state_code="NC",
                 is_active=True,
             )
@@ -243,7 +242,7 @@ class TestComputeGapNetBiweekly:
         the rate stays raise-aware (the pre-Commit-17 ``annual / periods``
         recompute silently dropped any applicable raise).
         """
-        profile = SalaryProfile(pay_periods_per_year=26)
+        profile = SalaryProfile()
         pay = retirement_dashboard_service._CurrentPay(
             net_biweekly=Decimal("2000.00"),
             current_breakdown=paycheck_calculator.PaycheckBreakdown(
@@ -275,7 +274,7 @@ class TestComputeGapNetBiweekly:
         ``None`` horizon must not scale (and must not raise), so the gap
         calculator falls back to comparing against today's take-home.
         """
-        profile = SalaryProfile(pay_periods_per_year=26)
+        profile = SalaryProfile()
         pay = retirement_dashboard_service._CurrentPay(
             net_biweekly=Decimal("1800.00"),
             current_breakdown=None,
@@ -295,7 +294,7 @@ class TestComputeGapNetBiweekly:
         helper must return the current net biweekly rather than divide by
         zero, so a no-current-period user still gets a defined comparison.
         """
-        profile = SalaryProfile(pay_periods_per_year=26)
+        profile = SalaryProfile()
         pay = retirement_dashboard_service._CurrentPay(
             net_biweekly=Decimal("1500.00"),
             current_breakdown=None,
@@ -337,8 +336,7 @@ class TestTheRenderDayOpensTheSalaryPath:
 
     def _profile(self):
         """A raise-free profile, so the projected series is flat and exact."""
-        return SalaryProfile(annual_salary=Decimal("100000.00"),
-                             pay_periods_per_year=26)
+        return SalaryProfile(annual_salary=Decimal("100000.00"))
 
     def test_the_pension_path_opens_at_the_pass_year(self):
         """``compute_pension_summary`` projects from the pass's year.
@@ -418,11 +416,13 @@ class TestTheRenderDayOpensTheSalaryPath:
         """
         profile = self._profile()
 
+        cadence = PayCadence(cadence_days=14)
+
         assert retirement_projection.build_employer_salary_basis(
-            [profile], date(2030, 6, 30), 5, date(2027, 3, 20),
+            [profile], date(2030, 6, 30), 5, date(2027, 3, 20), cadence,
         ) is not None
         assert retirement_projection.build_employer_salary_basis(
-            [profile], date(2030, 6, 30), 5, date(2032, 3, 20),
+            [profile], date(2030, 6, 30), 5, date(2032, 3, 20), cadence,
         ) is None
 
 
@@ -455,7 +455,6 @@ class TestTheRenderDayOpensTheSalaryPath:
                 filing_status_id=filing.id,
                 name="Main",
                 annual_salary=Decimal("80000"),
-                pay_periods_per_year=26,
                 state_code="NC",
                 is_active=True,
             )
@@ -729,7 +728,6 @@ class TestRetirementProjectionEntryAware:
                 filing_status_id=filing.id,
                 name="Day Job",
                 annual_salary=Decimal("80000.00"),
-                pay_periods_per_year=26,
                 state_code="NC",
                 is_active=True,
             ))
@@ -971,7 +969,6 @@ def _seed_active_salary_profile(db_session, user, scenario):
         filing_status_id=filing.id,
         name="C20 Day Job",
         annual_salary=Decimal("80000.00"),
-        pay_periods_per_year=26,
         state_code="NC",
         is_active=True,
     )

@@ -59,6 +59,7 @@ from tests.oracles.recurrence_baseline import (
     ANNUAL,
 )
 from tests._test_helpers import (
+    derived_calendar,
     make_every_period_rule,
     make_cadence_rule,
     open_calendar_hole,
@@ -3542,7 +3543,8 @@ class TestPaycheckAmountFallback:
             start_date = date(2026, 1, 2)
 
         result = _get_transaction_amount(
-            FakeTemplate(), FakeProfile(), FakePeriod(), []
+            FakeTemplate(), FakeProfile(), FakePeriod(),
+            derived_calendar([date(2026, 1, 2)]),
         )
         assert result == Decimal("1500.00")
 
@@ -3576,7 +3578,8 @@ class TestPaycheckAmountFallback:
             start_date = date(2026, 1, 2)
 
         result = _get_transaction_amount(
-            FakeTemplate(), FakeProfile(), FakePeriod(), []
+            FakeTemplate(), FakeProfile(), FakePeriod(),
+            derived_calendar([date(2026, 1, 2)]),
         )
         assert result == Decimal("2000.00")
 
@@ -3609,7 +3612,8 @@ class TestPaycheckAmountFallback:
 
         with pytest.raises(AttributeError, match="raises"):
             _get_transaction_amount(
-                FakeTemplate(), FakeProfile(), FakePeriod(), []
+                FakeTemplate(), FakeProfile(), FakePeriod(),
+            derived_calendar([date(2026, 1, 2)]),
             )
 
     def test_returns_default_amount_when_no_salary_profile(self, app, db):

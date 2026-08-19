@@ -237,7 +237,6 @@ def _make_salary_profile(user_id, scenario_id):
         name="Day Job",
         annual_salary=Decimal("60000.00"),
         state_code="NC",
-        pay_periods_per_year=26,
     )
     db.session.add(profile)
     db.session.commit()

@@ -414,11 +414,12 @@ class TestObligationsAggregator:
         and no module-level number to drift from it", and this is where a
         reintroduced constant is caught.
 
-        **Named for the CONVERSION side, because it is not the whole story.**
-        ``salary.salary_profiles.pay_periods_per_year`` is a second, stored,
-        user-selected paycheck count on the PRODUCTION side -- the divisor the
-        paycheck engine uses -- and nothing ties the two together.  This test
-        does not and cannot assert against it; the developer ruled that second
+        **Named for the CONVERSION side, and since plan step R-F16 that is
+        the whole story.**  ``salary.salary_profiles.pay_periods_per_year`` was
+        a second, stored, user-selected paycheck count on the PRODUCTION side
+        -- the divisor the paycheck engine used -- with nothing tying the two
+        together.  That column is dropped and both sides now derive from
+        ``budget.pay_schedule.cadence_days``.  The developer ruled that second
         producer's removal into this arc on 2026-08-11, as the leaf after
         R7a-2a.  A name claiming "one producer" flat would be the false claim
         this file exists to catch.

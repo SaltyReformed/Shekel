@@ -31,7 +31,8 @@ from app.services import (
     paycheck_calculator,
     pension_calculator,
 )
-from app.services.pay_calendar import PayCadence, cadence_for
+from app.services.pay_calendar import PayCadence
+from app.services.paycheck_calculator import PayrollBasis
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.utils.dates import add_months
 from app.utils.money import round_money
@@ -189,7 +190,8 @@ def load_gap_inputs(balance_ctx):
             ``budget.pay_schedule`` row and no pay period to infer one from.
             The gap's pre-retirement income is their paycheck converted to a
             month, so there is no honest figure without it (plan step
-            R7a-2a; see :func:`app.services.pay_calendar.cadence_for`).
+            R7a-2a; see
+            :attr:`app.services.pay_calendar.PayCalendar.cadence`).
     """
     user_id = balance_ctx.user_id
     settings = (
@@ -214,7 +216,17 @@ def load_gap_inputs(balance_ctx):
         # Resolved once here (plan step R7a-2a): the retire-later solver
         # probes this bundle dozens of times per request and the cadence does
         # not move with a candidate retirement date.
-        pay_cadence=cadence_for(user_id),
+        #
+        # **Off the pass's own calendar rather than through ``cadence_for``**
+        # (plan step R-F16).  ``_compute_current_pay`` above derives that
+        # calendar unconditionally and the pass memoizes it, so a second door
+        # here was one extra ``budget.pay_schedule`` query for a value already
+        # in hand -- which is the rule
+        # :attr:`app.services.pay_calendar.PayCalendar.cadence` states in as
+        # many words ("a caller that ALREADY holds a calendar must use this").
+        # Both doors refuse the same owner, so the ``Raises`` above is
+        # unchanged.
+        pay_cadence=balance_ctx.calendar().cadence,
     )
 
 
@@ -412,7 +424,8 @@ def _compute_current_pay(
             user_id, profile, current_period.start_date.year,
         )
         current_breakdown = paycheck_calculator.calculate_paycheck(
-            profile, current_period, all_periods, tax_configs,
+            PayrollBasis(profile, calendar.cadence),
+            current_period, all_periods, tax_configs,
         )
         net_biweekly = current_breakdown.earnings.net_pay
     return _CurrentPay(net_biweekly, current_breakdown)
@@ -576,8 +589,11 @@ def compute_gap_net_biweekly(
         return pay.net_biweekly
 
     final_salary = salary_by_year[-1][1]
+    # The owner's OWN paycheck count, off the cadence the inputs already
+    # carry (plan step R-F16); it was a second stored column on the profile,
+    # and the two could disagree with each other by any factor.
     final_gross_biweekly = round_money(
-        final_salary / (profile.pay_periods_per_year or 26)
+        gap.pay_cadence.annual_to_per_paycheck(final_salary)
     )
     return round_money(final_gross_biweekly * effective_take_home_rate)
 

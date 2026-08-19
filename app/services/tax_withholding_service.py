@@ -69,6 +69,7 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
 from app.services import paycheck_calculator
+from app.services.paycheck_calculator import PayrollBasis
 from app.services.tax_config_service import load_tax_configs_for_year
 
 ZERO = Decimal("0")
@@ -226,7 +227,7 @@ def save_checkpoint(
 
 
 def compute_withholding_to_date(
-    user_id: int, profile, year: int, periods: list,
+    user_id: int, basis: PayrollBasis, year: int, periods: list,
 ) -> WithholdingToDate:
     """Compute withholding-to-date = measured checkpoint + modeled remainder.
 
@@ -248,9 +249,13 @@ def compute_withholding_to_date(
 
     Args:
         user_id: The owning user's id (tax configs are per-user).
-        profile: The :class:`~app.models.salary_profile.SalaryProfile`,
-            with its ``raises``, ``deductions``, and ``calibration``
-            relationships available (read by ``project_salary``).
+        basis: The :class:`~app.services.paycheck_calculator.PayrollBasis` --
+            the :class:`~app.models.salary_profile.SalaryProfile` (with its
+            ``raises``, ``deductions``, and ``calibration`` relationships
+            available, read by ``project_salary``) bound to the owner's pay
+            cadence.  The cadence is the paycheck count the engine divides the
+            annual salary by, and it was a second stored column on the profile
+            until plan step **R-F16**.
         year: The tax year; every period in *periods* is expected to fall
             in it (the caller loads the year's periods).
         periods: The tax year's :class:`~app.services.pay_calendar.DerivedPeriod`
@@ -261,9 +266,9 @@ def compute_withholding_to_date(
         The populated :class:`WithholdingToDate` (totals + measured /
         projected split + the source checkpoint).
     """
-    checkpoint = latest_checkpoint(profile.id, year)
+    checkpoint = latest_checkpoint(basis.profile.id, year)
     measured = _measured_components(checkpoint)
-    projected = _project_remainder(user_id, profile, year, periods, checkpoint)
+    projected = _project_remainder(user_id, basis, year, periods, checkpoint)
 
     total = WithholdingComponents(
         gross=measured.gross + projected.gross,
@@ -310,7 +315,7 @@ def _measured_components(
 
 def _project_remainder(
     user_id: int,
-    profile,
+    basis,
     year: int,
     periods: list,
     checkpoint: YtdTaxCheckpoint | None,
@@ -339,8 +344,9 @@ def _project_remainder(
 
     Args:
         user_id: The owning user's id (per-user tax configs).
-        profile: The salary profile to project (calibration-aware via
-            ``profile.calibration``).
+        basis: The :class:`~app.services.paycheck_calculator.PayrollBasis` to
+            project -- the salary profile bound to its owner's pay cadence,
+            calibration-aware via ``basis.profile.calibration``.
         year: The tax year whose configs to load.
         periods: The tax year's FULL pay-period list (may be empty).
         checkpoint: The measured checkpoint, or ``None`` (fully modeled).
@@ -355,10 +361,10 @@ def _project_remainder(
     if not remainder_ids:
         return _ZERO_COMPONENTS
 
-    tax_configs = load_tax_configs_for_year(user_id, profile, year)
+    tax_configs = load_tax_configs_for_year(user_id, basis.profile, year)
     breakdowns = paycheck_calculator.project_salary(
-        profile, periods, tax_configs,
-        calibration=profile.calibration,
+        basis, periods, tax_configs,
+        calibration=basis.profile.calibration,
     )
     remainder = [
         bd for bd in breakdowns if bd.period.period_id in remainder_ids

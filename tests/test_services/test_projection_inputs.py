@@ -51,10 +51,17 @@ def _flat_id():
 
 @dataclass
 class _FakeDeduction:
+    """An adapted deduction, as ``adapt_deductions`` produces one since R-F16.
+
+    It carries no salary and no paycheck count: the gross a percentage
+    deduction applies to is the caller's raise-aware engine gross, and the
+    count is the owner's cadence, stamped once per ``adapt_deductions`` call.
+    """
+
     amount: Decimal
     calc_method_id: int
-    annual_salary: Decimal
-    pay_periods_per_year: int
+    periods_per_year: Decimal = Decimal("26")
+    annual_cap: Decimal | None = None
 
 
 @dataclass
@@ -114,8 +121,6 @@ class TestBuildInvestmentProjectionInputsEquivalence:
             _FakeDeduction(
                 amount=Decimal("500.00"),
                 calc_method_id=_flat_id(),
-                annual_salary=Decimal("100000"),
-                pay_periods_per_year=26,
             ),
         ]
         periods = [
@@ -245,19 +250,19 @@ def _seed_deductions_fixture(app, db, seed_user, seed_second_user):
     active_profile = SalaryProfile(
         user_id=user_id, scenario_id=scenario_id,
         name="Active", annual_salary=Decimal("100000"),
-        pay_periods_per_year=26, state_code="NC",
+        state_code="NC",
         filing_status_id=filing_status_id, is_active=True,
     )
     inactive_profile = SalaryProfile(
         user_id=user_id, scenario_id=scenario_id,
         name="Inactive", annual_salary=Decimal("80000"),
-        pay_periods_per_year=26, state_code="NC",
+        state_code="NC",
         filing_status_id=filing_status_id, is_active=False,
     )
     other_profile = SalaryProfile(
         user_id=other_user_id, scenario_id=other_scenario_id,
         name="Other", annual_salary=Decimal("100000"),
-        pay_periods_per_year=26, state_code="NC",
+        state_code="NC",
         filing_status_id=filing_status_id, is_active=True,
     )
     db.session.add_all([active_profile, inactive_profile, other_profile])
@@ -782,7 +787,8 @@ class TestShadowContributionBoundary:
             )
             timeline = build_contribution_timeline(
                 deductions=[], contribution_transactions=records,
-                periods=[period], as_of=period.start_date,
+                periods=[period], gross_biweekly=Decimal("0"),
+                as_of=period.start_date,
             )
 
             assert inputs.periodic_contribution == Decimal("400")

@@ -471,13 +471,18 @@ def _load_projection_context(
     projection_start = _projection_start(balance_ctx)
     active_profile = _load_active_salary_profile(user_id)
     # F-20 / MED-06 / F-032: raise-aware paycheck-engine value, not the
-    # off-engine ``annual_salary / pay_periods_per_year`` recompute that
-    # silently dropped any applicable ``SalaryRaise`` row pre-Commit-17.
+    # off-engine ``annual_salary / <a stored paycheck count>`` recompute that
+    # silently dropped any applicable ``SalaryRaise`` row pre-Commit-17.  Since
+    # plan step R-F16 it is also what a PERCENTAGE deduction takes its
+    # percentage of: that path re-derived the raise-blind figure for itself
+    # and only fell back to this one when the account had no deduction at all.
     salary_gross_biweekly = income_service.get_current_gross_biweekly(
         user_id, balance_ctx.calendar(),
     )
     deductions = load_active_deductions_for_account(user_id, account.id)
-    adapted_deductions = adapt_deductions(deductions)
+    adapted_deductions = adapt_deductions(
+        deductions, balance_ctx.calendar().cadence,
+    )
     acct_contributions = load_shadow_income_contributions_for_account(
         balance_ctx.amounts(),
         account.id, [period.period_id for period in periods],
@@ -498,6 +503,7 @@ def _load_projection_context(
         deductions=adapted_deductions,
         contribution_transactions=acct_contributions,
         periods=periods,
+        gross_biweekly=salary_gross_biweekly,
         as_of=balance_ctx.as_of,
     )
     return _ProjectionContext(

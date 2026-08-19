@@ -4,8 +4,9 @@ Shekel Budget App -- Income Service Tests (C17 / F-20 / MED-06 / F-032).
 Pins the raise-aware paycheck-engine producer contract:
 
 - The helper returns ``Decimal("0")`` when no active SalaryProfile exists.
-- The helper returns ``annual_salary / pay_periods_per_year`` byte-identical
-  to the engine for a no-raise profile.
+- The helper returns ``annual_salary`` over the owner's PAYCHECK COUNT --
+  derived from their cadence since plan step R-F16 -- byte-identical to the
+  engine for a no-raise profile.
 - The helper APPLIES applicable ``SalaryRaise`` rows so the post-raise
   per-period gross is returned -- the F-032 worked example: $104,000
   base with a 3% raise effective in the as-of period yields $4,120.00
@@ -47,7 +48,11 @@ from app.services.tax_config_service import (
     load_tax_configs_for_year,
 )
 from app.services.balance_at import BalanceContext
-from tests._test_helpers import freeze_today, make_investment_account
+from tests._test_helpers import (
+    freeze_today,
+    make_investment_account,
+    payroll_basis,
+)
 
 
 # Hand-computed expected values (see module docstring for derivation).
@@ -73,7 +78,6 @@ def _create_profile(
         name="Test Salary",
         annual_salary=Decimal(annual_salary),
         state_code="NC",
-        pay_periods_per_year=26,
         is_active=True,
     )
     db.session.add(profile)
@@ -367,7 +371,7 @@ class TestLiveIncomeThroughBalanceResolver:
                 user_id, profile, period.start_date.year,
             )
             breakdowns = paycheck_calculator.project_salary(
-                profile, _derived(user_id), tax_configs,
+                payroll_basis(profile), _derived(user_id), tax_configs,
                 calibration=profile.calibration,
             )
             expected_net = {
@@ -710,7 +714,7 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
             net_2027_rate = {
                 bd.period.period_id: bd.earnings.net_pay
                 for bd in paycheck_calculator.project_salary(
-                    profile, _derived(user_id),
+                    payroll_basis(profile), _derived(user_id),
                     load_tax_configs(user_id, profile, tax_year=2027),
                     calibration=profile.calibration,
                 )
@@ -718,7 +722,7 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
             net_2026_rate = {
                 bd.period.period_id: bd.earnings.net_pay
                 for bd in paycheck_calculator.project_salary(
-                    profile, _derived(user_id),
+                    payroll_basis(profile), _derived(user_id),
                     load_tax_configs(user_id, profile, tax_year=2026),
                     calibration=profile.calibration,
                 )
@@ -850,11 +854,11 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
                 p for p in derived if p.start_date.year == 2027
             )
             resolved = paycheck_calculator.calculate_paycheck(
-                profile, derived_2027, derived,
+                payroll_basis(profile), derived_2027, derived,
                 load_tax_configs_for_year(user_id, profile, 2027),
             )
             unresolved = paycheck_calculator.calculate_paycheck(
-                profile, derived_2027, derived,
+                payroll_basis(profile), derived_2027, derived,
                 load_tax_configs(user_id, profile, 2027),
             )
 

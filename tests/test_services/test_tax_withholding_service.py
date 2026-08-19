@@ -53,6 +53,7 @@ from app.services import paycheck_calculator
 from app.services.auth_service import _seed_tax_data_for_user
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.pay_calendar import calendar_for
+from tests._test_helpers import payroll_basis
 from app.services.tax_withholding_service import (
     CheckpointFigures,
     WithholdingToDate,
@@ -81,7 +82,6 @@ def _make_profile(
         scenario_id=seed_user["scenario"].id,
         name=name,
         annual_salary=Decimal(annual_salary),
-        pay_periods_per_year=26,
         filing_status_id=filing_status.id,
         state_code="NC",
         is_active=True,
@@ -159,7 +159,7 @@ def _add_checkpoint(profile, as_of_date, **figures):
     return cp
 
 
-def _expected_projected(user_id, profile, year, periods):
+def _expected_projected(user_id, basis, year, periods):
     """Sum ``project_salary`` over *periods* -- the independent oracle.
 
     Same configs SSOT and calibration-aware path as the producer, but over
@@ -171,9 +171,9 @@ def _expected_projected(user_id, profile, year, periods):
     dollar values; the divergent above-cap case is pinned with absolute
     hand-computed dollars in ``TestFullYearCapContext`` instead.
     """
-    configs = load_tax_configs_for_year(user_id, profile, year)
+    configs = load_tax_configs_for_year(user_id, basis.profile, year)
     breakdowns = paycheck_calculator.project_salary(
-        profile, periods, configs, calibration=profile.calibration,
+        basis, periods, configs, calibration=basis.profile.calibration,
     )
     return {
         "gross": sum((b.earnings.gross_biweekly for b in breakdowns), ZERO),
@@ -340,11 +340,11 @@ class TestComputeNoCheckpoint:
         db.session.commit()
 
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026,
+            seed_user["user"].id, payroll_basis(profile), 2026,
             _derived(seed_user["user"].id),
         )
         expected = _expected_projected(
-            seed_user["user"].id, profile, 2026,
+            seed_user["user"].id, payroll_basis(profile), 2026,
             _derived(seed_user["user"].id),
         )
 
@@ -392,11 +392,11 @@ class TestComputeWithCheckpoint:
 
         remainder = _derived(seed_user["user"].id)[1:]  # P1..P9
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026,
+            seed_user["user"].id, payroll_basis(profile), 2026,
             _derived(seed_user["user"].id),
         )
         expected = _expected_projected(
-            seed_user["user"].id, profile, 2026, remainder,
+            seed_user["user"].id, payroll_basis(profile), 2026, remainder,
         )
 
         assert result.checkpoint is not None
@@ -434,11 +434,11 @@ class TestComputeWithCheckpoint:
 
         remainder = _derived(seed_user["user"].id)[2:]  # P2..P9
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026,
+            seed_user["user"].id, payroll_basis(profile), 2026,
             _derived(seed_user["user"].id),
         )
         expected = _expected_projected(
-            seed_user["user"].id, profile, 2026, remainder,
+            seed_user["user"].id, payroll_basis(profile), 2026, remainder,
         )
 
         assert result.measured_through == date(2026, 1, 16)
@@ -454,11 +454,11 @@ class TestComputeWithCheckpoint:
         db.session.commit()
 
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026,
+            seed_user["user"].id, payroll_basis(profile), 2026,
             _derived(seed_user["user"].id),
         )
         expected = _expected_projected(
-            seed_user["user"].id, profile, 2026,
+            seed_user["user"].id, payroll_basis(profile), 2026,
             _derived(seed_user["user"].id),
         )
 
@@ -486,7 +486,7 @@ class TestComputeEmptyPeriods:
         db.session.commit()
 
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026, [],
+            seed_user["user"].id, payroll_basis(profile), 2026, [],
         )
         # Remainder is empty -> projected all zero.
         assert result.projected.gross == ZERO
@@ -504,7 +504,7 @@ class TestComputeEmptyPeriods:
         profile = _seed_and_profile(seed_user)
         db.session.commit()
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026, [],
+            seed_user["user"].id, payroll_basis(profile), 2026, [],
         )
         assert result.total.gross == ZERO
         assert result.total.federal == ZERO
@@ -551,7 +551,7 @@ class TestCalibrationExactWithholding:
 
         two_periods = _derived(seed_user["user"].id)[:2]
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026, two_periods,
+            seed_user["user"].id, payroll_basis(profile), 2026, two_periods,
         )
 
         assert result.projected.gross == Decimal("10000.00")
@@ -635,7 +635,7 @@ class TestFullYearCapContext:
         db.session.commit()
 
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026, periods,
+            seed_user["user"].id, payroll_basis(profile), 2026, periods,
         )
 
         assert result.measured_through == date(2026, 6, 30)

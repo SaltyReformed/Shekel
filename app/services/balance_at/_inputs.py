@@ -59,6 +59,7 @@ from decimal import Decimal
 
 from app.models.account import Account
 from app.services import income_service
+from app.services.investment_projection import adapt_deductions
 from app.services.projection_inputs import (
     load_active_deductions_for_accounts,
     load_investment_params_for_accounts,
@@ -184,10 +185,22 @@ def _contribution_inputs_for_accounts(
     # (``_asset_contributions.contribution_events``) -- so today the difference
     # is invisible, which is exactly why it must not be left to a docstring:
     # the caller-dependent input is the shape this loader exists to rule out.
+    # ADAPTED here, at the ORM boundary, rather than at the point of use
+    # (plan step R-F16).  The adapter needs the owner's paycheck count -- a
+    # calendar-year deduction cap is spread across the year's paychecks -- and
+    # this loader is where a pass with a memoized calendar is in scope; the
+    # consumer below the seam is pure.  Scoped to accounts that actually HAVE
+    # a deduction so an owner with no resolvable cadence is refused only when
+    # a figure would genuinely depend on one, which is the same rule
+    # :attr:`app.services.pay_calendar.PayCalendar.cadence` states.
+    adapted_by_account = {
+        acct_id: adapt_deductions(rows, ctx.calendar().cadence)
+        for acct_id, rows in deductions_by_account.items() if rows
+    }
     return {
         account.id: ContributionInputs(
             investment_params=investment_params_map.get(account.id),
-            deductions=deductions_by_account.get(account.id, []),
+            deductions=adapted_by_account.get(account.id, []),
             salary_gross_biweekly=(
                 salary_gross_biweekly
                 if account.id in investment_params_map else ZERO

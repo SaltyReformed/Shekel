@@ -83,12 +83,30 @@ def _emp_type_id(member):
     return ref_cache.employer_contribution_type_id(member)
 
 
+#: The owner's raise-aware engine gross per pay period, as the caller supplies
+#: it since plan step **R-F16**.  It is ``$100,000 / 26`` -- exactly what the
+#: deleted per-row ``annual_salary / pay_periods_per_year`` recompute produced
+#: for the profile these tests used to carry, so every expected figure below is
+#: unchanged by the move and the tests still pin the arithmetic rather than the
+#: provenance.
+_GROSS_BIWEEKLY = Decimal("3846.15")
+
+
 @dataclass
 class FakeDeduction:
+    """An adapted deduction, as ``adapt_deductions`` now produces one.
+
+    **It carries neither the parent profile's salary nor a paycheck count of
+    its own**, and has not since plan step R-F16.  The gross a percentage
+    deduction applies to is the caller's raise-aware engine gross, passed in
+    beside the deductions; the count is the OWNER's cadence, stamped on every
+    row of one ``adapt_deductions`` call.  The pair used to be re-divided here
+    into a raise-BLIND gross that then sized the employer match.
+    """
+
     amount: Decimal
     calc_method_id: int
-    annual_salary: Decimal
-    pay_periods_per_year: int
+    periods_per_year: Decimal = Decimal("26")
     # Calendar-year ceiling (PaycheckDeduction.annual_cap); None = uncapped.
     annual_cap: Decimal | None = None
 
@@ -129,8 +147,7 @@ class TestCalculateInvestmentInputs:
             annual_contribution_limit=Decimal("23500"),
             employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
-        deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id(),
-                                     annual_salary=Decimal("100000"), pay_periods_per_year=26)]
+        deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id())]
         current_period = _periods(date(2026, 3, 5))[0]
         result = calculate_investment_inputs(
             investment_params=params, deductions=deductions,
@@ -153,7 +170,6 @@ class TestCalculateInvestmentInputs:
         )
         deductions = [FakeDeduction(
             amount=Decimal("600.00"), calc_method_id=_flat_id(),
-            annual_salary=Decimal("100000"), pay_periods_per_year=26,
             annual_cap=Decimal("1000.00"),
         )]
         current_period = _periods(date(2026, 3, 5))[0]
@@ -171,12 +187,12 @@ class TestCalculateInvestmentInputs:
             annual_contribution_limit=Decimal("23500"),
             employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
-        deductions = [FakeDeduction(amount=Decimal("0.07"), calc_method_id=_pct_id(),
-                                     annual_salary=Decimal("100000"), pay_periods_per_year=26)]
+        deductions = [FakeDeduction(amount=Decimal("0.07"), calc_method_id=_pct_id())]
         current_period = _periods(date(2026, 3, 5))[0]
         result = calculate_investment_inputs(
             investment_params=params, deductions=deductions,
             all_contributions=[], current_period=current_period,
+            salary_gross_biweekly=_GROSS_BIWEEKLY,
         )
         # 7% of ($100,000 / 26) = 7% of $3846.15 = $269.2305 -> $269.23.
         # Hand-computed literal (not a re-quantize of the code's own
@@ -204,12 +220,15 @@ class TestCalculateInvestmentInputs:
             annual_contribution_limit=Decimal("23500"),
             employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
-        deductions = [FakeDeduction(amount=Decimal("0.05"), calc_method_id=_pct_id(),
-                                     annual_salary=Decimal("26013"), pay_periods_per_year=26)]
+        deductions = [FakeDeduction(amount=Decimal("0.05"), calc_method_id=_pct_id())]
         current_period = _periods(date(2026, 3, 5))[0]
         result = calculate_investment_inputs(
             investment_params=params, deductions=deductions,
             all_contributions=[], current_period=current_period,
+            # ``$26,013 / 26 = $1,000.50`` exactly -- the gross the engine
+            # reports for that salary, now supplied by the caller rather than
+            # re-divided per deduction (plan step R-F16).
+            salary_gross_biweekly=Decimal("1000.50"),
         )
         # gross = round_money(26013 / 26) = round_money(1000.50) = 1000.50;
         # 5% -> round_money(1000.50 * 0.05) = round_money(50.0250) = 50.03
@@ -246,19 +265,19 @@ class TestCalculateInvestmentInputs:
             ),
             employer_flat_percentage=Decimal("0.05"),
         )
-        deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id(),
-                                     annual_salary=Decimal("100000"), pay_periods_per_year=26)]
+        deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id())]
         current_period = _periods(date(2026, 3, 5))[0]
         result = calculate_investment_inputs(
             investment_params=params, deductions=deductions,
             all_contributions=[], current_period=current_period,
+            salary_gross_biweekly=_GROSS_BIWEEKLY,
         )
         assert result.employer_params is not None
         assert result.employer_params["type_id"] == _emp_type_id(
             EmployerContributionTypeEnum.FLAT_PERCENTAGE,
         )
         assert result.employer_params["flat_percentage"] == Decimal("0.05")
-        # $100,000 / 26 = $3846.153... -> $3846.15 (hand-computed literal).
+        # The caller's engine gross, unchanged by the deduction (R-F16).
         assert result.employer_params["gross_biweekly"] == Decimal("3846.15")
 
     def test_employer_match(self):
@@ -271,8 +290,7 @@ class TestCalculateInvestmentInputs:
             employer_match_percentage=Decimal("1.0"),
             employer_match_cap_percentage=Decimal("0.06"),
         )
-        deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id(),
-                                     annual_salary=Decimal("100000"), pay_periods_per_year=26)]
+        deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id())]
         current_period = _periods(date(2026, 3, 5))[0]
         result = calculate_investment_inputs(
             investment_params=params, deductions=deductions,
@@ -359,8 +377,7 @@ class TestCalculateInvestmentInputs:
             assumed_annual_return=Decimal("0.07"), annual_contribution_limit=Decimal("23500"),
             employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
-        deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id(),
-                                     annual_salary=Decimal("100000"), pay_periods_per_year=26)]
+        deductions = [FakeDeduction(amount=Decimal("500.00"), calc_method_id=_flat_id())]
         periods = _periods(date(2026, 1, 2), date(2026, 1, 16))
         contributions = [
             _priced(Decimal("200"), periods[0].start_date),
@@ -394,8 +411,26 @@ class TestCalculateInvestmentInputs:
         assert result.employer_params["gross_biweekly"] == Decimal("3846.15")
         assert result.periodic_contribution == Decimal("0")
 
-    def test_deduction_gross_overrides_salary_gross(self):
-        """When deductions exist, their derived gross takes precedence."""
+    def test_the_callers_gross_survives_a_deduction(self):
+        """A deduction does not displace the employer-match basis (R-F16).
+
+        Input: an account with a flat deduction and a 5% employer flat
+        contribution, given the caller's raise-aware engine gross.
+        Expected: the employer match is sized on THAT gross.
+
+        **This replaces ``test_deduction_gross_overrides_salary_gross``, which
+        asserted the opposite and was the defect written down.**  Each adapted
+        deduction used to carry its parent profile's ``annual_salary`` and
+        ``pay_periods_per_year``, and the module re-divided them into a gross
+        that OVERWROTE the caller's -- so the caller's raise-aware figure was
+        consulted only when the account had no deduction at all.  The two
+        differ by every raise the owner has taken: measured on the developer's
+        own profile at plan step R-F16, ``$3,525.96`` against a true
+        ``$3,631.74``, understating a 5% employer contribution by ``$137.51``
+        a year and compounding it through the retirement projection.  Three
+        sibling call sites already carried the comment naming that exact
+        recompute as the thing F-20 / MED-06 / F-032 replaced.
+        """
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
@@ -406,8 +441,6 @@ class TestCalculateInvestmentInputs:
             FakeDeduction(
                 amount=Decimal("500.00"),
                 calc_method_id=_flat_id(),
-                annual_salary=Decimal("120000"),
-                pay_periods_per_year=26,
             ),
         ]
         current_period = _periods(date(2026, 3, 5))[0]
@@ -417,11 +450,13 @@ class TestCalculateInvestmentInputs:
             deductions=deductions,
             all_contributions=[],
             current_period=current_period,
-            salary_gross_biweekly=Decimal("3846.15"),
+            salary_gross_biweekly=Decimal("3631.74"),
         )
 
-        # $120,000 / 26 = $4615.384... -> $4615.38 (hand-computed literal).
-        assert result.employer_params["gross_biweekly"] == Decimal("4615.38")
+        assert result.employer_params["gross_biweekly"] == Decimal("3631.74")
+        # And the employee side is untouched by the change: a flat deduction
+        # is its own amount whatever the gross.
+        assert result.periodic_contribution == Decimal("500.00")
 
     def test_no_employer_when_type_none(self):
         """Employer type 'none' produces employer_params=None."""
@@ -475,19 +510,18 @@ class TestCalculateInvestmentInputs:
         deductions = [FakeDeduction(
             amount=Decimal("0"),
             calc_method_id=_pct_id(),
-            annual_salary=Decimal("100000"),
-            pay_periods_per_year=26,
         )]
         current_period = _periods(date(2026, 3, 5))[0]
         result = calculate_investment_inputs(
             investment_params=params, deductions=deductions,
             all_contributions=[], current_period=current_period,
+            salary_gross_biweekly=Decimal("3846.15"),
         )
         # gross * 0% = 0
         assert result.periodic_contribution == Decimal("0")
         # Employer params are still populated (the match params exist even if contribution is 0)
         assert result.employer_params is not None
-        # $100,000 / 26 = $3846.153... -> $3846.15 (hand-computed literal).
+        # The caller's gross, unchanged by the deduction (plan step R-F16).
         assert result.gross_biweekly == Decimal("3846.15")
 
     def test_negative_deduction_amount(self):
@@ -512,8 +546,6 @@ class TestCalculateInvestmentInputs:
         deductions = [FakeDeduction(
             amount=Decimal("-500.00"),
             calc_method_id=_flat_id(),
-            annual_salary=Decimal("100000"),
-            pay_periods_per_year=26,
         )]
         current_period = _periods(date(2026, 3, 5))[0]
         result = calculate_investment_inputs(
@@ -611,15 +643,15 @@ class TestBuildContributionTimeline:
         Flat $500 deduction across 3 periods.
         """
         deductions = [FakeDeduction(
-            amount=Decimal("500.00"), calc_method_id=_flat_id(),
-            annual_salary=Decimal("100000"), pay_periods_per_year=26,
+            amount=Decimal("500.00"), calc_method_id=_flat_id()
         )]
         periods = _periods(
             date(2020, 1, 2), date(2020, 1, 16), date(2020, 1, 30),
         )
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[],
-            periods=periods, as_of=_AS_OF,
+            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
+            as_of=_AS_OF,
         )
         assert len(result) == 3
         for r in result:
@@ -635,7 +667,8 @@ class TestBuildContributionTimeline:
         ]
         result = build_contribution_timeline(
             deductions=[], contribution_transactions=txns,
-            periods=periods, as_of=_AS_OF,
+            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
+            as_of=_AS_OF,
         )
         assert len(result) == 2
         assert result[0].amount == Decimal("200")
@@ -648,14 +681,14 @@ class TestBuildContributionTimeline:
         Flat $500 deduction + $200 transfer on period 1.
         """
         deductions = [FakeDeduction(
-            amount=Decimal("500.00"), calc_method_id=_flat_id(),
-            annual_salary=Decimal("100000"), pay_periods_per_year=26,
+            amount=Decimal("500.00"), calc_method_id=_flat_id()
         )]
         periods = _periods(date(2020, 1, 2))
         txns = [_priced(Decimal("200"), periods[0].start_date, is_confirmed=True)]
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=txns,
-            periods=periods, as_of=_AS_OF,
+            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
+            as_of=_AS_OF,
         )
         # One record from deduction, one from transfer, same date.
         assert len(result) == 2
@@ -665,13 +698,13 @@ class TestBuildContributionTimeline:
     def test_deduction_flat_amount(self):
         """Flat-dollar deduction: amount matches deduction.amount exactly."""
         deductions = [FakeDeduction(
-            amount=Decimal("269.23"), calc_method_id=_flat_id(),
-            annual_salary=Decimal("100000"), pay_periods_per_year=26,
+            amount=Decimal("269.23"), calc_method_id=_flat_id()
         )]
         periods = _periods(date(2020, 1, 2))
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[],
-            periods=periods, as_of=_AS_OF,
+            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
+            as_of=_AS_OF,
         )
         assert result[0].amount == Decimal("269.23")
 
@@ -681,13 +714,13 @@ class TestBuildContributionTimeline:
         7% of ($100,000 / 26) = 7% of $3846.15 = $269.23.
         """
         deductions = [FakeDeduction(
-            amount=Decimal("0.07"), calc_method_id=_pct_id(),
-            annual_salary=Decimal("100000"), pay_periods_per_year=26,
+            amount=Decimal("0.07"), calc_method_id=_pct_id()
         )]
         periods = _periods(date(2020, 1, 2))
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[],
-            periods=periods, as_of=_AS_OF,
+            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
+            as_of=_AS_OF,
         )
         # 7% of ($100,000 / 26) = 7% of $3846.15 = $269.2305 -> $269.23
         # (per the docstring); hand-computed literal, not a code mirror.
@@ -696,28 +729,28 @@ class TestBuildContributionTimeline:
     def test_is_confirmed_deduction_past(self):
         """Deduction for a past period: is_confirmed=True."""
         deductions = [FakeDeduction(
-            amount=Decimal("500"), calc_method_id=_flat_id(),
-            annual_salary=Decimal("100000"), pay_periods_per_year=26,
+            amount=Decimal("500"), calc_method_id=_flat_id()
         )]
         # Before the pass's clock, by a literal rather than by when this runs.
         periods = _periods(date(2020, 1, 2))
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[],
-            periods=periods, as_of=_AS_OF,
+            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
+            as_of=_AS_OF,
         )
         assert result[0].is_confirmed is True
 
     def test_is_confirmed_deduction_future(self):
         """Deduction for a future period: is_confirmed=False."""
         deductions = [FakeDeduction(
-            amount=Decimal("500"), calc_method_id=_flat_id(),
-            annual_salary=Decimal("100000"), pay_periods_per_year=26,
+            amount=Decimal("500"), calc_method_id=_flat_id()
         )]
         # After the pass's clock, by a literal rather than by when this runs.
         periods = _periods(date(2099, 1, 2))
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[],
-            periods=periods, as_of=_AS_OF,
+            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
+            as_of=_AS_OF,
         )
         assert result[0].is_confirmed is False
 
@@ -727,7 +760,8 @@ class TestBuildContributionTimeline:
         txns = [_priced(Decimal("200"), periods[0].start_date, is_confirmed=True)]
         result = build_contribution_timeline(
             deductions=[], contribution_transactions=txns,
-            periods=periods, as_of=_AS_OF,
+            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
+            as_of=_AS_OF,
         )
         assert result[0].is_confirmed is True
 
@@ -737,7 +771,8 @@ class TestBuildContributionTimeline:
         txns = [_priced(Decimal("200"), periods[0].start_date, is_confirmed=False)]
         result = build_contribution_timeline(
             deductions=[], contribution_transactions=txns,
-            periods=periods, as_of=_AS_OF,
+            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
+            as_of=_AS_OF,
         )
         assert result[0].is_confirmed is False
 
@@ -749,15 +784,15 @@ class TestBuildContributionTimeline:
         Here we verify both records are produced -- one True, one False.
         """
         deductions = [FakeDeduction(
-            amount=Decimal("500"), calc_method_id=_flat_id(),
-            annual_salary=Decimal("100000"), pay_periods_per_year=26,
+            amount=Decimal("500"), calc_method_id=_flat_id()
         )]
         # Past date so the deduction is confirmed.
         periods = _periods(date(2020, 1, 2))
         txns = [_priced(Decimal("200"), periods[0].start_date, is_confirmed=False)]
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=txns,
-            periods=periods, as_of=_AS_OF,
+            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
+            as_of=_AS_OF,
         )
         assert len(result) == 2
         confirmed_flags = {r.is_confirmed for r in result}
@@ -769,7 +804,8 @@ class TestBuildContributionTimeline:
         periods = _periods(date(2020, 1, 2))
         result = build_contribution_timeline(
             deductions=[], contribution_transactions=[],
-            periods=periods, as_of=_AS_OF,
+            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
+            as_of=_AS_OF,
         )
         assert result == []
 
@@ -782,7 +818,8 @@ class TestBuildContributionTimeline:
         ]
         result = build_contribution_timeline(
             deductions=[], contribution_transactions=txns,
-            periods=periods, as_of=_AS_OF,
+            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
+            as_of=_AS_OF,
         )
         dates = [r.contribution_date for r in result]
         assert dates == sorted(dates)
@@ -801,7 +838,8 @@ class TestBuildContributionTimeline:
         txns = [_priced(Decimal("999.99"), periods[0].start_date, is_confirmed=True)]
         result = build_contribution_timeline(
             deductions=[], contribution_transactions=txns,
-            periods=periods, as_of=_AS_OF,
+            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
+            as_of=_AS_OF,
         )
         assert result[0].amount == Decimal("999.99")
 
@@ -812,18 +850,17 @@ class TestBuildContributionTimeline:
         """
         deductions = [
             FakeDeduction(
-                amount=Decimal("500.00"), calc_method_id=_flat_id(),
-                annual_salary=Decimal("100000"), pay_periods_per_year=26,
+                amount=Decimal("500.00"), calc_method_id=_flat_id()
             ),
             FakeDeduction(
-                amount=Decimal("0.05"), calc_method_id=_pct_id(),
-                annual_salary=Decimal("100000"), pay_periods_per_year=26,
+                amount=Decimal("0.05"), calc_method_id=_pct_id()
             ),
         ]
         periods = _periods(date(2020, 1, 2))
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[],
-            periods=periods, as_of=_AS_OF,
+            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
+            as_of=_AS_OF,
         )
         # $500 flat + 5% of $3846.15 = $500.00 + $192.3075 -> $500.00 +
         # $192.31 = $692.31 (per the docstring); hand-computed literal.
@@ -849,7 +886,8 @@ class TestBuildContributionTimeline:
         txns = [_priced(Decimal("200"), date(2020, 3, 5), is_confirmed=True)]
         result = build_contribution_timeline(
             deductions=[], contribution_transactions=txns,
-            periods=periods, as_of=_AS_OF,
+            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
+            as_of=_AS_OF,
         )
         assert result == []
 
@@ -866,7 +904,6 @@ class TestBuildContributionTimelineAnnualCap:
         """$600/period under a $1000 cap: 600, 400, 0, 0 (a record per period)."""
         deductions = [FakeDeduction(
             amount=Decimal("600.00"), calc_method_id=_flat_id(),
-            annual_salary=Decimal("100000"), pay_periods_per_year=26,
             annual_cap=Decimal("1000.00"),
         )]
         periods = _periods(
@@ -875,7 +912,8 @@ class TestBuildContributionTimelineAnnualCap:
         )
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[],
-            periods=periods, as_of=_AS_OF,
+            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
+            as_of=_AS_OF,
         )
         # A record for every period (the $0 ones override the periodic fallback).
         assert [r.amount for r in result] == [
@@ -887,7 +925,6 @@ class TestBuildContributionTimelineAnnualCap:
         """The cap is calendar-year scoped: the new-year period starts fresh."""
         deductions = [FakeDeduction(
             amount=Decimal("600.00"), calc_method_id=_flat_id(),
-            annual_salary=Decimal("100000"), pay_periods_per_year=26,
             annual_cap=Decimal("1000.00"),
         )]
         periods = _periods(
@@ -895,7 +932,8 @@ class TestBuildContributionTimelineAnnualCap:
         )
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[],
-            periods=periods, as_of=_AS_OF,
+            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
+            as_of=_AS_OF,
         )
         # 2026 caps at 600+400; 2027 resets -> full 600 again.
         assert [r.amount for r in result] == [
@@ -906,13 +944,13 @@ class TestBuildContributionTimelineAnnualCap:
         """A None cap is a passthrough: full amount every period, no $0 record."""
         deductions = [FakeDeduction(
             amount=Decimal("600.00"), calc_method_id=_flat_id(),
-            annual_salary=Decimal("100000"), pay_periods_per_year=26,
             annual_cap=None,
         )]
         periods = _periods(date(2026, 1, 2), date(2026, 1, 16))
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[],
-            periods=periods, as_of=_AS_OF,
+            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
+            as_of=_AS_OF,
         )
         assert [r.amount for r in result] == [
             Decimal("600.00"), Decimal("600.00"),
@@ -923,12 +961,10 @@ class TestBuildContributionTimelineAnnualCap:
         deductions = [
             FakeDeduction(
                 amount=Decimal("600.00"), calc_method_id=_flat_id(),
-                annual_salary=Decimal("100000"), pay_periods_per_year=26,
                 annual_cap=Decimal("1000.00"),
             ),
             FakeDeduction(
                 amount=Decimal("100.00"), calc_method_id=_flat_id(),
-                annual_salary=Decimal("100000"), pay_periods_per_year=26,
                 annual_cap=None,
             ),
         ]
@@ -937,7 +973,8 @@ class TestBuildContributionTimelineAnnualCap:
         )
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[],
-            periods=periods, as_of=_AS_OF,
+            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
+            as_of=_AS_OF,
         )
         # Capped leg: 600, 400, 0.  Uncapped leg: 100 each.  Sum: 700, 500, 100.
         assert [r.amount for r in result] == [

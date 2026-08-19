@@ -199,7 +199,6 @@ def _build_scenario(db, seed_user, *, tax_rate=None, with_pension=True):
         filing_status_id=filing.id,
         name="Day Job",
         annual_salary=Decimal("80000.00"),
-        pay_periods_per_year=26,
         state_code="NC",
         is_active=True,
     )

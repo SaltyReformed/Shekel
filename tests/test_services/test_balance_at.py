@@ -2740,14 +2740,16 @@ class TestTheContributionRowOnARealFeed:
           matched   = min(employee 200.00, 240.00) * 1.00 = 200.00
           column    = employee 200.00 + employer 200.00 = 400.00
 
-        **That gross is the DEDUCTION-derived one**, ``round_money(annual /
-        pay_periods_per_year)`` from
-        ``investment_projection._compute_deduction_per_period`` -- NOT the
-        raise-aware ``salary_gross_biweekly``, which
-        ``deduction_contribution_per_period`` uses only as the fallback when no
-        deduction supplies one, and this fixture has one.  The two agree here
-        ($104,000 / 26), which is why the fixture picks that salary; stating
-        which one the arithmetic actually consumes keeps the pin on the rule.
+        **That gross is the RAISE-AWARE ``salary_gross_biweekly``** the seam
+        loads once per account set and hands to
+        ``deduction_contribution_per_period``.  It was the deduction-derived
+        ``round_money(annual / pay_periods_per_year)`` until plan step
+        **R-F16**, which deleted that recompute: the caller's figure was
+        consulted only as a fallback when no deduction supplied one, so an
+        account WITH a deduction sized its employer match on a gross blind to
+        every raise the owner had taken.  The two agree on this fixture
+        ($104,000 / 26, no raises), which is why it picks that salary; stating
+        which one the arithmetic consumes keeps the pin on the rule.
 
         The employer half is what makes the row more than a restatement of the
         user's own deduction -- and on the developer's real Empower 401(k) it is

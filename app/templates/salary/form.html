@@ -48,14 +48,32 @@
                        value="{{ profile.annual_salary if profile else '' }}">
               </div>
             </div>
+            {# Paychecks a year is DERIVED from the pay schedule's cadence and
+               is not a second control here (plan step R-F16).  It was a
+               12/24/26/52 dropdown, and it was the divisor the paycheck engine
+               turned this salary into one paycheck with -- so a profile saying
+               26 beside a 7-day cadence modelled double the owner's income.
+               Shown rather than hidden because the gross this page previews is
+               unexplainable without it. #}
             <div class="col-md-6">
-              <label for="pay_periods_per_year" class="form-label">Pay Periods / Year</label>
-              <select id="pay_periods_per_year" name="pay_periods_per_year" class="form-select">
-                <option value="26" {{ 'selected' if not profile or profile.pay_periods_per_year == 26 }}>26 (Biweekly)</option>
-                <option value="24" {{ 'selected' if profile and profile.pay_periods_per_year == 24 }}>24 (Semi-monthly)</option>
-                <option value="52" {{ 'selected' if profile and profile.pay_periods_per_year == 52 }}>52 (Weekly)</option>
-                <option value="12" {{ 'selected' if profile and profile.pay_periods_per_year == 12 }}>12 (Monthly)</option>
-              </select>
+              <span class="form-label d-block">Paychecks / Year</span>
+              {% if paychecks_per_year %}
+              <p class="form-control-plaintext py-0 mb-0">
+                <span class="fw-semibold">{{ paychecks_per_year }}</span>
+                <a href="{{ url_for('settings.show', section='pay-periods') }}"
+                   class="ms-2 small text-decoration-none">
+                  from your pay schedule <i class="bi bi-arrow-right-short"></i>
+                </a>
+              </p>
+              {% else %}
+              <p class="form-control-plaintext py-0 mb-0 text-warning-emphasis">
+                <a href="{{ url_for('settings.show', section='pay-periods') }}"
+                   class="text-decoration-none">
+                  Generate a pay schedule first
+                  <i class="bi bi-arrow-right-short"></i>
+                </a>
+              </p>
+              {% endif %}
             </div>
           </div>
 

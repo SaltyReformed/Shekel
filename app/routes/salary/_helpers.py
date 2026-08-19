@@ -36,6 +36,7 @@ from app.services import (
     template_amount_service,
 )
 from app.services.generation_schedule import GenerationSchedule
+from app.services.paycheck_calculator import PayrollBasis
 from app.services.pay_calendar import calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs_for_year
@@ -60,7 +61,7 @@ logger = logging.getLogger(__name__)
 # each set is built once per process rather than on every request.
 _PROFILE_UPDATE_FIELDS = {
     "name", "annual_salary", "filing_status_id", "state_code",
-    "pay_periods_per_year", "qualifying_children", "other_dependents",
+    "qualifying_children", "other_dependents",
     "additional_income", "additional_deductions", "extra_withholding",
 }
 _RAISE_UPDATE_FIELDS = {
@@ -182,7 +183,8 @@ def _regenerate_salary_transactions(profile):
             current_user.id, profile, current_period.start_date.year,
         )
         pay_breakdown = paycheck_calculator.calculate_paycheck(
-            profile, current_period, periods, tax_configs,
+            PayrollBasis(profile, schedule.calendar.cadence),
+            current_period, periods, tax_configs,
             calibration=profile.calibration,
         )
         # Through the amount's one write door (plan step X-au-a).  The profile
@@ -261,7 +263,8 @@ def _compute_total_pre_tax(profile):
         current_user.id, profile, current_period.start_date.year,
     )
     pay_breakdown = paycheck_calculator.calculate_paycheck(
-        profile, current_period, periods, tax_configs,
+        PayrollBasis(profile, calendar.cadence),
+        current_period, periods, tax_configs,
     )
     return pay_breakdown.deductions.total_pre_tax
 

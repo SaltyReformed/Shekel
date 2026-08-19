@@ -260,7 +260,6 @@ def _create_investment_account_with_contributions(seed_user, seed_periods):
         filing_status_id=filing_status.id,
         name="Test Salary",
         annual_salary=Decimal("100000.00"),
-        pay_periods_per_year=26,
         state_code="NC",
     )
     db.session.add(profile)
@@ -555,7 +554,6 @@ class TestDashboard:
                 filing_status_id=filing_status.id,
                 name="Main Job",
                 annual_salary=Decimal("100000.00"),
-                pay_periods_per_year=26,
                 state_code="NC",
             )
             db.session.add(profile)
