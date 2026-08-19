@@ -70,7 +70,6 @@ from app.services import (
     dashboard_service,
     loan_payment_service,
     loan_posting_service,
-    pay_period_service,
     retirement_projection,
     savings_dashboard_service,
     spending_report_service,
@@ -79,6 +78,7 @@ from app.services import (
 from app.services.balance_at import BalanceContext
 from app.services.investment_dashboard_service import compute_dashboard_data
 from app.utils.balance_predicates import is_projected_clause
+from tests._test_helpers import all_periods
 
 # Six fixed valuation dates, the same discipline
 # ``verify_balance_baseline`` applies: a producer read at one date is blind
@@ -420,7 +420,7 @@ def _dump_user(user_id):
         .order_by(Account.id)
         .all()
     )
-    periods = pay_period_service.get_all_periods(user_id)
+    periods = all_periods(user_id)
     return {
         "period_count": len(periods),
         "calendar": {

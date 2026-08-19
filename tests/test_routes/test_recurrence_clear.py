@@ -55,14 +55,14 @@ from app.models.transfer_template import TransferTemplate
 from app.services.generation_schedule import GenerationSchedule
 from app.services import (
     account_service,
-    pay_period_service,
     recurrence_engine,
     recurring_transfer_query,
     transfer_recurrence,
     transfer_service,
 )
-from tests._test_helpers import create_loan_account, make_cadence_rule
+from tests._test_helpers import create_loan_account, make_cadence_rule, all_periods
 from tests.oracles.recurrence_baseline import EVERY_PERIOD
+from app.services.pay_calendar import calendar_for
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -104,7 +104,9 @@ def _recurring_txn_template(seed_user, recurs=True):
     if rule is not None:
         recurrence_engine.generate_for_template(
             template,
-            GenerationSchedule.for_periods(template.user_id, pay_period_service.get_all_periods(seed_user["user"].id)),
+            GenerationSchedule.for_period_ids(
+                calendar_for(template.user_id), {p.id for p in all_periods(seed_user["user"].id)},
+            ),
             seed_user["scenario"].id,
         )
     db.session.commit()
@@ -147,7 +149,9 @@ def _recurring_transfer_template(seed_user, savings, recurs=True):
     if rule is not None:
         transfer_recurrence.generate_for_template(
             template,
-            GenerationSchedule.for_periods(template.user_id, pay_period_service.get_all_periods(seed_user["user"].id)),
+            GenerationSchedule.for_period_ids(
+                calendar_for(template.user_id), {p.id for p in all_periods(seed_user["user"].id)},
+            ),
             seed_user["scenario"].id,
         )
     db.session.commit()

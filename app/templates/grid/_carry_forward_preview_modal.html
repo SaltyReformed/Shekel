@@ -9,10 +9,17 @@
    Expected context:
      preview         -- ``CarryForwardPreview`` from
                         ``carry_forward_service.preview_carry_forward``.
-     source_period   -- ``PayPeriod`` the user clicked Carry Fwd on.
-     current_period  -- ``DerivedPeriod`` the items would land in.  Its id is
-                        spelled ``period_id``, NOT ``id`` (plan step C2-f3a):
-                        ``{{ current_period.id }}`` renders EMPTY, silently.
+     source_period   -- ``DerivedPeriod`` the user clicked Carry Fwd on.
+     current_period  -- ``DerivedPeriod`` the items would land in.
+                        BOTH spell their id ``period_id``, NOT ``id`` (plan
+                        steps C2-f3a and C2-f3c): ``{{ current_period.id }}``
+                        renders EMPTY, silently.  The Confirm button's
+                        ``hx-post`` reads the id through ``url_for``, which
+                        RAISES on a missing one rather than rendering a broken
+                        URL, and ``test_carry_forward_preview.
+                        TestCarryForwardPreviewSuccess
+                        .test_returns_200_with_modal_html_for_owned_period``
+                        asserts the link it builds.
 
    Confirm posts to the existing carry_forward route; on success the
    route returns ``HX-Trigger: gridRefresh`` which reloads the page
@@ -198,7 +205,7 @@
         </button>
         <button type="button" class="btn btn-warning"
                 data-carry-forward-confirm
-                hx-post="{{ url_for('transactions.carry_forward', period_id=source_period.id) }}"
+                hx-post="{{ url_for('transactions.carry_forward', period_id=source_period.period_id) }}"
                 hx-swap="none"
                 hx-disabled-elt="this"
                 {% if preview.any_blocked or preview.plans|length == 0 %}

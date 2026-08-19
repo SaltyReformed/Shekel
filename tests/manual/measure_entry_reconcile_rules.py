@@ -32,11 +32,10 @@ from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import pay_period_service
 from app.services.balance_at import BalanceContext, grid_balance_view
 from app.utils.dates import display_today, to_display_date
 
-from tests._test_helpers import current_pay_period
+from tests._test_helpers import current_pay_period, all_periods
 
 _RULES = ("shipped", "derived", "order", "strict", "none")
 
@@ -128,7 +127,7 @@ def main():
             db.session.query(Account).filter_by(name="Checking").one()
         )
         user_id = account.user_id
-        periods = pay_period_service.get_all_periods(user_id)
+        periods = all_periods(user_id)
         current = current_pay_period(user_id, as_of=today)
 
         entries = _entries_with_accounts()

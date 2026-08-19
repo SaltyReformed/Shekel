@@ -141,6 +141,7 @@ from app.services import balance_at, companion_service, pay_period_service
 from app.services.account_resolver import resolve_grid_account
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import calendar_for
+from tests._test_helpers import all_periods
 
 
 #: Which side of the cutover this file is running on, keyed on the reader plan
@@ -235,7 +236,7 @@ def _periods_in_range(user_id, calendar, first_index, count):
 def _all_periods(user_id, ctx):
     """Return the owner's whole reported domain, per this side's reader."""
     if _IS_HEAD:
-        return pay_period_service.get_all_periods(user_id)
+        return all_periods(user_id)
     return ctx.reported_periods()
 
 

@@ -73,17 +73,31 @@ this paragraph claiming it was.**  The row is about the process clock behind
 they took the derivation at C2-f2d-3 and kept the clock.  The row stays open,
 re-measured, and names them.
 
-**``get_all_periods`` is the SIXTH and LAST, and it remains** for C2-f3b and
-C2-f3c, at six call sites: the four destructive schedule doors in
-``pay_period_admin``, the settings period list, and the recurrence generation
-seam's ``GenerationSchedule``.  When those land this module holds
-:func:`earliest_recordable_day` alone.
-*The C2-f decomposition ruling of 2026-08-14 said the two readers "travel
-together and may not be separated", on a measurement of 11 functions reading
-both. By the time C2-f3 was picked up TWO functions did -- the Income
+**The SIXTH and LAST is gone at C2-f3c**:
+
+======================================= ==================================
+retired reader                          what answers it now
+======================================= ==================================
+``get_all_periods``                     ``PayCalendar`` itself
+======================================= ==================================
+
+It answered "every pay period this owner has" as ORM rows ordered by the
+stored ``period_index`` -- one of the two columns plan step **C4** drops -- and
+its last caller was the recurrence generation seam's ``GenerationSchedule``,
+which read it BESIDE the calendar and then had to reconcile the two.  C2-f3c
+deleted the second read; a calendar is the owner's whole schedule already, in
+payday order by construction, so there is nothing for a separate reader to
+answer.  *The C2-f decomposition ruling of 2026-08-14 said the two readers
+"travel together and may not be separated", on a measurement of 11 functions
+reading both. By the time C2-f3 was picked up TWO functions did -- the Income
 Statement's window defaults and the transfer create form -- and both moved
 inside C2-f3a, so the constraint was satisfied rather than broken by splitting
 the leaves this way.*
+
+**What is left is one function**, and it is here rather than in the calendar
+package because it is not a calendar question: :func:`earliest_recordable_day`
+takes the EARLIER of the owner's first payday and today, so the clock is half
+its answer.
 """
 
 from datetime import date
@@ -151,20 +165,3 @@ def earliest_recordable_day(user_id: int) -> date:
     if earliest is None:
         return today
     return min(earliest, today)
-
-
-def get_all_periods(user_id):
-    """Return all pay periods for a user, ordered by index.
-
-    Args:
-        user_id: The user's ID.
-
-    Returns:
-        List of PayPeriod objects.
-    """
-    return (
-        db.session.query(PayPeriod)
-        .filter_by(user_id=user_id)
-        .order_by(PayPeriod.period_index)
-        .all()
-    )

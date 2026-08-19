@@ -40,7 +40,6 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import (
     pay_period_admin,
-    pay_period_service,
     pay_period_write,
     period_population,
     posting_service,
@@ -57,6 +56,7 @@ from scripts.integrity_check import (
     check_referential_integrity,
 )
 from tests._test_helpers import (
+    all_periods,
     add_txn,
     assert_pay_period_invariants,
     bare_expense_template,
@@ -168,7 +168,7 @@ class TestTruncateHappyPath:
             assert deleted == 3  # indices 4, 5, 6
             remaining = {
                 p.period_index
-                for p in pay_period_service.get_all_periods(user_id)
+                for p in all_periods(user_id)
             }
             # Bootstrap (0) + kept future indices 1..3.
             assert remaining == {0, 1, 2, 3}
@@ -183,7 +183,7 @@ class TestTruncateHappyPath:
             user_id = seed_user["user"].id
             make_expense_template(db.session, seed_user)
             period_population.populate_periods_from_active_templates(
-                user_id, periods,
+                user_id, {p.id for p in periods},
             )
             db.session.commit()
             doomed_id = periods[3].id  # index 4; capture before deletion
@@ -208,7 +208,7 @@ class TestTruncateHappyPath:
             )
             make_transfer_template(db.session, seed_user, savings)
             period_population.populate_periods_from_active_templates(
-                user_id, periods,
+                user_id, {p.id for p in periods},
             )
             db.session.commit()
             doomed_id = periods[3].id  # capture before deletion
@@ -270,7 +270,7 @@ class TestTruncateHappyPath:
             periods = _future_periods(db.session, seed_user, count=6)
             make_expense_template(db.session, seed_user, amount="1200.00")
             period_population.populate_periods_from_active_templates(
-                user_id, periods,
+                user_id, {p.id for p in periods},
             )
             db.session.commit()
 
@@ -648,7 +648,7 @@ class TestTruncateDiscardGate:
             user_id = seed_user["user"].id
             make_expense_template(db.session, seed_user)
             period_population.populate_periods_from_active_templates(
-                user_id, periods,
+                user_id, {p.id for p in periods},
             )
             txn = db.session.query(Transaction).filter_by(
                 pay_period_id=periods[2].id,
@@ -673,7 +673,7 @@ class TestTruncateDiscardGate:
             user_id = seed_user["user"].id
             make_expense_template(db.session, seed_user)
             period_population.populate_periods_from_active_templates(
-                user_id, periods,
+                user_id, {p.id for p in periods},
             )
             txn = db.session.query(Transaction).filter_by(
                 pay_period_id=periods[2].id,
@@ -693,7 +693,7 @@ class TestTruncateDiscardGate:
             user_id = seed_user["user"].id
             make_expense_template(db.session, seed_user)
             period_population.populate_periods_from_active_templates(
-                user_id, periods,
+                user_id, {p.id for p in periods},
             )
             db.session.commit()
 
@@ -720,7 +720,7 @@ class TestTruncateDiscardGate:
             )
             make_transfer_template(db.session, seed_user, savings)
             period_population.populate_periods_from_active_templates(
-                user_id, periods,
+                user_id, {p.id for p in periods},
             )
             db.session.commit()
 

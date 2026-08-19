@@ -21,7 +21,7 @@ import pytest
 
 from app.exceptions import ValidationError
 from app.models.pay_schedule import PaySchedule
-from app.services import pay_period_service, pay_period_write, pay_schedule_service
+from app.services import pay_period_write, pay_schedule_service
 
 
 class TestGetSchedule:

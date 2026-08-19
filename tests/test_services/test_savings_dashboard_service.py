@@ -29,14 +29,14 @@ from app.models.ref import AccountType, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
-from app.services import balance_at, savings_dashboard_service, pay_period_service
+from app.services import balance_at, savings_dashboard_service
 from app.services import account_service
 from app.services.balance_at import BalanceContext
 from app.services.account_category import account_category
 from app.services.pay_calendar import DerivedPeriod
 from app.services.savings_dashboard_service._types import AccountProjection
 
-from tests._test_helpers import current_pay_period
+from tests._test_helpers import current_pay_period, all_periods
 from tests.oracles.recurrence_baseline import MONTHLY
 
 
@@ -5733,7 +5733,7 @@ class TestTheProjectionShape:
             db.session.commit()
             user_id = seed_user["user"].id
             all_period_ids = {
-                p.id for p in pay_period_service.get_all_periods(user_id)
+                p.id for p in all_periods(user_id)
             }
             current = current_pay_period(user_id)
 

@@ -96,13 +96,22 @@ class DerivedRowFields(NamedTuple):
 
 
 
-def _derive_row_fields(template, rule, salary_profile, period, schedule):
+def _derive_row_fields(template, rule, salary_profile, period, calendar):
     """Resolve what *template* and *period* derive on a generated row.
 
     The single producer of :class:`DerivedRowFields`, so the create path and
     the maintain path cannot disagree about what a generated row's definition
     says -- see that class for why one statement of it is what lets a
     regeneration UPDATE a row instead of destroying and rebuilding it.
+
+    **It took a ``GenerationSchedule`` and looked *period* up on that value's
+    calendar until pay-calendar plan step C2-f3c.**  The paycheck engine has
+    priced from DERIVED periods since plan step C2-f2d-3, while the placement
+    carried the ORM row, so this function converted one into the other with a
+    ``period_by_id`` scan per generated row.  The placement now carries the
+    derived period itself, so the round trip has no subject -- and with the
+    lookup gone the pass's write WINDOW was the only thing this read off the
+    schedule that it never used, which is why the parameter is the calendar.
 
     Args:
         template: The :class:`~app.models.transaction_template.TransactionTemplate`
@@ -113,33 +122,22 @@ def _derive_row_fields(template, rule, salary_profile, period, schedule):
             amounts, or ``None`` -- resolved ONCE per pass by
             :func:`_get_salary_profile` and threaded in, rather than re-read per
             row.
-        period: The :class:`~app.models.pay_period.PayPeriod` this row lives in
-            -- the ORM row, because the row being written carries its id.
-        schedule: The pass's
-            :class:`~app.services.generation_schedule.GenerationSchedule`.  The
-            amount is priced against ``schedule.calendar`` -- the OWNER's WHOLE
-            schedule, never the write window; see :func:`_get_transaction_amount`
-            for the $502.45 that distinction was worth.
+        period: The :class:`~app.services.pay_calendar.DerivedPeriod` this row
+            lives in, straight off its ``PlannedOccurrence``.
+        calendar: The OWNER's whole pay calendar -- never a window; see
+            :func:`_get_transaction_amount` for the $502.45 that distinction
+            was worth.
 
     Returns:
         The :class:`DerivedRowFields` for this (template, period) pair.
     """
-    # The paycheck engine takes DERIVED periods (pay-calendar plan step
-    # C2-f2d-3) while the row being written takes the ORM row's id, so the
-    # pricing period is looked up on the schedule's own calendar.  It is TOTAL
-    # for this argument rather than merely usually present, and it takes TWO
-    # of ``GenerationSchedule.__post_init__``'s arms rather than one: the
-    # calendar-IS-the-schedule check makes every ``periods`` id a calendar id,
-    # and the separate stray-window check makes every ``write_periods`` id a
-    # ``periods`` id.  *period* comes from ``write_periods``.
-    priced_period = schedule.calendar.period_by_id(period.id)
     return DerivedRowFields(
         account_id=template.account_id,
         name=template.name,
         category_id=template.category_id,
         transaction_type_id=template.transaction_type_id,
         estimated_amount=_get_transaction_amount(
-            template, salary_profile, priced_period, schedule.calendar,
+            template, salary_profile, period, calendar,
         ),
         due_date=compute_due_date(rule, period),
     )

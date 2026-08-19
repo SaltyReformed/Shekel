@@ -44,9 +44,9 @@ import pytest
 
 from app.models.pay_period import PayPeriod
 from app.models.pay_schedule import PaySchedule
-from app.services import pay_period_service, pay_period_write, pay_schedule_service
+from app.services import pay_period_write, pay_schedule_service
 from app.services.pay_calendar import PayCalendar, calendar_for
-from tests._test_helpers import open_calendar_hole
+from tests._test_helpers import open_calendar_hole, all_periods
 
 #: ``seed_periods``' first payday, restated so the assertions below name a value
 #: rather than a bare literal.  Changing the fixture without changing this is
@@ -215,7 +215,7 @@ class TestTheEndsAreDerivedRatherThanRead:
         with app.app_context():
             stored = {
                 period.start_date: (period.end_date, period.period_index)
-                for period in pay_period_service.get_all_periods(seed_user["user"].id)
+                for period in all_periods(seed_user["user"].id)
             }
 
             calendar = calendar_for(seed_user["user"].id)
@@ -392,7 +392,7 @@ class TestTheDerivedCalendarDivergesFromTheStoredColumns:
             # The premise: no STORED period covers the day.
             assert not any(
                 period.start_date <= in_the_hole <= period.end_date
-                for period in pay_period_service.get_all_periods(user_id)
+                for period in all_periods(user_id)
             )
 
             covering = calendar_for(user_id).period_containing(in_the_hole)
@@ -439,7 +439,7 @@ class TestTheDerivedCalendarDivergesFromTheStoredColumns:
             user_id = seed_user["user"].id
             stored_horizon = max(
                 period.end_date
-                for period in pay_period_service.get_all_periods(user_id)
+                for period in all_periods(user_id)
             )
             assert calendar_for(user_id).horizon() == stored_horizon
 
@@ -462,7 +462,7 @@ class TestTheDerivedCalendarDivergesFromTheStoredColumns:
             # is the whole divergence.
             assert any(
                 period.start_date <= stored_horizon <= period.end_date
-                for period in pay_period_service.get_all_periods(user_id)
+                for period in all_periods(user_id)
             )
 
 
@@ -483,7 +483,7 @@ class TestThePartialSetHazardIsRealAndTheDoorIsWhatClosesIt:
         calendar value: plan step C2-b2 deleted the one that copied it.
         """
         with app.app_context():
-            tail = pay_period_service.get_all_periods(seed_user["user"].id)[6:]
+            tail = all_periods(seed_user["user"].id)[6:]
 
             sliced = PayCalendar.from_paydays(
                 [(period.id, period.start_date) for period in tail],

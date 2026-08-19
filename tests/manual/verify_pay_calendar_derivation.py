@@ -83,7 +83,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 from app import create_app
 from app.extensions import db
 from app.models.user import User
-from app.services import pay_period_service, pay_schedule_service
+from app.services import pay_schedule_service
 from tests.oracles.pay_calendar_derivation import (
     cadence_control,
     compare,
@@ -91,6 +91,7 @@ from tests.oracles.pay_calendar_derivation import (
     perturb,
     verdict,
 )
+from tests._test_helpers import all_periods
 
 
 def _resolve_cadence(user_id):
@@ -176,7 +177,7 @@ def _user_blob(user_id):
         cannot be resolved at all, each report why rather than being dropped
         from the blob -- an absent user reads as a clean one.
     """
-    periods = pay_period_service.get_all_periods(user_id)
+    periods = all_periods(user_id)
     if not periods:
         return {"user_id": user_id, "row_count": 0, "measured": False,
                 "why": "no paydays"}

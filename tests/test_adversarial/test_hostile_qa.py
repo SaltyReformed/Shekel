@@ -51,6 +51,7 @@ from app.services import (
 )
 from app.services import account_service
 from app.services.row_valuation import owned_contribution, settled_figure
+from app.services.pay_calendar import calendar_for
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -772,8 +773,8 @@ class TestCarryForwardEdgeCases:
             # Carry forward from period 0 to period 0.
             period_id = seed_periods[0].id
             count = carry_forward_service.carry_forward_unpaid(
-                period_id, period_id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                period_id, period_id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -806,8 +807,8 @@ class TestCarryForwardEdgeCases:
 
             # Carry forward from period 0 to period 2.
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[2].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[2].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 

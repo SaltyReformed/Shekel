@@ -5793,3 +5793,45 @@ def basis_for(account, scenario):
     )
 
     return amount_basis(account.user_id, scenario.id)
+
+
+def all_periods(user_id):
+    """Return every one of *user_id*'s pay periods as ORM rows, payday order.
+
+    **A TEST helper because the application has no such reader any more.**
+    ``pay_period_service.get_all_periods`` was the last of that module's six
+    ``get_*`` readers, and pay-calendar plan step C2-f3c deleted it with its
+    last caller: the recurrence generation seam now takes a
+    :class:`~app.services.pay_calendar.PayCalendar`, which IS the owner's whole
+    schedule, so nothing in ``app/`` asks a separate reader for the rows.
+    Keeping a production function alive for test callers alone is the
+    speculative shape ``CLAUDE.md`` rule 13 forbids, and ruling **P54** already
+    settled where the replacement lives: one shared helper here, never a
+    ``for_test`` door on the real API.
+
+    **Ordered by ``start_date``, not by ``period_index``**, which is the same
+    order the retired reader produced on every schedule this application can
+    write (``pay_period_write`` derives the stored ordinal from payday order)
+    and the only one plan step **C4** leaves expressible.  A test that
+    deliberately corrupts the stored ordinal and wants to SEE the corruption
+    must query it itself; ``test_asset_fold`` and ``test_generation_schedule``
+    each do, and each says why at the call.
+
+    Args:
+        user_id: The owning user.
+
+    Returns:
+        The owner's :class:`~app.models.pay_period.PayPeriod` rows, earliest
+        payday first.  Empty for an owner with no schedule.
+    """
+    from app.extensions import db  # pylint: disable=import-outside-toplevel
+    from app.models.pay_period import (  # pylint: disable=import-outside-toplevel
+        PayPeriod,
+    )
+
+    return (
+        db.session.query(PayPeriod)
+        .filter_by(user_id=user_id)
+        .order_by(PayPeriod.start_date)
+        .all()
+    )

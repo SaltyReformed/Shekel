@@ -51,7 +51,7 @@ from app.enums import (
     CompoundingFrequencyEnum,
     DeductionTimingEnum,
 )
-from app.services import growth_engine, pay_period_service
+from app.services import growth_engine
 from app.services.balance_at import (
     _asset_contributions,
     _asset_fold,
@@ -1093,13 +1093,19 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
         the payday it lands on and to nothing else.
 
         **Two controls, because the assertion is worth exactly what they are
-        worth.**  ``pay_period_service.get_all_periods`` really does hand the
+        worth.**  A read ordered by the STORED ordinal really does hand the
         rows back newest-first after the UPDATE (so the scramble took, and the
         column this feed used to inherit its order from really is corrupt);
         and the window the door is handed is in PAYDAY order regardless (so
         the order is the derivation's, not a leftover sort).  Before plan step
         C2-f2a the first control was what the door had to defend against with
         a sort of its own; now the ordinal is not on the path.
+
+        Control 1 issues its own ``ORDER BY period_index`` query rather than
+        calling a shared helper: pay-calendar plan step C2-f3c deleted the last
+        reader that ordered by that column, and ``_test_helpers.all_periods``
+        deliberately orders by payday, so a helper could not express what this
+        control has to measure.
 
         Without the derivation this fails: the test above measures the walk
         answering differently for the same plan in a different order.
@@ -1125,9 +1131,14 @@ class TestTheContributionWalksLimit:  # pylint: disable=protected-access
                 {"period_index": 1000 + offset},
             )
         db.session.commit()
-        scrambled = pay_period_service.get_all_periods(seed_user["user"].id)
-        # Control 1: the stored column really is corrupt now -- the reader the
-        # feed used to take its order from hands them back newest-first.
+        scrambled = (
+            db.session.query(PayPeriod)
+            .filter_by(user_id=seed_user["user"].id)
+            .order_by(PayPeriod.period_index)
+            .all()
+        )
+        # Control 1: the stored column really is corrupt now -- a read ordered
+        # by it hands them back newest-first.
         assert [period.id for period in scrambled] == [
             period.id for period in reversed(seed_periods)
         ]

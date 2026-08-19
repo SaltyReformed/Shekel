@@ -38,7 +38,6 @@ from app.services import (
     balance_at,
     cash_ledger,
     growth_engine,
-    pay_period_service,
     paycheck_calculator,
     retirement_dashboard_service,
     retirement_plan,
@@ -46,6 +45,7 @@ from app.services import (
 )
 from app.services.retirement_plan import load_retirement_inputs, picture_at
 from tests._test_helpers import (
+    all_periods,
     current_pay_period,
     make_investment_account,
     mark_purchase_settled,
@@ -941,7 +941,7 @@ class TestRetirementAnchorInPastModeledHeadlineDatedSeed:
                 seed_user, db.session, past_anchor, v0, name="Past 401k",
             )
 
-            all_periods = pay_period_service.get_all_periods(user.id)
+            owner_periods = all_periods(user.id)
             current_period = current_pay_period(user.id)
             assert current_period is not None
             assert past_anchor.period_index < current_period.period_index, (
@@ -966,7 +966,7 @@ class TestRetirementAnchorInPastModeledHeadlineDatedSeed:
             # and from the modeled value give DIFFERENT end balances, so the
             # equality below is non-tautological.
             forward_periods = [
-                p for p in all_periods
+                p for p in owner_periods
                 if p.period_index >= current_period.period_index
             ]
             def _run(seed):

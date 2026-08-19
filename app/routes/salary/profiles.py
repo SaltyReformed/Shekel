@@ -145,7 +145,7 @@ def _salary_category(user_id: int) -> Category:
 
 
 def _paycheck_template(
-    data: dict, *, account_id: int, category_id: int,
+    data: dict, *, account_id: int, category_id: int, calendar,
 ) -> TransactionTemplate:
     """Create and flush the every-paycheck template a salary profile files through.
 
@@ -168,17 +168,25 @@ def _paycheck_template(
     definition, so the count of paychecks in a year IS the count of pay
     periods in a year.
 
+    **The calendar is TAKEN rather than derived here** (pay-calendar plan step
+    C2-f3c).  ``create_profile`` derives one anyway for the paycheck it then
+    prices, so deriving a second one inside this helper made one POST answer
+    "what is this owner's schedule" twice from two reads that a concurrent
+    write could separate.
+
     Args:
         data: The validated create payload; read for the name and the annual
             salary.
         account_id: The non-loan deposit account the paychecks land in.
         category_id: This owner's ``Income: Salary`` category.
+        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`,
+            read for the schedule's opening payday and for the paycheck count
+            the annual salary is divided by.
 
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
         carrying an id the profile can link.
     """
-    calendar = calendar_for(current_user.id)
     template = TransactionTemplate(
         user_id=current_user.id,
         account_id=account_id,
@@ -258,11 +266,17 @@ def create_profile():
     # session (PendingRollbackError) rather than yield the id.
     user_id = current_user.id
 
+    # ONE derivation of the owner's schedule for the whole POST: the template's
+    # opening bound and per-paycheck amount, the generate pass, and the net-pay
+    # recompute below all read it (pay-calendar plan step C2-f3c).
+    calendar = calendar_for(current_user.id)
+
     try:
         template = _paycheck_template(
             data,
             account_id=account.id,
             category_id=salary_category.id,
+            calendar=calendar,
         )
 
         # Create the salary profile
@@ -285,20 +299,17 @@ def create_profile():
 
         # Generate income transactions via recurrence engine.  The schedule
         # is the OWNER's whole one, which is also what the paycheck
-        # calculator reads as ``all_periods`` (plan step R4b-1).
-        schedule = GenerationSchedule.for_user(current_user.id)
-        # The DERIVED half of that one schedule (pay-calendar plan step
-        # C2-f2d-3), which ``GenerationSchedule.__post_init__`` proves is the
-        # same periods in the same order as its ORM half -- so this is not a
-        # second read of the owner's paydays.
-        periods = schedule.calendar.saved()
+        # calculator reads as ``all_periods`` (plan step R4b-1).  ONE
+        # derivation answers both (pay-calendar plan steps C2-f2d-3, C2-f3c).
+        schedule = GenerationSchedule.for_calendar(calendar)
+        periods = calendar.saved()
         recurrence_engine.generate_for_template(template, schedule, scenario.id)
 
         # Update the template's default_amount from gross to net so that
         # any future fallback (e.g. missing tax configs for a period)
         # uses the net amount rather than the gross.
         ref_period = (
-            schedule.calendar.period_containing(date.today())
+            calendar.period_containing(date.today())
             or (periods[0] if periods else None)
         )
         if ref_period:
@@ -308,7 +319,7 @@ def create_profile():
                 current_user.id, profile, ref_period.start_date.year,
             )
             init_breakdown = paycheck_calculator.calculate_paycheck(
-                PayrollBasis(profile, schedule.calendar.cadence),
+                PayrollBasis(profile, calendar.cadence),
                 ref_period, periods, tax_configs,
             )
             # Through the amount's one write door (plan step X-au-a).  The

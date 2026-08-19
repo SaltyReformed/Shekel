@@ -244,7 +244,9 @@ class TestStartBoundIsSynced:
         # first installment after the 2026-04-15 closing is 2026-05-20.
         with auth_client.application.app_context():
             transfer_recurrence.regenerate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
                 effective_from=seed_periods[0].start_date,
             )
             db.session.commit()
@@ -434,7 +436,9 @@ class TestNoPaymentGeneratesBeforeTheLoan:
 
         with auth_client.application.app_context():
             transfer_recurrence.regenerate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
                 effective_from=seed_periods[0].start_date,
             )
             db.session.commit()

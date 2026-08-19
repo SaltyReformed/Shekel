@@ -52,6 +52,7 @@ from tests._test_helpers import (
     settlement_columns,
 )
 from tests._test_helpers import make_every_period_rule
+from app.services.pay_calendar import calendar_for
 
 
 def _create_transaction(seed_user, seed_periods, period_index=0,
@@ -119,8 +120,8 @@ class TestCarryForwardUnpaid:
             assert txn.is_override is False
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -143,8 +144,8 @@ class TestCarryForwardUnpaid:
             original_period_id = txn.pay_period_id
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -176,8 +177,8 @@ class TestCarryForwardUnpaid:
             original_scenario_id = txn.scenario_id
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -213,8 +214,8 @@ class TestCarryForwardUnpaid:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -304,8 +305,8 @@ class TestCarryForwardUnpaid:
 
             # Carry forward only the baseline scenario.
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, baseline_scenario.id,
+                seed_periods[0].id, seed_periods[1].id, baseline_scenario.id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -419,8 +420,8 @@ class TestCarryForwardStatusRecheck:
                 side_effect=racing_build,
             ):
                 count = carry_forward_service.carry_forward_unpaid(
-                    seed_periods[0].id, seed_periods[1].id,
-                    seed_user["user"].id, seed_user["scenario"].id,
+                    seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                    calendar=calendar_for(seed_user["user"].id),
                 )
                 db.session.commit()
 
@@ -487,8 +488,8 @@ class TestCarryForwardStatusRecheck:
                 side_effect=racing_build,
             ):
                 count = carry_forward_service.carry_forward_unpaid(
-                    seed_periods[0].id, seed_periods[1].id,
-                    seed_user["user"].id, seed_user["scenario"].id,
+                    seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                    calendar=calendar_for(seed_user["user"].id),
                 )
                 db.session.commit()
 
@@ -532,8 +533,8 @@ class TestCarryForwardStatusRecheck:
             assert txn.is_override is False
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -562,8 +563,8 @@ class TestCarryForwardStatusRecheck:
             initial_version = txn.version_id
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -628,8 +629,8 @@ class TestCarryForwardShadowTransactions:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             assert count == 2  # 1 regular + 1 transfer
@@ -663,8 +664,8 @@ class TestCarryForwardShadowTransactions:
             assert shadow_count == 2
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             # Counted as 1 transfer, not 2 shadows.
@@ -679,8 +680,8 @@ class TestCarryForwardShadowTransactions:
             db.session.flush()
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             db.session.refresh(xfer)
@@ -705,8 +706,8 @@ class TestCarryForwardShadowTransactions:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             assert count == 0
@@ -726,8 +727,8 @@ class TestCarryForwardShadowTransactions:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             assert count == 0
@@ -746,8 +747,8 @@ class TestCarryForwardShadowTransactions:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             assert count == 0
@@ -766,8 +767,8 @@ class TestCarryForwardShadowTransactions:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             assert count == 3  # 2 regular + 1 transfer
@@ -821,8 +822,8 @@ class TestCarryForwardShadowTransactions:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             assert count == 3  # 1 regular + 2 transfers
@@ -841,8 +842,8 @@ class TestCarryForwardShadowTransactions:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             assert count == 1
@@ -860,8 +861,8 @@ class TestCarryForwardShadowTransactions:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             assert count == 3
@@ -940,8 +941,8 @@ class TestCarryForwardOverrideSibling:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1004,8 +1005,8 @@ class TestCarryForwardOverrideSibling:
             db.session.flush()
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1080,14 +1081,16 @@ class TestCarryForwardOverrideSibling:
             # Initial generation populates rule-generated rows for
             # periods 0 and 1.
             recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods[:2]), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
             # Carry forward the period 0 row into period 1.
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1107,7 +1110,9 @@ class TestCarryForwardOverrideSibling:
             # Re-running the engine must NOT add a third row -- the
             # override sibling signals the period is handled.
             recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods[:2]), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1199,8 +1204,8 @@ class TestCarryForwardOverrideSiblingTransfers:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1261,15 +1266,17 @@ class TestCarryForwardOverrideSiblingTransfers:
             # Initial generation: rule-generated transfers in periods 0
             # and 1.
             transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods[:2]), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
             # Carry forward period 0 into period 1.  Period 1 now has a
             # rule-generated transfer + an override sibling.
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1286,7 +1293,9 @@ class TestCarryForwardOverrideSiblingTransfers:
 
             # Re-run transfer recurrence -- must not add a third row.
             transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods[:2]), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1445,8 +1454,8 @@ class TestCarryForwardEnvelopePartialSpend:
             db.session.commit()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1510,8 +1519,8 @@ class TestCarryForwardEnvelopePartialSpend:
             db.session.commit()
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1551,8 +1560,8 @@ class TestCarryForwardEnvelopeZeroEntries:
             db.session.commit()
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1599,8 +1608,8 @@ class TestCarryForwardEnvelopeOverspend:
             target_is_override_before = target.is_override
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1636,8 +1645,8 @@ class TestCarryForwardEnvelopeOverspend:
             db.session.commit()
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1685,8 +1694,8 @@ class TestCarryForwardEnvelopeMissingTarget:
             assert pre_count == 0
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1734,8 +1743,8 @@ class TestCarryForwardEnvelopeMissingTarget:
             source_id = source.id
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1799,8 +1808,8 @@ class TestCarryForwardEnvelopeSettledTarget:
             target_id = target.id
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1876,8 +1885,8 @@ class TestCarryForwardEnvelopeMultiHop:
 
             # Hop 1: A -> B.
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1894,8 +1903,8 @@ class TestCarryForwardEnvelopeMultiHop:
 
             # Hop 2: B (now $200) -> C.
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[1].id, seed_periods[2].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[1].id, seed_periods[2].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1969,8 +1978,8 @@ class TestCarryForwardEnvelopeMultipleSourcesToSameTarget:
 
             # Hop 1: A -> C.
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[2].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[2].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
             db.session.refresh(row_c)
@@ -1980,8 +1989,8 @@ class TestCarryForwardEnvelopeMultipleSourcesToSameTarget:
             # Hop 2: B -> C.  C is now is_override=True; lookup must
             # still find it.
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[1].id, seed_periods[2].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[1].id, seed_periods[2].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2043,8 +2052,8 @@ class TestCarryForwardEnvelopeCorruptDoubledRow:
 
             with pytest.raises(ValidationError) as exc_info:
                 carry_forward_service.carry_forward_unpaid(
-                    seed_periods[0].id, seed_periods[1].id,
-                    seed_user["user"].id, seed_user["scenario"].id,
+                    seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                    calendar=calendar_for(seed_user["user"].id),
                 )
             db.session.rollback()
 
@@ -2082,8 +2091,8 @@ class TestCarryForwardEnvelopeCreatesRowWhenNoCanonical:
             source_id = source.id
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2137,15 +2146,15 @@ class TestCarryForwardEnvelopeCreatesRowWhenNoCanonical:
 
             # Hop 1: period 0 -> target.  Creates a $100 override row.
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[2].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[2].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
             # Hop 2: period 1 -> target.  Tops up the same override row.
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[1].id, seed_periods[2].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[1].id, seed_periods[2].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2194,8 +2203,8 @@ class TestCarryForwardEnvelopeCreatesRowWhenNoCanonical:
             db.session.commit()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2276,8 +2285,8 @@ class TestCarryForwardEnvelopeMixedBatch:
             db.session.commit()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2371,8 +2380,8 @@ class TestCarryForwardEnvelopeMixedBatch:
 
             with pytest.raises(ValidationError):
                 carry_forward_service.carry_forward_unpaid(
-                    seed_periods[0].id, seed_periods[1].id,
-                    seed_user["user"].id, seed_user["scenario"].id,
+                    seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                    calendar=calendar_for(seed_user["user"].id),
                 )
             db.session.rollback()
             db.session.expire_all()
@@ -2429,8 +2438,8 @@ class TestCarryForwardEnvelopeBalanceInvariant:
             db.session.commit()
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2542,8 +2551,8 @@ class TestCarryForwardEnvelopeIncomeFalse:
             source_id = source.id
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2601,8 +2610,8 @@ class TestCarryForwardEnvelopeRecurrenceSkip:
             db.session.commit()
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2623,7 +2632,9 @@ class TestCarryForwardEnvelopeRecurrenceSkip:
             # is_immutable status; the bumped canonical in period 1
             # has is_override=True.  Both trigger skip clauses.
             recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods[:2]), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -2673,8 +2684,8 @@ class TestPreviewCarryForwardEmptyAndShortCircuits:
         """
         with app.app_context():
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             assert preview.plans == []
             assert preview.any_blocked is False
@@ -2682,8 +2693,8 @@ class TestPreviewCarryForwardEmptyAndShortCircuits:
             assert preview.discrete_count == 0
             assert preview.transfer_count == 0
             assert preview.blocked_count == 0
-            assert preview.source_period.id == seed_periods[0].id
-            assert preview.target_period.id == seed_periods[1].id
+            assert preview.source_period.period_id == seed_periods[0].id
+            assert preview.target_period.period_id == seed_periods[1].id
 
     def test_same_period_returns_empty_plans(
         self, app, db, seed_user, seed_periods,
@@ -2704,8 +2715,8 @@ class TestPreviewCarryForwardEmptyAndShortCircuits:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[0].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[0].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             assert preview.plans == []
             assert preview.any_blocked is False
@@ -2719,8 +2730,8 @@ class TestPreviewCarryForwardEmptyAndShortCircuits:
         with app.app_context():
             with pytest.raises(NotFoundError):
                 carry_forward_service.preview_carry_forward(
-                    9_999_999, seed_periods[1].id,
-                    seed_user["user"].id, seed_user["scenario"].id,
+                    9_999_999, seed_periods[1].id, seed_user["scenario"].id,
+                    calendar=calendar_for(seed_user["user"].id),
                 )
 
     def test_unowned_source_period_raises_not_found(
@@ -2740,8 +2751,8 @@ class TestPreviewCarryForwardEmptyAndShortCircuits:
             other_period_id = seed_second_periods[0].id
             with pytest.raises(NotFoundError):
                 carry_forward_service.preview_carry_forward(
-                    other_period_id, seed_periods[1].id,
-                    seed_user["user"].id, seed_user["scenario"].id,
+                    other_period_id, seed_periods[1].id, seed_user["scenario"].id,
+                    calendar=calendar_for(seed_user["user"].id),
                 )
 
 
@@ -2774,8 +2785,8 @@ class TestPreviewCarryForwardEnvelopePlans:
 
             before = _read_only_session_snapshot()
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             after = _read_only_session_snapshot()
             assert before == after, (
@@ -2812,8 +2823,8 @@ class TestPreviewCarryForwardEnvelopePlans:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             plan = preview.plans[0]
@@ -2845,8 +2856,8 @@ class TestPreviewCarryForwardEnvelopePlans:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             plan = preview.plans[0]
@@ -2886,8 +2897,8 @@ class TestPreviewCarryForwardEnvelopePlans:
             assert target_count == 0
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             plan = preview.plans[0]
@@ -2944,8 +2955,8 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             assert preview.any_blocked is False
@@ -2975,8 +2986,8 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             plan = preview.plans[0]
@@ -3008,8 +3019,8 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             plan = preview.plans[0]
@@ -3042,8 +3053,8 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             plan = preview.plans[0]
@@ -3095,8 +3106,8 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             assert len(preview.plans) == 2
             assert preview.any_blocked is True
@@ -3123,8 +3134,8 @@ class TestPreviewCarryForwardDiscreteAndTransfer:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             assert len(preview.plans) == 1
             plan = preview.plans[0]
@@ -3149,8 +3160,8 @@ class TestPreviewCarryForwardDiscreteAndTransfer:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             assert len(preview.plans) == 1
             plan = preview.plans[0]
@@ -3196,8 +3207,8 @@ class TestPreviewCarryForwardOrdering:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             assert len(preview.plans) == 3
@@ -3250,15 +3261,15 @@ class TestPreviewCarryForwardParityWithMutating:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             assert preview.any_blocked is False
             predicted_after = preview.plans[0].target_estimated_after
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -3295,8 +3306,8 @@ class TestPreviewCarryForwardParityWithMutating:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             assert preview.any_blocked is True
             assert preview.plans[0].block_reason_code == (
@@ -3305,8 +3316,8 @@ class TestPreviewCarryForwardParityWithMutating:
 
             with pytest.raises(ValidationError):
                 carry_forward_service.carry_forward_unpaid(
-                    seed_periods[0].id, seed_periods[1].id,
-                    seed_user["user"].id, seed_user["scenario"].id,
+                    seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                    calendar=calendar_for(seed_user["user"].id),
                 )
             db.session.rollback()
 
@@ -3331,15 +3342,15 @@ class TestPreviewCarryForwardParityWithMutating:
             db.session.commit()
 
             preview = carry_forward_service.preview_carry_forward(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             predicted_after = preview.plans[0].target_estimated_after
             assert preview.plans[0].target_will_be_generated is True
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 

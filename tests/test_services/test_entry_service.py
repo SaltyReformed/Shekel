@@ -26,7 +26,6 @@ from app.enums import RoleEnum, SettlementBasisEnum, StatusEnum
 from app.services import (
     account_service,
     cash_ledger,
-    pay_period_service,
     status_seam,
 )
 from app.services.row_valuation import purchases_total, settled_figure

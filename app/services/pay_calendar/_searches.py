@@ -190,14 +190,17 @@ def period_by_id(
     open; both were false by 2026-08-16** and the method's own docstring now
     carries the correction and the five callers.
 
-    Linear rather than a map built at construction, and the justification
-    NARROWED at pay-calendar plan step C2-f2d-3: it used to be "once per rule"
-    (61 paydays against 46 live rules on production), and the recurrence
-    engine's pricing lookup now runs it once per generated ROW.  A full
-    regenerate is therefore up to 46 x 61 scans of 61 elements -- microseconds,
-    and measured nowhere near a hot path, so the second derived value an index
-    would be is still not worth keeping in step with :attr:`periods`.  Stated
-    because the old sentence described a call pattern that has changed.
+    Linear rather than a map built at construction, and the justification has
+    now narrowed TWICE.  It was "once per rule" (61 paydays against 46 live
+    rules on production); pay-calendar plan step C2-f2d-3 widened it to once
+    per generated ROW, when the recurrence engine's pricing lookup started
+    resolving an id back to a derived period; and **plan step C2-f3c deleted
+    that caller** -- the generation seam carries the derived period on the
+    placement, so there is nothing to look back up.  No caller runs this per
+    row today, and the worst remaining pattern is once per render, so the
+    second derived value an index would be is still not worth keeping in step
+    with :attr:`periods`.  Stated because each of those sentences described a
+    call pattern that has since changed.
 
     Args:
         periods: The owner's periods, in any order.  Identity is not a search

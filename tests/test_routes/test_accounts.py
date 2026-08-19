@@ -26,6 +26,7 @@ from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    all_periods,
     append_balance_assertion,
     create_account_of_type,
     create_loan_account,
@@ -6161,12 +6162,12 @@ class TestCashDetailContext:
             assert 0 <= chart["current_index"] < n
             # The current period's position in the user's FULL period list --
             # one past the bootstrap period the chart now also draws.
-            all_periods = pay_period_service.get_all_periods(
+            owner_periods = all_periods(
                 seed_user["user"].id,
             )
-            assert n == len(all_periods)
+            assert n == len(owner_periods)
             assert chart["current_index"] == [
-                p.id for p in all_periods
+                p.id for p in owner_periods
             ].index(_periods[0].id) == 1
             # Every period before the anchor holds the opening flat (R-I), so
             # the series opens on the hero figure either way.
@@ -8765,7 +8766,7 @@ class TestAnchorDifference:
 
         with app.app_context():
             user_id = seed_user["user"].id
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             inv = make_investment_account(
                 seed_user, db.session, periods[0], Decimal("10000.00"),
             )

@@ -2,14 +2,16 @@
 
 ## Where this stands
 
-**Built:** **C1**, **C2-a**-**C2-e**, **C2-f1**, **C2-f2**, **C2-f3a**, **C2-f3b** and **C3** --
+**Built:** **C1**, **C2-a**-**C2-e**, **C2-f1**, **C2-f2**, **C2-f3a**-**C2-f3c** and **C3** --
 section 4 carries each one's commit, and what reached `main` is a MEASUREMENT
 (`git log --oneline origin/main..dev`).
 
-**Every RENDERING surface and every DESTRUCTIVE door answers "which paycheck" from the derivation**,
-`C2-f3a` having deleted `pay_period_service.get_current_period` and `C2-f3b` having taken the four
-schedule doors and the settings period list. `get_all_periods` survives at ONE call site, the
-generation seam, and `C2-f3c` deletes it.
+**`pay_period_service` is DOWN TO ONE FUNCTION and it is not a calendar question.** All six `get_*`
+readers are gone -- `C2-f3a` deleted `get_current_period`, `C2-f3b` took the four schedule doors and
+the settings period list, and `C2-f3c` deleted `get_all_periods` with its last caller. What is left
+is `earliest_recordable_day`, which takes the EARLIER of the owner's first payday and today, so the
+clock is half its answer. Every RENDERING surface, every DESTRUCTIVE door and the recurrence
+generation seam now answer "which paycheck" from the one derivation.
 
 **`C2-f3` is a container of FIVE leaves, and `C10`-`C12` came OUT of it**: the salary package's
 clock (**P49**, which `C2-f3a` wrongly closed), the layer predicate (**P56**) and the
@@ -278,20 +280,12 @@ each one's proof. **Must not be undone**: `_PeriodSpans`, `generate_projection_p
       **P64**'s calendar half; opened **P70**, **P71**. Proof: `verify_pay_period_doors_cutover.py`
       (62 periods, 0 disagreements, firing control 1).
 
-- [ ] **C2-f3c -- the generation seam holds ONE read.** `GenerationSchedule` becomes
-      `(calendar, write_period_ids)`: no ORM `PayPeriod` enters the seam, `PlannedOccurrence.period`
-      is a `DerivedPeriod`, `_amounts` drops the `period_by_id` round trip it makes to get one back,
-      and `query_rows_from_effective_date` selects on a period-id set instead of joining
-      `pay_periods` on `end_date`. **The developer ruled this the root cause 2026-08-18** after
-      refusing three band-aids: the seam reads only `.id`, `.start_date` and `.end_date`, and the
-      derived value carries all three. **THREE things its first draft got wrong, found by that
-      step's design review and NOT yet designed away**: the sweep's domain must stay strictly WIDER
-      than the plan's or `_maintain`'s RETIRE branch can never fire; `regeneration_bound` reads
-      `write_periods.values()` for a `start_date` and needs a replacement; and `__post_init__`'s
-      cross-read arm is what makes recurrence **D22**'s narrowed-calendar shape unconstructible, so
-      deleting it needs a replacement guarantee rather than a note. **DELETES `get_all_periods`**.
-      Closes **P68**. It reaches into the recurrence arc's engine and changes no cadence or
-      placement rule; tell that arc's session before starting.
+- [x] **C2-f3c -- the generation seam holds ONE read.** `53488cbf`. `GenerationSchedule` is
+      `(calendar, write_period_ids)`; no ORM `PayPeriod` reaches its ten modules, the regenerate row
+      select is a period-ID set, and `get_all_periods` and `regeneration_bound` are DELETED. Closed
+      **P68** (carry-forward render: 2 derivations -> 1). Proof: on PRODUCTION all 62 periods'
+      derived end and ordinal equal the stored ones, zero disagreements; a mutant narrowing the
+      sweep to the plan's periods is killed by NINE tests.
 
 - [ ] **C2-f3d -- the Spending report's ordinal search.** `_shift_window` walks
       `period_index - steps` with a query and a row load per chart point; both answer from the

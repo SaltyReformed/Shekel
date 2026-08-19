@@ -35,6 +35,7 @@ from app.services import account_service
 from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
+    all_periods,
     make_every_period_rule,
     payroll_basis,
     create_loan_account,
@@ -2462,9 +2463,11 @@ class TestNetBiweeklyMismatchFixes:
             # Regenerate transactions via the recurrence engine so that
             # future-year periods get amounts from the calculator.
             from app.services import recurrence_engine, pay_period_service
-            periods = pay_period_service.get_all_periods(user.id)
+            periods = all_periods(user.id)
             recurrence_engine.regenerate_for_template(
-                profile.template, GenerationSchedule.for_periods(profile.template.user_id, periods), seed_user["scenario"].id,
+                profile.template, GenerationSchedule.for_period_ids(
+                    calendar_for(profile.template.user_id), {p.id for p in periods},
+                ), seed_user["scenario"].id,
             )
             db.session.commit()
 
@@ -2677,10 +2680,12 @@ class TestCalibration:
             db.session.refresh(profile)
 
             from app.services import recurrence_engine, pay_period_service
-            periods = pay_period_service.get_all_periods(user.id)
+            periods = all_periods(user.id)
             try:
                 recurrence_engine.regenerate_for_template(
-                    profile.template, GenerationSchedule.for_periods(profile.template.user_id, periods), seed_user["scenario"].id,
+                    profile.template, GenerationSchedule.for_period_ids(
+                        calendar_for(profile.template.user_id), {p.id for p in periods},
+                    ), seed_user["scenario"].id,
                 )
             except Exception:
                 pass

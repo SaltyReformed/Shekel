@@ -152,7 +152,7 @@ from app.models.loan_features import RateHistory
 from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
-from app.services import anchor_service, balance_at, loan_ledger, loan_loaders, loan_payment_service, loan_posting_service, loan_resolver, pay_period_service, pay_period_write, posting_service, transfer_service
+from app.services import anchor_service, balance_at, loan_ledger, loan_loaders, loan_payment_service, loan_posting_service, loan_resolver, pay_period_write, posting_service, transfer_service
 from app.services.loan_resolver._periods import _replay_from_anchor
 from app.utils.money import round_money
 from app.services.balance_at import _kernel as net_worth_kernel

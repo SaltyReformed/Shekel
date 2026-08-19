@@ -52,6 +52,7 @@ from app.schemas.validation import (
 )
 from app.services import loan_loaders, loan_recurrence_sync, transfer_recurrence
 from app.services.generation_schedule import GenerationSchedule
+from app.services.pay_calendar import calendar_for
 from app.services.scenario_resolver import require_baseline_scenario
 from app.utils.auth_helpers import get_or_404
 
@@ -372,7 +373,7 @@ def generate_transfers_for_all_periods(
     scenario = require_baseline_scenario(current_user.id)
     transfer_recurrence.generate_for_template(
         template,
-        GenerationSchedule.for_user(current_user.id),
+        GenerationSchedule.for_calendar(calendar_for(current_user.id)),
         scenario.id,
         effective_from=effective_from,
     )

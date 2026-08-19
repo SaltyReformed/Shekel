@@ -45,6 +45,7 @@ from tests._test_helpers import (
 )
 from tests.oracles.recurrence_baseline import MONTHLY
 from app.services.row_valuation import owned_contribution
+from app.services.pay_calendar import calendar_for
 
 
 class TestSalaryToGrid:
@@ -71,7 +72,9 @@ class TestSalaryToGrid:
 
             # Generate income transactions across all 10 periods.
             txns = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.commit()
 
@@ -111,7 +114,9 @@ class TestTemplateRecurrenceToGrid:
             )
 
             txns = recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.commit()
 
@@ -335,8 +340,8 @@ class TestCarryForwardWorkflow:
 
             # Carry forward from period 0 → period 1.
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -411,8 +416,8 @@ class TestCarryForwardEdgeCases:
             db.session.commit()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
             assert count == 3
@@ -490,8 +495,8 @@ class TestCarryForwardEdgeCases:
             db.session.commit()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
             assert count == 3
@@ -556,8 +561,8 @@ class TestCarryForwardEdgeCases:
             db.session.commit()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
             assert count == 2
@@ -604,8 +609,8 @@ class TestCarryForwardEdgeCases:
             db.session.commit()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
             assert count == 0
@@ -650,8 +655,8 @@ class TestCarryForwardEdgeCases:
             db.session.commit()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[0].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[0].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
             assert count == 0
@@ -995,8 +1000,8 @@ class TestFullBudgetWorkflow:
             # Step 4: Gas Station stays projected.
             # Step 5: Carry forward from period 0 → period 1.
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
             assert count == 1  # Only Gas Station (projected) moves.

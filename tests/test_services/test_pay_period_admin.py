@@ -762,13 +762,15 @@ class TestTheDestructiveDoorsHoldNoDerivedColumn:
         assert self._column_reads("app/routes/settings.py") == set()
 
     def test_neither_module_can_reach_the_retired_period_list(self):
-        """``get_all_periods`` is unreachable from both, under any alias.
+        """Neither module reaches ``pay_period_service``, under any alias.
 
-        The reader itself survives for plan step C2-f3c, whose generation seam
-        is its last caller; what this pins is that no schedule DOOR and no
-        settings render can reach for it again -- graded on the IMPORT rather
-        than on the call, because ``from ... import get_all_periods as rows``
-        defeats a grep for the call site and was measured doing so.
+        ``get_all_periods`` itself is GONE since plan step C2-f3c -- the
+        generation seam was its last caller and now takes a ``PayCalendar`` --
+        so what this still pins is the module boundary rather than one name: no
+        schedule DOOR and no settings render may reach back into the pay-period
+        reader module for anything.  Graded on the IMPORT rather than on the
+        call, because ``from ... import get_all_periods as rows`` defeats a
+        grep for the call site and was measured doing so.
         """
         for relative in (
             "app/services/pay_period_admin.py",

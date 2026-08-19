@@ -16,7 +16,6 @@ from typing import List, Optional
 
 from app.exceptions import NotFoundError
 from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services.cash_ledger import (
     AmountBasis,
@@ -46,8 +45,8 @@ class _CarryForwardContext:  # pylint: disable=too-many-instance-attributes
     :class:`~app.services.recurrence.ResolvedRecurrence` precedent.
     """
 
-    source_period: object  # PayPeriod
-    target_period: object  # PayPeriod
+    source_period: object  # DerivedPeriod
+    target_period: object  # DerivedPeriod
     user_id: int
     scenario_id: int
     shadow_txns: List[Transaction]
@@ -69,45 +68,65 @@ class _CarryForwardContext:  # pylint: disable=too-many-instance-attributes
 
 
 def _build_carry_forward_context(source_period_id, target_period_id,
-                                 user_id, scenario_id):
+                                 scenario_id, calendar):
     """Validate periods, query projected source rows, three-way partition.
 
     Pure read-only setup shared by ``carry_forward_unpaid`` (mutating)
     and ``preview_carry_forward`` (read-only).  Raises ``NotFoundError``
-    if either period is missing or not owned by *user_id* -- both
+    if either period is missing or not the calendar owner's -- both
     callers want the same security response (404 at the route layer).
 
     The same-period short-circuit (``source == target``) returns an
     empty partition so callers can no-op cleanly without special
     casing in the loops.
 
+    **Both periods are ANSWERED BY THE CALENDAR, and that is what makes the
+    ownership check structural** (pay-calendar plan step C2-f3c).  Each was a
+    ``db.session.get(PayPeriod, ...)`` followed by a hand-written
+    ``row.user_id != user_id`` comparison -- correct, but a comparison a later
+    edit could drop, and one this module had to remember to write twice.  A
+    calendar is one owner's whole schedule and nothing else, so a period id
+    belonging to anybody else is simply not in it: "no such period" and "not
+    yours" are the same answer here because they are the same question, which
+    is the project's 404-for-both security rule expressed as a lookup rather
+    than as a guard.  It also drops two queries from every carry-forward
+    render.
+
     Args:
         source_period_id: pay_period.id to carry forward FROM.
         target_period_id: pay_period.id to carry forward TO.
-        user_id: defense-in-depth ownership check.
         scenario_id: scenario filter (mirrors the mutating path).
+        calendar: The owner's
+            :class:`~app.services.pay_calendar.PayCalendar`, derived once by
+            the route.  It carries the owner, so no ``user_id`` rides beside
+            it -- two spellings of one fact with nothing reconciling them is
+            the shape ruling P54 rejected.
 
     Returns:
         _CarryForwardContext.
 
     Raises:
-        NotFoundError: if either period is missing or not owned.
+        NotFoundError: if either period is missing or not the calendar
+            owner's.
     """
+    user_id = calendar.user_id
 
-    source = db.session.get(PayPeriod, source_period_id)
-    if source is None or source.user_id != user_id:
+    source = calendar.period_by_id(source_period_id)
+    if source is None:
         raise NotFoundError(f"Source pay period {source_period_id} not found.")
 
-    target = db.session.get(PayPeriod, target_period_id)
-    if target is None or target.user_id != user_id:
+    target = calendar.period_by_id(target_period_id)
+    if target is None:
         raise NotFoundError(f"Target pay period {target_period_id} not found.")
 
     # ONE schedule for the whole request, its window narrowed to the target
     # period the envelope rollovers write into (plan step R4b-1).  Every
     # envelope row asks the recurrence engine the same question about the same
-    # target; building this per row would repeat the schedule query and the
-    # forward occurrence walk once per row.
-    schedule = GenerationSchedule.for_periods(user_id, [target])
+    # target; building this per row would repeat the forward occurrence walk
+    # once per row.  It is built from the calendar the route already derived,
+    # so the request holds ONE derivation of the owner's schedule rather than
+    # the two plan ledger row **P68** measured.
+    schedule = GenerationSchedule.for_period_ids(calendar, {target.period_id})
     # ONE basis for the whole request, on the same terms as the schedule above:
     # every envelope row is priced against the same owner and scenario, and it
     # resolves nothing until the first row asks.
@@ -173,7 +192,7 @@ def _build_carry_forward_context(source_period_id, target_period_id,
     )
 
 
-def _target_canonical_rows(source_txn, target_period, scenario_id, *,
+def _target_canonical_rows(source_txn, target_period_id, scenario_id, *,
                            include_deleted):
     """Return the target period's rows for *source_txn*'s template+scenario.
 
@@ -186,7 +205,9 @@ def _target_canonical_rows(source_txn, target_period, scenario_id, *,
 
     Args:
         source_txn: The source transaction; its ``template_id`` is read.
-        target_period: The PayPeriod the canonical lives in.
+        target_period_id: The ``budget.pay_periods.id`` the canonical lives
+            in.  An id rather than a period since pay-calendar plan step
+            C2-f3c: it is the only thing this ever read off one.
         scenario_id: Scenario filter for the lookup.
         include_deleted: When False, soft-deleted rows are excluded in
             SQL (the mutating path); when True, they are returned so the
@@ -197,7 +218,7 @@ def _target_canonical_rows(source_txn, target_period, scenario_id, *,
     """
     query = db.session.query(Transaction).filter(
         Transaction.template_id == source_txn.template_id,
-        Transaction.pay_period_id == target_period.id,
+        Transaction.pay_period_id == target_period_id,
         Transaction.scenario_id == scenario_id,
     )
     if not include_deleted:
@@ -286,7 +307,8 @@ def _classify_leftover_target(source_txn, target_period, basis, schedule):
     Args:
         source_txn: The envelope source row being carried forward; its
             ``template`` / ``template_id`` drive the lookup.
-        target_period: The destination PayPeriod.
+        target_period: The destination
+            :class:`~app.services.pay_calendar.DerivedPeriod`.
         basis: The request's :class:`~app.services.cash_ledger.AmountBasis`;
             its ``scenario_id`` filters the lookup and the recurrence-engine
             prediction, and it prices the TOP_UP row's pre-bump base.
@@ -305,7 +327,8 @@ def _classify_leftover_target(source_txn, target_period, basis, schedule):
     from app.services import recurrence_engine  # pylint: disable=import-outside-toplevel
 
     all_rows = _target_canonical_rows(
-        source_txn, target_period, basis.scenario_id, include_deleted=True,
+        source_txn, target_period.period_id, basis.scenario_id,
+        include_deleted=True,
     )
     non_deleted = [r for r in all_rows if not r.is_deleted]
     mutable = [r for r in non_deleted if not _is_finalised(r)]
@@ -320,8 +343,8 @@ def _classify_leftover_target(source_txn, target_period, basis, schedule):
     if (not non_deleted
             and source_txn.template is not None
             and recurrence_engine.can_generate_in_period(
-                source_txn.template, target_period, basis.scenario_id,
-                schedule=schedule,
+                source_txn.template, target_period.period_id,
+                basis.scenario_id, schedule=schedule,
             )):
         return _TargetResolution(
             _TargetKind.GENERATE, base=source_txn.template.default_amount,

@@ -120,6 +120,8 @@ Test IDs
 from datetime import date
 from decimal import Decimal
 
+from app.models.ref import FilingStatus
+from app.models.salary_profile import SalaryProfile
 from app.services import account_resolver
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
@@ -829,6 +831,100 @@ class TestOneCalendarDerivationPerRender:
             f"/transfers/new derived the pay calendar "
             f"{counts['calendar_for']} times; the route derives one and asks "
             "it both the option set and the preselection"
+        )
+
+    def test_the_carry_forward_preview_derives_the_calendar_once(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET the carry-forward modal derives the pay calendar exactly once.
+
+        **This is ledger row P68, and it is a count that came DOWN.**  Plan step
+        C2-f3a replaced this route's ``pay_period_service.get_current_period``
+        -- SQL, which derived nothing -- with the calendar's own
+        ``period_containing``, so the render then held TWO derivations: the
+        route's, and a second inside ``carry_forward_service``, which built a
+        ``GenerationSchedule`` for the target period and that value loaded its
+        own.  Measured on this fixture at 2 before pay-calendar plan step
+        C2-f3c and 1 after.
+
+        What it grades from here is the same thing every case in this class
+        does: a producer wired below this route and left to resolve its own
+        schedule.  The service takes the route's calendar now and can no longer
+        build one, so the way back to 2 is a NEW producer, which is exactly
+        what this catches.
+        """
+        with app.app_context():
+            source_id = seed_periods_today[0].id
+
+        with counting_calls(_CALENDAR_DOOR) as counts:
+            resp = auth_client.get(
+                f"/pay-periods/{source_id}/carry-forward-preview",
+                headers={"HX-Request": "true"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert "Carry Forward" in body, (
+            "the modal did not render, so this count was taken over a route "
+            "that returned before it reached the service"
+        )
+        assert counts["calendar_for"] == 1, (
+            f"the carry-forward preview derived the pay calendar "
+            f"{counts['calendar_for']} times; the route derives one and "
+            "threads it into both period lookups and the generation seam"
+        )
+
+    def test_the_salary_profile_POST_derives_the_calendar_once(
+        self, app, db, auth_client, seed_user, seed_periods,
+    ):
+        """POST /salary derives the owner's pay calendar exactly once.
+
+        **The only WRITE in this class, and it is here because a write path
+        answers the same question a render does.**  ``create_profile`` asks the
+        schedule three things -- the opening payday its every-paycheck rule
+        starts on, the paycheck count its annual salary is divided by, and the
+        reference period the net-pay recompute prices -- and before
+        pay-calendar plan step C2-f3c it derived TWO calendars to do it: one in
+        ``_paycheck_template`` and one inside the ``GenerationSchedule`` it
+        built afterwards.  Two reads of one owner's schedule inside one POST,
+        which a concurrent schedule write can separate.
+
+        An adversarial review of that step found the fix ungraded: this class
+        covered only GETs, so nothing would have noticed it coming back.
+        """
+        with app.app_context():
+            filing_status = (
+                db.session.query(FilingStatus).filter_by(name="single").one()
+            )
+            status_id = filing_status.id
+
+        with counting_calls(_CALENDAR_DOOR) as counts:
+            resp = auth_client.post("/salary", data={
+                "name": "Arch Job",
+                "annual_salary": "75000.00",
+                "filing_status_id": status_id,
+                "state_code": "NC",
+            }, follow_redirects=True)
+
+        assert resp.status_code == 200
+        with app.app_context():
+            created = (
+                db.session.query(SalaryProfile)
+                .filter_by(user_id=seed_user["user"].id, name="Arch Job")
+                .one_or_none()
+            )
+            assert created is not None, (
+                "the profile was not created, so this count was taken over a "
+                "POST that returned before it reached the schedule"
+            )
+            assert created.template is not None, (
+                "no template was linked, so the half of the route this counts "
+                "never ran"
+            )
+        assert counts["calendar_for"] == 1, (
+            f"POST /salary derived the pay calendar {counts['calendar_for']} "
+            f"times; the route derives one and threads it into the template's "
+            f"opening bound, its per-paycheck amount and the generate pass"
         )
 
     def test_the_count_grows_with_the_account_set_when_a_producer_derives(

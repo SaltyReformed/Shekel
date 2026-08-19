@@ -27,7 +27,6 @@ from app.services import (
     account_service,
     balance_at,
     income_service,
-    pay_period_service,
     pay_period_write,
     posting_service,
     status_seam,
@@ -35,11 +34,12 @@ from app.services import (
 )
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 from app.services.balance_at import BalanceContext
-from app.services.pay_calendar import DerivedPeriod
+from app.services.pay_calendar import DerivedPeriod, calendar_for
 from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
+    all_periods,
     settlement_if_settling,
     settlement_basis_id,
     settlement_columns,
@@ -2011,7 +2011,9 @@ class TestAccountIdColumn:
         scenario = data["scenario"]
 
         created = recurrence_engine.generate_for_template(
-            template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id
+            template, GenerationSchedule.for_period_ids(
+                calendar_for(template.user_id), {p.id for p in periods},
+            ), scenario.id
         )
 
         assert len(created) > 0
@@ -7755,7 +7757,7 @@ class TestMobileJumpToPeriod:
         """C10-2: option count equals ``len(all_periods)``.
 
         ``seed_periods_today`` provisions 10 biweekly periods
-        (indices 0..9); ``pay_period_service.get_all_periods``
+        (indices 0..9); the owner's full period list
         returns all 10 to the route, so the rendered select carries
         10 ``<option>`` elements. Each option's ``value`` is the
         offset relative to the current period (period_index 4 under
@@ -7767,10 +7769,10 @@ class TestMobileJumpToPeriod:
                 seed_user["user"].id,
             )
             assert current is not None
-            all_periods = pay_period_service.get_all_periods(
+            owner_periods = all_periods(
                 seed_user["user"].id,
             )
-            assert len(all_periods) == 10
+            assert len(owner_periods) == 10
             assert current.period_index == 4
 
             response = auth_client.get("/grid")
@@ -7788,7 +7790,7 @@ class TestMobileJumpToPeriod:
             select_start = pane.index('<select name="offset"')
             select_end = pane.index("</select>", select_start)
             select_block = pane[select_start:select_end]
-            assert select_block.count("<option ") == len(all_periods)
+            assert select_block.count("<option ") == len(owner_periods)
 
             # Spot-check the boundary offsets. period_index 0 -> -4,
             # period_index 9 -> +5 (all under current.period_index=4).

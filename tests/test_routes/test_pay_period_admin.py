@@ -21,12 +21,11 @@ from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.services import (
     pay_period_admin,
-    pay_period_service,
     pay_period_write,
     pay_schedule_service,
 )
 from app.routes import settings as settings_routes
-from tests._test_helpers import add_txn, freeze_today, open_calendar_hole
+from tests._test_helpers import add_txn, freeze_today, open_calendar_hole, all_periods
 from app.services import cash_ledger
 
 
@@ -58,7 +57,7 @@ def _period_count(db_session, user_id):
 
 def _indices(user_id):
     """The user's current period indices."""
-    return {p.period_index for p in pay_period_service.get_all_periods(user_id)}
+    return {p.period_index for p in all_periods(user_id)}
 
 
 def _starts(user_id):
@@ -68,7 +67,7 @@ def _starts(user_id):
     now defined on the payday rather than on the ordinal, and the payday is the
     column that survives plan step C4.
     """
-    return {p.start_date for p in pay_period_service.get_all_periods(user_id)}
+    return {p.start_date for p in all_periods(user_id)}
 
 
 def _future_count(db_session, user_id):
@@ -262,7 +261,7 @@ class TestRegenerateRoute:
             )
             assert resp.status_code == 302
             # Bootstrap (index 0) survives; the 6 future periods become 3.
-            assert len(pay_period_service.get_all_periods(
+            assert len(all_periods(
                 seed_user["user"].id,
             )) == 4
 
@@ -395,7 +394,7 @@ class TestResetRoute:
             assert resp.status_code == 302
             assert "pay-periods" in resp.headers["Location"]
             db.session.expire_all()
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             assert {p.period_index for p in periods} == {0, 1, 2, 3}
             account = db.session.get(Account, account_id)
             assert cash_ledger.resolve_anchor(account).balance == Decimal("1000.00")
@@ -579,14 +578,14 @@ class TestOwnerOnlyAndUi:
         with app.app_context():
             periods = _future_periods(db.session, seed_user, count=3)
             user_id = seed_user["user"].id
-            all_periods = pay_period_service.get_all_periods(user_id)
+            owner_periods = all_periods(user_id)
             assert [p.id for p in periods] != [p.period_index for p in periods]
 
             resp = auth_client.get("/settings?section=pay-periods")
 
             assert resp.status_code == 200
             assert b'name="keep_through_period_id"' in resp.data
-            for period in all_periods:
+            for period in owner_periods:
                 assert f'<option value="{period.id}">'.encode() in resp.data
 
     def test_rolling_controls_prefilled_from_schedule(
