@@ -758,6 +758,79 @@ class TestOneCalendarDerivationPerRender:
                 "times; see the class docstring"
             )
 
+    def test_the_statements_render_derives_the_calendar_once(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET /analytics/income-statement derives the pay calendar once.
+
+        **It joined this class at pay-calendar plan step C2-f3a, and it is a
+        PIN of a +1 rather than a count that came down** -- the same honesty
+        the ``/dashboard/balance`` case beside it owes.  On the merge base this
+        render derived ZERO calendars and issued FOUR statements against
+        ``budget.pay_periods`` instead: ``get_current_period``,
+        ``get_all_periods``, its own earliest-period query for the year list,
+        and a ``db.session.get`` inside ``ledger_report_service`` for the
+        heading.  One derivation replaced all four, so the number this asserts
+        went UP while the reads went down.
+
+        What it grades from here is the thing that actually goes wrong: a
+        second producer wired onto this page and left to resolve its own
+        schedule, which is how ``/retirement`` acquired two passes.
+        """
+        with app.app_context():
+            _seed_projecting_account(db, seed_user, seed_periods_today)
+
+        with counting_calls(_CALENDAR_DOOR) as counts:
+            resp = auth_client.get(
+                "/analytics/income-statement",
+                headers={"HX-Request": "true"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert "Income Statement" in body, (
+            "the statement did not render, so this count was taken over a "
+            "producer that returned early"
+        )
+        assert "<option value=" in body, (
+            "the pay-period selector did not render, so the reader whose "
+            "derivation this counts never ran"
+        )
+        assert counts["calendar_for"] == 1, (
+            f"/analytics/income-statement derived the pay calendar "
+            f"{counts['calendar_for']} times; the route derives one and "
+            "threads it into the window defaults, the selector, the year "
+            "list and the report"
+        )
+
+    def test_the_transfer_create_form_derives_the_calendar_once(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET /transfers/new derives the pay calendar once.
+
+        Same shape and same C2-f3a pin: the form read ``get_all_periods`` for
+        its start-period ``<select>`` and ``get_current_period`` to preselect
+        one -- two reads of ``budget.pay_periods``, zero derivations -- where
+        it now derives once and asks it both questions.
+        """
+        with app.app_context():
+            _seed_projecting_account(db, seed_user, seed_periods_today)
+
+        with counting_calls(_CALENDAR_DOOR) as counts:
+            resp = auth_client.get("/transfers/new")
+
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert 'id="start_period_id"' in body, (
+            "the start-period selector did not render, so this count was "
+            "taken over a form that never asked the calendar anything"
+        )
+        assert counts["calendar_for"] == 1, (
+            f"/transfers/new derived the pay calendar "
+            f"{counts['calendar_for']} times; the route derives one and asks "
+            "it both the option set and the preselection"
+        )
+
     def test_the_count_grows_with_the_account_set_when_a_producer_derives(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):

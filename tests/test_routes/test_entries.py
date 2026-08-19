@@ -21,7 +21,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.user import User, UserSettings
-from app.services import pay_period_service, pay_period_write
+from app.services import pay_period_write
 from app.services.auth_service import hash_password
 from app.services import account_service
 from app.utils.dates import display_today
@@ -49,7 +49,7 @@ def _freeze_today_inside_seed_range(monkeypatch):
     Entry tests use hardcoded purchase dates such as
     date(2026, 1, 5) and date(2026, 4, 12) that must fall inside the
     calendar-anchored seed_periods range.  Freezing today inside the
-    seeded range keeps get_current_period() deterministic without
+    seeded range keeps "which paycheck contains today" deterministic without
     disturbing those calendar values.
     """
     freeze_today(monkeypatch, date(2026, 3, 20))

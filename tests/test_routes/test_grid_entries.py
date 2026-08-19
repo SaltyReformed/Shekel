@@ -24,7 +24,9 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.ref import Status, TransactionType
 from app.routes._render_helpers import fragment_amounts
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
-from app.services import pay_period_service, transaction_service
+from app.services import transaction_service
+
+from tests._test_helpers import current_pay_period
 
 
 def _sums(rows):
@@ -706,7 +708,7 @@ class TestGridPageEntrySums:
         """
         with app.app_context():
             # Find the current period so the txn is visible in the grid.
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             # Find which seed_periods_today index matches the current period.

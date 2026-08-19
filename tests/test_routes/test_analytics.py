@@ -13,7 +13,7 @@ Tests for the analytics page shell and HTMX tab endpoints:
 
 import json
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from html import unescape
 
@@ -21,8 +21,11 @@ import pytest
 
 from app import ref_cache
 from app.enums import AcctTypeEnum, StatusEnum, TxnTypeEnum
+from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import account_service, pay_period_write
+
+from app.utils.dates import display_today
 
 from tests._test_helpers import default_settle_day, settlement_columns
 from tests._test_helpers import create_settled_cash_transaction, freeze_today
@@ -628,6 +631,191 @@ class TestIncomeStatementTab:
             assert b"2100" in resp.data
 
 
+
+# ── The window comes from the DERIVATION (plan step C2-f3a) ───────
+
+
+class TestTheWindowIsAnsweredByTheDerivation:
+    """The Statements window resolves off ONE pay-calendar derivation.
+
+    This render asked ``budget.pay_periods`` FOUR times before plan step
+    C2-f3a, and every one of the four is a question the derivation answers:
+    which period is current (``pay_period_service.get_current_period`` -- SQL
+    whose ``.first()`` carried no ``ORDER BY``, ledger row **P19**), the whole
+    list for the ``<select>``, the earliest period for the year list, and the
+    chosen period's dates for the heading, that last one issued again inside
+    ``ledger_report_service``.
+
+    **Two of the three cases below FAIL on the merge base**, which is what
+    makes them a regression gate rather than a pin: the retired reader read
+    the STORED span and the PROCESS clock, and each case moves exactly one of
+    those away from what the paydays say.  The third pins that the heading and
+    the ``<option>`` the reader picked it from cannot drift apart, which is
+    ledger row **P47**'s duplicate half made a predicate.
+
+    ``seed_periods`` is ten biweekly periods from 2026-01-02, and this module
+    freezes today to 2026-03-20 -- inside period 5, which runs 2026-03-13
+    through 2026-03-26 because period 6's payday is 2026-03-27.
+    """
+
+    @staticmethod
+    def _selected_option(html):
+        """Return ``(value, label)`` of the window ``<select>``'s selected option."""
+        match = re.search(
+            r'<option value="(\d+)" selected>\s*(.*?)\s*</option>', html,
+        )
+        assert match is not None, "no selected period option in the rendered window"
+        return int(match.group(1)), unescape(match.group(2))
+
+    def test_a_doctored_stored_end_date_does_not_move_the_default_window(
+        self, app, db, auth_client, seed_user, seed_periods,
+    ):
+        """The default period is the one the PAYDAYS name, not the stored span.
+
+        Period 5's stored ``end_date`` is rewritten to 2026-03-19, the day
+        BEFORE the frozen today, leaving every payday untouched -- so the
+        derivation still places 2026-03-20 in period 5 while the column says
+        the period ended yesterday.  That is plan finding **P1**, the
+        disagreement nothing reconciles.
+
+        On the merge base the retired SQL matched ``start_date <= today <=
+        end_date`` against the doctored column, found NO period covering
+        today, and fell through to ``all_p[-1]`` -- period 9, a paycheck three
+        months in the future -- so the reader was shown the wrong statement
+        with no indication anything was wrong.  The assertion below names
+        period 5 and would read period 9 there.
+        """
+        with app.app_context():
+            # Re-loaded into THIS session rather than mutated on the fixture's
+            # own instance: that one belongs to the session the fixture ran in,
+            # and assigning to it wrote nothing.  The first draft of this case
+            # did exactly that and PASSED on the merge base -- an arm that
+            # could not fail, caught by running it there.
+            expected_id = seed_periods[5].id
+            stored = db.session.get(PayPeriod, expected_id)
+            assert stored.start_date == date(2026, 3, 13), (
+                "the fixture moved; this case names period 5 by its payday"
+            )
+            stored.end_date = date(2026, 3, 19)
+            db.session.commit()
+
+            # The premise, re-read from the database rather than assumed.
+            db.session.expire_all()
+            assert db.session.get(PayPeriod, expected_id).end_date == date(
+                2026, 3, 19,
+            ), "the doctored column did not persist, so nothing disagrees"
+
+            resp = auth_client.get(
+                "/analytics/income-statement",
+                headers={"HX-Request": "true"},
+            )
+
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        value, label = self._selected_option(html)
+        assert value == expected_id, (
+            "the default window followed the doctored stored end_date "
+            "instead of the owner's paydays"
+        )
+        assert label == "Mar 13 - Mar 26, 2026"
+        assert "Mar 13 - Mar 26, 2026" in html
+
+    def test_the_default_window_follows_the_OWNERS_day_not_the_containers(
+        self, app, db, auth_client, seed_user, seed_periods, monkeypatch,
+    ):
+        """Midnight UTC on a payday is the PREVIOUS paycheck for the owner.
+
+        Ledger row **P49**: none of the retired reader's call sites passed an
+        ``as_of``, so every "which paycheck am I in" answer was the container's
+        civil day.  Frozen at midnight UTC on 2026-03-27 -- which is 8pm on
+        2026-03-26 in ``America/New_York`` -- the two clocks name DIFFERENT
+        paychecks, because 03-27 is period 6's payday and 03-26 is period 5's
+        last covered day.
+
+        The owner is still in period 5, so that is what the page must default
+        to.  On the merge base ``date.today()`` answered 2026-03-27 and the
+        page opened on period 6.  In the deployed container the two agree --
+        both compose files pin ``TZ: America/New_York`` (the 2026-06-12 parity
+        audit's finding M01) -- so this grades the code rather than the
+        deployment, which is the whole point of the row.
+        """
+        freeze_today(monkeypatch, date(2026, 3, 27), at_time=time.min)
+        # RE-LOGIN under the moved clock.  ``auth_client`` authenticated at the
+        # module freeze (2026-03-20 noon UTC) and the session's idle bound is
+        # measured against the same ``datetime.now`` this freeze moves, so a
+        # seven-day jump logs that session out and the route answers 302.  The
+        # 302 is the session's, not the window's, and it would read exactly
+        # like this case failing.
+        assert auth_client.post("/login", data={
+            "email": "test@shekel.local", "password": "testpass",
+        }).status_code == 302
+        with app.app_context():
+            assert date.today() == date(2026, 3, 27), (
+                "the freeze did not move the PROCESS clock, so this case "
+                "cannot tell the two apart"
+            )
+            assert display_today() == date(2026, 3, 26), (
+                "the freeze did not put the two clocks on different civil "
+                "days, so this case cannot tell them apart"
+            )
+            expected_id = seed_periods[5].id
+            other_id = seed_periods[6].id
+
+            resp = auth_client.get(
+                "/analytics/income-statement",
+                headers={"HX-Request": "true"},
+            )
+
+        assert resp.status_code == 200
+        value, _label = self._selected_option(resp.data.decode())
+        assert value != other_id, (
+            "the page opened on the paycheck the CONTAINER's clock is in"
+        )
+        assert value == expected_id
+
+    def test_the_option_and_the_heading_are_one_label_rule(
+        self, app, db, auth_client, seed_user, seed_periods,
+    ):
+        """The selected ``<option>`` and the report heading render one string.
+
+        They were two: an inline Jinja expression here and
+        ``ledger_report_service._income_statement._window_label``, both
+        producing ``"Feb 21 - Mar 06, 2026"`` from separate code.  Ledger row
+        **P47** measured six spellings of a period's range and named these two
+        as the same register written twice; plan step C2-f3a put both on
+        ``spending_analysis.window_label``, which the Spending report's third
+        copy also calls now.
+
+        This is a PIN rather than a regression catcher -- the two agreed on the
+        merge base too -- and it is worth pinning because they sit on one
+        screen: the heading is what the ``<option>`` swaps in.
+        """
+        with app.app_context():
+            resp = auth_client.get(
+                "/analytics/income-statement",
+                headers={"HX-Request": "true"},
+            )
+
+        assert resp.status_code == 200
+        html = resp.data.decode()
+        _value, label = self._selected_option(html)
+        # The heading renders in ONE of two places: the hero caption when the
+        # window has posted rows, and the empty state's sentence when it has
+        # none.  This fixture's window is genuinely empty -- the seed
+        # Checking's opening is an Equity correction and never reaches the
+        # Income/Expense filter -- so the empty state is the one that renders,
+        # and it carries the same ``report.window_label``.  Both are matched so
+        # the case does not silently stop grading if the fixture gains a row.
+        heading = re.search(
+            r'<div class="nw-hero__cap">(.*?) &middot;', html,
+        ) or re.search(r"No income or expenses in (.*?)\.", html)
+        assert heading is not None, (
+            "neither the statement hero caption nor its empty state rendered, "
+            "so there is no heading to compare the option against"
+        )
+        assert unescape(heading.group(1)) == label
+
+
 # ── Balance Sheet Tab Tests ───────────────────────────────────────
 
 
@@ -1170,7 +1358,6 @@ class TestCalendarYearView:
     def test_calendar_third_paycheck_badge(self, app, auth_client, seed_user, db):
         """Year with 26 periods shows '3rd check' badge."""
         with app.app_context():
-            from app.services import pay_period_service
             from datetime import date
             # The BINDING went with the ``current_anchor_period_id`` line it
             # fed (ruling R-EH); the CALL is fixture setup and stays -- these

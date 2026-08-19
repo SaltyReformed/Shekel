@@ -44,6 +44,7 @@ from app.models.ledger_account import LedgerAccount
 from app.services import account_posting_service, ledger_report_service
 from app.services.ledger_report_service import StatementWindow
 from app.utils.dates import display_today
+from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
     create_account_of_type,
     create_settled_transfer,
@@ -570,7 +571,7 @@ class TestTheStatementsReportTheDifference:
             # as-of-today month would not contain a true-up dated two days ago.
             observed = _true_up_day()
             report = ledger_report_service.compute_income_statement(
-                seed_user["user"].id,
+                seed_user["user"].id, calendar_for(seed_user["user"].id),
                 StatementWindow(
                     window_type="month",
                     month=observed.month,
@@ -610,7 +611,7 @@ class TestTheStatementsReportTheDifference:
             # as-of-today month would not contain a true-up dated two days ago.
             observed = _true_up_day()
             report = ledger_report_service.compute_income_statement(
-                seed_user["user"].id,
+                seed_user["user"].id, calendar_for(seed_user["user"].id),
                 StatementWindow(
                     window_type="month",
                     month=observed.month,
@@ -676,7 +677,7 @@ class TestTheStatementsReportTheDifference:
 
             observed = _true_up_day()
             income = ledger_report_service.compute_income_statement(
-                seed_user["user"].id,
+                seed_user["user"].id, calendar_for(seed_user["user"].id),
                 StatementWindow(
                     window_type="month",
                     month=observed.month,

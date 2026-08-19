@@ -29,8 +29,8 @@ patterns: a Checking (PLAIN), an HYSA + InterestParams (INTEREST), a
 Mortgage + LoanParams + origination event/rate (AMORTIZING), a 401(k) +
 InvestmentParams (INVESTMENT), and a Property + AssetAppreciationParams
 (APPRECIATING).  ``seed_periods_today`` places today in period index 4 so
-``get_current_period`` is deterministic and an account can be anchored in
-the past (period 2) or at the current period (period 4).
+"which paycheck contains today" is deterministic and an account can be
+anchored in the past (period 2) or at the current period (period 4).
 """
 
 from collections import OrderedDict
@@ -93,6 +93,7 @@ from tests._test_helpers import (
     create_loan_account,
     create_settled_cash_transaction,
     create_settled_transfer,
+    current_pay_period,
     insert_trueup_event,
     loan_params_for,
     make_appreciating_account,
@@ -951,7 +952,7 @@ class TestBalanceMapInvestment:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            current = pay_period_service.get_current_period(user_id)
+            current = current_pay_period(user_id)
             inv = make_investment_account(
                 seed_user, db.session, current, Decimal("10000.00"),
             )
@@ -1072,7 +1073,7 @@ class TestInvestmentGrowthSinceAnchor:
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
-            current = pay_period_service.get_current_period(user_id)
+            current = current_pay_period(user_id)
             # Anchor at the first period, strictly before the current one.
             inv = make_investment_account(
                 seed_user, db.session, periods[0], Decimal("10000.00"),
@@ -1117,7 +1118,7 @@ class TestInvestmentGrowthSinceAnchor:
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
             periods = pay_period_service.get_all_periods(user_id)
-            current = pay_period_service.get_current_period(user_id)
+            current = current_pay_period(user_id)
             inv = make_investment_account(
                 seed_user, db.session, periods[0], Decimal("10000.00"),
             )
@@ -1154,7 +1155,7 @@ class TestInvestmentGrowthSinceAnchor:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            current = pay_period_service.get_current_period(user_id)
+            current = current_pay_period(user_id)
             inv = make_investment_account(
                 seed_user, db.session, current, Decimal("10000.00"),
             )
@@ -2505,7 +2506,7 @@ class TestASettledRowMovesEveryCashAnswerTogether:
 
             view = balance_at.grid_balance_view(hysa, bctx)
             cash = balance_at.cash_balance_map(hysa, bctx)
-            current = pay_period_service.get_current_period(user_id)
+            current = current_pay_period(user_id)
 
             # The settled row IS in the cash basis...
             assert cash[current.id] == Decimal("48000.00")
@@ -4825,7 +4826,7 @@ class TestBrokenLoanFailsLoud:
             # rather than reaching positions()'s fail-loud for a schedule-less
             # loan.  Pinned by value at the current period ($150,000.00 anchor,
             # held flat).
-            current = pay_period_service.get_current_period(seed_user["user"].id)
+            current = current_pay_period(seed_user["user"].id)
             loan_map = balance_at.balance_map(acct, bctx)
             assert loan_map is not None
             assert loan_map[current.id] == Decimal("150000.00")
@@ -5326,7 +5327,7 @@ class TestRecordsBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             ctx = balance_at.BalanceContext.build(user_id)
-            day = pay_period_service.get_current_period(user_id).end_date
+            day = current_pay_period(user_id).end_date
 
             with pytest.raises(TypeError):
                 balance_at.records_balance_at(

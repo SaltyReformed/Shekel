@@ -57,8 +57,8 @@ def _freeze_today_inside_seed_range(monkeypatch):
 
     Mirrors the fixture in ``test_salary.py``.  Required because
     these tests exercise routes that call ``_regenerate_salary_transactions``,
-    which in turn calls ``pay_period_service.get_current_period``;
-    that lookup needs to find a seeded period at "today" or it
+    which in turn asks which paycheck contains today; that lookup
+    needs to find a seeded period at "today" or it
     skips regeneration silently and the tests cannot tell whether
     the constraint or the regeneration path failed.
     """

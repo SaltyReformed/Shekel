@@ -185,8 +185,8 @@ def _create_concurrent_user(db_session):
     # uq_pay_periods_user_index constraint holds; the account re-anchors to
     # periods[0] (index 1) below, leaving the bootstrap unreferenced.
     # The APP's today, not the process's.  Every period boundary below has to
-    # contain the day ``get_current_period`` will look for, and that lookup is
-    # on the display clock -- so building the window from ``date.today()``
+    # contain the day the containment lookup will look for, and that lookup
+    # is on the display clock -- so building the window from ``date.today()``
     # leaves the app's today outside it whenever the two calendars disagree.
     today = display_today()
     base = today - timedelta(days=today.weekday())  # Monday this week

@@ -25,7 +25,7 @@ from flask_login import current_user, login_required
 
 from app.routes import analytics_view
 from app.utils.auth_helpers import get_or_404, require_owner
-from app.utils.dates import to_display_date
+from app.utils.dates import display_today, to_display_date
 
 from app.extensions import db
 from app.models.account import Account
@@ -35,12 +35,12 @@ from app.models.user import UserSettings
 from app.services import (
     calendar_service,
     ledger_report_service,
-    pay_period_service,
     spending_report_service,
     tax_report_service,
     tax_withholding_service,
 )
 from app.services.calendar_service import CalendarAccountNotResolvableError
+from app.services.pay_calendar import calendar_for
 
 analytics_bp = Blueprint("analytics", __name__)
 
@@ -243,7 +243,22 @@ def taxes_tab():
         return shell
 
     report = tax_report_service.compute_tax_report(current_user.id, year, today)
-    available_years = _get_available_years(current_user.id, today.year)
+    # ONE producer of "which years may this owner ask about", shared with the
+    # Income Statement tab, and it takes a calendar since plan step C2-f3a --
+    # it was its own ``ORDER BY start_date ... .first()`` query, a second
+    # implementation of a question the derivation answers.
+    #
+    # **This route DERIVES one where the statement tab threads the one it
+    # already holds, and that is a known +1 on THIS render until plan step
+    # C2-f3e** (ledger row **P56**).  ``tax_report_service`` opens its own read
+    # pass and separately calls ``calendar_for`` for its year slice; both are
+    # doors that step closes by taking the pass from the route, at which point
+    # this derivation becomes the render's only one.  Deriving here is the
+    # direction that fix goes -- the route is the door -- so the duplicate is a
+    # transient of the sequence rather than a second producer being added.
+    available_years = _get_available_years(
+        calendar_for(current_user.id), today.year,
+    )
 
     if report is None:
         return render_template(
@@ -385,15 +400,44 @@ def income_statement_tab():
     A direct (non-HTMX) request renders the shell with the Statements tab
     active (D13), which then auto-loads this partial (the Statements pill's
     income-statement default).
-    """
-    today = date.today()
 
+    **THIS RENDER DERIVES THE OWNER'S PAY CALENDAR ONCE, AND ASKS IT EVERY
+    "which paycheck" QUESTION** (plan step C2-f3a, ledger rows **P19** and
+    **P49**).  It asked FOUR separate reads of ``budget.pay_periods`` before,
+    each answering a question the one derivation answers: which period is
+    current (``pay_period_service.get_current_period`` -- SQL whose ``.first()``
+    carried NO ``ORDER BY``), the whole list for the ``<select>``, the earliest
+    period for the year list, and the chosen period's dates for the heading
+    label, that last one issued a second time inside
+    ``ledger_report_service``.  Measured on the arch fixture: four statements
+    naming ``budget.pay_periods`` and zero calendar derivations, against two
+    statements and one derivation now.
+
+    **The day is the OWNER'S civil day**, not the container's.  Every one of
+    those reads defaulted to ``date.today()``, which is the process clock;
+    ``display_today()`` is the clock the user's own screen is in and the one
+    ``routes/_period_options.period_move_options`` already uses for the same
+    question.  The two agree only because both compose files pin
+    ``TZ: America/New_York`` (the 2026-06-12 parity audit's finding M01), so
+    this removes a dependence on a deployment setting rather than a live
+    defect -- and it fixes CI, a script and a bare ``flask run`` on a
+    non-Eastern host, where the pin does not reach.
+    """
     # IDOR (the same route-boundary guard the calendar uses for
     # ``account_id``): validate a user-supplied ``period_id`` before
     # ``_resolve_window_params`` reads it.  The statement's money queries
     # are user-scoped (a foreign period yields an empty report), but the
     # service reads the period for its window LABEL un-scoped, so a foreign
     # ``period_id`` would otherwise leak the victim's period dates.
+    #
+    # **It stays a ``get_or_404`` and is deliberately NOT answered from the
+    # calendar below**, though the calendar knows the owner's period ids and
+    # could.  ``_validate_owned_or_abort`` delegates to
+    # ``auth_helpers.get_or_404``, which EMITS the structured
+    # ``resource_not_found`` (INFO) and ``access_denied_cross_user`` (WARNING)
+    # events the SOC dashboards read; a membership test against the calendar
+    # would refuse identically and record nothing.  The audit trail is the
+    # reason this read is not one of the four collapsed below.
     _validate_owned_or_abort(
         PayPeriod, request.args.get("period_id", type=int),
     )
@@ -405,16 +449,31 @@ def income_statement_tab():
     if shell is not None:
         return shell
 
-    window_type, period_id, month, year = _resolve_window_params(today)
+    # **The derivation is BELOW the early return, and an adversarial review of
+    # this step is why**: it sat above, so every direct navigation -- the
+    # bookmark this D13 branch exists for -- paid two queries and a derivation
+    # over the owner's whole payday set and threw the value away, then the
+    # auto-loaded partial derived it again.  That is the shape
+    # ``pay_calendar._loader.cadence_for``'s docstring already records as a
+    # defect: resolving BEFORE a producer's early return.  It also moved a
+    # ``PayCalendarError`` (ledger row **P35**) off the shell render, where a
+    # legacy owner would have met a 500 on a page that reads no pay-period
+    # data at all.
+    today = display_today()
+    calendar = calendar_for(current_user.id)
+
+    window_type, period_id, month, year = _resolve_window_params(
+        calendar, today,
+    )
     window = ledger_report_service.StatementWindow(
         window_type=window_type, period_id=period_id, month=month, year=year,
     )
     report = ledger_report_service.compute_income_statement(
-        current_user.id, window,
+        current_user.id, calendar, window,
     )
 
-    periods = pay_period_service.get_all_periods(current_user.id)
-    available_years = _get_available_years(current_user.id, today.year)
+    periods = calendar.saved()
+    available_years = _get_available_years(calendar, today.year)
     return render_template(
         "analytics/_income_statement.html",
         report=report,
@@ -566,7 +625,7 @@ def _render_year_view(year, account_id, threshold):
 # selector (the Variance tab that once shared it is retired).
 
 
-def _resolve_window_params(today):
+def _resolve_window_params(calendar, today):
     """Parse and apply defaults for the window query parameters.
 
     The ``window`` / ``period_id`` / ``month`` / ``year`` parsing for the
@@ -582,8 +641,20 @@ def _resolve_window_params(today):
     is a no-op for the in-range defaults and for the ``pay_period`` window
     (whose ``month`` / ``year`` stay ``None``).
 
+    **Both period reads come off the CALENDAR the caller derived** (plan step
+    C2-f3a).  ``period_containing`` is the SAVED-only search, which is exactly
+    what ``pay_period_service.get_current_period`` answered -- not
+    ``span_containing``, whose projection past the horizon carries
+    ``period_id = None`` and would put a ``None`` into ``StatementWindow`` that
+    reads as "no window chosen".  The fall-through to a MONTH window for an
+    owner with no periods at all is preserved and is why ``None`` here must
+    stay a real answer.
+
     Args:
-        today: The current date.
+        calendar: The render's :class:`~app.services.pay_calendar.PayCalendar`,
+            derived once by the caller.
+        today: The owner's civil day (``display_today()``), supplied by the
+            caller so this page holds ONE clock.
 
     Returns:
         Tuple of (window_type, period_id, month, year); ``month`` and
@@ -598,12 +669,12 @@ def _resolve_window_params(today):
     year = request.args.get("year", type=int)
 
     if window_type == "pay_period" and period_id is None:
-        current = pay_period_service.get_current_period(current_user.id)
+        current = calendar.period_containing(today)
         if current is None:
-            all_p = pay_period_service.get_all_periods(current_user.id)
-            current = all_p[-1] if all_p else None
+            saved = calendar.saved()
+            current = saved[-1] if saved else None
         if current is not None:
-            period_id = current.id
+            period_id = current.period_id
         else:
             window_type = "month"
             month = today.month
@@ -627,29 +698,28 @@ def _resolve_window_params(today):
     return window_type, period_id, month, year
 
 
-def _get_available_years(user_id, current_year):
+def _get_available_years(calendar, current_year):
     """Build the list of years for the year selector dropdown.
 
     Spans from the user's earliest pay period year through the
     current year, or just the current year if no periods exist.
 
+    **It was its own ``ORDER BY start_date ... .first()`` query** until plan
+    step C2-f3a, which is a fourth read of ``budget.pay_periods`` on a render
+    that now derives the schedule once;
+    :meth:`~app.services.pay_calendar.PayCalendar.opening_bound` is the same
+    question and the same answer, and it is ``None`` for the same owner the
+    query returned no row for.
+
     Args:
-        user_id: The authenticated user's ID.
+        calendar: The render's :class:`~app.services.pay_calendar.PayCalendar`.
         current_year: Today's year as an upper bound.
 
     Returns:
         List of year integers in descending order.
     """
-    earliest_period = (
-        db.session.query(PayPeriod)
-        .filter(PayPeriod.user_id == user_id)
-        .order_by(PayPeriod.start_date)
-        .first()
-    )
-    start_year = (
-        earliest_period.start_date.year if earliest_period
-        else current_year
-    )
+    opening = calendar.opening_bound()
+    start_year = opening.year if opening is not None else current_year
     return list(range(current_year, start_year - 1, -1))
 
 

@@ -54,7 +54,7 @@ def _freeze_today_inside_seed_range(monkeypatch):
     which spans 2026-2027 from a calendar anchor.  Migrating to a
     today-relative fixture would slide the period range out of the
     tax_year=2026 frame.  Freezing today inside the seeded range keeps
-    get_current_period() deterministic regardless of wall-clock date.
+    "which paycheck contains today" deterministic regardless of wall-clock date.
     """
     freeze_today(monkeypatch, date(2026, 3, 20))
 
@@ -236,7 +236,10 @@ def _respace_paydays(db, user_id, cadence_days):
         first_payday=date(2026, 1, 2),
         num_periods=10,
         cadence_days=cadence_days,
-        retiring=db.session.query(PayPeriod).filter_by(user_id=user_id).all(),
+        retiring_ids={
+            pid for (pid,) in db.session.query(PayPeriod.id)
+            .filter_by(user_id=user_id)
+        },
     )
     db.session.commit()
 

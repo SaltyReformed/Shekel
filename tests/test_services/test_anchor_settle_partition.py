@@ -33,7 +33,6 @@ from app.services import (
     anchor_service,
     balance_at,
     cash_ledger,
-    pay_period_service,
     posting_service,
     reconcile_service,
 )
@@ -45,6 +44,7 @@ from tests._test_helpers import (
     create_account_of_type,
     create_envelope_txn,
     create_settled_cash_transaction,
+    current_pay_period,
     linked_ledger_account,
     observed_day_of,
     override_anchor,
@@ -73,7 +73,7 @@ _A_STATEMENT_DAY = date(2026, 1, 22)
 
 def _current_period(user_id):
     """Return the pay period containing today in the USER's zone."""
-    return pay_period_service.get_current_period(
+    return current_pay_period(
         user_id, as_of=display_today(),
     )
 

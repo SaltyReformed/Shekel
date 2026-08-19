@@ -544,13 +544,6 @@ that has none. Whatever this step rules, it states the value honestly at both si
       `resolve` hardcodes `NONE`; 46 of 46 live rules carry `none`. Finding **F-4** (the PAY
       SCHEDULE's own holiday shift) is a different question and stays separate.
 
-- [x] **R9 -- the closed pattern set's last artefacts die.** `800671a7`, ruling **R-R27**.
-      `ref.recurrence_patterns` is DROPPED (`b2e9a47c3f18`) with `RecurrencePatternEnum`,
-      `ref_cache.recurrence_pattern_id` and the seed entry behind them, in ONE release rather than
-      the two R-R11 had reserved; the test suite's cadence vocabulary moved with them onto the two
-      axes. The rollback measurement, the production census and the clone rehearsal are in
-      `historical/recurrence_r9_as_built_2026-08-17.md`.
-
 ### R10 -- the regeneration's own defect
 
 Found while X-f3b measured the ledger. Its two leaves are below.
@@ -635,6 +628,11 @@ walk carries (`24.3495 / 24`) is an artifact the model manufactures, about `$1,3
 over-modelled gross on a `$91,675` salary, on top of paydays drifting ~20 days off the 1st and the
 15th. R13 is what removes it.
 
+**`R-D33` and `R9` left this index on 2026-08-19** with their `steps.md` rows, archived as one
+completed span to `historical/recurrence_completed_findings_span_as_built_2026-08-19.md` (rule 5)
+when `R-F16` needed the room. Each closed a finding on its own commit and blocked nothing; that
+record names both hashes and says why `R7c-c`, `R7c`, `R7a-2a` and `R-F1` stayed.
+
 ### Carried steps -- scheduled here so they are not merely remembered
 
 Section 5's ledger carries findings that no numbered step closes: some this arc surfaced elsewhere
@@ -648,10 +646,6 @@ is unreviewable.
 completed span to `historical/recurrence_findings_span_as_built_2026-08-17.md` (rule 5) when
 `bank_import:X-f6a-2` needed the room. Each closed one `F-` finding on its own commit and blocked
 nothing; that record names all three hashes, and says why `R-F1` stayed.
-
-- [x] **R-D33 -- a date bound answers from occurrences.** `dd2a5a34`. Both closing bounds answer
-      from whether the rule still OWES one, so two spellings of one schedule cannot leave the
-      obligations total on different days. Closed **D33**.
 
 - [x] **R-F1 -- the lagging `ref` identity sequences are in step.** `44b25ad3`, migration
       `c7f3a9d1e864`. Closed **F-1**. Account archived to

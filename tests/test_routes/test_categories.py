@@ -30,7 +30,10 @@ from app.utils.archive_helpers import (
     template_has_paid_history,
     transfer_template_has_paid_history,
 )
-from tests._test_helpers import select_option_values
+from tests._test_helpers import (
+    current_pay_period,
+    select_option_values,
+)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -1521,8 +1524,6 @@ class TestCategoryArchiveDelete:
     ):
         """C-5A.5-35: Transactions with archived categories still render in the grid."""
         with app.app_context():
-            from app.services.pay_period_service import get_current_period
-
             category = db.session.get(Category, seed_user["categories"]["Rent"].id)
             txn_type = db.session.query(TransactionType).filter_by(name="Expense").one()
             projected = db.session.query(Status).filter_by(name="Projected").one()
@@ -1533,7 +1534,7 @@ class TestCategoryArchiveDelete:
             # the period that contains today -- ``seed_periods_today`` is 10
             # biweekly periods starting 2026-01-02, so today's period is
             # always one of them.
-            current_period = get_current_period(seed_user["user"].id)
+            current_period = current_pay_period(seed_user["user"].id)
             assert current_period is not None, (
                 "seed_periods_today must cover today so the txn lands in the "
                 "default visible grid window"

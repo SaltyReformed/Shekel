@@ -41,7 +41,8 @@ from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
-from app.services import pay_period_service
+
+from tests._test_helpers import current_pay_period
 
 
 # -- Helpers ---------------------------------------------------------
@@ -50,11 +51,11 @@ from app.services import pay_period_service
 def _current_period_for(user_id, seed_periods_today):
     """Return the current period for the user.
 
-    seed_periods_today guarantees that today falls in period 4, so
-    ``get_current_period`` always returns a real period.
+    seed_periods_today guarantees that today falls in period 4, so the
+    containment lookup always answers a real period.
     """
     # pylint: disable=unused-argument
-    return pay_period_service.get_current_period(user_id)
+    return current_pay_period(user_id)
 
 
 def _create_tracked_txn_in_period(

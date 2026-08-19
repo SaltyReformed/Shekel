@@ -5288,6 +5288,62 @@ def dashboard_section(user_id, as_of=None):
     )
 
 
+def current_pay_period(user_id, as_of=None):
+    """Return the ORM :class:`PayPeriod` row covering *as_of* for *user_id*.
+
+    **The ONE place the suite asks "which paycheck is this owner in", and it
+    asks the APPLICATION** (plan step C2-f3a).  It replaced
+    ``pay_period_service.get_current_period``, which that step deleted after
+    moving its three ``app/`` call sites onto
+    :meth:`~app.services.pay_calendar.PayCalendar.period_containing` -- and the
+    two defects it was deleted FOR are exactly the two a hand-rolled test
+    helper would have reproduced.  Its ``.first()`` carried no ``ORDER BY``
+    (ledger row **P19**), and it read the process clock rather than the
+    owner's civil day (row **P49**).
+
+    So this does not re-implement the search.  It runs the same derivation the
+    application runs and then resolves the row, which is what keeps the suite
+    from being able to disagree with the app about which period is current --
+    a test that seeds state into "the current period" and a page that renders
+    "the current period" must mean one period, or the assertion grades nothing.
+
+    **It returns the ORM ROW deliberately**, where ``app/`` now holds
+    :class:`~app.services.pay_calendar.DerivedPeriod` values.  A test needs a
+    row because the factories take one (``make_investment_account``,
+    ``create_loan_account``, every ``Transaction(pay_period_id=...)`` seed) and
+    because ``tests/`` legitimately writes this table where ``app/`` may not
+    (see ``pay_period_write``'s ``TestThereIsOneWriter``).  The identity comes
+    from the derivation either way, so the row and the derived value name the
+    same paycheck by construction rather than by two searches agreeing.
+
+    Args:
+        user_id: The owner whose schedule to search.
+        as_of: The civil day to place.  Defaults to
+            :func:`~app.utils.dates.display_today`, the owner's own day and
+            the clock ``seed_periods_today`` builds its schedule around, so
+            the default lands inside the seeded window rather than one UTC
+            midnight past it.
+
+    Returns:
+        The covering :class:`~app.models.pay_period.PayPeriod`, or ``None``
+        when no SAVED period covers *as_of* -- which is a real answer and the
+        one three routes still branch on.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dependency
+    # avoidance as the factories above.
+    from app.extensions import db as _db
+    from app.models.pay_period import PayPeriod as _PayPeriod
+    from app.services.pay_calendar import calendar_for
+    from app.utils.dates import display_today
+
+    period = calendar_for(user_id).period_containing(
+        display_today() if as_of is None else as_of,
+    )
+    if period is None:
+        return None
+    return _db.session.get(_PayPeriod, period.period_id)
+
+
 def read_pass_over_paydays(paydays, cadence_days, as_of, user_id=1):
     """Return a :class:`BalanceContext` whose pay calendar is *paydays*.
 

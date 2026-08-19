@@ -107,6 +107,8 @@ from app.services.account_projection import (
     classify_account,
 )
 
+from tests._test_helpers import current_pay_period
+
 
 # Fixed valuation dates spanning the horizon, read by BOTH the cash-flow scalar
 # and the kind-correct one: two in the past (one of them pre-anchor for the real
@@ -228,7 +230,7 @@ def _modelled_figures(account, ctx):
     ):
         return {}
     growth = balance_at.investment_growth_since_anchor(
-        account, ctx, pay_period_service.get_current_period(ctx.user_id),
+        account, ctx, current_pay_period(ctx.user_id),
     )
     return {
         # A ``(growth, contributed)`` pair, or None when the account models

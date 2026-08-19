@@ -10,7 +10,9 @@
      preview         -- ``CarryForwardPreview`` from
                         ``carry_forward_service.preview_carry_forward``.
      source_period   -- ``PayPeriod`` the user clicked Carry Fwd on.
-     current_period  -- ``PayPeriod`` the items would land in.
+     current_period  -- ``DerivedPeriod`` the items would land in.  Its id is
+                        spelled ``period_id``, NOT ``id`` (plan step C2-f3a):
+                        ``{{ current_period.id }}`` renders EMPTY, silently.
 
    Confirm posts to the existing carry_forward route; on success the
    route returns ``HX-Trigger: gridRefresh`` which reloads the page
