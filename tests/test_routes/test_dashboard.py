@@ -38,11 +38,11 @@ from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.models.account import AccountAnchorHistory
 from app.models.transaction import Transaction
-from app.services import pay_period_service
 from app.utils.dates import add_months, display_today
 from tests._test_helpers import (
     add_anchor_history as _add_anchor_history,
     add_txn as _add_txn,
+    current_pay_period,
 )
 
 
@@ -147,7 +147,7 @@ class TestDashboardPulseRendering:
         Still-due total = $300.00, rendered ``$300.00``.
         """
         with app.app_context():
-            cur = pay_period_service.get_current_period(seed_user["user"].id)
+            cur = current_pay_period(seed_user["user"].id)
             _add_txn(
                 db.session, seed_user, cur, "Rent", "300.00",
                 due_date=cur.start_date + timedelta(days=2),
@@ -184,7 +184,7 @@ class TestDashboardPulseRendering:
         from app.services import account_service, transfer_service
 
         with app.app_context():
-            cur = pay_period_service.get_current_period(seed_user["user"].id)
+            cur = current_pay_period(seed_user["user"].id)
 
             _add_txn(
                 db.session, seed_user, cur, "Rent", "300.00",
@@ -309,7 +309,7 @@ class TestDashboardPulseRendering:
         from app.models.transaction_template import TransactionTemplate
 
         with app.app_context():
-            cur = pay_period_service.get_current_period(seed_user["user"].id)
+            cur = current_pay_period(seed_user["user"].id)
             _add_txn(
                 db.session, seed_user, cur, "Rent", "1200.00",
                 due_date=cur.start_date + timedelta(days=1),
@@ -368,7 +368,7 @@ class TestDashboardPulseRendering:
         feeds the street, so its name never reaches the response.
         """
         with app.app_context():
-            cur = pay_period_service.get_current_period(seed_user["user"].id)
+            cur = current_pay_period(seed_user["user"].id)
             _add_txn(
                 db.session, seed_user, cur, "Already Paid", "500.00",
                 status_enum=StatusEnum.DONE, settled_amount="500.00",
@@ -508,7 +508,7 @@ class TestDashboardPulseRendering:
         terminus no longer print on top of each other.
         """
         with app.app_context():
-            cur = pay_period_service.get_current_period(seed_user["user"].id)
+            cur = current_pay_period(seed_user["user"].id)
             _add_txn(
                 db.session, seed_user, cur, "End Day Bill", "250.00",
                 due_date=cur.end_date,
@@ -568,7 +568,7 @@ class TestHeroCaptions:
         money macro must place the sign before the dollar symbol.
         """
         with app.app_context():
-            cur = pay_period_service.get_current_period(seed_user["user"].id)
+            cur = current_pay_period(seed_user["user"].id)
             account = seed_user["account"]
             # The assertion IS the anchor since ruling R-EH; the cache column
             # this used to set beside it is deleted.  The origination row is
@@ -919,7 +919,7 @@ class TestPulseSection:
         street head + the bill's street event.
         """
         with app.app_context():
-            cur = pay_period_service.get_current_period(seed_user["user"].id)
+            cur = current_pay_period(seed_user["user"].id)
             _add_txn(
                 db.session, seed_user, cur, "Rent", "300.00",
                 due_date=cur.start_date + timedelta(days=2),

@@ -20,6 +20,8 @@ from app.utils.dates import (
     display_today,
     has_settled_by,
     months_between,
+    pay_period_label,
+    pay_period_range_label,
     to_display_date,
     to_display_tz,
 )
@@ -291,3 +293,60 @@ class TestHasSettledBy:
         """
         assert has_settled_by(None, date(2026, 5, 9)) is False
         assert has_settled_by(None, date(2999, 12, 31)) is False
+
+
+class TestPayPeriodRangeLabel:
+    """The WIDE period register, and the one place it is now written.
+
+    Plan step **C2-f3a** collapsed three copies of this string --
+    ``ledger_report_service._income_statement._window_label``,
+    ``spending_report_service._window._window_label`` and inline Jinja in
+    ``analytics/_income_statement.html`` -- onto
+    :func:`~app.utils.dates.pay_period_range_label`, and then onto
+    ``spending_analysis.window_label`` one level up when ``duplicate-code``
+    showed the two service functions were the same three-arm dispatch.  Ledger
+    row **P47**'s duplicate half.
+
+    **These are BYTE-EXACT pins of what all three copies produced**, which is
+    what makes the collapse provably display-neutral rather than a rendering
+    change smuggled in behind a DRY fix.
+    """
+
+    def test_it_reproduces_the_register_the_three_copies_produced(self):
+        """``Feb 21 - Mar 06, 2026``: abbreviated month, padded day, end year."""
+        assert pay_period_range_label(
+            date(2026, 2, 21), date(2026, 3, 6),
+        ) == "Feb 21 - Mar 06, 2026"
+
+    def test_a_period_inside_one_month_keeps_the_same_shape(self):
+        """No special case for a period that does not cross a month."""
+        assert pay_period_range_label(
+            date(2026, 3, 13), date(2026, 3, 26),
+        ) == "Mar 13 - Mar 26, 2026"
+
+    def test_a_STRADDLING_period_shows_only_the_END_year(self):
+        """The known defect, pinned as the behaviour that was preserved.
+
+        ``"Dec 26 - Jan 08, 2027"`` reads as a December in 2027, and it is a
+        December in 2026.  All three collapsed copies did this and this
+        reproduces it deliberately: the collapse is a DRY fix and changing what
+        a screen renders is a separate decision.  Ledger row **P67** carries
+        the remedy, which is the rule the NARROW register beside it already
+        applies to the same case -- see
+        :meth:`test_the_narrow_register_already_carries_both_years`.
+        """
+        assert pay_period_range_label(
+            date(2026, 12, 26), date(2027, 1, 8),
+        ) == "Dec 26 - Jan 08, 2027"
+
+    def test_the_narrow_register_already_carries_both_years(self):
+        """:func:`pay_period_label` disambiguates the straddle; this one does not.
+
+        Stated side by side because it is the whole of P67's argument: the
+        rule exists in this module already, applied by the sibling register to
+        the identical input, so the wide one is inconsistent with its own
+        neighbour rather than merely terse.
+        """
+        assert pay_period_label(
+            date(2026, 12, 26), date(2027, 1, 8),
+        ) == "12/26/26 - 01/08/27"

@@ -39,8 +39,9 @@ from app.models.transaction import Transaction
 from app.services import account_service, cash_ledger, dashboard_service, pay_period_write
 from app.services.dashboard_service import _pulse
 from app.services import transfer_service
-from app.services import balance_at, pay_period_service, savings_dashboard_service
+from app.services import balance_at, savings_dashboard_service
 from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
     add_anchor_history as _add_anchor_history,
     add_entry,
@@ -1567,12 +1568,29 @@ class TestPeriodIsDerivedNotStored:
             stored.end_date = date(2026, 3, 19)
             db.session.commit()
 
-            # The premise, asserted rather than assumed: the stored span no
-            # longer covers the frozen today, so the retired reader answers
-            # nothing.
-            assert pay_period_service.get_current_period(
-                seed_user["user"].id, as_of=_TODAY,
-            ) is None
+            # The premise, asserted rather than assumed, and it is the two
+            # halves DISAGREEING.  It used to be one assertion --
+            # ``pay_period_service.get_current_period(...) is None`` -- which
+            # said it by driving the reader that read the doctored column;
+            # plan step C2-f3a deleted that reader, so the premise is stated
+            # against the COLUMN itself, which is stronger: it does not depend
+            # on some reader still existing to demonstrate it.
+            #
+            # *A mechanical rename of the old call to the suite's
+            # ``current_pay_period`` helper would have been silent and wrong:
+            # that helper resolves through the DERIVATION, which ignores the
+            # doctored column, so the premise would have asserted the very
+            # thing this case then proves is false.*
+            assert stored.end_date < _TODAY, (
+                "the stored span must NOT cover the frozen today, or the "
+                "disagreement this case is about does not exist"
+            )
+            assert calendar_for(
+                seed_user["user"].id,
+            ).period_containing(_TODAY).period_id == stored.id, (
+                "the PAYDAYS must still place today in this period, or the "
+                "two halves agree and the case grades nothing"
+            )
 
             result = dashboard_service.compute_pulse_section(
                 dashboard_section(seed_user["user"].id, as_of=_TODAY),

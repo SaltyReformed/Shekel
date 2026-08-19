@@ -243,7 +243,7 @@ def record_paydays(
     first_payday: date,
     num_periods: int,
     cadence_days: int,
-    retiring: "list[PayPeriod] | None" = None,
+    retiring_ids: "set[int] | None" = None,
 ) -> "list[PayPeriod]":
     """Record a batch of paydays and re-materialise the owner's whole calendar.
 
@@ -255,9 +255,9 @@ def record_paydays(
     rather than duplicated, so re-running with the same start and a larger
     count legitimately extends the schedule.
 
-    **``retiring`` is what makes regenerate and reset ONE operation**, and an
-    adversarial review of this step is why it exists.  Those two doors replace a
-    span: they drop periods and record others, and applying the halves through
+    **``retiring_ids`` is what makes regenerate and reset ONE operation**, and
+    an adversarial review of this step is why it exists.  Those two doors replace
+    a span: they drop periods and record others, and applying the halves through
     two separate calls derived, refused against and MATERIALISED an interval
     that existed for one statement -- the schedule minus its tail, before the
     rebuild that is the whole point of the door.  Handing both halves to one
@@ -266,6 +266,18 @@ def record_paydays(
     coverage rule, deleted 2026-08-11) is gone; the reason it is ONE call is
     not, because :func:`_write_derivation` would otherwise re-materialise the
     whole calendar twice per rebuild and log the intermediate shape as a repair.
+
+    **It takes IDS, not rows, since plan step C2-f3b.**  It was a
+    ``list[PayPeriod]`` that this function read one thing off -- ``.id`` -- so
+    every caller had to hold ORM rows for a set of integers, which is what kept
+    ``pay_period_admin`` querying ``budget.pay_periods`` for values it decides
+    nothing with.  That module now decides in
+    :class:`~app.services.pay_calendar.DerivedPeriod` values and the ORM read
+    lives HERE, in the one module that writes the table
+    (:func:`_owner_periods`), which is where a read whose only purpose is to
+    feed a write belongs.  It also makes the OWNER scoping structural rather
+    than a property of the callers: an id naming another owner's period is not
+    in :func:`_owner_periods`' answer, so it retires nothing and is not counted.
 
     It replaced ``pay_period_service.generate_pay_periods`` at plan step C3-b,
     and the difference is what the step is about: that function AUTHORED
@@ -291,11 +303,13 @@ def record_paydays(
         cadence_days: Days between the batch's paydays.  Persisted as the
             owner's forecast cadence when the batch records at least one new
             payday; ignored otherwise.
-        retiring: Periods to DELETE as part of the same operation, for the two
-            doors that replace a span rather than extend one.  The caller has
-            already run whatever gates decide they may go; this only carries
-            them out, so that the refusals below see the operation's final
-            payday set.  Defaults to retiring nothing.
+        retiring_ids: ``budget.pay_periods.id`` values to DELETE as part of the
+            same operation, for the two doors that replace a span rather than
+            extend one.  The caller has already run whatever gates decide they
+            may go; this only carries them out, so that the refusals below see
+            the operation's final payday set.  Any id that is not one of
+            *user_id*'s own periods is silently inert -- it names no row this
+            function can reach.  Defaults to retiring nothing.
 
     Returns:
         The newly created :class:`~app.models.pay_period.PayPeriod` objects,
@@ -318,8 +332,8 @@ def record_paydays(
     reject_unmaterialisable_batch(num_periods, cadence_days)
 
     current = _owner_periods(user_id)
-    retiring_ids = {period.id for period in retiring or ()}
-    keep = [period for period in current if period.id not in retiring_ids]
+    doomed = retiring_ids or frozenset()
+    keep = [period for period in current if period.id not in doomed]
     by_payday = {period.start_date: period for period in keep}
 
     new_paydays = [
@@ -351,17 +365,15 @@ def record_paydays(
         "Pay periods generated",
         user_id=user_id,
         count=len(created),
-        retired=len(retiring_ids),
+        retired=len(current) - len(keep),
         start_date=first_payday.isoformat(),
         cadence_days=cadence_days,
     )
     return created
 
 
-def retire_paydays(
-    user_id: int, periods: "list[PayPeriod]", doomed: "list[PayPeriod]",
-) -> int:
-    """Delete *doomed* and re-materialise what survives.
+def retire_paydays(user_id: int, doomed_ids: "set[int]") -> int:
+    """Delete the periods *doomed_ids* names and re-materialise what survives.
 
     **The one door that removes from ``budget.pay_periods``.**  Truncate,
     regenerate's rebuild step and reset's whole-schedule wipe all reach the
@@ -395,15 +407,38 @@ def retire_paydays(
     the derivation onto them costs no reload, where expiring first would make
     the dirty-check re-``SELECT`` one row at a time.
 
+    **It takes IDS and reads the rows itself, since plan step C2-f3b**, for the
+    reason :func:`record_paydays` gives at length: a read whose only purpose is
+    to feed a write belongs in the module that writes, and the caller that used
+    to supply the rows -- ``pay_period_admin`` -- now decides in
+    :class:`~app.services.pay_calendar.DerivedPeriod` values and holds none.
+    Because the delete set is ``current`` less ``keep``, an id from another
+    owner (or a stale one) retires nothing rather than being deleted or counted.
+
+    **What the re-read does and does NOT guarantee**, corrected by an
+    adversarial review of this step.  Under every door that takes
+    ``user_write_lock.lock_user_writes`` it cannot see FEWER rows than the gate
+    did, which is the direction that matters: no period the caller refused to
+    delete can be missing here.  It is not the SAME set, and a first draft said
+    it was: ``POST /pay-periods/generate`` and ``auth_service.register_user``
+    both reach :func:`record_paydays` without taking that lock (finding
+    **P71**), so a concurrent generate can commit a payday between the gate's
+    read and this one and this read sees a SUPERSET.  That is benign here and
+    better than the caller-supplied snapshot it replaced -- the new row is then
+    in ``current`` and in ``keep``, so :func:`_write_derivation` materialises
+    it, where the old shape left it in neither and gave the newly-last survivor
+    a cadence-projected end that could run past it.
+
     Args:
         user_id: The owning user's id.
-        periods: ALL the owner's periods, read by the caller under its advisory
-            lock -- the snapshot the delete and the re-materialisation are both
-            evaluated against, so the two cannot see different sets.
-        doomed: The subset to delete.  Empty is a legal, idempotent no-op.
+        doomed_ids: The ``budget.pay_periods.id`` values to delete.  Empty is a
+            legal, idempotent no-op, and so is a set naming nothing of this
+            owner's.
 
     Returns:
-        The number of pay periods deleted.
+        The number of pay periods actually deleted -- the size of the
+        intersection of *doomed_ids* with this owner's periods, never the size
+        of the argument.
 
     Raises:
         PayPeriodOverlapStored: A surviving row's stored end runs past its
@@ -415,19 +450,21 @@ def retire_paydays(
             follows because this module never commits and the failed request's
             session is discarded without one.
     """
-    doomed_ids = {period.id for period in doomed}
-    if not doomed_ids:
+    current = _owner_periods(user_id)
+    keep = [period for period in current if period.id not in doomed_ids]
+    retired = len(current) - len(keep)
+    if not retired:
         return 0
     _apply(
         _PaydayChange(
             user_id=user_id,
-            current=periods,
-            keep=[p for p in periods if p.id not in doomed_ids],
+            current=current,
+            keep=keep,
             recording=[],
             cadence_days=None,
         ),
     )
-    return len(doomed_ids)
+    return retired
 
 
 @dataclass(frozen=True)
@@ -558,6 +595,39 @@ def _apply(change: _PaydayChange) -> "list[PayPeriod]":
     if retiring_ids:
         db.session.expire_all()
     return created
+
+
+def owner_period_ids(user_id: int) -> "set[int]":
+    """Return every ``budget.pay_periods.id`` *user_id* holds.
+
+    **The door for a caller that means "the whole schedule"** -- today
+    ``pay_period_admin.reset_pay_periods``, which retires every period and
+    rebuilds from a corrected start.  It lives HERE, beside the write it feeds,
+    for :func:`record_paydays`' reason: a read whose only purpose is to name
+    rows for a write belongs in the module that owns the table.
+
+    **It is deliberately not a calendar read** (adversarial review of plan step
+    C2-f3b).  A first cut spelled this ``calendar_for(user_id).saved()``, which
+    made the door that REPAIRS a broken schedule depend on the schedule being
+    derivable: an owner with no ``budget.pay_schedule`` row whose last period
+    spans more than a year resolves a cadence outside 1..365, and
+    ``derive_periods`` refuses it -- so reset, which used to succeed there
+    (``keep`` is empty, and :func:`_apply` derives at the SUBMITTED cadence),
+    became an unhandled 500.  The identity of a row is not a derived value and
+    must not be reached through one.
+
+    Args:
+        user_id: The owning user's id.
+
+    Returns:
+        The ids, empty for an owner who has never generated a schedule.
+    """
+    return {
+        row[0] for row in
+        db.session.query(PayPeriod.id)
+        .filter(PayPeriod.user_id == user_id)
+        .all()
+    }
 
 
 def _owner_periods(user_id: int) -> "list[PayPeriod]":

@@ -172,8 +172,8 @@ class TestRouteAccess:
     ):
         """Companion with no owner periods gets 200 (empty state).
 
-        When pay_period_service.get_current_period returns None,
-        the route should gracefully render the empty state.
+        When no period contains the owner's day, the route should
+        gracefully render the empty state.
         Note: seed_periods_today is not included, so the owner has no periods.
         """
         comp = _login_companion(app)

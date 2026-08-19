@@ -12,12 +12,13 @@ from decimal import Decimal
 from app.models.asset_appreciation_params import AssetAppreciationParams
 from app.models.ref import AccountType
 from app.services.balance_at import BalanceContext
-from app.services import account_service, growth_engine, pay_period_service, savings_dashboard_service
+from app.services import account_service, growth_engine, savings_dashboard_service
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.balance_at._asset_contributions import (
     ContributionInputs,
 )
 from tests._test_helpers import (
+    current_pay_period,
     period_window,
     restamp_opening_assertion,
     settle_instant_on,
@@ -226,13 +227,13 @@ class TestSavingsDashboardProjection:
             )
             # The tile adopts the model-from-anchor value: the canonical
             # net-worth kernel's appreciation map at the current period (read
-            # the SAME way the dashboard does, via get_current_period, rather
-            # than a fixture-index guess).  Cross-checked against the kernel
+            # the SAME way the dashboard does -- the period CONTAINING the
+            # owner's day -- rather than a fixture-index guess).  Cross-checked against the kernel
             # producer (not a pinned magic number) and asserted strictly above
             # the flat $400,000 the pre-seam tile showed, so the appreciation
             # is provably applied.  gross/deductions are irrelevant on the
             # appreciation path, so a 0 gross reproduces the tile's map exactly.
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id,
             )
             modeled_map = net_worth_kernel.build_account_balance_map(

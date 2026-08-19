@@ -160,6 +160,7 @@ from app.services.investment_dashboard_service import (
 )
 from app.services.pay_calendar import calendar_for
 
+
 #: The horizon slider positions the growth chart is asked for.  Three rather
 #: than one because the axis LENGTH is what the slider moves, and a single
 #: position cannot show a per-period defect growing with the horizon.
@@ -244,17 +245,62 @@ def _guard(label, thunk):
         }
 
 
-def _readers(user_id):
-    """Both period readers' answers, side by side, on whichever side runs.
+def _stored_current_period_id(user_id, as_of):
+    """Answer "which paycheck covers *as_of*" off the STORED spans.
 
-    ``get_current_period`` / ``get_all_periods`` survive this leaf -- plan step
-    ``C2-f3`` deletes them -- so this probe runs unchanged on both sides and
-    records what each answered.  If they ever disagree with the calendar the
-    dashboard figures above have already moved, and this says why.
+    A transcription of ``pay_period_service.get_current_period``, which plan
+    step **C2-f3a** deleted -- inline, deliberately, and this function is the
+    correction that step's adversarial code review made.
+
+    **The mechanical rename that step ran over the suite turned this probe
+    into a comparison of the derivation against itself.**  The line read
+    ``pay_period_service.get_current_period(user_id)`` and became the suite's
+    ``current_pay_period`` helper, which resolves THROUGH
+    ``PayCalendar.period_containing`` -- so ``stored_current_period_id`` and
+    ``derived_current_period_id`` below came off one bisect over one payday
+    set, agreed by construction, and this harness would have certified an
+    agreement it never measured.  The one state it exists to catch -- a stored
+    ``end_date`` disagreeing with the paydays, plan finding **P1** -- is
+    exactly the state that would have gone unreported.  See
+    ``docs/plans/lessons.md`` on a fixture that stops testing silently.
+
+    Args:
+        user_id: The owner whose stored spans to search.
+        as_of: The day to place.
+
+    Returns:
+        The ``budget.pay_periods.id`` whose STORED span covers *as_of*, or
+        ``None``.  First match in payday order, which is the honest reading of
+        a ``LIMIT 1`` with no ``ORDER BY``.
+    """
+    row = (
+        db.session.query(PayPeriod)
+        .filter(
+            PayPeriod.user_id == user_id,
+            PayPeriod.start_date <= as_of,
+            PayPeriod.end_date >= as_of,
+        )
+        .order_by(PayPeriod.start_date)
+        .first()
+    )
+    return None if row is None else row.id
+
+
+def _readers(user_id):
+    """The STORED spans and the DERIVED calendar, side by side.
+
+    The stored side is :func:`_stored_current_period_id` and
+    ``pay_period_service.get_all_periods``; the derived side is the calendar.
+    Where they disagree the dashboard figures above have already moved, and
+    this says why.
+
+    **``get_all_periods`` survives C2-f3a and C2-f3c deletes it**; when it
+    goes, ``stored_all_periods`` becomes a ``COUNT`` here for the same reason
+    the current-period probe is now inline -- a stored-vs-derived probe that
+    reads the derivation on both sides measures nothing.
     """
     ctx = BalanceContext.build(user_id)
     calendar = calendar_for(user_id)
-    stored_current = pay_period_service.get_current_period(user_id)
     derived_current = calendar.period_containing(ctx.as_of)
     return {
         "as_of": ctx.as_of.isoformat(),
@@ -263,8 +309,8 @@ def _readers(user_id):
         "horizon": _plain(calendar.horizon()),
         "stored_all_periods": len(pay_period_service.get_all_periods(user_id)),
         "derived_saved_periods": len(calendar.saved()),
-        "stored_current_period_id": (
-            None if stored_current is None else stored_current.id
+        "stored_current_period_id": _stored_current_period_id(
+            user_id, ctx.as_of,
         ),
         "derived_current_period_id": (
             None if derived_current is None else derived_current.period_id

@@ -14,7 +14,6 @@ window spend" is the drift the shared series exists to prevent.
 Boundary discipline: no Flask import; DB reads only, ``Decimal`` out.
 """
 
-from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
@@ -49,21 +48,35 @@ def _resolve_window(ids: _ScopeIds, window: SpendingWindow) -> _ResolvedWindow:
     itself (:func:`_window_transactions`) -- plus the overlapping periods
     as the tracked-window signal.
 
+    **The pay-period arm reads the scope's CALENDAR, not the table** (plan
+    step C2-f3a).  It was ``db.session.get(PayPeriod, window.period_id)``: a
+    second read of ``budget.pay_periods`` on a render that already holds the
+    owner's whole schedule, and an UNSCOPED one -- any owner's id resolved,
+    and its dates went into the window label.  Nothing reachable submits a
+    ``period_id`` to ``/analytics/spending`` today (the route exposes only
+    month and year), so this hardens a door rather than closing a live leak;
+    the calendar carries ONE owner's periods, so a foreign id now resolves
+    nothing by construction.
+
     Args:
-        ids: The report's scope, whose ``calendar`` answers the overlap.
+        ids: The report's scope, whose ``calendar`` answers both the overlap
+            and the pay-period window's own identity lookup.
         window: The window to resolve.
 
     Returns:
         The :class:`_ResolvedWindow`.  ``period_ids`` is empty when a
-        pay-period window's id resolves no row, or a calendar window overlaps
-        none.  ``calendar_window_bounds`` never crosses its bounds (C2-f).
+        pay-period window's id names none of this owner's periods, or a
+        calendar window overlaps none.  ``calendar_window_bounds`` never
+        crosses its bounds (C2-f).
     """
     if window.window_type == "pay_period":
-        period = db.session.get(PayPeriod, window.period_id)
+        period = ids.calendar.period_by_id(window.period_id)
         if period is None:
             return _ResolvedWindow([], None, None, "")
         return _ResolvedWindow(
-            [period.id], None, None, _window_label(window, period),
+            [period.period_id], None, None, spending_analysis.window_label(
+                window.window_type, window.month, window.year, period,
+            ),
         )
 
     first_day, last_day = spending_analysis.calendar_window_bounds(
@@ -71,33 +84,10 @@ def _resolve_window(ids: _ScopeIds, window: SpendingWindow) -> _ResolvedWindow:
     )
     return _ResolvedWindow(
         [p.period_id for p in ids.calendar.overlapping(first_day, last_day)],
-        first_day, last_day, _window_label(window, None),
+        first_day, last_day, spending_analysis.window_label(
+            window.window_type, window.month, window.year, None,
+        ),
     )
-
-
-def _window_label(window: SpendingWindow, period: PayPeriod | None) -> str:
-    """Return the human label for a window.
-
-    Args:
-        window: The window to label.
-        period: The resolved period for a ``"pay_period"`` window (``None``
-            for calendar windows).
-
-    Returns:
-        ``"Feb 21 - Mar 06, 2026"`` (pay period), ``"January 2026"``
-        (month), ``"2026"`` (year), or ``""`` when a pay-period window has
-        no resolved period.
-    """
-    if window.window_type == "pay_period":
-        if period is None:
-            return ""
-        return (
-            f"{period.start_date:%b %d} - {period.end_date:%b %d}, "
-            f"{period.end_date.year}"
-        )
-    if window.window_type == "month":
-        return f"{date(window.year, window.month, 1):%B} {window.year}"
-    return str(window.year)
 
 
 def _window_transactions(

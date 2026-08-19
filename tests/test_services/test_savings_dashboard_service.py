@@ -35,6 +35,8 @@ from app.services.balance_at import BalanceContext
 from app.services.account_category import account_category
 from app.services.pay_calendar import DerivedPeriod
 from app.services.savings_dashboard_service._types import AccountProjection
+
+from tests._test_helpers import current_pay_period
 from tests.oracles.recurrence_baseline import MONTHLY
 
 
@@ -2383,7 +2385,7 @@ class TestDTIRaiseAware:
             db.session.add(profile)
             db.session.flush()
 
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id
             )
             assert current is not None, (
@@ -2640,7 +2642,7 @@ class TestDTIRaiseAware:
             db.session.add(profile)
             db.session.flush()
 
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id
             )
             assert current is not None
@@ -2839,7 +2841,7 @@ class TestCanonicalProducerRouting:
         with app.app_context():
             # Current period == anchor period: seed_periods_today
             # places today in period 4 of a 10-period biweekly window.
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             assert current_period is not None
@@ -2931,7 +2933,7 @@ class TestCanonicalProducerRouting:
             hysa_type = (
                 db.session.query(AccountType).filter_by(name="HYSA").one()
             )
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             assert current_period is not None
@@ -3015,7 +3017,7 @@ class TestCanonicalProducerRouting:
           anchor_period_balance = 614.29 + 0 - 500.00 = 114.29
         """
         with app.app_context():
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             assert current_period is not None
@@ -5735,7 +5737,7 @@ class TestTheProjectionShape:
             all_period_ids = {
                 p.id for p in pay_period_service.get_all_periods(user_id)
             }
-            current = pay_period_service.get_current_period(user_id)
+            current = current_pay_period(user_id)
 
             data = savings_dashboard_service.compute_dashboard_data(
                 BalanceContext.build(user_id),

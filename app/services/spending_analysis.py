@@ -49,8 +49,10 @@ from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
+from app.services.pay_calendar import DerivedPeriod
 from app.services.row_valuation import owned_amount, settled_figure
 from app.utils.balance_predicates import settled_status_ids
+from app.utils.dates import pay_period_range_label
 from app.utils.money import CENTS, HUNDRED, ZERO
 
 _WINDOW_TYPES = frozenset({"pay_period", "month", "year"})
@@ -291,6 +293,63 @@ def calendar_window_bounds(
         last_dom = cal_mod.monthrange(year, month)[1]
         return date(year, month, 1), date(year, month, last_dom)
     return date(year, 1, 1), date(year, 12, 31)
+
+
+def window_label(
+    window_type: str,
+    month: "int | None",
+    year: "int | None",
+    period: DerivedPeriod | None,
+) -> str:
+    """Return the human label for an analytics window.
+
+    The THIRD shared window rule, beside :func:`validate_window` and
+    :func:`calendar_window_bounds`, and it is here for their reason: the
+    Spending report and the confirmed-ledger Income Statement each render a
+    window heading, and a rule defined per surface is a rule two surfaces can
+    come to disagree about.
+
+    **It was written TWICE, and finding that was pylint's** (plan step
+    C2-f3a).  Ledger row **P47** recorded three copies of the pay-period
+    REGISTER; collapsing those onto
+    :func:`~app.utils.dates.pay_period_range_label` left the two enclosing
+    ``_window_label`` functions structurally identical, and ``duplicate-code``
+    said so.  They were the same three-arm dispatch over two window dataclasses
+    that carry the same four fields -- ``StatementWindow`` and
+    ``SpendingWindow`` -- and their month arms produced one string from two
+    spellings (``date(...).strftime("%B")`` against an f-string format spec).
+    So the register was the visible half of a whole duplicated function.
+
+    **It takes the SCALARS rather than a window**, exactly as
+    :func:`validate_window` does at the same two call sites, because the two
+    dataclasses are per-surface types this module may not choose between --
+    and in :func:`validate_window`'s ORDER, ``month`` before ``year``, so two
+    functions called side by side at both sites cannot be read as taking their
+    arguments in different orders.
+
+    Args:
+        window_type: ``"pay_period"``, ``"month"`` or ``"year"``.
+        month: The calendar month 1-12, for a ``"month"`` window.
+        year: The calendar year, for a ``"month"`` or ``"year"`` window.
+        period: The resolved
+            :class:`~app.services.pay_calendar.DerivedPeriod` for a
+            ``"pay_period"`` window.  ``None`` for the calendar windows, and
+            also when a pay-period window's id names none of the owner's
+            periods -- which is what makes the empty string below a real
+            answer rather than a fallback.
+
+    Returns:
+        ``"Feb 21 - Mar 06, 2026"`` (pay period), ``"January 2026"`` (month),
+        ``"2026"`` (year), or ``""`` when a pay-period window resolved no
+        period.
+    """
+    if window_type == "pay_period":
+        if period is None:
+            return ""
+        return pay_period_range_label(period.start_date, period.end_date)
+    if window_type == "month":
+        return f"{date(year, month, 1):%B} {year}"
+    return str(year)
 
 
 def category_names(txn: Transaction) -> tuple[str, str]:

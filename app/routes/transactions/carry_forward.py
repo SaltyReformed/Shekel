@@ -14,10 +14,12 @@ from flask_login import current_user, login_required
 
 from app.extensions import db
 from app.models.pay_period import PayPeriod
-from app.services import carry_forward_service, pay_period_service
+from app.services import carry_forward_service
+from app.services.pay_calendar import calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import require_owner
+from app.utils.dates import display_today
 from app.routes.transactions._bp import transactions_bp
 
 logger = logging.getLogger(__name__)
@@ -38,17 +40,50 @@ def _resolve_carry_forward_context(period_id):
             return err
         source_period, current_period, scenario = ctx
 
+    **The TARGET period is derived and the SOURCE stays an ORM row**, and the
+    asymmetry is the two questions (plan step C2-f3a).  The source is a
+    user-supplied id that has to be resolved and OWNERSHIP-CHECKED against the
+    row -- a 404 for both "no such period" and "not yours", which is the
+    project's security response rule -- while the target is "which paycheck is
+    this owner in now", a calendar question that
+    ``pay_period_service.get_current_period`` answered in SQL with no
+    ``ORDER BY`` against the process clock (ledger rows **P19**, **P49**).
+    The day is ``display_today()``, the owner's own civil day.
+
+    ``None`` from :meth:`~app.services.pay_calendar.PayCalendar
+    .period_containing` keeps its meaning and its 400: no SAVED period covers
+    today, so there is nowhere to carry TO.  ``span_containing`` would answer a
+    projected period past the horizon whose ``period_id`` is ``None``, and
+    every row this operation writes needs one.
+
+    **This render now derives the pay calendar TWICE, and that is a MEASURED
+    +1 this step introduced** (ledger row **P68**, owned by plan step
+    **C2-f3c**).  The retired reader was SQL and derived nothing, so the one
+    derivation on this render belonged to ``carry_forward_service``, which
+    builds a ``GenerationSchedule`` for the target period; the resolve above is
+    a second.  Measured on the arch fixture at 1 -> 2 derivations and 12 -> 13
+    queries.  It is not left for someone to find: C2-f3c reshapes
+    ``GenerationSchedule`` to hold ONE read and to take a calendar rather than
+    load one, at which point this route threads the calendar it already has and
+    the render is back to one.  Deriving HERE is the direction that fix goes --
+    the route is the door -- so the duplicate is a transient of the sequence
+    rather than a producer being added below the route.
+
     Returns:
         Tuple of ``((source_period, current_period, scenario), None)``
         on success, or ``(None, error_response)`` on failure.  The
         error response is a Flask-compatible ``(body, status_code)``
-        tuple that the caller returns directly to HTMX.
+        tuple that the caller returns directly to HTMX.  *current_period* is
+        a :class:`~app.services.pay_calendar.DerivedPeriod`; *source_period*
+        is the ORM row.
     """
     source_period = db.session.get(PayPeriod, period_id)
     if source_period is None or source_period.user_id != current_user.id:
         return None, ("Not found", 404)
 
-    current_period = pay_period_service.get_current_period(current_user.id)
+    current_period = calendar_for(current_user.id).period_containing(
+        display_today(),
+    )
     if current_period is None:
         return None, ("No current period found", 400)
 
@@ -93,7 +128,7 @@ def carry_forward_preview(period_id: int):
 
     try:
         preview = carry_forward_service.preview_carry_forward(
-            period_id, current_period.id, current_user.id, scenario.id,
+            period_id, current_period.period_id, current_user.id, scenario.id,
         )
     except NotFoundError as exc:
         return str(exc), 404
@@ -129,7 +164,7 @@ def carry_forward(period_id):
     # pylint: disable=duplicate-code
     try:
         count = carry_forward_service.carry_forward_unpaid(
-            period_id, current_period.id, current_user.id, scenario.id
+            period_id, current_period.period_id, current_user.id, scenario.id
         )
         db.session.commit()
     except NotFoundError as exc:

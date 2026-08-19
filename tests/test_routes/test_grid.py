@@ -51,6 +51,7 @@ from tests._test_helpers import (
     net_posted_by_day,
     posted_loan_balance_at,
     settle_instant_on,
+    current_pay_period,
 )
 from app.services.row_valuation import owned_contribution, settled_figure
 
@@ -165,11 +166,11 @@ class TestGridRowScoping:
         """Return a period that falls in the default visible window.
 
         The grid starts at the current period; seed_periods_today places
-        period 4 around today's date so get_current_period always
-        returns a valid period.  No fallback is needed.
+        period 4 around today's date so the containment lookup always
+        answers a real period.  No fallback is needed.
         """
         # pylint: disable=unused-argument
-        return pay_period_service.get_current_period(
+        return current_pay_period(
             seed_user["user"].id,
         )
 
@@ -293,7 +294,8 @@ class TestBalanceRow:
     def test_balance_row_no_current_period(self, app, auth_client, seed_user):
         """GET /grid/balance-row with no periods returns 204 empty."""
         with app.app_context():
-            # No periods generated -- get_current_period returns None.
+            # No periods generated -- no period contains today, so the
+            # grid's containment lookup answers None.
             resp = auth_client.get("/grid/balance-row")
             assert resp.status_code == 204
             assert resp.data == b""
@@ -515,7 +517,7 @@ class TestSubtotalRowsEndpoint:
         hx-swap-oob fragment so it never needs its own GET.
         """
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             self._seed_income_expense(
@@ -651,7 +653,7 @@ class TestSubtotalRowsEndpoint:
                 db.session.query(TransactionType)
                 .filter_by(name="Income").one()
             )
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             # First user's own income -- shown via the fallback.
@@ -2250,7 +2252,7 @@ class TestAccountScopedGrid:
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         # Use a visible period (current period index ~5).
-        current = pay_period_service.get_current_period(seed_user["user"].id)
+        current = current_pay_period(seed_user["user"].id)
         self._create_txn(checking, current, scenario, "Checking Rent", 1234,
                          category=seed_user["categories"]["Rent"])
         self._create_txn(savings, current, scenario, "Savings Deposit", 567,
@@ -2371,7 +2373,7 @@ class TestAccountScopedGrid:
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
         # Use the current period so it falls within the visible window.
-        current = pay_period_service.get_current_period(seed_user["user"].id)
+        current = current_pay_period(seed_user["user"].id)
 
         self._create_txn(checking, current, scenario, "Salary", 2000,
                          txn_type_name="Income", category=seed_user["categories"]["Salary"])
@@ -2474,7 +2476,7 @@ class TestAccountScopedGrid:
         checking = seed_user["account"]
         scenario = seed_user["scenario"]
         bctx = BalanceContext.build(seed_user["user"].id)
-        current = pay_period_service.get_current_period(seed_user["user"].id)
+        current = current_pay_period(seed_user["user"].id)
 
         active = self._create_txn(checking, current, scenario, "Active Expense", 100,
                                   category=seed_user["categories"]["Rent"])
@@ -2545,7 +2547,7 @@ class TestAccountScopedGrid:
         checking_after = db.session.get(Transaction, checking_txn_id)
         savings_after = db.session.get(Transaction, savings_txn_id)
 
-        current_period = pay_period_service.get_current_period(seed_user["user"].id)
+        current_period = current_pay_period(seed_user["user"].id)
         assert checking_after.pay_period_id == current_period.id
         assert savings_after.pay_period_id == current_period.id
 
@@ -2598,7 +2600,7 @@ class TestAccountScopedGrid:
         bctx = BalanceContext.build(seed_user["user"].id)
         savings = self._create_savings_account(seed_user["user"], seed_periods_today)
 
-        current = pay_period_service.get_current_period(seed_user["user"].id)
+        current = current_pay_period(seed_user["user"].id)
         # Find the next period after current.
         current_idx = next(
             i for i, p in enumerate(seed_periods_today) if p.id == current.id
@@ -2668,8 +2670,7 @@ class TestInlineSubtotalRows:
             projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            from app.services import pay_period_service
-            current = pay_period_service.get_current_period(seed_user["user"].id)
+            current = current_pay_period(seed_user["user"].id)
             if not current:
                 current = seed_periods_today[0]
 
@@ -2709,8 +2710,7 @@ class TestInlineSubtotalRows:
             projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            from app.services import pay_period_service
-            current = pay_period_service.get_current_period(seed_user["user"].id)
+            current = current_pay_period(seed_user["user"].id)
             if not current:
                 current = seed_periods_today[0]
 
@@ -2748,8 +2748,7 @@ class TestInlineSubtotalRows:
             projected = db.session.query(Status).filter_by(name="Projected").one()
             cancelled = db.session.query(Status).filter_by(name="Cancelled").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
-            from app.services import pay_period_service
-            current = pay_period_service.get_current_period(seed_user["user"].id)
+            current = current_pay_period(seed_user["user"].id)
             if not current:
                 current = seed_periods_today[0]
 
@@ -2803,11 +2802,10 @@ class TestNetCashFlowRow:
     def _seed_txns(self, seed_user, seed_periods_today, income_amt, expense_amt):
         """Helper: create income + expense in the current/first visible period."""
         from app.models.ref import TransactionType
-        from app.services import pay_period_service
         projected = db.session.query(Status).filter_by(name="Projected").one()
         income_type = db.session.query(TransactionType).filter_by(name="Income").one()
         expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-        current = pay_period_service.get_current_period(seed_user["user"].id)
+        current = current_pay_period(seed_user["user"].id)
         if not current:
             current = seed_periods_today[0]
 
@@ -2927,10 +2925,9 @@ class TestFooterCondensation:
         """Tbody subtotal and net cash flow rows survive footer condensation."""
         with app.app_context():
             from app.models.ref import TransactionType
-            from app.services import pay_period_service
             projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
-            current = pay_period_service.get_current_period(seed_user["user"].id)
+            current = current_pay_period(seed_user["user"].id)
             if not current:
                 current = seed_periods_today[0]
 
@@ -2987,7 +2984,7 @@ class TestPeriodHeaderDateFormat:
             self._make_periods(db, seed_user, start)
 
             # The grid starts at the current period -- find it.
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id
             )
             assert current is not None, "No period covers today"
@@ -3055,7 +3052,7 @@ class TestPeriodHeaderDateFormat:
 
             assert next_year_period is not None, "Test requires a next-year period"
 
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             offset = next_year_period.period_index - current_period.period_index
@@ -3076,7 +3073,7 @@ class TestPeriodHeaderDateFormat:
             num = (days_to_today // 14) + 4
             periods = self._make_periods(db, seed_user, past_start, num_periods=num)
 
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             first_offset = periods[0].period_index - current_period.period_index
@@ -3104,7 +3101,7 @@ class TestPeriodHeaderDateFormat:
 
             assert future_period is not None, "Test requires a next-year period"
 
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             offset = future_period.period_index - current_period.period_index
@@ -3136,7 +3133,7 @@ class TestPeriodHeaderDateFormat:
             assert last_current is not None
             assert first_next is not None
 
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             offset = last_current.period_index - current_period.period_index
@@ -3179,7 +3176,7 @@ class TestPeriodHeaderDateFormat:
             db.session.add(txn)
             db.session.commit()
 
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             offset = periods[0].period_index - current_period.period_index
@@ -3231,7 +3228,7 @@ class TestPeriodHeaderDateFormat:
             num = max((days_to_today // 14) + 4, 6)
             periods = self._make_periods(db, seed_user, jan1, num_periods=num)
 
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             offset = periods[0].period_index - current_period.period_index
@@ -3261,7 +3258,7 @@ class TestPeriodHeaderDateFormat:
             if dec_period is None:
                 pytest.skip("No period starting in late current year generated")
 
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             offset = dec_period.period_index - current_period.period_index
@@ -3294,7 +3291,7 @@ class TestTransactionNameRows:
 
     def _get_current_period(self, seed_user):
         """Return the current period for the seed user."""
-        return pay_period_service.get_current_period(seed_user["user"].id)
+        return current_pay_period(seed_user["user"].id)
 
     def test_grid_separate_rows_for_same_category_transactions(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -4070,7 +4067,7 @@ class TestTooltipContent:
 
     def _get_current_period(self, seed_user):
         """Return the current period for the seed user."""
-        return pay_period_service.get_current_period(seed_user["user"].id)
+        return current_pay_period(seed_user["user"].id)
 
     @staticmethod
     def _extract_txn_titles(html):
@@ -4513,8 +4510,7 @@ class TestSubtotalDecimalPrecision:
             projected = db.session.query(Status).filter_by(name="Projected").one()
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
             expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
-            from app.services import pay_period_service
-            period = pay_period_service.get_current_period(seed_user["user"].id)
+            period = current_pay_period(seed_user["user"].id)
             if not period:
                 period = seed_periods_today[0]
 
@@ -4616,7 +4612,7 @@ class TestGridSubtotalsRegressionBaseline:
 
             # Place the transaction in the current period so it is
             # visible on the default grid view.
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             if not current:
@@ -4708,7 +4704,7 @@ class TestGridPeriodSubtotalCanonical:
             expense_type = db.session.query(TransactionType).filter_by(
                 name="Expense",
             ).one()
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None, (
@@ -4851,7 +4847,7 @@ class TestGridPeriodSubtotalCanonical:
                 name="Expense",
             ).one()
             periods = seed_periods_today
-            target_period = pay_period_service.get_current_period(
+            target_period = current_pay_period(
                 seed_user["user"].id,
             )
             assert target_period is not None, (
@@ -5147,7 +5143,7 @@ class TestGridMatchedByRowPeriod:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
@@ -5220,7 +5216,7 @@ class TestGridMatchedByRowPeriod:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
@@ -6400,9 +6396,8 @@ class TestMobileThisPeriodPartial:
         partial's nav header equals ``current_period.label``.
         """
         with app.app_context():
-            from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
 
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
@@ -6594,7 +6589,7 @@ class TestMobileCardActionBar:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
@@ -6630,7 +6625,7 @@ class TestMobileCardActionBar:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
@@ -6670,7 +6665,7 @@ class TestMobileCardActionBar:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
@@ -6716,7 +6711,7 @@ class TestMobileCardActionBar:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
@@ -6763,7 +6758,7 @@ class TestMobileCardActionBar:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
@@ -6813,7 +6808,7 @@ class TestMobileCardActionBar:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
@@ -6857,7 +6852,7 @@ class TestMobileCardActionBar:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
@@ -6922,7 +6917,7 @@ class TestMobileCardActionBar:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
@@ -7095,7 +7090,7 @@ class TestMobileNoSwipeAffordances:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
@@ -7232,7 +7227,7 @@ class TestMobilePlanTab:
         period's id.
         """
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
@@ -7262,7 +7257,7 @@ class TestMobilePlanTab:
         Plan card is still the current period.
         """
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
@@ -7406,7 +7401,7 @@ class TestMobilePlanTab:
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
@@ -7768,7 +7763,7 @@ class TestMobileJumpToPeriod:
         ``{-4, -3, -2, -1, 0, 1, 2, 3, 4, 5}``.
         """
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None
@@ -8814,7 +8809,7 @@ class TestTheAccrualRowLabelIsPerKind:
             seed_user, db.session, seed_periods_today[0], Decimal("100000.00"),
         )
         with app.app_context():
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
         resp = auth_client.get(
@@ -8914,7 +8909,7 @@ class TestGridInterestAccrual:
         scenario = seed_user["scenario"]
         bctx = BalanceContext.build(seed_user["user"].id)
         user_id = seed_user["user"].id
-        current = pay_period_service.get_current_period(user_id)
+        current = current_pay_period(user_id)
         # Seam truth the route must render (current is the leftmost visible col).
         view = balance_at.grid_balance_view(hysa, bctx)
         accrued = view.columns[current.id].balance
@@ -8982,7 +8977,7 @@ class TestGridInterestAccrual:
         hysa = create_hysa_account(
             seed_user, db.session, seed_periods_today[0], Decimal("100000.00"),
         )
-        current = pay_period_service.get_current_period(seed_user["user"].id)
+        current = current_pay_period(seed_user["user"].id)
         resp = auth_client.get(
             f"/grid/this-period-summary?period_id={current.id}"
             f"&account_id={hysa.id}",
@@ -8994,7 +8989,7 @@ class TestGridInterestAccrual:
         self, app, auth_client, seed_user, seed_periods_today,
     ):
         """The mobile This-Period summary refresh shows no Interest bar (PLAIN)."""
-        current = pay_period_service.get_current_period(seed_user["user"].id)
+        current = current_pay_period(seed_user["user"].id)
         resp = auth_client.get(
             f"/grid/this-period-summary?period_id={current.id}",
         )
@@ -9047,7 +9042,7 @@ class TestGridInterestAccrual:
                 Decimal("5000.00") if txn.id == income.id else None
             ),
         )
-        current = pay_period_service.get_current_period(user_id)
+        current = current_pay_period(user_id)
         # The seam builds the live map itself (ruling R-Q), so no override is
         # threaded here or by the route -- this IS the live figure.
         live_view = balance_at.grid_balance_view(hysa, bctx)
@@ -9219,7 +9214,7 @@ class TestTheAddPurchaseFormReadsTheUsersClock:
         monkeypatch.setattr(_helpers, "display_today", lambda: self._SENTINEL)
 
         with app.app_context(), app.test_request_context("/"):
-            period = pay_period_service.get_current_period(
+            period = current_pay_period(
                 seed_user["user"].id,
             )
             assert period is not None
@@ -9287,7 +9282,7 @@ class TestARevertedRowShowsWhatARePayWillBook:
         own badge, captioned with what a tick will do.
         """
         with app.app_context():
-            period = pay_period_service.get_current_period(
+            period = current_pay_period(
                 seed_user["user"].id,
             )
             self._reverted_corrected_row(seed_user, period)
@@ -9319,7 +9314,7 @@ class TestARevertedRowShowsWhatARePayWillBook:
         the one carrying a retained figure.
         """
         with app.app_context():
-            period = pay_period_service.get_current_period(
+            period = current_pay_period(
                 seed_user["user"].id,
             )
             txn_id = self._reverted_corrected_row(seed_user, period).id
@@ -9341,7 +9336,7 @@ class TestARevertedRowShowsWhatARePayWillBook:
         noise to every row on the grid.
         """
         with app.app_context():
-            period = pay_period_service.get_current_period(
+            period = current_pay_period(
                 seed_user["user"].id,
             )
             txn = Transaction(

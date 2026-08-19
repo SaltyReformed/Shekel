@@ -55,6 +55,7 @@ from tests._test_helpers import (
     end_bound_payload,
     make_cadence_rule,
     make_transfer_template,
+    current_pay_period,
 )
 from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
@@ -853,7 +854,7 @@ class TestTemplateUpdate:
             # both constraints at once: the update route sweeps from today, so
             # an earlier row is out of the window, and a purchase may not be
             # dated in the future (ruling R-M), so a later row cannot hold one.
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             txn = (
@@ -3374,7 +3375,7 @@ class TestACreateDoesNotBackfillClosedPayPeriods:
             txn_type = db.session.query(TransactionType).filter_by(
                 name="Expense",
             ).one()
-            current = pay_period_service.get_current_period(
+            current = current_pay_period(
                 seed_user["user"].id,
             )
             assert current is not None, "fixture must cover today"

@@ -303,3 +303,60 @@ class TestTopUpDeficitPath:
             assert_pay_period_invariants(db.session, user_id)
             assert all(r.passed for r in check_balance_anomalies(db.session))
             assert all(r.passed for r in check_referential_integrity(db.session))
+
+
+class TestTheTopUpCountsOnTheOwnersDay:
+    """"How many paychecks are left" is asked of the OWNER's clock.
+
+    Plan step **C2-f3b**, ruled 2026-08-19 with the lock classifier's -- finding
+    **balance:N-191** named this door as the second of the two sites deciding
+    something against the user's CALENDAR on ``date.today()``.  Both live callers
+    (``/grid`` and ``/dashboard``) pass no ``as_of``, so the default IS the
+    decision, and an adversarial review of this step found it ungraded.
+
+    Where the clocks differ the owner's day is the EARLIER one, so a period the
+    process clock has already retired still counts as future -- the window looks
+    one paycheck longer and the top-up appends one fewer.
+    """
+
+    def test_the_default_as_of_is_the_display_clock(
+        self, app, db, seed_user, monkeypatch,
+    ):
+        """The clocks are pinned APART and the count follows the display one.
+
+        The schedule is built so exactly one period sits BETWEEN the two clocks:
+        it has ended on the process clock (2026-07-31) and has not on the display
+        clock (2026-07-30, its own last covered day).  The two counts therefore
+        differ by exactly one, and both are asserted -- the process-clock number
+        is computed here rather than assumed, so the case cannot pass on a
+        schedule where the two happen to agree.
+        """
+        owner_day = date(2026, 7, 30)
+        with app.app_context():
+            user_id = seed_user["user"].id
+            pay_period_write.record_paydays(
+                user_id, date(2026, 7, 3), 4, 14,
+            )
+            db.session.commit()
+
+            # pylint: disable=protected-access
+            on_process = pay_period_admin._future_period_count(
+                user_id, date(2026, 7, 31),
+            )
+            on_owner = pay_period_admin._future_period_count(
+                user_id, owner_day,
+            )
+            assert on_owner == on_process + 1, (on_owner, on_process)
+
+            freeze_today(monkeypatch, date(2026, 7, 31))
+            monkeypatch.setattr(
+                pay_period_admin, "display_today", lambda: owner_day,
+            )
+            pay_schedule_service.set_rolling(
+                user_id, enabled=True, target_periods=on_owner,
+            )
+            db.session.commit()
+
+            # The window is FULL on the owner's clock and one short on the
+            # process clock, so a door reading the process clock appends one.
+            assert pay_period_admin.top_up_rolling_window(user_id) == 0
