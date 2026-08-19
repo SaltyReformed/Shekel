@@ -33,9 +33,11 @@ from app.services import (
     recurrence_engine,
     template_amount_service,
 )
-from app.services.pay_calendar import calendar_for
+from app.services import pay_schedule_service
+from app.services.pay_calendar import PayCadence, cadence_for, calendar_for
 from app.services.recurrence import RecurrenceSpec, author_rule
 from app.services.generation_schedule import GenerationSchedule
+from app.services.payroll_basis import PayrollBasis
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.routes._commit_helpers import (
@@ -58,6 +60,40 @@ from app.routes.salary._helpers import (
 logger = logging.getLogger(__name__)
 
 
+def _paychecks_per_year() -> "int | None":
+    """Return how many paychecks the owner receives a year, or ``None``.
+
+    **The form's read-only replacement for the ``pay_periods_per_year``
+    dropdown** (plan step R-F16).  The engine divides the annual salary by this
+    number, so the page has to state it or the gross it previews is
+    unexplainable -- but it is not the owner's to choose HERE: it derives from
+    ``budget.pay_schedule.cadence_days``, which the pay-period settings own,
+    and offering a second control was the finding.
+
+    ``None`` for an owner with no resolvable cadence, which the template
+    renders as a pointer to generate a schedule.  Answered rather than raised:
+    a form page must not 500 on the state the form itself is the fix for, and
+    such an owner cannot create a profile either way (``_paycheck_template``
+    needs a payday to seat the recurrence on).
+
+    **Through ``resolve_cadence`` rather than ``cadence_for`` or a whole
+    calendar**, and the two doors beside it are why each is wrong here.
+    :func:`~app.services.pay_calendar.cadence_for` REFUSES the unresolvable
+    owner, which is right for a producer of money and wrong for a form.
+    :func:`~app.services.pay_calendar.calendar_for` answers without refusing
+    but derives the owner's whole payday set to do it -- 61 rows on
+    production, on two pages that load a calendar for nothing else.  This is
+    the one fact both of those read, asked directly.
+
+    Returns:
+        The paycheck count as an ``int``, or ``None``.
+    """
+    cadence_days = pay_schedule_service.resolve_cadence(current_user.id)
+    if cadence_days is None:
+        return None
+    return int(PayCadence(cadence_days=cadence_days).periods_per_year)
+
+
 @salary_bp.route("/salary/new")
 @login_required
 @require_owner
@@ -71,6 +107,7 @@ def new_profile():
         raise_types=[],
         deduction_timings=[],
         calc_methods=[],
+        paychecks_per_year=_paychecks_per_year(),
         now_year=date.today().year,
     )
 
@@ -122,9 +159,18 @@ def _paycheck_template(
     salary profile fans its paychecks across every pay period the owner has,
     closed ones included.  Plan ledger row **D34** carries whether it should.
 
+    **The per-paycheck amount is the annual salary over the OWNER's paycheck
+    count** (plan step R-F16).  It read a ``pay_periods_per_year`` off the
+    submitted payload until then -- a second answer to a question the calendar
+    this function already loads had already answered, and one that could
+    disagree with it.  The docstring above is why there was never a second
+    answer to give: a salary profile's paycheck recurs every pay period by
+    definition, so the count of paychecks in a year IS the count of pay
+    periods in a year.
+
     Args:
-        data: The validated create payload; read for the name, the annual
-            salary and the pay-period count.
+        data: The validated create payload; read for the name and the annual
+            salary.
         account_id: The non-loan deposit account the paychecks land in.
         category_id: This owner's ``Income: Salary`` category.
 
@@ -139,8 +185,8 @@ def _paycheck_template(
         category_id=category_id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
         name=data["name"],
-        default_amount=(
-            data["annual_salary"] / data.get("pay_periods_per_year", 26)
+        default_amount=calendar.cadence.annual_to_per_paycheck(
+            data["annual_salary"],
         ),
         is_active=True,
     )
@@ -228,7 +274,6 @@ def create_profile():
             name=data["name"],
             annual_salary=data["annual_salary"],
             state_code=data["state_code"],
-            pay_periods_per_year=data.get("pay_periods_per_year", 26),
             qualifying_children=data.get("qualifying_children", 0),
             other_dependents=data.get("other_dependents", 0),
             additional_income=data.get("additional_income", 0),
@@ -263,7 +308,8 @@ def create_profile():
                 current_user.id, profile, ref_period.start_date.year,
             )
             init_breakdown = paycheck_calculator.calculate_paycheck(
-                profile, ref_period, periods, tax_configs
+                PayrollBasis(profile, schedule.calendar.cadence),
+                ref_period, periods, tax_configs,
             )
             # Through the amount's one write door (plan step X-au-a).  The
             # profile above is already flushed and active, so the door sees a
@@ -330,6 +376,7 @@ def edit_profile(profile_id):
         calc_methods=calc_methods,
         investment_accounts=investment_accounts,
         inactive_profiles=inactive_profiles,
+        paychecks_per_year=_paychecks_per_year(),
         now_year=date.today().year,
     )
 
@@ -382,9 +429,14 @@ def update_profile(profile_id):
     # (lazy="joined"), so this touches no DB and stages safely before the
     # guard below picks up the commit.
     if profile.template and "annual_salary" in data:
-        pay_periods = profile.pay_periods_per_year or 26
+        # The owner's paycheck count, off their cadence and from nowhere else
+        # (plan step R-F16).  ``cadence_for`` rather than a whole calendar:
+        # this needs the count and not the paydays.
         template_amount_service.set_amount(
-            profile.template, data["annual_salary"] / pay_periods,
+            profile.template,
+            cadence_for(current_user.id).annual_to_per_paycheck(
+                data["annual_salary"],
+            ),
             effective_on=display_today(),
         )
         if "name" in data:

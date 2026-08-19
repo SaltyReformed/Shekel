@@ -61,7 +61,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from app.exceptions import ShekelError
-from app.utils.dates import pay_period_label
+from app.utils.dates import pay_period_label, pay_period_range_label
 
 #: The cadence bounds, mirroring ``ck_pay_schedule_cadence_range`` on
 #: ``budget.pay_schedule.cadence_days``.  Named here rather than inlined
@@ -184,6 +184,27 @@ class DerivedPeriod:
             straddles one.
         """
         return pay_period_label(self.start_date, self.end_date)
+
+    @property
+    def range_label(self) -> str:
+        """Return this period's WIDE label (``"Feb 21 - Mar 06, 2026"``).
+
+        :attr:`label`'s sibling register, for a surface with room for month
+        names -- today the Income Statement's window ``<select>``, whose
+        ``<option>`` sits on screen beside the report heading the same rule
+        produces (``ledger_report_service`` labels that heading by calling
+        :func:`~app.utils.dates.pay_period_range_label` directly, exactly as
+        :attr:`label` and ``PayPeriod.label`` both call the narrow one).
+
+        It is a PROPERTY rather than a Jinja global for :attr:`label`'s reason:
+        the format belongs to ``app.utils.dates``, and a template that called a
+        two-argument formatter would be the place a fourth spelling of this
+        register next appeared (ledger row **P47**).  Plan step C2-f3a.
+
+        Returns:
+            The label, carrying the END date's four-digit year.
+        """
+        return pay_period_range_label(self.start_date, self.end_date)
 
 
 def derive_periods(
@@ -340,6 +361,61 @@ def derive_periods(
             end_is_projected=position == last_position,
         )
         for position, (period_id, payday) in enumerate(ordered)
+    )
+
+
+def project_period_after(
+    periods: "tuple[DerivedPeriod, ...]", cadence_days: int, day: date,
+) -> DerivedPeriod:
+    """Return the projected period covering *day*, past the last saved payday.
+
+    **The forward continuation of the rule above**, and it lives beside it
+    rather than on a consumer because it IS that rule: the last saved period's
+    end is ``start_date + cadence_days - 1``, and every period after it is the
+    same span stepped forward by one cadence.  Two consumers ask for it --
+    :meth:`~._calendar.PayCalendar.span_containing`, which must answer for any
+    day, and :func:`~._views.axis_window`, which walks the projection out to a
+    requested horizon -- and a second implementation of "where does the next
+    paycheck land" is exactly the class of duplicate ledger row **P6** counted
+    seven of.
+
+    Projection is ARITHMETIC on the last saved payday rather than a walk:
+    paydays continue at *cadence_days*, so the period covering *day* is the
+    ``n``-th one after the last saved payday where ``n`` is the whole number of
+    cadences between them.  Computing it directly means the cost does not grow
+    with how far past the horizon a caller asks.
+
+    Every projected period reports ``end_is_projected`` ``True``, which stays
+    faithful to plan step C1's meaning of that flag: the end comes from the
+    cadence rather than from a payday anyone has recorded.  It carries
+    ``period_id = None``, so a caller needing a foreign key target cannot
+    mistake one for a saved row.
+
+    Args:
+        periods: The owner's SAVED periods, ``start_date`` ascending and
+            non-empty.  Only the last one is read.
+        cadence_days: Days between paydays.  An ``int`` rather than
+            ``int | None``: a calendar holding a period cannot have been
+            constructed without a cadence
+            (:func:`derive_periods` refuses that pair), and every caller
+            reaches here only after establishing that *periods* is non-empty.
+        day: A calendar day strictly after the last saved period's
+            ``end_date``.  The caller guarantees it -- both test first.
+
+    Returns:
+        The projected :class:`DerivedPeriod`, carrying ``period_id = None`` and
+        a ``period_index`` continuing the saved sequence.
+    """
+    last = periods[-1]
+    elapsed = (day - last.start_date).days
+    steps = elapsed // cadence_days
+    start = last.start_date + timedelta(days=steps * cadence_days)
+    return DerivedPeriod(
+        period_id=None,
+        period_index=last.period_index + steps,
+        start_date=start,
+        end_date=start + timedelta(days=cadence_days - 1),
+        end_is_projected=True,
     )
 
 

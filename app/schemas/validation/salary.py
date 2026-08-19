@@ -42,10 +42,6 @@ class SalaryProfileCreateSchema(BaseSchema):
     state_code = fields.String(
         required=True, validate=validate.Length(min=2, max=2)
     )
-    pay_periods_per_year = fields.Integer(
-        load_default=26, validate=validate.OneOf([12, 24, 26, 52])
-    )
-
     # W-4 fields (IRS Pub 15-T)
     qualifying_children = fields.Integer(
         load_default=0, validate=validate.Range(min=0, max=99),
@@ -94,10 +90,6 @@ class SalaryProfileUpdateSchema(BaseSchema):
     )
     filing_status_id = RowId()
     state_code = fields.String(validate=validate.Length(min=2, max=2))
-    pay_periods_per_year = fields.Integer(
-        validate=validate.OneOf([12, 24, 26, 52])
-    )
-
     # W-4 fields (IRS Pub 15-T)
     qualifying_children = fields.Integer(
         validate=validate.Range(min=0, max=99),

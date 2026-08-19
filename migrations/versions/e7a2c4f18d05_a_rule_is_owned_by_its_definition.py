@@ -63,7 +63,7 @@ by none, 0 referenced by two, 0 whose ``user_id`` differs from their owner's.
      :func:`downgrade`'s docstring.
 
 Revision ID: e7a2c4f18d05
-Revises: a4c6f1d92b73
+Revises: f2b7c40d918e
 Create Date: 2026-08-18
 """
 import sqlalchemy as sa
@@ -71,7 +71,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "e7a2c4f18d05"
-down_revision = "a4c6f1d92b73"
+down_revision = "f2b7c40d918e"
 branch_labels = None
 depends_on = None
 

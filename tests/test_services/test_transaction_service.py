@@ -875,7 +875,6 @@ class TestASettleBooksTheFreshestFigure:
             name="X-aq Salary",
             annual_salary=Decimal("104000.00"),
             state_code="NC",
-            pay_periods_per_year=26,
             is_active=True,
         )
         db.session.add(profile)

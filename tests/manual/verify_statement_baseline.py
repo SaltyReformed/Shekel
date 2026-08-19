@@ -82,6 +82,7 @@ from app.services import ledger_report_service, pay_period_service
 from app.services.ledger_report_service import StatementWindow
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.dates import display_today
+from app.services.pay_calendar import calendar_for
 
 
 def _money(value):
@@ -124,7 +125,7 @@ def _income_statement(user_id, window):
     absent, they serialise as ``None`` and the field diffs exactly once, at
     the step that adds them, instead of making the file uncomparable.
     """
-    report = ledger_report_service.compute_income_statement(user_id, window)
+    report = ledger_report_service.compute_income_statement(user_id, calendar_for(user_id), window)
     unrealized = getattr(report, "unrealized", None)
     return {
         "window_label": report.window_label,

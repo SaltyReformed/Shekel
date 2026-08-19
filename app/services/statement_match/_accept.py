@@ -25,6 +25,17 @@ does a settle verb run -- so a refused match leaves the database exactly as it
 was without depending on the rollback, the same discipline
 ``statement_import.record_statement`` states for itself.
 
+**This door applies no DATE bound, and that asymmetry is deliberate.**  The
+proposer refuses to OFFER a pairing outside the row's own window
+(``_propose._within_window``, ruling **R-FY**); the hand-build form on the
+review screen exists precisely so an owner may assert a grouping the proposer
+would not guess, so refusing one here on a date would refuse the act ruling
+**R-FP** reserves to them.  What this door does enforce is the SCOPE: every id
+is re-derived through ``_candidates.candidates_for``, so no request can reach a
+row the screen could not have shown.  Stated because an adversarial review read
+the missing bound as an oversight 2026-08-19, which is what an unstated
+deliberate asymmetry looks like.
+
 **The settle verbs are the app's own, never restated.**  An ordinary row goes
 through ``transaction_service.apply_requested_status``, the route layer's one
 status entry point; a transfer SHADOW through ``transfer_service``, because
@@ -54,6 +65,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import (
     entry_service,
+    pay_calendar,
     transaction_service,
     transfer_service,
 )
@@ -206,10 +218,15 @@ def _load_rows(
     } | {
         (RowKind.PURCHASE, row_id) for row_id in submission.entry_ids
     }
+    # ONE calendar for this act's own read pass, the way
+    # :func:`~._reads.review_set` holds one for the screen's: every candidate's
+    # window is read off it, and a producer that rebuilt its caller's is the
+    # second copy that parameter exists to remove.
     found = [
         row
         for row in candidates_for(
-            submission.owner_id, submission.account_id,
+            submission.account_id,
+            pay_calendar.calendar_for(submission.owner_id),
         ).rows
         if (row.kind, row.row_id) in wanted
     ]
@@ -530,6 +547,14 @@ def accept_match(submission: MatchSubmission) -> AcceptedMatch:
         ValidationError: On any of this door's refusals or a settle door's.
             A 400: every one of them is reachable by an ordinary owner working
             from a stale page.
+        PayCalendarError: From
+            :func:`~app.services.pay_calendar.calendar_for`, when the owner has
+            paydays and no resolvable cadence.  Fails loud rather than
+            rendering as a designed refusal: a matcher cannot bound a row
+            without the calendar that says which paycheck it is budgeted in,
+            and answering anyway is the unbounded state finding **N-312**
+            records.  The review screen this door is reached from reads the
+            same value, so the page is unreachable before the door is.
         PostingError: From a ledger reconcile, on a broken invariant.  Fails
             loud rather than rendering as a designed refusal.
     """

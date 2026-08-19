@@ -52,6 +52,7 @@ from app.utils.balance_predicates import (
     is_done,
     is_projected,
     is_projected_clause,
+    not_archived_clause,
     settled_status_ids,
 )
 
@@ -778,6 +779,78 @@ class TestIsProjectedClause:
                 "balance_predicates.py has drifted; the SQL filter "
                 "sites and the Python predicate sites will silently "
                 "classify Projected rows differently."
+            )
+
+
+class TestNotArchivedClause:
+    """Pins ``not_archived_clause`` (plan step ``bank_import:X-f6a-3b``).
+
+    The SQL twin of :func:`is_archived`, added because two query sites had to
+    exclude the archive and one of them had spelled it inline since X-f6a-2 --
+    invisibly to the gate below, which greps LINE BY LINE and could not see the
+    expression wrapped across two.
+
+    The parity test is the load-bearing one, for the reason
+    ``TestIsProjectedClause``'s is: a SQL filter that classified differently
+    from the Python predicate would let a screen offer exactly the rows its
+    write door refuses.  **The archive is the single terminal ``SETTLED``
+    status, not the settled BAND**, so Paid and Received must survive it.
+    """
+
+    def test_it_excludes_only_the_archive(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Every status but the terminal ``Settled`` survives the clause."""
+        with app.app_context():
+            txns_by_status = {
+                member: _make_txn(db, seed_user, seed_periods, member)
+                for member in StatusEnum
+            }
+            seeded_ids = {t.id for t in txns_by_status.values()}
+
+            kept = {
+                row.id for row in (
+                    db.session.query(Transaction.id)
+                    .filter(Transaction.id.in_(seeded_ids))
+                    .filter(not_archived_clause(Transaction))
+                    .all()
+                )
+            }
+
+            assert kept == seeded_ids - {
+                txns_by_status[StatusEnum.SETTLED].id,
+            }, "not_archived_clause dropped a status that is not the archive"
+
+    def test_it_matches_the_python_is_archived(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The SQL form and the Python form classify the same rows.
+
+        Nothing else enforces that.  ``statement_match`` asks the SQL form
+        which envelopes it may OFFER and ``entry_service`` asks the Python form
+        whether a purchase may be added -- so a drift between them is an
+        offered destination whose submission always fails.
+        """
+        with app.app_context():
+            txns = [
+                _make_txn(db, seed_user, seed_periods, member)
+                for member in StatusEnum
+            ]
+            seeded_ids = {t.id for t in txns}
+
+            python_kept = {t.id for t in txns if not is_archived(t)}
+            sql_kept = {
+                row.id for row in (
+                    db.session.query(Transaction.id)
+                    .filter(Transaction.id.in_(seeded_ids))
+                    .filter(not_archived_clause(Transaction))
+                    .all()
+                )
+            }
+
+            assert python_kept == sql_kept, (
+                "not_archived_clause and is_archived disagree -- a screen "
+                "would offer rows its write door refuses"
             )
 
 

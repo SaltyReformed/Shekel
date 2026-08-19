@@ -5,6 +5,7 @@ Tests for transfer template CRUD, grid cell endpoints, transfer instance
 operations, and ad-hoc transfer creation (§2.3 of the test plan).
 """
 
+import re
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -182,7 +183,6 @@ def _create_other_user_with_template():
     db.session.add(template)
     db.session.flush()
 
-    from app.services import pay_period_service
     from datetime import date
     periods = pay_period_write.record_paydays(
         user_id=other_user.id,
@@ -342,6 +342,73 @@ class TestTemplatePrefill:
             assert resp.status_code == 200
             html = resp.data.decode()
             assert f'value="{savings.id}"' in html
+
+
+class TestTheStartPeriodSelectorComesFromTheDerivation:
+    """The create form's pay-period ``<select>`` is answered by ONE calendar.
+
+    Plan step **C2-f3a**.  It read ``pay_period_service.get_all_periods`` for
+    its options and ``get_current_period`` to preselect one -- two reads of
+    ``budget.pay_periods``, the second SQL whose ``.first()`` carried no
+    ``ORDER BY`` (ledger row **P19**) resolved against the process clock (row
+    **P49**).  Both are now the one derivation, and the day is the OWNER's.
+
+    ``tests/test_arch/test_one_read_pass_per_render`` counts the derivations;
+    these grade what the form actually renders, which a count cannot see.
+    """
+
+    def test_the_option_values_are_pay_period_ids(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Every option names a row a foreign key can point at.
+
+        The values come off ``DerivedPeriod.period_id`` now, where they came
+        off ``PayPeriod.id`` -- the SAME integer, and the case exists because
+        the derived type spells it differently: a template rendering ``p.id``
+        against a ``DerivedPeriod`` emits an EMPTY value silently, and the
+        POST door would then read "no start period" for a form that showed
+        one selected.
+        """
+        with app.app_context():
+            expected = [str(period.id) for period in seed_periods_today]
+
+            html = auth_client.get("/transfers/new").data.decode()
+
+        select = html.split('id="start_period_id"', 1)[1].split("</select>", 1)[0]
+        rendered = re.findall(r'<option value="([^"]*)"', select)
+        assert rendered == expected, (
+            "the start-period options do not name this owner's pay periods "
+            "in payday order"
+        )
+        assert "" not in rendered, (
+            "an option rendered an empty value, which is what reading ``.id`` "
+            "off a DerivedPeriod produces"
+        )
+
+    def test_the_preselected_option_is_the_owners_current_paycheck(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The selected option is the period containing the OWNER's day.
+
+        ``seed_periods_today`` puts ``display_today()`` inside period 4 by
+        construction, so the assertion names that period rather than
+        recomputing the fixture's own rule.
+        """
+        with app.app_context():
+            today = display_today()
+            expected = next(
+                period for period in seed_periods_today
+                if period.start_date <= today <= period.end_date
+            )
+
+            html = auth_client.get("/transfers/new").data.decode()
+
+        select = html.split('id="start_period_id"', 1)[1].split("</select>", 1)[0]
+        selected = re.findall(r'<option value="([^"]*)" selected', select)
+        assert selected == [str(expected.id)], (
+            "the form preselected a paycheck other than the one the owner is "
+            "in today"
+        )
 
 
 class TestTemplateCreate:
@@ -2192,7 +2259,6 @@ def _create_second_user_transfer(second_user_data):
         Transfer: the created transfer.
     """
     from datetime import date as _date  # pylint: disable=import-outside-toplevel
-    from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
 
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     savings = account_service.create_account(

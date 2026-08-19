@@ -95,8 +95,8 @@ class TestTheDatabaseClockIsTheTestClock:
         ``AccountAnchorHistory.created_at`` is a ``NOW()`` server default, so
         before this fix the row carried the real wall clock: months past the
         end of ``seed_periods`` (2026-01-02 to 2026-05-21), which is a state
-        production cannot reach -- a true-up files against
-        ``get_current_period``.
+        production cannot reach -- a true-up files against the period
+        containing its own observation day.
         """
         with app.app_context():
             account = seed_user["account"]

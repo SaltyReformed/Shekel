@@ -1031,7 +1031,6 @@ def bare_periods(app, db, bare_user):
     Returns:
         List of PayPeriod objects.
     """
-    from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
 
     periods = pay_period_write.record_paydays(
         user_id=bare_user["user"].id,
@@ -1297,7 +1296,6 @@ def seed_periods(app, db, seed_user):
     Returns:
         List of PayPeriod objects.
     """
-    from app.services import pay_period_service
 
     periods = pay_period_write.record_paydays(
         user_id=seed_user["user"].id,
@@ -1324,9 +1322,11 @@ def _today_relative_start_date():
     Period 4 is the middle of a 10-period window, leaving 4 historical
     periods and 5 future periods.  The start is aligned to the most
     recent Monday so period boundaries fall on weekdays consistently.
-    Used by ``seed_periods_today``-style fixtures so that
-    ``pay_period_service.get_current_period`` always returns a real
-    period regardless of the wall-clock date.
+    Used by ``seed_periods_today``-style fixtures so that "which paycheck
+    contains today" -- ``PayCalendar.period_containing``, and
+    ``pay_period_service.get_current_period`` before pay-calendar plan step
+    C2-f3a deleted it -- always answers a real period regardless of the
+    wall-clock date.
     """
     today = display_today()
     return today - timedelta(days=today.weekday() + 4 * 14)
@@ -1336,9 +1336,9 @@ def _today_relative_start_date():
 def seed_periods_today(app, db, seed_user):
     """Generate 10 biweekly pay periods so today falls in period 4.
 
-    Use this fixture when the test exercises a code path that calls
-    ``pay_period_service.get_current_period()`` (directly or via a
-    route handler).  Use the regular ``seed_periods`` fixture when the
+    Use this fixture when the test exercises a code path that asks which
+    paycheck contains today (``PayCalendar.period_containing``, directly or
+    via a route handler).  Use the regular ``seed_periods`` fixture when the
     test asserts on specific calendar dates (due_date filters,
     year-end summaries for tax_year=2026, loan origination alignment).
 
@@ -1348,7 +1348,6 @@ def seed_periods_today(app, db, seed_user):
     Returns:
         List of PayPeriod objects, ordered by period_index.
     """
-    from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
 
     periods = pay_period_write.record_paydays(
         user_id=seed_user["user"].id,
@@ -1400,8 +1399,8 @@ def _build_cross_page_calendar_periods(db, user):
     the seam's :func:`app.services.balance_at.cash_balance_at` makes the
     calendar surface's projected month-end balance equal the anchor-period
     balance for the same data.  The anchor being the month containing today also
-    lets ``pay_period_service.get_current_period`` land on it with no
-    date-mock plumbing.
+    lets ``PayCalendar.period_containing`` land on it with no date-mock
+    plumbing.
 
     The ``seed_user`` bootstrap pay period is left in place rather than
     deleted via ``_drop_seed_user_bootstrap``: deleting it cascades the
@@ -1411,8 +1410,8 @@ def _build_cross_page_calendar_periods(db, user):
     ``ForeignKeyViolation`` on ``current_anchor_period_id``).  Keeping the
     bootstrap is benign for the lock: it is a 2024 pre-anchor period every
     surface skips (the resolver only emits balances from the anchor period
-    forward, and grid / dashboard / savings / accounts all key off
-    ``get_current_period``, which matches today's month, not the bootstrap).
+    forward, and grid / dashboard / savings / accounts all key off the period
+    CONTAINING today, which is today's month rather than the bootstrap).
 
     Args:
         db: The SQLAlchemy ``db`` fixture.
@@ -1532,11 +1531,12 @@ def seed_cross_page_account(app, db, seed_user):
         Without that alignment a mid-period month-end would silently make
         the calendar surface look like a divergence even when the
         underlying math agrees, defeating the cross-page lock.
-      * The anchor period is the calendar month containing
-        ``date.today()`` (so the dashboard's ``get_current_period`` and
-        the grid's ``get_periods_in_range(current_period.period_index,
-        ...)`` both naturally land on the anchor period without any
-        date-mock plumbing).
+      * The anchor period is the calendar month containing today (so the
+        dashboard's containment lookup and the grid's window both naturally
+        land on the anchor period without any date-mock plumbing).  Those
+        two named ``get_current_period`` and ``get_periods_in_range`` until
+        pay-calendar plan steps C2-f2b and C2-f3a deleted them; the
+        alignment is what matters and it is unchanged.
       * The account anchor is overridden -- via a fresh
         ``AccountAnchorHistory`` row + cache-column update, latest-wins
         per E-19 -- to the case's ``anchor_balance``.  ``seed_user``'s
@@ -2244,7 +2244,6 @@ def seed_periods_52(app, db, seed_user):
     Returns:
         List of PayPeriod objects.
     """
-    from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
 
     periods = pay_period_write.record_paydays(
         user_id=seed_user["user"].id,
@@ -2364,7 +2363,6 @@ def seed_second_periods(app, db, seed_second_user):
     Returns:
         List of PayPeriod objects.
     """
-    from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
 
     periods = pay_period_write.record_paydays(
         user_id=seed_second_user["user"].id,
@@ -2529,7 +2527,7 @@ def seed_full_user_data(app, db, seed_user, seed_periods):
 
     Uses the calendar-anchored ``seed_periods`` fixture, so transactions
     fall in calendar 2026.  Use ``seed_full_user_data_today`` instead
-    when the test exercises a route that calls ``get_current_period``.
+    when the test exercises a route that asks which paycheck contains today.
 
     Returns:
         dict merging seed_user keys plus: periods, template, transaction,
@@ -2545,8 +2543,8 @@ def seed_full_user_data_today(app, db, seed_user, seed_periods_today):
 
     Identical payload to ``seed_full_user_data`` except the periods
     are anchored so today falls in period 4.  Use when the test
-    exercises a route that internally calls
-    ``pay_period_service.get_current_period`` (e.g. /dashboard).
+    exercises a route that internally asks which paycheck contains today
+    (e.g. /dashboard).
 
     Returns:
         dict merging seed_user keys plus: periods, template, transaction,

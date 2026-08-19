@@ -39,7 +39,7 @@ def _freeze_today_inside_seed_range(monkeypatch):
     Mark-paid entry tests use hardcoded purchase dates like
     date(2026, 1, 5) and date(2026, 1, 10) that must fall inside the
     calendar-anchored seed_periods range.  Freezing today inside the
-    seeded range keeps get_current_period() deterministic without
+    seeded range keeps "which paycheck contains today" deterministic without
     disturbing those calendar values.
     """
     freeze_today(monkeypatch, date(2026, 3, 20))
@@ -353,24 +353,31 @@ class TestCreditStatusGuard:
 
 
 class TestPostPaidEntryMutation:
-    """A Paid row's purchases are CLOSED: all three doors refuse (X-au-c3).
+    """A Paid row's purchases are closed to RE-PRICING and REMOVAL (X-au-c3).
 
-    **This class asserted the opposite until plan step X-au-c3** -- adding,
-    deleting or re-pricing a purchase on a Paid envelope re-derived its
-    ``actual_amount`` from the new entry sum.  That is withdrawn (developer
-    ruling, 2026-08-17) and the reason is carry-forward: it rolls the
-    envelope's unspent remainder into the NEXT period's row and settles the
-    source at what was spent, so a purchase recorded against the closed source
-    afterwards raises its cost while the later row still holds the
-    rolled-forward money -- the same dollars counted twice.  Re-deriving also
-    moves money in the optimistic direction with no human act: one back-filled
-    purchase against a close at the row's estimate crashes the recorded cost to
-    that purchase and hands the difference back to the projection.
+    **This class asserted the opposite until plan step X-au-c3** -- deleting or
+    re-pricing a purchase on a Paid envelope re-derived its ``actual_amount``
+    from the new entry sum.  That is withdrawn (developer ruling, 2026-08-17):
+    re-deriving moves money in the OPTIMISTIC direction with no human act, and
+    carry-forward has already rolled the envelope's unspent remainder into the
+    next period's row, so shrinking the source's cost counts the same dollars
+    twice.
 
-    The service-level negative controls live in
-    ``test_entry_service.TestASettledRowsPurchasesAreClosed``; these grade the
-    same rule on a row closed through the real ``mark-done`` route, and assert
-    the second half of it -- the RECORDED figure does not move either.
+    **ADDING one is a separate rule since plan step ``bank_import:X-f6a-3b``**
+    (developer ruling, 2026-08-18), and the two are not the same question.
+    Removing a purchase shrinks a recorded cost on nothing but the owner's
+    second thoughts.  Adding one to a row whose figure IS its purchases raises
+    that cost by exactly the figure a bank statement just showed -- the
+    PESSIMISTIC direction, and the whole of what the statement importer does.
+    A row closed at a STORED figure still refuses, because its gross cannot
+    rise and ``settled_cash_leg`` would then subtract money the gross never
+    held.
+
+    The service-level controls live in
+    ``test_entry_service.TestASettledRowsPurchasesAreClosed`` and
+    ``TestASettledRowMayStillGAINAPurchase``; these grade the same rules on a
+    row closed through the real ``mark-done`` route, and assert the second half
+    of each -- what the RECORDED figure does.
     """
 
     @staticmethod
@@ -393,31 +400,92 @@ class TestPostPaidEntryMutation:
         assert settled_figure(txn) == Decimal("300.00")
         return txn_id, entry_ids
 
-    def test_entry_added_after_paid_is_refused(
+    def test_entry_added_after_paid_GROWS_what_the_row_records(
         self, app, auth_client, seed_user, seed_periods,
     ):
-        """A late purchase against a Paid row is refused and changes nothing."""
+        """A late POSTED purchase on a purchases-basis close is ADMITTED.
+
+        **This asserted a refusal until plan step ``bank_import:X-f6a-3b``**
+        (developer ruling, 2026-08-18).  The row was closed through the real
+        ``mark-done`` route with two entries, so ``settles_from_entries`` took
+        the ``purchases`` branch and the row stores NO figure -- its cost IS
+        ``Sigma(entries)``.  A new purchase therefore RAISES what it cost by
+        exactly its own amount, which is what a bank statement showing a swipe
+        the records never named is evidence of.
+
+        `$300.00` becomes `$350.00`: the pessimistic direction, and no stored
+        figure is overwritten because there is none.
+
+        **It must state the day the bank took it** (developer ruling
+        2026-08-19).  Without that day the amount comes out of the envelope's
+        own leg on the day the row closed instead of booking its own dated
+        cash, which is a movement on a past day with no evidence -- so the
+        undated form stays refused, graded by
+        ``test_entry_service.TestASettledRowMayStillGAINAPurchase
+        .test_an_UNDATED_purchase_is_refused_on_a_closed_row``.
+        """
         with app.app_context():
             txn_id, _ = self._paid_envelope_at_300(
                 auth_client, seed_user, seed_periods,
             )
 
-            with pytest.raises(ValidationError, match="has settled"):
+            entry_service.create_entry(
+                transaction_id=txn_id,
+                user_id=seed_user["user"].id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("50.00"),
+                    description="Late purchase",
+                    purchased_on=date(2026, 1, 10),
+                    settled_on=date(2026, 1, 12),
+                ),
+            )
+            db.session.flush()
+
+            txn = db.session.get(Transaction, txn_id)
+            assert txn.settled_amount is None
+            assert settled_figure(txn) == Decimal("350.00")
+            assert db.session.query(TransactionEntry).filter_by(
+                transaction_id=txn_id,
+            ).count() == 3
+
+    def test_entry_added_to_a_STORED_FIGURE_close_is_still_refused(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The arm the narrowing did NOT open, graded at the route tier.
+
+        An envelope closed with NO entries takes ``mark-done``'s ``derived``
+        branch and stores its figure, so nothing a new purchase does can raise
+        it -- and ``settled_cash_leg``'s posted-purchase term would then
+        subtract money that gross never contained.  Measured on a production
+        clone: `-163.95` became `+203.67`, an expense row publishing an inflow,
+        while the anchor true-up moved `$0.00` so the spending was never
+        recorded at all.
+        """
+        with app.app_context():
+            txn = _create_tracked_txn(seed_user, seed_periods)
+            txn_id = txn.id
+            db.session.commit()
+            auth_client.post(f"/transactions/{txn_id}/mark-done")
+            txn = db.session.get(Transaction, txn_id)
+            assert settled_figure(txn) == Decimal("500.00")
+
+            with pytest.raises(ValidationError, match="records a fixed figure"):
                 entry_service.create_entry(
                     transaction_id=txn_id,
                     user_id=seed_user["user"].id,
                     details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
+                        amount=Decimal("600.00"),
                         description="Late purchase",
                         purchased_on=date(2026, 1, 10),
+                        settled_on=date(2026, 1, 12),
                     ),
                 )
 
             txn = db.session.get(Transaction, txn_id)
-            assert settled_figure(txn) == Decimal("300.00")
+            assert settled_figure(txn) == Decimal("500.00")
             assert db.session.query(TransactionEntry).filter_by(
                 transaction_id=txn_id,
-            ).count() == 2
+            ).count() == 0
 
     def test_entry_deleted_after_paid_is_refused(
         self, app, auth_client, seed_user, seed_periods,

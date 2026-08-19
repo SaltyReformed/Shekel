@@ -229,7 +229,7 @@ def main(out_path):
                         user_id, "retire_tail",
                         lambda uid=user_id, rows=periods: (
                             pay_period_write.retire_paydays(
-                                uid, rows, rows[-1:],
+                                uid, {rows[-1].id},
                             )
                         ),
                     ),

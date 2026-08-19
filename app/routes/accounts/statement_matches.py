@@ -41,13 +41,18 @@ from app.routes.accounts._statement_doors import (
 )
 from app.routes.accounts._cash_page import load_cash_account_or_404
 from app.schemas.validation import form_payload
+from app.services.category_service import list_active_categories
 from app.schemas.validation.statements import (
     StatementMatchReleaseSchema,
     StatementMatchSchema,
+    StatementPurchaseSchema,
 )
 from app.services.statement_match import (
     MatchSubmission,
+    NewEnvelope,
+    PurchaseCreation,
     accept_match,
+    create_purchase_from_line,
     release_match,
     review_set,
 )
@@ -58,6 +63,7 @@ _logger = logging.getLogger(__name__)
 #: One schema instance each, constructed at import like every sibling's.
 _match_schema = StatementMatchSchema()
 _release_schema = StatementMatchReleaseSchema()
+_purchase_schema = StatementPurchaseSchema()
 
 
 def _messages(errors):
@@ -114,6 +120,12 @@ def review_statements(account_id):
         "accounts/statement_review.html",
         account=account,
         review=review_set(current_user.id, account_id),
+        # The picker the NEW-ENVELOPE arm needs (plan step X-f6a-3b).  Loaded
+        # here rather than inside the review set because it is not a fact about
+        # the statement: it is what any create form on this account offers, and
+        # ``list_active_categories`` is the ordering every category picker in
+        # the app already shares.
+        categories=list_active_categories(current_user.id),
     )
 
 
@@ -263,4 +275,119 @@ def release_statement_match(account_id):
             "days they corrected are unchanged.",
             "info",
         ),
+    )
+
+
+@accounts_bp.route(
+    "/accounts/<int:account_id>/statements/review/purchase", methods=["POST"],
+)
+@login_required
+@require_owner
+def record_statement_purchase(account_id):
+    """Record one bank line the app has no row for as a purchase.
+
+    Ruling **R-FS**'s third shape (plan step ``bank_import:X-f6a-3b``).  **It
+    MOVES MONEY, and differently from its sibling**: accepting a match re-dates
+    a movement the app already held, where this one adds a movement the app did
+    not have at all -- measured on the developer's own statement, 91 unmatched
+    outflows, 74 of them card swipes worth `$3,383.49`, that no proposal can
+    ever explain.
+
+    The unit of work is the request, exactly as the accept door's is.
+
+    Args:
+        account_id: The account being reviewed.
+
+    Returns:
+        A redirect back to the review page, with a flash saying what was
+        recorded.
+    """
+    account = load_cash_account_or_404(account_id)
+    target = url_for("accounts.review_statements", account_id=account_id)
+
+    payload = form_payload(request.form, _purchase_schema)
+    errors = _purchase_schema.validate(payload)
+    if errors:
+        _flash_errors(errors)
+        return redirect(target)
+    submitted = _purchase_schema.load(payload)
+
+    # **THE SELECT IS THE ARM**, and reading the name box instead was a defect
+    # that made the whole existing-envelope arm unreachable from a browser.
+    # Every control in the form is submitted on every POST -- the name box is
+    # always rendered and always prefilled from the merchant -- so keying on
+    # ``envelope_name is not None`` named BOTH destinations every time and the
+    # service refused all 66 of the developer's lines that have one.  The
+    # name and the category are PARAMETERS OF ONE OPTION of the select, not a
+    # destination of their own.  Found by three independent adversarial reviews
+    # 2026-08-19; the route test that should have caught it posted a payload no
+    # browser sends.
+    new_envelope = None
+    if submitted["transaction_id"] is None:
+        new_envelope = NewEnvelope(
+            name=submitted["envelope_name"],
+            category_id=submitted["category_id"],
+        )
+
+    return run_statement_door(
+        StatementDoorContext(
+            logger=_logger,
+            refusal=ValidationError,
+            log_message=(
+                "user_id=%d failed to record a statement line as a purchase "
+                "on account %d"
+            ),
+            log_args=(current_user.id, account_id),
+            flash_message=(
+                "Something went wrong recording that purchase.  Nothing was "
+                "changed."
+            ),
+            target=target,
+        ),
+        lambda: create_purchase_from_line(PurchaseCreation(
+            owner_id=current_user.id,
+            account_id=account.id,
+            line_id=submitted["line_id"],
+            transaction_id=submitted["transaction_id"],
+            new_envelope=new_envelope,
+        )),
+        lambda recorded: (_recorded_message(recorded), "success"),
+    )
+
+
+def _recorded_message(recorded) -> str:
+    """Return the sentence describing what recording one line did.
+
+    **It names the container and whether it was created**, because those are
+    different acts: filing a purchase under an envelope the owner already
+    budgeted changes what that envelope RECORDS as its cost, while creating one
+    adds a budget line to a period that did not have it.  A single "purchase
+    recorded" would hide which.
+
+    **It names both days only when they differ.**  A purchase carries the day
+    it was MADE beside the day the bank TOOK it (ruling **R-FW**), and on 179 of
+    the developer's 361 lines the source states no separate made-day at all --
+    so printing "made on" unconditionally would report the clearing day as a
+    swipe day on half of every statement, which is the exact substitution R-FW
+    rejected.
+
+    Args:
+        recorded: The
+            :class:`~app.services.statement_match.CreatedPurchase`.
+
+    Returns:
+        The flash text.
+    """
+    where = (
+        f"a new envelope, {recorded.envelope_label}"
+        if recorded.envelope_created
+        else recorded.envelope_label
+    )
+    made = (
+        f", made {recorded.made_on}" if recorded.made_on != recorded.posts_on
+        else ""
+    )
+    return (
+        f"Recorded ${recorded.amount:,.2f} your bank took on "
+        f"{recorded.posts_on}{made} as a purchase in {where}."
     )

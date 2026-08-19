@@ -8,30 +8,29 @@ surface and ``/retirement`` was wrong for any owner who is not paid biweekly --
 a weekly-paid owner's ``$100`` per-paycheck bill reported ``$216.67`` a month
 against a true ``$433.33``.
 
-**This is the one CONVERSION-side producer, and it is not the only paycheck
-count in the application.**  The fact here is ``cadence_days``, and the count
-of paychecks in a year is derived from it in this module and nowhere else --
-it is not a column, because a derivation stored beside its own input is a
-cache and a cache drifts the moment one writer moves one side alone (the
-argument :mod:`app.services.recurrence._resolution` makes for the two-axis
-recurrence values, applied to this one).
+**This is THE producer of "how many paychecks in a year", for every side of
+the application.**  The fact here is ``cadence_days``, and the count is derived
+from it in this module and nowhere else -- it is not a column, because a
+derivation stored beside its own input is a cache and a cache drifts the moment
+one writer moves one side alone (the argument
+:mod:`app.services.recurrence._resolution` makes for the two-axis recurrence
+values, applied to this one).
 
-**But ``salary.salary_profiles.pay_periods_per_year`` is a SECOND, stored,
-user-selected paycheck count**, a 12 / 24 / 26 / 52 dropdown on the salary
-form, and nothing ties it to ``cadence_days``.  It is the DIVISOR the paycheck
-engine uses to turn an annual salary into one paycheck
-(``paycheck_calculator:225`` and seven more ``or 26`` sites), and this module's
-conversions multiply that paycheck back up.  While both read 26 the two errors
-CANCELLED; they no longer do, so where the two disagree a figure that was
-accidentally right is now visibly wrong -- measured on a ``$91,675`` salary:
-profile 26 beside a 7-day cadence gives ``$15,279.17`` of monthly gross against
-a true ``$7,639.58``.  Where they AGREE, which is every consistent owner and
-all of production, the conversions here are right and the old constant was
-wrong for anyone but a biweekly one.  **The remedy is one producer for both
-sides and the developer ruled it IN THIS ARC** (2026-08-11), as the leaf after
-this one; until it lands, the sentence above rather than the "one fact, one
-producer" this module claimed in its first draft is the true statement of
-where the count comes from.
+**It became the only one at plan step R-F16, and until then it was not.**
+``salary.salary_profiles.pay_periods_per_year`` was a SECOND, stored,
+user-selected count -- a 12 / 24 / 26 / 52 dropdown on the salary form -- and
+nothing tied it to ``cadence_days``.  It was the DIVISOR the paycheck engine
+turned an annual salary into one paycheck with, while this module's conversions
+multiplied that paycheck back up.  While both read 26 the two errors CANCELLED;
+plan step R7a-2a fixed this side and made the mismatch visible, and finding
+**F-16** is what it exposed: measured with the real engine on a ``$91,675``
+salary, a profile reading 26 beside a 7-day cadence gave ``$15,279.20`` of
+monthly gross against a true ``$7,639.60``, and the year's paychecks summed to
+200% of salary.  R-F16 dropped the column; the engine takes a
+:class:`PayCadence` (bound to its profile as
+:class:`app.services.payroll_basis.PayrollBasis`) and divides by the
+count derived here.  A salary profile's paycheck recurs every pay period by
+definition, so there was never a second count to hold.
 
 Why the ROUNDED integer, and not the exact rate
 -----------------------------------------------

@@ -21,6 +21,20 @@ class SalaryProfile(
 ):
     """A salary income profile used for net paycheck calculation.
 
+    **It does NOT record how often the owner is paid, and that is plan step
+    R-F16.**  ``pay_periods_per_year`` was an ``Integer`` column here, offered
+    as a 12 / 24 / 26 / 52 dropdown, and it was the DIVISOR the paycheck
+    engine turned an annual salary into one paycheck with.
+    ``budget.pay_schedule.cadence_days`` is the same fact -- the rhythm the
+    owner's paydays arrive on -- and nothing validated one against the other,
+    so a profile saying 26 beside a 7-day cadence modelled DOUBLE the owner's
+    income (finding **F-16**).  The count is now derived from the cadence
+    alone, by :attr:`app.services.pay_calendar.PayCadence.periods_per_year`,
+    which is the one producer every monthly-equivalent conversion already
+    read.  A profile's paycheck recurs every pay period BY DEFINITION -- that
+    is what ``salary.profiles._paycheck_template`` authors -- so there was
+    never a per-profile count for this column to hold.
+
     Optimistic locking: see :class:`Transaction` for the
     ``version_id_col`` contract.  Concurrent profile edits race for
     the bump; the loser raises ``StaleDataError`` and the route
@@ -35,7 +49,6 @@ class SalaryProfile(
             name="uq_salary_profiles_user_scenario_name",
         ),
         db.CheckConstraint("annual_salary > 0", name="ck_salary_profiles_positive_salary"),
-        db.CheckConstraint("pay_periods_per_year > 0", name="ck_salary_profiles_positive_periods"),
         db.CheckConstraint("qualifying_children >= 0", name="ck_salary_profiles_nonneg_children"),
         db.CheckConstraint("other_dependents >= 0", name="ck_salary_profiles_nonneg_dependents"),
         db.CheckConstraint("additional_income >= 0", name="ck_salary_profiles_nonneg_add_income"),
@@ -85,10 +98,6 @@ class SalaryProfile(
         db.String(2), nullable=False, default="NC",
         server_default=db.text("'NC'"),
     )
-    pay_periods_per_year = db.Column(
-        db.Integer, nullable=False, default=26, server_default=db.text("26"),
-    )
-
     # W-4 fields (IRS Pub 15-T Percentage Method inputs)
     qualifying_children = db.Column(
         db.Integer, nullable=False, default=0, server_default=db.text("0"),

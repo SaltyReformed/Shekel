@@ -13,9 +13,19 @@ parser has not been written must be unofferable AND unsubmittable from the same
 fact, or the two drift and a tampered form reaches a parser that does not exist.
 """
 
-from marshmallow import fields, validate
+from marshmallow import (
+    ValidationError,
+    fields,
+    pre_load,
+    validate,
+    validates_schema,
+)
 
-from app.schemas.validation._helpers import BaseSchema, RowId
+from app.schemas.validation._helpers import (
+    BaseSchema,
+    RowId,
+    _normalize_empty_inputs,
+)
 from app.services.statement_import import supported_sources
 
 
@@ -115,3 +125,77 @@ class StatementMatchReleaseSchema(BaseSchema):
         required=True,
         error_messages={"required": "Which match do you want to undo?"},
     )
+
+
+class StatementPurchaseSchema(BaseSchema):
+    """Validate one bank line becoming a purchase (plan step X-f6a-3b).
+
+    **One line and one destination, and no figure at all.**  The amount and
+    both days come from the recorded LINE inside the same transaction
+    (:mod:`app.services.statement_match._create`), so a stale page cannot
+    commit a number the bank did not state -- the same reason
+    :class:`StatementMatchSchema` beside it carries ids only.
+
+    **The destination arms are OPTIONAL here and exclusive at the door.**
+    Which of "an envelope I already have" and "a new envelope" was chosen is a
+    fact about the ACT, so the service refuses both-or-neither and this schema
+    does not restate it (see :class:`StatementMatchSchema`'s own note on why a
+    relation between fields is not a fact about either).  What IS a fact about
+    this form is that a new envelope needs both of its own fields, which is the
+    cross-field rule below.
+
+    The ``@pre_load`` is not decoration: the destination ``<select>`` submits
+    ``""`` when the owner picks "a new envelope", and ``RowId`` reads that as a
+    validation error rather than as "absent".
+    """
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
+
+    line_id = RowId(
+        required=True,
+        error_messages={"required": "Which statement line are you recording?"},
+    )
+    transaction_id = RowId(required=False, load_default=None)
+    #: Defaulted from what the BANK called the merchant and editable, because
+    #: the bank's own words are the only description of this spending that
+    #: exists.  The 200 matches ``transactions.name``.
+    envelope_name = fields.String(
+        required=False, load_default=None,
+        validate=validate.Length(min=1, max=200),
+    )
+    category_id = RowId(required=False, load_default=None)
+
+    @validates_schema
+    def validate_new_envelope_is_whole(self, data, **kwargs):
+        """Refuse a NEW envelope stated by halves.
+
+        A budget line needs a name AND a category: ``transactions.category_id``
+        is what every spending report groups by, and a row created without one
+        would be invisible to the very analysis the purchase exists to feed.
+
+        **It applies only when the destination select says "a new envelope"**,
+        which is what an absent ``transaction_id`` means.  Asking it
+        unconditionally read the always-rendered, always-prefilled name box as
+        a destination -- so an owner who picked an envelope they already had
+        was told their new envelope was incomplete, about a new envelope they
+        had not asked for.  The form submits every control it renders; only the
+        select says which arm was chosen.
+
+        Args:
+            data: The deserialized payload.
+            **kwargs: Marshmallow's context, unused.
+
+        Raises:
+            ValidationError: When no envelope is named and the new one is
+                missing its name or its category.
+        """
+        if data.get("transaction_id") is not None:
+            return
+        if data.get("envelope_name") is None or data.get("category_id") is None:
+            raise ValidationError(
+                "A new envelope needs both a name and a category.",
+                field_name="envelope_name",
+            )

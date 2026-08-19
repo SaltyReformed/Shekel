@@ -18,6 +18,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import NamedTuple
 
+from app.services.payroll_basis import PayrollBasis
 from app.services.recurrence_engine._plan import compute_due_date
 
 logger = logging.getLogger(__name__)
@@ -138,7 +139,7 @@ def _derive_row_fields(template, rule, salary_profile, period, schedule):
         category_id=template.category_id,
         transaction_type_id=template.transaction_type_id,
         estimated_amount=_get_transaction_amount(
-            template, salary_profile, priced_period, schedule.calendar.saved(),
+            template, salary_profile, priced_period, schedule.calendar,
         ),
         due_date=compute_due_date(rule, period),
     )
@@ -177,7 +178,7 @@ def _get_salary_profile(template):
 
 
 
-def _get_transaction_amount(template, salary_profile, period, all_periods):
+def _get_transaction_amount(template, salary_profile, period, calendar):
     """Determine the transaction amount, using paycheck calculator if salary-linked.
 
     Resolves tax configs for the period's OWN tax year via the shared
@@ -189,10 +190,16 @@ def _get_transaction_amount(template, salary_profile, period, all_periods):
     salary page's live-calculated net pay agree on which year's brackets
     and FICA wage base/cap apply -- they cannot silently diverge.
 
-    **``all_periods`` must be the OWNER's WHOLE schedule, and passing the
-    caller's window instead was a live money defect** (plan ledger row
-    **D25**, closed at plan step R4b-1).  ``calculate_paycheck`` reads this
-    argument for FIVE separate judgements, every one of which needs periods
+    **The engine's period set must be the OWNER's WHOLE schedule, and passing
+    the caller's window instead was a live money defect** (plan ledger row
+    **D25**, closed at plan step R4b-1).  Since plan step **R-F16** this takes
+    the CALENDAR rather than a period sequence, which makes that a property of
+    the type instead of a rule stated here: a
+    :class:`~app.services.pay_calendar.PayCalendar` is built only from a
+    complete payday set, and its cadence -- the paycheck count the engine
+    divides by -- comes off the same derivation as its periods, so the two
+    cannot be sourced from different reads.  ``calculate_paycheck`` reads the
+    period set for FIVE separate judgements, every one of which needs periods
     the pass itself is not writing into: the annual rounding reconciliation
     (``_gross_biweekly_for_period``), THIRD-PAYCHECK detection
     (``_is_third_paycheck``), the first-paycheck-of-month deductions
@@ -262,7 +269,8 @@ def _get_transaction_amount(template, salary_profile, period, all_periods):
         calibration = getattr(salary_profile, "calibration", None)
 
         breakdown = paycheck_calculator.calculate_paycheck(
-            salary_profile, period, all_periods, tax_configs,
+            PayrollBasis(salary_profile, calendar.cadence),
+            period, calendar.saved(), tax_configs,
             calibration=calibration,
         )
         return breakdown.earnings.net_pay

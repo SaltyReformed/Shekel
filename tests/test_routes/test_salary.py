@@ -14,6 +14,7 @@ from app.models.salary_raise import SalaryRaise
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.tax_config import FicaConfig, StateTaxConfig
 from app.models.calibration_override import CalibrationOverride
+from app.services import pay_period_write
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
@@ -35,6 +36,7 @@ from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
     make_every_period_rule,
+    payroll_basis,
     create_loan_account,
     freeze_today,
     seed_fica_config,
@@ -52,7 +54,7 @@ def _freeze_today_inside_seed_range(monkeypatch):
     which spans 2026-2027 from a calendar anchor.  Migrating to a
     today-relative fixture would slide the period range out of the
     tax_year=2026 frame.  Freezing today inside the seeded range keeps
-    get_current_period() deterministic regardless of wall-clock date.
+    "which paycheck contains today" deterministic regardless of wall-clock date.
     """
     freeze_today(monkeypatch, date(2026, 3, 20))
 
@@ -95,7 +97,6 @@ def _create_profile(seed_user):
         name="Day Job",
         annual_salary=Decimal("75000.00"),
         state_code="NC",
-        pay_periods_per_year=26,
     )
     db.session.add(profile)
     db.session.commit()
@@ -180,7 +181,6 @@ def _create_other_user_profile():
         name="Other Job",
         annual_salary=Decimal("60000.00"),
         state_code="NC",
-        pay_periods_per_year=26,
     )
     db.session.add(profile)
     db.session.commit()
@@ -217,6 +217,31 @@ class TestProfileList:
             assert b"New Salary Profile" in response.data
 
 
+def _respace_paydays(db, user_id, cadence_days):
+    """Re-generate the owner's schedule AT *cadence_days*, committed.
+
+    Both the persisted cadence and the paydays move, through the one write
+    door, so the fixture is a state the application can actually produce -- a
+    schedule row saying 7 beside 14-day paydays is not.
+
+    Args:
+        db: The test session wrapper.
+        user_id: The owner to respace.
+        cadence_days: The new days between paydays.
+    """
+    pay_period_write.record_paydays(
+        user_id=user_id,
+        first_payday=date(2026, 1, 2),
+        num_periods=10,
+        cadence_days=cadence_days,
+        retiring_ids={
+            pid for (pid,) in db.session.query(PayPeriod.id)
+            .filter_by(user_id=user_id)
+        },
+    )
+    db.session.commit()
+
+
 class TestProfileCreate:
     """Tests for POST /salary."""
 
@@ -230,7 +255,6 @@ class TestProfileCreate:
                 "annual_salary": "75000.00",
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
-                "pay_periods_per_year": "26",
             }, follow_redirects=True)
 
             assert response.status_code == 200
@@ -247,7 +271,7 @@ class TestProfileCreate:
             assert profile.template.is_active is True
 
     def test_create_profile_template_amount(self, app, auth_client, seed_user, seed_periods):
-        """Created template amount equals annual_salary / pay_periods_per_year."""
+        """Created template amount equals annual_salary over the paycheck count."""
         with app.app_context():
             filing_status = db.session.query(FilingStatus).filter_by(name="single").one()
 
@@ -256,7 +280,6 @@ class TestProfileCreate:
                 "annual_salary": "52000.00",
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
-                "pay_periods_per_year": "26",
             }, follow_redirects=True)
 
             profile = (
@@ -266,6 +289,94 @@ class TestProfileCreate:
             )
             # 52000 / 26 = 2000
             assert profile.template.default_amount == Decimal("2000.00")
+
+    def test_create_profile_template_amount_follows_the_cadence(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """A weekly owner's paycheck template is the salary over 52, not 26.
+
+        Input: the same $52,000 create POST as the test above, from an owner
+        whose ``budget.pay_schedule.cadence_days`` is 7.
+        Expected: ``default_amount`` is $1,000.00 ($52,000 / 52).
+        Why: **the sibling above cannot see this** -- its owner is biweekly, so
+        a route that hardcoded 26, or read a per-profile count, produces the
+        same $2,000.00 either way.  Before plan step R-F16 nothing checked the
+        form's ``pay_periods_per_year`` against the schedule, so a weekly owner
+        accepting the dropdown's default seeded every paycheck row at DOUBLE
+        their pay.
+
+        **What this pins, measured rather than assumed.**  The figure asserted
+        is the one ``create_profile`` finally writes, which is the paycheck
+        ENGINE's answer for the reference period -- ``_paycheck_template``'s
+        own ``annual / count`` seed is overwritten by ``set_amount`` in the
+        same request, and mutating that seed to ``/ 26`` leaves this test
+        green.  Hardcoding :attr:`PayrollBasis.periods_per_year` to 26 fails
+        it, and it is the ONLY test in this module that does -- which is the
+        point: every other case here is biweekly, where the derived count and
+        the old constant agree.
+        """
+        with app.app_context():
+            filing_status = db.session.query(FilingStatus).filter_by(
+                name="single",
+            ).one()
+            # A COHERENT weekly owner: the paydays are respaced with the
+            # cadence, not just relabelled.  A 7-day cadence beside 14-day
+            # paydays is a state no door in the application can produce, and
+            # asserting a figure for one pins nothing about a real owner.
+            _respace_paydays(db, seed_user["user"].id, cadence_days=7)
+
+            auth_client.post("/salary", data={
+                "name": "Weekly Check",
+                "annual_salary": "52000.00",
+                "filing_status_id": filing_status.id,
+                "state_code": "NC",
+            }, follow_redirects=True)
+
+            profile = (
+                db.session.query(SalaryProfile)
+                .filter_by(user_id=seed_user["user"].id, name="Weekly Check")
+                .one()
+            )
+            # 52000 / 52 = 1000, gross == net here (no tax configs seeded).
+            assert profile.template.default_amount == Decimal("1000.00")
+
+    def test_the_salary_form_states_the_derived_paycheck_count(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """The form SHOWS the count and offers no control to change it.
+
+        Input: ``GET /salary/new`` for an owner at a 7-day cadence and again
+        at 14.
+        Expected: "52" then "26" under a "Paychecks / Year" label, no
+        ``pay_periods_per_year`` input of any kind, and a link to the
+        pay-period settings that own the cadence.
+        Why: the count is what the page's own gross preview divides by, so
+        hiding it makes that figure unexplainable -- but rendering a SECOND
+        control for it is the finding.  **Both cadences are asked** because a
+        readout hardcoded to 26 renders correctly for the biweekly fixture and
+        is the exact regression this replaces; only the weekly read
+        distinguishes them.  Asserting the absence of the input matters just
+        as much: ``BaseSchema``'s ``unknown = EXCLUDE`` means a stale control
+        would submit silently and reach nothing, so nothing else in the suite
+        would fail if one came back.
+        """
+        with app.app_context():
+            for cadence_days, shown in ((7, ">52<"), (14, ">26<")):
+                _respace_paydays(db, seed_user["user"].id, cadence_days)
+
+                response = auth_client.get("/salary/new")
+
+                assert response.status_code == 200
+                body = response.data.decode()
+                assert b'name="pay_periods_per_year"' not in response.data
+                assert b'id="pay_periods_per_year"' not in response.data
+                assert "Paychecks / Year" in body
+                assert "from your pay schedule" in body
+                marker = body.index("Paychecks / Year")
+                assert shown in body[marker:marker + 400], (
+                    f"a {cadence_days}-day cadence rendered "
+                    f"{body[marker:marker + 400]!r}"
+                )
 
     def test_create_profile_validation_error(self, app, auth_client, seed_user):
         """POST /salary with missing fields shows a validation error."""
@@ -490,7 +601,6 @@ class TestProfileUpdate:
                 "annual_salary": "80000.00",
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
-                "pay_periods_per_year": "26",
             }, follow_redirects=True)
 
             assert response.status_code == 200
@@ -1919,7 +2029,6 @@ def _create_second_user_salary_profile(second_user_data):
         name="Other Job",
         annual_salary=Decimal("60000.00"),
         state_code="NC",
-        pay_periods_per_year=26,
     )
     db.session.add(profile)
     db.session.commit()
@@ -2274,7 +2383,6 @@ class TestNetBiweeklyMismatchFixes:
                 "annual_salary": "75000.00",
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
-                "pay_periods_per_year": "26",
             }, follow_redirects=True)
 
             profile = (
@@ -2313,7 +2421,6 @@ class TestNetBiweeklyMismatchFixes:
                 "annual_salary": "60000.00",
                 "filing_status_id": filing_status.id,
                 "state_code": "NC",
-                "pay_periods_per_year": "26",
             }, follow_redirects=True)
 
             profile = (
@@ -3197,7 +3304,7 @@ class TestCalibrationServerDerivedSnapshot:
                 user.id, profile, current_period.start_date.year,
             )
             breakdown = paycheck_calculator.calculate_paycheck(
-                profile, current_period, periods, tax_configs,
+                payroll_basis(profile), current_period, periods, tax_configs,
                 calibration=profile.calibration,
             )
 
@@ -3369,7 +3476,6 @@ def _create_inactive_profile(seed_user, name="Old Job"):
         name=name,
         annual_salary=Decimal("40000.00"),
         state_code="NC",
-        pay_periods_per_year=26,
         is_active=False,
     )
     db.session.add(profile)

@@ -14,6 +14,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from app import ref_cache
 from app.enums import RaiseTypeEnum
+from app.services.salary_raises import apply_raises
 from app.utils.money import round_money
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ class _HorizonRaise:
     """A recurring cola-type raise re-anchored to the post-cutoff horizon.
 
     The minimal raise-like value
-    :func:`app.services.paycheck_calculator.apply_raises` consumes: that
+    :func:`app.services.salary_raises.apply_raises` consumes: that
     function reads only ``effective_year``, ``effective_month``,
     ``is_recurring``, ``percentage``, and ``flat_amount`` (never
     ``raise_type`` -- that is display-only, read by the badge helper).
@@ -106,7 +107,7 @@ def project_salaries_by_year(
     """Project annual salary for each year in a range, honoring the merit horizon.
 
     Delegates each year's salary to the shared
-    :func:`app.services.paycheck_calculator.apply_raises` so pension
+    :func:`app.services.salary_raises.apply_raises` so pension
     projections and the paycheck pipeline apply the identical raise rule
     (sort order, recurring compounding, one-time gating).
 
@@ -157,13 +158,6 @@ def project_salaries_by_year(
     Returns:
         list of (year, Decimal salary) tuples.
     """
-    # Pylint: ``import-outside-toplevel`` -- Deferred import keeps this
-    # pure-function module a stdlib-only leaf: the paycheck_calculator
-    # tax/calibration chain loads only when raise projection is actually
-    # requested.
-    # pylint: disable=import-outside-toplevel
-    from app.services.paycheck_calculator import apply_raises
-
     owned_raises = raises or []
     cutoff_year = start_year + merit_horizon_years
 
@@ -231,7 +225,7 @@ def _reanchor_recurring_cola(raises, anchor_year):
     Returns a lightweight :class:`_HorizonRaise` for every recurring
     cola-type raise, with ``effective_year`` reset to
     ``max(own effective_year, anchor_year)`` so
-    :func:`app.services.paycheck_calculator.apply_raises` compounds each
+    :func:`app.services.salary_raises.apply_raises` compounds each
     one only from *anchor_year* forward -- and never EARLIER than the
     raise's own start (H1: a plain ``anchor_year`` reset pulled a
     future-scheduled COLA backward, applying it in years before it

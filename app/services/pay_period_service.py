@@ -48,14 +48,42 @@ retired reader                          what answers it now
 ``get_periods_in_range``                ``PayCalendar.window``
 ======================================= ==================================
 
-``get_current_period`` and ``get_all_periods`` remain, for the rest of
-**C2-f2** and then **C2-f3**: only the GRID leaf of that step has landed, and
-``C2-f2c``-``C2-f2e`` still move both readers at ``/investment``,
-``/savings``, ``/retirement``, the budget dashboard and ``/accounts/<id>``.
-**They travel together and may not be separated** (the C2-f decomposition
-ruling, 2026-08-14): 11 functions read both, so splitting them leaves a
-dozen context objects holding an ORM row in one field and a
-:class:`~app.services.pay_calendar.DerivedPeriod` in another.
+**The FIFTH is gone at C2-f3a**:
+
+======================================= ==================================
+retired reader                          what answers it now
+======================================= ==================================
+``get_current_period``                  ``PayCalendar.period_containing``
+======================================= ==================================
+
+It answered "which paycheck covers this day" in SQL, and it is worth saying
+what was wrong with it rather than only that it moved.  Its ``.first()``
+carried NO ``ORDER BY`` (ledger row **P19**), so over two periods covering one
+day it returned whichever row PostgreSQL happened to yield first -- a
+plan-dependent answer to the application's most-asked period question.  And
+none of its three call sites ever passed ``as_of``, so each answered on the
+CONTAINER's civil day rather than the owner's; all three now read
+``display_today()``.  Neither defect is patched: the derivation is ordered by
+construction and takes the day as an argument, so both have no subject.
+
+**Row P49 is NOT closed by that, and an adversarial review of C2-f3a caught
+this paragraph claiming it was.**  The row is about the process clock behind
+"which paycheck am I in" wherever it is asked, and FIVE sites in
+``app/routes/salary/`` still ask it as ``period_containing(date.today())`` --
+they took the derivation at C2-f2d-3 and kept the clock.  The row stays open,
+re-measured, and names them.
+
+**``get_all_periods`` is the SIXTH and LAST, and it remains** for C2-f3b and
+C2-f3c, at six call sites: the four destructive schedule doors in
+``pay_period_admin``, the settings period list, and the recurrence generation
+seam's ``GenerationSchedule``.  When those land this module holds
+:func:`earliest_recordable_day` alone.
+*The C2-f decomposition ruling of 2026-08-14 said the two readers "travel
+together and may not be separated", on a measurement of 11 functions reading
+both. By the time C2-f3 was picked up TWO functions did -- the Income
+Statement's window defaults and the transfer create form -- and both moved
+inside C2-f3a, so the constraint was satisfied rather than broken by splitting
+the leaves this way.*
 """
 
 from datetime import date
@@ -123,30 +151,6 @@ def earliest_recordable_day(user_id: int) -> date:
     if earliest is None:
         return today
     return min(earliest, today)
-
-
-def get_current_period(user_id, as_of=None):
-    """Return the pay period that contains the given date.
-
-    Args:
-        user_id: The user's ID.
-        as_of:   The reference date (default: today).
-
-    Returns:
-        The matching PayPeriod, or None if no period covers that date.
-    """
-    if as_of is None:
-        as_of = date.today()
-
-    return (
-        db.session.query(PayPeriod)
-        .filter(
-            PayPeriod.user_id == user_id,
-            PayPeriod.start_date <= as_of,
-            PayPeriod.end_date >= as_of,
-        )
-        .first()
-    )
 
 
 def get_all_periods(user_id):

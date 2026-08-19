@@ -76,6 +76,7 @@ from app.services import pay_period_service, pay_period_write, period_population
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
     make_cadence_rule,
+    payroll_basis,
     seed_fica_config,
     seed_state_tax_config,
     seed_tax_bracket_set,
@@ -528,7 +529,6 @@ class TestThePaycheckSeesTheWholeSchedule:
             name="Day Job",
             annual_salary=Decimal("104000.00"),
             state_code="NC",
-            pay_periods_per_year=26,
         )
         db.session.add(profile)
         db.session.flush()
@@ -595,10 +595,10 @@ class TestThePaycheckSeesTheWholeSchedule:
             derived = calendar.saved()
             derived_period = calendar.period_by_id(period.id)
             whole_break = paycheck_calculator.calculate_paycheck(
-                profile, derived_period, derived, configs,
+                payroll_basis(profile), derived_period, derived, configs,
             )
             windowed_break = paycheck_calculator.calculate_paycheck(
-                profile, derived_period, [derived_period], configs,
+                payroll_basis(profile), derived_period, [derived_period], configs,
             )
             whole = whole_break.earnings.net_pay
             windowed = windowed_break.earnings.net_pay

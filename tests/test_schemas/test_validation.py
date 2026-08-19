@@ -784,7 +784,6 @@ class TestSalaryProfileCreateSchema:
             "state_code": "NC",
         })
         assert data["annual_salary"] == Decimal("75000.00")
-        assert data["pay_periods_per_year"] == 26  # Default.
 
     def test_missing_required_field(self):
         """Missing annual_salary raises ValidationError."""
@@ -796,17 +795,26 @@ class TestSalaryProfileCreateSchema:
             })
         assert "annual_salary" in exc.value.messages
 
-    def test_invalid_pay_periods_per_year(self):
-        """pay_periods_per_year=10 fails OneOf validation."""
-        with pytest.raises(ValidationError) as exc:
-            SalaryProfileCreateSchema().load({
-                "name": "Bad",
-                "annual_salary": "75000.00",
-                "filing_status_id": "1",
-                "state_code": "NC",
-                "pay_periods_per_year": "10",
-            })
-        assert "pay_periods_per_year" in exc.value.messages
+    def test_pay_periods_per_year_cannot_be_submitted(self):
+        """A submitted paycheck count reaches no column (R-F16).
+
+        Input: a valid payload carrying ``pay_periods_per_year``, the field
+        this schema offered as a 12 / 24 / 26 / 52 dropdown until plan step
+        R-F16 dropped the column behind it.
+        Expected: the key is absent from the loaded data -- ``BaseSchema``'s
+        ``unknown = EXCLUDE`` drops it -- so a stale client, a replayed form or
+        a hand-crafted POST cannot reinstate a second answer to "how often am
+        I paid" beside ``budget.pay_schedule.cadence_days``.  The count derives
+        from the cadence and from nothing a salary form submits.
+        """
+        data = SalaryProfileCreateSchema().load({
+            "name": "Stale client",
+            "annual_salary": "75000.00",
+            "filing_status_id": "1",
+            "state_code": "NC",
+            "pay_periods_per_year": "52",
+        })
+        assert "pay_periods_per_year" not in data
 
     def test_state_code_length(self):
         """state_code must be exactly 2 characters."""

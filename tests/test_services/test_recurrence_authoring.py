@@ -600,7 +600,6 @@ class TestSalaryProfileWriter:
             "annual_salary": "104000.00",
             "filing_status_id": str(filing_status.id),
             "state_code": "PA",
-            "pay_periods_per_year": "26",
         })
         assert resp.status_code == 302
 

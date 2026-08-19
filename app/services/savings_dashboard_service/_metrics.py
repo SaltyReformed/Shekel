@@ -25,6 +25,7 @@ from app.services import (
     obligations_aggregator,
     paycheck_calculator,
 )
+from app.services.payroll_basis import PayrollBasis
 from app.services.savings_dashboard_service._debt_line import (
     LoanPayoffOutlook,
     debt_without_payoff_model,
@@ -227,7 +228,7 @@ def _sum_liquid_balances(account_data: list[AccountProjection]) -> Decimal:
     return total_savings
 
 
-def _get_current_paycheck_breakdown(user_id, all_periods, current_period):
+def _get_current_paycheck_breakdown(balance_ctx, all_periods, current_period):
     """Compute the canonical paycheck breakdown for the current period.
 
     The single income producer this module uses for any engine-derived
@@ -257,8 +258,16 @@ def _get_current_paycheck_breakdown(user_id, all_periods, current_period):
     via ``apply_raises`` and is therefore the only correct source for
     a raise-aware monthly gross.
 
+    **It takes the read PASS rather than an owner id** (plan step R-F16, on
+    the ruling ``pay_calendar:C2-f2d-1`` set).  The engine needs the owner's
+    paycheck COUNT as well as their profile, that count comes off the pay
+    calendar the pass already memoizes, and a producer holding a bare id could
+    only have derived a second one.  Dropping the id also makes a mismatched
+    (owner, pass) pair unrepresentable here.
+
     Args:
-        user_id: Integer ID of the current user.
+        balance_ctx: The read pass.  Its ``user_id`` scopes the profile query
+            and its memoized calendar supplies the cadence.
         all_periods: The owner's whole saved schedule as a
             :class:`~app.services.pay_calendar.PeriodWindow` (passed through
             to the paycheck engine for 3rd-paycheck detection and the
@@ -279,7 +288,7 @@ def _get_current_paycheck_breakdown(user_id, all_periods, current_period):
 
     profile = (
         db.session.query(SalaryProfile)
-        .filter_by(user_id=user_id, is_active=True)
+        .filter_by(user_id=balance_ctx.user_id, is_active=True)
         .first()
     )
     if profile is None:
@@ -288,10 +297,11 @@ def _get_current_paycheck_breakdown(user_id, all_periods, current_period):
     # The CURRENT PERIOD's own tax year, not the clock's -- the same key
     # every other paycheck for this profile is computed under.
     tax_configs = load_tax_configs_for_year(
-        user_id, profile, current_period.start_date.year,
+        balance_ctx.user_id, profile, current_period.start_date.year,
     )
     return paycheck_calculator.calculate_paycheck(
-        profile, current_period, all_periods, tax_configs,
+        PayrollBasis(profile, balance_ctx.calendar().cadence),
+        current_period, all_periods, tax_configs,
     )
 
 

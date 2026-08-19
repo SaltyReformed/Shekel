@@ -87,7 +87,6 @@ F_134_RESTORED_COLUMNS = [
     ("salary", "pension_profiles", "name", "'Pension'"),
     ("salary", "pension_profiles", "consecutive_high_years", "4"),
     ("salary", "salary_profiles", "state_code", "'NC'"),
-    ("salary", "salary_profiles", "pay_periods_per_year", "26"),
     ("salary", "salary_profiles", "qualifying_children", "0"),
     ("salary", "salary_profiles", "other_dependents", "0"),
     ("salary", "salary_profiles", "additional_income", "0"),

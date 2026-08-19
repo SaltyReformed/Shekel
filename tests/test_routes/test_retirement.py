@@ -65,7 +65,6 @@ def _create_salary_profile(seed_user, db_session):
         filing_status_id=filing_status.id,
         name="Main Job",
         annual_salary=Decimal("80000.00"),
-        pay_periods_per_year=26,
     )
     db_session.add(profile)
     db_session.flush()

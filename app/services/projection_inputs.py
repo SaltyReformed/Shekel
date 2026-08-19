@@ -447,11 +447,20 @@ def build_investment_projection_inputs(
     average those consumers compute; passing pre-loaded data
     preserves each surface's existing filter contract.
 
-    Positional rather than keyword-only because the verification gate
-    (`grep -nE "salary_gross_biweekly=salary_gross_biweekly,\\s*\\)"
-    app/services/`) treats the kwarg-self-binding pattern as the
-    duplicate-canary; positional consumer calls do not match the
-    pattern, so the gate passes when only this helper site has it.
+    **This paragraph stated a verification gate that matched NOTHING, and it
+    is DELETED** (plan step C2-f3a, ledger row **P52**).  It named
+    ``grep -nE "salary_gross_biweekly=salary_gross_biweekly,\\s*\\)"
+    app/services/`` as the duplicate-canary for the kwarg-self-binding splat
+    below, and concluded "the gate passes when only this helper site has it".
+    ``grep`` is LINE-based; the one call site that carries the pattern ends its
+    line with the comma and closes on the NEXT one, so the expression matched
+    zero lines and the run exited 1.  The gate passed because nothing matched,
+    which is indistinguishable from passing because one thing matched -- a
+    safety that is not a predicate, which is what
+    ``docs/plans/conventions.md`` says is worse than no safety at all.
+    The duplication it claimed to police IS real -- the splat sat in four
+    services before Commit 18 -- and it is really policed, by pylint's
+    ``duplicate-code``, which CI enforces as a hard gate.
 
     Args:
         params: :class:`InvestmentParams` row for the account.

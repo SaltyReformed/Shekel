@@ -39,8 +39,9 @@ from app.models.account import Account
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.ref import Status, TransactionType
-from app.services import pay_period_service
 from app.services import cash_ledger
+
+from tests._test_helpers import current_pay_period
 
 
 class TestPaydayWorkflowRegression:
@@ -235,8 +236,9 @@ class TestPaydayWorkflowRegression:
             assert response.status_code == 200
             assert response.headers.get("HX-Trigger") == "gridRefresh"
 
-            # Resolve the target (the route uses get_current_period).
-            current_period = pay_period_service.get_current_period(
+            # Resolve the target the same way the route does: the period
+            # containing the owner's day.
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
 
@@ -398,7 +400,7 @@ class TestPaydayWorkflowRegression:
 
             # Create income and expense in the current period so the
             # calculated balance is deterministic.
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             income_txn = Transaction(
@@ -533,7 +535,7 @@ class TestPaydayWorkflowRegression:
             account = seed_user["account"]
 
             # Resolve key periods.
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             # Past period: immediately before current.
