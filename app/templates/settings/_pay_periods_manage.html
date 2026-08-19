@@ -3,7 +3,10 @@
    lock badges, plus the extend / truncate / regenerate actions.  Included
    by settings/_pay_periods.html only when the user already has periods.
    pp_periods (rows of {period, locked, badge_label, badge_class}) and the
-   optional pp_confirm ({op, count, params}) come from the route context. #}
+   optional pp_confirm ({op, count, params}) come from the route context.
+   `period` is a pay_calendar.DerivedPeriod since plan step C2-f3b, so its
+   identity is `.period_id` rather than `.id` -- the stored `end_date` the
+   ORM row's label read is one of the two columns plan step C4 drops. #}
 
 <h5 class="mt-4 mb-3"><i class="bi bi-sliders"></i> Manage Schedule</h5>
 
@@ -105,7 +108,7 @@
             <select id="keep_through_period_id" name="keep_through_period_id"
                     class="form-select" required>
               {% for row in pp_periods %}
-              <option value="{{ row.period.id }}">
+              <option value="{{ row.period.period_id }}">
                 #{{ row.period.period_index }} ({{ row.period.label }})
               </option>
               {% endfor %}

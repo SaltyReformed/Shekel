@@ -667,7 +667,7 @@ class TestCalibrationSSWageBaseCap:
     two paths cannot drift again.
 
     Worked example (03_consistency.md F-037, 2026-05-19 audit):
-      annual_salary = $312,000, pay_periods_per_year = 26
+      annual_salary = $312,000, 26 paychecks a year (a 14-day cadence)
       per-period gross = $12,000.00
       2026 fica_config.ss_wage_base = $184,500, ss_rate = 0.062
       Periods 1-15: cumul moves 0 -> $180,000 (15 * $12,000); each period

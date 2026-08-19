@@ -27,7 +27,7 @@ def _freeze_today_inside_seed_range(monkeypatch):
     """Freeze today to date(2026, 3, 20) so seed_periods tests pass past 2026-05-22.
 
     Adversarial tests use seed_periods (calendar-anchored Jan-May 2026)
-    and exercise route handlers that call ``get_current_period``.
+    and exercise route handlers that ask which paycheck contains today.
     Freezing today inside the seed range keeps those routes returning
     populated grid HTML regardless of wall-clock date, so input-
     validation assertions ("/grid?periods=10000 still renders") stay
@@ -985,7 +985,6 @@ class TestAuthEdgeCases:
         """
         with app.app_context():
             # Create a pay period for user 2.
-            from app.services import pay_period_service
             periods2 = pay_period_write.record_paydays(
                 user_id=second_user["user"].id,
                 first_payday=date(2026, 1, 2),

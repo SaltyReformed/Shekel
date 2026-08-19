@@ -36,6 +36,8 @@ from app.services import pay_period_service
 from app.services.balance_at import BalanceContext, grid_balance_view
 from app.utils.dates import display_today, to_display_date
 
+from tests._test_helpers import current_pay_period
+
 _RULES = ("shipped", "derived", "order", "strict", "none")
 
 
@@ -127,7 +129,7 @@ def main():
         )
         user_id = account.user_id
         periods = pay_period_service.get_all_periods(user_id)
-        current = pay_period_service.get_current_period(user_id, as_of=today)
+        current = current_pay_period(user_id, as_of=today)
 
         entries = _entries_with_accounts()
         account_ids = {account_id for _entry, account_id in entries}

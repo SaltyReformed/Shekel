@@ -643,6 +643,7 @@ def _derive_picture(
         return_rate_override=point.return_rate_override,
         employer_salary_basis=build_employer_salary_basis(
             gap.salary_profiles, retirement_date, merit_horizon, as_of,
+            gap.pay_cadence,
         ),
     )
     axis = resolve_projection_axis(ctx)

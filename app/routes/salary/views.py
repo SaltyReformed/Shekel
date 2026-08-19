@@ -17,6 +17,7 @@ from flask_login import current_user, login_required
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.models.salary_profile import SalaryProfile
 from app.services import paycheck_calculator, salary_cockpit_service
+from app.services.payroll_basis import PayrollBasis
 from app.services.pay_calendar import calendar_for
 from app.services.tax_config_service import load_tax_configs_for_periods
 from app.routes.salary._bp import salary_bp
@@ -79,7 +80,8 @@ def projection(profile_id):
     if profile is None:
         abort(404)
 
-    periods = calendar_for(current_user.id).saved()
+    calendar = calendar_for(current_user.id)
+    periods = calendar.saved()
     # Resolve tax configs PER period year (DH-#30): the ~2-year horizon
     # spans multiple tax years, so each period uses its own year's
     # brackets/FICA -- substituting the latest CONFIGURED year at or before
@@ -89,8 +91,8 @@ def projection(profile_id):
         current_user.id, profile, periods,
     )
     breakdowns = paycheck_calculator.project_salary(
-        profile, periods, configs_by_year=configs_by_year,
-        calibration=profile.calibration,
+        PayrollBasis(profile, calendar.cadence), periods,
+        configs_by_year=configs_by_year, calibration=profile.calibration,
     )
 
     # Pair periods with breakdowns

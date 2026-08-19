@@ -509,6 +509,67 @@ def pay_period_label(start_date: date, end_date: date) -> str:
     return f"{start_date.strftime('%m/%d')} - {end_date.strftime('%m/%d')}"
 
 
+def pay_period_range_label(start_date: date, end_date: date) -> str:
+    """Return a pay period's WIDE label (``"Feb 21 - Mar 06, 2026"``).
+
+    The second register, for the surfaces with room for month names: the
+    Income Statement's window selector and heading, and the Spending report's
+    window heading.  :func:`pay_period_label` above is the narrow one
+    (``"02/21 - 03/06"``), for a grid column head and a ``<select>`` that has
+    to fit beside other controls.  **Two registers is the deliberate part;
+    three COPIES of one register was not**, and collapsing that is what this
+    function is (plan step C2-f3a, ledger row **P47**'s duplicate half).
+
+    It was written three times -- character for character the same output from
+    three separate expressions of it:
+    ``ledger_report_service._income_statement._window_label``,
+    ``spending_report_service._window._window_label``, and inline Jinja in
+    ``analytics/_income_statement.html``.  Two of the three render this label
+    beside each other on ONE screen -- the statement's heading and the
+    ``<option>`` the reader picked it from -- so editing either alone would put
+    one paycheck on one page under two spellings.
+
+    **What is left is FOUR more spellings, and P47's census of six did not have
+    two of them** (re-censused 2026-08-18 by C2-f3a's adversarial reviews, over
+    every `` - `` / `` -- `` join of two ``strftime`` calls in ``app/``).  The
+    row's own status says its count is a floor and this is the measurement that
+    proves it: ``companion/index.html`` (``%b %-d`` -- ``%b %-d, %Y``),
+    ``grid/_mobile_plan.html`` (``%b %-d`` -- ``%b %-d``),
+    ``_recurrence_preview`` (``%b %d, %Y`` - ``%b %d, %Y``), and a pair the
+    census never named -- ``accounts/_reconcile_panel.html`` and
+    ``dashboard/_pulse.html``, which render the IDENTICAL ``%b %-d`` -
+    ``%b %-d`` and are therefore a second duplicate, not a second register.
+    Untouched here: which registers a screen should speak is P47's open half
+    and a display decision rather than a calendar one.
+
+    **It takes the two dates rather than a period**, for
+    :func:`pay_period_label`'s reason one function up: a pay period is answered
+    by two types (the ORM row and
+    :class:`~app.services.pay_calendar.DerivedPeriod`), neither of their
+    modules may import the other, and both already depend on this one.
+
+    **The year is the END's, and on a period that STRADDLES one that
+    misleads** -- ``"Dec 26 - Jan 08, 2027"`` reads as a December in 2027.  All
+    three copies did exactly that and this reproduces it BYTE FOR BYTE, so the
+    collapse is provably display-neutral and a rendering change is not smuggled
+    in behind a DRY fix.  The defect is recorded as ledger row **P67**, whose
+    remedy is the rule :func:`pay_period_label` already applies to this very
+    case: carry the year on both halves when the period crosses one.
+
+    Args:
+        start_date: The payday that opens the period.
+        end_date: The last day the period covers.
+
+    Returns:
+        The label -- abbreviated month name, zero-padded day, and the END
+        date's four-digit year.
+    """
+    return (
+        f"{start_date.strftime('%b %d')} - "
+        f"{end_date.strftime('%b %d')}, {end_date.year}"
+    )
+
+
 def attribution_date(
     preferred: date | None, period_start: date, period_end: date,
 ) -> date:

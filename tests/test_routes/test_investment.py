@@ -27,7 +27,6 @@ from app.services import (
     balance_at,
     growth_engine,
     investment_dashboard_service,
-    pay_period_service,
 )
 from app.services.balance_at import BalanceContext
 from app.services.investment_dashboard_service import (
@@ -41,6 +40,7 @@ from app.services.investment_dashboard_service._context import (
 from app.services.investment_projection import InvestmentInputs
 from app.utils.money import round_money
 from tests._test_helpers import (
+    current_pay_period,
     restamp_opening_assertion,
     settle_instant_on,
 )
@@ -203,7 +203,7 @@ class TestInvestmentDashboard:
         _create_investment_params(db.session, acct.id)
         headline = balance_at.balance_map(
             acct, BalanceContext.build(seed_user["user"].id),
-        )[pay_period_service.get_current_period(seed_user["user"].id).id]
+        )[current_pay_period(seed_user["user"].id).id]
         assert headline > Decimal("50000.00")
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
@@ -240,7 +240,7 @@ class TestInvestmentDashboard:
         )
         headline = balance_at.balance_map(
             acct, BalanceContext.build(seed_user["user"].id),
-        )[pay_period_service.get_current_period(seed_user["user"].id).id]
+        )[current_pay_period(seed_user["user"].id).id]
         assert headline > Decimal("25000.00")  # ruling R-Y: the anchor accrues
         resp = auth_client.get(f"/accounts/{acct.id}/investment")
         assert resp.status_code == 200
@@ -358,8 +358,7 @@ class TestInvestmentDashboard:
         The chip is still hidden where it should be: no investment params, or no
         current period (the two arms ruling R-AC kept).
         """
-        from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
-        current = pay_period_service.get_current_period(seed_user["user"].id)
+        current = current_pay_period(seed_user["user"].id)
         inv = make_investment_account(
             seed_user, db.session, current, Decimal("10000.00"),
             name="Fresh 401k",
@@ -2314,12 +2313,11 @@ class TestInvestmentEntryAwareRouting:
         canonical producer's value so the contract is locked beyond
         the rendered string.
         """
-        from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
             user = seed_user["user"]
             scenario = seed_user["scenario"]
-            current_period = pay_period_service.get_current_period(user.id)
+            current_period = current_pay_period(user.id)
             assert current_period is not None
 
             # ``account_service.create_account`` (via the helper) anchors
@@ -2404,8 +2402,7 @@ class TestInvestmentEntryAwareRouting:
         with app.app_context():
             user = seed_user["user"]
             scenario = seed_user["scenario"]
-            from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
-            current_period = pay_period_service.get_current_period(user.id)
+            current_period = current_pay_period(user.id)
             assert current_period is not None
 
             # ``account_service.create_account`` (via the helper) anchors
@@ -2703,7 +2700,6 @@ class TestTheProjectionAppliesEachContributionOnce:
         the first projected point at 12,000 -- which this test forbids.  The
         headline tile (11,000) is unchanged by the basis change.
         """
-        from app.services import pay_period_service  # pylint: disable=import-outside-toplevel
         from app.services.investment_dashboard_service import (  # pylint: disable=import-outside-toplevel
             compute_dashboard_data,
         )
@@ -2717,7 +2713,7 @@ class TestTheProjectionAppliesEachContributionOnce:
             assumed_annual_return=Decimal("0.00000"),
             annual_contribution_limit=Decimal("100000.00"),
         )
-        current_period = pay_period_service.get_current_period(
+        current_period = current_pay_period(
             seed_user["user"].id,
         )
         assert current_period is not None
@@ -2890,7 +2886,7 @@ class TestTheAnnualLimitSeedFollowsTheWindow:
             name="Limit 401k", balance="10000.00",
         )
         _create_investment_params(db.session, acct.id)
-        current = pay_period_service.get_current_period(seed_user["user"].id)
+        current = current_pay_period(seed_user["user"].id)
         _make_projected_shadow_income(
             seed_user, acct, current, Decimal("1000.00"), db.session,
         )
@@ -2919,8 +2915,8 @@ class TestTheProjectionMeetsItsSeedOnALapsedSchedule:
 
     **So the state this grades is an owner whose generated schedule has run
     out**, which nothing forces them to fix and which the balance arc's X-ad-b
-    and X-x steps exist because of.  ``get_current_period`` answers ``None``
-    there, the old window opened at today, and the axis would have opened on the
+    and X-x steps exist because of.  No period CONTAINS today there, the old
+    window opened at today, and the axis would have opened on the
     last payday up to a cadence earlier -- the engine re-growing days
     ``balance_at`` had already grown.  An adversarial code review of this step
     measured it at **$57.24** on a $102,686.18 balance, compounded over the
@@ -2938,7 +2934,7 @@ class TestTheProjectionMeetsItsSeedOnALapsedSchedule:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            assert pay_period_service.get_current_period(user_id) is None, (
+            assert current_pay_period(user_id) is None, (
                 "this test needs a LAPSED schedule; the fixture changed"
             )
             acct = _create_investment_account(
@@ -3063,7 +3059,7 @@ class TestTheProjectionContinuesTheHistory:
         assert Decimal(history[-1]) > Decimal("50000.00")
 
         bctx = BalanceContext.build(seed_user["user"].id)
-        current = pay_period_service.get_current_period(seed_user["user"].id)
+        current = current_pay_period(seed_user["user"].id)
         seed = balance_at.balance_at(acct, bctx, current.end_date)
         # The seed IS the history line's last point (ruling R-AE) ...
         assert Decimal(history[-1]) == seed
@@ -3123,7 +3119,7 @@ class TestInvestmentBalanceHeroTrueUp:
         # the anchor period's own accrual (ruling R-Y).
         headline = balance_at.balance_map(
             acct, BalanceContext.build(seed_user["user"].id),
-        )[pay_period_service.get_current_period(seed_user["user"].id).id]
+        )[current_pay_period(seed_user["user"].id).id]
         assert headline > Decimal("50000.00")
         assert f"{headline:,.2f}" in html
         assert "investment-balance-hero" in html

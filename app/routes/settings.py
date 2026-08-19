@@ -31,10 +31,11 @@ from app.services import (
     account_service,
     pay_period_admin,
     pay_period_locks,
-    pay_period_service,
     pay_schedule_service,
 )
 from app.services.auth_service import hash_password
+from app.services.pay_calendar import calendar_for
+from app.utils.dates import display_today
 
 logger = logging.getLogger(__name__)
 
@@ -186,20 +187,35 @@ def render_settings_dashboard(section, extra=None, status=200):
 def _load_pay_periods_context(user_id):
     """Load the pay-periods section: the period list with lock badges.
 
-    Each row carries a :class:`~app.models.pay_period.PayPeriod`, whether
-    it is ``locked`` (immutable), and the display badge text/CSS the
+    Each row carries a :class:`~app.services.pay_calendar.DerivedPeriod`,
+    whether it is ``locked`` (immutable), and the display badge text/CSS the
     manage UI renders -- the lock-reason-to-badge mapping is resolved here
     so the template only displays, never computes.  ``pp_schedule`` is the
     persisted schedule (cadence) when one exists.  ``pp_can_reset`` gates
     the full-reset control to users with no settled transactions (the same
     bound the service enforces), so the destructive action is only offered
     when it would be accepted.
+
+    **The list is the DERIVATION since plan step C2-f3b**, where it was
+    ``pay_period_service.get_all_periods`` -- ORM rows ordered by the stored
+    ``period_index`` and labelled from the stored ``end_date``, both of which
+    plan step **C4** drops.  It matters beyond that step: this page renders the
+    ordinal and the date range that the four destructive doors beside it then
+    decide against, so a row shown here and the row truncate deletes have to be
+    described by one derivation or the confirmation the user gives is about a
+    different schedule from the one that changes.
+
+    ``display_today`` rather than ``date.today``: the HISTORICAL badge says
+    whether a paycheck is behind the OWNER, and the process clock is the
+    container's (finding **balance:N-191**, ruled 2026-08-19).
     """
-    periods = pay_period_service.get_all_periods(user_id)
-    locks = pay_period_locks.classify_periods_bulk(periods)
+    calendar = calendar_for(user_id)
+    locks = pay_period_locks.classify_schedule_locks(
+        calendar, as_of=display_today(),
+    )
     period_rows = []
-    for period in periods:
-        reason = locks.get(period.id)
+    for period in calendar.saved():
+        reason = locks[period.period_id]
         badge_label, badge_class = _PP_LOCK_BADGES.get(
             reason, _PP_MUTABLE_BADGE,
         )

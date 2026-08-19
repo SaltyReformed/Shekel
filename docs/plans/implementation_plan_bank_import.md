@@ -73,18 +73,11 @@ the payback rows do not reconcile to what was actually paid to the card.
         **When it ticks is `steps.md`'s to say and is not restated here** -- the sentence that used
         to name a leaf disagreed with the order table's own answer, which is what rule 16 exists to
         stop.
-    - [x] **X-f6a-1** `40a490c3` a statement is RECORDED: four tables, one normalized line shape
-          behind a source adapter, the SECU CSV reader, and the import page. Balance-neutral on a
-          production clone (9 accounts, 434 grid cells, 6,076 daily points byte-identical with 306
-          real lines). **What a LATER leaf must obey**: identity is positional and its ordinal is
-          UNMEASURED (see R-FU's amendment), the restatement guard compares only the description,
-          and a refusal has no repair door -- **N-313**, **N-302**, **N-303**.
-    - [x] **X-f6a-2** `267cb75e` a bank line IS these rows: `budget.statement_matches` and its
-          members hold the correspondence over an exclusive arc, the proposer offers it, and an
-          accepted match writes the bank's posted day onto every member. Closed **N-173**; opened
-          **N-305**, **N-306** and **N-314**. **What a LATER step must obey**: no clearing link is
-          written from a match (**R-FV**), an unbalanced group is refused rather than apportioned,
-          and a group's day is its LATEST.
+    - The importer's CORE shipped 2026-08-16 - 2026-08-19 in four steps -- `40a490c3`, `267cb75e`,
+      `140f1f24` + `feb2ea91`, `1f214712` -- and is CONDENSED under `conventions.md` rule 5 into
+      `historical/bank_import_x_f6a_core_as_built_2026-08-19.md`, which names each id, its commit
+      and what it closed. Every finding they left open is live in `ledger.md`; every ruling they
+      established is in the table above.
 
     - [ ] **X-f6a-4** `feat(import): an import can be undone` -- the repair door finding **N-302**
           says a refusal owes. A `StatementLineConflict` is TERMINAL today: no door in `app/`
@@ -97,20 +90,6 @@ the payback rows do not reconcile to what was actually paid to the card.
           audited, or the review screen resolving a divergence rather than the write door
           hard-stopping. Balance-neutral either way -- deleting an import deletes what the bank
           SAID, and the days an accepted match wrote are the app's own record and stay.
-
-    - [x] **X-f6a-3a** `140f1f24` + `feb2ea91` the bank owns BOTH of a purchase's days (**R-FW**):
-          `transaction_on` goes NULLABLE, the adapter reads the swipe day SECU states in a card
-          line's description, and a match corrects a purchase's `purchased_on` where the bank
-          refutes it. Forced by X-f6a-3b's premise being measured FALSE. Opened **N-312**.
-          **What a LATER leaf must obey**: a purchase day moves only where the bank REFUTES it, and
-          only a line within `DAY_WINDOW` of the day it was MADE may refute it.
-
-    - [x] **X-f6a-3b** `1f214712` a bank line BECOMES a purchase (**R-FS**, **R-FX**), against an
-          envelope the owner picks or a NEW one it creates in the period the purchase was MADE in.
-          It also REPAIRED X-f6a-3a, whose `_COST_BEARING_FIELDS` refused `purchased_on` and so
-          killed 13 of the 15 purchase-date corrections the screen offered. Opened
-          **N-315**-**N-321**; **N-306 split off**. **What a LATER leaf must obey**: R-FX's two
-          conditions on adding to a settled row, and that a line becomes a PURCHASE, never a row.
 
     - [ ] **X-f6a-3c** the DECOMPOSED parent of the review screen's THROUGHPUT, split in two
           2026-08-19 (developer). What the proposer may OFFER and how many acts one request performs

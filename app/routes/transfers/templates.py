@@ -35,11 +35,11 @@ from app.services import (
     account_service,
     category_service,
     loan_loaders,
-    pay_period_service,
     template_amount_service,
     transfer_recurrence,
     transfer_service,
 )
+from app.services.pay_calendar import calendar_for
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (
     STALE_ACTION_MESSAGE,
@@ -130,11 +130,32 @@ def list_transfer_templates():
 @login_required
 @require_owner
 def new_transfer_template():
-    """Display the transfer template creation form."""
+    """Display the transfer template creation form.
+
+    **The start-period ``<select>`` and its preselection come off ONE calendar
+    derivation** (plan step C2-f3a).  They were
+    ``pay_period_service.get_all_periods`` and ``get_current_period`` -- two
+    reads of ``budget.pay_periods`` for one form, the second of them SQL with
+    no ``ORDER BY`` (ledger row **P19**) resolved against the process clock
+    (row **P49**).  The day is ``display_today()``, the owner's civil day and
+    the one ``routes/_period_options.period_move_options`` already reads for
+    the sibling ``<select>`` on the edit popover; a create form and an edit
+    popover disagreeing about which paycheck is current would be visible on
+    consecutive clicks.
+
+    **The offer set is still EVERY saved period, closed ones included**, which
+    is deliberately NOT ``period_move_options``' narrowed rule: this form
+    places the first occurrence of a definition being created, and back-dating
+    a one-time transfer into a closed paycheck is a legitimate thing to author
+    where MOVING an existing row backwards is the workflow ledger row **P46**
+    is about.  Stated because the two ``<select>``s now sit one derivation
+    apart and the difference is a policy rather than an oversight.
+    """
     accounts = account_service.list_active_accounts(current_user.id)
     categories = category_service.list_active_categories(current_user.id)
-    periods = pay_period_service.get_all_periods(current_user.id)
-    current_period = pay_period_service.get_current_period(current_user.id)
+    calendar = calendar_for(current_user.id)
+    periods = calendar.saved()
+    current_period = calendar.period_containing(display_today())
 
     # Pre-fill account selection from query params (for quick-action links).
     prefill_from = request.args.get("from_account", type=int)

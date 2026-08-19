@@ -25,7 +25,8 @@ from app.services import (
     pay_period_write,
     pay_schedule_service,
 )
-from tests._test_helpers import add_txn, freeze_today
+from app.routes import settings as settings_routes
+from tests._test_helpers import add_txn, freeze_today, open_calendar_hole
 from app.services import cash_ledger
 
 
@@ -632,3 +633,79 @@ class TestOwnerOnlyAndUi:
             assert resp.status_code == 200
             assert b"Reset is unavailable" in resp.data
             assert b'name="confirm"' not in resp.data
+
+
+class TestTheManageListIsTheDerivation:
+    """The rendered period list answers from the paydays, not the columns.
+
+    Plan step **C2-f3b**.  This page is where a user reviews the schedule
+    BEFORE pressing a destructive button on it, and the button's service decides
+    against the derivation -- so the list beside it has to describe the same
+    periods or the confirmation is about a different schedule from the one that
+    changes.  Both halves of a rendered row are graded: the LABEL, which the ORM
+    accessor built from the stored ``end_date``, and the lock BADGE, whose
+    "Past" chip was decided on the process clock.
+    """
+
+    def test_the_label_follows_the_paydays_not_the_stored_end(
+        self, app, db, auth_client, seed_user,
+    ):
+        """A shortened stored ``end_date`` does not move the rendered label.
+
+        The first generated period runs 2026-07-03 .. 2026-07-16, because the
+        next payday is 2026-07-17.  Its stored column is shortened to 07-05 --
+        the shape a row written before plan step C3-b can hold -- and the page
+        must still say 07/16, because that is when the paycheck actually ends.
+        Both strings are asserted, so a render that dropped the label entirely
+        cannot pass the negative half alone.
+        """
+        with app.app_context():
+            periods = _future_periods(db.session, seed_user, count=3)
+            open_calendar_hole(db.session, periods[0], date(2026, 7, 5))
+            db.session.commit()
+
+            # FIRING CONTROL, and an adversarial review of this step is why it
+            # is here: both assertions below are true of the UN-doctored row --
+            # the writer already materialises the derived end -- so with the
+            # fixture neutered this case was measured passing while grading
+            # nothing.  Re-read by primary key, because the plant is written
+            # through a re-loaded instance and the caller's is detached.
+            assert db.session.get(
+                PayPeriod, periods[0].id,
+            ).end_date == date(2026, 7, 5)
+
+            resp = auth_client.get("/settings?section=pay-periods")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            assert "07/03 - 07/16" in html
+            assert "07/03 - 07/05" not in html
+
+    def test_the_past_badge_follows_the_owners_civil_day(
+        self, app, db, auth_client, seed_user, monkeypatch,
+    ):
+        """"Past" is decided on ``display_today``, ruled 2026-08-19.
+
+        The clocks are pinned APART: the process clock stays on this module's
+        2026-06-15 and the display clock reads 2026-07-17.  TWO "Past" chips must
+        render -- an exact count, so a badge map that marked everything
+        historical fails here too.
+
+        **Both chips are the display clock's, and an adversarial review of this
+        step corrected a comment that said otherwise.**  ``_future_periods``
+        records paydays through the writer, which re-materialises the whole
+        calendar, so the 2024 bootstrap ends the day before the first generated
+        payday -- 2026-07-02, not its seeded 2024-01-18.  On the process clock
+        it has NOT ended either, which is why the mutation this case exists to
+        kill reports ``0 == 2`` rather than ``1 == 2``.
+        """
+        monkeypatch.setattr(
+            settings_routes, "display_today", lambda: date(2026, 7, 17),
+        )
+        with app.app_context():
+            _future_periods(db.session, seed_user, count=3)
+            resp = auth_client.get("/settings?section=pay-periods")
+            assert resp.status_code == 200
+            html = resp.data.decode()
+            # The bootstrap (derived end 2026-07-02) and the first generated
+            # period (2026-07-16); neither has ended on the process clock.
+            assert html.count(">Past<") == 2

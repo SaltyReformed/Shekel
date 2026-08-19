@@ -30,6 +30,7 @@ from tests._test_helpers import (
     create_account_of_type,
     create_loan_account,
     create_transfer,
+    current_pay_period,
     settle_instant_on,
     settlement_basis_id,
     settlement_if_settling,
@@ -1159,9 +1160,9 @@ class TestTrueUp:
             # pass as an ordinary true-up.  ``seed_user``'s bootstrap period is
             # HARDCODED to 2026-01-05..2026-01-18 (``conftest``), not derived
             # from the user's creation date as an earlier version of this
-            # comment said, so ``get_current_period`` is ``None`` on every day
-            # after 2026-01-18 and this is not date-fragile.
-            assert pay_period_service.get_current_period(
+            # comment said, so no period contains any day after 2026-01-18
+            # and this is not date-fragile.
+            assert current_pay_period(
                 seed_user["user"].id,
             ) is None, (
                 "this test grades the no-current-period door; the fixture now "
@@ -5565,7 +5566,7 @@ class TestCheckingDetailCanonicalProducer:
         from app.services.balance_at import BalanceContext  # pylint: disable=import-outside-toplevel
 
         with app.app_context():
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             assert current_period is not None
@@ -5691,7 +5692,7 @@ class TestCheckingDetailCanonicalProducer:
         non-entries-aware projection ($114.29 and $700.00).
         """
         with app.app_context():
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             assert current_period is not None
@@ -6308,7 +6309,7 @@ class TestCashDetailContext:
             params = db.session.query(InterestParams).filter_by(
                 account_id=acct.id,
             ).one()
-            current = pay_period_service.get_current_period(seed_user["user"].id)
+            current = current_pay_period(seed_user["user"].id)
             # pylint: disable=import-outside-toplevel
             from app.services.balance_at import BalanceContext
             ibp = net_worth_kernel.interest_by_period_for_account(

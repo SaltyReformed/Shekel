@@ -361,7 +361,6 @@ _NON_ROW_ID_INTEGERS = frozenset({
     # field of the same name to be lax, which is what this set's own
     # stale-entry arm refuses.
     "other_dependents",
-    "pay_periods_per_year",
     "payment_day",
     "qualifying_children",
     "rolling_target_periods",

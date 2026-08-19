@@ -36,6 +36,7 @@ from app.services.paycheck_calculator import (
 from app import ref_cache
 from app.enums import DeductionTimingEnum
 from app.services.pay_calendar import DerivedPeriod
+from tests._test_helpers import payroll_basis
 
 
 def _timing_id(name):
@@ -177,17 +178,22 @@ class FakeFicaConfig:
 
 
 class FakeProfile:
-    """Minimal stand-in for a SalaryProfile ORM object."""
+    """Minimal stand-in for a SalaryProfile ORM object.
+
+    **It carries no paycheck count**, and has not since plan step R-F16 dropped
+    ``salary_profiles.pay_periods_per_year``.  How often the owner is paid
+    reaches the engine on the :class:`PayrollBasis` beside the profile, which
+    every call here builds through the shared ``payroll_basis`` helper.
+    """
 
     def __init__(self, annual_salary, raises=None, deductions=None,
-                 pay_periods_per_year=26, created_at=None,
+                 created_at=None,
                  additional_income=0, additional_deductions=0,
                  extra_withholding=0, qualifying_children=0,
                  other_dependents=0):
         self.annual_salary = Decimal(str(annual_salary))
         self.raises = raises or []
         self.deductions = deductions or []
-        self.pay_periods_per_year = pay_periods_per_year
         self.created_at = created_at
         self.additional_income = Decimal(str(additional_income))
         self.additional_deductions = Decimal(str(additional_deductions))
@@ -488,7 +494,7 @@ class TestCalculatePaycheckPipeline:
         all_periods = [period]
 
         result = calculate_paycheck(
-            base_profile, period, all_periods,
+            payroll_basis(base_profile), period, all_periods,
             simple_tax_configs
         )
 
@@ -534,7 +540,7 @@ class TestCalculatePaycheckPipeline:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
         all_periods = [period]
 
-        r = calculate_paycheck(base_profile, period, all_periods,
+        r = calculate_paycheck(payroll_basis(base_profile), period, all_periods,
                                simple_tax_configs)
 
         # Hardcoded correctness anchor: base_profile=$60k salary,
@@ -565,7 +571,7 @@ class TestCalculatePaycheckPipeline:
         profile = FakeProfile(annual_salary=75000, created_at=date(2026, 1, 1))
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = calculate_paycheck(profile, period, [period], simple_tax_configs)
+        result = calculate_paycheck(payroll_basis(profile), period, [period], simple_tax_configs)
 
         expected_gross = (Decimal("75000") / 26).quantize(
             TWO_PLACES, rounding=ROUND_HALF_UP
@@ -584,7 +590,7 @@ class TestCalculatePaycheckPipeline:
         )
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = calculate_paycheck(profile, period, [period], simple_tax_configs)
+        result = calculate_paycheck(payroll_basis(profile), period, [period], simple_tax_configs)
 
         assert result.earnings.taxable_income == ZERO
 
@@ -598,7 +604,7 @@ class TestCalculatePaycheckPipeline:
             "fica_config": standard_fica,
         }
 
-        result = calculate_paycheck(profile, period, [period], configs)
+        result = calculate_paycheck(payroll_basis(profile), period, [period], configs)
 
         assert result.taxes.federal == ZERO
 
@@ -612,7 +618,7 @@ class TestCalculatePaycheckPipeline:
             "fica_config": standard_fica,
         }
 
-        result = calculate_paycheck(profile, period, [period], configs)
+        result = calculate_paycheck(payroll_basis(profile), period, [period], configs)
 
         assert result.taxes.state == ZERO
 
@@ -626,7 +632,7 @@ class TestCalculatePaycheckPipeline:
             "fica_config": None,
         }
 
-        result = calculate_paycheck(profile, period, [period], configs)
+        result = calculate_paycheck(payroll_basis(profile), period, [period], configs)
 
         assert result.taxes.social_security == ZERO
         assert result.taxes.medicare == ZERO
@@ -641,7 +647,7 @@ class TestCalculatePaycheckPipeline:
             "fica_config": None,
         }
 
-        result = calculate_paycheck(profile, period, [period], configs)
+        result = calculate_paycheck(payroll_basis(profile), period, [period], configs)
 
         assert result.taxes.federal == ZERO
         assert result.taxes.state == ZERO
@@ -669,7 +675,7 @@ class TestCalculatePaycheckPipeline:
             created_at=date(2026, 1, 1),
         )
         base_result = calculate_paycheck(
-            base, period, [period], simple_tax_configs
+            payroll_basis(base), period, [period], simple_tax_configs
         )
 
         with_w4 = FakeProfile(
@@ -679,7 +685,7 @@ class TestCalculatePaycheckPipeline:
             extra_withholding=50,
         )
         w4_result = calculate_paycheck(
-            with_w4, period, [period], simple_tax_configs
+            payroll_basis(with_w4), period, [period], simple_tax_configs
         )
 
         # Base: 4499.99/26=173.076923->173.08
@@ -704,7 +710,7 @@ class TestDeductionCalculation:
         ]
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = calculate_paycheck(base_profile, period, [period],
+        result = calculate_paycheck(payroll_basis(base_profile), period, [period],
                                     simple_tax_configs)
 
         assert len(result.deductions.pre_tax) == 1
@@ -718,7 +724,7 @@ class TestDeductionCalculation:
         ]
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = calculate_paycheck(base_profile, period, [period],
+        result = calculate_paycheck(payroll_basis(base_profile), period, [period],
                                     simple_tax_configs)
 
         assert len(result.deductions.post_tax) == 1
@@ -732,7 +738,7 @@ class TestDeductionCalculation:
         ]
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = calculate_paycheck(base_profile, period, [period],
+        result = calculate_paycheck(payroll_basis(base_profile), period, [period],
                                     simple_tax_configs)
 
         gross = Decimal("60000") / 26
@@ -747,7 +753,7 @@ class TestDeductionCalculation:
         ]
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = calculate_paycheck(base_profile, period, [period],
+        result = calculate_paycheck(payroll_basis(base_profile), period, [period],
                                     simple_tax_configs)
 
         assert len(result.deductions.pre_tax) == 0
@@ -760,7 +766,7 @@ class TestDeductionCalculation:
         ]
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = calculate_paycheck(base_profile, period, [period],
+        result = calculate_paycheck(payroll_basis(base_profile), period, [period],
                                     simple_tax_configs)
 
         pre_names = [d.name for d in result.deductions.pre_tax]
@@ -788,7 +794,7 @@ class TestDeductionCalculation:
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
         result = _calculate_deductions(
-            _DeductionContext(profile, p3, all_periods, gross, True),
+            _DeductionContext(payroll_basis(profile), p3, all_periods, gross, True),
             _timing_id("pre_tax"),
         )
         assert len(result) == 0
@@ -809,7 +815,7 @@ class TestDeductionCalculation:
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
         result = _calculate_deductions(
-            _DeductionContext(profile, p1, all_periods, gross, False),
+            _DeductionContext(payroll_basis(profile), p1, all_periods, gross, False),
             _timing_id("pre_tax"),
         )
         assert len(result) == 1
@@ -831,7 +837,7 @@ class TestDeductionCalculation:
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
         result = _calculate_deductions(
-            _DeductionContext(profile, p2, all_periods, gross, False),
+            _DeductionContext(payroll_basis(profile), p2, all_periods, gross, False),
             _timing_id("pre_tax"),
         )
         assert len(result) == 0
@@ -861,7 +867,7 @@ class TestDeductionCalculation:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = _calculate_deductions(
-            _DeductionContext(profile, period, [period], Decimal("0.00"), False),
+            _DeductionContext(payroll_basis(profile), period, [period], Decimal("0.00"), False),
             _timing_id("pre_tax"),
         )
         assert len(result) == 1
@@ -889,7 +895,7 @@ class TestDeductionCalculation:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = _calculate_deductions(
-            _DeductionContext(profile, period, [period], Decimal("0.00"), False),
+            _DeductionContext(payroll_basis(profile), period, [period], Decimal("0.00"), False),
             _timing_id("post_tax"),
         )
         assert len(result) == 1
@@ -917,7 +923,7 @@ class TestDeductionAnnualCap:
         amounts = []
         for p in periods:
             lines = _calculate_deductions(
-                _DeductionContext(profile, p, periods, gross, is_third),
+                _DeductionContext(payroll_basis(profile), p, periods, gross, is_third),
                 _timing_id(timing),
             )
             amounts.append(lines[0].amount)
@@ -1016,7 +1022,7 @@ class TestDeductionAnnualCap:
         ]
         configs = {"bracket_set": None, "state_config": None, "fica_config": None}
         nets = [
-            calculate_paycheck(profile, p, periods, configs).earnings.net_pay
+            calculate_paycheck(payroll_basis(profile), p, periods, configs).earnings.net_pay
             for p in periods
         ]
         # Post-tax deduction reduces net directly.  P1 takes 600, P2 takes the
@@ -1095,7 +1101,7 @@ class TestInflationAdjustment:
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
         result = _calculate_deductions(
-            _DeductionContext(profile, period, [period], gross, False),
+            _DeductionContext(payroll_basis(profile), period, [period], gross, False),
             _timing_id("pre_tax"),
         )
         expected = (Decimal("100") * Decimal("1.03")).quantize(
@@ -1121,7 +1127,7 @@ class TestInflationAdjustment:
         gross = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                  rounding=ROUND_HALF_UP)
         result = _calculate_deductions(
-            _DeductionContext(profile, period, [period], gross, False),
+            _DeductionContext(payroll_basis(profile), period, [period], gross, False),
             _timing_id("pre_tax"),
         )
         expected = (Decimal("100") * Decimal("1.03") ** 2).quantize(
@@ -1153,7 +1159,7 @@ class TestInflationAdjustment:
         period = _period(start_date=date(2026, 6, 1), period_id=1)
         result = _calculate_deductions(
             _DeductionContext(
-                profile, period, [period], Decimal("1000.49"), False,
+                payroll_basis(profile), period, [period], Decimal("1000.49"), False,
             ),
             _timing_id("pre_tax"),
         )
@@ -1176,7 +1182,7 @@ class TestInflationAdjustment:
         period = _period(start_date=date(2026, 6, 1), period_id=1)
         result = _calculate_deductions(
             _DeductionContext(
-                profile, period, [period], Decimal("2307.69"), False,
+                payroll_basis(profile), period, [period], Decimal("2307.69"), False,
             ),
             _timing_id("pre_tax"),
         )
@@ -1220,7 +1226,7 @@ class TestCumulativeWages:
         p3 = _period(start_date=date(2026, 1, 30), period_id=3)
         all_periods = [p1, p2, p3]
 
-        result = _get_cumulative_wages(profile, p3, all_periods)
+        result = _get_cumulative_wages(payroll_basis(profile), p3, all_periods)
 
         gross_per = (Decimal("60000") / 26).quantize(TWO_PLACES,
                                                      rounding=ROUND_HALF_UP)
@@ -1231,7 +1237,7 @@ class TestCumulativeWages:
         profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
         p1 = _period(start_date=date(2026, 1, 2), period_id=1)
 
-        result = _get_cumulative_wages(profile, p1, [p1])
+        result = _get_cumulative_wages(payroll_basis(profile), p1, [p1])
         assert result == ZERO
 
     def test_different_year_periods_excluded(self):
@@ -1241,7 +1247,7 @@ class TestCumulativeWages:
         p1 = _period(start_date=date(2026, 1, 2), period_id=1)
         all_periods = [p_prev, p1]
 
-        result = _get_cumulative_wages(profile, p1, all_periods)
+        result = _get_cumulative_wages(payroll_basis(profile), p1, all_periods)
         assert result == ZERO
 
 
@@ -1257,7 +1263,7 @@ class TestProjectSalary:
             _period(start_date=date(2026, 1, 30), period_id=3),
         ]
 
-        result = project_salary(base_profile, periods, simple_tax_configs)
+        result = project_salary(payroll_basis(base_profile), periods, simple_tax_configs)
 
         assert len(result) == 3
         assert all(isinstance(r, PaycheckBreakdown) for r in result)
@@ -1276,7 +1282,7 @@ class TestProjectSalary:
             _period(start_date=date(2026, 4, 10), period_id=3),
         ]
 
-        result = project_salary(profile, periods, simple_tax_configs)
+        result = project_salary(payroll_basis(profile), periods, simple_tax_configs)
 
         assert result[0].period.raise_event == ""
         assert "MERIT" in result[1].period.raise_event
@@ -1303,7 +1309,7 @@ class TestProjectSalary:
             _period(start_date=date(2026, 3, 13), period_id=2),
             _period(start_date=date(2026, 4, 10), period_id=3),
         ]
-        result_2026 = project_salary(profile, periods_2026, simple_tax_configs)
+        result_2026 = project_salary(payroll_basis(profile), periods_2026, simple_tax_configs)
         assert all(r.period.raise_event == "" for r in result_2026)
         assert result_2026[1].earnings.annual_salary == Decimal("60000.00")
 
@@ -1314,14 +1320,14 @@ class TestProjectSalary:
             _period(start_date=date(2027, 2, 12), period_id=27),
             _period(start_date=date(2027, 3, 12), period_id=28),
         ]
-        result_2027 = project_salary(profile, periods_2027, simple_tax_configs)
+        result_2027 = project_salary(payroll_basis(profile), periods_2027, simple_tax_configs)
         assert result_2027[0].period.raise_event == ""
         assert "MERIT" in result_2027[1].period.raise_event
         assert result_2027[1].earnings.annual_salary == Decimal("61800.00")  # 60000 * 1.03
 
     def test_empty_periods_empty_result(self, base_profile, simple_tax_configs):
         """[] → []."""
-        result = project_salary(base_profile, [], simple_tax_configs)
+        result = project_salary(payroll_basis(base_profile), [], simple_tax_configs)
         assert result == []
 
     def test_configs_by_year_applies_each_periods_own_year(
@@ -1354,7 +1360,7 @@ class TestProjectSalary:
         ]
 
         result = project_salary(
-            base_profile, periods, configs_by_year=configs_by_year,
+            payroll_basis(base_profile), periods, configs_by_year=configs_by_year,
         )
 
         assert result[0].earnings.gross_biweekly == result[1].earnings.gross_biweekly
@@ -1366,10 +1372,10 @@ class TestProjectSalary:
         """ValueError when neither or both config sources are supplied."""
         periods = [_period(start_date=date(2026, 1, 2), period_id=1)]
         with pytest.raises(ValueError, match="exactly one"):
-            project_salary(base_profile, periods)
+            project_salary(payroll_basis(base_profile), periods)
         with pytest.raises(ValueError, match="exactly one"):
             project_salary(
-                base_profile, periods, simple_tax_configs,
+                payroll_basis(base_profile), periods, simple_tax_configs,
                 configs_by_year={2026: simple_tax_configs},
             )
 
@@ -1405,7 +1411,7 @@ class TestFICAWageCapBoundary:
             created_at=date(2026, 1, 1),
         )
         results = project_salary(
-            profile, biweekly_periods, simple_tax_configs
+            payroll_basis(profile), biweekly_periods, simple_tax_configs
         )
 
         # gross = 200000/26 = 7692.307692->7692.31
@@ -1589,7 +1595,7 @@ class TestMedicareSurtax:
             created_at=date(2026, 1, 1),
         )
         results = project_salary(
-            profile, biweekly_periods, simple_tax_configs
+            payroll_basis(profile), biweekly_periods, simple_tax_configs
         )
 
         # base Medicare = 11538.46*0.0145 = 167.30767->167.31
@@ -1661,7 +1667,7 @@ class TestAnnualProjection:
         floor=$2307.69, residue=$60000-$2307.69*26=$0.06, residue_cents=6.
         """
         results = project_salary(
-            base_profile, biweekly_periods, simple_tax_configs
+            payroll_basis(base_profile), biweekly_periods, simple_tax_configs
         )
 
         assert len(results) == 26, (
@@ -1754,7 +1760,7 @@ class TestAnnualProjection:
         identical across all 26.
         """
         results = project_salary(
-            base_profile, biweekly_periods, simple_tax_configs
+            payroll_basis(base_profile), biweekly_periods, simple_tax_configs
         )
 
         assert len(results) == 26, (
@@ -1846,7 +1852,7 @@ class TestEdgeCases:
         )
 
         result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs
+            payroll_basis(profile), period, [period], simple_tax_configs
         )
 
         assert result.earnings.gross_biweekly == Decimal("0.00"), (
@@ -1892,7 +1898,7 @@ class TestEdgeCases:
 
         with pytest.raises(InvalidGrossPayError):
             calculate_paycheck(
-                profile, period, [period],
+                payroll_basis(profile), period, [period],
                 simple_tax_configs
             )
 
@@ -1907,56 +1913,65 @@ class TestNegativeAndBoundaryPaths:
     deductions, and unusual pay frequencies.
     """
 
-    def test_pay_periods_per_year_zero_defaults_to_26(self, simple_tax_configs):
-        """pay_periods_per_year=0 defaults to 26 via 'or 26' fallback.
+    def test_a_zero_paycheck_count_cannot_be_expressed(self):
+        """A zero paycheck count is REFUSED, not silently defaulted (R-F16).
 
-        Input: Profile with pay_periods_per_year=0.
-        Expected: Identical output to pay_periods_per_year=26. The source code
-        has `profile.pay_periods_per_year or 26` which treats 0 as falsy.
-        Why: Division by zero in the paycheck pipeline would crash grid load
-        for any user with a misconfigured salary profile.
+        Input: a cadence of 0 days, which is what a stored
+        ``pay_periods_per_year`` of 0 amounted to before plan step R-F16.
+        Expected: ``PayCadence`` refuses at construction, so no
+        :class:`PayrollBasis` and no paycheck can be built from it.
+
+        **This replaces an assertion that the engine SILENTLY defaulted a zero
+        count to 26**, via ``profile.pay_periods_per_year or 26``, whose own
+        note asked for "a ValidationError guard if 0 is invalid user input".
+        Dropping the column is that guard: the count is now derived from
+        ``budget.pay_schedule.cadence_days``, ``ck_pay_schedule_cadence_range``
+        bounds that column to 1..365 in the database, and
+        :func:`~app.services.pay_calendar.validate_cadence` refuses the same
+        range in front of it -- so the misconfigured profile the old test
+        described is no longer a state the application can hold.  Division by
+        zero in the pipeline is prevented by the value not existing rather
+        than by a falsy-coalesce nobody could see.
+        """
+        from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+            PayCadence,
+            PayCalendarError,
+        )
+
+        with pytest.raises(PayCalendarError):
+            PayCadence(cadence_days=0)
+
+    def test_a_biweekly_cadence_prices_the_known_paycheck(
+        self, simple_tax_configs
+    ):
+        """26 paychecks a year is what a 14-day cadence derives.
+
+        Input: a $60,000 profile on the default 14-day cadence.
+        Expected: the known $60k / 26 figures -- gross $2,307.69, net
+        $1,854.22 -- proving the DERIVED count reproduces exactly what the
+        dropped column's 26 produced, which is the no-op claim plan step
+        R-F16 makes for every owner whose two stored answers agreed.
         """
         period = _period(start_date=date(2026, 1, 16), period_id=1)
-
-        profile_zero = FakeProfile(
+        profile = FakeProfile(
             annual_salary=60000,
-            pay_periods_per_year=0,
-            created_at=date(2026, 1, 1),
-        )
-        profile_26 = FakeProfile(
-            annual_salary=60000,
-            pay_periods_per_year=26,
             created_at=date(2026, 1, 1),
         )
 
-        # NOTE: Source does not raise for zero. Instead,
-        # `profile.pay_periods_per_year or 26` silently defaults to 26.
-        # Consider adding a ValidationError guard if 0 is invalid user input.
-        result_zero = calculate_paycheck(
-            profile_zero, period, [period], simple_tax_configs
-        )
-        result_26 = calculate_paycheck(
-            profile_26, period, [period], simple_tax_configs
+        result = calculate_paycheck(
+            payroll_basis(profile), period, [period], simple_tax_configs
         )
 
-        # Both produce identical results since 0 defaults to 26.
-        assert result_zero.earnings.gross_biweekly == result_26.earnings.gross_biweekly
-        assert result_zero.taxes.federal == result_26.taxes.federal
-        assert result_zero.taxes.state == result_26.taxes.state
-        assert result_zero.taxes.social_security == result_26.taxes.social_security
-        assert result_zero.taxes.medicare == result_26.taxes.medicare
-        assert result_zero.earnings.net_pay == result_26.earnings.net_pay
+        assert result.earnings.gross_biweekly == Decimal("2307.69")
+        assert result.earnings.net_pay == Decimal("1854.22")
 
-        # Verify actual values match known $60k/26-periods result.
-        assert result_zero.earnings.gross_biweekly == Decimal("2307.69")
-        assert result_zero.earnings.net_pay == Decimal("1854.22")
-
-    def test_pay_periods_per_year_one_annual(
+    def test_a_once_a_year_cadence_has_no_rounding_artifacts(
         self, simple_bracket_set, nc_state_config, standard_fica
     ):
         """Annual pay frequency (1 period/year) produces no rounding artifacts.
 
-        Input: annual_salary=78000, pay_periods_per_year=1, no raises/deductions.
+        Input: annual_salary=78000, a 365-day cadence (1 paycheck a year), no
+        raises/deductions.
         Pipeline trace:
           gross = 78000 / 1 = 78000.00
           federal: taxable = 78000 - 15000 = 63000
@@ -1970,7 +1985,6 @@ class TestNegativeAndBoundaryPaths:
         """
         profile = FakeProfile(
             annual_salary=78000,
-            pay_periods_per_year=1,
             created_at=date(2026, 1, 1),
         )
         period = _period(start_date=date(2026, 1, 16), period_id=1)
@@ -1980,7 +1994,12 @@ class TestNegativeAndBoundaryPaths:
             "fica_config": standard_fica,
         }
 
-        result = calculate_paycheck(profile, period, [period], tax_configs)
+        # ``round(365.2425 / 365) = 1``: the once-a-year cadence, DERIVED
+        # rather than stated as a count (plan step R-F16).
+        result = calculate_paycheck(
+            payroll_basis(profile, cadence_days=365), period, [period],
+            tax_configs,
+        )
 
         # gross = 78000 / 1 = 78000.00 (exact, no rounding)
         assert result.earnings.gross_biweekly == Decimal("78000.00"), (
@@ -2025,7 +2044,6 @@ class TestNegativeAndBoundaryPaths:
         """
         profile = FakeProfile(
             annual_salary=30000,
-            pay_periods_per_year=26,
             deductions=[
                 FakeDeduction(
                     name="Excessive Post Tax",
@@ -2037,7 +2055,7 @@ class TestNegativeAndBoundaryPaths:
         )
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = calculate_paycheck(profile, period, [period], simple_tax_configs)
+        result = calculate_paycheck(payroll_basis(profile), period, [period], simple_tax_configs)
 
         assert result.earnings.gross_biweekly == Decimal("1153.85")
         assert result.taxes.federal == Decimal("57.69")
@@ -2054,19 +2072,18 @@ class TestNegativeAndBoundaryPaths:
     def test_zero_annual_salary(self, simple_tax_configs):
         """Zero salary produces zero in every field without error.
 
-        Input: annual_salary=0, pay_periods_per_year=26, no deductions.
+        Input: annual_salary=0 on the default 14-day cadence, no deductions.
         Expected: All fields (including annual_salary, taxable_income) are zero.
         Why: A zero-salary profile (e.g., a template or placeholder) must not
         produce NaN, crash, or negative values in any tax calculation.
         """
         profile = FakeProfile(
             annual_salary=0,
-            pay_periods_per_year=26,
             created_at=date(2026, 1, 1),
         )
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = calculate_paycheck(profile, period, [period], simple_tax_configs)
+        result = calculate_paycheck(payroll_basis(profile), period, [period], simple_tax_configs)
 
         assert result.earnings.annual_salary == Decimal("0.00")
         assert result.earnings.gross_biweekly == Decimal("0.00")
@@ -2094,7 +2111,6 @@ class TestNegativeAndBoundaryPaths:
         """
         profile = FakeProfile(
             annual_salary=52000,
-            pay_periods_per_year=26,
             deductions=[
                 FakeDeduction(
                     name="Mega Pre Tax",
@@ -2106,7 +2122,7 @@ class TestNegativeAndBoundaryPaths:
         )
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
-        result = calculate_paycheck(profile, period, [period], simple_tax_configs)
+        result = calculate_paycheck(payroll_basis(profile), period, [period], simple_tax_configs)
 
         # gross = 52000/26 = 2000.00
         assert result.earnings.gross_biweekly == Decimal("2000.00")
@@ -2203,7 +2219,7 @@ class TestPreTaxDeductionTaxImpact:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         with_ded = calculate_paycheck(
-            profile, period, [period], simple_tax_configs
+            payroll_basis(profile), period, [period], simple_tax_configs
         )
 
         # Baseline comparison (from established test):
@@ -2279,10 +2295,10 @@ class TestPreTaxDeductionTaxImpact:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         no_ded = calculate_paycheck(
-            no_ded_profile, period, [period], simple_tax_configs
+            payroll_basis(no_ded_profile), period, [period], simple_tax_configs
         )
         with_ded = calculate_paycheck(
-            with_ded_profile, period, [period], simple_tax_configs
+            payroll_basis(with_ded_profile), period, [period], simple_tax_configs
         )
 
         # SS must be identical -- computed on gross, not taxable.
@@ -2350,7 +2366,7 @@ class TestPreTaxDeductionTaxImpact:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs
+            payroll_basis(profile), period, [period], simple_tax_configs
         )
 
         # Deduction amount computed from gross.
@@ -2432,10 +2448,10 @@ class TestPreTaxDeductionTaxImpact:
         all_periods = [p1, p2, p3]
 
         normal = calculate_paycheck(
-            profile, p2, all_periods, simple_tax_configs
+            payroll_basis(profile), p2, all_periods, simple_tax_configs
         )
         third = calculate_paycheck(
-            profile, p3, all_periods, simple_tax_configs
+            payroll_basis(profile), p3, all_periods, simple_tax_configs
         )
 
         # On normal paycheck, deduction applies.
@@ -2533,7 +2549,7 @@ class TestPreTaxDeductionTaxImpact:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs
+            payroll_basis(profile), period, [period], simple_tax_configs
         )
 
         assert result.deductions.total_pre_tax == Decimal("300.00"), (
@@ -2599,10 +2615,10 @@ class TestPreTaxDeductionTaxImpact:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         no_ded = calculate_paycheck(
-            no_ded_profile, period, [period], simple_tax_configs
+            payroll_basis(no_ded_profile), period, [period], simple_tax_configs
         )
         post_ded = calculate_paycheck(
-            post_ded_profile, period, [period], simple_tax_configs
+            payroll_basis(post_ded_profile), period, [period], simple_tax_configs
         )
 
         # Every tax field must be identical.
@@ -2667,7 +2683,7 @@ class TestPreTaxDeductionTaxImpact:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs
+            payroll_basis(profile), period, [period], simple_tax_configs
         )
 
         # Taxes match the $200 pre-tax scenario (post-tax has no effect).
@@ -2742,10 +2758,10 @@ class TestPreTaxDeductionTaxImpact:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         no_ded = calculate_paycheck(
-            no_ded_profile, period, [period], configs
+            payroll_basis(no_ded_profile), period, [period], configs
         )
         with_ded = calculate_paycheck(
-            with_ded_profile, period, [period], configs
+            payroll_basis(with_ded_profile), period, [period], configs
         )
 
         # Without deduction: state std ded reduces the base.
@@ -2793,7 +2809,7 @@ class TestPreTaxDeductionTaxImpact:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         r = calculate_paycheck(
-            profile, period, [period], simple_tax_configs
+            payroll_basis(profile), period, [period], simple_tax_configs
         )
 
         # Verify every component individually.
@@ -2870,10 +2886,10 @@ class TestPreTaxDeductionTaxImpact:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         no_ded = calculate_paycheck(
-            no_ded_profile, period, [period], simple_tax_configs
+            payroll_basis(no_ded_profile), period, [period], simple_tax_configs
         )
         with_ded = calculate_paycheck(
-            with_ded_profile, period, [period], simple_tax_configs
+            payroll_basis(with_ded_profile), period, [period], simple_tax_configs
         )
 
         assert no_ded.taxes.federal == Decimal("657.69"), (
@@ -2941,7 +2957,7 @@ class TestCalibrationIntegration:
         )
 
         result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile), period, [period], simple_tax_configs,
             calibration=cal,
         )
 
@@ -3041,7 +3057,7 @@ class TestCalibrationIntegration:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile), period, [period], simple_tax_configs,
             calibration=cal,
         )
 
@@ -3075,7 +3091,7 @@ class TestCalibrationIntegration:
 
         # Bracket-based calculation.
         bracket_result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile), period, [period], simple_tax_configs,
         )
 
         # Calibrated with intentionally different rates.
@@ -3086,7 +3102,7 @@ class TestCalibrationIntegration:
             medicare_rate="0.01450",
         )
         cal_result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile), period, [period], simple_tax_configs,
             calibration=cal,
         )
 
@@ -3106,7 +3122,7 @@ class TestCalibrationIntegration:
 
         # Bracket-based (no calibration).
         bracket_result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile), period, [period], simple_tax_configs,
         )
 
         # Inactive calibration should be ignored.
@@ -3118,7 +3134,7 @@ class TestCalibrationIntegration:
             is_active=False,
         )
         result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile), period, [period], simple_tax_configs,
             calibration=cal,
         )
 
@@ -3136,10 +3152,10 @@ class TestCalibrationIntegration:
         period = _period(start_date=date(2026, 1, 16), period_id=1)
 
         result_omitted = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile), period, [period], simple_tax_configs,
         )
         result_none = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile), period, [period], simple_tax_configs,
             calibration=None,
         )
 
@@ -3176,7 +3192,7 @@ class TestCalibrationIntegration:
         )
 
         result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile), period, [period], simple_tax_configs,
             calibration=cal,
         )
 
@@ -3213,7 +3229,7 @@ class TestCalibrationIntegration:
         )
 
         result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile), period, [period], simple_tax_configs,
             calibration=cal,
         )
 
@@ -3265,7 +3281,7 @@ class TestCalibrationIntegration:
         )
 
         result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile), period, [period], simple_tax_configs,
             calibration=cal,
         )
 
@@ -3321,7 +3337,7 @@ class TestCalibrationIntegration:
 
         # Non-3rd paycheck: deduction applies, taxable = 2307.69 - 200 = 2107.69
         normal = calculate_paycheck(
-            profile, p1, all_periods, simple_tax_configs,
+            payroll_basis(profile), p1, all_periods, simple_tax_configs,
             calibration=cal,
         )
         assert normal.deductions.total_pre_tax == Decimal("200.00")
@@ -3329,7 +3345,7 @@ class TestCalibrationIntegration:
 
         # 3rd paycheck: 24-per-year deduction is SKIPPED, taxable = 2307.69
         third = calculate_paycheck(
-            profile, p3, all_periods, simple_tax_configs,
+            payroll_basis(profile), p3, all_periods, simple_tax_configs,
             calibration=cal,
         )
         assert third.period.is_third_paycheck is True
@@ -3371,11 +3387,11 @@ class TestCalibrationIntegration:
         )
 
         cal_result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile), period, [period], simple_tax_configs,
             calibration=cal,
         )
         bracket_result = calculate_paycheck(
-            profile, period, [period], simple_tax_configs,
+            payroll_basis(profile), period, [period], simple_tax_configs,
         )
 
         # Gross, raises, and deductions must be identical.
@@ -3410,11 +3426,11 @@ class TestCalibrationIntegration:
 
         # With calibration.
         cal_breakdowns = project_salary(
-            profile, periods, simple_tax_configs, calibration=cal,
+            payroll_basis(profile), periods, simple_tax_configs, calibration=cal,
         )
         # Without calibration.
         bracket_breakdowns = project_salary(
-            profile, periods, simple_tax_configs,
+            payroll_basis(profile), periods, simple_tax_configs,
         )
 
         assert len(cal_breakdowns) == 3
@@ -3486,7 +3502,7 @@ class TestBiweeklyResidueReconciliation:
         )
 
         results = project_salary(
-            profile, biweekly_periods, simple_tax_configs
+            payroll_basis(profile), biweekly_periods, simple_tax_configs
         )
         assert len(results) == 26
 
@@ -3519,10 +3535,10 @@ class TestBiweeklyResidueReconciliation:
         randomisation) inside the reconciliation helper.
         """
         first_run = project_salary(
-            base_profile, biweekly_periods, simple_tax_configs
+            payroll_basis(base_profile), biweekly_periods, simple_tax_configs
         )
         second_run = project_salary(
-            base_profile, biweekly_periods, simple_tax_configs
+            payroll_basis(base_profile), biweekly_periods, simple_tax_configs
         )
 
         first_grosses = [r.earnings.gross_biweekly for r in first_run]
@@ -3540,7 +3556,7 @@ class TestBiweeklyResidueReconciliation:
 
         Route previews and isolated test fixtures invoke
         ``calculate_paycheck`` with ``all_periods=[period]``; with
-        fewer than ``pay_periods_per_year`` periods in the year, the
+        fewer than ``basis.periods_per_year`` periods in the year, the
         reconciliation cannot anchor against a complete annual
         figure, so the helper falls back to the historical half-up
         quantisation.  $60k / 26 -> $2307.69 (half-up) regardless of
@@ -3548,7 +3564,7 @@ class TestBiweeklyResidueReconciliation:
         """
         period = _period(start_date=date(2026, 1, 16), period_id=1)
         result = calculate_paycheck(
-            base_profile, period, [period], simple_tax_configs,
+            payroll_basis(base_profile), period, [period], simple_tax_configs,
         )
         # Half-up: 2307.6923... -> 2307.69 (same as the legacy contract).
         assert result.earnings.gross_biweekly == Decimal("2307.69")
@@ -3589,7 +3605,7 @@ class TestBiweeklyResidueReconciliation:
             ],
         )
         results = project_salary(
-            profile, biweekly_periods, simple_tax_configs
+            payroll_basis(profile), biweekly_periods, simple_tax_configs
         )
         assert len(results) == 26
 
@@ -3767,9 +3783,9 @@ class TestCalibrationSSCapIntegration:
             medicare_rate="0.01450",
         )
 
-        bracket = project_salary(profile, periods, tax_configs)
+        bracket = project_salary(payroll_basis(profile), periods, tax_configs)
         calibrated = project_salary(
-            profile, periods, tax_configs, calibration=cal,
+            payroll_basis(profile), periods, tax_configs, calibration=cal,
         )
 
         bracket_year_ss = sum(r.taxes.social_security for r in bracket)
@@ -3812,7 +3828,7 @@ class TestCalibrationSSCapIntegration:
         )
 
         results = project_salary(
-            profile, periods, tax_configs, calibration=cal,
+            payroll_basis(profile), periods, tax_configs, calibration=cal,
         )
 
         # Periods 1-15 (indexes 0-14): full SS.  12000.00 * 0.062 = 744.00.

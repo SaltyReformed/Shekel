@@ -39,7 +39,7 @@ def _freeze_today_inside_seed_range(monkeypatch):
     Mark-paid entry tests use hardcoded purchase dates like
     date(2026, 1, 5) and date(2026, 1, 10) that must fall inside the
     calendar-anchored seed_periods range.  Freezing today inside the
-    seeded range keeps get_current_period() deterministic without
+    seeded range keeps "which paycheck contains today" deterministic without
     disturbing those calendar values.
     """
     freeze_today(monkeypatch, date(2026, 3, 20))
