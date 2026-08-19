@@ -78,11 +78,12 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 from app import create_app
 from app.extensions import db
 from app.models.user import User
-from app.services import ledger_report_service, pay_period_service
+from app.services import ledger_report_service
 from app.services.ledger_report_service import StatementWindow
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.dates import display_today
 from app.services.pay_calendar import calendar_for
+from tests._test_helpers import all_periods
 
 
 def _money(value):
@@ -199,7 +200,7 @@ def _user_blob(user_id):
         return None
 
     days = _ledger_days(user_id, scenario.id)
-    periods = pay_period_service.get_all_periods(user_id)
+    periods = all_periods(user_id)
 
     income_statements = {}
     for period in periods:

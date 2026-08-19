@@ -30,7 +30,6 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import (
     pay_period_admin,
-    pay_period_service,
     pay_period_write,
     pay_schedule_service,
     period_population,
@@ -40,6 +39,7 @@ from scripts.integrity_check import (
     check_referential_integrity,
 )
 from tests._test_helpers import (
+    all_periods,
     add_txn,
     assert_pay_period_invariants,
     freeze_today,
@@ -86,7 +86,7 @@ def _index_set(user_id):
     """The set of period_index values the user currently has."""
     return {
         p.period_index
-        for p in pay_period_service.get_all_periods(user_id)
+        for p in all_periods(user_id)
     }
 
 
@@ -209,7 +209,7 @@ class TestRegenerateHappyPath:
             periods = _spanning_periods(db.session, seed_user, count=8)
             make_expense_template(db.session, seed_user, amount="1200.00")
             period_population.populate_periods_from_active_templates(
-                user_id, periods,
+                user_id, {p.id for p in periods},
             )
             db.session.commit()
             retained_end = periods[3].end_date  # index 4
@@ -231,7 +231,7 @@ class TestRegenerateHappyPath:
             )
             assert after_retained == before  # retained window untouched
 
-            last = pay_period_service.get_all_periods(user_id)[-1]  # index 8
+            last = all_periods(user_id)[-1]  # index 8
             assert seam_cash_balance_at(
                 account, scen, last.end_date,
             ) == Decimal("-8600.00")  # 1000 - 8*1200
@@ -284,7 +284,7 @@ class TestRegenerateWhenTheWholeScheduleIsRebuildable:
 
             # Not one original row survived, and the count is exactly the
             # rebuild -- no retained prefix, because there was nothing to keep.
-            surviving = pay_period_service.get_all_periods(user_id)
+            surviving = all_periods(user_id)
             assert {p.id for p in surviving} & old_ids == set()
             assert len(surviving) == 3
             assert len(new_periods) == 3
@@ -318,7 +318,7 @@ class TestRegenerateWhenTheWholeScheduleIsRebuildable:
             )
             db.session.commit()
 
-            surviving = pay_period_service.get_all_periods(user_id)
+            surviving = all_periods(user_id)
             # All four historical periods kept, two appended: 4 + 2.
             assert old_ids <= {p.id for p in surviving}
             assert len(surviving) == 6

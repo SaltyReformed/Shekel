@@ -39,7 +39,6 @@ from app.services.pay_calendar import calendar_for
 from app.services import (
     balance_at,
     income_service,
-    pay_period_service,
     paycheck_calculator,
     savings_dashboard_service,
 )
@@ -49,6 +48,7 @@ from app.services.tax_config_service import (
 )
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    all_periods,
     freeze_today,
     make_investment_account,
     payroll_basis,
@@ -202,7 +202,7 @@ class TestLiveProjectedNet:
             template = _make_salary_template(seed_user, profile)
             db.session.commit()
 
-            period = pay_period_service.get_all_periods(user_id)[5]
+            period = all_periods(user_id)[5]
             txn = _make_txn(
                 seed_user, period, template=template,
                 estimated_amount="1.00",
@@ -251,7 +251,7 @@ class TestLiveProjectedNet:
             db.session.add(other_template)
             db.session.commit()
 
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             # Distinct periods avoid the (template, period, scenario)
             # non-override unique index.
             wanted = _make_txn(seed_user, periods[5], template=template)
@@ -304,7 +304,7 @@ class TestLiveProjectedNet:
             db.session.add(unlinked)
             db.session.commit()
             txn = _make_txn(
-                seed_user, pay_period_service.get_all_periods(user_id)[3],
+                seed_user, all_periods(user_id)[3],
                 template=unlinked,
             )
             db.session.commit()
@@ -359,7 +359,7 @@ class TestLiveIncomeThroughBalanceResolver:
             template = _make_salary_template(seed_user, profile)
             db.session.commit()
 
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             period = periods[5]
             _make_txn(
                 seed_user, period, template=template,
@@ -425,7 +425,7 @@ class TestLiveIncomeThroughBalanceResolver:
             template = _make_salary_template(seed_user, profile)
             db.session.commit()
 
-            period = pay_period_service.get_all_periods(user_id)[5]
+            period = all_periods(user_id)[5]
             _make_txn(
                 seed_user, period, template=template, is_override=True,
                 estimated_amount="1234.56",
@@ -696,7 +696,7 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
             ])
             db.session.commit()
 
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             period_2027 = next(
                 (p for p in periods if p.start_date.year == 2027), None,
             )
@@ -799,7 +799,7 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
             template = _make_salary_template(seed_user, profile)
             self._seed_2026_only(user_id, profile)
 
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             period_2027 = next(
                 (p for p in periods if p.start_date.year == 2027), None,
             )
@@ -844,7 +844,7 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
             _make_salary_template(seed_user, profile)
             self._seed_2026_only(user_id, profile)
 
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             period_2027 = next(
                 p for p in periods if p.start_date.year == 2027
             )

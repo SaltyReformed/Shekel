@@ -101,13 +101,13 @@ from app import create_app
 from app.extensions import db
 from app.models.account import Account
 from app.models.user import User
-from app.services import balance_at, pay_period_service
+from app.services import balance_at
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
 
-from tests._test_helpers import current_pay_period
+from tests._test_helpers import current_pay_period, all_periods
 
 
 # Fixed valuation dates spanning the horizon, read by BOTH the cash-flow scalar
@@ -286,7 +286,7 @@ def main(out_path):
             ctx = balance_at.BalanceContext.build(user.id)
             if ctx.scenario is None:
                 continue
-            periods = pay_period_service.get_all_periods(user.id)
+            periods = all_periods(user.id)
             accounts = (
                 db.session.query(Account)
                 .filter(Account.user_id == user.id)

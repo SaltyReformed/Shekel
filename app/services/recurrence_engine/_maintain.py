@@ -33,9 +33,9 @@ from app.services import posting_service
 from app.services._recurrence_common import (
     check_scenario_ownership,
     refuse_unstorable_repeats,
-    regeneration_bound,
-    query_rows_from_effective_date,
+    rows_this_pass_may_maintain,
 )
+from app.services.recurrence_engine._generate import _selector
 from app.services.recurrence_engine._amounts import (
     _derive_row_fields,
     _get_salary_profile,
@@ -91,26 +91,27 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
     written -- measured at 504 of 505 live sweepable rows identical, the 505th
     being the one that keeps its purchases.
 
-    **The pass and the rule share ONE bound, and that is load-bearing.**
-    ``effective_from`` bounds an SQL select over ``pay_periods.end_date``, so
-    "no lower bound" has to become a date before it can be compared against a
-    column -- and the date it becomes must be the opening of the WINDOW this
-    pass writes into, not of the whole schedule.  Taking the schedule's opening
-    instead would reach every non-override row from the owner's first payday
-    forward while the rule was resolved only inside the window, retiring rows
-    nothing would recreate.  No route reaches that today -- both callers pass a
-    whole-schedule window, where the two bounds coincide -- which is exactly
-    why the asymmetry is closed here rather than left for someone to discover
-    with a narrow window.
+    **The pass and the rule share ONE bound and ONE domain, and both are now
+    structural** (pay-calendar plan step C2-f3c).  ``effective_from`` used to
+    bound an SQL select over ``pay_periods.end_date`` while the rule was
+    filtered on the DERIVED end, so "no lower bound" had to be turned into the
+    WRITE WINDOW's opening date by a shared helper -- because a sweep bounded
+    by the schedule's opening instead would have reached every non-override row
+    from the owner's first payday forward while the rule was resolved only
+    inside the window, retiring rows nothing would recreate.  The row select is
+    now a period-ID set taken from that same window and filtered by that same
+    derived end (``_recurrence_common.rows_this_pass_may_maintain``), so the
+    domain cannot exceed the window whatever the bound is, and ``None`` needs
+    no translation.  ``regeneration_bound`` went with the translation.
 
     Args:
         template:       The updated TransactionTemplate.
         schedule:       The owner's
                         :class:`~app.services.generation_schedule.GenerationSchedule`.
         scenario_id:    The target scenario.
-        effective_from: Date from which to maintain (default: the WRITE
-                        WINDOW's first payday -- see above; the row select and
-                        the rule must not use different bounds).
+        effective_from: Date from which to maintain, or ``None`` for the whole
+                        write window.  The row select and the rule take it
+                        unchanged, and read it against the same derived end.
 
     Returns:
         List of newly created Transaction objects.  Rows this pass UPDATED are
@@ -136,20 +137,23 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
     ):
         return []
 
-    effective_from = regeneration_bound(schedule, effective_from)
-
     # What the rule names NOW, and what is there already.  ``plan`` is None
     # only for a CLEARED recurrence (ownership is settled above), in which case
     # the rule names no period at all and every existing row is considered for
     # retirement -- the behaviour ``regenerate_or_conflict_chooser`` documents
     # for a template whose pattern was set to "Does not repeat".
+    #
+    # The two calls take the SAME bound and the same window, and the second's
+    # answer is strictly WIDER than the first's -- it is the window, where the
+    # plan is the window intersected with the periods the rule names.  That is
+    # what makes the RETIRE branch reachable at all: a row is retired precisely
+    # because the rule no longer names its period.
     plan = resolve_generation_plan(
         template, schedule, scenario_id, effective_from,
         block_message="Blocked cross-user recurrence regeneration",
     )
-    existing = query_rows_from_effective_date(
-        Transaction, Transaction.template_id,
-        template.id, scenario_id, effective_from,
+    existing = rows_this_pass_may_maintain(
+        _selector(template, scenario_id), schedule, effective_from,
     )
 
     outcome = _maintain_instances(template, plan, schedule, scenario_id, existing)
@@ -591,8 +595,9 @@ def _maintain_instances(template, plan, schedule, scenario_id, existing):
 
     salary_profile = _get_salary_profile(template)
     derived = {
-        placement.period.id: _derive_row_fields(
-            template, plan.rule, salary_profile, placement.period, schedule,
+        placement.period.period_id: _derive_row_fields(
+            template, plan.rule, salary_profile, placement.period,
+            schedule.calendar,
         )
         for placement in placements
     }

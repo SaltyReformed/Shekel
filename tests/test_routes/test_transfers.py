@@ -30,6 +30,7 @@ from app.services import account_service
 from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
+    all_periods,
     make_every_period_rule,
     settlement_basis_id,
     cadence_payload,
@@ -41,6 +42,7 @@ from tests._test_helpers import (
     override_anchor,
 )
 from app.services.row_valuation import owned_contribution
+from app.services.pay_calendar import calendar_for
 
 
 def _create_savings_account(seed_user):
@@ -644,9 +646,11 @@ class TestTemplateUpdate:
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings)  # rule, amount 200
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in periods},
+), scenario.id,
             )
             db.session.flush()
             xfer = (
@@ -691,9 +695,11 @@ class TestTemplateUpdate:
             savings = _create_savings_account(seed_user)
             template = _create_template(seed_user, savings)  # rule, amount 200
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in periods},
+), scenario.id,
             )
             db.session.flush()
             xfer = (

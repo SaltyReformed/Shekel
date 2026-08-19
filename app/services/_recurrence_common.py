@@ -16,12 +16,22 @@ place, where the two cannot drift:
     :func:`existing_rows_by_period` and :func:`refuse_unstorable_repeats`),
   - the regenerate row-partition (:func:`partition_regeneration_rows`) --
     **the TRANSFER engine's only, since plan step R10-a**; see its docstring,
-  - the regenerate sweep bound (:func:`regeneration_bound`),
-  - the regenerate row fetch (:func:`query_rows_from_effective_date`),
+  - the regenerate row fetch (:func:`rows_this_pass_may_maintain`),
+  - the ONE statement of the query both fetches run (:func:`_rows_in_periods`),
   - the cross-user audit ``log_event(...)`` blocks (the ``log_*`` helpers
     below).
 
-What both engines TAKE rather than share -- the owner's pay-period schedule
+**``regeneration_bound`` is gone** (pay-calendar plan step C2-f3c).  It existed
+because the regenerate sweep was an SQL bound on ``pay_periods.end_date``, so
+"no lower bound" had to be turned into a concrete date before it could be
+compared against a column -- and the date it had to become was the WRITE
+WINDOW's opening, or the sweep reached rows the pass would not rewrite.  The
+sweep now selects on a period-ID SET taken from the pass's own window, so
+``None`` needs no translation and the domain cannot exceed the window in the
+first place.  The asymmetry that helper closed by arithmetic is closed by the
+shape.
+
+What both engines TAKE rather than share -- the owner's pay calendar
 and the window one pass writes into -- is
 :class:`~app.services.generation_schedule.GenerationSchedule`, and it lives in
 its own public module because the route layer constructs it too.  This module
@@ -57,10 +67,10 @@ event constant, category, and keyword shape, not to add behaviour.
 
 import logging
 from collections import defaultdict
+from typing import NamedTuple
 
 from app.exceptions import RecurrenceCadenceUnsupported
 from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.scenario import Scenario
 from app.utils.log_events import (
     ACCESS,
@@ -231,6 +241,38 @@ def should_skip_period(existing_rows: list) -> bool:
     return False
 
 
+class TemplateRowSelector(NamedTuple):
+    """WHICH rows a recurrence pass is asking about.
+
+    **The one place the two engines' difference is written down.**  A
+    transaction pass and a transfer pass run identical queries against
+    different tables, so every shared fetch here took the mapped class and the
+    template foreign-key column as a pair of arguments beside the template and
+    the scenario -- four parameters repeated at six call sites, and enough of
+    them to trip ``too-many-arguments`` the moment a fetch needed one more.
+    Naming the four as one value says what they are: this pass's subject.
+
+    Built ONCE per pass by each engine, which is also what stops a pass mixing
+    one model's column with another's.
+
+    Attributes:
+        model: The mapped class to query (``Transaction`` or ``Transfer``).
+        template_fk_col: That model's template foreign-key column object
+            (``Transaction.template_id`` or ``Transfer.transfer_template_id``).
+        template: The (Transaction|Transfer)Template being generated from.
+            The whole row rather than its id, because the refusal path reads
+            its NAME (:func:`refuse_unstorable_repeats`) and every other reader
+            wants ``template.id``; carrying both would be two spellings of one
+            fact.
+        scenario_id: The scenario primary key every row must match.
+    """
+
+    model: type
+    template_fk_col: object
+    template: object
+    scenario_id: int
+
+
 def refuse_unstorable_repeats(template, placements, existing) -> None:
     """Refuse when one paycheck must host this template's row more than once.
 
@@ -275,7 +317,10 @@ def refuse_unstorable_repeats(template, placements, existing) -> None:
         template: The (Transaction|Transfer)Template being generated.
         placements: The occurrences the rule fires on inside this pass's write
             window (``recurrence_engine.PlannedOccurrence`` values, one per
-            occurrence), whose ``period`` may therefore repeat.
+            occurrence), whose ``period`` may therefore repeat.  Each is a
+            :class:`~app.services.pay_calendar.DerivedPeriod` since pay-calendar
+            plan step C2-f3c, so the paycheck this refusal NAMES is bounded by
+            the derivation rather than by two stored columns.
         existing: ``{pay_period_id: [row, ...]}`` for this template and
             scenario, as :func:`existing_rows_by_period` returns it.
 
@@ -286,7 +331,7 @@ def refuse_unstorable_repeats(template, placements, existing) -> None:
     """
     seen: dict[int, list] = {}
     for placement in placements:
-        seen.setdefault(placement.period.id, []).append(placement)
+        seen.setdefault(placement.period.period_id, []).append(placement)
     for period_id, repeats in seen.items():
         if len(repeats) < 2 or should_skip_period(existing.get(period_id, [])):
             continue
@@ -297,41 +342,6 @@ def refuse_unstorable_repeats(template, placements, existing) -> None:
             period_start=period.start_date,
             period_end=period.end_date,
         )
-
-
-def regeneration_bound(schedule, effective_from):
-    """Return the date a regenerate pass sweeps and rewrites from.
-
-    Shared by both engines' ``regenerate_for_template`` because it is one
-    decision, not two that happen to agree: the DELETE sweep is an SQL bound on
-    ``pay_periods.end_date``, so "no lower bound" has to become a concrete date
-    -- and it must be the same date the regeneration writes within.
-
-    **The date is the WRITE WINDOW's opening, not the schedule's.**  Taking the
-    schedule's opening instead would delete every non-override template row
-    from the owner's first payday forward while regenerating only inside the
-    window, destroying rows nothing would recreate.  No route reaches that
-    today (both callers pass a whole-schedule window, where the two coincide),
-    which is why the asymmetry is closed here rather than left to be found with
-    a narrow window (plan step R4b-1, adversarial review).
-
-    Args:
-        schedule: The pass's
-            :class:`~app.services.generation_schedule.GenerationSchedule`.
-        effective_from: The caller's explicit bound, or ``None``.
-
-    Returns:
-        *effective_from* when the caller stated one; else the earliest payday
-        in the write window; else ``None``, for a window with no periods at
-        all, where the sweep has nothing to bound and nothing to delete.
-    """
-    if effective_from is not None:
-        return effective_from
-    if not schedule.write_periods:
-        return None
-    return min(
-        period.start_date for period in schedule.write_periods.values()
-    )
 
 
 def partition_regeneration_rows(existing_rows: list) -> tuple[list, list, list]:
@@ -395,9 +405,7 @@ def partition_regeneration_rows(existing_rows: list) -> tuple[list, list, list]:
     return overridden_ids, deleted_ids, to_delete
 
 
-def existing_rows_refusing_repeats(
-    model, template_fk_col, template, scenario_id, placements,
-) -> dict[int, list]:
+def existing_rows_refusing_repeats(selector, placements) -> dict[int, list]:
     """Fetch what is already in this pass's periods, refusing an unstorable pass.
 
     The two steps every generate pass runs between resolving its plan and
@@ -413,11 +421,7 @@ def existing_rows_refusing_repeats(
     for pylint's ``duplicate-code`` to see what a reader always could.
 
     Args:
-        model: The mapped class to query (``Transaction`` or ``Transfer``).
-        template_fk_col: That model's template foreign-key column object.
-        template: The (Transaction|Transfer)Template being generated -- read
-            for its id here and for its NAME by the refusal.
-        scenario_id: The scenario primary key to match.
+        selector: This pass's :class:`TemplateRowSelector`.
         placements: This pass's ``recurrence_engine.PlannedOccurrence`` values,
             one per occurrence, whose ``period`` may therefore repeat.
 
@@ -429,28 +433,22 @@ def existing_rows_refusing_repeats(
         RecurrenceCadenceUnsupported: See :func:`refuse_unstorable_repeats`.
     """
     existing = existing_rows_by_period(
-        model, template_fk_col, template.id, scenario_id,
-        [placement.period.id for placement in placements],
+        selector,
+        [placement.period.period_id for placement in placements],
     )
-    refuse_unstorable_repeats(template, placements, existing)
+    refuse_unstorable_repeats(selector.template, placements, existing)
     return existing
 
 
-def existing_rows_by_period(
-    model,
-    template_fk_col,
-    template_id: int,
-    scenario_id: int,
-    period_ids,
-) -> dict[int, list]:
+def existing_rows_by_period(selector, period_ids) -> dict[int, list]:
     """Group this template's existing rows in *period_ids* by pay period.
 
     Shared by both recurrence engines' ``generate_for_template``, which each
     carried a byte-similar copy of it until plan step R4b-2 -- the exact
     duplication this module exists to hold, and the parameterisation is the one
-    :func:`query_rows_from_effective_date` already established for the sibling
-    query: the model class and the template foreign-key column, and nothing
-    else, differ between the two engines.
+    :class:`TemplateRowSelector` now carries for every fetch here: the model
+    class and the template foreign-key column, and nothing else, differ between
+    the two engines.
 
     Fetches EVERY row, including soft-deleted and immutable ones, because the
     caller's skip predicate (:func:`should_skip_period`) treats any existing row
@@ -466,31 +464,15 @@ def existing_rows_by_period(
     written.
 
     Args:
-        model: The mapped class to query (``Transaction`` or ``Transfer``).
-        template_fk_col: That model's template foreign-key column object
-            (``Transaction.template_id`` or ``Transfer.transfer_template_id``).
-        template_id: The template primary key to match.
-        scenario_id: The scenario primary key to match.
+        selector: This pass's :class:`TemplateRowSelector`.
         period_ids: The ``budget.pay_periods.id`` values to look in.  Empty
             short-circuits without a query.
 
     Returns:
         ``{pay_period_id: [row, ...]}``, absent for a period holding no row.
     """
-    ids = list(period_ids)
-    if not ids:
-        return {}
-    rows = (
-        db.session.query(model)
-        .filter(
-            template_fk_col == template_id,
-            model.scenario_id == scenario_id,
-            model.pay_period_id.in_(ids),
-        )
-        .all()
-    )
     grouped: dict[int, list] = defaultdict(list)
-    for row in rows:
+    for row in _rows_in_periods(selector, period_ids):
         grouped[row.pay_period_id].append(row)
     # A plain dict, not the defaultdict: the documented contract is that a
     # period holding no row is ABSENT, and a defaultdict would silently create
@@ -498,44 +480,95 @@ def existing_rows_by_period(
     return dict(grouped)
 
 
-def query_rows_from_effective_date(
-    model,
-    template_fk_col,
-    template_id: int,
-    scenario_id: int,
-    effective_from,
-) -> list:
-    """Fetch template-linked rows in periods ending on or after a date.
+def rows_this_pass_may_maintain(selector, schedule, effective_from) -> list:
+    """Fetch the template-linked rows a regenerate pass is allowed to act on.
 
-    Shared by both recurrence engines' ``regenerate_for_template`` to
-    collect the rows eligible for the delete-and-regenerate sweep.  The
-    only per-engine differences are the model class and the template
-    foreign-key column, so both are parameters.
+    Shared by both recurrence engines' ``regenerate_for_template`` to collect
+    the rows eligible for the maintain / retire decision.  The only per-engine
+    differences are the model class and the template foreign-key column, so
+    both are parameters.
+
+    **It selects on a period-ID SET, and the set is the pass's own write
+    window** (pay-calendar plan step C2-f3c).  It was
+    ``query_rows_from_effective_date``: a ``JOIN budget.pay_periods ON ... WHERE
+    pay_periods.end_date >= :effective_from``, which read the STORED end while
+    ``recurrence_engine.resolve_generation_plan`` filtered the same bound
+    against the DERIVED one.  On a schedule where the two disagree the two
+    halves considered different periods -- a row selected but never NAMED where
+    the derived end is earlier, so RETIRED; a stale amount surviving an edit
+    where it is later.  Both halves now read the same derived end off the same
+    calendar, so there is one predicate rather than two that have to agree.
+    (Measured 2026-08-19 on production: 62 periods, zero rows where the stored
+    end differs from the derived one, so the cutover moves nothing on live
+    data.  Plan step **C4** drops the column the old query read.)
+
+    **The domain is the WINDOW, and it must stay strictly WIDER than the plan's
+    named set** or ``_maintain``'s RETIRE branch could never fire: a row is
+    retired precisely because the rule NO LONGER names its period, so the rows
+    offered here have to include periods the plan does not. They do, by
+    construction -- the plan is this same window intersected with the periods
+    the rule names -- and the two live callers pass a whole-schedule window, so
+    the set is every one of the owner's periods.
+
+    **Bounding by the window is also what let ``regeneration_bound`` go.** That
+    helper turned "no lower bound" into the window's opening date, because a
+    sweep bounded only by the SCHEDULE's opening would retire rows from the
+    owner's first payday forward while regenerating inside the window alone.
+    A window-shaped domain cannot do that whatever the bound is, so ``None``
+    once again plainly means "no lower bound".
 
     Args:
-        model: The mapped class to query (``Transaction`` or
-            ``Transfer``).
-        template_fk_col: The model's template foreign-key column object
-            (``Transaction.template_id`` or
-            ``Transfer.transfer_template_id``).
-        template_id: The template primary key to match.
-        scenario_id: The scenario primary key to match.
-        effective_from: Only rows whose pay period ends on or after this
-            date are returned, so the current period is included when
-            the date falls mid-period.
+        selector: This pass's :class:`TemplateRowSelector`.
+        schedule: The pass's
+            :class:`~app.services.generation_schedule.GenerationSchedule` --
+            the owner's calendar plus the periods this pass may write into.
+        effective_from: Only rows whose pay period ends on or after this date
+            are returned, so the current period is included when the date falls
+            mid-period.  ``None`` applies no lower bound.
 
     Returns:
         A list of matching model instances, including soft-deleted and
-        immutable rows -- the caller partitions them via
-        :func:`partition_regeneration_rows`.
+        immutable rows -- the caller classifies them.
     """
+    window = schedule.write_period_ids
+    period_ids = [
+        period.period_id
+        for period in schedule.calendar.saved()
+        if period.period_id in window
+        and (effective_from is None or period.end_date >= effective_from)
+    ]
+    return _rows_in_periods(selector, period_ids)
+
+
+def _rows_in_periods(selector, period_ids) -> list:
+    """Return this template's rows, in this scenario, in *period_ids*.
+
+    **THE statement of the query both fetches run.**
+    :func:`existing_rows_by_period` and :func:`rows_this_pass_may_maintain`
+    differ only in the SHAPE they hand back and in how their period set is
+    chosen; until pay-calendar plan step C2-f3c they differed in the query too,
+    because one selected on ids and the other joined ``budget.pay_periods`` on
+    a column plan step C4 drops.  With both selecting on ids, two spellings of
+    one ``SELECT`` is the duplication this module exists to hold.
+
+    Args:
+        selector: This pass's :class:`TemplateRowSelector`.
+        period_ids: The ``budget.pay_periods.id`` values to look in.  Empty
+            short-circuits without a query -- ``IN ()`` is not valid SQL and a
+            pass with no periods has nothing to find.
+
+    Returns:
+        Every matching row, in no particular order.
+    """
+    ids = list(period_ids)
+    if not ids:
+        return []
     return (
-        db.session.query(model)
-        .join(PayPeriod, model.pay_period_id == PayPeriod.id)
+        db.session.query(selector.model)
         .filter(
-            template_fk_col == template_id,
-            model.scenario_id == scenario_id,
-            PayPeriod.end_date >= effective_from,
+            selector.template_fk_col == selector.template.id,
+            selector.model.scenario_id == selector.scenario_id,
+            selector.model.pay_period_id.in_(ids),
         )
         .all()
     )

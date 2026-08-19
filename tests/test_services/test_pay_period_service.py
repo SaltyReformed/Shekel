@@ -26,7 +26,18 @@ none was deleted, because none of the behaviour was:
   replaced it, and grade it harder -- they cover the crossed range, which the
   query answered with an empty list and the calendar refuses.
 
-**A FOURTH reader's tests moved out at C2-f2b**, and it is the first of the
+**The SIXTH and LAST reader is gone at C2-f3c**: ``get_all_periods`` had ONE
+``app/`` caller left -- the recurrence generation seam's
+``GenerationSchedule``, which read it BESIDE the owner's calendar -- and that
+step deleted the second read.  Its single case here graded that the reader
+returned the owner's ten periods in ``period_index`` order; a
+:class:`~app.services.pay_calendar.PayCalendar` IS the owner's whole schedule,
+in payday order by construction, and ``test_pay_calendar_value`` and
+``test_pay_calendar_loader`` already grade that harder than a length check
+could -- so the case is DELETED rather than re-pointed at a test helper.
+Grading ``tests._test_helpers.all_periods`` would be grading the harness.
+
+**A FOURTH reader's tests moved out at C2-f2b**, and it was the first of the
 six to be DELETED rather than re-pointed: ``get_periods_in_range`` had all
 three of its ``app/`` call sites in the grid route (``page.py`` twice,
 ``partials.py`` once), so moving the grid onto ``PayCalendar.window`` left it
@@ -42,7 +53,6 @@ from ``/grid?offset=-99`` on every schedule.
 
 from datetime import date
 
-from app.services import pay_period_service
 from app.services.pay_calendar import calendar_for
 
 
@@ -100,22 +110,6 @@ class TestTheCurrentPeriodComesFromTheDerivation:
             assert period is not None
             assert period.period_index == 2
             assert period.start_date == date(2026, 1, 30)
-
-
-# ---------------------------------------------------------------------------
-# TestGetAllPeriods
-# ---------------------------------------------------------------------------
-
-
-class TestGetAllPeriods:
-    """Tests for get_all_periods()."""
-
-    def test_returns_all_periods_ordered_by_index(self, app, db, bare_user, bare_periods):
-        """Should return all 10 periods ordered 0..9."""
-        with app.app_context():
-            periods = pay_period_service.get_all_periods(bare_user["user"].id)
-            assert len(periods) == 10
-            assert [p.period_index for p in periods] == list(range(10))
 
 
 # ---------------------------------------------------------------------------

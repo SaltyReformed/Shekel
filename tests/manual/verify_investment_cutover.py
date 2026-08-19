@@ -51,7 +51,7 @@ records.
 * ``derived_vs_stored`` -- per saved period, the stored ``end_date`` /
   ``period_index`` against the derivation's.  Read this BEFORE reading the
   diff: it says whether this database can express a disagreement at all.
-* ``readers`` -- ``get_current_period`` and ``get_all_periods`` beside
+* ``readers`` -- ``get_current_period`` and the stored period COUNT beside
   ``period_containing(as_of)`` and ``saved()``.  Both readers survive this leaf
   (plan step ``C2-f3`` deletes them), so this file runs unchanged on both sides
   and records what the two answers were on each.
@@ -151,7 +151,6 @@ from app.extensions import db
 from app.models.account import Account
 from app.models.pay_period import PayPeriod
 from app.models.user import User
-from app.services import pay_period_service
 from app.services.balance_at import BalanceContext
 from app.services.investment_dashboard_service import (
     compute_balance_hero_cell,
@@ -286,18 +285,35 @@ def _stored_current_period_id(user_id, as_of):
     return None if row is None else row.id
 
 
+def _stored_period_rows(user_id):
+    """Every ``budget.pay_periods`` row this owner has, straight from the table.
+
+    Deliberately NOT the calendar and deliberately not a shared helper: this is
+    the STORED side of a stored-vs-derived probe, so it must not pass through
+    the derivation that the other side is measuring.
+
+    Args:
+        user_id: The owning user.
+
+    Returns:
+        The owner's rows, in no particular order -- only the count is read.
+    """
+    return (
+        db.session.query(PayPeriod).filter_by(user_id=user_id).all()
+    )
+
+
 def _readers(user_id):
     """The STORED spans and the DERIVED calendar, side by side.
 
-    The stored side is :func:`_stored_current_period_id` and
-    ``pay_period_service.get_all_periods``; the derived side is the calendar.
-    Where they disagree the dashboard figures above have already moved, and
-    this says why.
+    The stored side is :func:`_stored_current_period_id` and a direct COUNT of
+    ``budget.pay_periods``; the derived side is the calendar.  Where they
+    disagree the dashboard figures above have already moved, and this says why.
 
-    **``get_all_periods`` survives C2-f3a and C2-f3c deletes it**; when it
-    goes, ``stored_all_periods`` becomes a ``COUNT`` here for the same reason
-    the current-period probe is now inline -- a stored-vs-derived probe that
-    reads the derivation on both sides measures nothing.
+    **``pay_period_service.get_all_periods`` is GONE since plan step C2-f3c**,
+    so the stored count is taken here rather than through a reader -- for the
+    same reason the current-period probe is inline: a stored-vs-derived probe
+    that reads the derivation on both sides measures nothing.
     """
     ctx = BalanceContext.build(user_id)
     calendar = calendar_for(user_id)
@@ -307,7 +323,7 @@ def _readers(user_id):
         "cadence_days": calendar.cadence_days,
         "opening_bound": _plain(calendar.opening_bound()),
         "horizon": _plain(calendar.horizon()),
-        "stored_all_periods": len(pay_period_service.get_all_periods(user_id)),
+        "stored_all_periods": len(_stored_period_rows(user_id)),
         "derived_saved_periods": len(calendar.saved()),
         "stored_current_period_id": _stored_current_period_id(
             user_id, ctx.as_of,

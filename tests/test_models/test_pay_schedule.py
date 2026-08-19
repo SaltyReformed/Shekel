@@ -36,7 +36,6 @@ from app.models.pay_schedule import (
     PaySchedule,
 )
 from app.services import pay_calendar, pay_period_write
-from app.services import pay_period_service
 
 
 _MIGRATIONS_DIR = (

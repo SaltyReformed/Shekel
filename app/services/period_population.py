@@ -22,11 +22,12 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
 from app.services import transfer_recurrence
 from app.services.generation_schedule import GenerationSchedule
+from app.services.pay_calendar import calendar_for
 from app.services.recurrence_engine import generate_for_template
 from app.services.scenario_resolver import get_baseline_scenario
 
 
-def populate_periods_from_active_templates(user_id, periods, effective_from=None):
+def populate_periods_from_active_templates(user_id, period_ids):
     """Generate recurring transactions AND transfers into a set of periods.
 
     The repopulation step extend and regenerate run after creating new,
@@ -43,7 +44,7 @@ def populate_periods_from_active_templates(user_id, periods, effective_from=None
     retried extend / top-up creates nothing and cannot violate the
     ``(template, period, scenario)`` unique partial index.
 
-    **This is the caller plan step R4b-1 was written for.**  ``periods`` is
+    **This is the caller plan step R4b-1 was written for.**  *period_ids* is
     the newly created batch, and until R4b-1 it was handed to each engine as
     BOTH the schedule the rule was resolved against and the window to write
     into -- so every extend re-read every rule as though the owner's pay
@@ -51,38 +52,48 @@ def populate_periods_from_active_templates(user_id, periods, effective_from=None
     rows and stored a third paycheck $502.45 low on production; the
     measurements live in
     :class:`~app.services.generation_schedule.GenerationSchedule`.  The
-    schedule is now loaded ONCE here, from the owner, and ``periods`` states
-    only the window.
+    owner's calendar is derived ONCE here and the batch states only the
+    window.
 
     **Loaded once rather than per template**, which is why it is built here
     and not inside the engines: this loop runs both engines over every active
     definition the user has, and a per-template lookup would be the same read
-    repeated N times for one answer.
+    repeated N times for one answer.  The calendar is derived AFTER the write
+    that created *period_ids*, deliberately: those periods must be in it, and
+    a value derived before the write could not hold them.
+
+    **It takes IDS and forwards no boundary since pay-calendar plan step
+    C2-f3c.**  It took ORM rows, read two things off them -- ``.id`` for the
+    window and ``periods[0].start_date`` for a boundary -- and forwarded that
+    boundary to each engine.  Both are gone, and neither was a behaviour
+    change: the window is the batch, every period of the batch ENDS on or
+    after the batch's own opening payday, so bounding placements by that date
+    could never drop one.  The ``effective_from`` parameter that let a caller
+    override it went with the boundary; no caller in ``app/`` or in the suite
+    ever passed one, which is the speculative shape ``CLAUDE.md`` rule 13
+    forbids.  A caller that genuinely needs a later bound calls the engines
+    directly, as the unarchive paths already do.
 
     Args:
         user_id: The owning user's id.
-        periods: The PayPeriod objects to populate (ordered by index).  Must
-            already be flushed.  An empty list is a no-op.
-        effective_from: Boundary date forwarded to each engine; defaults
-            to the first period's ``start_date``.  Redundant with the window
-            for a contiguous batch, and kept because the top-up path may pass
-            a later one.
+        period_ids: The ``budget.pay_periods.id`` values to populate.  Must
+            already be flushed, and must be this owner's -- both are what
+            ``pay_period_write.record_paydays`` returns.  An empty set is a
+            no-op.
 
     Returns:
         The number of template-linked records created (transactions plus
         transfers; a transfer counts once, not its two shadow rows).
     """
-    if not periods:
+    window = frozenset(period_ids)
+    if not window:
         return 0
 
     scenario = get_baseline_scenario(user_id)
     if scenario is None:
         return 0
 
-    boundary = (
-        effective_from if effective_from is not None else periods[0].start_date
-    )
-    schedule = GenerationSchedule.for_periods(user_id, periods)
+    schedule = GenerationSchedule.for_period_ids(calendar_for(user_id), window)
 
     created = 0
     txn_templates = (
@@ -92,7 +103,7 @@ def populate_periods_from_active_templates(user_id, periods, effective_from=None
     )
     for template in txn_templates:
         created += len(generate_for_template(
-            template, schedule, scenario.id, effective_from=boundary,
+            template, schedule, scenario.id,
         ))
 
     transfer_templates = (
@@ -102,7 +113,7 @@ def populate_periods_from_active_templates(user_id, periods, effective_from=None
     )
     for template in transfer_templates:
         created += len(transfer_recurrence.generate_for_template(
-            template, schedule, scenario.id, effective_from=boundary,
+            template, schedule, scenario.id,
         ))
 
     return created

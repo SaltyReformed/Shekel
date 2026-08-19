@@ -30,12 +30,12 @@ from ._context import (
 logger = logging.getLogger(__name__)
 
 
-def carry_forward_unpaid(source_period_id, target_period_id, user_id,
-                         scenario_id):
+def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
+                         *, calendar):
     """Carry forward all projected items from source to target period.
 
     Steps:
-      1. Verify both periods belong to *user_id*.
+      1. Verify both periods are in the owner's pay calendar.
       2. Find every non-deleted, projected transaction in the source
          period that belongs to the specified scenario.
       3. Partition into shadow / envelope / discrete buckets.
@@ -54,19 +54,22 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
         source_period_id: The pay_period.id to carry forward FROM.
         target_period_id: The pay_period.id to carry forward TO.
             Typically the user's current period.
-        user_id: The ID of the user who owns both periods.
-            Defense-in-depth: ownership is verified even if the
-            caller already checked at the route level.
         scenario_id: The scenario to carry forward within.  Prevents
             cross-scenario data corruption when multiple scenarios
             exist for the same user.
+        calendar: The owner's
+            :class:`~app.services.pay_calendar.PayCalendar`, derived once by
+            the route and threaded down (pay-calendar plan step C2-f3c).  It
+            names the owner, so no ``user_id`` rides beside it, and a period
+            id that is not in it is not this owner's -- which is how both
+            periods are ownership-checked.
 
     Returns:
         int -- the number of carried items (1 per source row processed).
 
     Raises:
-        NotFoundError: If either period does not exist or does not
-            belong to *user_id*.
+        NotFoundError: If either period is not in *calendar* -- it does
+            not exist, or it is not this owner's.
         ValidationError: On two conditions, either of which fails the WHOLE
             batch -- the caller must rollback the session before issuing any
             follow-up writes.  (a) The envelope branch's ``AMBIGUOUS`` guard: a
@@ -84,8 +87,9 @@ def carry_forward_unpaid(source_period_id, target_period_id, user_id,
             carry-forward's batch semantics, not to the guard.
     """
     ctx = _build_carry_forward_context(
-        source_period_id, target_period_id, user_id, scenario_id,
+        source_period_id, target_period_id, scenario_id, calendar,
     )
+    user_id = ctx.user_id
 
     if (not ctx.shadow_txns
             and not ctx.envelope_txns
@@ -282,7 +286,7 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
          settled source row's settlement record and on its entries.
       3. If ``leftover > 0``, resolve the destination row via
          ``_resolve_or_create_target_row``, which (a) bumps the single
-         mutable (Projected) row for ``(template_id, target_period.id,
+         mutable (Projected) row for ``(template_id, target period,
          scenario_id)`` when one exists, (b) lets
          ``recurrence_engine.generate_for_template`` create the canonical
          when the destination is empty and the template is active there,
@@ -320,7 +324,8 @@ def _settle_source_and_roll_leftover(source_txn, target_period, basis,
         source_txn: A Projected, non-deleted, envelope-tracked
             transaction in the source period.  Partitioning in
             ``carry_forward_unpaid`` guarantees the preconditions.
-        target_period: The PayPeriod object for the target period.
+        target_period: The target
+            :class:`~app.services.pay_calendar.DerivedPeriod`.
         schedule: The request's
             :class:`~app.services.generation_schedule.GenerationSchedule`
             (``ctx.schedule``), passed through to the target-row resolution.
@@ -422,7 +427,8 @@ def _resolve_or_create_target_row(source_txn, target_period,
 
     Args:
         source_txn: The envelope source row being carried forward.
-        target_period: The destination PayPeriod.
+        target_period: The destination
+            :class:`~app.services.pay_calendar.DerivedPeriod`.
         basis: The request's amount basis; its ``scenario_id`` is the scenario
             the rollover stays within.
         recurrence_engine: The recurrence-engine module (passed in to
@@ -448,7 +454,7 @@ def _resolve_or_create_target_row(source_txn, target_period,
         raise ValidationError(
             f"Carry forward refused for source transaction "
             f"{source_txn.id} ('{source_txn.name}'): target period "
-            f"{target_period.id} has more than one open row for "
+            f"{target_period.period_id} has more than one open row for "
             f"template {source_txn.template_id}.  Resolve the duplicate "
             f"rows manually before retrying."
         )
@@ -467,7 +473,8 @@ def _resolve_or_create_target_row(source_txn, target_period,
             source_txn.template, schedule, basis.scenario_id,
         )
         generated = next(
-            (t for t in created if t.pay_period_id == target_period.id),
+            (t for t in created
+             if t.pay_period_id == target_period.period_id),
             None,
         )
         if generated is not None:
@@ -509,7 +516,8 @@ def _create_target_override_row(source_txn, target_period, scenario_id):
 
     Args:
         source_txn: The envelope source row whose identity is copied.
-        target_period: The destination PayPeriod.
+        target_period: The destination
+            :class:`~app.services.pay_calendar.DerivedPeriod`.
         scenario_id: Scenario the new row belongs to.
 
     Returns:
@@ -518,7 +526,7 @@ def _create_target_override_row(source_txn, target_period, scenario_id):
     row = Transaction(
         account_id=source_txn.account_id,
         template_id=source_txn.template_id,
-        pay_period_id=target_period.id,
+        pay_period_id=target_period.period_id,
         scenario_id=scenario_id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
         name=source_txn.name,

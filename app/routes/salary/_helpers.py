@@ -163,17 +163,17 @@ def _regenerate_salary_transactions(profile):
     if not scenario:
         return
 
-    # One load of the owner's schedule serves both the paycheck recompute
+    # ONE derivation of the owner's schedule serves both the paycheck recompute
     # below and the regeneration's own resolution (plan step R4b-1).  The
-    # paycheck engine reads the schedule's DERIVED half (pay-calendar plan step
-    # C2-f2d-3); ``GenerationSchedule.__post_init__`` proves the two halves are
-    # the same periods in the same order, so this is the schedule the
-    # regeneration below resolves against and not a second read of it.
-    schedule = GenerationSchedule.for_user(current_user.id)
-    periods = schedule.calendar.saved()
+    # paycheck engine and the recurrence seam both read the CALENDAR
+    # (pay-calendar plan steps C2-f2d-3 and C2-f3c), so there is one value and
+    # no second read to reconcile it against.
+    calendar = calendar_for(current_user.id)
+    schedule = GenerationSchedule.for_calendar(calendar)
+    periods = calendar.saved()
 
     # Update the template's default_amount to the current net pay
-    current_period = schedule.calendar.period_containing(date.today())
+    current_period = calendar.period_containing(date.today())
     if current_period:
         # The configs are resolved for the PERIOD's own tax year, not the
         # clock's: a period straddling New Year belongs to the year it starts
@@ -183,7 +183,7 @@ def _regenerate_salary_transactions(profile):
             current_user.id, profile, current_period.start_date.year,
         )
         pay_breakdown = paycheck_calculator.calculate_paycheck(
-            PayrollBasis(profile, schedule.calendar.cadence),
+            PayrollBasis(profile, calendar.cadence),
             current_period, periods, tax_configs,
             calibration=profile.calibration,
         )

@@ -40,7 +40,6 @@ from app.services import (
     credit_workflow,
     entry_credit_workflow,
     entry_service,
-    pay_period_service,
     pay_period_write,
     reconcile_service,
     recurrence_engine,
@@ -80,6 +79,7 @@ from app.utils.log_events import (
     EVT_TRANSFER_UPDATED,
 )
 from tests._test_helpers import make_every_period_rule
+from app.services.pay_calendar import calendar_for
 
 
 class _LogCapture:
@@ -725,7 +725,9 @@ class TestRecurrenceEngineLogging:
             "app.services.recurrence_engine",
         ) as cap:
             created = recurrence_engine.generate_for_template(
-                _recurrence_setup, GenerationSchedule.for_periods(_recurrence_setup.user_id, seed_periods[:3]),
+                _recurrence_setup, GenerationSchedule.for_period_ids(
+    calendar_for(_recurrence_setup.user_id), {p.id for p in seed_periods[:3]},
+),
                 seed_user["scenario"].id,
             )
 
@@ -740,13 +742,17 @@ class TestRecurrenceEngineLogging:
         """regenerate_for_template emits ``recurrence_regenerated``."""
         with app.app_context():
             recurrence_engine.generate_for_template(
-                _recurrence_setup, GenerationSchedule.for_periods(_recurrence_setup.user_id, seed_periods[:3]),
+                _recurrence_setup, GenerationSchedule.for_period_ids(
+    calendar_for(_recurrence_setup.user_id), {p.id for p in seed_periods[:3]},
+),
                 seed_user["scenario"].id,
             )
             db.session.commit()
             with _LogCapture("app.services.recurrence_engine") as cap:
                 recurrence_engine.regenerate_for_template(
-                    _recurrence_setup, GenerationSchedule.for_periods(_recurrence_setup.user_id, seed_periods[:3]),
+                    _recurrence_setup, GenerationSchedule.for_period_ids(
+    calendar_for(_recurrence_setup.user_id), {p.id for p in seed_periods[:3]},
+),
                     seed_user["scenario"].id,
                 )
 
@@ -763,7 +769,9 @@ class TestRecurrenceEngineLogging:
             "app.services.recurrence_engine",
         ) as cap:
             created = recurrence_engine.generate_for_template(
-                _recurrence_setup, GenerationSchedule.for_periods(_recurrence_setup.user_id, seed_periods[:1]),
+                _recurrence_setup, GenerationSchedule.for_period_ids(
+    calendar_for(_recurrence_setup.user_id), {p.id for p in seed_periods[:1]},
+),
                 seed_second_user["scenario"].id,
             )
 
@@ -879,8 +887,8 @@ class TestCarryForwardLogging:
             count = carry_forward_service.carry_forward_unpaid(
                 source_period_id=seed_periods[0].id,
                 target_period_id=seed_periods[1].id,
-                user_id=seed_user["user"].id,
                 scenario_id=seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
 
         assert count == 1
@@ -927,7 +935,9 @@ class TestTransferRecurrenceLogging:
             "app.services.transfer_recurrence",
         ) as cap:
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods[:2]), td["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
+), td["scenario"].id,
             )
 
         assert len(created) == 2

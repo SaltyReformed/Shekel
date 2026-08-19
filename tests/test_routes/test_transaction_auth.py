@@ -21,7 +21,7 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
-from app.services import pay_period_service, pay_period_write
+from app.services import pay_period_write
 from app.services import account_service
 
 

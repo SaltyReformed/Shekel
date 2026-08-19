@@ -45,12 +45,12 @@ from app.models.transfer import Transfer
 from app.schemas.validation.pay_periods import CADENCE_DAYS_FORM_MIN
 from app.services import (
     pay_period_admin,
-    pay_period_service,
     pay_period_write,
     pay_schedule_service,
     transfer_service,
 )
 from tests._test_helpers import (
+    all_periods,
     add_txn,
     capture_sql_statements,
     create_savings_account,
@@ -84,7 +84,7 @@ def _paydays(user_id):
     return [
         (period.start_date, period.end_date, period.period_index)
         for period in sorted(
-            pay_period_service.get_all_periods(user_id),
+            all_periods(user_id),
             key=lambda period: period.start_date,
         )
     ]
@@ -175,7 +175,7 @@ class TestItRecordsPaydays:
                 date(2026, 1, 30), date(2026, 2, 13),
             ]
             assert [p.period_index for p in again] == [2, 3]
-            assert len(pay_period_service.get_all_periods(user_id)) == 4
+            assert len(all_periods(user_id)) == 4
 
     def test_a_second_batch_appends_and_keeps_payday_order(
         self, app, db, bare_user,
@@ -291,7 +291,7 @@ class TestTheForwardOnlyFloor:
                     num_periods=4, cadence_days=14,
                 )
             db.session.rollback()
-            assert len(pay_period_service.get_all_periods(user_id)) == 2
+            assert len(all_periods(user_id)) == 2
 
     def test_the_floor_is_one_CADENCE_after_the_latest_payday(
         self, app, db, bare_user,
@@ -1107,7 +1107,7 @@ class TestTheWriterRefusesWhatItCannotMaterialise:
                     cadence_days=1,
                 )
             db.session.rollback()
-            assert pay_period_service.get_all_periods(
+            assert all_periods(
                 bare_user["user"].id,
             ) == []
 
@@ -1150,7 +1150,7 @@ class TestTheWriterRefusesWhatItCannotMaterialise:
                     cadence_days=14,
                 )
             db.session.rollback()
-            assert pay_period_service.get_all_periods(
+            assert all_periods(
                 bare_user["user"].id,
             ) == []
 
@@ -1184,7 +1184,7 @@ class TestTheWriterRefusesWhatItCannotMaterialise:
                     cadence_days=366,
                 )
             db.session.rollback()
-            assert pay_period_service.get_all_periods(user_id) == []
+            assert all_periods(user_id) == []
             assert pay_schedule_service.get_schedule(user_id) is None
 
 
@@ -1315,7 +1315,7 @@ class TestTheWriterTakesIdsAndScopesThemToTheOwner:
             assert pay_period_write.retire_paydays(user_id, doomed) == 3
             survivors = {
                 period.id
-                for period in pay_period_service.get_all_periods(user_id)
+                for period in all_periods(user_id)
             }
             assert doomed & survivors == set()
 
@@ -1337,7 +1337,7 @@ class TestTheWriterTakesIdsAndScopesThemToTheOwner:
             foreign = seed_second_periods[4]
             before = {
                 period.id
-                for period in pay_period_service.get_all_periods(
+                for period in all_periods(
                     foreign.user_id,
                 )
             }
@@ -1345,7 +1345,7 @@ class TestTheWriterTakesIdsAndScopesThemToTheOwner:
             assert pay_period_write.retire_paydays(user_id, {foreign.id}) == 0
             after = {
                 period.id
-                for period in pay_period_service.get_all_periods(
+                for period in all_periods(
                     foreign.user_id,
                 )
             }
@@ -1372,7 +1372,7 @@ class TestTheWriterTakesIdsAndScopesThemToTheOwner:
             )
             db.session.flush()
             assert db.session.get(PayPeriod, foreign.id) is not None
-            assert len(pay_period_service.get_all_periods(user_id)) == 6
+            assert len(all_periods(user_id)) == 6
 
     def test_an_id_naming_no_row_at_all_is_an_idempotent_no_op(
         self, app, db, seed_user,
@@ -1477,12 +1477,12 @@ class TestTheRetiredCountIsTheIntersection:
 
             before = {
                 period.id
-                for period in pay_period_service.get_all_periods(user_id)
+                for period in all_periods(user_id)
             }
             assert pay_period_write.retire_paydays(user_id, mixed) == 2
             survivors = {
                 period.id
-                for period in pay_period_service.get_all_periods(user_id)
+                for period in all_periods(user_id)
             }
             assert survivors & mine == set()
             assert survivors == before - mine
@@ -1534,7 +1534,7 @@ class TestThePeriodsAlwaysEqualTheirDerivation:
         from app.services.pay_calendar import derive_periods
 
         periods = sorted(
-            pay_period_service.get_all_periods(user_id),
+            all_periods(user_id),
             key=lambda period: period.start_date,
         )
         derived = derive_periods(

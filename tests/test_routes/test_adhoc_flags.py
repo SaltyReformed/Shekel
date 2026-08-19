@@ -26,6 +26,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import carry_forward_service
 from app.services.row_valuation import settled_figure
+from app.services.pay_calendar import calendar_for
 
 
 def _make_adhoc(seed_user, period, *, is_envelope=False, companion_visible=False,
@@ -526,8 +527,8 @@ class TestAdhocEnvelopeCarryForward:
             _add_entry(txn, seed_user, "15.00", "Partial spend")
 
             carry_forward_service.carry_forward_unpaid(
-                source.id, target.id,
-                seed_user["user"].id, seed_user["scenario"].id,
+                source.id, target.id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.commit()
 

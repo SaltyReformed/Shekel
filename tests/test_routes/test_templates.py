@@ -36,7 +36,7 @@ from app.models.transfer_template import TransferTemplate
 from app.models.user import User, UserSettings
 from app.routes._form_errors import GENERIC_VALIDATION_FLASH
 from app.services.auth_service import hash_password
-from app.services import account_service, pay_period_service, status_seam
+from app.services import account_service, status_seam
 from app.services.generation_schedule import GenerationSchedule
 from app.services.pay_calendar import calendar_for
 from app.services.recurrence import (
@@ -47,6 +47,7 @@ from app.services.recurrence import (
 )
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    all_periods,
     settlement_columns,
     settlement_if_settling,
     cadence_payload,
@@ -127,8 +128,10 @@ def _future_override_txn(seed_user, template, amount="1500.00"):
     """
     from app.services import recurrence_engine, pay_period_service
     scenario = seed_user["scenario"]
-    periods = pay_period_service.get_all_periods(seed_user["user"].id)
-    recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id)
+    periods = all_periods(seed_user["user"].id)
+    recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in periods},
+), scenario.id)
     db.session.flush()
     txn = (
         db.session.query(Transaction)
@@ -783,8 +786,10 @@ class TestTemplateUpdate:
                 amount="1200.00",
             )
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id)
+            periods = all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in periods},
+), scenario.id)
             db.session.flush()
             txn = (
                 db.session.query(Transaction)
@@ -839,10 +844,12 @@ class TestTemplateUpdate:
             template.is_envelope = True  # rows track purchases, as production
             db.session.flush()
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_periods(template.user_id, periods),
+                GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in periods},
+),
                 scenario.id,
             )
             db.session.flush()
@@ -927,9 +934,11 @@ class TestTemplateUpdate:
 
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in periods},
+), scenario.id,
             )
             db.session.commit()
 
@@ -976,9 +985,11 @@ class TestTemplateUpdate:
 
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in periods},
+), scenario.id,
             )
             db.session.flush()
 
@@ -1012,9 +1023,11 @@ class TestTemplateUpdate:
 
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in periods},
+), scenario.id,
             )
             db.session.commit()
 
@@ -1062,9 +1075,11 @@ class TestGridRowKeyBuilder:
 
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in periods},
+), scenario.id,
             )
             db.session.flush()
 
@@ -1168,8 +1183,10 @@ class TestTemplateArchive:
             # Generate projected transactions.
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id)
+            periods = all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in periods},
+), scenario.id)
             db.session.commit()
 
             txn_count = db.session.query(Transaction).filter_by(
@@ -1233,8 +1250,10 @@ class TestTemplateUnarchive:
             # Generate and then delete.
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id)
+            periods = all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in periods},
+), scenario.id)
             db.session.commit()
 
             # Archive via the archive route.
@@ -2001,8 +2020,10 @@ class TestTemplateHardDelete:
             # Generate projected transactions.
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario.id)
+            periods = all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in periods},
+), scenario.id)
             db.session.commit()
 
             template_id = template.id
@@ -2048,8 +2069,10 @@ class TestTemplateHardDelete:
 
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods_list = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods_list), scenario.id)
+            periods_list = all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in periods_list},
+), scenario.id)
             db.session.commit()
 
             # Mark one transaction as Paid.
@@ -2102,8 +2125,10 @@ class TestTemplateHardDelete:
 
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods_list = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods_list), scenario.id)
+            periods_list = all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in periods_list},
+), scenario.id)
             db.session.commit()
 
             # Mark one transaction as Paid.
@@ -2142,8 +2167,10 @@ class TestTemplateHardDelete:
 
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods_list = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods_list), scenario.id)
+            periods_list = all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in periods_list},
+), scenario.id)
             db.session.commit()
 
             # Pre-archive via route (soft-deletes projected txns).
@@ -2407,8 +2434,10 @@ class TestTemplateHardDelete:
 
             from app.services import recurrence_engine, pay_period_service
             scenario = seed_user["scenario"]
-            periods_list = pay_period_service.get_all_periods(seed_user["user"].id)
-            recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods_list), scenario.id)
+            periods_list = all_periods(seed_user["user"].id)
+            recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in periods_list},
+), scenario.id)
             db.session.commit()
 
             resp = auth_client.post(
@@ -3355,7 +3384,7 @@ class TestACreateDoesNotBackfillClosedPayPeriods:
     option, preselecting the CURRENT period -- so every definition ever created
     carried an opening bound of "the paycheck I am in".  Replacing it with a
     date box that defaults to EMPTY silently changed that to "unbounded", and
-    the create routes generate over ``GenerationSchedule.for_user`` -- every
+    the create routes generate over ``GenerationSchedule.for_calendar`` -- every
     period the owner has, with no lower window bound -- so a rent template
     created today wrote projected debits into every pay period that had already
     closed.

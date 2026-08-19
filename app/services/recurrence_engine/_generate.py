@@ -18,6 +18,7 @@ import logging
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.services._recurrence_common import (
+    TemplateRowSelector,
     existing_rows_by_period,
     existing_rows_refusing_repeats,
     should_skip_period,
@@ -76,8 +77,7 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
     # 30 days or more.  One call because the order matters; see
     # _recurrence_common.existing_rows_refusing_repeats.
     existing = existing_rows_refusing_repeats(
-        Transaction, Transaction.template_id,
-        template, scenario_id, plan.placements,
+        _selector(template, scenario_id), plan.placements,
     )
 
     # Check if this template has a linked salary profile for paycheck calculation.
@@ -85,7 +85,7 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
 
     created = []
     for period in (row.period for row in plan.placements):
-        existing_txns = existing.get(period.id, [])
+        existing_txns = existing.get(period.period_id, [])
 
         # Skip periods that already hold a template-linked row (immutable,
         # override, soft-deleted, or simply already auto-generated).
@@ -100,10 +100,10 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
         # row, live, and not yet an actual event.
         txn = Transaction(
             **_derive_row_fields(
-                template, plan.rule, salary_profile, period, schedule,
+                template, plan.rule, salary_profile, period, schedule.calendar,
             )._asdict(),
             template_id=template.id,
-            pay_period_id=period.id,
+            pay_period_id=period.period_id,
             scenario_id=scenario_id,
             status_id=plan.projected_id,
             is_override=False,
@@ -124,8 +124,8 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
 
 
 
-def can_generate_in_period(template, period, scenario_id, *, schedule):
-    """Return True iff ``generate_for_template`` would create a row in *period*.
+def can_generate_in_period(template, period_id, scenario_id, *, schedule):
+    """Return True iff ``generate_for_template`` would create a row there.
 
     Read-only mirror of ``generate_for_template``'s gating logic.
     Useful to callers that need to predict the engine's behaviour
@@ -168,21 +168,25 @@ def can_generate_in_period(template, period, scenario_id, *, schedule):
     **The schedule is threaded in rather than built here**, and that is a cost
     decision the carry-forward path forces.  This predicate runs ONCE PER
     ENVELOPE ROW being rolled forward (``_classify_leftover_target``), and
-    building a schedule per call would issue that schedule's THREE queries --
-    ``get_all_periods``, and the payday and cadence reads
-    ``pay_calendar.calendar_for`` makes (plan step C2-b2 moved the calendar onto
-    that one door) -- plus one full forward occurrence walk, per row.  That is
-    the redundant-producer shape ``period_population`` documents avoiding three
-    modules away.  The caller
-    resolves one schedule for the request and passes it down.
+    building a schedule per call would derive the owner's pay calendar -- two
+    queries -- plus one full forward occurrence walk, per row.  That is the
+    redundant-producer shape ``period_population`` documents avoiding three
+    modules away.  The caller resolves one schedule for the request and passes
+    it down.
+
+    **It takes an ID rather than a pay period** (pay-calendar plan step
+    C2-f3c).  It read exactly one thing off the row it used to take -- ``.id``
+    -- so taking the row made its one caller hold an ORM object for an integer,
+    and made "which type of period is this" a question at a call site that does
+    not care.
 
     Args:
         template: The TransactionTemplate to check.  Must have its
             ``recurrence_rule`` relationship loaded (the same
             assumption ``generate_for_template`` makes).
-        period: The PayPeriod object the canonical would land in.  Its
-            membership in the engine's answer is the question; it does NOT
-            have to be *schedule*'s write window.
+        period_id: The ``budget.pay_periods.id`` the canonical would land in.
+            Its membership in the engine's answer is the question; it does NOT
+            have to be in *schedule*'s write window.
         scenario_id: The scenario that would receive the canonical.
         schedule: The owner's
             :class:`~app.services.generation_schedule.GenerationSchedule`.
@@ -201,13 +205,15 @@ def can_generate_in_period(template, period, scenario_id, *, schedule):
     # the one period asked about (the carry-forward context narrows it to the
     # target, but a caller threading a whole-schedule value is equally valid),
     # so the answer is "does the engine name THIS period".
-    if period.id not in {row.period.id for row in plan.placements}:
+    if period_id not in {row.period.period_id for row in plan.placements}:
         return False
 
     # Engine refuses to overwrite ANY existing row -- skip if even one
     # row (including soft-deleted) sits in (template, period, scenario).
-    existing = _get_existing_map(template.id, scenario_id, [period.id])
-    if existing.get(period.id):
+    existing = existing_rows_by_period(
+        _selector(template, scenario_id), [period_id],
+    )
+    if existing.get(period_id):
         return False
 
     return True
@@ -215,15 +221,23 @@ def can_generate_in_period(template, period, scenario_id, *, schedule):
 
 
 
-def _get_existing_map(template_id, scenario_id, period_ids):
-    """Group this template's existing transactions in *period_ids* by period.
+def _selector(template, scenario_id):
+    """Name what this engine's row fetches are asking about.
 
-    A one-line binding of :func:`_recurrence_common.existing_rows_by_period` to
-    this engine's model, so the two engines' generate paths run the identical
-    query.  Plan step R4b-2 hoisted the body: the transfer engine carried a
-    byte-similar copy, which is the duplication that module exists to hold.
+    A one-line binding of :class:`_recurrence_common.TemplateRowSelector` to
+    this engine's model, so ``Transaction`` and ``Transaction.template_id`` are
+    paired in ONE place and the two engines' generate paths run the identical
+    query.  Plan step R4b-2 hoisted the query itself; pay-calendar plan step
+    C2-f3c named the four facts it takes, which is what let the pair stop being
+    repeated at each call.
+
+    Args:
+        template: The TransactionTemplate this pass is generating from.
+        scenario_id: The scenario being written into.
+
+    Returns:
+        The :class:`~app.services._recurrence_common.TemplateRowSelector`.
     """
-    return existing_rows_by_period(
-        Transaction, Transaction.template_id,
-        template_id, scenario_id, period_ids,
+    return TemplateRowSelector(
+        Transaction, Transaction.template_id, template, scenario_id,
     )

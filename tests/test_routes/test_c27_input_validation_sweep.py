@@ -45,7 +45,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.models.ref import AccountType
-from app.services import pay_period_service, pay_period_write, transfer_service
+from app.services import pay_period_write, transfer_service
 from app.services import account_service
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
 

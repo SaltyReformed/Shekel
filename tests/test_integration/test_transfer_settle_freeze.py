@@ -69,6 +69,7 @@ from tests.test_integration.test_loan_transfer_live_amount import (
     _build_derived_loan_transfer,
 )
 from app.services.row_valuation import owned_contribution, settled_figure
+from app.services.pay_calendar import calendar_for
 
 #: P&I 1,199.10 + escrow 300.00, the figure the freeze captures.
 _LIVE_PITI = Decimal("1499.10")
@@ -89,7 +90,9 @@ def _derived_loan_transfer(seed_user, seed_periods):
     )
     transfer_recurrence.generate_for_template(
         template,
-        GenerationSchedule.for_periods(template.user_id, seed_periods),
+        GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+),
         scenario_id,
     )
     db.session.commit()

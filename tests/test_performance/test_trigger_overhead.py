@@ -20,6 +20,7 @@ from app.models.ref import Status, TransactionType
 from app.services import recurrence_engine
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import make_every_period_rule
+from app.services.pay_calendar import calendar_for
 
 # Overhead threshold from the Phase 8 plan.
 MAX_OVERHEAD_PERCENT = 20
@@ -87,7 +88,9 @@ def _time_generate(template, periods, scenario_id, iterations=ITERATIONS):
     for _ in range(WARMUP):
         _delete_generated_transactions(template.id)
         db.session.commit()
-        recurrence_engine.generate_for_template(template, GenerationSchedule.for_periods(template.user_id, periods), scenario_id)
+        recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in periods},
+), scenario_id)
         db.session.flush()
         db.session.commit()
 
@@ -98,7 +101,9 @@ def _time_generate(template, periods, scenario_id, iterations=ITERATIONS):
 
         start = time.perf_counter()
         recurrence_engine.generate_for_template(
-            template, GenerationSchedule.for_periods(template.user_id, periods), scenario_id
+            template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in periods},
+), scenario_id
         )
         db.session.flush()
         elapsed_ms = (time.perf_counter() - start) * 1000
@@ -159,11 +164,15 @@ class TestRecurrenceEngineOverhead:
             for _ in range(WARMUP):
                 _delete_generated_transactions(template.id)
                 recurrence_engine.generate_for_template(
-                    template, GenerationSchedule.for_periods(template.user_id, perf_periods), scenario_id
+                    template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in perf_periods},
+), scenario_id
                 )
                 db.session.commit()
                 recurrence_engine.regenerate_for_template(
-                    template, GenerationSchedule.for_periods(template.user_id, perf_periods), scenario_id
+                    template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in perf_periods},
+), scenario_id
                 )
                 db.session.flush()
                 db.session.commit()
@@ -173,13 +182,17 @@ class TestRecurrenceEngineOverhead:
                 # Ensure transactions exist to be regenerated.
                 _delete_generated_transactions(template.id)
                 recurrence_engine.generate_for_template(
-                    template, GenerationSchedule.for_periods(template.user_id, perf_periods), scenario_id
+                    template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in perf_periods},
+), scenario_id
                 )
                 db.session.commit()
 
                 start = time.perf_counter()
                 recurrence_engine.regenerate_for_template(
-                    template, GenerationSchedule.for_periods(template.user_id, perf_periods), scenario_id
+                    template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in perf_periods},
+), scenario_id
                 )
                 db.session.flush()
                 elapsed_ms = (time.perf_counter() - start) * 1000

@@ -53,7 +53,6 @@ from app.models.transfer import Transfer
 from app.services import (
     loan_posting_service,
     pay_period_admin,
-    pay_period_service,
     pay_period_write,
     pay_schedule_service,
     posting_service,
@@ -63,6 +62,7 @@ from scripts.integrity_check import (
     check_referential_integrity,
 )
 from tests._test_helpers import (
+    all_periods,
     add_txn,
     assert_pay_period_invariants,
     create_loan_with_trueup,
@@ -143,7 +143,7 @@ def _seed_old_schedule(db_session, seed_user, count=5):
 
 def _all_indices(user_id):
     """The set of period_index values the user currently has."""
-    return {p.period_index for p in pay_period_service.get_all_periods(user_id)}
+    return {p.period_index for p in all_periods(user_id)}
 
 
 def _make_every_n_template(db_session, seed_user, start_period, interval_n=2):
@@ -203,7 +203,7 @@ class TestResetHappyPath:
             _seed_old_schedule(db.session, seed_user)
             account = seed_user["account"]
             old_period_ids = {
-                p.id for p in pay_period_service.get_all_periods(user_id)
+                p.id for p in all_periods(user_id)
             }
             balance_before = cash_ledger.resolve_anchor(account).balance
 
@@ -434,7 +434,7 @@ class TestResetHappyPath:
         with app.app_context():
             user_id = seed_user["user"].id
             _seed_old_schedule(db.session, seed_user)
-            old_periods = pay_period_service.get_all_periods(user_id)
+            old_periods = all_periods(user_id)
             # Phase the rule to an OLD odd index (3) -> offset 1 under n=2.
             template = _make_every_n_template(
                 db.session, seed_user, old_periods[3], interval_n=2,
@@ -550,7 +550,7 @@ class TestResetRefusals:
         with app.app_context():
             user_id = seed_user["user"].id
             _seed_old_schedule(db.session, seed_user)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             settled = add_txn(
                 db.session, seed_user, periods[2], "Paycheck", "2000.00",
                 status_enum=StatusEnum.RECEIVED, is_income=True,
@@ -568,7 +568,7 @@ class TestResetRefusals:
             db.session.rollback()
 
             assert exc_info.value.settled_count == 1
-            after_ids = {p.id for p in pay_period_service.get_all_periods(user_id)}
+            after_ids = {p.id for p in all_periods(user_id)}
             assert after_ids == before_ids  # nothing deleted
             assert db.session.get(Transaction, settled.id) is not None
             account = db.session.get(Account, account.id)
@@ -584,7 +584,7 @@ class TestResetRefusals:
         with app.app_context():
             user_id = seed_user["user"].id
             _seed_old_schedule(db.session, seed_user)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             add_txn(
                 db.session, seed_user, periods[2], "Paycheck", "2000.00",
                 status_enum=StatusEnum.RECEIVED, is_income=True,
@@ -611,7 +611,7 @@ class TestResetRefusals:
         with app.app_context():
             user_id = seed_user["user"].id
             _seed_old_schedule(db.session, seed_user)
-            before_ids = {p.id for p in pay_period_service.get_all_periods(user_id)}
+            before_ids = {p.id for p in all_periods(user_id)}
             account = seed_user["account"]
 
             with pytest.raises(ValidationError):
@@ -621,7 +621,7 @@ class TestResetRefusals:
                 )
             db.session.rollback()
 
-            after_ids = {p.id for p in pay_period_service.get_all_periods(user_id)}
+            after_ids = {p.id for p in all_periods(user_id)}
             assert after_ids == before_ids
             account = db.session.get(Account, account.id)
             assert_pay_period_invariants(db.session, user_id)
@@ -668,7 +668,7 @@ class TestResetResyncsLoanGenesis:
             loan_posting_service.sync_loan_postings_all_scenarios(loan.id)
             db.session.commit()
 
-            old_ids = {p.id for p in pay_period_service.get_all_periods(user_id)}
+            old_ids = {p.id for p in all_periods(user_id)}
             before = _loan_genesis_entries(db.session, user_id)
             assert len(before) == 2
             assert {e.pay_period_id for e in before} <= old_ids
@@ -765,7 +765,7 @@ class TestResetResyncsAccountOpenings:
             # A first version of this assertion only checked membership in the
             # set of all live periods -- true of any of the six, so it would
             # have passed against a correction filed in the wrong one.
-            rebuilt = pay_period_service.get_all_periods(user_id)
+            rebuilt = all_periods(user_id)
             opening_assertion = (
                 db.session.query(AccountAnchorHistory)
                 .filter_by(account_id=checking_id)

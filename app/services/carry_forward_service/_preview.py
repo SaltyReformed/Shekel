@@ -124,8 +124,8 @@ class CarryForwardPreview:
     are the only ones that can block the batch).
     """
 
-    source_period: object  # PayPeriod -- forward-declared to avoid an import cycle.
-    target_period: object  # PayPeriod
+    source_period: object  # DerivedPeriod -- forward-declared, no import cycle.
+    target_period: object  # DerivedPeriod
     plans: List[CarryForwardPlan]
 
     @property
@@ -172,8 +172,9 @@ class CarryForwardPreview:
 def preview_carry_forward(
     source_period_id: int,
     target_period_id: int,
-    user_id: int,
     scenario_id: int,
+    *,
+    calendar,
 ) -> CarryForwardPreview:
     """Return a read-only preview of a planned carry-forward batch.
 
@@ -201,17 +202,21 @@ def preview_carry_forward(
         target_period_id: pay_period.id to carry forward TO.
             Typically the user's current period; the route resolves
             it the same way the mutating route does.
-        user_id: defense-in-depth ownership check (route already
-            enforced via ``@require_owner``).
         scenario_id: scenario filter; mirrors the mutating path so
             preview and execution see the same set of rows.
+        calendar: The owner's
+            :class:`~app.services.pay_calendar.PayCalendar`, derived once by
+            the route (pay-calendar plan step C2-f3c).  It names the owner and
+            answers both period lookups, so a period that is not this owner's
+            is simply not found.
 
     Returns:
         CarryForwardPreview.  Empty plans list when source == target
         or there are no projected rows in the source period.
 
     Raises:
-        NotFoundError: if either period is missing or not owned.
+        NotFoundError: if either period is not in *calendar* -- it is missing,
+            or it is not this owner's.
 
     Side effects:
         None.  All database access is read-only and no session
@@ -220,7 +225,7 @@ def preview_carry_forward(
         any persisted side effects.
     """
     ctx = _build_carry_forward_context(
-        source_period_id, target_period_id, user_id, scenario_id,
+        source_period_id, target_period_id, scenario_id, calendar,
     )
 
     plans: List[CarryForwardPlan] = []

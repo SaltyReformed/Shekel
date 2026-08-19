@@ -831,6 +831,47 @@ class TestOneCalendarDerivationPerRender:
             "it both the option set and the preselection"
         )
 
+    def test_the_carry_forward_preview_derives_the_calendar_once(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET the carry-forward modal derives the pay calendar exactly once.
+
+        **This is ledger row P68, and it is a count that came DOWN.**  Plan step
+        C2-f3a replaced this route's ``pay_period_service.get_current_period``
+        -- SQL, which derived nothing -- with the calendar's own
+        ``period_containing``, so the render then held TWO derivations: the
+        route's, and a second inside ``carry_forward_service``, which built a
+        ``GenerationSchedule`` for the target period and that value loaded its
+        own.  Measured on this fixture at 2 before pay-calendar plan step
+        C2-f3c and 1 after.
+
+        What it grades from here is the same thing every case in this class
+        does: a producer wired below this route and left to resolve its own
+        schedule.  The service takes the route's calendar now and can no longer
+        build one, so the way back to 2 is a NEW producer, which is exactly
+        what this catches.
+        """
+        with app.app_context():
+            source_id = seed_periods_today[0].id
+
+        with counting_calls(_CALENDAR_DOOR) as counts:
+            resp = auth_client.get(
+                f"/pay-periods/{source_id}/carry-forward-preview",
+                headers={"HX-Request": "true"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert "Carry Forward" in body, (
+            "the modal did not render, so this count was taken over a route "
+            "that returned before it reached the service"
+        )
+        assert counts["calendar_for"] == 1, (
+            f"the carry-forward preview derived the pay calendar "
+            f"{counts['calendar_for']} times; the route derives one and "
+            "threads it into both period lookups and the generation seam"
+        )
+
     def test_the_count_grows_with_the_account_set_when_a_producer_derives(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):

@@ -21,7 +21,7 @@ from app.models.account import Account
 from app.models.ref import AccountType, TransactionType
 from app import ref_cache
 from app.enums import StatusEnum
-from app.services import pay_period_service, pay_period_write, transfer_recurrence
+from app.services import pay_period_write, transfer_recurrence
 from app.exceptions import (
     RecurrenceCadenceUnsupported,
     RecurrenceConflict,
@@ -34,6 +34,7 @@ from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
     MONTHLY,
 )
+from app.services.pay_calendar import calendar_for
 
 
 def _assert_shadows_valid(xfer):
@@ -116,7 +117,9 @@ class TestTransferGeneration:
                 seed_user, EVERY_PERIOD
             )
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
 
             assert len(created) == len(seed_periods)
@@ -150,7 +153,9 @@ class TestTransferGeneration:
                 seed_user, MONTHLY, day_of_month=15,
             )
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
 
             assert sorted(x.due_date for x in created) == [
@@ -197,7 +202,9 @@ class TestTransferGeneration:
             db.session.refresh(template)
 
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
 
             assert len(created) == 0
@@ -231,7 +238,9 @@ class TestTransferGeneration:
             assert template.recurrence_rule is None
 
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
 
             assert len(created) == 0
@@ -244,13 +253,17 @@ class TestTransferGeneration:
             )
 
             first_run = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
             assert len(first_run) == len(seed_periods)
 
             second_run = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             assert len(second_run) == 0
 
@@ -262,7 +275,9 @@ class TestTransferGeneration:
             )
 
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
             assert len(created) == len(seed_periods)
@@ -275,7 +290,9 @@ class TestTransferGeneration:
             db.session.flush()
 
             second_run = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             assert len(second_run) == 0
 
@@ -322,9 +339,9 @@ class TestTransferGenerationSharesTheOccurrencePairs:
             with pytest.raises(RecurrenceCadenceUnsupported) as excinfo:
                 transfer_recurrence.generate_for_template(
                     template,
-                    GenerationSchedule.for_periods(
-                        template.user_id, long_periods,
-                    ),
+                    GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in long_periods},
+),
                     seed_user["scenario"].id,
                 )
 
@@ -400,7 +417,7 @@ class TestTransferGenerationSharesTheOccurrencePairs:
             ), pytest.raises(RecurrenceCadenceUnsupported) as excinfo:
                 transfer_recurrence.generate_for_template(
                     template,
-                    GenerationSchedule.for_user(template.user_id),
+                    GenerationSchedule.for_calendar(calendar_for(template.user_id)),
                     seed_user["scenario"].id,
                 )
 
@@ -479,7 +496,9 @@ class TestTransferRegeneration:
             )
 
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
             old_ids = [xfer.id for xfer in created]
@@ -490,7 +509,9 @@ class TestTransferRegeneration:
             db.session.flush()
 
             new_created = transfer_recurrence.regenerate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -522,7 +543,9 @@ class TestTransferRegeneration:
                 seed_user, MONTHLY, day_of_month=15,
             )
             transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -530,7 +553,9 @@ class TestTransferRegeneration:
             db.session.flush()
 
             new_created = transfer_recurrence.regenerate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -555,7 +580,9 @@ class TestTransferRegeneration:
             )
 
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -567,7 +594,9 @@ class TestTransferRegeneration:
 
             with pytest.raises(RecurrenceConflict) as exc_info:
                 transfer_recurrence.regenerate_for_template(
-                    template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                    template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
                 )
 
             assert overridden_id in exc_info.value.overridden
@@ -582,7 +611,9 @@ class TestTransferRegeneration:
             )
 
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -598,7 +629,9 @@ class TestTransferRegeneration:
             db.session.flush()
 
             transfer_recurrence.regenerate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -659,7 +692,9 @@ class TestTransferResolveConflicts:
             )
 
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -688,7 +723,9 @@ class TestTransferResolveConflicts:
             )
 
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -728,7 +765,9 @@ class TestTransferResolveConflicts:
                 seed_user, EVERY_PERIOD
             )
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -758,7 +797,9 @@ class TestTransferResolveConflicts:
                 seed_user, EVERY_PERIOD
             )
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -787,7 +828,9 @@ class TestTransferResolveConflicts:
                 seed_user, EVERY_PERIOD
             )
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -817,7 +860,9 @@ class TestTransferResolveConflicts:
                 seed_user, EVERY_PERIOD
             )
             created_a = transfer_recurrence.generate_for_template(
-                template_a, GenerationSchedule.for_periods(template_a.user_id, seed_periods), seed_user["scenario"].id,
+                template_a, GenerationSchedule.for_period_ids(
+    calendar_for(template_a.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
             xfer_a = created_a[0]
@@ -835,7 +880,9 @@ class TestTransferResolveConflicts:
                 second_user, EVERY_PERIOD
             )
             created_b = transfer_recurrence.generate_for_template(
-                template_b, GenerationSchedule.for_periods(template_b.user_id, periods_b), second_user["scenario"].id,
+                template_b, GenerationSchedule.for_period_ids(
+    calendar_for(template_b.user_id), {p.id for p in periods_b},
+), second_user["scenario"].id,
             )
             db.session.flush()
             xfer_b = created_b[0]
@@ -973,7 +1020,9 @@ class TestNegativePaths:
                 seed_user, EVERY_PERIOD
             )
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, []), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in []},
+), seed_user["scenario"].id,
                 effective_from=date(2026, 1, 1),
             )
 
@@ -996,7 +1045,9 @@ class TestNegativePaths:
             )
 
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
             assert len(created) == len(seed_periods)
@@ -1014,7 +1065,9 @@ class TestNegativePaths:
             db.session.flush()
 
             transfer_recurrence.regenerate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1152,7 +1205,9 @@ class TestShadowTransactionCreation:
         with app.app_context():
             template, _ = self._make_template(seed_user, EVERY_PERIOD)
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1171,7 +1226,9 @@ class TestShadowTransactionCreation:
             )
 
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1195,7 +1252,9 @@ class TestShadowTransactionCreation:
         with app.app_context():
             template, _ = self._make_template(seed_user, EVERY_PERIOD)
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1211,7 +1270,9 @@ class TestShadowTransactionCreation:
             template.default_amount = Decimal("300.00")
             db.session.flush()
             new_created = transfer_recurrence.regenerate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.commit()
             # Expire session cache so get() hits the database and sees
@@ -1234,14 +1295,18 @@ class TestShadowTransactionCreation:
         with app.app_context():
             template, _ = self._make_template(seed_user, EVERY_PERIOD)
             transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
             template.default_amount = Decimal("250.00")
             db.session.flush()
             transfer_recurrence.regenerate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1263,7 +1328,9 @@ class TestShadowTransactionCreation:
         with app.app_context():
             template, _ = self._make_template(seed_user, EVERY_PERIOD)
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1349,7 +1416,9 @@ class TestResolveConflictsServiceRouting:
                 seed_user, EVERY_PERIOD
             )
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1399,7 +1468,9 @@ class TestResolveConflictsServiceRouting:
                 seed_user, EVERY_PERIOD
             )
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1446,7 +1517,9 @@ class TestResolveConflictsServiceRouting:
                 seed_user, EVERY_PERIOD
             )
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1480,7 +1553,9 @@ class TestResolveConflictsServiceRouting:
                 seed_user, EVERY_PERIOD
             )
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1513,7 +1588,9 @@ class TestResolveConflictsServiceRouting:
                 seed_user, EVERY_PERIOD
             )
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
             assert len(created) >= 3
@@ -1653,7 +1730,9 @@ class TestRegenerateDeletionRoutedThroughService:
             template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
 
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
             deleted_ids = {xfer.id for xfer in created}
@@ -1667,7 +1746,9 @@ class TestRegenerateDeletionRoutedThroughService:
 
             with _LogCapture("app.services.transfer_service") as cap:
                 new_created = transfer_recurrence.regenerate_for_template(
-                    template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                    template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
                 )
                 db.session.flush()
 
@@ -1705,7 +1786,9 @@ class TestRegenerateDeletionRoutedThroughService:
         with app.app_context():
             template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
             transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1714,7 +1797,9 @@ class TestRegenerateDeletionRoutedThroughService:
 
             with _LogCapture("app.services.transfer_service") as cap:
                 transfer_recurrence.regenerate_for_template(
-                    template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                    template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
                 )
                 db.session.flush()
 
@@ -1744,7 +1829,9 @@ class TestRegenerateDeletionRoutedThroughService:
         with app.app_context():
             template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
             created = transfer_recurrence.generate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1761,7 +1848,9 @@ class TestRegenerateDeletionRoutedThroughService:
             template.default_amount = Decimal("225.00")
             db.session.flush()
             transfer_recurrence.regenerate_for_template(
-                template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,
+                template, GenerationSchedule.for_period_ids(
+    calendar_for(template.user_id), {p.id for p in seed_periods},
+), seed_user["scenario"].id,
             )
             db.session.commit()
             db.session.expire_all()

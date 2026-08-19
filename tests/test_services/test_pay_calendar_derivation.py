@@ -35,7 +35,7 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from app.services import pay_period_service, pay_period_write
+from app.services import pay_period_write
 from app.services.pay_calendar import (
     MAX_CADENCE_DAYS,
     DerivedPeriod,
@@ -43,7 +43,7 @@ from app.services.pay_calendar import (
     PayCalendarError,
     derive_periods,
 )
-from tests._test_helpers import open_calendar_hole
+from tests._test_helpers import open_calendar_hole, all_periods
 from tests.oracles.pay_calendar_derivation import (
     IRREGULAR_SHAPES,
     build_stored_rows,
@@ -634,7 +634,7 @@ class TestTheStoredColumnsAreReproduced:
 
             comparison = compare(
                 user_id=user_id,
-                periods=pay_period_service.get_all_periods(user_id),
+                periods=all_periods(user_id),
                 cadence_days=14,
                 cadence_is_stored=True,
             )
@@ -682,7 +682,7 @@ class TestTheStoredColumnsAreReproduced:
             # end runs to the day before the late payday.
             assert compare(
                 user_id=user_id,
-                periods=pay_period_service.get_all_periods(user_id),
+                periods=all_periods(user_id),
                 cadence_days=14,
                 cadence_is_stored=True,
             ).disagreements == ()
@@ -695,7 +695,7 @@ class TestTheStoredColumnsAreReproduced:
 
             comparison = compare(
                 user_id=user_id,
-                periods=pay_period_service.get_all_periods(user_id),
+                periods=all_periods(user_id),
                 cadence_days=14,
                 cadence_is_stored=True,
             )
@@ -1006,6 +1006,6 @@ class TestTheComparatorRefusesWhatItCannotMeasure:
                 row in db.session for row in perturbation.rows
             )
             db.session.flush()
-            assert pay_period_service.get_all_periods(
+            assert all_periods(
                 bare_user["user"].id,
             )[0].start_date == date(2026, 1, 2)

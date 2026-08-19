@@ -383,8 +383,8 @@ class TestCarryForward:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -441,8 +441,8 @@ class TestCarryForward:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -495,8 +495,8 @@ class TestCarryForward:
             db.session.flush()
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -536,8 +536,8 @@ class TestCarryForward:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -589,8 +589,8 @@ class TestCarryForward:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -627,8 +627,8 @@ class TestCarryForward:
             db.session.flush()
 
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -642,8 +642,8 @@ class TestCarryForward:
         with app.app_context():
             with pytest.raises(NotFoundError):
                 carry_forward_service.carry_forward_unpaid(
-                    999999, seed_periods[1].id, seed_user["user"].id,
-                    seed_user["scenario"].id,
+                    999999, seed_periods[1].id, seed_user["scenario"].id,
+                    calendar=calendar_for(seed_user["user"].id),
                 )
 
     def test_carry_forward_target_not_found(self, app, db, seed_user, seed_periods):
@@ -651,29 +651,39 @@ class TestCarryForward:
         with app.app_context():
             with pytest.raises(NotFoundError):
                 carry_forward_service.carry_forward_unpaid(
-                    seed_periods[0].id, 999999, seed_user["user"].id,
-                    seed_user["scenario"].id,
+                    seed_periods[0].id, 999999, seed_user["scenario"].id,
+                    calendar=calendar_for(seed_user["user"].id),
                 )
 
     def test_carry_forward_empty_source_returns_zero(self, app, db, seed_user, seed_periods):
         """Carry forward returns 0 when the source period has no transactions."""
         with app.app_context():
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
 
             assert count == 0
 
-    def test_carry_forward_wrong_user_source_raises_not_found(
+    def test_carry_forward_another_owners_calendar_raises_not_found(
         self, app, db, seed_user, seed_periods
     ):
-        """Defense-in-depth: wrong user_id on source raises NotFoundError."""
+        """Another owner's calendar cannot reach these periods.
+
+        **This graded a ``user_id=999999`` argument until pay-calendar plan
+        step C2-f3c**, which deleted that argument: the door takes the owner's
+        :class:`~app.services.pay_calendar.PayCalendar` and reads the owner off
+        it, so there is no second spelling of "whose periods are these" to get
+        wrong.  What replaces the check is the same defence made structural --
+        a calendar is one owner's whole schedule and nothing else, so periods
+        that are not in it are not found, whether they exist or not.
+        """
         with app.app_context():
             with pytest.raises(NotFoundError):
                 carry_forward_service.carry_forward_unpaid(
-                    seed_periods[0].id, seed_periods[1].id, user_id=999999,
-                    scenario_id=seed_user["scenario"].id,
+                    seed_periods[0].id, seed_periods[1].id,
+                    seed_user["scenario"].id,
+                    calendar=calendar_for(999999),
                 )
 
     def test_carry_forward_wrong_user_target_raises_not_found(
@@ -713,8 +723,8 @@ class TestCarryForward:
             # Source belongs to seed_user (passes), target belongs to user2 (fails).
             with pytest.raises(NotFoundError):
                 carry_forward_service.carry_forward_unpaid(
-                    seed_periods[0].id, periods2[0].id, seed_user["user"].id,
-                    seed_user["scenario"].id,
+                    seed_periods[0].id, periods2[0].id, seed_user["scenario"].id,
+                    calendar=calendar_for(seed_user["user"].id),
                 )
 
     def test_carry_forward_nonexistent_source_raises_not_found(
@@ -724,8 +734,8 @@ class TestCarryForward:
         with app.app_context():
             with pytest.raises(NotFoundError):
                 carry_forward_service.carry_forward_unpaid(
-                    999999, seed_periods[0].id, seed_user["user"].id,
-                    seed_user["scenario"].id,
+                    999999, seed_periods[0].id, seed_user["scenario"].id,
+                    calendar=calendar_for(seed_user["user"].id),
                 )
 
     def test_carry_forward_nonexistent_target_raises_not_found(
@@ -735,14 +745,15 @@ class TestCarryForward:
         with app.app_context():
             with pytest.raises(NotFoundError):
                 carry_forward_service.carry_forward_unpaid(
-                    seed_periods[0].id, 999999, seed_user["user"].id,
-                    seed_user["scenario"].id,
+                    seed_periods[0].id, 999999, seed_user["scenario"].id,
+                    calendar=calendar_for(seed_user["user"].id),
                 )
 
 
 # Import at the bottom to avoid circular issues in the test helpers.
 from app.models.transaction_template import TransactionTemplate
 from app.services import account_service
+from app.services.pay_calendar import calendar_for
 
 
 class TestNegativePaths:
@@ -963,8 +974,8 @@ class TestNegativePaths:
 
             # Carry forward with source == target -- early return.
             count = carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[0].id, seed_user["user"].id,
-                seed_user["scenario"].id,
+                seed_periods[0].id, seed_periods[0].id, seed_user["scenario"].id,
+                calendar=calendar_for(seed_user["user"].id),
             )
             db.session.flush()
 

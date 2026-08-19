@@ -31,12 +31,11 @@ from app.models.tax_config import (
 from app.services import (
     auth_service,
     pay_calendar,
-    pay_period_service,
     pay_schedule_service,
 )
 from app.exceptions import AuthError, ConflictError, ValidationError
 from app.utils.dates import display_today
-from tests._test_helpers import registration_spec
+from tests._test_helpers import registration_spec, all_periods
 
 
 class TestHashPassword:
@@ -733,7 +732,7 @@ class TestRegistrationBuildsARealPayCalendar:
             ))
             db.session.flush()
 
-            periods = pay_period_service.get_all_periods(user.id)
+            periods = all_periods(user.id)
             assert len(periods) == 5
             assert periods[0].start_date == payday
             # Sign-up day sits inside the first paycheck at every offset --
@@ -768,7 +767,7 @@ class TestRegistrationBuildsARealPayCalendar:
             schedule = pay_schedule_service.get_schedule(user.id)
             assert schedule is not None
             assert schedule.cadence_days == 7
-            periods = pay_period_service.get_all_periods(user.id)
+            periods = all_periods(user.id)
             assert all(
                 p.end_date == p.start_date + timedelta(days=6) for p in periods
             )
@@ -813,7 +812,7 @@ class TestRegistrationBuildsARealPayCalendar:
             assert assertion.observed_on == signup_day
             assert assertion.anchor_balance == Decimal("0.00")
 
-            first_period = pay_period_service.get_all_periods(user.id)[0]
+            first_period = all_periods(user.id)[0]
             calendar = pay_calendar.calendar_for(user.id)
             # Containment, not the clamp: period_containing answers None
             # outside every span, so a non-None answer here is the evidence.
@@ -884,7 +883,7 @@ class TestRegistrationBuildsARealPayCalendar:
             ))
             db.session.flush()
             assert (
-                pay_period_service.get_all_periods(user.id)[0].start_date
+                all_periods(user.id)[0].start_date
                 == eight_days_back
             )
 

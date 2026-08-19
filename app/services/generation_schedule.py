@@ -12,26 +12,28 @@ the extend / regenerate / reset paths, and four route handlers build it for the
 create / unarchive / salary / template-edit paths.  It cannot live in
 ``app.services._recurrence_common`` -- that module is package-private
 (``shekel-private-module-import``) and a type the route layer must name by
-hand may not be -- and it cannot live in ``app.services.recurrence``, whose
-modules are deliberately free of Flask, the ORM, the clock and the database,
-all of which this needs.
+hand may not be -- and it cannot live in ``app.services.pay_calendar``, whose
+public surface is the derivation itself and which must not learn what a
+recurrence pass is.
 
-Flask-isolated (plain values in, no ``request`` / ``session`` reads); it reads
-the database through ``pay_period_service`` and never writes.
+**It reads nothing** (pay-calendar plan step C2-f3c).  It used to open its own
+database read -- ``pay_period_service.get_all_periods`` for a list of ORM rows
+BESIDE the calendar -- and reconciling those two reads was the whole of its
+``__post_init__``.  The caller now hands over the one
+:class:`~app.services.pay_calendar.PayCalendar` its request already derived, so
+this module holds no session, no ORM model and no clock; every field is a plain
+value the caller supplies.
 """
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass
-from types import MappingProxyType
 
 from app.exceptions import RecurrenceWindowError
-from app.models.pay_period import PayPeriod
-from app.services import pay_period_service
-from app.services.pay_calendar import PayCalendar, calendar_for
+from app.services.pay_calendar import PayCalendar
 
 
 @dataclass(frozen=True)
 class GenerationSchedule:
-    """The OWNER's whole pay-period schedule, and the slice a pass writes into.
+    """The OWNER's whole pay calendar, and the slice a pass writes into.
 
     **The value that separates two facts one argument used to carry**, which
     is plan step R4b-1's whole subject.  Both recurrence engines took a single
@@ -62,161 +64,100 @@ class GenerationSchedule:
     * a rule's chosen start period could not be found in the window, so the
       opening bound it states was dropped entirely (plan ledger row **D2**).
 
-    Naming the two facts separately is the fix, and **the separation is
-    enforced rather than conventional**.  Both classmethods load the whole
-    schedule from the database themselves, so a caller states the window and
-    has no way to state the schedule; and :meth:`__post_init__` refuses any
-    value whose ``calendar`` is not exactly its ``periods``, so the D22 shape
-    -- a narrowed calendar beside a matching window -- cannot be built through
-    the public constructor either.  An adversarial review found the first
-    draft's claim was carried by the docstring alone: the generated
-    ``__init__`` accepted a batch as all three fields and every check passed.
+    Naming the two facts separately is the fix, and **what keeps them apart is
+    now the TYPE of each rather than a check** (plan step C2-f3c).  The
+    schedule is a :class:`~app.services.pay_calendar.PayCalendar`, which is
+    only ever an owner's COMPLETE payday set: the one function that produces
+    one, :func:`~app.services.pay_calendar.calendar_for`, takes a user id and
+    has no window argument, and narrowing a calendar yields a
+    :class:`~app.services.pay_calendar.PeriodWindow` -- a different type that
+    nothing can derive a calendar back out of.  The window is a set of
+    ``budget.pay_periods.id`` values, which cannot describe a schedule at all.
+    So the D22 shape is no longer a value this class has to refuse; it is one
+    the two types cannot spell.
 
-    Measured direction of the change, over every contiguous window of the
+    **Until C2-f3c the schedule was read HERE, twice.**  This class loaded
+    ``pay_period_service.get_all_periods`` for a tuple of ORM rows and
+    :func:`~app.services.pay_calendar.calendar_for` for the calendar, and
+    ``__post_init__`` refused any value whose two halves disagreed -- a real
+    check, because they were separate statements under READ COMMITTED and
+    because a stored ``period_index`` out of payday order made them differ.
+    Both reasons are gone with the second read: there is one statement, its
+    order is payday order by construction, and no part of the generation seam
+    reads a stored ordinal or a stored end at all.  What replaced the check is
+    the absence of the thing it reconciled.
+
+    Measured direction of the R4b-1 change, over every contiguous window of the
     production schedule -- 86,986 ``(rule, window)`` pairs: the whole-schedule
     reading NEVER names a period the window reading does not.  It named fewer
-    in 1,008 of them and the same set in the rest, so on live data this can
+    in 1,008 of them and the same set in the rest, so on live data it can
     only ever remove a row that no occurrence justified.
 
     Attributes:
-        periods: The owner's whole schedule as ORM rows, in ``period_index``
-            order -- what the GENERATE pass writes into, since a written row
-            needs the id a ``pay_period_id`` points at.  It was also what the
-            paycheck calculator meant by ``all_periods`` until pay-calendar
-            plan step C2-f2d-3 moved that engine onto :attr:`calendar`; the two
-            halves describe the same periods in the same order, which
-            :meth:`__post_init__` refuses any value that breaks.
-        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`,
-            loaded through that package's one door.  It USED to be built from
-            *periods* rather than loaded, on the ground that two reads could
-            describe different schedules; plan step **C2-b2** inverted that,
-            because the door takes no window argument and so cannot be handed
-            a slice at all.  What was a construction rule is now a property of
-            the only way to get one, and :meth:`__post_init__`'s first check
-            became the cross-read consistency assert it describes.
-        write_periods: The periods this pass may write into, keyed by
-            ``budget.pay_periods.id``.  A read-only mapping, and always a
-            subset of *periods*.  Keyed by id rather than held as a list
-            because the generation seam asks exactly one question of it --
-            "is the period this occurrence placed on one I may write into,
-            and if so which ORM row is it" -- and a mapping answers both at
-            once.
+        calendar: The owner's whole pay calendar, derived from their complete
+            payday set.  It answers both halves of what a pass needs about the
+            schedule: which periods a rule fires in (the occurrence walk reads
+            it) and what each of those periods IS (its payday, its last covered
+            day, its id).  It is the OWNER's, never the window's; see
+            ``recurrence_engine._get_transaction_amount`` for the $502.45 that
+            distinction was worth.
+        write_period_ids: The ``budget.pay_periods.id`` values this pass may
+            write into, and always a subset of *calendar*'s materialised
+            periods.  Ids rather than periods because that is the only question
+            the seam asks of the window -- "is the period this occurrence was
+            placed on one I may write into" -- and because the ANSWER a write
+            needs, the period itself, already rode in on the placement.
     """
 
-    periods: tuple[PayPeriod, ...]
     calendar: PayCalendar
-    write_periods: Mapping[int, PayPeriod]
+    write_period_ids: frozenset[int]
 
     def __post_init__(self) -> None:
-        """Refuse any value whose three fields do not describe ONE schedule.
+        """Refuse a window naming a period this owner's calendar does not hold.
 
-        Two checks, and between them they make the defect this class exists to
-        end unconstructible rather than merely discouraged:
+        **The window is part of the schedule.**  A row written into a period
+        the rule was never resolved against is a row placed by nothing: the
+        occurrence walk cannot have named it.  The only ways in are a caller
+        pairing one user's template with another user's period, or a period id
+        that no longer exists -- and both would otherwise be SILENT, because
+        the intersection in ``recurrence_engine.resolve_generation_plan`` would
+        simply match nothing and the pass would report "generated 0 rows" for a
+        definition that fires every paycheck.
 
-        1. **The calendar IS the schedule.**  ``calendar`` must carry exactly
-           ``periods``, in the same order.  It was written for the D22 shape
-           -- resolving against a NARROWED calendar beside a matching window,
-           which made an extend re-read every rule as though the owner's pay
-           history began at the new batch -- and since plan step **C2-b2**
-           that shape is unconstructible: the calendar comes from
-           :func:`~app.services.pay_calendar.calendar_for`, which has no
-           window argument.  What the check still catches is real and is why
-           it stays: the two reads are separate statements under READ
-           COMMITTED, so a concurrent schedule write between them is visible
-           here, and a STORED ``period_index`` whose order disagrees with its
-           own payday order (legacy data, which the derived ordinal cannot
-           reproduce) is refused rather than silently re-phasing every
-           ``Every N Periods`` rule.
-        2. **The window is part of the schedule.**  A row written into a
-           period the rule was never resolved against is a row placed by
-           nothing: the occurrence walk cannot have named it.  The only ways
-           in are a caller pairing one user's template with another user's
-           period, or a period id that no longer exists -- and both would
-           otherwise be SILENT, because the intersection in
-           ``recurrence_engine.resolve_generation_plan`` would simply match
-           nothing and the pass would report "generated 0 rows" for a
-           definition that fires every paycheck.
+        **It is the only refusal left here, and neither constructor can reach
+        it** (plan step C2-f3c).  Both windows in ``app/`` are now derived from
+        the same calendar this value carries -- ``period_population`` narrows
+        to the periods a write just recorded and then derives the calendar that
+        holds them, and ``carry_forward_service`` narrows to a period it looked
+        up ON the calendar -- so a stray id names a caller that assembled the
+        pair by hand.  Two sibling checks went with the second read C2-f3c
+        deleted: one reconciled the calendar against a tuple of ORM rows, and
+        one refused an UNSAVED period, which had an id of ``None``.  A window
+        of ids cannot carry an unsaved period, so that state has no spelling
+        here any more.
 
         Raises:
-            RecurrenceWindowError: When the calendar is not the schedule, when
-                a period is unsaved, or when a write-window period is absent
-                from the schedule.
+            RecurrenceWindowError: A write-window id is not one of this
+                owner's materialised periods.
         """
-        schedule_ids = tuple(period.id for period in self.periods)
-        if any(period_id is None for period_id in schedule_ids):
-            raise RecurrenceWindowError(
-                f"user {self.calendar.user_id}'s schedule contains an UNSAVED "
-                f"pay period, which has no id to match a window against.  A "
-                f"generate pass resolves and writes by pay-period id, so a "
-                f"schedule read back from the database is the only kind it "
-                f"can use."
-            )
-        calendar_ids = tuple(
-            period.period_id for period in self.calendar.periods
-        )
-        if calendar_ids != schedule_ids:
-            raise RecurrenceWindowError(
-                f"the calendar describes {len(calendar_ids)} pay period(s) and "
-                f"the schedule {len(schedule_ids)}, or they are not the same "
-                f"periods in the same order.  These are two reads of "
-                f"budget.pay_periods -- one ordered by the stored "
-                f"period_index, one by payday -- so they disagree when a "
-                f"concurrent write lands between them, or when a stored "
-                f"ordinal's order disagrees with its own payday order.  The "
-                f"second would silently re-phase every Every N Periods rule "
-                f"for this owner, so it is refused rather than answered.  "
-                f"Rebuild the schedule with the pay-period reset, which "
-                f"refuses when any transaction is already settled -- an owner "
-                f"with settled history needs the budget.pay_periods rows "
-                f"corrected directly."
-            )
-        owned = set(schedule_ids)
+        owned = {period.period_id for period in self.calendar.saved()}
         stray = sorted(
-            period_id for period_id in self.write_periods
+            period_id for period_id in self.write_period_ids
             if period_id not in owned
         )
         if stray:
             raise RecurrenceWindowError(
-                f"pay period id(s) {stray} are not in this owner's schedule of "
-                f"{len(self.periods)} periods, so a rule resolved against that "
-                f"schedule can never place a row in them.  Generating into a "
-                f"period the recurrence was not resolved against would write a "
-                f"row nothing selected."
+                f"pay period id(s) {stray} are not in user "
+                f"{self.calendar.user_id}'s calendar of {len(owned)} saved "
+                f"period(s), so a rule resolved against that calendar can "
+                f"never place a row in them.  Generating into a period the "
+                f"recurrence was not resolved against would write a row "
+                f"nothing selected."
             )
 
     @classmethod
-    def _load(cls, user_id: int, choose_window) -> "GenerationSchedule":
-        """Build the value from the owner's OWN schedule and a chosen window.
-
-        The single body both public constructors call.  They differ only in
-        which window they choose, and their agreement on everything else is
-        what the class's guarantee rests on -- so it is one function rather
-        than two that happen to match.  ONE schedule read, whichever door was
-        used.
-
-        Args:
-            user_id: The owning user.  The schedule is read for them here, and
-                nowhere else, which is what stops a caller supplying one.
-            choose_window: Called with the loaded periods; returns
-                ``{pay_periods.id: PayPeriod}`` for what this pass may write
-                into.
-
-        Returns:
-            The frozen :class:`GenerationSchedule`.
-
-        Raises:
-            RecurrenceWindowError: See :meth:`__post_init__`.
-        """
-        periods = tuple(pay_period_service.get_all_periods(user_id))
-        return cls(
-            periods=periods,
-            calendar=calendar_for(user_id),
-            write_periods=MappingProxyType(choose_window(periods)),
-        )
-
-    @classmethod
-    def for_user(cls, user_id: int) -> "GenerationSchedule":
-        """Load the owner's schedule with EVERY period open for writing.
+    def for_calendar(cls, calendar: PayCalendar) -> "GenerationSchedule":
+        """Open EVERY period of *calendar* for writing.
 
         What the create, unarchive, salary and template-edit paths mean: they
         re-drive a template across the whole schedule and let the per-period
@@ -224,54 +165,42 @@ class GenerationSchedule:
         is already there.
 
         Args:
-            user_id: The owning user.
+            calendar: The owner's whole pay calendar.
 
         Returns:
-            The schedule, its window covering every period.
+            The schedule, its window covering every materialised period.
         """
-        return cls._load(
-            user_id,
-            lambda periods: {period.id: period for period in periods},
+        return cls(
+            calendar=calendar,
+            write_period_ids=frozenset(
+                period.period_id for period in calendar.saved()
+            ),
         )
 
     @classmethod
-    def for_periods(
-        cls, user_id: int, write_periods: Iterable[PayPeriod],
+    def for_period_ids(
+        cls, calendar: PayCalendar, period_ids: Iterable[int],
     ) -> "GenerationSchedule":
-        """Load the owner's schedule, opening only *write_periods* for writing.
+        """Open only *period_ids* of *calendar* for writing.
 
         What the extend / regenerate / reset repopulation means (write into
-        the periods just created) and what the carry-forward generate branch
-        means (write into exactly this one period).  **The schedule is loaded
-        here rather than taken from the caller**, which is the whole point: the
-        caller states the window and cannot state the schedule, so the window
-        can no longer stand in for it.
+        the periods just recorded) and what the carry-forward generate branch
+        means (write into exactly this one period).
 
         Args:
-            user_id: The owning user.
-            write_periods: The periods this pass may write into.  Must already
-                be flushed -- an unsaved period has no id to match against a
-                schedule read back from the database.
-                ``pay_period_write.record_paydays`` flushes before returning,
-                so every repopulation caller already satisfies this.
+            calendar: The owner's whole pay calendar.
+            period_ids: The ``budget.pay_periods.id`` values this pass may
+                write into.  Must all be periods of *calendar*; see
+                :meth:`__post_init__`.
 
         Returns:
-            The schedule, its window covering exactly *write_periods*.
+            The schedule, its window covering exactly *period_ids*.
 
         Raises:
-            RecurrenceWindowError: When a write period is unsaved, or is not
-                one of this owner's (see :meth:`__post_init__`).
+            RecurrenceWindowError: An id is not one of this owner's
+                materialised periods (see :meth:`__post_init__`).
         """
-        window = {}
-        for period in write_periods:
-            if period.id is None:
-                raise RecurrenceWindowError(
-                    f"pay period at index {period.period_index} has no id, so "
-                    f"it cannot be matched against the owner's loaded "
-                    f"schedule.  Flush new periods before populating them."
-                )
-            window[period.id] = period
-        return cls._load(user_id, lambda _periods: window)
+        return cls(calendar=calendar, write_period_ids=frozenset(period_ids))
 
 
 __all__ = ["GenerationSchedule"]

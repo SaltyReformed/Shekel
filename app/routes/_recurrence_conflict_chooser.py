@@ -40,6 +40,7 @@ from flask_login import current_user
 from app.exceptions import RecurrenceConflict
 from app.extensions import db
 from app.services.generation_schedule import GenerationSchedule
+from app.services.pay_calendar import calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.digit_strings import parse_row_id
 
@@ -479,7 +480,7 @@ def regenerate_or_conflict_chooser(
         return None
     if template.recurrence_rule is None and not before.had_recurrence_rule:
         return None
-    schedule = GenerationSchedule.for_user(current_user.id)
+    schedule = GenerationSchedule.for_calendar(calendar_for(current_user.id))
     decisions = parse_conflict_decisions(request.form)
     try:
         kind.regenerate_fn(

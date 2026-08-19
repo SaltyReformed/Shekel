@@ -59,7 +59,6 @@ from app.services import (
     balance_at,
     cash_ledger,
     income_service,
-    pay_period_service,
 )
 from app.services.account_projection import (
     AccountProjectionKind,
@@ -86,6 +85,7 @@ from app.services.balance_at._resolution import (
     resolved_loan,
 )
 from tests._test_helpers import (
+    all_periods,
     add_txn,
     append_balance_assertion,
     create_account_of_type,
@@ -258,7 +258,7 @@ class TestBalanceMapCash:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
             gross = income_service.get_current_gross_biweekly(
                 user_id, calendar_for(user_id),
@@ -292,7 +292,7 @@ class TestBalanceMapCash:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
             gross = income_service.get_current_gross_biweekly(
                 user_id, calendar_for(user_id),
@@ -358,7 +358,7 @@ class TestInterestBeginsAtTheLatestAssertion:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             anchor = periods[0]
             hysa = self._hysa_asserted_on(
                 db, seed_user, anchor, Decimal("10000.00"),
@@ -387,7 +387,7 @@ class TestInterestBeginsAtTheLatestAssertion:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = create_hysa_account(
                 seed_user, db.session, periods[0], Decimal("6000.00"),
             )
@@ -431,7 +431,7 @@ class TestInterestBeginsAtTheLatestAssertion:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             anchor = periods[0]
             hysa = self._hysa_asserted_on(
                 db, seed_user, anchor, Decimal("10000.00"),
@@ -497,7 +497,7 @@ class TestBalanceMapLoan:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             mortgage, params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
@@ -568,7 +568,7 @@ class TestBalanceMapLoan:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             loan, params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
@@ -608,7 +608,7 @@ class TestBalanceMapLoan:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             loan, params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
@@ -703,7 +703,7 @@ class TestTheLoanGateIsOneQuestion:
         """The ordinary case: a Mortgage with LoanParams takes the loan arm."""
         with app.app_context():
             bctx = BalanceContext.build(seed_user["user"].id)
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             loan, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
@@ -729,7 +729,7 @@ class TestTheLoanGateIsOneQuestion:
         """
         with app.app_context():
             bctx = BalanceContext.build(seed_user["user"].id)
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             loan, params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
@@ -806,7 +806,7 @@ class TestTheLoanGateIsOneQuestion:
         """
         with app.app_context():
             bctx = BalanceContext.build(seed_user["user"].id)
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             loan, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
@@ -845,7 +845,7 @@ class TestTheLoanGateIsOneQuestion:
         """
         with app.app_context():
             bctx = BalanceContext.build(seed_user["user"].id)
-            periods = pay_period_service.get_all_periods(seed_user["user"].id)
+            periods = all_periods(seed_user["user"].id)
             loan, params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
@@ -907,7 +907,7 @@ class TestAFeedIsTheSameWhoeverItIsLoadedBeside:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             checking = seed_user["account"]
             roth = make_investment_account(
                 seed_user, db.session, periods[2], Decimal("10000.00"),
@@ -997,7 +997,7 @@ class TestBalanceMapInvestment:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             inv = make_investment_account(seed_user, db.session, periods[2], Decimal("10000.00"))
 
             params = load_investment_params_for_accounts([inv]).get(inv.id)
@@ -1072,7 +1072,7 @@ class TestInvestmentGrowthSinceAnchor:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             current = current_pay_period(user_id)
             # Anchor at the first period, strictly before the current one.
             inv = make_investment_account(
@@ -1117,7 +1117,7 @@ class TestInvestmentGrowthSinceAnchor:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             current = current_pay_period(user_id)
             inv = make_investment_account(
                 seed_user, db.session, periods[0], Decimal("10000.00"),
@@ -1181,7 +1181,7 @@ class TestInvestmentGrowthSinceAnchor:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             inv = make_investment_account(
                 seed_user, db.session, periods[0], Decimal("10000.00"),
             )
@@ -1210,7 +1210,7 @@ class TestBalanceMapProperty:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             prop = make_appreciating_account(
                 seed_user, db.session, periods[2], Decimal("400000.00"),
                 Decimal("0.03000"),
@@ -1271,7 +1271,7 @@ class TestBuildMaps:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
 
             _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
             _make_mortgage(
@@ -1371,7 +1371,7 @@ class TestBuildMaps:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             accounts = account_service.list_active_accounts(user_id)
             assert accounts, "fixture must supply at least one account"
 
@@ -1410,7 +1410,7 @@ class TestBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
             as_of = periods[5].start_date  # inside a known period
             add_txn(
@@ -1455,7 +1455,7 @@ class TestBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[2], Decimal("5000.00"))
             as_of = periods[6].start_date  # independently known: in period 6
 
@@ -1493,7 +1493,7 @@ class TestBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             mortgage, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
@@ -1545,7 +1545,7 @@ class TestBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             inv = make_investment_account(seed_user, db.session, periods[2], Decimal("10000.00"))
 
             full_map = balance_at.balance_map(inv, bctx)
@@ -1574,7 +1574,7 @@ class TestBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             prop = make_appreciating_account(
                 seed_user, db.session, periods[2], Decimal("400000.00"),
                 Decimal("0.03000"),
@@ -1626,7 +1626,7 @@ class TestTheSeamOwnsTheIncomeBasis:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
             profile = _create_profile(user_id, scenario.id)
             template = _make_salary_template(seed_user, profile)
@@ -1665,7 +1665,7 @@ class TestTheSeamOwnsTheIncomeBasis:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
             profile = _create_profile(user_id, scenario.id)
             template = _make_salary_template(seed_user, profile)
@@ -1737,7 +1737,7 @@ class TestMultiLoanIsolation:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             loan_a, params_a = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1), name="Mortgage A",
@@ -1815,7 +1815,7 @@ class TestInvestmentContributions:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             inv = make_investment_account(seed_user, db.session, periods[2], Decimal("10000.00"))
 
             baseline = balance_at.balance_map(inv, bctx)
@@ -1877,7 +1877,7 @@ class TestInvestmentContributions:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             inv_match = make_investment_account(
                 seed_user, db.session, periods[2], Decimal("10000.00"),
                 name="401k Match", employer_type="match",
@@ -1939,7 +1939,7 @@ class TestScenarioGuard:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
             as_of = periods[5].start_date
 
@@ -1974,7 +1974,7 @@ class TestBalanceAtDegrade:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             mortgage_type = (
                 db.session.query(AccountType).filter_by(name="Mortgage").one()
             )
@@ -2014,7 +2014,7 @@ class TestBalanceAtDegrade:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             inv = make_investment_account(seed_user, db.session, periods[2], Decimal("10000.00"))
 
             seam = balance_at.balance_at(inv, bctx, date(2000, 1, 1))
@@ -2078,7 +2078,7 @@ class TestOnlyALoanIsNotATransactionSum:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             mortgage, _p = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
@@ -2165,7 +2165,7 @@ class TestCashPreAnchorPeriodsAreAnswered:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[2], Decimal("5000.00"))
             gross = income_service.get_current_gross_biweekly(
                 user_id, calendar_for(user_id),
@@ -2249,7 +2249,7 @@ class TestCashFlowView:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
 
             seam = balance_at.cash_balance_map(account, bctx)
@@ -2275,7 +2275,7 @@ class TestCashFlowView:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
 
             cash = balance_at.cash_balance_map(hysa, bctx)
@@ -2306,7 +2306,7 @@ class TestCashFlowView:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
             add_txn(
                 db.session, seed_user, periods[3], "Deposit", "500.00",
@@ -2331,7 +2331,7 @@ class TestCashFlowView:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
             as_of = periods[5].start_date
 
@@ -2356,7 +2356,7 @@ class TestCashFlowView:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
             as_of = periods[-1].end_date
 
@@ -2406,7 +2406,7 @@ class TestCashFlowView:
         """Both cash entries fail loud on a None scenario (C1 contract)."""
         with app.app_context():
             user_id = seed_user["user"].id
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
             as_of = periods[5].start_date
 
@@ -2448,7 +2448,7 @@ class TestASettledRowMovesEveryCashAnswerTogether:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
             create_settled_cash_transaction(
                 seed_user, db.session, periods[4], Decimal("250.00"),
@@ -2494,7 +2494,7 @@ class TestASettledRowMovesEveryCashAnswerTogether:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("50000.00"))
             create_settled_cash_transaction(
                 seed_user, db.session, periods[4], Decimal("2000.00"),
@@ -2587,7 +2587,7 @@ class TestTheInterestChipAndTheBalanceAreOneWalk:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("8000.00"))
             db.session.add(Transaction(
                 account_id=hysa.id,
@@ -2747,7 +2747,7 @@ class TestTheContributionRowOnARealFeed:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = self._401k_with_feed(db, seed_user, periods)
 
             view = balance_at.grid_balance_view(account, bctx)
@@ -2790,7 +2790,7 @@ class TestTheContributionRowOnARealFeed:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = self._401k_with_feed(
                 db, seed_user, periods,
                 employer_type="match",
@@ -2820,7 +2820,7 @@ class TestTheContributionRowOnARealFeed:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = self._401k_with_feed(db, seed_user, periods)
 
             view = balance_at.grid_balance_view(account, bctx)
@@ -2879,7 +2879,7 @@ class TestGridBalanceView:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             mortgage, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("240000.00"),
                 date(2024, 1, 1),
@@ -2913,7 +2913,7 @@ class TestGridBalanceView:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("8000.00"))
             db.session.add(Transaction(
                 account_id=hysa.id,
@@ -2988,7 +2988,7 @@ class TestGridBalanceView:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             inv = make_investment_account(
                 seed_user, db.session, periods[2], Decimal("10000.00"),
             )
@@ -3026,7 +3026,7 @@ class TestGridBalanceView:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             prop = make_appreciating_account(
                 seed_user, db.session, periods[2], Decimal("400000.00"),
                 Decimal("0.03000"),
@@ -3085,7 +3085,7 @@ class TestGridBalanceView:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
             db.session.query(InterestParams).filter_by(
                 account_id=hysa.id,
@@ -3127,7 +3127,7 @@ class TestGridBalanceView:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
             income_txn = Transaction(
                 account_id=hysa.id,
@@ -3554,7 +3554,7 @@ class TestTheViewOwnsTheLiveOverrideMap:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
             income_txn = Transaction(
                 account_id=account.id,
@@ -3624,7 +3624,7 @@ class TestTheRemainderIsWhatTheRowsCannotExplain:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
             _seed_grid_activity(db, seed_user, periods)
 
@@ -3670,7 +3670,7 @@ class TestTheRemainderIsWhatTheRowsCannotExplain:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             account = seed_user["account"]
             create_settled_cash_transaction(
                 seed_user, db.session, periods[1], Decimal("300.00"),
@@ -3753,7 +3753,7 @@ class TestLiabilityOwedAtDates:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
                 date.today() - timedelta(days=365),
@@ -3797,7 +3797,7 @@ class TestLiabilityOwedAtDates:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
                 date.today() - timedelta(days=365),
@@ -3853,7 +3853,7 @@ class TestLiabilityOwedAtDates:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
                 date.today() - timedelta(days=365),
@@ -3901,7 +3901,7 @@ class TestLiabilityOwedAtDates:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
                 date.today() - timedelta(days=365),
@@ -3932,7 +3932,7 @@ class TestLiabilityOwedAtDates:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
                 date.today() - timedelta(days=365),
@@ -3970,7 +3970,7 @@ class TestLiabilityOwedAtDates:
             user_id = seed_user["user"].id
             scenario = get_baseline_scenario(user_id)
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
                 date.today() - timedelta(days=365),
@@ -4012,7 +4012,7 @@ class TestLiabilityOwedAtDates:
             bctx = BalanceContext.build(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user,
-                pay_period_service.get_all_periods(user_id)[0],
+                all_periods(user_id)[0],
                 Decimal("200000.00"), date.today() - timedelta(days=365),
             )
             today = date.today()
@@ -4067,7 +4067,7 @@ class TestLiabilityOwedAtDates:
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             acct, _params = _make_mortgage(
                 db, seed_user, periods[0], Decimal("200000.00"),
                 date.today() - timedelta(days=365),
@@ -5201,7 +5201,7 @@ class TestRecordsBalanceAt:
             user_id = seed_user["user"].id
             account = seed_user["account"]
             ctx = balance_at.BalanceContext.build(user_id)
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             day = periods[1].end_date
 
             assert balance_at.records_balance_at(account, ctx, day) == (
@@ -5221,7 +5221,7 @@ class TestRecordsBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             account = seed_user["account"]
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             day = periods[1].end_date
 
             create_settled_cash_transaction(
@@ -5262,7 +5262,7 @@ class TestRecordsBalanceAt:
         with app.app_context():
             user_id = seed_user["user"].id
             account = seed_user["account"]
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             day = periods[1].end_date
 
             records = balance_at.records_balance_at(
@@ -5300,7 +5300,7 @@ class TestRecordsBalanceAt:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             ctx = balance_at.BalanceContext.build(user_id)
             inv = make_investment_account(
                 seed_user, db.session, periods[0], Decimal("10000.00"),
@@ -5368,7 +5368,7 @@ class TestCashAnchorHistory:
         with app.app_context():
             user_id = seed_user["user"].id
             account = seed_user["account"]
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
 
             create_settled_cash_transaction(
                 seed_user, db.session, periods[1], Decimal("125.00"),
@@ -5432,7 +5432,7 @@ class TestCashAnchorHistory:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             later = create_account_of_type(
                 seed_user, db.session, "Checking", "Statement Checking",
                 anchor_balance=Decimal("2746.58"),
@@ -5477,7 +5477,7 @@ class TestCashAnchorHistory:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             hysa = _make_hysa(db, seed_user, periods[0], Decimal("5000.00"))
             anchor_service.apply_anchor_true_up(
                 account=hysa, new_balance=Decimal("5100.00"),
@@ -5555,7 +5555,7 @@ class TestCashAnchorHistory:
         with app.app_context():
             user_id = seed_user["user"].id
             account = seed_user["account"]
-            periods = pay_period_service.get_all_periods(user_id)
+            periods = all_periods(user_id)
             back_day = periods[1].end_date
             typed_day = periods[3].start_date
 
@@ -5596,7 +5596,7 @@ class TestCashAnchorHistory:
         with app.app_context():
             user_id = seed_user["user"].id
             account = seed_user["account"]
-            day = pay_period_service.get_all_periods(user_id)[1].end_date
+            day = all_periods(user_id)[1].end_date
 
             for balance in (Decimal("1172.44"), Decimal("1133.47"),
                             Decimal("1087.61")):
@@ -5715,7 +5715,7 @@ class TestTheReadPassOwnsTheReportingDomain:
         with app.app_context():
             ctx = balance_at.BalanceContext.build(seed_user["user"].id)
             window = ctx.reported_periods()
-            stored = pay_period_service.get_all_periods(seed_user["user"].id)
+            stored = all_periods(seed_user["user"].id)
             assert [period.period_id for period in window] == [
                 period.id for period in
                 sorted(stored, key=lambda row: row.start_date)

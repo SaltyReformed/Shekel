@@ -188,7 +188,9 @@ def extend_pay_periods(user_id, num_periods):
     new_periods = pay_period_write.record_paydays(
         user_id, next_payday, num_periods, cadence_days,
     )
-    populate_periods_from_active_templates(user_id, new_periods)
+    populate_periods_from_active_templates(
+        user_id, {period.id for period in new_periods},
+    )
     return new_periods
 
 
@@ -563,7 +565,9 @@ def regenerate_pay_periods(
         user_id, new_start_date, num_periods, cadence_days,
         retiring_ids={period.period_id for period in doomed},
     )
-    populate_periods_from_active_templates(user_id, new_periods)
+    populate_periods_from_active_templates(
+        user_id, {period.id for period in new_periods},
+    )
     return new_periods
 
 
@@ -707,7 +711,9 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
         user_id, new_start_date, num_periods, cadence_days,
         retiring_ids=pay_period_write.owner_period_ids(user_id),
     )
-    populate_periods_from_active_templates(user_id, new_periods)
+    populate_periods_from_active_templates(
+        user_id, {period.id for period in new_periods},
+    )
     # Re-post the loan genesis (opening / true-up) corrections the period
     # CASCADE wiped: their source facts survived, so this re-derives them
     # onto the rebuilt schedule inside this transaction (review M2 / R7).

@@ -24,7 +24,6 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import (
     pay_period_admin,
-    pay_period_service,
     pay_period_write,
     pay_schedule_service,
     period_population,
@@ -68,7 +67,7 @@ class TestPopulateFromActiveTemplates:
             periods = _future_periods(db.session, seed_user, count=3)
             make_expense_template(db.session, seed_user)
             created = period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, periods,
+                seed_user["user"].id, {p.id for p in periods},
             )
             db.session.commit()
 
@@ -96,7 +95,7 @@ class TestPopulateFromActiveTemplates:
             )
             make_transfer_template(db.session, seed_user, savings)
             created = period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, periods,
+                seed_user["user"].id, {p.id for p in periods},
             )
             db.session.commit()
 
@@ -117,7 +116,7 @@ class TestPopulateFromActiveTemplates:
             periods = _future_periods(db.session, seed_user, count=3)
             make_expense_template(db.session, seed_user, is_active=False)
             created = period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, periods,
+                seed_user["user"].id, {p.id for p in periods},
             )
             db.session.commit()
             assert created == 0
@@ -132,11 +131,11 @@ class TestPopulateFromActiveTemplates:
             periods = _future_periods(db.session, seed_user, count=3)
             make_expense_template(db.session, seed_user)
             first = period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, periods,
+                seed_user["user"].id, {p.id for p in periods},
             )
             db.session.commit()
             second = period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, periods,
+                seed_user["user"].id, {p.id for p in periods},
             )
             db.session.commit()
             assert first == 3
@@ -146,7 +145,7 @@ class TestPopulateFromActiveTemplates:
         """A user with no baseline scenario is a no-op (returns 0)."""
         with app.app_context():
             created = period_population.populate_periods_from_active_templates(
-                bare_periods[0].user_id, bare_periods,
+                bare_periods[0].user_id, {p.id for p in bare_periods},
             )
             assert created == 0
 
@@ -154,7 +153,7 @@ class TestPopulateFromActiveTemplates:
         """An empty period list short-circuits to 0."""
         with app.app_context():
             assert period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, [],
+                seed_user["user"].id, set(),
             ) == 0
 
 
@@ -309,7 +308,7 @@ class TestExtendPayPeriods:
             periods = _future_periods(db.session, seed_user, count=4)  # idx 1..4
             make_expense_template(db.session, seed_user, amount="1200.00")
             period_population.populate_periods_from_active_templates(
-                user_id, periods,
+                user_id, {p.id for p in periods},
             )
             db.session.commit()
 

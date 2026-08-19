@@ -22,12 +22,12 @@ import logging
 from app.extensions import db
 from app.models.transfer import Transfer
 from app.services._recurrence_common import (
+    TemplateRowSelector,
     check_scenario_ownership,
     existing_rows_refusing_repeats,
     log_resource_access_denied,
     partition_regeneration_rows,
-    regeneration_bound,
-    query_rows_from_effective_date,
+    rows_this_pass_may_maintain,
     should_skip_period,
 )
 from app.services.recurrence_engine import compute_due_date, resolve_generation_plan
@@ -42,6 +42,26 @@ from app.utils.log_events import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _selector(template, scenario_id):
+    """Name what this engine's row fetches are asking about.
+
+    The transfer engine's half of :class:`TemplateRowSelector`, mirroring
+    ``recurrence_engine._generate._selector`` exactly: the two engines differ
+    in the mapped class and the template foreign-key column and in nothing
+    else, so each names its pair ONCE and every shared fetch takes the value.
+
+    Args:
+        template: The TransferTemplate this pass is generating from.
+        scenario_id: The scenario being written into.
+
+    Returns:
+        The :class:`~app.services._recurrence_common.TemplateRowSelector`.
+    """
+    return TemplateRowSelector(
+        Transfer, Transfer.transfer_template_id, template, scenario_id,
+    )
 
 
 def generate_for_template(template, schedule, scenario_id, effective_from=None):
@@ -80,13 +100,12 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
     # transaction engine makes the identical call; see
     # ``_recurrence_common.existing_rows_refusing_repeats``.
     existing = existing_rows_refusing_repeats(
-        Transfer, Transfer.transfer_template_id,
-        template, scenario_id, plan.placements,
+        _selector(template, scenario_id), plan.placements,
     )
 
     created = []
     for period in (row.period for row in plan.placements):
-        existing_xfers = existing.get(period.id, [])
+        existing_xfers = existing.get(period.period_id, [])
 
         # Skip periods that already hold a template-linked transfer
         # (immutable, override, soft-deleted, or already auto-generated).
@@ -110,7 +129,7 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
                 user_id=template.user_id,
                 from_account_id=template.from_account_id,
                 to_account_id=template.to_account_id,
-                pay_period_id=period.id,
+                pay_period_id=period.period_id,
                 scenario_id=scenario_id,
                 amount=template.default_amount,
                 status_id=plan.projected_id,
@@ -142,11 +161,11 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
         schedule:       The owner's
                         :class:`~app.services.generation_schedule.GenerationSchedule`.
         scenario_id:    The target scenario.
-        effective_from: Date from which to regenerate (default: the WRITE
-                        WINDOW's first payday).  The delete sweep needs a
-                        concrete date to bound ``pay_periods.end_date``
-                        against, and it must be the same bound the
-                        regeneration writes within -- see
+        effective_from: Date from which to regenerate, or ``None`` for the
+                        whole write window.  The delete sweep selects on a
+                        period-ID set taken from that window and filtered by
+                        the same derived end the rule is filtered on, so the
+                        two halves cannot use different bounds -- see
                         ``recurrence_engine.regenerate_for_template``.
 
     Returns:
@@ -162,13 +181,11 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
     ):
         return []
 
-    effective_from = regeneration_bound(schedule, effective_from)
-
-    # Find all existing template-linked transfers on or after effective_from,
-    # then partition them into conflicts vs rows safe to delete and regenerate.
-    existing = query_rows_from_effective_date(
-        Transfer, Transfer.transfer_template_id,
-        template.id, scenario_id, effective_from,
+    # Find the template-linked transfers this pass may act on -- its own write
+    # window, bounded below by *effective_from* -- then partition them into
+    # conflicts vs rows safe to delete and regenerate.
+    existing = rows_this_pass_may_maintain(
+        _selector(template, scenario_id), schedule, effective_from,
     )
     overridden_ids, deleted_ids, to_delete = partition_regeneration_rows(existing)
 

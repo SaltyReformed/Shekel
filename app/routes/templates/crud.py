@@ -38,6 +38,7 @@ from app.services import (
     template_amount_service,
 )
 from app.services.generation_schedule import GenerationSchedule
+from app.services.pay_calendar import calendar_for
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
@@ -344,7 +345,7 @@ def create_template():
         if scenario:
             recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_user(current_user.id),
+                GenerationSchedule.for_calendar(calendar_for(current_user.id)),
                 scenario.id,
             )
 
@@ -771,7 +772,7 @@ def unarchive_template(template_id):
         if scenario:
             recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_user(current_user.id),
+                GenerationSchedule.for_calendar(calendar_for(current_user.id)),
                 scenario.id,
                 effective_from=date.today(),
             )

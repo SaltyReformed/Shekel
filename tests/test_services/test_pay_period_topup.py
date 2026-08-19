@@ -29,7 +29,6 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import (
     pay_period_admin,
-    pay_period_service,
     pay_period_write,
     pay_schedule_service,
     period_population,
@@ -39,6 +38,7 @@ from scripts.integrity_check import (
     check_referential_integrity,
 )
 from tests._test_helpers import (
+    all_periods,
     assert_pay_period_invariants,
     capture_sql_statements,
     freeze_today,
@@ -225,7 +225,7 @@ class TestTopUpDeficitPath:
             db.session.commit()
             indices = sorted(
                 p.period_index
-                for p in pay_period_service.get_all_periods(user_id)
+                for p in all_periods(user_id)
             )
             # bootstrap 0 + the 2 seeded + the 3 topped up -> 0..5, no
             # duplicates.  The bootstrap counts toward the target of 6, so the
@@ -243,7 +243,7 @@ class TestTopUpDeficitPath:
             created = pay_period_admin.top_up_rolling_window(user_id)
             db.session.commit()
             assert created == 5 - (2 + _BOOTSTRAP_IN_WINDOW)
-            new_periods = pay_period_service.get_all_periods(user_id)[-created:]
+            new_periods = all_periods(user_id)[-created:]
             for period in new_periods:
                 txns = (
                     db.session.query(Transaction)
@@ -275,7 +275,7 @@ class TestTopUpDeficitPath:
             periods = _future_periods(db.session, seed_user, count=3)  # idx 1..3
             make_expense_template(db.session, seed_user, amount="1200.00")
             period_population.populate_periods_from_active_templates(
-                user_id, periods,
+                user_id, {p.id for p in periods},
             )
             db.session.commit()
 
@@ -291,7 +291,7 @@ class TestTopUpDeficitPath:
             assert created == 5 - (3 + _BOOTSTRAP_IN_WINDOW)
 
             # New window: the projection continues to 1000 - 4*1200.
-            new_last = pay_period_service.get_all_periods(user_id)[-1]  # idx 4
+            new_last = all_periods(user_id)[-1]  # idx 4
             assert seam_cash_balance_at(
                 account, scen, new_last.end_date,
             ) == Decimal("-3800.00")

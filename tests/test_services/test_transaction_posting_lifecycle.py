@@ -64,6 +64,7 @@ from tests._test_helpers import (
     linked_ledger_account,
 )
 from app.services import cash_ledger
+from app.services.pay_calendar import calendar_for
 
 
 # ---------------------------------------------------------------------------
@@ -1190,7 +1191,8 @@ class TestCarryForwardPostsSettledSources:
             source_id = source.id
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, user_id, scenario_id,
+                seed_periods[0].id, seed_periods[1].id, scenario_id,
+                calendar=calendar_for(user_id),
             )
             db.session.commit()
 
@@ -1222,7 +1224,8 @@ class TestCarryForwardPostsSettledSources:
             source_id = source.id
 
             carry_forward_service.carry_forward_unpaid(
-                seed_periods[0].id, seed_periods[1].id, user_id, scenario_id,
+                seed_periods[0].id, seed_periods[1].id, scenario_id,
+                calendar=calendar_for(user_id),
             )
             db.session.commit()
 
