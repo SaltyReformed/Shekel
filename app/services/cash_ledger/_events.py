@@ -99,7 +99,8 @@ from app.utils.balance_predicates import (
 )
 from app.utils.dates import utc_instant
 
-from ._amounts import ReconciledThrough, settled_cash_leg
+from ._amounts import ReconciledThrough
+from ._cash_leg import settled_cash_leg
 from ._clearing import StatementCoverage, statement_coverage
 from ._facts import _unwindowed_contributing_rows
 
@@ -483,7 +484,7 @@ def _posted_purchase_facts(
       question, asked identically of both kinds by the walk.
     * ``is_credit IS FALSE`` -- a card purchase never touches checking; it
       leaves later through its own CC Payback sibling, which is why
-      :func:`~._amounts.credit_entry_sum` removes it from the parent's leg too.
+      :func:`~._cash_leg.credit_entry_sum` removes it from the parent's leg too.
     * the parent is BALANCE-CONTRIBUTING -- the same
       :func:`~app.utils.balance_predicates.balance_contributing_clause` gate the
       transaction half applies, so a soft-deleted or Credit / Cancelled envelope

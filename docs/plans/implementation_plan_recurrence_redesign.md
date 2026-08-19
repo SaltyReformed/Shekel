@@ -633,6 +633,11 @@ promised something else. They get steps here so they are scheduled rather than r
 gap. Do not fold them into a recurrence migration -- an unrelated fix riding in a schema migration
 is unreviewable.
 
+**R-F2, R-F3 and R-F8 left this list on 2026-08-17** with their `steps.md` rows, archived as one
+completed span to `historical/recurrence_findings_span_as_built_2026-08-17.md` (rule 5) when
+`bank_import:X-f6a-2` needed the room. Each closed one `F-` finding on its own commit and blocked
+nothing; that record names all three hashes, and says why `R-F1` stayed.
+
 - [x] **R-D33 -- a date bound answers from occurrences.** `dd2a5a34`. Both closing bounds answer
       from whether the rule still OWES one, so two spellings of one schedule cannot leave the
       obligations total on different days. Closed **D33**.
@@ -640,6 +645,9 @@ is unreviewable.
 - [x] **R-F1 -- the lagging `ref` identity sequences are in step.** `44b25ad3`, migration
       `c7f3a9d1e864`. Closed **F-1**. Account archived to
       `historical/recurrence_as_built_2026-08-15.md`.
+      **Kept in the index when its three siblings were archived** (2026-08-17): a plan-gate control
+      uses this id as its worked example of the PREFIX trap, and archiving it emptied that trap out
+      of the corpus. Finding **D42**.
 
 - [ ] **R-F6 -- Close the recurrence-rule leak, then delete what leaked** (finding F-6).
 
@@ -651,16 +659,6 @@ template, or ownership inverts so the rule carries the template id and CASCADEs.
 used to propose cannot fix it -- see R-R7. Deleting the 3 existing rows rides in the SAME commit, so
 the cleanup and its cause are reviewed together; that makes the migration destructive, so it carries
 the `Review:` line and a downgrade that refuses with the literal SQL.
-
-- [x] **R-F8 -- the deploy's safety net stops lying.** `2e63e4f9`, `8aeae48e`, `398c332c`. The
-      pre-flight asks whether an image can resolve the revision the database is STAMPED at. Closed
-      **F-8**, **F-14**.
-
-- [x] **R-F2 -- the ref-seed parity scan ends a statement where the SQL does.** `672c18b1`. Closed
-      **F-2**. Account archived to `historical/recurrence_as_built_2026-08-15.md`.
-
-- [x] **R-F3 -- a `ref` table's generated PK/UNIQUE names ARE the rule.** `e37b736c`. Closed
-      **F-3**. Account archived to `historical/recurrence_as_built_2026-08-15.md`.
 
 - [x] **R-F10 -- delete the gap machinery.** `fe365de1`. Closed **F-10**; the LOSS survives as
       `pay_calendar:P16`. Account archived to `historical/recurrence_as_built_2026-08-15.md`.

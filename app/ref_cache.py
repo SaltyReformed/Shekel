@@ -52,6 +52,7 @@ from app.enums import (
     RaiseTypeEnum,
     RecurrenceUnitEnum,
     RoleEnum,
+    StatementSourceEnum,
     StatusEnum,
     TaxTypeEnum,
     TxnTypeEnum,
@@ -218,6 +219,7 @@ def _build_ref_specs(ref_models) -> list[_RefSpec]:
         _RefSpec(PeriodPlacementEnum, ref_models.PeriodPlacement),
         _RefSpec(BusinessDayShiftEnum, ref_models.BusinessDayShift),
         _RefSpec(AmountSourceEnum, ref_models.AmountSource),
+        _RefSpec(StatementSourceEnum, ref_models.StatementSource),
         _RefSpec(SettlementBasisEnum, ref_models.SettlementBasis),
     ]
 
@@ -902,6 +904,28 @@ def amount_source_id(member):
     return _cache.enum_ids[AmountSourceEnum][member]
 
 
+def statement_source_id(member):
+    """Return the integer primary key for a StatementSourceEnum member.
+
+    WHERE a recorded statement line came from (ruling **R-FP**, plan step
+    ``bank_import:X-f6a``), stamped on ``budget.statement_imports.source_id``
+    and ``budget.account_external_identities.source_id`` by the import door and
+    read by the adapter registry -- always via the integer ID, never the string
+    ``name``.  Matches the project-wide IDs-for-logic invariant.
+
+    Args:
+        member: A ``StatementSourceEnum`` member
+                (e.g. ``StatementSourceEnum.SECU_CHECKING_CSV``).
+
+    Returns:
+        int -- the ``ref.statement_sources.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid StatementSourceEnum member.
+    """
+    _require_init()
+    return _cache.enum_ids[StatementSourceEnum][member]
 def settlement_basis_id(member):
     """Return the integer primary key for a SettlementBasisEnum member.
 

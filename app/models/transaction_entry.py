@@ -101,6 +101,16 @@ class TransactionEntry(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.
             "settled_on IS NULL OR settled_on >= purchased_on",
             name="ck_transaction_entries_settled_not_before_purchase",
         ),
+        # The SUPERKEY ``statement_match_members`` names to prove its own
+        # ``account_id`` is this purchase's (plan step ``bank_import:X-f6a-2``).
+        # It constrains nothing -- ``id`` is already the primary key -- and
+        # exists only because PostgreSQL requires a UNIQUE over exactly the
+        # referenced columns before a composite foreign key may target them.
+        # The same construction, for the same reason, as
+        # ``uq_transactions_id_account``.
+        db.UniqueConstraint(
+            "id", "account_id", name="uq_transaction_entries_id_account",
+        ),
         # **This entry's account IS its parent's, guaranteed rather than
         # maintained** (plan step X-f3a-1).  The pair keys straight onto
         # ``uq_transactions_id_account``, so a row whose ``account_id`` differs

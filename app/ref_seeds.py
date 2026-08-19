@@ -220,6 +220,26 @@ _REF_TABLE_SEEDS = (
     # -- the same dual-seed pattern the posting and recurrence refs use.  Names
     # match the enum ``.value`` strings in ``app/enums.py`` exactly.
     ("AmountSource", ["template", "parent_transfer"]),
+    # WHERE a recorded statement line came from (bank-import arc, plan step
+    # X-f6a-1; ruling **R-FP**).  One row per source ADAPTER -- a FORMAT at an
+    # institution, because one bank publishes one statement several ways and
+    # the ways do not carry the same facts.  Migration ``3f408018a71c``
+    # inline-seeds the identical row so a freshly upgraded DB resolves the enum
+    # before this idempotent reseed runs -- the same dual-seed pattern the
+    # posting, recurrence and amount refs use.
+    #
+    # **This entry is leg 3, and omitting it is invisible to the test suite.**
+    # Every test database is migration-built and then reseeded, so a value
+    # present in the enum and the migration but missing HERE fails only on the
+    # ``create_all`` + ``seed_reference_data`` bootstrap (dev / test first-run,
+    # and the production deploy reseed) -- where ``ref_cache.init`` finds the
+    # table present and the row absent and raises, refusing to boot.  A dict
+    # entry rather than a bare name because this table carries a display label
+    # the upload form reads.
+    ("StatementSource", [
+        {"name": "secu_checking_csv",
+         "display_name": "SECU checking -- CSV with running balance"},
+    ]),
     # The settlement record's discriminator (balance arc, plan step X-au-c3).
     # HOW a settled row's recorded figure is known: ``derived`` is the app's own
     # resolution at the moment of the settle, ``corrected`` is a figure a human

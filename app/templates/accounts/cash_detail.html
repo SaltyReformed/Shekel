@@ -27,7 +27,16 @@
     <h4 class="mb-0"><i class="bi {{ acct_glyph(account) }}"></i> {{ account.name }}</h4>
     <span class="acctd-type-tag">{{ account.account_type.name if account.account_type else '--' }}</span>
   </div>
-  {{ back_link(url_for('savings.dashboard'), 'Accounts') }}
+  <div class="d-flex align-items-center gap-2">
+    {# The only way in to what the BANK said (plan step bank_import:X-f6a-1).
+       A plain link, not a form: the page it opens only READS, and the import
+       that writes is that page's own POST. #}
+    <a class="btn btn-sm btn-outline-secondary"
+       href="{{ url_for('accounts.statements', account_id=account.id) }}">
+      <i class="bi bi-bank"></i> Bank statements
+    </a>
+    {{ back_link(url_for('savings.dashboard'), 'Accounts') }}
+  </div>
 </div>
 
 {% if request.args.get('setup') == '1' %}

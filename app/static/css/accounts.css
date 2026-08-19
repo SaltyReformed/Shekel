@@ -703,3 +703,32 @@ a.acct-cell__link:focus-visible {
 .reconcile-amount {
   max-width: 8.5rem;
 }
+
+/* The statement import page's file-name cell (plan step bank_import:X-f6a-1).
+   An uploaded file name is arbitrary length and shares a row with four numeric
+   columns, so it truncates rather than pushing them off the page.  A class
+   rather than an inline style for the reason `.reconcile-amount` above is one,
+   and for a second reason measured in a browser: this app's CSP is
+   `style-src 'self'` with no `unsafe-inline`, so a `style="..."` attribute is
+   BLOCKED outright -- the truncation would silently not apply, which is how
+   this started life. */
+.stmt-file-name {
+  max-width: 16rem;
+}
+
+/* The statement REVIEW page's two pick-lists (plan step bank_import:X-f6a-2).
+   The hand-build form offers every unmatched bank line beside every unmatched
+   app row, and a first import produces hundreds of each -- measured at 121
+   lines and 112 rows on the developer's own account -- so each list scrolls
+   inside a bounded box rather than pushing the Accept button below three
+   screens of table.
+
+   A class rather than an inline style for the reason `.stmt-file-name` above
+   is one, and this is the second time that reason has been paid for: the CSP
+   is `style-src 'self'` with no `unsafe-inline`, so a `style="..."` attribute
+   is BLOCKED and the box would silently not scroll at all.  The template
+   linter refused the inline version before it could ship. */
+.stmt-pick-list {
+  max-height: 22rem;
+  overflow-y: auto;
+}

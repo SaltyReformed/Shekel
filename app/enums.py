@@ -557,6 +557,48 @@ class AmountSourceEnum(enum.Enum):
     PARENT_TRANSFER = "parent_transfer"
 
 
+class StatementSourceEnum(enum.Enum):
+    """WHERE a recorded statement line came from -- ruling **R-FP**'s adapter.
+
+    A statement importer is a SOURCE ADAPTER over one normalized line shape
+    (plan step ``bank_import:X-f6a``), so matching, review and fact-writing stay
+    source-independent: a new way for a statement to arrive is a new member here
+    and a new parser, never a second path through the importer.
+
+        secu_checking_csv -- State Employees' Credit Union's own transaction
+                             export, with the running-balance column included.
+
+    **A member names a FORMAT at an INSTITUTION, not an institution**, because
+    one bank publishes one statement several ways and the ways do not carry the
+    same facts.  Measured on the developer's own exports 2026-08-16: SECU's OFX
+    -- and its QFX and QBO twins, which are the same statement content plus two
+    Intuit routing tags -- carries a ``FITID`` and truncates the description to
+    the OFX ``NAME`` limit, 326 of 361 lines landing at exactly 32 characters;
+    the CSV carries the merchant, the bank's own category and a per-line running
+    balance, and carries no ``FITID`` at all.  The CSV description STARTS WITH
+    the OFX name on 306 of 306 shared lines, so the two really are one statement
+    with one of them cut short.
+
+    **Losing ``FITID`` costs nothing, and that is measured rather than
+    assumed.**  A line's identity is
+    ``(account, posted_on, amount, sequence within that group)``
+    (:func:`app.services.statement_import.line_identity`), which every source
+    can compute including one carrying no id of its own.  Compared across two
+    SECU exports twelve days apart, that key reproduced the ``FITID`` key
+    exactly: 0 keys present in only one export, 0 lines whose ``FITID``
+    disagreed, over 342 shared lines.  So an external id is stored as a
+    CORROBORATING fact (``bank_statement_lines.external_id``) rather than as the
+    thing identity rests on, and the importer has ONE identity rule instead of
+    one per format -- which is what lets ``X-f6b``'s automated source join
+    without re-opening the question.
+
+    Application code resolves these via ``ref_cache.statement_source_id`` and
+    compares against the integer ID -- never the string ``name`` -- matching the
+    project-wide ``ref-table: IDs for logic, strings for display only``
+    invariant.
+    """
+
+    SECU_CHECKING_CSV = "secu_checking_csv"
 class SettlementBasisEnum(enum.Enum):
     """HOW a settled row's recorded figure is known (plan step **X-au-c3**).
 

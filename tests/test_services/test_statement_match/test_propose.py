@@ -1,0 +1,697 @@
+"""What the app OFFERS -- the proposer, which touches no database.
+
+Plan step **bank_import:X-f6a-2**, ruling **R-FP** (*a match is a PROPOSAL,
+never a silent apply*).  :mod:`app.services.statement_match._propose` is pure:
+lines and candidates in, proposals out, no query and no clock.  So these tests
+are pure too, and they can therefore assert the thing that matters most about a
+matcher -- **which of several equally-priced pairings it chooses** -- without
+building a database state for each.
+
+**The assignment is the subject.**  A greedy left-to-right matcher and an
+optimal one agree on every input with distinct amounts, so a test suite built
+only from distinct amounts would pass against either.  The developer's own data
+is not like that: five monthly `$1,910.95` mortgage transfers appear on both
+sides, and the whole difference between the two algorithms shows up there.
+"""
+
+from datetime import date, timedelta
+from decimal import Decimal
+
+from app.services.statement_match import DAY_WINDOW
+from app.services.statement_match._offers import (
+    BankLine,
+    CandidateRow,
+    RowKind,
+)
+from app.services.statement_match._propose import (
+    MAX_GROUP_DAY_ROWS,
+    MAX_GROUP_UNDATED,
+    propose,
+    skipped_group_days,
+    undated_pool_too_large,
+)
+
+_DAY = date(2026, 5, 1)
+
+
+def _line(line_id, amount, posted_on=_DAY, description="ACH DEBIT",
+          transaction_on=None):
+    """Return one bank line.
+
+    ``transaction_on`` defaults to ``None`` -- a source stating no separate
+    transaction day, which is 179 of the developer's own 361 lines.
+    """
+    return BankLine(
+        line_id=line_id, posted_on=posted_on,
+        amount=Decimal(amount), description=description,
+        transaction_on=transaction_on,
+    )
+
+
+def _row(row_id, amount, settled_on=_DAY, is_settled=True, label=None):
+    """Return one candidate app row."""
+    return CandidateRow(
+        kind=RowKind.TRANSACTION, row_id=row_id,
+        label=label or f"row {row_id}", cash_amount=Decimal(amount),
+        settled_on=settled_on, is_settled=is_settled,
+    )
+
+
+class TestOneLineToOneRow:
+    """R-FS's first shape."""
+
+    def test_an_equal_amount_inside_the_window_is_proposed(self):
+        """The ordinary case: same figure, a few days apart."""
+        proposals = propose(
+            [_line(1, "-180.00", _DAY)],
+            [_row(10, "-180.00", _DAY + timedelta(days=3))],
+        )
+
+        assert len(proposals) == 1
+        assert proposals[0].lines[0].line_id == 1
+        assert proposals[0].rows[0].row_id == 10
+        assert proposals[0].day_gap == 3
+
+    def test_a_different_amount_is_not_proposed(self):
+        """The predicate is EXACT: a near miss is not a match."""
+        assert propose(
+            [_line(1, "-180.00")], [_row(10, "-180.05")],
+        ) == []
+
+    def test_outside_the_window_is_not_proposed(self):
+        """One day past the bound, and the bound is what it says it is."""
+        far = _DAY + timedelta(days=DAY_WINDOW + 1)
+        assert propose([_line(1, "-180.00")], [_row(10, "-180.00", far)]) == []
+
+    def test_at_the_window_edge_is_proposed(self):
+        """The control for the arm above: the bound is inclusive."""
+        edge = _DAY + timedelta(days=DAY_WINDOW)
+        proposals = propose([_line(1, "-180.00")], [_row(10, "-180.00", edge)])
+
+        assert len(proposals) == 1
+        assert proposals[0].day_gap == DAY_WINDOW
+
+    def test_a_row_with_no_recorded_day_is_always_reachable(self):
+        """The bank is the only evidence about a row nobody has settled.
+
+        There is no distance from "never observed to have moved", so the window
+        cannot exclude one -- and this is the arm that reaches the 11 rows
+        inside the developer's own statement span that had never been marked as
+        having happened.
+        """
+        proposals = propose(
+            [_line(1, "-180.00", date(2027, 1, 1))],
+            [_row(10, "-180.00", settled_on=None, is_settled=False)],
+        )
+
+        assert len(proposals) == 1
+        assert proposals[0].day_gap is None
+
+    def test_an_undated_proposal_does_not_CONFIRM_a_day(self):
+        """``None`` is not zero, and reading it as zero told the user a lie.
+
+        **This test asserted ``day_gap == 0`` until an adversarial design
+        review 2026-08-17.**  ``_day_distance`` answers ``None`` for a row
+        carrying no day and the proposer wrote ``or 0``, so the screen printed
+        *confirms the day you already had* beside *marks 1 row(s) as happened*
+        -- two captions contradicting each other on the arm built for rows
+        nobody has settled.  The three states are distinct acts and the value
+        type now says so.
+        """
+        undated = propose(
+            [_line(1, "-180.00", _DAY)],
+            [_row(10, "-180.00", settled_on=None, is_settled=False)],
+        )[0]
+        agreeing = propose(
+            [_line(2, "-90.00", _DAY)], [_row(11, "-90.00", _DAY)],
+        )[0]
+
+        assert undated.day_gap is None and not undated.confirms
+        assert agreeing.day_gap == 0 and agreeing.confirms
+
+    def test_a_dated_row_outranks_an_undated_one(self):
+        """A row that genuinely sits near the line wins the pairing.
+
+        Both are legal partners, so a matcher with no preference could take
+        either -- and taking the undated one would settle a row nobody has
+        evidence about while leaving the real correction unmade.
+        """
+        proposals = propose(
+            [_line(1, "-180.00", _DAY)],
+            [
+                _row(10, "-180.00", settled_on=None, is_settled=False),
+                _row(11, "-180.00", _DAY + timedelta(days=2)),
+            ],
+        )
+
+        assert [p.rows[0].row_id for p in proposals] == [11]
+
+
+class TestAPurchaseIsNotOfferedBeforeItWasMade:
+    """A purchase cannot reach the bank before the day it was bought.
+
+    ``entry_service.update_entry`` refuses that write outright
+    (``_reject_settled_before_purchase``), so a proposer blind to
+    ``purchased_on`` renders an Accept button that can never succeed --
+    measured at 23 such (line, undated purchase) pairs on the developer's own
+    clone.  Found by adversarial security review 2026-08-17.
+
+    **Plan step X-f6a-3a made the floor SATISFIABLE rather than merely
+    refusing** (ruling **R-FW**): a match may move the purchase day onto the
+    bank's own, so the pairing is offered and the correction is what the
+    reviewer accepts.  The floor still refuses the pairing no write could
+    legalise -- a line whose own stated transaction day is AFTER the day it
+    posted, which 2 of 361 lines in the developer's OFX are.
+
+    **Why the change is not a weakening.**  It is what stops the review screen
+    presenting 14 lines worth `$1,028.66` as unexplained when the app already
+    holds every one of them at the same amount and the same merchant, which is
+    an invitation to record them a second time.
+    """
+
+    @staticmethod
+    def _purchase(row_id, amount, purchased_on, settled_on=None):
+        """Return one purchase candidate with a purchase day."""
+        return CandidateRow(
+            kind=RowKind.PURCHASE, row_id=row_id, label="Kroger",
+            cash_amount=Decimal(amount), settled_on=settled_on,
+            is_settled=settled_on is not None,
+            parent_id=900, expected_on=purchased_on,
+        )
+
+    def test_a_line_before_the_purchase_day_is_OFFERED_and_corrects_it(self):
+        """The app's day is refuted by the owner's own assertion, so it moves.
+
+        Ruling **R-FW**.  Accepting says *this line IS this purchase*, which
+        says the purchase was made on or before the day the line posted -- so
+        a recorded day after it is wrong, and the match corrects it rather than
+        the screen leaving the line looking unexplained.
+        """
+        proposals = propose(
+            [_line(1, "-25.00", date(2026, 5, 1))],
+            [self._purchase(10, "-25.00", date(2026, 5, 8))],
+        )
+
+        assert len(proposals) == 1
+        assert proposals[0].made_on == date(2026, 5, 1)
+        assert [row.row_id for row in proposals[0].redated_purchases] == [10]
+
+    def test_it_corrects_to_the_day_the_bank_STATED(self):
+        """Not to the day it cleared -- the two are different facts.
+
+        Where the source states a transaction day, that is the day the purchase
+        was MADE; the posted day is when the money left.  Recording the second
+        as the first would date every card purchase to its clearing day.
+        """
+        proposals = propose(
+            [_line(1, "-25.00", date(2026, 5, 1),
+                   transaction_on=date(2026, 4, 29))],
+            [self._purchase(10, "-25.00", date(2026, 5, 8))],
+        )
+
+        assert proposals[0].made_on == date(2026, 4, 29)
+
+    def test_a_line_no_write_could_legalise_is_still_refused(self):
+        """The floor survives for the pairing the correction cannot fix.
+
+        A source whose stated transaction day is AFTER its posting day exists
+        -- 2 of 361 lines in the developer's own OFX -- and there is no day a
+        match could write that satisfies ``settled_on >= purchased_on``.  So
+        the proposer declines rather than rendering an Accept that raises.
+        """
+        assert propose(
+            [_line(1, "-25.00", date(2026, 5, 1),
+                   transaction_on=date(2026, 5, 2))],
+            [self._purchase(10, "-25.00", date(2026, 5, 8))],
+        ) == []
+
+    def test_a_purchase_the_bank_does_not_contradict_is_left_alone(self):
+        """The bank corrects what it refutes, and nothing else.
+
+        Measured on the developer's own statement: taking the bank's day
+        unconditionally moves 27 of 44 matched purchases, 18 of them onto a
+        CLEARING day because the source states no transaction day at all.
+        Correcting only the contradicted ones moves 3.
+        """
+        proposals = propose(
+            [_line(1, "-25.00", date(2026, 5, 8),
+                   transaction_on=date(2026, 5, 7))],
+            [self._purchase(10, "-25.00", date(2026, 5, 1))],
+        )
+
+        assert len(proposals) == 1
+        assert proposals[0].redated_purchases == ()
+
+    def test_a_line_ON_the_purchase_day_is_offered(self):
+        """The control: the floor is inclusive, as the door's own check is."""
+        proposals = propose(
+            [_line(1, "-25.00", date(2026, 5, 8))],
+            [self._purchase(10, "-25.00", date(2026, 5, 8))],
+        )
+
+        assert len(proposals) == 1
+
+    def test_a_TRANSACTION_has_no_such_floor(self):
+        """Only a purchase carries one; a bill may settle before its period.
+
+        Recording money that moved before you started budgeting is a real
+        thing to do, which ``status_seam.settle_day_for_status`` says in as
+        many words -- so the floor must not leak onto the other kind.
+        """
+        proposals = propose(
+            [_line(1, "-25.00", date(2026, 5, 1))],
+            [CandidateRow(
+                kind=RowKind.TRANSACTION, row_id=10, label="Bill",
+                cash_amount=Decimal("-25.00"), settled_on=None,
+                is_settled=False, expected_on=date(2026, 5, 8),
+            )],
+        )
+
+        assert len(proposals) == 1
+
+
+class TestRepeatedAmountsAreAssignedGlobally:
+    """The mortgage-transfer shape, which is where greedy fails."""
+
+    def test_the_pairing_minimises_total_distance(self):
+        """Two lines and two rows that a first-come pass would cross.
+
+        Lines on the 1st and the 20th, rows on the 19th and the 2nd, all four
+        `$1,910.95`.  Read in order, a greedy matcher pairs line 1 with the
+        FIRST equal row it meets (the 19th, 18 days away and outside the
+        window, so it proposes nothing at all) -- while the cheapest complete
+        pairing is 1<->2nd and 20th<->19th, one day each.
+        """
+        proposals = propose(
+            [
+                _line(1, "-1910.95", date(2026, 5, 1)),
+                _line(2, "-1910.95", date(2026, 5, 20)),
+            ],
+            [
+                _row(10, "-1910.95", date(2026, 5, 19)),
+                _row(11, "-1910.95", date(2026, 5, 2)),
+            ],
+        )
+
+        pairs = {p.lines[0].line_id: p.rows[0].row_id for p in proposals}
+        assert pairs == {1: 11, 2: 10}
+        assert [p.day_gap for p in proposals] == [1, 1]
+
+    def test_five_monthly_transfers_pair_in_order(self):
+        """The developer's own shape, at its real size.
+
+        Five bank lines a month apart and five rows a month apart, every one
+        `$1,910.95`.  The only correct answer is the order-preserving one, and
+        it is the one an optimal assignment finds.
+        """
+        lines = [
+            _line(i, "-1910.95", date(2026, month, 1))
+            for i, month in enumerate((3, 4, 5, 6, 7), start=1)
+        ]
+        rows = [
+            _row(10 + i, "-1910.95", date(2026, month, 2))
+            for i, month in enumerate((3, 4, 5, 6, 7))
+        ]
+
+        proposals = propose(lines, rows)
+
+        assert {p.lines[0].line_id: p.rows[0].row_id for p in proposals} == {
+            1: 10, 2: 11, 3: 12, 4: 13, 5: 14,
+        }
+
+    def test_more_rows_than_lines_uses_the_nearest(self):
+        """Three candidates, one line: the closest is the pairing."""
+        proposals = propose(
+            [_line(1, "-50.00", date(2026, 5, 10))],
+            [
+                _row(10, "-50.00", date(2026, 5, 2)),
+                _row(11, "-50.00", date(2026, 5, 9)),
+                _row(12, "-50.00", date(2026, 5, 20)),
+            ],
+        )
+
+        assert [p.rows[0].row_id for p in proposals] == [11]
+
+    def test_more_lines_than_rows_leaves_the_rest_unmatched(self):
+        """A statement may show movements the app never recorded."""
+        proposals = propose(
+            [
+                _line(1, "-50.00", date(2026, 5, 2)),
+                _line(2, "-50.00", date(2026, 5, 3)),
+            ],
+            [_row(10, "-50.00", date(2026, 5, 2))],
+        )
+
+        assert len(proposals) == 1
+        assert proposals[0].lines[0].line_id == 1
+
+
+class TestAGroupSumsToTheLine:
+    """R-FS's second shape: N app rows, one bank line."""
+
+    def test_two_same_day_rows_summing_to_one_line(self):
+        """The split payroll deposit, which is the shape this arm is for."""
+        proposals = propose(
+            [_line(1, "2611.90", date(2026, 8, 13))],
+            [
+                _row(10, "39.54", date(2026, 8, 14)),
+                _row(11, "2572.36", date(2026, 8, 14)),
+            ],
+        )
+
+        assert len(proposals) == 1
+        assert {r.row_id for r in proposals[0].rows} == {10, 11}
+        assert proposals[0].difference == Decimal("0.00")
+        assert proposals[0].posts_on == date(2026, 8, 13)
+
+    def test_a_group_may_contain_a_row_NOBODY_HAS_SETTLED(self):
+        """Ruling R-FV's third arm has to reach the group path too.
+
+        **A first implementation excluded undated rows from grouping outright**
+        -- "there is nothing to group them BY" -- which made a split payroll
+        deposit with one unsettled member unproposable, and that population is
+        exactly the one R-FV cites (11 rows inside the developer's own
+        statement span had never been marked as having happened).  An undated
+        row has no day to disagree with, so it composes with any day's set;
+        what stops a coincidence is that the group must still sum exactly and
+        be the only set that does.  Found by adversarial design review
+        2026-08-17.
+        """
+        proposals = propose(
+            [_line(1, "2611.90", date(2026, 8, 13))],
+            [
+                _row(10, "39.54", settled_on=None, is_settled=False),
+                _row(11, "2572.36", date(2026, 8, 14)),
+            ],
+        )
+
+        assert len(proposals) == 1
+        assert {r.row_id for r in proposals[0].rows} == {10, 11}
+        assert proposals[0].difference == Decimal("0.00")
+
+    def test_a_group_that_does_not_sum_is_not_proposed(self):
+        """The five-cent payroll gap: the app must not offer it as a match.
+
+        Finding **N-239**: on 6 of 16 payroll deposits the app's rows sum
+        `$0.05`-`$0.06` below what the bank paid.  Proposing that group would
+        put a difference in front of the accept door, which refuses it -- so
+        the honest place to stop is here.
+        """
+        assert propose(
+            [_line(1, "2573.43", date(2026, 5, 21))],
+            [
+                _row(10, "2473.38", date(2026, 5, 21)),
+                _row(11, "100.00", date(2026, 5, 21)),
+            ],
+        ) == []
+
+    def test_two_possible_groups_are_not_proposed(self):
+        """An ambiguous proposal is a question dressed as an answer."""
+        assert propose(
+            [_line(1, "-100.00", _DAY)],
+            [
+                _row(10, "-40.00", _DAY),
+                _row(11, "-60.00", _DAY),
+                _row(12, "-30.00", _DAY),
+                _row(13, "-70.00", _DAY),
+            ],
+        ) == []
+
+    def test_rows_on_different_days_are_not_grouped(self):
+        """A group is what the bank took as ONE movement, on one day.
+
+        Rows scattered across days that happen to sum to a line are a
+        coincidence, and grouping them would settle several unrelated rows on a
+        day none of them belongs to.
+        """
+        assert propose(
+            [_line(1, "-100.00", _DAY)],
+            [
+                _row(10, "-40.00", _DAY),
+                _row(11, "-60.00", _DAY + timedelta(days=1)),
+            ],
+        ) == []
+
+    def test_a_one_to_one_match_wins_over_a_group(self):
+        """The simpler explanation of the same money is the one to show."""
+        proposals = propose(
+            [_line(1, "-100.00", _DAY)],
+            [
+                _row(10, "-100.00", _DAY),
+                _row(11, "-40.00", _DAY),
+                _row(12, "-60.00", _DAY),
+            ],
+        )
+
+        assert len(proposals) == 1
+        assert [r.row_id for r in proposals[0].rows] == [10]
+
+
+class TestTheGroupSearchSaysWhatItSkipped:
+    """A bound that does not report itself reads as a clean sweep.
+
+    **The amounts here are POWERS OF TWO deliberately.**  A first draft used
+    1, 2, 3, ... and its control was a tautology: removing the bound left the
+    test passing, because with consecutive amounts many subsets reach the same
+    total and the search declines an AMBIGUOUS group anyway.  Powers of two
+    make every subset sum unique, so the only thing that can stop the proposal
+    is the bound itself -- which is what a firing control has to be.  Caught by
+    mutating the bound away and finding the suite still green.
+    """
+
+    @staticmethod
+    def _binary_rows(count):
+        """Return *count* same-day rows whose every subset sums uniquely."""
+        return [
+            _row(100 + i, f"-{2 ** i}.00", _DAY) for i in range(count)
+        ]
+
+    def test_a_crowded_day_is_reported(self):
+        """More rows on one day than the search will combine."""
+        assert skipped_group_days(
+            self._binary_rows(MAX_GROUP_DAY_ROWS + 1),
+        ) == [_DAY]
+
+    def test_a_crowded_day_proposes_no_group(self):
+        """The bound is real: the group that WOULD be found is not proposed.
+
+        The firing control for the arm above.  The target is the sum of the two
+        largest rows and no other subset reaches it, so a search that ran would
+        certainly propose it.
+        """
+        rows = self._binary_rows(MAX_GROUP_DAY_ROWS + 1)
+        target = rows[-1].cash_amount + rows[-2].cash_amount
+        assert all(row.cash_amount != target for row in rows)
+
+        assert propose([_line(1, str(target), _DAY)], rows) == []
+
+    def test_a_LARGE_UNDATED_POOL_is_kept_out_and_reported(self):
+        """The second bound, and the one whose absence killed the arm.
+
+        An undated row joins EVERY day's bucket, so admitting all of them put
+        every day over :data:`MAX_GROUP_DAY_ROWS` on the developer's own
+        account -- 674 undated candidates -- and the group arm proposed
+        NOTHING while the screen blamed 51 "crowded days".  Measured by
+        adversarial financial review 2026-08-17 against a working
+        implementation that proposed 3 groups on the same data.
+        """
+        dated = self._binary_rows(2)
+        # DISTINCT amounts, so exactly one subset reaches the target below.
+        # A first draft gave them all the same figure, which made the group
+        # AMBIGUOUS and the search decline it for that reason instead -- so the
+        # test passed with the bound removed and controlled nothing.
+        undated = [
+            CandidateRow(
+                kind=RowKind.TRANSACTION, row_id=500 + i, label=f"u{i}",
+                cash_amount=-Decimal(1000 * 2 ** i), settled_on=None,
+                is_settled=False,
+            )
+            for i in range(MAX_GROUP_UNDATED + 1)
+        ]
+        # Reachable ONLY by combining a dated row with an undated one, so the
+        # dated group beside it is not what answers.
+        needs_an_undated_member = dated[0].cash_amount + undated[0].cash_amount
+
+        assert undated_pool_too_large(dated + undated) == len(undated)
+        assert skipped_group_days(dated + undated) == [], (
+            "the DAY is not crowded -- the undated pool is, and saying "
+            "otherwise blames the wrong thing"
+        )
+        assert propose(
+            [_line(1, str(needs_an_undated_member), _DAY)], dated + undated,
+        ) == []
+        # ...while the group that needs no undated member is still proposed,
+        # which is the half the unbounded implementation destroyed.
+        dated_only = dated[0].cash_amount + dated[1].cash_amount
+        assert len(propose(
+            [_line(2, str(dated_only), _DAY)], dated + undated,
+        )) == 1
+
+    def test_a_SMALL_undated_pool_still_joins_the_search(self):
+        """The control: the bound admits the shape the arm exists for."""
+        dated = self._binary_rows(2)
+        target = dated[0].cash_amount + dated[1].cash_amount
+
+        assert undated_pool_too_large(dated) == 0
+        assert len(propose([_line(1, str(target), _DAY)], dated)) == 1
+
+    def test_an_ordinary_day_is_searched_and_not_reported(self):
+        """The control for the control: inside the bound, the group is found."""
+        rows = self._binary_rows(MAX_GROUP_DAY_ROWS)
+        target = rows[-1].cash_amount + rows[-2].cash_amount
+
+        assert skipped_group_days(rows) == []
+        proposals = propose([_line(1, str(target), _DAY)], rows)
+
+        assert len(proposals) == 1
+        assert {r.row_id for r in proposals[0].rows} == {
+            rows[-1].row_id, rows[-2].row_id,
+        }
+
+
+class TestTheOrderPutsConfirmationsFirst:
+    """What a reviewer scans first."""
+
+    def test_proposals_are_ordered_by_day_gap(self):
+        """A proposal that merely confirms is cheaper to review than one that
+        corrects, so the corrections are what a reviewer's attention reaches
+        last rather than what it has to dig for."""
+        proposals = propose(
+            [
+                _line(1, "-10.00", date(2026, 5, 1)),
+                _line(2, "-20.00", date(2026, 5, 2)),
+            ],
+            [
+                _row(10, "-10.00", date(2026, 5, 6)),
+                _row(11, "-20.00", date(2026, 5, 2)),
+            ],
+        )
+
+        assert [p.day_gap for p in proposals] == [0, 5]
+
+
+class TestTheFloorIsAppliedPerPAIRAndNotPerAmountGroup:
+    """A row legal against ONE line was being handed a DIFFERENT one.
+
+    ``_one_to_one`` filters the amount group with ``any(_within_window(...))``
+    -- so a row legal against at least one of the group's lines survives -- and
+    :func:`_assign`'s undated arm then paired a surviving row with whichever
+    line was still free, with no check of its own.  A per-GROUP survival test
+    stood in for a per-PAIR legality test.
+
+    **What makes it reachable is the window, not the floor**, and an
+    adversarial review of X-f6a-3a is what established that: the FLOOR (a line
+    posted before its purchase, unrescuable) needs a line whose stated
+    transaction day is after its posting day, which the only adapter cannot
+    produce.  The WINDOW does the work instead -- an undated purchase is
+    anchored on the day it was MADE (:func:`~._propose._window_anchor`), so a
+    line more than :data:`DAY_WINDOW` days from it is illegal, and that is an
+    ordinary SECU line.
+    """
+
+    @staticmethod
+    def _undated_purchase(made_on):
+        """Return an undated purchase made on *made_on*."""
+        return CandidateRow(
+            kind=RowKind.PURCHASE, row_id=10, label="Kroger",
+            cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
+            parent_id=900, expected_on=made_on,
+        )
+
+    def test_it_is_paired_with_the_line_it_is_LEGAL_against(self):
+        """Two ordinary lines share an amount; only one is near the purchase.
+
+        The illegal line posts EARLIER, so a loop taking lines in day order
+        reaches it first -- which is exactly how the shipped defect chose it.
+        Revert :func:`_assign`'s per-pair check to ``undated.pop(0)`` and this
+        fails.
+        """
+        far = _line(1, "-25.00", date(2026, 3, 1))
+        near = _line(2, "-25.00", date(2026, 5, 20))
+        purchase = self._undated_purchase(date(2026, 5, 18))
+
+        proposals = propose([far, near], [purchase])
+
+        assert len(proposals) == 1
+        assert proposals[0].lines[0].line_id == near.line_id
+
+    def test_a_purchase_near_NEITHER_line_is_not_offered(self):
+        """No line in the group is legal, so no proposal survives.
+
+        **It is NOT a control for the ``any()`` group filter**, and a first
+        docstring claimed it was: deleting that filter entirely leaves the
+        whole suite green, because the per-pair tests inside :func:`_assign`
+        refuse the same pairings one level down.  The filter is an
+        optimisation -- it keeps the assignment's pool to rows that can pair
+        with something -- and what makes the ANSWER right is the per-pair
+        test.  Measured by adversarial test-quality review 2026-08-18.
+        """
+        first = _line(1, "-25.00", date(2026, 3, 1))
+        second = _line(2, "-25.00", date(2026, 3, 4))
+        purchase = self._undated_purchase(date(2026, 7, 27))
+
+        assert propose([first, second], [purchase]) == []
+
+
+class TestAnUndatedPurchaseIsBoundedByTheDayItWasMADE:
+    """:data:`DAY_WINDOW` reaches a purchase through its OTHER clock.
+
+    **Ruling R-FW removed the only bound an undated purchase had.**  Until
+    X-f6a-3a a line posted before the purchase was made could never be
+    accepted, so the proposer declined it; R-FW makes that pairing legal by
+    CORRECTING the purchase day, and ``_day_distance`` answers ``None`` for a
+    row with no ``settled_on`` -- so nothing bounded the pairing at all.
+    Measured on the developer's own statement, the three worst then re-dated a
+    purchase by 39, 40 and 59 days on an exact-amount coincidence, rewriting
+    the one piece of evidence that would have exposed the mis-pairing.
+
+    A purchase always carries ``purchased_on``, so "undated" is true of its
+    CASH clock and false of the purchase.  Found by two independent adversarial
+    reviews 2026-08-18.
+    """
+
+    @staticmethod
+    def _undated_purchase(made_on):
+        """Return an undated purchase made on *made_on*."""
+        return CandidateRow(
+            kind=RowKind.PURCHASE, row_id=10, label="Kroger",
+            cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
+            parent_id=900, expected_on=made_on,
+        )
+
+    def test_a_line_two_months_from_the_purchase_is_not_offered(self):
+        """The measured defect, as a control: a May line, a July purchase."""
+        line = _line(1, "-25.00", date(2026, 6, 1),
+                     transaction_on=date(2026, 5, 30))
+
+        assert propose([line], [self._undated_purchase(date(2026, 7, 27))]) == []
+
+    def test_a_line_inside_the_window_still_is(self):
+        """The 14 pairings the step exists for are 1 to 5 days out."""
+        line = _line(1, "-25.00", date(2026, 4, 24),
+                     transaction_on=date(2026, 4, 23))
+
+        proposals = propose(
+            [line], [self._undated_purchase(date(2026, 4, 29))],
+        )
+
+        assert len(proposals) == 1
+        assert proposals[0].made_on == date(2026, 4, 23)
+
+    def test_a_TRANSACTION_keeps_its_unbounded_arm(self):
+        """A bill's ``expected_on`` is a pay-period start, not an observation.
+
+        Bounding one by 14 days from its period start would refuse the arm that
+        settles a row the app never marked as having happened -- 11 of them
+        inside the developer's own statement span.
+        """
+        proposals = propose(
+            [_line(1, "-25.00", date(2026, 8, 1))],
+            [CandidateRow(
+                kind=RowKind.TRANSACTION, row_id=10, label="Bill",
+                cash_amount=Decimal("-25.00"), settled_on=None,
+                is_settled=False, expected_on=date(2026, 1, 1),
+            )],
+        )
+
+        assert len(proposals) == 1
