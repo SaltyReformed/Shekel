@@ -12,28 +12,44 @@ Plan step ``bank_import:X-f6a-2``, rulings **R-FS**, **R-FP** and **R-FV**.
 
 The public surface, and what each piece is for:
 
+* :class:`ReviewScope` -- ONE derivation of what a pass over one account may
+  act on, built once by the route and threaded through everything below it.
+  Plan step ``bank_import:X-f6a-3c-2`` exists because it was not: every act
+  derived the account again for itself, at 3.593 s a time over the 215 acts the
+  developer's own statement offers -- 12.88 minutes of derivation to work one
+  statement, against 5.80 s for the whole pass now.
 * :func:`review_set` -- everything the review screen shows for one account:
   what the app proposes, what it could not explain, what is out of reach, and
   what has already been accepted.
-* :func:`accept_match` -- the ONE write door for a correspondence between
-  things that already exist.  **It MOVES MONEY**: every member row takes the
-  bank's posted day, which settles a still-Projected row and corrects a
-  wrongly-dated settled one.
+* :func:`apply_reviewed` -- the batch door, and the one the screen posts to.
+  **It MOVES MONEY.**  It applies every act the owner ticked, each in its own
+  SAVEPOINT so a refused item leaves nothing behind and the rest still land,
+  and reports what each one did (:class:`BatchOutcome`).  It is not "accept
+  everything" (**R-FP**): nothing is applied that was not ticked.
+* :func:`accept_match` -- one correspondence between things that already exist.
+  Every member row takes the bank's posted day, which settles a still-Projected
+  row and corrects a wrongly-dated settled one.
 * :func:`create_purchase_from_line` -- ruling **R-FS**'s THIRD shape (plan step
   ``bank_import:X-f6a-3b``): a bank line the app has no row for BECOMES a
   purchase against a budget line the owner picks, or against one this door
   creates for it.  **It MOVES MONEY** in the other direction from the first --
   it records a movement the app did not have at all, where a match re-dates one
-  it did.  It records the correspondence through :func:`accept_match`, so there
-  is still exactly one door writing a match.
+  it did.  It records the correspondence through the same function
+  :func:`accept_match` does, so there is still exactly one place a match is
+  written.
 * :func:`destinations_for` -- the budget lines that door may write into, which
-  is the SAME set the screen offers.
+  is the SAME set the screen offers, and :func:`matched_subjects` /
+  :func:`unmatched_destinations`, which are the one statement of what an
+  accepted match has already claimed.  **What this exports is what something
+  outside the package imports**: ``AppliedItem``, ``RefusedItem``,
+  ``MatchedSubjects`` and ``unmatched_rows`` were exported for symmetry and had
+  no importer at all, which is a surface nobody asked for.
 * :func:`release_match` -- the undo, which restores the QUESTION rather than
   the days.
 * The value types :class:`MatchProposal`, :class:`MatchSubmission`,
   :class:`CandidateRow`, :class:`BankLine`, :class:`RowKind`,
-  :class:`AcceptedMatch`, :class:`AcceptedGroup`, :class:`AcceptedRow` and
-  :class:`ReviewSet`.
+  :class:`AcceptedMatch`, :class:`AcceptedGroup`, :class:`AcceptedRow`,
+  :class:`ReviewedBatch`, :class:`BatchOutcome` and :class:`ReviewSet`.
 
 **Three rules this package is built on, each of them the developer's ruling of
 2026-08-17 rather than an implementation choice:**
@@ -58,7 +74,13 @@ owner has not accepted, and :mod:`._propose` cannot write at all.
 """
 
 from ._accept import AcceptedMatch, accept_match, release_match
-from ._candidates import candidates_for
+from ._batch import BatchOutcome, ReviewedBatch, apply_reviewed
+from ._candidates import (
+    candidates_for,
+    destinations_for,
+    matched_subjects,
+    unmatched_destinations,
+)
 from ._create import CreatedPurchase, create_purchase_from_line
 from ._offers import (
     BankLine,
@@ -74,22 +96,23 @@ from ._offers import (
     corrected_purchase_day,
     merchant_of,
 )
-from ._propose import DAY_WINDOW, propose
+from ._propose import DAY_WINDOW, ProposedMatches, propose
 from ._reads import (
     AcceptedGroup,
     AcceptedRow,
     CreatableLine,
     ReviewBounds,
     ReviewSet,
-    destinations_for,
     review_set,
 )
+from ._scope import ReviewScope
 
 __all__ = [
     "AcceptedGroup",
     "AcceptedMatch",
     "AcceptedRow",
     "BankLine",
+    "BatchOutcome",
     "CandidateRow",
     "Candidates",
     "CreatableLine",
@@ -99,18 +122,24 @@ __all__ = [
     "MatchProposal",
     "MatchSubmission",
     "NewEnvelope",
+    "ProposedMatches",
     "PurchaseCreation",
     "PurchaseDestination",
     "ReviewBounds",
+    "ReviewScope",
     "ReviewSet",
+    "ReviewedBatch",
     "RowKind",
     "accept_match",
+    "apply_reviewed",
     "candidates_for",
     "corrected_purchase_day",
     "create_purchase_from_line",
     "destinations_for",
+    "matched_subjects",
     "merchant_of",
     "propose",
     "release_match",
     "review_set",
+    "unmatched_destinations",
 ]

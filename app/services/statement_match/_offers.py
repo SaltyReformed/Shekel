@@ -494,6 +494,34 @@ class MatchProposal:
         return self.day_gap == 0
 
     @property
+    def review_class(self) -> str:
+        """Return which of three things accepting this proposal would DO.
+
+        ``"confirm"`` when it changes no recorded day, ``"correct"`` when it
+        moves one the app had wrong, ``"settle"`` when no member carries a day
+        at all and the match is what marks the money as having moved.
+
+        **A PARTITION, and that is what the review screen's sweep controls
+        rest on** (plan step ``bank_import:X-f6a-3c-2``, developer ruling
+        2026-08-19).  R-FP's *reviewed before it commits* survives 124
+        proposals only if the sweep is per class rather than one "tick all":
+        the classes are three different acts with three different
+        consequences, so the riskiest is never swept by the same click as the
+        safest.  Measured on the developer's own statement, they come to
+        27 / 46 / 51 of 124 and they sum -- which is the property a caption
+        counting them has to be able to rely on.
+
+        It is derived HERE rather than as a Jinja condition for the reason
+        :attr:`confirms` is: ``day_gap`` is three-valued, and a template
+        reading ``None`` as falsy would sweep the settle class in with the
+        confirm class -- the exact collapse that caption was made three-valued
+        to stop.
+        """
+        if self.day_gap is None:
+            return "settle"
+        return "confirm" if self.day_gap == 0 else "correct"
+
+    @property
     def days(self) -> MatchDays:
         """Return the two days accepting this proposal would write.
 
@@ -637,16 +665,23 @@ class PurchaseCreation:
     other two shapes rather than preferring one -- a door that silently picked
     an arm would record something nobody asked for.
 
+    **It names no OWNER and no ACCOUNT** (plan step ``bank_import:X-f6a-3c-2``).
+    Whose account this is, is the :class:`~._scope.ReviewScope`'s -- one
+    statement, which the route proved once -- and a submission carrying its own
+    pair was a second statement that could disagree with it: an item naming
+    another account would have been priced from this scope and written against
+    that one.  Unreachable through the route, which set both from the same
+    verified ids, and unreachable is not the same as unspellable.  It is the
+    rule :func:`~._candidates.candidates_for` already states for its own
+    signature, applied one tier up.  Named by adversarial design review
+    2026-08-19.
+
     Attributes:
-        owner_id: The user the route proved owns the account.
-        account_id: The account the line belongs to.
         line_id: The bank line to record.
         transaction_id: An existing envelope to put it in, or ``None``.
         new_envelope: An envelope to create for it, or ``None``.
     """
 
-    owner_id: int
-    account_id: int
     line_id: int
     transaction_id: "int | None" = None
     new_envelope: "NewEnvelope | None" = None
@@ -663,16 +698,17 @@ class MatchSubmission:
     :func:`~app.services.reconcile_service._rows.record_settled` re-derives its
     ids through the arm's own scope rather than trusting them.
 
+    **It names no OWNER and no ACCOUNT**, for the reason
+    :class:`PurchaseCreation` states: whose account this is, is the
+    :class:`~._scope.ReviewScope`'s, and a second statement of it could
+    disagree with the scope the rows were priced from.
+
     Attributes:
-        owner_id: The user the route proved owns the account.
-        account_id: The account both sides must belong to.
         line_ids: The bank lines to explain.
         transaction_ids: The transactions that explain them.
         entry_ids: The purchases that explain them.
     """
 
-    owner_id: int
-    account_id: int
     line_ids: "frozenset[int]"
     transaction_ids: "frozenset[int]"
     entry_ids: "frozenset[int]"

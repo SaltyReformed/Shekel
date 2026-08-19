@@ -1,24 +1,37 @@
-"""The review screen, and the two POSTs that accept and release a match.
+"""The review screen, the POST that applies a reviewed pass, and the undo.
 
-Plan step **bank_import:X-f6a-2**.  The route's own subjects, none of which the
-service tests can see: OWNERSHIP (the security response rule's 404 for both
-"not found" and "not yours"), the FORM PAYLOAD, the unit of work, and the FLASH
-that tells the user what moved.
+Plan steps **bank_import:X-f6a-2** and **X-f6a-3c-2**.  The route's own
+subjects, none of which the service tests can see: OWNERSHIP (the security
+response rule's 404 for both "not found" and "not yours"), the FORM PAYLOAD,
+the unit of work, and what the screen SAYS about what moved.
 
-**The multi-value form test is the one that would otherwise ship broken.**  A
-GROUP match posts the same field name several times, and ``request.form["k"]``
-returns only the FIRST of them -- so a schema handed the raw ``MultiDict``
-refuses a two-row group as "not a valid list".  No service test can see that:
-they pass real lists.  It was found by mutating a real browser payload through
-this route, and it is pinned here because the failure is total in a browser and
-invisible everywhere else.
+**Every payload here is what the template actually emits.**  That is a rule
+this arc has paid for twice: a hand-picked subset shipped a dead arm at plan
+step X-f6a-3b (three adversarial reviews found the existing-envelope
+destination unreachable from a browser, because the always-rendered name box
+read as a destination of its own), and a raw ``MultiDict`` read of a repeated
+field would refuse every group match. So the helpers below build the ids the
+same way the form does -- ``apply`` naming a ticked item's rendered position,
+``match-<i>-*`` carrying that item's ids, ``destination-<line>`` naming where
+one bank line goes.
 
-**The ownership tests are firing controls against an IDOR** on doors that MOVE
-MONEY: a route answering for another user's account would let one user re-date
-another's records, and -- since plan step **bank_import:X-f6a-3b** -- mint
-budget rows in their periods.  All FOUR doors are tested, because the
-decorators are applied independently and three being right proves nothing about
-the fourth.
+**The multi-value case is the one that would otherwise ship broken.**  A GROUP
+match posts the same field name several times and ``request.form["k"]`` returns
+only the FIRST of them.  No service test can see that: they pass real lists.
+
+**Nothing an owner did not tick may be applied** (ruling **R-FP**), and at 215
+acts in one request that is a property with two halves rather than a slogan: an
+un-ticked proposal contributes its ids and is not applied, and a bank line
+whose destination select was never moved off "leave this line alone" is not
+recorded.  Both are asserted below, because the batch is where a default
+becomes forty writes nobody chose.
+
+**The ownership tests are firing controls against an IDOR** on a door that
+MOVES MONEY: a route answering for another user's account would let one user
+re-date another's records and mint budget rows in their periods.  Both shapes
+the one door now carries -- a match and a creation -- are tested, because the
+service reaches them through different code and a decorator proves nothing
+about which arm ran.
 """
 
 from datetime import date, timedelta
@@ -31,7 +44,12 @@ from app.models.account import Account
 from app.models.statement_match import StatementMatch, StatementMatchMember
 from app.models.transaction import Transaction
 from app.models.user import User, UserSettings
+from sqlalchemy.exc import OperationalError
+
+from app.exceptions import ValidationError
+from app.routes.accounts import statement_matches as statement_matches_route
 from app.services import auth_service
+from app.services.statement_match import _batch as statement_match_batch
 from tests.test_services.test_statement_match._builders import (
     a_bank_line,
     a_purchase,
@@ -43,6 +61,84 @@ from tests.test_services.test_statement_match._builders import (
 def _review_url(account_id):
     """Return the review page's URL for *account_id*."""
     return f"/accounts/{account_id}/statements/review"
+
+
+def _match(index=0, lines=(), transactions=(), entries=()):
+    """Return the form fields a TICKED match item submits.
+
+    Exactly what ``_statement_review_body.html`` emits: the tick names the
+    item's rendered position and the hidden inputs beside it carry that item's
+    ids, so what commits is what was reviewed (ruling **R-FP**).
+
+    Args:
+        index: The item's rendered position, or ``"hand"`` for the
+            hand-build form -- whose index is deliberately not a number, so it
+            can never collide with a proposal's.
+        lines: Bank line rows it explains.
+        transactions: Transaction rows that explain them.
+        entries: Purchase rows that explain them.
+
+    Returns:
+        The form fields, as a plain ``dict`` for the test client.
+    """
+    return {
+        "apply": [str(index)],
+        f"match-{index}-line_ids": [str(line.id) for line in lines],
+        f"match-{index}-transaction_ids": [str(txn.id) for txn in transactions],
+        f"match-{index}-entry_ids": [str(entry.id) for entry in entries],
+    }
+
+
+def _pass(*parts):
+    """Merge several items' fields into ONE submitted form.
+
+    **``apply`` is a REPEATED key, so merging is a union rather than an
+    update.**  A plain ``dict.update`` overwrites it, which silently leaves one
+    item ticked out of however many were meant -- and every assertion about
+    what landed then grades a pass that was never submitted.  Found by writing
+    exactly that and watching four items become two.
+
+    Args:
+        *parts: The per-item field dicts from :func:`_match` /
+            :func:`_record_line`.
+
+    Returns:
+        The merged form, list values concatenated.
+    """
+    merged = {}
+    for part in parts:
+        for key, value in part.items():
+            if isinstance(value, list):
+                merged.setdefault(key, []).extend(value)
+            else:
+                merged[key] = value
+    return merged
+
+
+def _record_line(line, *, destination, name="Walmart", category_id=""):
+    """Return the form fields ONE creatable line submits.
+
+    **The name and the category are always submitted**, whichever destination
+    was picked, because a browser submits every control it renders -- which is
+    the fact a hand-picked payload hid at plan step X-f6a-3b.  The SELECT is
+    what says which arm was chosen.
+
+    Args:
+        line: The bank line row.
+        destination: ``"new"``, an envelope id, or ``""`` to leave it alone --
+            which is the select's own default.
+        name: What the name box carries.
+        category_id: What the category select carries; ``""`` is its default,
+            because the category is a decision rather than a default.
+
+    Returns:
+        The form fields, as a plain ``dict`` for the test client.
+    """
+    return {
+        f"destination-{line.id}": str(destination),
+        f"envelope_name-{line.id}": name,
+        f"category_id-{line.id}": str(category_id),
+    }
 
 
 class TestTheReviewPage:
@@ -120,7 +216,9 @@ class TestTheReviewPage:
         """This screen MOVES MONEY and, unlike its sibling, says so."""
         response = auth_client.get(_review_url(seed_user["account"].id))
 
-        assert b"Accepting a match changes your records" in response.data
+        assert b"Applying what you ticked changes your records" in (
+            response.data
+        )
 
     def test_it_names_lines_older_than_the_pay_calendar(
         self, auth_client, db, seed_user,
@@ -163,8 +261,7 @@ class TestTheAcceptPost:
 
         response = auth_client.post(
             _review_url(seed_user["account"].id),
-            data={"line_ids": [line.id], "transaction_ids": [txn.id]},
-            follow_redirects=True,
+            data=_match(lines=[line], transactions=[txn]),
         )
 
         assert response.status_code == 200
@@ -197,11 +294,7 @@ class TestTheAcceptPost:
 
         response = auth_client.post(
             _review_url(seed_user["account"].id),
-            data={
-                "line_ids": [line.id],
-                "transaction_ids": [salary.id, allowance.id],
-            },
-            follow_redirects=True,
+            data=_match(lines=[line], transactions=[salary, allowance]),
         )
 
         assert response.status_code == 200
@@ -227,11 +320,7 @@ class TestTheAcceptPost:
 
         response = auth_client.post(
             _review_url(seed_user["account"].id),
-            data={
-                "line_ids": [line.id],
-                "transaction_ids": [salary.id, allowance.id],
-            },
-            follow_redirects=True,
+            data=_match(lines=[line], transactions=[salary, allowance]),
         )
 
         assert b"do not add up" in response.data
@@ -239,6 +328,34 @@ class TestTheAcceptPost:
         assert salary.settled_on is None
         assert allowance.settled_on is None
         assert db.session.query(StatementMatch).count() == 0
+
+    def test_a_crafted_TICK_is_refused_rather_than_a_500(
+        self, auth_client, db, seed_user,
+    ):
+        """The route-level control for the sort key's own domain.
+
+        ``batch_payload`` runs BEFORE the route's ``try``, so anything it
+        raises escapes the handler entirely -- and ``app/error_handlers.py``
+        registers no ``ValueError`` arm.  ``str.isdigit()`` is true for 888
+        characters, 128 of which make ``int()`` raise, so ``apply=%C2%B2`` was
+        an unhandled 500 on the door that applies a whole reviewed pass.  Found
+        by adversarial security review 2026-08-19; the schema test grades the
+        regrouper, and this grades what an actual request gets back.
+        """
+        statement = an_import(seed_user)
+        a_bank_line(seed_user, statement)
+        db.session.commit()
+
+        for token in ("\N{SUPERSCRIPT TWO}", "9" * 4301):
+            response = auth_client.post(
+                _review_url(seed_user["account"].id),
+                data={"apply": [token], f"match-{token}-line_ids": ["1"]},
+            )
+
+            assert response.status_code in (200, 400), (
+                f"apply={token[:8]!r} answered {response.status_code}"
+            )
+            assert db.session.query(StatementMatch).count() == 0
 
     def test_a_lax_id_spelling_is_refused(self, auth_client, db, seed_user):
         """``RowId``, not ``fields.Integer``: '007' names no row (N-141)."""
@@ -248,12 +365,418 @@ class TestTheAcceptPost:
 
         response = auth_client.post(
             _review_url(seed_user["account"].id),
-            data={"line_ids": [str(line.id)], "transaction_ids": ["007"]},
-            follow_redirects=True,
+            data={
+                "apply": ["0"],
+                "match-0-line_ids": [str(line.id)],
+                "match-0-transaction_ids": ["007"],
+            },
         )
 
+        # **The status and the sentence, not just the absence of success.**  A
+        # route answering 200 with an empty body, or 500 behind an error page,
+        # passed the "not in response.data" arm alone.  Named by adversarial
+        # test-quality review 2026-08-19.
+        assert response.status_code == 400
+        assert response.headers.get("Shekel-Designed-Fragment") == "1"
+        assert b"Not a valid id" in response.data
         assert db.session.query(StatementMatch).count() == 0
         assert b"onto the bank" not in response.data
+
+    def test_MANY_bad_ids_do_not_render_the_same_sentence_many_times(
+        self, auth_client, db, seed_user,
+    ):
+        """One message, named and counted, rather than forty identical ones.
+
+        Marshmallow reports one entry per bad value, so a stale page with forty
+        unparseable ids used to render "Not a valid id.; Not a valid id.; ..."
+        with nothing saying WHICH ticked item to untick -- the opposite of the
+        standard this package holds a refusal to three lines away.  Named by
+        adversarial design review 2026-08-19.
+        """
+        statement = an_import(seed_user)
+        line = a_bank_line(seed_user, statement)
+        db.session.commit()
+
+        data = {"apply": [str(index) for index in range(6)]}
+        for index in range(6):
+            data[f"match-{index}-line_ids"] = [str(line.id)]
+            data[f"match-{index}-transaction_ids"] = ["007"]
+
+        response = auth_client.post(
+            _review_url(seed_user["account"].id), data=data,
+        )
+
+        assert response.status_code == 400
+        body = response.data.decode()
+        assert body.count("Not a valid id.") == 1, (
+            "the same sentence was repeated once per bad value"
+        )
+        # ...and it says WHERE, so the owner can find the ticked item.
+        assert "matches" in body
+        assert "transaction_ids" in body
+
+    def test_a_pass_over_the_CEILING_is_refused_on_screen(
+        self, auth_client, db, seed_user,
+    ):
+        """The bound's whole point is that it is SAID, never silent.
+
+        ``_MAX_BATCH_ITEMS`` is graded at the schema, but the sentence it
+        raises is a schema-LEVEL error rather than a field one -- a different
+        shape through ``_messages`` -- and nothing asserted that it reaches the
+        owner.  Named by adversarial test-quality review 2026-08-19.
+        """
+        response = auth_client.post(
+            _review_url(seed_user["account"].id),
+            data={
+                "apply": [str(index) for index in range(501)],
+                **{
+                    f"match-{index}-line_ids": ["1"]
+                    for index in range(501)
+                },
+            },
+        )
+
+        assert response.status_code == 400
+        assert b"at most 500 in one pass" in response.data
+        assert b"apply them in two goes" in response.data
+        assert db.session.query(StatementMatch).count() == 0
+
+
+class TestOneRequestWorksTheWholeStatement:
+    """Finding **N-306**, end to end through HTTP -- plan step X-f6a-3c-2.
+
+    The screen offered 215 acts on the developer's own statement and took one
+    per request, at 3.67 s apiece -- 13.2 minutes.  These are the properties
+    of doing them
+    together that no service test can see: what a browser actually posts, and
+    what the screen says back.
+    """
+
+    @staticmethod
+    def _three_proposals(seed_user, db):
+        """Stage three lines that pair one-to-one with three rows."""
+        statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        pairs = []
+        for index, amount in enumerate(("180.00", "42.00", "9.99")):
+            line = a_bank_line(
+                seed_user, statement, amount=f"-{amount}", posted_on=day,
+                sequence_in_group=index,
+            )
+            row = a_transaction(
+                seed_user, name=f"Bill {index}", amount=amount,
+                status=StatusEnum.DONE,
+                settled_on=day + timedelta(days=index + 1),
+            )
+            pairs.append((line, row))
+        db.session.commit()
+        return pairs
+
+    def test_many_acts_land_in_ONE_request(self, auth_client, db, seed_user):
+        """Three matches and a recorded line, one POST, one commit."""
+        pairs = self._three_proposals(seed_user, db)
+        swipe = a_bank_line(
+            seed_user, an_import(seed_user), amount="-57.96",
+            posted_on=seed_user["bootstrap_period"].start_date,
+        )
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="500.00", is_envelope=True,
+        )
+        db.session.commit()
+
+        data = _pass(
+            *(
+                _match(index=index, lines=[line], transactions=[row])
+                for index, (line, row) in enumerate(pairs)
+            ),
+            _record_line(swipe, destination=envelope.id),
+        )
+
+        response = auth_client.post(
+            _review_url(seed_user["account"].id), data=data,
+        )
+
+        assert response.status_code == 200
+        assert b"4 applied" in response.data
+        db.session.expire_all()
+        assert db.session.query(StatementMatch).count() == 4
+        for _, row in pairs:
+            assert row.settled_on == (
+                seed_user["bootstrap_period"].start_date
+            )
+        assert len(envelope.entries) == 1
+
+    def test_an_UNTICKED_proposal_is_not_applied(
+        self, auth_client, db, seed_user,
+    ):
+        """Ruling **R-FP**, on the payload a browser really sends.
+
+        Every proposal's ids are rendered as hidden inputs and submitted
+        whether or not it was ticked, because a browser cannot render them
+        conditionally.  The checkbox is what separates them -- and at 124
+        proposals that is the difference between a reviewed pass and applying
+        the app's entire opinion.
+        """
+        pairs = self._three_proposals(seed_user, db)
+
+        data = _match(index=0, lines=[pairs[0][0]], transactions=[pairs[0][1]])
+        # The second proposal's ids, rendered and submitted, with no tick.
+        data["match-1-line_ids"] = [str(pairs[1][0].id)]
+        data["match-1-transaction_ids"] = [str(pairs[1][1].id)]
+
+        response = auth_client.post(
+            _review_url(seed_user["account"].id), data=data,
+        )
+
+        assert response.status_code == 200
+        db.session.expire_all()
+        assert db.session.query(StatementMatch).count() == 1
+        assert pairs[1][1].settled_on != (
+            seed_user["bootstrap_period"].start_date
+        ), "an un-ticked proposal was applied"
+
+    def test_a_refused_item_is_QUOTED_and_the_rest_still_land(
+        self, auth_client, db, seed_user,
+    ):
+        """The ruled failure policy, on the screen the owner is looking at.
+
+        Flash messages ride in the signed session cookie and one of these
+        sentences measures 497 bytes against the 4 KB a browser stores -- nine
+        of them overflow it -- so the outcome is part of the re-rendered
+        surface instead.
+        """
+        pairs = self._three_proposals(seed_user, db)
+        bad_line = a_bank_line(
+            seed_user, an_import(seed_user), amount="2573.43",
+            posted_on=seed_user["bootstrap_period"].start_date,
+        )
+        bad_row = a_transaction(
+            seed_user, name="Salary", amount="2473.38", income=True,
+        )
+        db.session.commit()
+
+        data = _pass(
+            _match(index=0, lines=[bad_line], transactions=[bad_row]),
+            _match(index=1, lines=[pairs[0][0]], transactions=[pairs[0][1]]),
+        )
+
+        response = auth_client.post(
+            _review_url(seed_user["account"].id), data=data,
+        )
+
+        assert response.status_code == 200
+        assert b"1 applied, 1 refused" in response.data
+        assert b"do not add up" in response.data
+        assert b"0.05" in response.data, "the refusal lost its own figures"
+        db.session.expire_all()
+        assert db.session.query(StatementMatch).count() == 1
+        assert bad_row.settled_on is None
+
+    def test_the_screen_re_renders_from_AFTER_the_pass(
+        self, auth_client, db, seed_user,
+    ):
+        """The answer is the screen, so it must not be the screen from before.
+
+        The scope the pass ran against holds the account's rows as they stood
+        BEFORE it, which is exactly what must not be shown after -- so the
+        response builds a fresh one.
+
+        **It has to be asserted on something the stale scope CANNOT know**, and
+        a first draft was not: it checked for ``Accepted matches`` and for
+        ``name="apply" value="0"``, both of which the template renders
+        unconditionally on every render, and both of which passed against a
+        response deliberately built from the pre-pass scope.  Adversarial
+        test-quality review 2026-08-19 measured that and named it a tautology.
+
+        So the assertion is an envelope the pass CREATED: it did not exist when
+        the scope was derived, so a stale render cannot offer it as a
+        destination for another line, and a fresh one must.
+        """
+        statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        swipe = a_bank_line(
+            seed_user, statement, amount="-31.41", posted_on=day,
+            description="LOWES #00907 (Lowe's)",
+        )
+        # A SECOND line in the same period, left alone, whose destination
+        # picker is where the created envelope must appear.
+        a_bank_line(
+            seed_user, statement, amount="-12.00", posted_on=day,
+            sequence_in_group=1,
+        )
+        db.session.commit()
+
+        page = auth_client.get(_review_url(seed_user["account"].id))
+        assert b"Bright New Envelope" not in page.data
+
+        response = auth_client.post(
+            _review_url(seed_user["account"].id),
+            data=_record_line(
+                swipe, destination="new", name="Bright New Envelope",
+                category_id=seed_user["categories"]["Groceries"].id,
+            ),
+        )
+
+        assert response.status_code == 200
+        created = db.session.query(Transaction).filter(
+            Transaction.name == "Bright New Envelope",
+        ).one()
+        assert f'<option value="{created.id}">'.encode() in response.data, (
+            "the answer was rendered from the scope the pass ran AGAINST, so "
+            "it cannot see the envelope the pass created"
+        )
+
+    def test_the_sweep_controls_PARTITION_the_proposals(
+        self, auth_client, db, seed_user,
+    ):
+        """Per-class rather than one "tick all" (developer ruling 2026-08-19).
+
+        A proposal either confirms a day the app already had, moves one it got
+        wrong, or marks a row as having happened -- three different acts with
+        three different consequences, so the riskiest is never swept by the
+        same click as the safest.  The classes must SUM to the proposal count,
+        which is the property a caption counting them relies on.
+        """
+        statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        # One that only confirms.
+        a_bank_line(seed_user, statement, amount="-11.00", posted_on=day)
+        a_transaction(
+            seed_user, name="Confirms", amount="11.00",
+            status=StatusEnum.DONE, settled_on=day,
+        )
+        # One that moves a day.
+        a_bank_line(
+            seed_user, statement, amount="-22.00", posted_on=day,
+            sequence_in_group=1,
+        )
+        a_transaction(
+            seed_user, name="Corrects", amount="22.00",
+            status=StatusEnum.DONE, settled_on=day + timedelta(days=3),
+        )
+        # One that marks a row as having happened.
+        a_bank_line(
+            seed_user, statement, amount="-33.00", posted_on=day,
+            sequence_in_group=2,
+        )
+        a_transaction(seed_user, name="Settles", amount="33.00")
+        db.session.commit()
+
+        response = auth_client.get(_review_url(seed_user["account"].id))
+        body = response.data
+
+        assert b"tick all 1 that only confirm a day you already had" in body
+        assert b"tick all 1 that move a day onto the bank" in body
+        assert b"tick all 1 that mark a row as having happened" in body
+        # Each proposal is tagged with exactly one class, and the three tags
+        # cover all three proposals.
+        assert body.count(b'data-proposal-class=') == 3
+
+
+    def test_a_refusal_raised_OUTSIDE_an_item_still_answers_with_the_screen(
+        self, auth_client, db, seed_user, monkeypatch,
+    ):
+        """The firing control for the route's ``except ValidationError`` arm.
+
+        Nothing inside the route's ``try`` raises one today -- every per-item
+        refusal is caught and reported by ``_batch._run``.  The arm stands for
+        the SURFACE: a designed refusal escaping an htmx POST is answered by
+        the app-wide handler with a page htmx will not swap, so the owner
+        presses Apply and sees nothing at all after a fourteen-second wait.
+
+        A guard nothing can observe is worse than none, so this observes it.
+        """
+        statement = an_import(seed_user)
+        a_bank_line(seed_user, statement)
+        db.session.commit()
+
+        def _refuses(*_args, **_kwargs):
+            raise ValidationError("the pass itself was unacceptable.")
+
+        # **The ROUTE's own binding**, not the service module's: the route
+        # does ``from app.services.statement_match import apply_reviewed``, so
+        # patching the service leaves the route calling the real one -- which
+        # is how a first version of this test passed against an arm it never
+        # reached.
+        monkeypatch.setattr(
+            statement_matches_route, "apply_reviewed", _refuses,
+        )
+
+        response = auth_client.post(
+            _review_url(seed_user["account"].id),
+            data={"apply": ["0"], "match-0-line_ids": ["1"]},
+        )
+
+        assert response.status_code == 400
+        assert response.headers.get("Shekel-Designed-Fragment") == "1"
+        assert b"the pass itself was unacceptable." in response.data
+        assert b"statement-review-body" in response.data, (
+            "the answer must be the SCREEN, or htmx swaps a fragment that is "
+            "not the one the request targeted"
+        )
+
+    def test_a_DATABASE_error_leaves_the_whole_pass_undone(
+        self, auth_client, db, seed_user, monkeypatch,
+    ):
+        """The route's ``except SQLAlchemyError`` arm, which nothing reached.
+
+        ``_run`` catches only this project's designed refusals, so a DB-level
+        error inside item 2 of a pass propagates out of ``apply_reviewed`` --
+        and the truth of "nothing was changed" then rests on the REQUEST's
+        rollback undoing item 1, whose savepoint was already released.  That is
+        a different guarantee from the per-item one and it was untested.  Named
+        by adversarial test-quality review 2026-08-19.
+
+        It also grades the refusal SURFACE: htmx leaves a 4xx non-swapping
+        unless the designed-fragment marker is present, so without it the
+        owner would see nothing at all after a 14-second wait.
+        """
+        statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(
+            seed_user, statement, amount="-180.00", posted_on=day,
+        )
+        row = a_transaction(
+            seed_user, name="Electricity", amount="180.00",
+            status=StatusEnum.DONE, settled_on=day + timedelta(days=3),
+        )
+        swipe = a_bank_line(
+            seed_user, statement, amount="-57.96", posted_on=day,
+            sequence_in_group=1,
+        )
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="500.00", is_envelope=True,
+        )
+        db.session.commit()
+
+        def _database_died(*_args, **_kwargs):
+            raise OperationalError("SELECT 1", {}, Exception("gone"))
+
+        monkeypatch.setattr(
+            statement_match_batch, "create_purchase_from_line",
+            _database_died,
+        )
+
+        response = auth_client.post(
+            _review_url(seed_user["account"].id),
+            data=_pass(
+                _match(lines=[line], transactions=[row]),
+                _record_line(swipe, destination=envelope.id),
+            ),
+        )
+
+        assert response.status_code == 400
+        assert response.headers.get("Shekel-Designed-Fragment") == "1", (
+            "htmx will not swap this, so the owner sees nothing"
+        )
+        assert b"nothing was changed" in response.data
+        db.session.expire_all()
+        assert db.session.query(StatementMatch).count() == 0
+        assert row.settled_on == day + timedelta(days=3), (
+            "item 1 landed and its savepoint was released; the REQUEST's own "
+            "rollback is what has to undo it"
+        )
+        assert envelope.entries == []
 
 
 class TestTheHandBuildForm:
@@ -294,8 +817,13 @@ class TestTheHandBuildForm:
         assert b"ACH DEBIT NOTHING EXPLAINS THIS" in response.data
         assert b"Ghost Payment" in response.data
         assert b"the bank never showed" in response.data
-        assert b'name="line_ids"' in response.data
-        assert b'name="transaction_ids"' in response.data
+        assert b'name="match-hand-line_ids"' in response.data
+        assert b'name="match-hand-transaction_ids"' in response.data
+        # **Its index cannot collide with a rendered proposal's.**  Both forms
+        # post to one door; only their separateness as <form> elements keeps
+        # proposal 0's hidden ids out of this group today, and that is a
+        # property of the document rather than of the form.
+        assert b'name="apply" value="hand"' in response.data
 
     def test_a_hand_built_group_that_does_not_add_up_is_REFUSED_on_screen(
         self, auth_client, db, seed_user,
@@ -318,11 +846,8 @@ class TestTheHandBuildForm:
 
         response = auth_client.post(
             _review_url(seed_user["account"].id),
-            data={
-                "line_ids": [line.id],
-                "transaction_ids": [salary.id, allowance.id],
-            },
-            follow_redirects=True,
+            data=_match(index="hand", lines=[line],
+                        transactions=[salary, allowance]),
         )
 
         assert b"do not add up" in response.data
@@ -349,11 +874,7 @@ class TestTheHandBuildForm:
 
         auth_client.post(
             _review_url(seed_user["account"].id),
-            data={
-                "line_ids": [line.id],
-                "transaction_ids": [salary.id, allowance.id],
-            },
-            follow_redirects=True,
+            data=_match(lines=[line], transactions=[salary, allowance]),
         )
 
         db.session.expire_all()
@@ -378,7 +899,7 @@ class TestTheReleasePost:
         db.session.commit()
         auth_client.post(
             _review_url(seed_user["account"].id),
-            data={"line_ids": [line.id], "transaction_ids": [txn.id]},
+            data=_match(lines=[line], transactions=[txn]),
         )
         match_id = db.session.query(StatementMatch.id).scalar()
 
@@ -432,7 +953,11 @@ class TestItRefusesAnotherUsersAccount:
         """The write door is decorated independently of the read."""
         response = auth_client.post(
             _review_url(other_users_account),
-            data={"line_ids": [1], "transaction_ids": [1]},
+            data={
+                "apply": ["0"],
+                "match-0-line_ids": ["1"],
+                "match-0-transaction_ids": ["1"],
+            },
         )
 
         assert response.status_code == 404
@@ -449,38 +974,43 @@ class TestItRefusesAnotherUsersAccount:
 
         assert response.status_code == 404
 
-    def test_the_purchase_door_answers_404(
+    def test_the_CREATION_arm_answers_404_too(
         self, auth_client, db, other_users_account,
     ):
-        """The FOURTH decorator, and the one that CREATES budget rows.
+        """The same door, asked with the payload that MINTS budget rows.
 
-        Plan step **bank_import:X-f6a-3b**.  Three doors being right proves
-        nothing about a fourth, and this one can mint a transaction and a
-        purchase -- so an un-decorated route would let one user grow another's
+        Plan step **bank_import:X-f6a-3b** put creating a purchase behind its
+        own route, and **X-f6a-3c-2** folded it into this one -- so the
+        decorator is now shared.  The arms are still tested separately, because
+        a shared decorator proves the request was refused and says nothing
+        about which arm would have run: this one can mint a transaction and a
+        purchase, so an un-refused request would let one user grow another's
         budget from their own statement.
         """
         response = auth_client.post(
-            f"{_review_url(other_users_account)}/purchase",
-            data={"line_id": 1, "transaction_id": 1},
+            _review_url(other_users_account),
+            data={
+                "destination-1": "new",
+                "envelope_name-1": "Anything",
+                "category_id-1": "1",
+            },
         )
 
         assert response.status_code == 404
         assert db.session.query(StatementMatch).count() == 0
+        assert db.session.query(Transaction).filter(
+            Transaction.name == "Anything",
+        ).count() == 0
 
 
-class TestThePurchasePost:
-    """The create door end to end -- plan step **bank_import:X-f6a-3b**.
+class TestTheCreateArm:
+    """Recording a bank line as a purchase -- plan step **bank_import:X-f6a-3b**,
+    through the one door plan step **X-f6a-3c-2** left standing.
 
-    The route's own subjects, none of which the service test can see: the
-    destination ``<select>``'s EMPTY value meaning "a new envelope", the
-    ownership decorator on a third door, and the flash that says what was
-    recorded and where.
+    The route's own subjects, none of which the service test can see: what the
+    destination select MEANS, the payload a browser really sends, and what the
+    screen says was recorded.
     """
-
-    @staticmethod
-    def _purchase_url(account_id):
-        """Return the create door's URL for *account_id*."""
-        return f"{_review_url(account_id)}/purchase"
 
     @staticmethod
     def _an_open_envelope(seed_user):
@@ -492,9 +1022,9 @@ class TestThePurchasePost:
     def test_the_page_offers_the_line_and_a_destination(
         self, auth_client, db, seed_user,
     ):
-        """The card is what makes the door reachable at all.
+        """The card is what makes the arm reachable at all.
 
-        Without it the create door fires only on a crafted POST, and the 74
+        Without it the create arm fires only on a crafted POST, and the 74
         card swipes the step exists for are never put in front of the person
         who can record them -- which is the same defect the hand-build form was
         added to fix one leaf earlier.
@@ -516,21 +1046,57 @@ class TestThePurchasePost:
         # The name box is prefilled with the MERCHANT, not the whole line.
         assert b'value="Walmart"' in response.data
 
+    def test_the_select_DEFAULTS_to_leaving_the_line_alone(
+        self, auth_client, db, seed_user,
+    ):
+        """Ruling **R-FP**, as a property of the CONTROL rather than of a click.
+
+        This is the half of "nothing is applied that you did not accept" that a
+        batch makes load-bearing.  The select used to default to the first
+        envelope in the line's pay period -- which on the developer's own data
+        has already CLOSED at a fixed figure on 78 of 91 lines -- and the
+        category select to whichever category sorts first ("Auto: Property
+        Tax").  One press per line hid that; one press for forty would have
+        filed forty purchases nobody chose.
+
+        So the rendered default is asserted, and then SUBMITTED: a pass
+        carrying every control the page renders, with nothing touched, must
+        record nothing at all.
+        """
+        statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(seed_user, statement, amount="-57.96",
+                           posted_on=day)
+        envelope = self._an_open_envelope(seed_user)
+        db.session.commit()
+
+        page = auth_client.get(_review_url(seed_user["account"].id))
+        assert b"-- leave this line alone --" in page.data
+        assert b"-- choose a category --" in page.data
+
+        response = auth_client.post(
+            _review_url(seed_user["account"].id),
+            data=_record_line(line, destination=""),
+        )
+
+        assert response.status_code == 200
+        db.session.expire_all()
+        assert envelope.entries == []
+        assert db.session.query(StatementMatch).count() == 0
+
     def test_it_records_into_an_existing_envelope_and_says_where(
         self, auth_client, db, seed_user,
     ):
         """The RENDERED payload, not a hand-picked subset of it.
 
-        **This posted only ``line_id`` and ``transaction_id`` and shipped a
-        dead arm.**  Every control in the form is submitted on every POST: the
-        name box is always rendered and always prefilled from the merchant, and
-        the category select has no empty option.  Keying the arm on
-        ``envelope_name is not None`` therefore named BOTH destinations on every
-        real submission and the door refused all of them -- 66 of the
+        **A hand-picked payload shipped a dead arm.**  Every control in the
+        form is submitted on every POST: the name box is always rendered and
+        always prefilled from the merchant.  Keying the arm on
+        ``envelope_name is not None`` therefore named BOTH destinations on
+        every real submission and the door refused all of them -- 66 of the
         developer's 91 creatable lines, on the first click, with no sequence of
-        interactions that reached the arm at all.  Three independent adversarial
-        reviews found it on 2026-08-19; this file's own module docstring
-        describes the identical class one leaf earlier.
+        interactions that reached the arm at all.  Three independent
+        adversarial reviews found it on 2026-08-19.
 
         So the payload below is exactly what the template emits, and the arm is
         the SELECT.
@@ -543,15 +1109,8 @@ class TestThePurchasePost:
         db.session.commit()
 
         response = auth_client.post(
-            self._purchase_url(seed_user["account"].id),
-            data={
-                "line_id": line.id,
-                "transaction_id": envelope.id,
-                # The two the browser sends whatever the owner picked.
-                "envelope_name": "Walmart",
-                "category_id": seed_user["categories"]["Groceries"].id,
-            },
-            follow_redirects=True,
+            _review_url(seed_user["account"].id),
+            data=_record_line(line, destination=envelope.id),
         )
 
         assert response.status_code == 200
@@ -571,15 +1130,16 @@ class TestThePurchasePost:
             Transaction.name == "Walmart",
         ).count() == 0
 
-    def test_an_EMPTY_destination_select_means_a_new_envelope(
+    def test_the_NEW_ENVELOPE_option_is_its_own_named_arm(
         self, auth_client, db, seed_user,
     ):
-        """The browser submits ``""`` for the "a new envelope" option.
+        """``"new"`` names the arm; an ABSENCE used to, and could be misread.
 
-        ``RowId`` reads an empty string as a validation error rather than as
-        "absent", so without the schema's ``@pre_load`` the whole arm 400s on
-        the ordinary path -- the failure is total in a browser and invisible to
-        a service test, which passes ``None``.
+        The destination was a nullable ``transaction_id`` until plan step
+        X-f6a-3c-2, so "make a new envelope" was spelled as a missing id -- and
+        the always-rendered name box then read as a destination of its own.  A
+        control that says which of three things the owner meant cannot be
+        misread; an absence can.
         """
         statement = an_import(seed_user)
         day = seed_user["bootstrap_period"].start_date
@@ -588,14 +1148,11 @@ class TestThePurchasePost:
         db.session.commit()
 
         response = auth_client.post(
-            self._purchase_url(seed_user["account"].id),
-            data={
-                "line_id": line.id,
-                "transaction_id": "",
-                "envelope_name": "Lowe's",
-                "category_id": seed_user["categories"]["Groceries"].id,
-            },
-            follow_redirects=True,
+            _review_url(seed_user["account"].id),
+            data=_record_line(
+                line, destination="new", name="Lowe's",
+                category_id=seed_user["categories"]["Groceries"].id,
+            ),
         )
 
         assert response.status_code == 200
@@ -606,47 +1163,71 @@ class TestThePurchasePost:
         ).one()
         assert created.estimated_amount == Decimal("0.00")
 
-    def test_a_new_envelope_missing_its_CATEGORY_is_refused(
+    def test_a_new_envelope_missing_its_CATEGORY_costs_only_ITSELF(
         self, auth_client, db, seed_user,
     ):
-        """A budget line with no category is invisible to every spending report.
+        """The ruled failure policy, on the slip the FORM ITSELF produces.
 
-        Both-or-neither is a fact about this FORM, so the schema owns it -- and
-        without it the service would refuse with "that category is not one of
-        yours", which is a true sentence about the wrong problem.
+        A budget line with no category is invisible to every spending report,
+        so it must be refused -- and the category select has no default on
+        purpose, which makes "picked a new envelope and stopped" the ordinary
+        path rather than an exotic one.
+
+        **The refusal used to be the schema's, and a nested schema error
+        refuses the WHOLE payload.**  On the developer's own statement that is
+        124 proposals and 90 good creations discarded by one untouched select,
+        which is exactly what the developer's ruling of 2026-08-19 says must
+        not happen.  Found by adversarial financial review 2026-08-19.
+
+        So this asserts BOTH halves: the incomplete line is refused with its
+        own sentence, and the ticked proposal beside it still lands.
         """
         statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        good_line = a_bank_line(
+            seed_user, statement, amount="-180.00", posted_on=day,
+        )
+        good_row = a_transaction(
+            seed_user, name="Electricity", amount="180.00",
+            status=StatusEnum.DONE, settled_on=day + timedelta(days=3),
+        )
         line = a_bank_line(
-            seed_user, statement, amount="-31.41",
-            posted_on=seed_user["bootstrap_period"].start_date,
+            seed_user, statement, amount="-31.41", posted_on=day,
+            sequence_in_group=1,
         )
         db.session.commit()
 
         response = auth_client.post(
-            self._purchase_url(seed_user["account"].id),
-            data={
-                "line_id": line.id,
-                "transaction_id": "",
-                "envelope_name": "Lowe's",
-                "category_id": "",
-            },
-            follow_redirects=True,
+            _review_url(seed_user["account"].id),
+            data=_pass(
+                _match(lines=[good_line], transactions=[good_row]),
+                _record_line(line, destination="new", name="Lowe's"),
+            ),
         )
 
-        assert response.status_code == 200
+        assert response.status_code == 200, (
+            "one incomplete line refused the whole pass"
+        )
         assert b"needs both a name and a category" in response.data
+        assert b"1 applied, 1 refused" in response.data
+        db.session.expire_all()
         assert db.session.query(Transaction).filter(
             Transaction.name == "Lowe's",
         ).count() == 0
+        assert good_row.settled_on == day, (
+            "the good proposal was discarded with the bad line"
+        )
 
-    def test_a_refusal_leaves_nothing_behind(
+    def test_a_refused_creation_leaves_nothing_behind(
         self, auth_client, db, seed_user,
     ):
-        """The unit of work is the REQUEST, which is what makes the message true.
+        """The new-envelope arm STAGES a budget line before the purchase.
 
-        Every refusal here ends "Nothing was changed", and the new-envelope arm
-        stages a budget line before the purchase -- so a refusal arriving after
-        that has to take the row with it.
+        So a refusal arriving after that has to take the row with it, which is
+        what makes the sentence every refusal here ends with true.  Inside a
+        batch that is the SAVEPOINT's job rather than the request's, and the
+        two are not the same guarantee: the request rolls everything back, and
+        the savepoint has to roll back this item while the others stand.
         """
         statement = an_import(seed_user)
         line = a_bank_line(
@@ -656,14 +1237,11 @@ class TestThePurchasePost:
         db.session.commit()
 
         response = auth_client.post(
-            self._purchase_url(seed_user["account"].id),
-            data={
-                "line_id": line.id,
-                "transaction_id": "",
-                "envelope_name": "Payroll",
-                "category_id": seed_user["categories"]["Groceries"].id,
-            },
-            follow_redirects=True,
+            _review_url(seed_user["account"].id),
+            data=_record_line(
+                line, destination="new", name="Payroll",
+                category_id=seed_user["categories"]["Groceries"].id,
+            ),
         )
 
         assert response.status_code == 200

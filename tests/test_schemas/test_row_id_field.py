@@ -267,8 +267,23 @@ _NON_INTEGER_FIELD_FACTORIES = frozenset({"_auth_email_field"})
 #: :data:`_NON_ROW_ID_INTEGERS`.  So this set is held to being real by
 #: ``test_the_non_integer_spellings_are_all_declared``: adding a genuinely new
 #: field type means declaring it and listing it in the same commit.
+#: **``PurchaseDestination`` is here and it DOES carry a row id**, which is why
+#: :meth:`TestNoIdFieldWasMissed
+#: ::test_the_destination_field_is_strict_about_the_id_it_carries` stands
+#: beside this entry.  The statement review screen's destination select submits
+#: one of three things -- leave this line alone, an envelope's id, or "a new
+#: envelope" -- so the field cannot be a ``RowId`` subclass without lying about
+#: what it returns.  Listing it as a non-integer spelling would otherwise be
+#: exactly the standing permission the comment above refuses, so the strictness
+#: this gate exists to enforce is asserted DIRECTLY on it instead.
+#: **``Nested`` is not a hole**, and the reason is the scan's own shape: a
+#: nested field delegates to a SCHEMA, and that schema's declarations are read
+#: by this same sweep on their own account.  ``StatementBatchSchema`` carries
+#: two lists of them (plan step ``bank_import:X-f6a-3c-2``), and the ids inside
+#: each item are graded where they are declared -- so nothing is waved through
+#: by listing the container.
 _NON_INTEGER_FIELD_SPELLINGS = frozenset({
-    "Boolean", "Date", "Decimal", "String",
+    "Boolean", "Date", "Decimal", "Nested", "PurchaseDestination", "String",
 })
 
 #: Every field-class spelling in the validation package that is STRICT about
@@ -537,6 +552,35 @@ class TestNoIdFieldWasMissed:
             "_STRICT_ROW_ID_SPELLINGS if it builds a RowId, "
             f"_NON_INTEGER_FIELD_FACTORIES if it builds neither: {unknown}"
         )
+
+    def test_the_destination_field_is_strict_about_the_id_it_carries(self):
+        """``PurchaseDestination`` names a ROW and is graded like one.
+
+        It is listed as a non-integer spelling because it returns one of two
+        things -- an envelope's id, or the string naming the "a new envelope"
+        arm -- so it cannot derive from :class:`RowId` without lying about its
+        own return type.  That listing would otherwise be the standing
+        permission :data:`_NON_INTEGER_FIELD_SPELLINGS`' own docstring refuses,
+        so the guarantee is asserted here directly: every spelling
+        ``fields.Integer`` accepts and ``RowId`` refuses is refused by this
+        field too.
+
+        It matters because the id it carries is where a bank line's money goes.
+        A laxer reading would let ``'007'`` name envelope 7 -- a real budget
+        line, in a real pay period, that the owner never picked.
+        """
+        from app.schemas.validation.statements import (  # pylint: disable=import-outside-toplevel
+            NEW_ENVELOPE,
+            PurchaseDestination,
+        )
+
+        field = PurchaseDestination()
+        for lax in ("\u0661\u0662", " 12 ", "+12", "1_0", "007", "-5", "0"):
+            with pytest.raises(ValidationError):
+                field.deserialize(lax)
+        # ...and the two things it DOES accept.
+        assert field.deserialize("12") == 12
+        assert field.deserialize(NEW_ENVELOPE) == NEW_ENVELOPE
 
     def test_the_non_integer_spellings_are_all_declared(self):
         """No field type is waved through that the package does not declare.

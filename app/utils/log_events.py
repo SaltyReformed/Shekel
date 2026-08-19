@@ -486,6 +486,15 @@ EVT_STATEMENT_LINE_RECORDED = _register(
     "line, which MOVES MONEY: the app now records a movement it did not have.",
 )
 
+EVT_STATEMENT_BATCH_APPLIED = _register(
+    "statement_batch_applied", BUSINESS,
+    "An owner applied a whole reviewed statement pass in one request.  It is "
+    "its own event beside the per-act ones rather than a replacement for them: "
+    "those say what each match and each recorded line did, and this says how "
+    "much of what was ticked actually landed -- which is the only place a "
+    "REFUSED item is counted at all.",
+)
+
 
 # ── Performance events (request lifecycle) ─────────────────────────
 
