@@ -648,8 +648,8 @@ class TestTemplateUpdate:
             periods = all_periods(seed_user["user"].id)
             transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in periods},
-), scenario.id,
+                    calendar_for(template.user_id), {p.id for p in periods},
+                ), scenario.id,
             )
             db.session.flush()
             xfer = (
@@ -697,8 +697,8 @@ class TestTemplateUpdate:
             periods = all_periods(seed_user["user"].id)
             transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in periods},
-), scenario.id,
+                    calendar_for(template.user_id), {p.id for p in periods},
+                ), scenario.id,
             )
             db.session.flush()
             xfer = (

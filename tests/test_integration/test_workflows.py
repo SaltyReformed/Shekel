@@ -73,8 +73,8 @@ class TestSalaryToGrid:
             # Generate income transactions across all 10 periods.
             txns = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in seed_periods},
-), seed_user["scenario"].id,
+                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.commit()
 
@@ -115,8 +115,8 @@ class TestTemplateRecurrenceToGrid:
 
             txns = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in seed_periods},
-), seed_user["scenario"].id,
+                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                ), seed_user["scenario"].id,
             )
             db.session.commit()
 

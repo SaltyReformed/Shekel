@@ -88,8 +88,8 @@ def _time_generate(template, periods, scenario_id, iterations=ITERATIONS):
         _delete_generated_transactions(template.id)
         db.session.commit()
         recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in periods},
-), scenario_id)
+            calendar_for(template.user_id), {p.id for p in periods},
+        ), scenario_id)
         db.session.flush()
         db.session.commit()
 
@@ -101,8 +101,8 @@ def _time_generate(template, periods, scenario_id, iterations=ITERATIONS):
         start = time.perf_counter()
         recurrence_engine.generate_for_template(
             template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in periods},
-), scenario_id
+                calendar_for(template.user_id), {p.id for p in periods},
+            ), scenario_id
         )
         db.session.flush()
         elapsed_ms = (time.perf_counter() - start) * 1000
@@ -164,14 +164,14 @@ class TestRecurrenceEngineOverhead:
                 _delete_generated_transactions(template.id)
                 recurrence_engine.generate_for_template(
                     template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in perf_periods},
-), scenario_id
+                        calendar_for(template.user_id), {p.id for p in perf_periods},
+                    ), scenario_id
                 )
                 db.session.commit()
                 recurrence_engine.regenerate_for_template(
                     template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in perf_periods},
-), scenario_id
+                        calendar_for(template.user_id), {p.id for p in perf_periods},
+                    ), scenario_id
                 )
                 db.session.flush()
                 db.session.commit()
@@ -182,16 +182,16 @@ class TestRecurrenceEngineOverhead:
                 _delete_generated_transactions(template.id)
                 recurrence_engine.generate_for_template(
                     template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in perf_periods},
-), scenario_id
+                        calendar_for(template.user_id), {p.id for p in perf_periods},
+                    ), scenario_id
                 )
                 db.session.commit()
 
                 start = time.perf_counter()
                 recurrence_engine.regenerate_for_template(
                     template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in perf_periods},
-), scenario_id
+                        calendar_for(template.user_id), {p.id for p in perf_periods},
+                    ), scenario_id
                 )
                 db.session.flush()
                 elapsed_ms = (time.perf_counter() - start) * 1000

@@ -1082,8 +1082,8 @@ class TestCarryForwardOverrideSibling:
             # periods 0 and 1.
             recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
-), seed_user["scenario"].id,
+                    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1111,8 +1111,8 @@ class TestCarryForwardOverrideSibling:
             # override sibling signals the period is handled.
             recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
-), seed_user["scenario"].id,
+                    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1267,8 +1267,8 @@ class TestCarryForwardOverrideSiblingTransfers:
             # and 1.
             transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
-), seed_user["scenario"].id,
+                    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -1294,8 +1294,8 @@ class TestCarryForwardOverrideSiblingTransfers:
             # Re-run transfer recurrence -- must not add a third row.
             transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
-), seed_user["scenario"].id,
+                    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 
@@ -2633,8 +2633,8 @@ class TestCarryForwardEnvelopeRecurrenceSkip:
             # has is_override=True.  Both trigger skip clauses.
             recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
-), seed_user["scenario"].id,
+                    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
+                ), seed_user["scenario"].id,
             )
             db.session.flush()
 

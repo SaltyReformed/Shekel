@@ -91,8 +91,8 @@ def _derived_loan_transfer(seed_user, seed_periods):
     transfer_recurrence.generate_for_template(
         template,
         GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in seed_periods},
-),
+            calendar_for(template.user_id), {p.id for p in seed_periods},
+        ),
         scenario_id,
     )
     db.session.commit()

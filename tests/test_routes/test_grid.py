@@ -2012,8 +2012,8 @@ class TestAccountIdColumn:
 
         created = recurrence_engine.generate_for_template(
             template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in periods},
-), scenario.id
+                calendar_for(template.user_id), {p.id for p in periods},
+            ), scenario.id
         )
 
         assert len(created) > 0

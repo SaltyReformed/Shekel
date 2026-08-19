@@ -185,8 +185,11 @@ def can_generate_in_period(template, period_id, scenario_id, *, schedule):
             ``recurrence_rule`` relationship loaded (the same
             assumption ``generate_for_template`` makes).
         period_id: The ``budget.pay_periods.id`` the canonical would land in.
-            Its membership in the engine's answer is the question; it does NOT
-            have to be in *schedule*'s write window.
+            Its membership in the engine's answer is the question, so it does
+            NOT have to be the whole of *schedule*'s write window -- a caller
+            threading a whole-schedule value and asking about one period is as
+            valid as the carry-forward context's narrowed one.  It must be IN
+            that window, because the engine's answer is narrowed to it.
         scenario_id: The scenario that would receive the canonical.
         schedule: The owner's
             :class:`~app.services.generation_schedule.GenerationSchedule`.

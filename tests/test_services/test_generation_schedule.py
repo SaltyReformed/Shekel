@@ -63,7 +63,7 @@ from decimal import Decimal
 import pytest
 
 from app.enums import StatusEnum, TxnTypeEnum
-from app.exceptions import RecurrenceWindowError
+from app.exceptions import RecurrenceCadenceUnsupported, RecurrenceWindowError
 from app import ref_cache
 from app.extensions import db
 from app.models.pay_period import PayPeriod
@@ -74,7 +74,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services import pay_period_write, period_population, recurrence_engine
 from app.services.generation_schedule import GenerationSchedule
-from app.services.pay_calendar import calendar_for
+from app.services.pay_calendar import PayCalendar, calendar_for
 from tests._test_helpers import (
     all_periods,
     counting_calls,
@@ -85,6 +85,7 @@ from tests._test_helpers import (
     seed_tax_bracket_set,
 )
 from tests.oracles.recurrence_baseline import (
+    EVERY_N_PERIODS,
     EVERY_PERIOD,
     MONTHLY_FIRST,
 )
@@ -356,8 +357,8 @@ class TestTheWindowStillNarrowsWhatIsWritten:
             created = recurrence_engine.generate_for_template(
                 template,
                 GenerationSchedule.for_period_ids(
-    calendar_for(seed_user["user"].id), {p.id for p in [seed_periods[4]]},
-),
+                    calendar_for(seed_user["user"].id), {seed_periods[4].id},
+                ),
                 scenario_id,
             )
             db.session.flush()
@@ -403,8 +404,8 @@ class TestTheStartPeriodBoundSurvivesTheWindow:
             created = recurrence_engine.generate_for_template(
                 template,
                 GenerationSchedule.for_period_ids(
-    calendar_for(seed_user["user"].id), {p.id for p in window},
-),
+                    calendar_for(seed_user["user"].id), {p.id for p in window},
+                ),
                 scenario_id,
                 effective_from=window[0].start_date,
             )
@@ -418,11 +419,19 @@ class TestTheStartPeriodBoundSurvivesTheWindow:
     ):
         """The same shape through the real repopulation entry point.
 
-        ``populate_periods_from_active_templates`` is what an extend runs, and
-        it defaults its boundary to the new batch's opening payday -- so this
-        drives D2's actual production path rather than a reconstruction of it.
-        A rule whose first paycheck is index 5 must gain nothing when periods
-        2-3 are (re)populated.
+        ``populate_periods_from_active_templates`` is what an extend runs, so
+        this drives D2's actual production path rather than a reconstruction
+        of it.  A rule whose first paycheck is index 5 must gain nothing when
+        periods 2-3 are (re)populated.
+
+        **It said "and it defaults its boundary to the new batch's opening
+        payday" until pay-calendar plan step C2-f3c**, which deleted that
+        boundary as a provable no-op: every period of a write window ends on
+        or after that window's own opening payday, so bounding placements by
+        it could never drop one.  What holds this case up is therefore the
+        RULE's own opening bound resolved against the owner's whole calendar,
+        which is what D2 was about; the caller-supplied-boundary shape is
+        still covered by the sibling case above, which passes one explicitly.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -459,8 +468,8 @@ class TestTheStartPeriodBoundSurvivesTheWindow:
             created = recurrence_engine.generate_for_template(
                 template,
                 GenerationSchedule.for_period_ids(
-    calendar_for(seed_user["user"].id), {p.id for p in [seed_periods[5]]},
-),
+                    calendar_for(seed_user["user"].id), {seed_periods[5].id},
+                ),
                 scenario_id,
             )
             db.session.flush()
@@ -601,8 +610,8 @@ class TestThePaycheckSeesTheWholeSchedule:
             period = seed_periods[_JANUARY_THIRD_PAYCHECK_INDEX]
 
             schedule = GenerationSchedule.for_period_ids(
-    calendar_for(seed_user["user"].id), {p.id for p in [period]},
-)
+                calendar_for(seed_user["user"].id), {period.id},
+            )
             created = recurrence_engine.generate_for_template(
                 template, schedule, scenario_id,
             )
@@ -781,6 +790,19 @@ class TestAWindowMustBelongToTheOwner:
         rather than the refusal: scramble the column underneath a schedule and
         the generate pass produces byte-identical rows.
 
+        **The cadence is ``EVERY_N_PERIODS`` at ``interval_n=2``, and that is
+        the whole test** (adversarial review of plan step C2-f3c).  The ONLY
+        ordinal-sensitive line in the seam is
+        ``recurrence/_occurrence._period_walk``'s
+        ``(period.period_index - offset) % interval_n``, and at ``interval_n=1``
+        that expression is zero for every ordinal there is -- so an
+        every-paycheck rule would assert something no ordinal, derived or
+        stored, can move.  The refusal this replaces named exactly this rule
+        class: it existed because a disagreeing ordinal would "silently
+        re-phase every ``Every N Periods`` rule".  At 2 the phase is real:
+        pointing the walk at the STORED column instead makes periods 0 and 1
+        swap phase and this goes red.
+
         The swap parks one row on a spare ordinal and FLUSHES between each
         step: ``uq_pay_periods_user_index`` is checked per statement, so a
         direct exchange collides inside the one flush that would carry both
@@ -788,7 +810,9 @@ class TestAWindowMustBelongToTheOwner:
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
-            template = _make_template(seed_user, EVERY_PERIOD)
+            template = _make_template(
+                seed_user, EVERY_N_PERIODS, interval_n=2,
+            )
             recurrence_engine.generate_for_template(
                 template,
                 GenerationSchedule.for_calendar(
@@ -798,7 +822,12 @@ class TestAWindowMustBelongToTheOwner:
             )
             db.session.flush()
             before = _placements(template, scenario_id)
-            assert len(before) == 10, "the premise: the pass generated rows"
+            # The premise: the rule PHASES, so an ordinal it read wrongly would
+            # move the answer.  Every other paycheck of ten, not all ten.
+            assert 0 < len(before) < 10, (
+                f"an every-2-periods rule must fire in some but not all ten "
+                f"paychecks, got {len(before)}"
+            )
 
             rows = all_periods(seed_user["user"].id)
             first, second = rows[0], rows[1]
@@ -823,7 +852,9 @@ class TestAWindowMustBelongToTheOwner:
             assert scrambled[0].start_date > scrambled[1].start_date
 
             # And the answer is unchanged: same periods, same due dates.
-            second_template = _make_template(seed_user, EVERY_PERIOD)
+            second_template = _make_template(
+                seed_user, EVERY_N_PERIODS, interval_n=2,
+            )
             second_template.name = "After the scramble"
             db.session.flush()
             recurrence_engine.generate_for_template(
@@ -836,31 +867,83 @@ class TestAWindowMustBelongToTheOwner:
             db.session.flush()
             assert _placements(second_template, scenario_id) == before
 
-    def test_the_window_cannot_widen_the_calendar_it_was_built_from(
+    def test_a_narrowed_WINDOW_still_resolves_against_the_whole_schedule(
         self, app, db, seed_user, seed_periods,
     ):
-        """A narrowed window leaves the SCHEDULE whole, which is defect D22.
+        """Defect **D22**, graded BEHAVIOURALLY because the type cannot grade it.
 
-        The window states what a pass may WRITE; it can never state what a rule
-        MEANS.  Since C2-f3c that is a property of the two types rather than of
-        a check: the schedule half is a
-        :class:`~app.services.pay_calendar.PayCalendar`, which
-        :func:`~app.services.pay_calendar.calendar_for` only ever builds from
-        an owner's complete payday set and which takes no window argument, and
-        the window half is a set of integers, which cannot describe a schedule
-        at all.
+        The window states what a pass may WRITE; it may never state what a rule
+        MEANS.  That is the $118.62 / $502.45 shape: `period_population` hands
+        each engine the newly created batch, and reading the rule against that
+        batch makes the batch's own first payday look like the owner's.
+
+        **This case asserts the ANSWER, not the shape, and an adversarial
+        review of plan step C2-f3c is why.**  What stood here asserted
+        ``schedule.calendar is calendar`` and the calendar's own ordinals --
+        one a restatement of the dataclass assignment, the other a fact the
+        test itself built -- so it could not fire on the defect it was named
+        for.  It cannot be graded at the type level either: this value now
+        TAKES its calendar, and ``PayCalendar.from_paydays`` over a window's
+        pairs is one line (``PeriodWindow``'s own docstring records that, as
+        ledger row **P24**).  So the grade is the one thing a narrowed calendar
+        would change: a ``Monthly First`` rule resolved against a one-period
+        window fires in EVERY period, because that window's only month holds
+        exactly one payday.
+
+        The control is the pair: the same rule, the same one-period window, one
+        schedule built the way `period_population` builds it and one built the
+        way D22 built it.  If the narrowed calendar answered the same, this
+        test would be measuring nothing.
         """
         with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            template = _make_template(seed_user, MONTHLY_FIRST)
             calendar = calendar_for(seed_user["user"].id)
-            schedule = GenerationSchedule.for_period_ids(
-                calendar, {seed_periods[9].id},
+            # seed_periods[4] opens 2026-02-27 -- the SECOND payday of
+            # February (the first is 02-13), so a whole-schedule Monthly First
+            # does NOT name it.
+            target = seed_periods[4]
+
+            whole = GenerationSchedule.for_period_ids(calendar, {target.id})
+            assert whole.calendar.earliest_start_in_month(2026, 2) == (
+                seed_periods[3].start_date
+            ) != target.start_date, (
+                "the premise: February's FIRST payday is not the target's"
             )
 
-            assert schedule.write_period_ids == {seed_periods[9].id}
-            assert [
-                p.period_index for p in schedule.calendar.periods
-            ] == list(range(10))
-            assert schedule.calendar is calendar
+            created = recurrence_engine.generate_for_template(
+                template, whole, scenario_id,
+            )
+            db.session.flush()
+            assert created == [], (
+                "resolved against the owner's whole calendar, a Monthly First "
+                "rule must not fire in a month's second paycheck"
+            )
+
+            # The CONTROL: the same window against a calendar narrowed to it --
+            # D22 exactly -- fires, because that calendar's February holds one
+            # payday and it is the target's.
+            narrowed = GenerationSchedule.for_period_ids(
+                PayCalendar.from_paydays(
+                    paydays=[(target.id, target.start_date)],
+                    cadence_days=calendar.cadence_days,
+                    user_id=seed_user["user"].id,
+                ),
+                {target.id},
+            )
+            assert narrowed.calendar.earliest_start_in_month(2026, 2) == (
+                target.start_date
+            ), "the control: the slice thinks the target IS February's first"
+            # And it does not merely ANSWER differently, it answers wrongly:
+            # the slice's only period runs to a cadence projection, so January
+            # AND February both land in it and the pass is refused as
+            # unstorable.  The whole-schedule read places those two occurrences
+            # in two different paychecks and refuses nothing.
+            with pytest.raises(RecurrenceCadenceUnsupported):
+                recurrence_engine.generate_for_template(
+                    _make_template(seed_user, MONTHLY_FIRST),
+                    narrowed, scenario_id,
+                )
 
     def test_the_window_is_a_frozen_set(
         self, app, db, seed_user, seed_periods,
@@ -1000,8 +1083,8 @@ class TestABoundedRuleDoesNotRestartItsCount:
             created = recurrence_engine.generate_for_template(
                 template,
                 GenerationSchedule.for_period_ids(
-    calendar_for(seed_user["user"].id), {p.id for p in seed_periods[5:8]},
-),
+                    calendar_for(seed_user["user"].id), {p.id for p in seed_periods[5:8]},
+                ),
                 scenario_id,
             )
             db.session.flush()
@@ -1131,8 +1214,8 @@ class TestRegenerateSweepsOnlyWhatItRewrites:
             recurrence_engine.regenerate_for_template(
                 template,
                 GenerationSchedule.for_period_ids(
-    calendar_for(seed_user["user"].id), {p.id for p in seed_periods[5:]},
-),
+                    calendar_for(seed_user["user"].id), {p.id for p in seed_periods[5:]},
+                ),
                 scenario_id,
             )
             db.session.flush()
@@ -1142,6 +1225,76 @@ class TestRegenerateSweepsOnlyWhatItRewrites:
             assert sorted(_rows(template, scenario_id)) == [
                 period.start_date for period in seed_periods
             ]
+
+
+class TestTheSweepDomainIsTheWINDOWAndNotABoundOnIt:
+    """What let ``regeneration_bound`` go, graded where it is visible.
+
+    The helper existed because the sweep was SQL against a column: "no lower
+    bound" had to become a concrete date, and the date had to be the WRITE
+    WINDOW's opening or the sweep reached rows the pass would never rewrite.
+    Plan step C2-f3c deleted it on the strength of a stronger property -- the
+    domain IS the window, so it cannot exceed the window whatever the bound is.
+
+    **The sibling class's narrow-window case cannot see that property**
+    (adversarial review of C2-f3c).  It uses a contiguous TAIL, where "the ids
+    in the window" and "every period from the window's opening onward" select
+    the identical rows -- so it passes byte-identically on both trees and
+    measures nothing about the change.  Only a window with a HOLE in it
+    separates the two readings, and nothing else in the suite builds one.
+
+    Not reachable from ``app/`` today: both ``regenerate_for_template`` callers
+    pass a whole-schedule window.  That was equally true of the asymmetry
+    ``regeneration_bound`` was written to close, which is the argument for
+    grading it rather than trusting it.
+    """
+
+    def test_a_window_with_a_HOLE_sweeps_neither_side_of_the_hole(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Periods 2 and 6 are the window; 3, 4 and 5 keep their rows."""
+        with app.app_context():
+            scenario_id = seed_user["scenario"].id
+            template = _make_template(seed_user, EVERY_PERIOD)
+            recurrence_engine.generate_for_template(
+                template,
+                GenerationSchedule.for_calendar(
+                    calendar_for(seed_user["user"].id),
+                ),
+                scenario_id,
+            )
+            db.session.flush()
+            assert len(_rows(template, scenario_id)) == 10
+
+            # The rule is CLEARED, so every row the pass can see is an orphan
+            # and the RETIRE branch is what decides.  That makes the domain
+            # visible: exactly the rows it reaches are the rows that go.
+            db.session.delete(template.recurrence_rule)
+            db.session.flush()
+            db.session.refresh(template)
+
+            holed = {seed_periods[2].id, seed_periods[6].id}
+            recurrence_engine.regenerate_for_template(
+                template,
+                GenerationSchedule.for_period_ids(
+                    calendar_for(seed_user["user"].id), holed,
+                ),
+                scenario_id,
+            )
+            db.session.flush()
+
+            survivors = {
+                row.pay_period_id
+                for rows in _rows(template, scenario_id).values()
+                for row in rows
+            }
+            assert survivors == {
+                period.id for period in seed_periods
+            } - holed, (
+                "a sweep bounded by the window's OPENING rather than shaped by "
+                "the window itself takes periods 3, 4 and 5 with it -- they "
+                "sit inside the hole and no pass would recreate them"
+            )
 
 
 class TestOneScheduleReadServesTheWholeRequest:
@@ -1221,6 +1374,29 @@ class TestOneScheduleReadServesTheWholeRequest:
                 f"one the route already holds"
             )
 
+            # **The instrument's own control**, and an adversarial review of
+            # plan step C2-f3c is why it is here: ``== 0`` is satisfied
+            # identically by "the service derives nothing" and by "the counter
+            # is blind", and only one of those is the claim.
+            #
+            # It calls the door the way ``app/`` code calls it -- through the
+            # module attribute -- because that is the only shape
+            # ``counting_calls`` can see.  The instrument patches every
+            # ``app.*`` module holding the real function as an attribute of
+            # that NAME, so a producer that did ``from ... import calendar_for
+            # as _cal`` would derive uncounted and both zeros above would read
+            # green through the N+1 this class exists to prevent.  That hole is
+            # the instrument's, not this step's; what this control pins is that
+            # the counter is live for the ordinary spelling.
+            from app.services import pay_calendar  # pylint: disable=import-outside-toplevel
+
+            with counting_calls(_CALENDAR_DOOR) as control:
+                pay_calendar.calendar_for(seed_user["user"].id)
+            assert control["calendar_for"] == 1, (
+                f"the counter saw {control['calendar_for']} of one direct call "
+                f"to the door it is keyed on, so both zeros above mean nothing"
+            )
+
 
 class TestNoOrmPayPeriodEntersTheSeam:
     """The generation seam names ``budget.pay_periods`` in exactly one way: ids.
@@ -1280,10 +1456,16 @@ class TestNoOrmPayPeriodEntersTheSeam:
         found = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
-                if (node.module or "").endswith("models.pay_period"):
-                    found.update(
-                        (node.module, alias.name) for alias in node.names
-                    )
+                module = node.module or ""
+                for alias in node.names:
+                    # BOTH spellings: ``from app.models.pay_period import
+                    # PayPeriod`` and ``from app.models import pay_period``.
+                    # An adversarial review of plan step C2-f3c found the
+                    # second walked straight past this census.
+                    if module.endswith("models.pay_period"):
+                        found.add((module, alias.name))
+                    elif f"{module}.{alias.name}".endswith("models.pay_period"):
+                        found.add((module, alias.name))
             elif isinstance(node, ast.Import):
                 found.update(
                     (alias.name, alias.name) for alias in node.names
@@ -1311,3 +1493,44 @@ class TestNoOrmPayPeriodEntersTheSeam:
         assert ("app.models.pay_period", "PayPeriod") in (
             self._pay_period_imports("app/services/pay_period_write.py")
         )
+
+    def test_the_census_sees_every_spelling_of_the_import(self, tmp_path):
+        """The CONTROL for the census's own BRANCHES, one per import form.
+
+        The live tree exercises exactly one of the three: ``from
+        app.models.pay_period import PayPeriod``.  An adversarial review of
+        plan step C2-f3c found the ``from app.models import pay_period``
+        spelling walking past the census unseen, and the ``ast.Import`` arm
+        with no firing control at all -- nothing in ``app/`` writes ``import
+        app.models.pay_period``, so it could have been deleted silently.
+        """
+        # Pylint: ``import-outside-toplevel`` -- this control is the only user.
+        import ast  # pylint: disable=import-outside-toplevel
+
+        spellings = {
+            "from app.models.pay_period import PayPeriod\n":
+                ("app.models.pay_period", "PayPeriod"),
+            "from app.models import pay_period\n":
+                ("app.models", "pay_period"),
+            "import app.models.pay_period\n":
+                ("app.models.pay_period", "app.models.pay_period"),
+        }
+        for source, expected in spellings.items():
+            tree = ast.parse(source)
+            found = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom):
+                    module = node.module or ""
+                    for alias in node.names:
+                        if module.endswith("models.pay_period"):
+                            found.add((module, alias.name))
+                        elif f"{module}.{alias.name}".endswith(
+                            "models.pay_period",
+                        ):
+                            found.add((module, alias.name))
+                elif isinstance(node, ast.Import):
+                    found.update(
+                        (alias.name, alias.name) for alias in node.names
+                        if alias.name.endswith("models.pay_period")
+                    )
+            assert expected in found, (source, found)

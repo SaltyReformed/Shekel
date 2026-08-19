@@ -27,10 +27,11 @@ whose order its year-to-date accumulation depends on.  **The second went at
 ``C2-f2a``** (ledger row **P37**): the contribution tier takes the read pass's
 own calendar, so no module under ``balance_at`` IMPORTS ``pay_period_service``
 and the ordering rule is the derivation rather than a sort at that door.
-``C2-e`` (the projection axis) has since shipped; of ``C2-f``'s remaining
-leaves, ``C2-f3a`` deleted ``pay_period_service.get_current_period``; ``C2-f3b`` took the four
-destructive schedule doors and the settings period list, leaving
-``get_all_periods`` alive for ``C2-f3c`` alone.
+``C2-e`` (the projection axis) has since shipped; ``C2-f3a`` deleted
+``pay_period_service.get_current_period``; ``C2-f3b`` took the four destructive
+schedule doors and the settings period list; and ``C2-f3c`` deleted
+``get_all_periods`` with its last caller, the recurrence generation seam.  That
+module now holds ``earliest_recordable_day`` alone.
 
 Why the value exists at all: an AST census on 2026-08-10 found **SIX**
 implementations of "which pay period contains this date" in ``app/`` -- ledger
@@ -412,9 +413,9 @@ class PayCalendar:
         """Return the span covering *day*, projecting past the horizon.
 
         **The TOTAL answer, and the reason this step exists** (``balance:X-l``,
-        "the pay calendar answers any date").  Today ``get_all_periods``
-        returns the saved rows and nothing else, so past the last payday every
-        consumer improvises and the improvisations disagree: the modelled
+        "the pay calendar answers any date").  The readers this replaced
+        returned the SAVED rows and nothing else, so past the last payday every
+        consumer improvised and the improvisations disagreed: the modelled
         replay's accrual tier keeps running while its contribution tier stops
         (``+$2,501.92`` and ``+$5,427.07`` at six months out, ledger rows
         **N-82** / **P7**), and ``growth_engine`` invents its own axis at a
@@ -684,14 +685,20 @@ class PayCalendar:
 
         The one question here that is not about a DATE.
 
-        **It has SEVEN live ``app/`` callers, and this paragraph claimed ZERO
-        until 2026-08-16 and FIVE until C2-f3a.**  Plan step R7b-4's note --
-        "nothing in the application asks this" -- was already false then
+        **It has ELEVEN live ``app/`` callers, and this paragraph has claimed
+        ZERO, FIVE and SEVEN in turn.**  Plan step R7b-4's note -- "nothing in
+        the application asks this" -- was already false then
         (``grid/partials.py``, ``companion_service.py``); C2-f2d-3 added the
         salary cockpit's period selector, its anatomy fragment and the
-        recurrence engine's pricing lookup, and C2-f3a added both window
-        labels.  **A sentence about the tree goes stale exactly like one about
-        the code**, and this one has now gone stale twice.
+        recurrence engine's pricing lookup; C2-f3a added both window labels;
+        the statement matcher and the schedule truncate door arrived with their
+        own steps; and C2-f3c DELETED the pricing lookup while adding three --
+        the carry-forward route and both of its service-side period lookups,
+        where this replaced a ``db.session.get`` plus a hand-written
+        ``row.user_id`` comparison.  **A sentence about the tree goes stale
+        exactly like one about the code**, and this one has now gone stale
+        three times; the census that produced the number is
+        ``grep -rn "period_by_id(" app/``.
 
         Never answers a projected period, which has no id.
 

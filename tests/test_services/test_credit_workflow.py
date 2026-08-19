@@ -666,9 +666,9 @@ class TestCarryForward:
             assert count == 0
 
     def test_carry_forward_another_owners_calendar_raises_not_found(
-        self, app, db, seed_user, seed_periods
+        self, app, db, seed_user, seed_second_user, seed_periods
     ):
-        """Another owner's calendar cannot reach these periods.
+        """A REAL second owner's calendar cannot reach these periods.
 
         **This graded a ``user_id=999999`` argument until pay-calendar plan
         step C2-f3c**, which deleted that argument: the door takes the owner's
@@ -677,13 +677,30 @@ class TestCarryForward:
         wrong.  What replaces the check is the same defence made structural --
         a calendar is one owner's whole schedule and nothing else, so periods
         that are not in it are not found, whether they exist or not.
+
+        **The second owner is REAL and has their own schedule**, which an
+        adversarial review of that step is why: the first rewrite passed
+        ``calendar_for(999999)``, a nonexistent user, whose calendar is EMPTY
+        and therefore refuses every id trivially.  That cannot tell "not this
+        owner's" from "this owner has no schedule", and it is a state the
+        application cannot produce.  This is the mutating door's only
+        cross-owner case; the preview door's lives in
+        ``test_carry_forward_service``.
         """
         with app.app_context():
+            other = calendar_for(seed_second_user["user"].id)
+            # The premise: the other owner HAS a schedule, so the refusal below
+            # is about whose periods these are and not about an empty calendar.
+            assert len(other.saved()) > 0, (
+                "the second user needs their own periods, or this case is the "
+                "empty-calendar tautology it replaced"
+            )
+
             with pytest.raises(NotFoundError):
                 carry_forward_service.carry_forward_unpaid(
                     seed_periods[0].id, seed_periods[1].id,
                     seed_user["scenario"].id,
-                    calendar=calendar_for(999999),
+                    calendar=other,
                 )
 
     def test_carry_forward_wrong_user_target_raises_not_found(

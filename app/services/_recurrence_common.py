@@ -317,7 +317,8 @@ def refuse_unstorable_repeats(template, placements, existing) -> None:
         template: The (Transaction|Transfer)Template being generated.
         placements: The occurrences the rule fires on inside this pass's write
             window (``recurrence_engine.PlannedOccurrence`` values, one per
-            occurrence), whose ``period`` may therefore repeat.  Each is a
+            occurrence), whose ``period`` may therefore repeat.  Each
+            placement's ``period`` is a
             :class:`~app.services.pay_calendar.DerivedPeriod` since pay-calendar
             plan step C2-f3c, so the paycheck this refusal NAMES is bounded by
             the derivation rather than by two stored columns.
@@ -364,9 +365,10 @@ def partition_regeneration_rows(existing_rows: list) -> tuple[list, list, list]:
     ``recurrence_engine._maintain._classify_maintain_work``.
 
     Args:
-        existing_rows: All existing (Transaction|Transfer) rows whose
-            pay period ends on or after the regeneration's effective
-            date.
+        existing_rows: The existing (Transaction|Transfer) rows this pass may
+            act on -- since pay-calendar plan step C2-f3c, the ones in its
+            WRITE WINDOW whose pay period ends on or after the regeneration's
+            effective date.
 
     Returns:
         A 3-tuple ``(overridden_ids, deleted_ids, to_delete)``: the
@@ -491,24 +493,34 @@ def rows_this_pass_may_maintain(selector, schedule, effective_from) -> list:
     **It selects on a period-ID SET, and the set is the pass's own write
     window** (pay-calendar plan step C2-f3c).  It was
     ``query_rows_from_effective_date``: a ``JOIN budget.pay_periods ON ... WHERE
-    pay_periods.end_date >= :effective_from``, which read the STORED end while
-    ``recurrence_engine.resolve_generation_plan`` filtered the same bound
-    against the DERIVED one.  On a schedule where the two disagree the two
-    halves considered different periods -- a row selected but never NAMED where
-    the derived end is earlier, so RETIRED; a stale amount surviving an edit
-    where it is later.  Both halves now read the same derived end off the same
-    calendar, so there is one predicate rather than two that have to agree.
-    (Measured 2026-08-19 on production: 62 periods, zero rows where the stored
-    end differs from the derived one, so the cutover moves nothing on live
-    data.  Plan step **C4** drops the column the old query read.)
+    pay_periods.end_date >= :effective_from``.
 
-    **The domain is the WINDOW, and it must stay strictly WIDER than the plan's
-    named set** or ``_maintain``'s RETIRE branch could never fire: a row is
-    retired precisely because the rule NO LONGER names its period, so the rows
-    offered here have to include periods the plan does not. They do, by
+    **This is a CUTOVER, not the repair of a divergence, and an adversarial
+    review of C2-f3c is why that is said plainly.**  A first draft of this
+    paragraph claimed the old select read the STORED end while
+    ``resolve_generation_plan`` filtered the DERIVED one, and it was false:
+    that function resolved the ORM row out of the write window BEFORE applying
+    the bound, deliberately and with a comment saying so, precisely so both
+    halves read the same stored column.  They agreed.  What C2-f3c does is move
+    them BOTH onto the derived end, because plan step **C4** drops the column
+    they agreed on -- and the reason that is safe is a separate invariant, not
+    a bug being fixed: ``pay_period_write._write_derivation`` is the only
+    writer of ``end_date`` in ``app/`` and rewrites every stored end from the
+    derivation on every pass.  Measured 2026-08-19 on production: 62 periods,
+    zero rows where the two differ.  The one shape where they still can is
+    legacy data written before plan step C3-b, and there the derived end is the
+    answer this arc exists to give.
+
+    **The domain is the WINDOW, and it must be a SUPERSET of the plan's named
+    set** or ``_maintain``'s RETIRE branch could never fire: a row is retired
+    precisely because the rule NO LONGER names its period, so the rows offered
+    here have to include the periods the plan does not.  They do, by
     construction -- the plan is this same window intersected with the periods
-    the rule names -- and the two live callers pass a whole-schedule window, so
-    the set is every one of the owner's periods.
+    the rule names, under the same bound.  A superset rather than a strict one:
+    where the rule names every period of the window the two sets are EQUAL,
+    which is the ordinary case for an every-paycheck template and the case in
+    which nothing is retired.  Both live callers pass a whole-schedule window,
+    so the set is every one of the owner's periods.
 
     **Bounding by the window is also what let ``regeneration_bound`` go.** That
     helper turned "no lower bound" into the window's opening date, because a

@@ -91,18 +91,26 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
     written -- measured at 504 of 505 live sweepable rows identical, the 505th
     being the one that keeps its purchases.
 
-    **The pass and the rule share ONE bound and ONE domain, and both are now
-    structural** (pay-calendar plan step C2-f3c).  ``effective_from`` used to
-    bound an SQL select over ``pay_periods.end_date`` while the rule was
-    filtered on the DERIVED end, so "no lower bound" had to be turned into the
-    WRITE WINDOW's opening date by a shared helper -- because a sweep bounded
-    by the schedule's opening instead would have reached every non-override row
-    from the owner's first payday forward while the rule was resolved only
-    inside the window, retiring rows nothing would recreate.  The row select is
-    now a period-ID set taken from that same window and filtered by that same
-    derived end (``_recurrence_common.rows_this_pass_may_maintain``), so the
-    domain cannot exceed the window whatever the bound is, and ``None`` needs
-    no translation.  ``regeneration_bound`` went with the translation.
+    **The pass and the rule share ONE bound and ONE domain, and since
+    pay-calendar plan step C2-f3c both are structural rather than upheld.**
+    They shared the bound before it too -- ``resolve_generation_plan`` resolved
+    the ORM row before applying it, so both halves read the same STORED
+    ``end_date`` -- and an adversarial review of C2-f3c corrected a draft of
+    this paragraph that claimed otherwise.  What changed is that both now read
+    the DERIVED end, off the same calendar, because plan step **C4** drops the
+    column they used to agree on.
+
+    What ``regeneration_bound`` actually existed for was narrower: the sweep
+    was SQL, and ``end_date >= NULL`` matches no row, so "no lower bound" had
+    to become a concrete date before it could be compared against a column at
+    all -- and the date it became had to be the WRITE WINDOW's opening, because
+    a sweep bounded by the SCHEDULE's opening would have reached every
+    non-override row from the owner's first payday forward while the rule was
+    resolved only inside the window, retiring rows nothing would recreate.  A
+    period-ID set taken from that same window
+    (``_recurrence_common.rows_this_pass_may_maintain``) needs no translation
+    for ``None`` and cannot exceed the window whatever the bound is, so both
+    halves of that helper's job are gone and the helper with them.
 
     Args:
         template:       The updated TransactionTemplate.
@@ -144,10 +152,12 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
     # for a template whose pattern was set to "Does not repeat".
     #
     # The two calls take the SAME bound and the same window, and the second's
-    # answer is strictly WIDER than the first's -- it is the window, where the
-    # plan is the window intersected with the periods the rule names.  That is
-    # what makes the RETIRE branch reachable at all: a row is retired precisely
-    # because the rule no longer names its period.
+    # answer is a SUPERSET of the first's -- it is the window, where the plan
+    # is the window intersected with the periods the rule names.  That is what
+    # makes the RETIRE branch reachable at all: a row is retired precisely
+    # because the rule no longer names the row's period.  Equal, not strictly
+    # wider, when the rule names every period of the window -- which is the
+    # ordinary case, and the case in which nothing is retired.
     plan = resolve_generation_plan(
         template, schedule, scenario_id, effective_from,
         block_message="Blocked cross-user recurrence regeneration",
@@ -156,7 +166,9 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
         _selector(template, scenario_id), schedule, effective_from,
     )
 
-    outcome = _maintain_instances(template, plan, schedule, scenario_id, existing)
+    outcome = _maintain_instances(
+        template, plan, schedule.calendar, scenario_id, existing,
+    )
     db.session.flush()
 
     # **ONE event per pass, and it gained a field while another LEFT.**  This
@@ -404,7 +416,10 @@ def _classify_maintain_work(existing, named_period_ids, account_id, with_records
     exactly as it found it and asks.
 
     Args:
-        existing: Every row of this template at or after the pass's bound.
+        existing: Every row of this template in the pass's WRITE WINDOW at
+            or after its bound.  The window half is the load-bearing one:
+            it is what keeps this domain a superset of the plan's, and so
+            what makes the RETIRE branch reachable.
         named_period_ids: The ``pay_periods.id`` values the rule names now.
             Empty for a template whose recurrence was CLEARED, which correctly
             makes every row an orphan.
@@ -564,11 +579,13 @@ def _refuse_repeats_this_pass(template, placements, existing):
 
 
 
-def _maintain_instances(template, plan, schedule, scenario_id, existing):
+def _maintain_instances(template, plan, calendar, scenario_id, existing):
     """Resolve and apply everything one regeneration does to a template's rows.
 
     The body of :func:`regenerate_for_template`, split out so the orchestrator
-    reads as ownership -> bound -> plan -> maintain -> report.  Runs in four
+    reads as ownership -> plan -> maintain -> report.  It read
+    "ownership -> bound -> plan" until pay-calendar plan step C2-f3c deleted
+    the bound-resolution step (``_recurrence_common.regeneration_bound``).  Runs in four
     steps: refuse an unstorable cadence, derive what the definition says for
     every period the rule names, classify each existing row against that, then
     write.
@@ -578,10 +595,18 @@ def _maintain_instances(template, plan, schedule, scenario_id, existing):
         plan: The :class:`GenerationPlan` for this pass, or ``None`` when the
             template's recurrence was CLEARED -- which names no period, so
             every row is considered for retirement.
-        schedule: The owner's
-            :class:`~app.services.generation_schedule.GenerationSchedule`.
+        calendar: The owner's
+            :class:`~app.services.pay_calendar.PayCalendar`, which is all this
+            reads off the pass -- the WRITE WINDOW has already done its work in
+            the plan and in *existing*.  Taking the whole
+            ``GenerationSchedule`` for one field is the shape pay-calendar plan
+            step C2-f3c removed from ``_amounts._derive_row_fields``, and an
+            adversarial review of that step found it still here.
         scenario_id: The scenario being maintained.
-        existing: Every row of this template at or after the pass's bound.
+        existing: Every row of this template in the pass's WRITE WINDOW at
+            or after its bound.  The window half is the load-bearing one:
+            it is what keeps this domain a superset of the plan's, and so
+            what makes the RETIRE branch reachable.
 
     Returns:
         The :class:`_MaintainOutcome` for the audit event and the conflict
@@ -596,8 +621,7 @@ def _maintain_instances(template, plan, schedule, scenario_id, existing):
     salary_profile = _get_salary_profile(template)
     derived = {
         placement.period.period_id: _derive_row_fields(
-            template, plan.rule, salary_profile, placement.period,
-            schedule.calendar,
+            template, plan.rule, salary_profile, placement.period, calendar,
         )
         for placement in placements
     }

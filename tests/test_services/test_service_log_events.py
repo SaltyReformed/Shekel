@@ -724,8 +724,8 @@ class TestRecurrenceEngineLogging:
         ) as cap:
             created = recurrence_engine.generate_for_template(
                 _recurrence_setup, GenerationSchedule.for_period_ids(
-    calendar_for(_recurrence_setup.user_id), {p.id for p in seed_periods[:3]},
-),
+                    calendar_for(_recurrence_setup.user_id), {p.id for p in seed_periods[:3]},
+                ),
                 seed_user["scenario"].id,
             )
 
@@ -741,16 +741,16 @@ class TestRecurrenceEngineLogging:
         with app.app_context():
             recurrence_engine.generate_for_template(
                 _recurrence_setup, GenerationSchedule.for_period_ids(
-    calendar_for(_recurrence_setup.user_id), {p.id for p in seed_periods[:3]},
-),
+                    calendar_for(_recurrence_setup.user_id), {p.id for p in seed_periods[:3]},
+                ),
                 seed_user["scenario"].id,
             )
             db.session.commit()
             with _LogCapture("app.services.recurrence_engine") as cap:
                 recurrence_engine.regenerate_for_template(
                     _recurrence_setup, GenerationSchedule.for_period_ids(
-    calendar_for(_recurrence_setup.user_id), {p.id for p in seed_periods[:3]},
-),
+                        calendar_for(_recurrence_setup.user_id), {p.id for p in seed_periods[:3]},
+                    ),
                     seed_user["scenario"].id,
                 )
 
@@ -768,8 +768,8 @@ class TestRecurrenceEngineLogging:
         ) as cap:
             created = recurrence_engine.generate_for_template(
                 _recurrence_setup, GenerationSchedule.for_period_ids(
-    calendar_for(_recurrence_setup.user_id), {p.id for p in seed_periods[:1]},
-),
+                    calendar_for(_recurrence_setup.user_id), {p.id for p in seed_periods[:1]},
+                ),
                 seed_second_user["scenario"].id,
             )
 
@@ -933,8 +933,8 @@ class TestTransferRecurrenceLogging:
         ) as cap:
             created = transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
-), td["scenario"].id,
+                    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
+                ), td["scenario"].id,
             )
 
         assert len(created) == 2

@@ -130,8 +130,8 @@ def _future_override_txn(seed_user, template, amount="1500.00"):
     scenario = seed_user["scenario"]
     periods = all_periods(seed_user["user"].id)
     recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in periods},
-), scenario.id)
+        calendar_for(template.user_id), {p.id for p in periods},
+    ), scenario.id)
     db.session.flush()
     txn = (
         db.session.query(Transaction)
@@ -788,8 +788,8 @@ class TestTemplateUpdate:
             scenario = seed_user["scenario"]
             periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in periods},
-), scenario.id)
+                calendar_for(template.user_id), {p.id for p in periods},
+            ), scenario.id)
             db.session.flush()
             txn = (
                 db.session.query(Transaction)
@@ -848,8 +848,8 @@ class TestTemplateUpdate:
             recurrence_engine.generate_for_template(
                 template,
                 GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in periods},
-),
+                    calendar_for(template.user_id), {p.id for p in periods},
+                ),
                 scenario.id,
             )
             db.session.flush()
@@ -937,8 +937,8 @@ class TestTemplateUpdate:
             periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in periods},
-), scenario.id,
+                    calendar_for(template.user_id), {p.id for p in periods},
+                ), scenario.id,
             )
             db.session.commit()
 
@@ -988,8 +988,8 @@ class TestTemplateUpdate:
             periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in periods},
-), scenario.id,
+                    calendar_for(template.user_id), {p.id for p in periods},
+                ), scenario.id,
             )
             db.session.flush()
 
@@ -1026,8 +1026,8 @@ class TestTemplateUpdate:
             periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in periods},
-), scenario.id,
+                    calendar_for(template.user_id), {p.id for p in periods},
+                ), scenario.id,
             )
             db.session.commit()
 
@@ -1078,8 +1078,8 @@ class TestGridRowKeyBuilder:
             periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in periods},
-), scenario.id,
+                    calendar_for(template.user_id), {p.id for p in periods},
+                ), scenario.id,
             )
             db.session.flush()
 
@@ -1185,8 +1185,8 @@ class TestTemplateArchive:
             scenario = seed_user["scenario"]
             periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in periods},
-), scenario.id)
+                calendar_for(template.user_id), {p.id for p in periods},
+            ), scenario.id)
             db.session.commit()
 
             txn_count = db.session.query(Transaction).filter_by(
@@ -1252,8 +1252,8 @@ class TestTemplateUnarchive:
             scenario = seed_user["scenario"]
             periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in periods},
-), scenario.id)
+                calendar_for(template.user_id), {p.id for p in periods},
+            ), scenario.id)
             db.session.commit()
 
             # Archive via the archive route.
@@ -2022,8 +2022,8 @@ class TestTemplateHardDelete:
             scenario = seed_user["scenario"]
             periods = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in periods},
-), scenario.id)
+                calendar_for(template.user_id), {p.id for p in periods},
+            ), scenario.id)
             db.session.commit()
 
             template_id = template.id
@@ -2071,8 +2071,8 @@ class TestTemplateHardDelete:
             scenario = seed_user["scenario"]
             periods_list = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in periods_list},
-), scenario.id)
+                calendar_for(template.user_id), {p.id for p in periods_list},
+            ), scenario.id)
             db.session.commit()
 
             # Mark one transaction as Paid.
@@ -2127,8 +2127,8 @@ class TestTemplateHardDelete:
             scenario = seed_user["scenario"]
             periods_list = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in periods_list},
-), scenario.id)
+                calendar_for(template.user_id), {p.id for p in periods_list},
+            ), scenario.id)
             db.session.commit()
 
             # Mark one transaction as Paid.
@@ -2169,8 +2169,8 @@ class TestTemplateHardDelete:
             scenario = seed_user["scenario"]
             periods_list = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in periods_list},
-), scenario.id)
+                calendar_for(template.user_id), {p.id for p in periods_list},
+            ), scenario.id)
             db.session.commit()
 
             # Pre-archive via route (soft-deletes projected txns).
@@ -2436,8 +2436,8 @@ class TestTemplateHardDelete:
             scenario = seed_user["scenario"]
             periods_list = all_periods(seed_user["user"].id)
             recurrence_engine.generate_for_template(template, GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in periods_list},
-), scenario.id)
+                calendar_for(template.user_id), {p.id for p in periods_list},
+            ), scenario.id)
             db.session.commit()
 
             resp = auth_client.post(

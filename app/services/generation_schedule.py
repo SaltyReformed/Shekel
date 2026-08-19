@@ -64,17 +64,31 @@ class GenerationSchedule:
     * a rule's chosen start period could not be found in the window, so the
       opening bound it states was dropped entirely (plan ledger row **D2**).
 
-    Naming the two facts separately is the fix, and **what keeps them apart is
-    now the TYPE of each rather than a check** (plan step C2-f3c).  The
-    schedule is a :class:`~app.services.pay_calendar.PayCalendar`, which is
-    only ever an owner's COMPLETE payday set: the one function that produces
-    one, :func:`~app.services.pay_calendar.calendar_for`, takes a user id and
-    has no window argument, and narrowing a calendar yields a
-    :class:`~app.services.pay_calendar.PeriodWindow` -- a different type that
-    nothing can derive a calendar back out of.  The window is a set of
-    ``budget.pay_periods.id`` values, which cannot describe a schedule at all.
-    So the D22 shape is no longer a value this class has to refuse; it is one
-    the two types cannot spell.
+    Naming the two facts separately is the fix.  **What this class GUARANTEED
+    about it changed at plan step C2-f3c, and the honest statement is weaker
+    than the one a first draft made** (adversarial design review, 2026-08-19).
+
+    Before that step this class LOADED both halves itself, so a caller could
+    state the window and had no way to state the schedule: D22 was
+    unconstructible through the public constructors, full stop.  It now TAKES
+    the calendar, because the alternative is deriving a second one per render
+    (ledger row **P68**).  What remains is what
+    :class:`~app.services.pay_calendar.PeriodWindow` states for itself and what
+    ledger row **P14** names: **no constructor in ``pay_calendar`` ACCEPTS a
+    window**, so no producer can be handed a slice and mistake it for a
+    complete payday set, and every ``PayCalendar`` in ``app/`` comes from
+    :func:`~app.services.pay_calendar.calendar_for`, which takes a user id and
+    nothing else.
+
+    **What is NOT claimed**, because ``PeriodWindow``'s own docstring already
+    measured it false: that a calendar cannot be rebuilt from a window.
+    ``PayCalendar.from_paydays([(p.period_id, p.start_date) for p in window],
+    ...)`` is one line over the public iterator.  A caller who writes that line
+    and hands the result here reproduces D22, and nothing in this class can
+    tell.  That is the same standing every consumer of a calendar in this
+    application already has -- the completeness precondition is the calendar's
+    one uncheckable one -- but it is a standing this seam did not have before,
+    and saying so is the point of this paragraph.
 
     **Until C2-f3c the schedule was read HERE, twice.**  This class loaded
     ``pay_period_service.get_all_periods`` for a tuple of ORM rows and
@@ -86,6 +100,18 @@ class GenerationSchedule:
     order is payday order by construction, and no part of the generation seam
     reads a stored ordinal or a stored end at all.  What replaced the check is
     the absence of the thing it reconciled.
+
+    One state it refused is therefore no longer refused ANYWHERE, and it is
+    worth naming: an owner with a scrambled stored ``period_index`` AND no
+    ``budget.pay_schedule`` row.  ``pay_schedule_service.resolve_cadence``'s
+    legacy fallback finds "the last period" with ``ORDER BY period_index
+    DESC``, so a scrambled ordinal gives it the wrong row's length and the
+    calendar's projected last end is wrong -- which this class used to make
+    loud and now does not.  Both halves are legacy-only (registration writes
+    the schedule row since ``balance:X-ad-a``; the writer derives the ordinal
+    since ``pay_calendar:C3-b``), and the fallback is ledger rows **P8** and
+    **P70**, owned by plan step **C4**, which deletes it with the column it
+    reads.
 
     Measured direction of the R4b-1 change, over every contiguous window of the
     production schedule -- 86,986 ``(rule, window)`` pairs: the whole-schedule
@@ -141,9 +167,18 @@ class GenerationSchedule:
                 owner's materialised periods.
         """
         owned = {period.period_id for period in self.calendar.saved()}
+        # Sorted by REPR, not by value: a hand-assembled window can hold
+        # ``None`` beside an int -- an unsaved period's id -- and ``sorted``
+        # over a mixed set raises ``TypeError`` from inside the refusal, which
+        # is the wrong failure for a caller this message exists to inform
+        # (adversarial review of plan step C2-f3c).  Every window in ``app/``
+        # is a set of ints; this is for the caller that is not.
         stray = sorted(
-            period_id for period_id in self.write_period_ids
-            if period_id not in owned
+            (
+                period_id for period_id in self.write_period_ids
+                if period_id not in owned
+            ),
+            key=repr,
         )
         if stray:
             raise RecurrenceWindowError(
@@ -164,17 +199,26 @@ class GenerationSchedule:
         skip predicate (``_recurrence_common.should_skip_period``) decide what
         is already there.
 
+        Delegates to :meth:`for_period_ids` rather than building the value
+        itself, so "the window is a set of THIS calendar's saved ids" is
+        stated once (adversarial review of plan step C2-f3c: the two bodies
+        were one construction spelled twice).
+
         Args:
             calendar: The owner's whole pay calendar.
 
         Returns:
             The schedule, its window covering every materialised period.
+
+        Raises:
+            PayCalendarError: *calendar*'s saved periods do not cover an
+                unbroken span (:meth:`~app.services.pay_calendar.PayCalendar
+                .saved`).  Unreachable through
+                :func:`~app.services.pay_calendar.calendar_for`, whose periods
+                come from the table and are therefore all materialised.
         """
-        return cls(
-            calendar=calendar,
-            write_period_ids=frozenset(
-                period.period_id for period in calendar.saved()
-            ),
+        return cls.for_period_ids(
+            calendar, (period.period_id for period in calendar.saved()),
         )
 
     @classmethod
@@ -199,6 +243,8 @@ class GenerationSchedule:
         Raises:
             RecurrenceWindowError: An id is not one of this owner's
                 materialised periods (see :meth:`__post_init__`).
+            PayCalendarError: *calendar*'s saved periods do not cover an
+                unbroken span; see :meth:`for_calendar`.
         """
         return cls(calendar=calendar, write_period_ids=frozenset(period_ids))
 

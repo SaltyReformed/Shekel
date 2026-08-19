@@ -105,8 +105,8 @@ def _recurring_txn_template(seed_user, recurs=True):
         recurrence_engine.generate_for_template(
             template,
             GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in all_periods(seed_user["user"].id)},
-),
+                calendar_for(template.user_id), {p.id for p in all_periods(seed_user["user"].id)},
+            ),
             seed_user["scenario"].id,
         )
     db.session.commit()
@@ -150,8 +150,8 @@ def _recurring_transfer_template(seed_user, savings, recurs=True):
         transfer_recurrence.generate_for_template(
             template,
             GenerationSchedule.for_period_ids(
-    calendar_for(template.user_id), {p.id for p in all_periods(seed_user["user"].id)},
-),
+                calendar_for(template.user_id), {p.id for p in all_periods(seed_user["user"].id)},
+            ),
             seed_user["scenario"].id,
         )
     db.session.commit()
