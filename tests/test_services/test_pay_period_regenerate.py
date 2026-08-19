@@ -411,3 +411,103 @@ class TestRegenerateRefusals:
             db.session.rollback()
             assert _count_periods(db.session, user_id) == before
             assert_pay_period_invariants(db.session, user_id)
+
+
+class TestRegenerateResolvesItsFactsOnce:
+    """One schedule read, one lock classification, one clock read.
+
+    Plan step **C2-f3b**.  This door used to answer one question -- where does
+    the rebuildable tail open, and may every period past it go -- out of THREE
+    independent reads of "today" and TWO independent lock classifications:
+    ``_regenerate_keep_through_period`` read ``date.today()`` for its
+    not-yet-started test and again inside the classify it ran over the whole
+    schedule, and ``_gate_deletable_tail`` classified the tail separately with a
+    third.  Nothing was wrong on the day, because a period cannot become
+    historical between two statements of one transaction -- but that is an
+    argument from timing rather than from construction, and it is the shape
+    ledger row **P56** and findings **P68** / **P69** record one layer up.
+
+    Graded as a CALL COUNT because that is what the property is.  A test that
+    only checked the outcome would pass on the old code, which computed the
+    same answer twice.
+    """
+
+    def test_it_classifies_the_lock_state_exactly_once(
+        self, app, db, seed_user, monkeypatch,
+    ):
+        """One ``classify_schedule_locks`` call per regenerate, over the whole schedule.
+
+        The count is 1 rather than "at most 2", and the KEY SET is asserted too:
+        a classification narrowed to the tail would satisfy a bare count while
+        leaving the boundary computation to classify separately.
+        """
+        calls = []
+        real = pay_period_admin.classify_schedule_locks
+
+        def _counting(calendar, *, as_of):
+            """Record each classification and delegate to the real one."""
+            answer = real(calendar, as_of=as_of)
+            calls.append((tuple(sorted(answer)), as_of))
+            return answer
+
+        monkeypatch.setattr(
+            pay_period_admin, "classify_schedule_locks", _counting,
+        )
+        with app.app_context():
+            periods = _spanning_periods(db.session, seed_user, count=8)
+            user_id = seed_user["user"].id
+            # Read BEFORE the rebuild: regenerate DELETES the tail, so these
+            # instances are gone by the time the assertions run.
+            expected_ids = {period.id for period in periods}
+            expected_ids.add(seed_user["bootstrap_period"].id)
+
+            pay_period_admin.regenerate_pay_periods(
+                user_id, new_start_date=date(2026, 7, 10), num_periods=3,
+                cadence_days=14,
+            )
+            db.session.commit()
+
+            assert len(calls) == 1
+            classified, as_of = calls[0]
+            # The WHOLE schedule, so the boundary search and the refusal read
+            # one answer: the bootstrap period plus the eight generated ones.
+            assert set(classified) == expected_ids
+            assert as_of == FROZEN_TODAY
+
+    def test_the_day_it_decides_on_is_the_owners_civil_day(
+        self, app, db, seed_user, monkeypatch,
+    ):
+        """``display_today``, not ``date.today`` -- ruled 2026-08-19.
+
+        The two are pinned APART here: the process clock stays on this module's
+        ``FROZEN_TODAY`` and the display clock is moved four periods forward, to
+        a day on which two more periods have ended.  The door's answer must
+        follow the display clock, which the assertion below reads off the value
+        the classifier was actually handed.
+        """
+        owner_day = FROZEN_TODAY + timedelta(days=56)
+        monkeypatch.setattr(
+            pay_period_admin, "display_today", lambda: owner_day,
+        )
+        seen = []
+        real = pay_period_admin.classify_schedule_locks
+
+        def _capturing(calendar, *, as_of):
+            """Record the day the classifier was asked about."""
+            seen.append(as_of)
+            return real(calendar, as_of=as_of)
+
+        monkeypatch.setattr(
+            pay_period_admin, "classify_schedule_locks", _capturing,
+        )
+        with app.app_context():
+            _spanning_periods(db.session, seed_user, count=8)
+            user_id = seed_user["user"].id
+            assert date.today() != owner_day
+
+            pay_period_admin.regenerate_pay_periods(
+                user_id, new_start_date=owner_day + timedelta(days=14),
+                num_periods=3, cadence_days=14,
+            )
+            db.session.commit()
+            assert seen == [owner_day]

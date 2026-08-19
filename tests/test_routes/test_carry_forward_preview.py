@@ -564,7 +564,7 @@ class TestCarryForwardPreviewConfiguration:
             doomed = [p for p in periods if p.end_date >= today]
             assert doomed, "the fixture must cover today for this to remove it"
             pay_period_write.retire_paydays(
-                seed_user["user"].id, periods, doomed,
+                seed_user["user"].id, {period.id for period in doomed},
             )
             db.session.commit()
             assert calendar_for(

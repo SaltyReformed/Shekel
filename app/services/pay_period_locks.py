@@ -16,9 +16,49 @@ answers a read-only question about a period's state, everything there acts on
 the answer.  The line count is what reported it -- ``pay_period_admin`` reached
 pylint's 1000-line ceiling -- but the ceiling was the symptom.
 
-The precedence lives in :func:`_resolve_lock` and is shared by the
-single-period and bulk classifiers, so the two query strategies (scalar
-EXISTS vs. set membership) cannot disagree about which reason wins.
+The precedence lives in :func:`_resolve_lock`, which
+:func:`classify_schedule_locks` is the only caller of.  *That paragraph said
+the precedence was "shared by the single-period and bulk classifiers, so the two
+query strategies (scalar EXISTS vs. set membership) cannot disagree" until plan
+step C2-f3b re-read it: there had been ONE query strategy since the
+single-period door became a delegating wrapper (``0c7bb2a``), so the property it
+claimed had no subject, and that door -- which no module under ``app/`` had
+called since -- is DELETED.*
+
+**It classifies a whole PAY CALENDAR since plan step C2-f3b**, not a list of
+ORM rows.  Two things moved with that, and the second is what the first is for.
+
+**The HISTORICAL test reads the DERIVED end.**  It compared
+``budget.pay_periods.end_date`` -- a stored copy of ``lead(start_date) - 1``
+that plan step **C4** drops and that nothing reconciles against the paydays it
+derives from.  A period this classifier calls historical is HARD-LOCKED, so a
+stale column was a paycheck the app either protected or offered to delete for
+the wrong reason.  Reading it off the derivation means the lock decision and
+every other "which paycheck" answer in the application come from one rule, and
+that this module survives C4 untouched.
+
+**And the DOOR takes the calendar rather than a period set, which is what makes
+a wrong input unconstructible.**  A first cut of this step took an iterable of
+:class:`~app.services.pay_calendar.DerivedPeriod` and REFUSED one carrying no
+``period_id`` -- a projection past the owner's horizon, which would key every
+such period in a call under the same ``None``.  That refusal was a fence, and
+all three ``app/`` callers were passing exactly one value:
+:meth:`~app.services.pay_calendar.PayCalendar.saved`.  **An argument a caller
+can get wrong is a defect rather than a contract** -- the sentence
+:func:`~app.services.pay_calendar._views.saved_window` already makes one layer
+down -- so the argument is gone and the door reads the window itself.  There is
+nothing left to refuse (adversarial design review, 2026-08-19).
+
+**``as_of`` is REQUIRED, which is a rule about clocks rather than about
+defaults.**  It defaulted to ``date.today()``, so ``regenerate_pay_periods``
+read the wall clock THREE times for one decision -- benign only because a
+period cannot become historical between two statements of one transaction, an
+argument that holds by timing rather than by construction.  A caller now
+resolves the owner's civil day ONCE and hands it down.  The value every
+``app/`` caller supplies is :func:`app.utils.dates.display_today`, ruled
+2026-08-19 by the developer: this decides something against the OWNER's
+calendar, and the process clock is the container's (finding **balance:N-191**,
+which named this function as one of the two sites that needed the ruling).
 """
 
 import enum
@@ -28,6 +68,7 @@ from datetime import date
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.transaction import Transaction
+from app.services.pay_calendar import PayCalendar
 from app.utils.balance_predicates import settled_status_ids
 
 logger = logging.getLogger(__name__)
@@ -109,51 +150,60 @@ def _resolve_lock(
     return None
 
 
-def classify_period_lock(period, as_of: date | None = None) -> PeriodLockReason | None:
-    """Return the first reason ``period`` is locked, or ``None`` if mutable.
+def classify_schedule_locks(
+    calendar: PayCalendar, *, as_of: date,
+) -> "dict[int, PeriodLockReason | None]":
+    """Return ``{period_id: reason | None}`` for every SAVED period of *calendar*.
 
-    The single-period public API, used by the settings UI to badge one
-    period.  Delegates to :func:`classify_periods_bulk` over a one-element
-    list so the lock rules have exactly ONE encoding -- the set queries
-    plus the :func:`_resolve_lock` precedence -- and the single-period and
-    bulk paths can never drift apart on this spine-critical classifier.
+    Two set queries plus an in-memory date check -- the no-N+1 path the truncate
+    and regenerate doors run before they delete anything, and the settings page
+    renders as a per-period badge.
 
-    Args:
-        period: The :class:`~app.models.pay_period.PayPeriod` to classify.
-        as_of: Reference date for the historical test (defaults to
-            today), matching :meth:`~app.services.pay_calendar.PayCalendar
-            .period_containing`: the period containing ``as_of`` and every
-            later one is not historical.  *This named
-            ``pay_period_service.get_current_period`` until plan step C2-f3a
-            deleted it; the derivation is what answers that question now.*
+    **It takes the CALENDAR, not a period set** (plan step C2-f3b).  The result
+    is keyed by ``budget.pay_periods.id``, so an unmaterialised period -- a
+    projection past the owner's horizon, which carries ``period_id = None`` --
+    would key every such period in one call under the same entry and collapse
+    them onto each other (ledger row **P21**'s shape).  Reading
+    :meth:`~app.services.pay_calendar.PayCalendar.saved` here rather than taking
+    its result means no caller can supply that set at all: the door's one
+    argument is the owner's whole schedule, and every value it admits is one the
+    derivation produced.  The refusal a first cut of this step carried has no
+    subject.
 
-    Returns:
-        The first applicable :class:`PeriodLockReason`, or ``None``.
-    """
-    return classify_periods_bulk([period], as_of=as_of)[period.id]
-
-
-def classify_periods_bulk(
-    periods, as_of: date | None = None,
-) -> dict[int, PeriodLockReason | None]:
-    """Classify many periods with set queries instead of N x 3 scalar ones.
-
-    Returns ``{period.id: PeriodLockReason | None}`` identical to calling
-    :func:`classify_period_lock` on each period, but with two set
-    queries total plus the in-memory date check -- the no-N+1 path the
-    truncate operation runs over its to-delete window.
+    **The HISTORICAL test reads the DERIVED end**: a period has ended when the
+    day before its successor's payday is behind *as_of*.  That is the same
+    figure ``budget.pay_periods.end_date`` stores, read from the derivation
+    instead so this decision cannot be one a stale column moves -- and so plan
+    step **C4**, which drops the column, reaches this module with nothing to
+    change.
 
     Args:
-        periods: The :class:`~app.models.pay_period.PayPeriod` objects to
-            classify.
-        as_of: Reference date for the historical test (defaults to today).
+        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`.
+            Only its SAVED periods are classified; a projection names no row to
+            answer about.
+        as_of: The owner's civil day, for the historical test: the period
+            containing *as_of* and every later one is not historical.
+            **Keyword-only and REQUIRED.**  It defaulted to ``date.today()``
+            until plan step C2-f3b, which is how ``regenerate_pay_periods`` came
+            to read the wall clock three times for one decision; every ``app/``
+            caller now resolves :func:`app.utils.dates.display_today` once and
+            threads it, which is the ruling of 2026-08-19 on the two sites
+            finding **balance:N-191** named.
 
     Returns:
-        A dict mapping each period's id to its lock reason (or ``None``).
+        A dict mapping each saved period's ``period_id`` to its lock reason (or
+        ``None``).  Empty for an owner who has never generated a schedule -- no
+        periods, no queries.
+
+    Raises:
+        PayCalendarError: *calendar*'s saved periods do not cover an unbroken
+            span, which :meth:`~app.services.pay_calendar.PayCalendar.saved`
+            refuses.  Unreachable through
+            :func:`~app.services.pay_calendar.calendar_for`, which reads saved
+            rows only.
     """
-    if as_of is None:
-        as_of = date.today()
-    period_ids = [p.id for p in periods]
+    saved = calendar.saved()
+    period_ids = [period.period_id for period in saved]
     if not period_ids:
         return {}
 
@@ -161,12 +211,12 @@ def classify_periods_bulk(
     unbalanced = _period_ids_with_unbalanced_ledger(period_ids)
 
     return {
-        period.id: _resolve_lock(
+        period.period_id: _resolve_lock(
             is_historical=period.end_date < as_of,
-            has_settled=period.id in settled,
-            has_unbalanced_ledger=period.id in unbalanced,
+            has_settled=period.period_id in settled,
+            has_unbalanced_ledger=period.period_id in unbalanced,
         )
-        for period in periods
+        for period in saved
     }
 
 

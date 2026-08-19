@@ -28,6 +28,7 @@ or derived from one by ``timedelta``, and nothing calls ``date.today()``, so
 these pass identically under ``TZ=Pacific/Kiritimati``.
 """
 
+import logging
 import pathlib
 from datetime import date, timedelta
 from decimal import Decimal
@@ -1280,6 +1281,242 @@ class TestThereIsOneWriter:
             assert forbidden not in source, (
                 f"pay_period_service must hold no write; found {forbidden!r}"
             )
+
+
+class TestTheWriterTakesIdsAndScopesThemToTheOwner:
+    """Both doors take ``budget.pay_periods.id`` values and read the rows here.
+
+    Plan step **C2-f3b**.  ``retire_paydays`` took ``(periods, doomed)`` -- two
+    lists of ORM rows the caller had queried -- and ``record_paydays`` took a
+    ``retiring`` list it read one attribute off.  So ``pay_period_admin`` had to
+    hold ORM rows for a set of integers, which is the last thing keeping that
+    module reading ``budget.pay_periods``.  The ORM read moved here, into the
+    module that owns the table, and what crosses the seam is ids.
+
+    That makes the OWNER scoping structural rather than a property of the two
+    callers: the delete set is this owner's rows LESS the survivors, so an id
+    naming somebody else's period (or naming nothing) can only ever retire
+    nothing.  The old shape trusted the caller to have queried an owner-scoped
+    list, and returned ``len(doomed)`` whether or not those rows existed.
+    """
+
+    def test_it_deletes_exactly_the_periods_the_ids_name(
+        self, app, db, seed_user,
+    ):
+        """Three ids in, three periods gone, three reported."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            created = pay_period_write.record_paydays(
+                user_id, date(2026, 1, 2), 5, 14,
+            )
+            db.session.flush()
+            doomed = {period.id for period in created[2:]}
+
+            assert pay_period_write.retire_paydays(user_id, doomed) == 3
+            survivors = {
+                period.id
+                for period in pay_period_service.get_all_periods(user_id)
+            }
+            assert doomed & survivors == set()
+
+    def test_another_owners_id_retires_nothing_and_is_not_counted(
+        self, app, db, seed_user, seed_second_periods,
+    ):
+        """The count is the intersection, never the size of the argument.
+
+        The first owner asks to retire a period belonging to the second.  Under
+        the old signature the caller supplied both lists, so this was a
+        caller-side property; here the writer resolves the rows itself and the
+        foreign id is simply not in the set it can reach.  It is graded on BOTH
+        sides -- nothing deleted, and nothing counted -- because a door that
+        deleted nothing while reporting "1 removed" is what the settings page
+        would flash at the user.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            foreign = seed_second_periods[4]
+            before = {
+                period.id
+                for period in pay_period_service.get_all_periods(
+                    foreign.user_id,
+                )
+            }
+
+            assert pay_period_write.retire_paydays(user_id, {foreign.id}) == 0
+            after = {
+                period.id
+                for period in pay_period_service.get_all_periods(
+                    foreign.user_id,
+                )
+            }
+            assert after == before
+
+    def test_recording_a_batch_ignores_a_foreign_retiring_id(
+        self, app, db, seed_user, seed_second_periods,
+    ):
+        """``record_paydays`` scopes ``retiring_ids`` the same way.
+
+        Regenerate and reset reach the table through this door rather than
+        through ``retire_paydays``, so the same property has to hold on both or
+        the scoping is only half structural.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            pay_period_write.record_paydays(user_id, date(2026, 1, 2), 3, 14)
+            db.session.flush()
+            foreign = seed_second_periods[4]
+
+            pay_period_write.record_paydays(
+                user_id, date(2026, 3, 6), 2, 14,
+                retiring_ids={foreign.id},
+            )
+            db.session.flush()
+            assert db.session.get(PayPeriod, foreign.id) is not None
+            assert len(pay_period_service.get_all_periods(user_id)) == 6
+
+    def test_an_id_naming_no_row_at_all_is_an_idempotent_no_op(
+        self, app, db, seed_user,
+    ):
+        """A stale id -- one a concurrent truncate already deleted -- changes nothing.
+
+        The confirm-discard panel re-posts the id the user reviewed, so this is
+        reachable rather than hypothetical; ``truncate_pay_periods`` refuses it
+        at its own resolve, and this grades the writer beneath that door.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            created = pay_period_write.record_paydays(
+                user_id, date(2026, 1, 2), 4, 14,
+            )
+            db.session.flush()
+            before = _paydays(user_id)
+            gone = max(period.id for period in created) + 10_000
+
+            assert pay_period_write.retire_paydays(user_id, {gone}) == 0
+            assert _paydays(user_id) == before
+
+
+class TestTheOwnerIdReader:
+    """``owner_period_ids`` is the door for a caller that means "all of them".
+
+    Plan step **C2-f3b**, corrected by an adversarial review of it.  Reset spelled
+    this ``calendar_for(user_id).saved()``, which made the door that REPAIRS a
+    broken schedule depend on the schedule being derivable; the identity of a row
+    is not a derived value and is not reached through one.
+    """
+
+    def test_it_returns_every_id_and_only_this_owners(
+        self, app, db, seed_user, seed_second_periods,
+    ):
+        """Two owners, two disjoint answers."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            created = pay_period_write.record_paydays(
+                user_id, date(2026, 1, 2), 4, 14,
+            )
+            db.session.flush()
+
+            mine = pay_period_write.owner_period_ids(user_id)
+            theirs = pay_period_write.owner_period_ids(
+                seed_second_periods[0].user_id,
+            )
+            assert {period.id for period in created} <= mine
+            assert mine & theirs == set()
+            assert theirs == {period.id for period in seed_second_periods}
+
+    def test_an_owner_with_no_schedule_gets_an_empty_set(self, app, bare_user):
+        """Empty is a legal answer, so reset can run on a schedule-less owner."""
+        with app.app_context():
+            assert pay_period_write.owner_period_ids(
+                bare_user["user"].id,
+            ) == set()
+
+    def test_it_reads_no_column_a_derivation_could_move(self, app, db, seed_user):
+        """The identity read is a bare id query, not a calendar.
+
+        Graded as a statement census rather than by argument: an implementation
+        that resolved the ids through ``calendar_for`` would issue that
+        function's ``budget.pay_schedule`` read, and an owner whose stored
+        cadence cannot define a calendar would reach ``derive_periods`` and a
+        500 on the door that exists to repair them.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            pay_period_write.record_paydays(user_id, date(2026, 1, 2), 3, 14)
+            db.session.flush()
+
+            ids, statements = capture_sql_statements(
+                lambda: pay_period_write.owner_period_ids(user_id),
+            )
+            assert ids
+            assert len(statements) == 1
+            assert "pay_schedule" not in statements[0][0].lower()
+
+
+class TestTheRetiredCountIsTheIntersection:
+    """``len(current) - len(keep)`` graded BETWEEN its extremes.
+
+    The three cases above it are all-own, all-foreign and all-stale, so an
+    implementation returning ``min(len(doomed_ids), len(current))`` survives them
+    (adversarial review, 2026-08-19).  A MIXED set is what separates the two.
+    """
+
+    def test_a_mixed_set_counts_and_deletes_only_the_owned_half(
+        self, app, db, seed_user, seed_second_periods,
+    ):
+        """Two of this owner's ids, one foreign and one stale -> 2."""
+        with app.app_context():
+            user_id = seed_user["user"].id
+            created = pay_period_write.record_paydays(
+                user_id, date(2026, 1, 2), 5, 14,
+            )
+            db.session.flush()
+            mine = {created[3].id, created[4].id}
+            stale = max(period.id for period in created) + 10_000
+            mixed = mine | {seed_second_periods[2].id, stale}
+
+            before = {
+                period.id
+                for period in pay_period_service.get_all_periods(user_id)
+            }
+            assert pay_period_write.retire_paydays(user_id, mixed) == 2
+            survivors = {
+                period.id
+                for period in pay_period_service.get_all_periods(user_id)
+            }
+            assert survivors & mine == set()
+            assert survivors == before - mine
+            # The foreign owner is untouched, which the count alone cannot say.
+            assert db.session.get(
+                PayPeriod, seed_second_periods[2].id,
+            ) is not None
+
+    def test_the_generated_event_reports_the_same_intersection(
+        self, app, db, seed_user, seed_second_periods, caplog,
+    ):
+        """``retired=`` counts what went, not the size of the argument.
+
+        The field moved from ``len(retiring_ids)`` to ``len(current) - len(keep)``
+        at this step and nothing read it; a log line that says "3 retired" beside
+        two deletions is a record of an operation that did not happen.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            created = pay_period_write.record_paydays(
+                user_id, date(2026, 1, 2), 4, 14,
+            )
+            db.session.flush()
+            mixed = {created[3].id, seed_second_periods[2].id}
+
+            with caplog.at_level(logging.INFO):
+                pay_period_write.record_paydays(
+                    user_id, date(2026, 3, 6), 2, 14, retiring_ids=mixed,
+                )
+            retired = [
+                record.retired for record in caplog.records
+                if getattr(record, "event", None) == "pay_periods_generated"
+            ]
+            assert retired[-1] == 1
 
 
 class TestThePeriodsAlwaysEqualTheirDerivation:
