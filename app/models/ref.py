@@ -206,8 +206,10 @@ class Status(db.Model):
     status names:
 
         is_settled          -- The real-world transaction has completed
-                               (Paid, Received, Settled).  The balance
-                               calculator uses actual_amount for these.
+                               (Paid, Received, Settled).  Such a row RECORDS
+                               what moved, and the balance counts that record
+                               rather than the row's plan (plan step X-au-c3;
+                               it read actual_amount until then).
         is_immutable        -- The recurrence engine must not overwrite
                                this transaction (Paid, Received, Credit,
                                Cancelled, Settled).
@@ -238,34 +240,16 @@ class Status(db.Model):
         return f"<Status {self.name}>"
 
 
-class RecurrencePattern(db.Model):
-    """Recurrence pattern reference: Every Period, Monthly, Annual, etc.
-
-    The closed eight-name set the recurrence redesign replaces with the
-    two-axis ``(interval_n, unit)`` model (:class:`RecurrenceUnit` +
-    :class:`PeriodPlacement` below).  Still authoritative through plan step
-    R4; step R9 drops this table once every reader has moved.
-    """
-
-    __tablename__ = "recurrence_patterns"
-    __table_args__ = {"schema": "ref"}
-
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(20), unique=True, nullable=False)
-
-    def __repr__(self):
-        return f"<RecurrencePattern {self.name}>"
-
-
 class RecurrenceUnit(db.Model):
     """Recurrence cadence-unit reference: period, week, month, year.
 
     The first axis of the two-axis recurrence model (redesign step R2): a
     rule recurs every ``budget.recurrence_rules.interval_n`` units of this
-    kind.  Four of :class:`RecurrencePattern`'s names were one idea with a
+    kind.  Four of the closed pattern set's names were one idea with a
     different integer baked into the name (every 1 / 3 / 6 / 12 months);
     moving that integer into a column is what makes "every other month" and
-    "every two years" expressible.
+    "every two years" expressible.  That set lived in ``ref.recurrence_patterns``
+    until plan step **R9** dropped the table.
 
     Application code resolves these via ``ref_cache.recurrence_unit_id`` and
     compares against the integer ID -- never the string ``name`` -- matching
@@ -696,3 +680,77 @@ class AmountSource(db.Model):
 
     def __repr__(self):
         return f"<AmountSource {self.name}>"
+
+
+class StatementSource(db.Model):
+    """WHERE a recorded statement line came from (ruling **R-FP**, X-f6a).
+
+    The catalogue behind ``budget.statement_imports.source_id``,
+    ``budget.bank_statement_lines`` (through its import) and
+    ``budget.account_external_identities.source_id``.  One row per source
+    ADAPTER: a format at an institution, because one bank publishes one
+    statement several ways and the ways carry different facts.
+
+    One value today, ``secu_checking_csv``.  Later adapters -- SECU's OFX, the
+    Capital One card, and ``X-f6b``'s automated SimpleFIN feed -- INSERT a row
+    here, because a new source is data and never schema.
+
+    Why the member names a format rather than an institution, and why an
+    adapter without an external transaction id loses nothing, are both measured
+    on :class:`app.enums.StatementSourceEnum`.
+
+    Application code resolves these via ``ref_cache.statement_source_id`` and
+    compares against the integer ID -- never the string ``name`` -- matching the
+    project-wide ``ref-table: IDs for logic, strings for display only``
+    invariant.
+    """
+
+    __tablename__ = "statement_sources"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(40), unique=True, nullable=False)
+    #: What a human sees.  A source is chosen on an upload form, so unlike most
+    #: ref rows this one is READ for display as well as joined -- and the label
+    #: is a column rather than a template-side mapping for the reason the
+    #: project keeps ref labels in ref: a second spelling in Jinja is a second
+    #: place for a new adapter's name to be forgotten.
+    display_name = db.Column(db.String(80), nullable=False)
+
+    def __repr__(self):
+        return f"<StatementSource {self.name}>"
+class SettlementBasis(db.Model):
+    """HOW a settled row's recorded figure is known (plan step **X-au-c3**).
+
+    The catalogue behind ``budget.transactions.settled_basis_id``.  A row that
+    has not settled carries NULL here, no settle day and no settled figure; a
+    row that HAS settled carries all three, and this column says which of the
+    three ways its figure was arrived at -- ``derived`` (the app resolved it at
+    the settle), ``corrected`` (a human read it off a statement) or
+    ``purchases`` (the row's own entries state it, and it is the one basis that
+    stores no figure).
+
+    Its whole reason for existing is that ``actual_amount`` used to answer two
+    questions at once -- WHAT moved, in its value, and WHO said so, in its
+    NULL-ness (ruling **R-FH**).  :class:`app.enums.SettlementBasisEnum` carries
+    the two defects that overload produced and why splitting them is what
+    removes the need to freeze a row's plan at settle.
+
+    Application code resolves these via ``ref_cache.settlement_basis_id`` and
+    compares against the integer ID -- never the string ``name`` -- matching the
+    project-wide ``ref-table: IDs for logic, strings for display only``
+    invariant.
+
+    ``budget.transfers`` carries no such column and needs none: a transfer's
+    money moves on its two shadow ``Transaction`` rows, which each record their
+    own leg, and the transfer itself stays a plan for its whole life.
+    """
+
+    __tablename__ = "settlement_bases"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(20), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<SettlementBasis {self.name}>"

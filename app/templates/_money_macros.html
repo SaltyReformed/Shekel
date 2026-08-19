@@ -20,6 +20,29 @@
 {%- if value < 0 -%}-${{ fmt.format(-value) }}{%- else -%}${{ fmt.format(value) }}{%- endif -%}
 {%- endmacro -%}
 
+{%- macro retained_badge(retained_amount) -%}
+{#- The figure a tick WOULD book, drawn only where it is not already on screen
+    (plan step X-au-c3, developer 2026-08-17).
+
+    A row reverted out of the settled band KEEPS what it recorded and a
+    re-settle honours it, so its PLAN is what the balance counts and this is
+    what marking it paid will record -- two different numbers about one row.
+    The route decides which rows have such a gap
+    (``transaction_service.retained_settle_amounts_by_id`` answers ``none``
+    for every row that does not); this macro only draws it, so the rule has one
+    statement in Python and no template restates it.
+
+    It is a BADGE and not a second figure in the money slot on purpose: the
+    amount beside it is what the projection is counting today, and replacing
+    that with a figure no balance uses would make the cell disagree with the
+    column it sits in. -#}
+{%- if retained_amount is not none -%}
+<span class="badge bg-info-subtle text-info-emphasis fw-normal ms-1"
+      title="Marking this paid will record {{ money(retained_amount) }} -- the figure recorded before this row was set back to Projected. Type a different amount when you tick it to replace that.">
+  &#8635; {{ money(retained_amount) }}</span>
+{%- endif -%}
+{%- endmacro -%}
+
 {%- macro pace_pill(pace) -%}
 {%- if pace == 'behind' -%}
 <span class="verdict-pill verdict-pill--warning">Behind</span>

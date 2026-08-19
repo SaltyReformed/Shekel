@@ -35,6 +35,7 @@ from app.enums import (
     AcctCategoryEnum,
     AcctTypeEnum,
     AmountSourceEnum,
+    SettlementBasisEnum,
     BusinessDayShiftEnum,
     CalcMethodEnum,
     CompoundingFrequencyEnum,
@@ -49,9 +50,9 @@ from app.enums import (
     PostingKindEnum,
     PostingSourceEnum,
     RaiseTypeEnum,
-    RecurrencePatternEnum,
     RecurrenceUnitEnum,
     RoleEnum,
+    StatementSourceEnum,
     StatusEnum,
     TaxTypeEnum,
     TxnTypeEnum,
@@ -198,7 +199,6 @@ def _build_ref_specs(ref_models) -> list[_RefSpec]:
         _RefSpec(TxnTypeEnum, ref_models.TransactionType),
         _RefSpec(AcctTypeEnum, ref_models.AccountType, builtin_only=True),
         _RefSpec(AcctCategoryEnum, ref_models.AccountTypeCategory),
-        _RefSpec(RecurrencePatternEnum, ref_models.RecurrencePattern),
         _RefSpec(DeductionTimingEnum, ref_models.DeductionTiming),
         _RefSpec(CalcMethodEnum, ref_models.CalcMethod),
         _RefSpec(TaxTypeEnum, ref_models.TaxType),
@@ -219,6 +219,8 @@ def _build_ref_specs(ref_models) -> list[_RefSpec]:
         _RefSpec(PeriodPlacementEnum, ref_models.PeriodPlacement),
         _RefSpec(BusinessDayShiftEnum, ref_models.BusinessDayShift),
         _RefSpec(AmountSourceEnum, ref_models.AmountSource),
+        _RefSpec(StatementSourceEnum, ref_models.StatementSource),
+        _RefSpec(SettlementBasisEnum, ref_models.SettlementBasis),
     ]
 
 
@@ -474,24 +476,6 @@ def acct_category_member(category_id):
     """
     _require_init()
     return _cache.acct_category_members.get(category_id)
-
-
-def recurrence_pattern_id(member):
-    """Return the integer primary key for a RecurrencePatternEnum member.
-
-    Args:
-        member: A ``RecurrencePatternEnum`` member
-                (e.g. ``RecurrencePatternEnum.MONTHLY``).
-
-    Returns:
-        int -- the ``ref.recurrence_patterns.id`` value.
-
-    Raises:
-        RuntimeError: If the cache has not been initialized.
-        KeyError: If *member* is not a valid RecurrencePatternEnum member.
-    """
-    _require_init()
-    return _cache.enum_ids[RecurrencePatternEnum][member]
 
 
 def recurrence_unit_id(member):
@@ -918,3 +902,58 @@ def amount_source_id(member):
     """
     _require_init()
     return _cache.enum_ids[AmountSourceEnum][member]
+
+
+def statement_source_id(member):
+    """Return the integer primary key for a StatementSourceEnum member.
+
+    WHERE a recorded statement line came from (ruling **R-FP**, plan step
+    ``bank_import:X-f6a``), stamped on ``budget.statement_imports.source_id``
+    and ``budget.account_external_identities.source_id`` by the import door and
+    read by the adapter registry -- always via the integer ID, never the string
+    ``name``.  Matches the project-wide IDs-for-logic invariant.
+
+    Args:
+        member: A ``StatementSourceEnum`` member
+                (e.g. ``StatementSourceEnum.SECU_CHECKING_CSV``).
+
+    Returns:
+        int -- the ``ref.statement_sources.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid StatementSourceEnum member.
+    """
+    _require_init()
+    return _cache.enum_ids[StatementSourceEnum][member]
+def settlement_basis_id(member):
+    """Return the integer primary key for a SettlementBasisEnum member.
+
+    The settlement record's discriminator (plan step **X-au-c3**): HOW a settled
+    row's recorded figure is known, stamped on
+    ``budget.transactions.settled_basis_id`` by the settle and read by the one
+    accessor that answers what a settled row recorded
+    (``row_valuation.settled_figure``) -- always via the integer ID, never the
+    string ``name``.  Matches the project-wide IDs-for-logic invariant.
+
+    **There is deliberately no accessor for the NOT-SETTLED state**, for the
+    reason :func:`amount_source_id` states about OWN: it is not a member but the
+    ABSENCE of one, so "has this row ever recorded a settle" is a NULL test on
+    the column and needs no cache read -- and no ref id is frozen into the
+    schema.  **It is NOT how a reader asks whether the row is settled**: a
+    revert keeps what moved, so the column outlives the settle it recorded and
+    the STATUS is what decides (``row_valuation.settled_figure``).
+
+    Args:
+        member: A ``SettlementBasisEnum`` member
+                (e.g. ``SettlementBasisEnum.PURCHASES``).
+
+    Returns:
+        int -- the ``ref.settlement_bases.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid SettlementBasisEnum member.
+    """
+    _require_init()
+    return _cache.enum_ids[SettlementBasisEnum][member]

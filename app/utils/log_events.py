@@ -457,6 +457,30 @@ EVT_TRANSACTION_SETTLED_FROM_ENTRIES = _register(
 )
 
 
+# ── Business events: statement import (bank_import:X-f6a) ──────────
+
+EVT_STATEMENT_IMPORTED = _register(
+    "statement_imported", BUSINESS,
+    "A bank statement was parsed, verified and recorded against an account.",
+)
+
+EVT_STATEMENT_IDENTITY_RECORDED = _register(
+    "statement_identity_recorded", BUSINESS,
+    "A first import recorded what a source calls one of the user's accounts.",
+)
+
+EVT_STATEMENT_MATCHED = _register(
+    "statement_matched", BUSINESS,
+    "An owner accepted that bank lines and app rows are one movement, and the "
+    "app's recorded day moved to the bank's.",
+)
+
+EVT_STATEMENT_MATCH_RELEASED = _register(
+    "statement_match_released", BUSINESS,
+    "An owner undid a match; the bank lines it explained are unexplained again.",
+)
+
+
 # ── Performance events (request lifecycle) ─────────────────────────
 
 EVT_REQUEST_COMPLETE = _register(

@@ -133,46 +133,13 @@ class RaiseTypeEnum(enum.Enum):
     CUSTOM = "custom"
 
 
-class RecurrencePatternEnum(enum.Enum):
-    """Recurrence pattern values -- the cadences this application MODELS.
-
-    Values match ``ref.recurrence_patterns.name`` after the Commit #2
-    migration capitalizes the display names.
-
-    **This is deliberately NARROWER than the ``ref`` table** (plan step R2e-3,
-    ruling R-R11).  ``Once`` was a member and a row meaning "does not recur";
-    the member is gone and the ROW SURVIVES.  Not for this image's sake --
-    ``ref_cache.init`` iterates THIS enum and a surplus row is invisible to it
-    -- but for the PREVIOUS image's, which still names ``ONCE`` and which
-    ``shekel-deploy`` rolls back to on an unhealthy deploy.  Plan step R9 drops
-    the row with the table; migration ``d4a71f6e30bb`` carries the full
-    reasoning.
-
-    **Nothing in ``app/`` reads this enum for a cadence any more, from plan
-    step R7c-c.**  No form posts a pattern id (plan step R7b-2: a submission
-    states ``(interval_n, unit, placement)``), and that step dropped
-    ``budget.recurrence_rules.pattern_id`` along with the encode / decode pair
-    and ``modelled_pattern``, the last reader of a STORED one -- so the enum
-    names a vocabulary no surface speaks in either direction.  What is left is
-    ``ref_cache``, which seeds and caches the ``ref`` rows, and R9 is the step
-    that drops both.  "Does not recur" is ``recurrence_rule_id IS NULL``, the
-    shape transaction templates always used.
-    """
-
-    EVERY_PERIOD = "Every Period"
-    EVERY_N_PERIODS = "Every N Periods"
-    MONTHLY = "Monthly"
-    MONTHLY_FIRST = "Monthly First"
-    QUARTERLY = "Quarterly"
-    SEMI_ANNUAL = "Semi-Annual"
-    ANNUAL = "Annual"
-
-
 class RecurrenceUnitEnum(enum.Enum):
     """Recurrence cadence-unit values (recurrence redesign, step R2).
 
-    The first of the two axes that replace :class:`RecurrencePatternEnum`'s
-    closed eight-name set: a recurrence is ``every <interval_n> <unit>``.
+    The first of the two axes that replaced the closed pattern set's
+    eight-name enum, ``RecurrencePatternEnum``, deleted with
+    ``ref.recurrence_patterns`` at plan step **R9**: a recurrence is
+    ``every <interval_n> <unit>``.
     Four of the old names -- Monthly, Quarterly, Semi-Annual, Annual -- were
     the same idea with a different integer baked into the NAME (every 1, 3, 6
     or 12 months), which is why "every other month" and "every two years" had
@@ -588,3 +555,102 @@ class AmountSourceEnum(enum.Enum):
 
     TEMPLATE = "template"
     PARENT_TRANSFER = "parent_transfer"
+
+
+class StatementSourceEnum(enum.Enum):
+    """WHERE a recorded statement line came from -- ruling **R-FP**'s adapter.
+
+    A statement importer is a SOURCE ADAPTER over one normalized line shape
+    (plan step ``bank_import:X-f6a``), so matching, review and fact-writing stay
+    source-independent: a new way for a statement to arrive is a new member here
+    and a new parser, never a second path through the importer.
+
+        secu_checking_csv -- State Employees' Credit Union's own transaction
+                             export, with the running-balance column included.
+
+    **A member names a FORMAT at an INSTITUTION, not an institution**, because
+    one bank publishes one statement several ways and the ways do not carry the
+    same facts.  Measured on the developer's own exports 2026-08-16: SECU's OFX
+    -- and its QFX and QBO twins, which are the same statement content plus two
+    Intuit routing tags -- carries a ``FITID`` and truncates the description to
+    the OFX ``NAME`` limit, 326 of 361 lines landing at exactly 32 characters;
+    the CSV carries the merchant, the bank's own category and a per-line running
+    balance, and carries no ``FITID`` at all.  The CSV description STARTS WITH
+    the OFX name on 306 of 306 shared lines, so the two really are one statement
+    with one of them cut short.
+
+    **Losing ``FITID`` costs nothing, and that is measured rather than
+    assumed.**  A line's identity is
+    ``(account, posted_on, amount, sequence within that group)``
+    (:func:`app.services.statement_import.line_identity`), which every source
+    can compute including one carrying no id of its own.  Compared across two
+    SECU exports twelve days apart, that key reproduced the ``FITID`` key
+    exactly: 0 keys present in only one export, 0 lines whose ``FITID``
+    disagreed, over 342 shared lines.  So an external id is stored as a
+    CORROBORATING fact (``bank_statement_lines.external_id``) rather than as the
+    thing identity rests on, and the importer has ONE identity rule instead of
+    one per format -- which is what lets ``X-f6b``'s automated source join
+    without re-opening the question.
+
+    Application code resolves these via ``ref_cache.statement_source_id`` and
+    compares against the integer ID -- never the string ``name`` -- matching the
+    project-wide ``ref-table: IDs for logic, strings for display only``
+    invariant.
+    """
+
+    SECU_CHECKING_CSV = "secu_checking_csv"
+class SettlementBasisEnum(enum.Enum):
+    """HOW a settled row's recorded figure is known (plan step **X-au-c3**).
+
+    A row is a PLAN until its money moves and a RECORD of what moved once it
+    has.  ``estimated_amount`` / ``amount_source_id`` are the plan and no settle
+    path writes either of them; ``settled_on`` / ``settled_amount`` /
+    ``settled_basis_id`` are the record and nothing but a settle writes those.
+    This enum is the record's third column: it says which of three ways the
+    figure beside it was arrived at.
+
+        derived   -- the app resolved it at the moment of the settle, from
+                     whatever prices the row (its definition's price series, its
+                     salary profile, its loan's schedule).  That resolution is
+                     not repeatable, which is why the answer is RECORDED rather
+                     than re-asked: an effective-dated price series admits a
+                     version dated into the past, so the same question answered
+                     a year later can give a different figure and be right both
+                     times -- the series says what the price WAS, and the bank
+                     says what it TOOK.
+        corrected -- a human read it off a statement and typed it.  It beats the
+                     derivation, because a figure somebody read is a fact and a
+                     derivation is an inference.
+        purchases -- the row's own purchases state it, and it is the one basis
+                     that stores NO figure: ``settled_amount`` is NULL and the
+                     amount is the sum of the row's entries, which are
+                     themselves the records.  Storing it would be a second copy
+                     of a value the row's own children already hold, with a
+                     reconciler to keep the two in step -- the shape ruling
+                     **R-FI** exists to delete.
+
+    **The point of the enum is that WHAT moved and WHO said so stopped sharing a
+    column.**  ``actual_amount`` carried both until this step: its VALUE was the
+    settled figure and its NULL-ness was read by three subsystems as *a human
+    entered this* (ruling **R-FH**).  Two defects followed from the one
+    overload.  A machine-derived figure written there manufactured a correction
+    that never happened (finding **N-241**).  And a settled row that carried no
+    correction carried no recorded figure at all -- so every reader fell back to
+    the row's PLAN, and because a plan is a derivation, the plan then had to be
+    frozen against later change.  Splitting the two makes the record mandatory,
+    and a mandatory record is what leaves nothing to freeze.
+
+    Application code resolves these via ``ref_cache.settlement_basis_id`` and
+    compares against the integer ID -- never the string ``name`` -- matching the
+    project-wide ``ref-table: IDs for logic, strings for display only``
+    invariant.  There is deliberately no member meaning *not settled*: that is
+    the ABSENCE of a basis, so a NULL test answers "has this row ever recorded
+    a settle" with no ref id frozen into the schema -- the same reason
+    :class:`AmountSourceEnum` has no ``own`` member.  Whether the row is settled
+    NOW is a different question with a different answer: its STATUS
+    (``row_valuation.settled_figure``), because a revert keeps what moved.
+    """
+
+    DERIVED = "derived"
+    CORRECTED = "corrected"
+    PURCHASES = "purchases"

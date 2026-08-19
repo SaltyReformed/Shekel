@@ -30,9 +30,13 @@ from app.services import (
 )
 from app.services.account_resolver import resolve_grid_account
 from app.services.balance_at import BalanceContext
-from app.services.cash_ledger import display_amounts_by_id
+from app.services.cash_ledger import (
+    display_amounts_by_id,
+    settled_amounts_by_id,
+)
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services.grid_view_service import RowKey
+from app.services.transaction_service import retained_settle_amounts_by_id
 from app.services.pay_calendar import DerivedPeriod, PeriodWindow
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
@@ -473,6 +477,20 @@ def index():
     budgets = display_amounts_by_id(
         all_transactions, ctx.balance_ctx.amounts(),
     )
+    # What each row's money DID, beside what its amount IS (plan step X-au-c3).
+    # A settled row shows the figure it RECORDED and an unsettled one shows its
+    # plan, and the two questions have two maps because they are two questions:
+    # merging them would put "has this settled" back inside a figure, which is
+    # the overload ``actual_amount`` carried.
+    settled = settled_amounts_by_id(all_transactions)
+    # What each row WILL book if it is marked paid, where that differs from
+    # both maps above (plan step X-au-c3, developer 2026-08-17).  A row reverted
+    # out of the settled band KEEPS what it recorded and a re-settle honours it,
+    # so its plan is what the balance counts and its retained figure is what a
+    # tick books -- two numbers, and the second was visible on no surface but
+    # the reconcile panel.  Non-``None`` for exactly the rows where that gap is
+    # real, so a template draws a marker rather than deciding anything.
+    retained = retained_settle_amounts_by_id(all_transactions)
 
     # Load ALL categories (including archived) for row-key building so
     # transactions with archived categories still render correctly;
@@ -498,10 +516,14 @@ def index():
 
     return render_template(
         "grid/grid.html",
-        # The ONE amount map every cell on this page reads (plan step
-        # X-au-c2b).  Published as context rather than annotated onto each row,
-        # so a template cannot read a stale column when a render path forgets.
+        # The THREE amount maps every cell on this page reads (plan steps
+        # X-au-c2b and X-au-c3): what the row's amount IS, what its money DID,
+        # and what a tick WOULD book where that differs from both.  Published as
+        # context rather than annotated onto each row, so a template cannot read
+        # a stale column when a render path forgets.
         budgets=budgets,
+        settled=settled,
+        retained=retained,
         # The ID, not the Scenario ROW (plan step X-v2): the template needs
         # exactly the id for its hidden create-form field, and the two sibling
         # create fragments already take ``scenario_id``.  Passing the nullable

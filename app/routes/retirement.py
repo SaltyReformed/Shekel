@@ -96,11 +96,16 @@ def dashboard():
     **What that buys, stated exactly.**  ``picture_at(inputs, STORED_PLAN)``
     below and the lever solver's own month-0 probe are the SAME object, not two
     equal ones, so the two cards cannot state different figures for one plan.
-    It does not make this render single-clock: ``compute_pension_summary``,
-    ``compute_gap_net_biweekly`` and ``build_employer_salary_basis`` still read
-    ``date.today().year`` for themselves.  Ledger row **P55** owns that
-    remainder.  The gate for what IS claimed here is
-    ``tests/test_arch/test_one_read_pass_per_render.py``.
+    **And this render is single-clock as of pay-calendar plan step C2-f2e**,
+    which closed ledger row **P55**: ``compute_pension_summary``,
+    ``compute_gap_net_biweekly`` and ``build_employer_salary_basis`` each took
+    ``date.today().year`` for themselves, once per plan point over about ten
+    probes, so a render crossing a NEW YEAR could project the verdict card's
+    salary path from year N and the lever card's from N+1.  All three take the
+    pass's day now.  The gates are
+    ``tests/test_arch/test_one_read_pass_per_render.py`` for the pass and
+    ``test_retirement_dashboard_service.TestTheRenderDayOpensTheSalaryPath``
+    for the day.
     """
     inputs = retirement_plan.load_retirement_inputs(
         BalanceContext.build(current_user.id),
@@ -431,8 +436,9 @@ def readiness_fragment():
     passes and three loads -- the stored-settings baseline, the override, and
     the lever outcome -- and the panel's whole purpose is to state the DELTA
     between the first two, so every input the halves share had better BE
-    shared.  They are; the bare ``date.today()`` reads ledger row **P55** names
-    are not yet.
+    shared.  They are, and since pay-calendar plan step C2-f2e that includes the
+    DAY: the three producers that opened a salary path from
+    ``date.today().year`` take the pass's ``as_of``, which closed row **P55**.
     """
     if not request.headers.get("HX-Request"):
         return redirect(url_for("retirement.dashboard"))

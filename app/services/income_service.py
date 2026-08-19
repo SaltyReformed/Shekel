@@ -39,7 +39,12 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
-from app.services import pay_period_service, paycheck_calculator
+from app.services import paycheck_calculator
+from app.services.pay_calendar import (
+    PayCalendar,
+    PeriodWindow,
+    calendar_for,
+)
 from app.services.tax_config_service import (
     load_tax_configs_for_periods,
     load_tax_configs_for_year,
@@ -53,6 +58,7 @@ ZERO = Decimal("0")
 
 def get_current_gross_biweekly(
     user_id: int,
+    calendar: PayCalendar,
     *,
     scenario_id: int | None = None,
     as_of: date | None = None,
@@ -90,10 +96,17 @@ def get_current_gross_biweekly(
             filter is omitted and the user's first ``is_active=True``
             profile across all scenarios is used (the historical
             savings / retirement / investment dashboard behavior).
+        calendar: The OWNER's pay calendar.  Taken rather than derived
+            (pay-calendar plan step C2-f2d-3's fix pass): every caller already
+            holds one -- on a ``BalanceContext``, where it is memoized for the
+            whole render -- and deriving a second here cost `/savings` SEVEN
+            derivations a render against the one the arc exists to leave.  It
+            is the CALENDAR and not the read pass because that is all this
+            function needs, and because a pass would carry an ``as_of`` and a
+            scenario it deliberately does not read (see below).
         as_of: Optional date for which to compute the gross.  Defaults
-            to today.  Passed to
-            :func:`pay_period_service.get_current_period` for period
-            resolution.
+            to today.  The period covering it is resolved off *calendar*
+            (:meth:`~app.services.pay_calendar.PayCalendar.period_containing`).
 
     Returns:
         The paycheck engine's
@@ -103,6 +116,15 @@ def get_current_gross_biweekly(
         covers ``as_of`` -- both pre-fix call sites returned
         ``Decimal("0")`` for the missing-profile branch, so the
         substitute preserves the contract.
+
+    **The CLOCK and the SCENARIO are still this function's own**, and that is
+    deliberate rather than an oversight: two of its three callers pass neither,
+    so the gross resolves against an implicit ``date.today()`` and the owner's
+    first active profile across all scenarios.  Threading the read pass's
+    ``as_of`` and ``scenario_id`` would MOVE MONEY on a historical read, which
+    is ledger row **P56**'s remainder and ``C2-f3``'s to rule.  The calendar is
+    threaded here because it is an owner FACT that cannot change the answer --
+    the same paydays however they are read.
     """
     query = (
         db.session.query(SalaryProfile)
@@ -118,13 +140,16 @@ def get_current_gross_biweekly(
         return ZERO
 
     as_of_date = as_of or date.today()
-    current_period = pay_period_service.get_current_period(
-        user_id, as_of=as_of_date,
-    )
+    # Both questions the engine needs -- which paycheck covers ``as_of``, and
+    # the owner's whole schedule for the cumulative and reconciliation context
+    # -- come off the CALLER's calendar (pay-calendar plan step C2-f2d-3), so a
+    # render that already derived one pays nothing here.  The two SQL readers
+    # this replaced could answer from two different reads.
+    current_period = calendar.period_containing(as_of_date)
     if current_period is None:
         return ZERO
 
-    all_periods = pay_period_service.get_all_periods(user_id)
+    all_periods = calendar.saved()
     # Resolved for the RESOLVED PERIOD's own tax year rather than the clock's,
     # which is the key ``live_projected_net`` below already uses for every
     # period it prices -- so a caller reading one period and a caller reading
@@ -190,7 +215,7 @@ class SalaryPricing:
         self._user_id = user_id
         self._scenario_id = scenario_id
         self._profiles: "dict[int, SalaryProfile] | None" = None
-        self._periods: list | None = None
+        self._periods: PeriodWindow | None = None
         self._net_by_profile: "dict[int, dict[int, Decimal]]" = {}
 
     def net_for(
@@ -267,9 +292,19 @@ class SalaryPricing:
         """
         if profile.id not in self._net_by_profile:
             if self._periods is None:
-                self._periods = pay_period_service.get_all_periods(
-                    self._user_id,
-                )
+                # The owner's saved schedule off the DERIVED calendar
+                # (pay-calendar plan step C2-f2d-3), so the periods this
+                # projection reconciles against carry the ends the whole payday
+                # set dictates rather than the stored ``end_date`` column plan
+                # step C4 drops.  **This one still DERIVES**, where
+                # :func:`get_current_gross_biweekly` above was given its
+                # calendar: the basis is built by ``cash_ledger.amount_basis``
+                # from an owner and a scenario alone, so there is no calendar to
+                # take without threading one through that constructor -- which
+                # is ``balance:X-au-c2b``'s object and ``X-i1``'s input tier.
+                # It is LAZY, so a pass that prices no paycheck pays nothing;
+                # ledger row **P63** carries the rest.
+                self._periods = calendar_for(self._user_id).saved()
             configs_by_year = load_tax_configs_for_periods(
                 self._user_id, profile, self._periods,
             )
@@ -349,8 +384,8 @@ def live_projected_net(txn, pricing: SalaryPricing) -> "Decimal | None":
       * income with a template, and priced by an active profile in this
         scenario for its own period (:func:`salary_net_for`);
       * Projected (:func:`~app.utils.balance_predicates.is_projected` --
-        Received / Settled income carries a realized ``actual_amount`` that is a
-        historical fact, never a recomputable projection);
+        Received / Settled income RECORDS what moved, a historical fact and
+        never a recomputable projection);
       * NOT user-overridden (``is_override`` -- a manual amount the user
         deliberately set is respected, mirroring the recurrence engine),
 

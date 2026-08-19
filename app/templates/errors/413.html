@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}File Too Large -- Shekel{% endblock title %}
+
+{# Reached when a request body exceeds ``MAX_CONTENT_LENGTH``.  In practice
+   that is the statement import (plan step bank_import:X-f6a-1), the app's
+   only upload -- so the copy names the real remedy rather than the generic
+   "try again", which for a too-large file is advice that cannot work. #}
+
+{% block content %}
+<div class="row justify-content-center mt-5">
+  <div class="col-md-6 text-center">
+    <h1 class="display-1 text-muted">413</h1>
+    <h4>That file is too large</h4>
+    <p class="text-muted">
+      Uploads are limited to {{ max_upload_kb }} KB. A full year of bank
+      statements is well under that, so a file this big is usually the wrong
+      one -- check that you exported transactions rather than a statement PDF,
+      and narrow the date range if you need to.
+    </p>
+    <a href="{{ url_for('dashboard.page') }}" class="btn btn-primary mt-3">
+      <i class="bi bi-speedometer2"></i> Back to Dashboard
+    </a>
+  </div>
+</div>
+{% endblock content %}

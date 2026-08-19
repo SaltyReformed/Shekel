@@ -24,9 +24,9 @@ defined once rather than re-implemented per surface (coding-standards rule
   bill due in month M is attributed to M even when its funding period does
   not overlap M.
 * :func:`resolved_actual_amount` -- the settled-surprises kernel's
-  estimate-at-entry vs actual-at-settle rule (a settled row uses its
-  entered actual, falling back to the estimate; an unsettled row has no
-  actual yet, so it reads back its estimate and shows zero variance).
+  plan-at-entry vs recorded-at-settle rule (a settled row is worth what it
+  RECORDED as having moved; an unsettled row has recorded nothing, so it reads
+  back its own plan and shows zero variance).
 * :func:`signed_pct` -- the guarded "signed value as a percentage of a
   base" helper (``None`` when the base is zero), shared by the surprises
   figures and the Spending hero's vs-prior / vs-average chips.
@@ -42,14 +42,14 @@ import calendar as cal_mod
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy.orm import contains_eager, joinedload
+from sqlalchemy.orm import contains_eager, joinedload, selectinload
 
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
-from app.services.row_valuation import owned_amount
+from app.services.row_valuation import owned_amount, settled_figure
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.money import CENTS, HUNDRED, ZERO
 
@@ -137,6 +137,12 @@ def query_settled_expenses(
         .options(
             joinedload(Transaction.category),
             joinedload(Transaction.pay_period),
+            # ``resolved_actual_amount`` asks ``row_valuation.settled_figure``,
+            # which sums a ``purchases``-basis row's OWN entries rather than
+            # reading a stored copy (plan step X-au-c3).  Without this the
+            # Spending report issues one SELECT per settled envelope where it
+            # used to read a column; production carries 29 such rows.
+            selectinload(Transaction.entries),
         )
         .filter(
             Transaction.account_id == account_id,
@@ -197,6 +203,9 @@ def query_settled_expenses_in_span(
         .options(
             joinedload(Transaction.category),
             contains_eager(Transaction.pay_period),
+            # The sibling query's reason, and the same consumer: see
+            # :func:`query_settled_expenses` above.
+            selectinload(Transaction.entries),
         )
         .filter(
             Transaction.account_id == account_id,
@@ -215,38 +224,47 @@ def query_settled_expenses_in_span(
 def resolved_actual_amount(txn: Transaction) -> Decimal:
     """Return the 'actual' amount for an estimate-vs-actual comparison.
 
-    The Variance/surprises kernel's rule: a settled transaction uses its
-    entered ``actual_amount`` when populated, else the amount it OWNS (the
-    done-without-actual edge case -- a zero variance, not a spurious one).  A
-    projected transaction has no actual yet, so it reads back that same owned
-    amount and its individual variance is exactly zero.  A "surprise" is a row
-    whose resolved actual differs from its estimate -- only a settled row with
-    an explicitly entered, different actual can produce one.
+    The Variance/surprises kernel's rule: a settled transaction is worth what it
+    RECORDED as having moved (:func:`~app.services.row_valuation.settled_figure`),
+    and an unsettled one has recorded nothing, so it reads back its own PLAN and
+    its individual variance is exactly zero.  A "surprise" is a row whose
+    recorded figure differs from its plan.
 
-    **Both fall-throughs go through
+    **Which rows can produce one changed at plan step X-au-c3, and it is a
+    widening the surprises list wanted.**  The old rule read
+    ``actual_amount``, which was populated only when a HUMAN had typed a
+    correction -- so a settled row was a surprise only if somebody had retyped
+    its figure, and a row whose settle booked something other than its estimate
+    for any other reason (a salary row's live recompute, a loan payment's
+    payment-date escrow) recorded nothing and reported a variance of zero.  A
+    settled row now always records what moved, so the comparison finally answers
+    the question the list is named for.  Whether the figure came from a human is
+    a separate fact and has its own column (``settled_basis_id``).
+
+    **The fall-through goes through
     :func:`~app.services.row_valuation.owned_amount` since plan step
-    X-au-c2b**, where they read ``estimated_amount`` directly.  Its one caller
-    (``spending_report_service._build_surprises``) queries settled expenses
-    only, and after the freeze (plan step X-au-c3) a settled row owns its
-    figure -- so the accessor asserts what is true here and REFUSES rather than
-    handing a ``None`` into a subtraction on the day some later reader points a
-    derived row at this kernel.
+    X-au-c2b**, where it read ``estimated_amount`` directly.  Its one caller
+    (``spending_report_service._build_surprises``) queries settled expenses only,
+    so the fall-through is unreachable from it; the accessor REFUSES rather than
+    handing a ``None`` into a subtraction on the day some later reader points an
+    unsettled derived row at this kernel.
 
     Args:
-        txn: The transaction to resolve.  ``txn.status`` is declared
-            ``lazy="joined"`` so ``is_settled`` is available without an
+        txn: The transaction to resolve.  Its settlement record is read, and
+            ``txn.status`` is declared ``lazy="joined"`` so nothing here needs an
             explicit load.
 
     Returns:
         The comparison actual as a ``Decimal``.
 
     Raises:
-        AmountUnresolvable: When the row's amount is DERIVED, so it stores
-            none.  Unreachable from this kernel's only caller, which is
-            settled-only.
+        AmountUnresolvable: When the row has NOT settled and its plan is
+            DERIVED, so it stores no figure either way.  Unreachable from this
+            kernel's only caller, which is settled-only.
     """
-    if txn.status and txn.status.is_settled and txn.actual_amount is not None:
-        return txn.actual_amount
+    recorded = settled_figure(txn)
+    if recorded is not None:
+        return recorded
     return owned_amount(txn)
 
 

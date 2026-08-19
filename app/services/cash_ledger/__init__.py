@@ -82,6 +82,15 @@ in, frozen dataclasses out; no Flask symbol, no writes.  All money is
 :class:`~decimal.Decimal`.
 """
 
+# The producer-free half of the valuation lives a tier DOWN
+# (:mod:`app.services.row_valuation`), because the loan stack needs it and can
+# never name this package.  Re-exported here so a consumer asking what a row's
+# money DID names the same module it asks what the row's amount IS -- the same
+# reason ``_amounts`` re-exports ``owned_contribution``.
+from app.services.row_valuation import (
+    recorded_amounts_by_id,
+    settled_amounts_by_id,
+)
 from ._amount_source import (
     AmountBasis,
     AmountRule,
@@ -96,13 +105,17 @@ from ._amounts import (
     contributed_amount,
     contribution_of,
     contributions_by_id,
-    credit_entry_sum,
     display_amounts_by_id,
     income_amount,
     live_amounts,
     live_override,
     owned_amount,
     owned_contribution,
+)
+from ._cash_leg import (
+    cash_leg_of,
+    credit_entry_sum,
+    off_statement_sum,
     posted_purchase_sum,
     settled_cash_leg,
 )
@@ -161,6 +174,8 @@ __all__ = [
     "income_amount",
     "live_amounts",
     "live_override",
+    "cash_leg_of",
+    "off_statement_sum",
     "owned_amount",
     "owned_contribution",
     "planned_cash_rows",
@@ -169,6 +184,8 @@ __all__ = [
     "resolve_anchor",
     "resolve_transaction_amount",
     "resolve_transfer_amount",
+    "recorded_amounts_by_id",
+    "settled_amounts_by_id",
     "settled_cash_facts",
     "settled_cash_leg",
     "statement_coverage",

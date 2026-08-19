@@ -287,6 +287,34 @@ _FENCED_MODULE_RULINGS = {
         "own_figure",
         "owned_amount",
         "owned_contribution",
+        # The settlement RECORD's three names (plan step X-au-c3), ruled on the
+        # same ground: each answers about ONE ROW, from that row's own columns
+        # and children, and none folds, dates, sums or reads an anchor.
+        # ``settled_figure`` is what the row RECORDED as having moved -- a
+        # stored fact, not a projection of one -- ``purchases_total`` is the
+        # reduction an envelope's record defers to (it takes entries, not even a
+        # row), and ``settled_amounts_by_id`` is ``settled_figure`` mapped over
+        # a row set for a render, which is a LOOP over a non-producer and not a
+        # fold toward a balance: it dates nothing and sums nothing.  The batch
+        # is the one to look at twice, and it is ``display_amounts_by_id``'s
+        # sibling one tier up -- that map needs an ``AmountBasis`` because a
+        # plan may be DERIVED, and this one needs none because a record is the
+        # row's own, which is exactly why it is down here.
+        # ``recorded_figure`` and ``recorded_amounts_by_id`` are
+        # ``settled_figure``'s TOTAL twin and its batch, ruled non-producers on
+        # exactly the same ground and by the same reading: each answers about
+        # ONE ROW from that row's own columns, and the batch is a LOOP over the
+        # single-row form.  The one clause between the pairs decides nothing a
+        # balance sees -- a settled row that RECORDS NOTHING answers ``None``
+        # here and raises there -- because these two are read by the EDIT
+        # DOORS, which prefill a box rather than count anything.  A balance
+        # reader taking this pair instead would be the substitution the fence
+        # exists to catch, and the refusing pair beside it is what it must take.
+        "purchases_total",
+        "recorded_amounts_by_id",
+        "recorded_figure",
+        "settled_amounts_by_id",
+        "settled_figure",
     })),
     # The cash LEDGER leaf (plan steps D1a + D1c): the facts a cash balance is
     # folded from, what one row is WORTH, and what a set of rows SUMS TO.
@@ -428,6 +456,22 @@ _FENCED_MODULE_RULINGS = {
         # the reason its sibling above is, and refused for the same one: it is a
         # component of an amount per transaction, not a balance per account.
         "posted_purchase_sum",
+        # The SUM of the two terms above, published at plan step
+        # ``bank_import:X-f6a-2`` because THREE readers now ask for it -- the
+        # rule below, the reconcile panel's "what a statement shows" caption,
+        # and the statement matcher -- and two additions written out is one
+        # place for them to drift.  A non-producer for its components' own
+        # reason: a component of an amount per transaction is not a balance per
+        # account.
+        "off_statement_sum",
+        # ``settled_cash_leg`` with its first term supplied, so one rule serves
+        # a SETTLED row (whose gross it owns) and a PROJECTED one (whose gross
+        # is what settling would book) alike.  Its second caller is the
+        # statement matcher, which must value a row the bank names whether the
+        # app has settled it or not.  Non-producing for the same reason as the
+        # function it generalises: it answers what ONE ROW moves, never what an
+        # account HOLDS.
+        "cash_leg_of",
         # ``_flows`` -- what a SET of rows sums to: what MOVED, not what is HELD
         # at a date.  A peer reduction over the same rows a balance folds, not a
         # step toward one.  ``sum_projected`` is the shared engine BOTH cash

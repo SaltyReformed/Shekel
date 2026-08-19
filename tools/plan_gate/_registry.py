@@ -731,8 +731,32 @@ def blocked_by_violations() -> list[str]:
 #: because if that pass does not happen, this comment is the evidence that the
 #: cap drifted rather than the ledger shrinking, which is precisely what rule 5
 #: exists to make visible.
+#: **``ledger.md`` was raised 250 -> 260 on 2026-08-18 -- the THIRD raise, by
+#: developer ruling, and the condition the SECOND one was granted on was NOT
+#: met.**  That raise named the fix and dated it: clear the decision-blocked
+#: pile, then **14** rows, because ruling any one of them closes a row.  Four
+#: days later the pile is still **14** -- two were cleared and two more opened
+#: (``balance:N-299`` and ``N-300``, the calendar sweep's clock findings) -- so
+#: the paragraph above is now doing exactly the job it was written for: it is
+#: the evidence that the cap drifted rather than the ledger shrinking.
+#:
+#: **What this raise also settles is that rule 5 can never answer for THIS
+#: file, and the reason is structural rather than circumstantial.**  Plan step
+#: ``bank_import:X-f6a-3a`` swept all 217 rows before asking: exactly 7 cite a
+#: code symbol that no longer exists, 2 of those are false positives, and all 5
+#: of the rest are LIVE defects whose citation went stale when code was renamed
+#: -- the ``N-97``/``N-18`` shape.  There is no dead weight.  61% of rows carry
+#: ``$0.00`` or "latent" as their worst measured, so the file is design debt
+#: awaiting a step, and 152 of 217 belong to one arc.  **One finding is one
+#: line, so a line cap on this file is a cap on how many defects the project is
+#: allowed to have MEASURED** -- it binds hardest when adversarial review is
+#: working, which is the discipline the whole project leans on.  The developer
+#: was offered the structural fixes (drop the line cap and keep
+#: :data:`LEDGER_ROW_CAP`, cap per arc, or split the balance arc out) and ruled
+#: for a condensed header plus this raise, keeping the forcing function while
+#: the arcs that own 35 of these rows (``X-ai``, ``X-ak``, ``X-f3c``) land.
 REGISTRY_CAPS = {
-    "ledger.md": 250,
+    "ledger.md": 260,
     "steps.md": 260,
     "conventions.md": 280,
     "verification.md": 120,

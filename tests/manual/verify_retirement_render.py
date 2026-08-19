@@ -97,7 +97,7 @@ from app import create_app
 from app.extensions import db
 from app.models.user import User
 from app.services import (
-    dashboard_pulse_service,
+    dashboard_service,
     retirement_dashboard_service,
     retirement_levers,
     retirement_readiness,
@@ -315,6 +315,12 @@ def _figures_before(source):
             retirement_readiness.compute_readiness_whatif(source())
         ))),
         "whatif_override": _plain(_guard("whatif_override", lambda: (
+            # Pylint: ``unexpected-keyword-arg`` -- this call runs ONLY on the
+            # HEAD tree, where ``compute_readiness_whatif`` took the three
+            # keyword what-ifs ``_before`` documents; the signature pylint
+            # resolves is the POST tree's, which this branch never reaches.
+            # A both-sides harness names one API the checker cannot see.
+            # pylint: disable-next=unexpected-keyword-arg
             _before(retirement_readiness, "compute_readiness_whatif")(
                 source(), **_HEAD_WHATIF_KWARGS,
             )
@@ -474,13 +480,19 @@ def _savings(user_id):
     """
     return {
         "dashboard": _plain(_guard("savings_dashboard", lambda: (
-            savings_dashboard_service.compute_dashboard_data(user_id)
+            savings_dashboard_service.compute_dashboard_data(
+                BalanceContext.build(user_id),
+            )
         ))),
         "goal_progress": _plain(_guard("goal_progress", lambda: (
-            savings_dashboard_service.compute_goal_progress(user_id)
+            savings_dashboard_service.compute_goal_progress(
+                BalanceContext.build(user_id),
+            )
         ))),
         "debt_summary": _plain(_guard("debt_summary", lambda: (
-            savings_dashboard_service.compute_debt_summary(user_id)
+            savings_dashboard_service.compute_debt_summary(
+                BalanceContext.build(user_id),
+            )
         ))),
         # The budget dashboard's TRACKS section, which is the one production
         # caller that hands ONE pass to both narrow producers -- and therefore
@@ -489,7 +501,9 @@ def _savings(user_id):
         # exercises neither that sharing nor that caller (adversarial code
         # review, 2026-08-16).
         "dashboard_tracks": _plain(_guard("dashboard_tracks", lambda: (
-            dashboard_pulse_service.compute_tracks_section(user_id)
+            dashboard_service.compute_tracks_section(
+                BalanceContext.build(user_id),
+            )
         ))),
     }
 
@@ -529,6 +543,11 @@ def _render_fragment(user_id):
     """
     if retirement_plan is None:
         pass_ = BalanceContext.build(user_id)
+        # Pylint: ``unexpected-keyword-arg`` -- the same both-sides argument as
+        # the site in ``_figures_before``: this arm is guarded on the HEAD
+        # tree's own absence of ``retirement_plan``, so the signature pylint
+        # resolves is not the one this call reaches.
+        # pylint: disable-next=unexpected-keyword-arg
         _before(retirement_readiness, "compute_readiness_whatif")(
             pass_, **_HEAD_WHATIF_KWARGS,
         )
@@ -585,7 +604,9 @@ def _savings_page_passes(user_id):
     """
     with counting_read_passes() as counter:
         _guard("savings_page_passes", lambda: (
-            savings_dashboard_service.compute_dashboard_data(user_id)
+            savings_dashboard_service.compute_dashboard_data(
+                BalanceContext.build(user_id),
+            )
         ))
     return counter["n"]
 

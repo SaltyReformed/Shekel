@@ -168,11 +168,23 @@ services:
     # connections alive so the OS detects dead clients.  Middle
     # triplet (``fsync`` / ``synchronous_commit`` / ``full_page_writes``)
     # are the non-durable knobs documented in the volumes comment
-    # above.  Trailing ``file_copy_method=clone`` (Phase 3a) makes
-    # PG 18's ``CREATE DATABASE ... STRATEGY FILE_COPY`` use the
-    # kernel ``FICLONE`` reflink ioctl on btrfs-backed PGDATA; the
-    # conftest's per-test drop+reclone helper (Phase 3b) issues
-    # ``STRATEGY FILE_COPY`` explicitly so the GUC is consumed.
+    # above, and they are what makes the per-test drop+reclone cheap:
+    # each cycle forces cluster-wide checkpoints, and with ``fsync``
+    # on they are fsync'd (measured 1618 ms per cycle vs 31 ms here).
+    #
+    # **``file_copy_method=clone`` is currently INERT and kept only
+    # so this note is not silently lost.**  It is consumed by
+    # ``CREATE DATABASE ... STRATEGY FILE_COPY`` and nothing else,
+    # and ``tests/conftest.py`` stopped issuing that form on
+    # 2026-08-18: ``FILE_COPY`` forces three checkpoints per cycle
+    # against ``WAL_LOG``'s one, which cost this cluster nothing and
+    # cost CI's durable one 20x -- see
+    # ``_clone_worker_database``'s docstring for the measurements.
+    # The reflink saves the byte copy, not the checkpoints, and at
+    # this template's 12 MB it measured no faster than a plain copy
+    # even on btrfs.  Dropping this line (and, with it, the btrfs
+    # subvolume requirement in the volumes comment above) is a
+    # cleanup worth taking deliberately, not as a side effect.
     # GUC is per-cluster -- adding it to the ``db`` service above
     # would be inert (that cluster never invokes
     # ``CREATE DATABASE TEMPLATE``) and is intentionally omitted.

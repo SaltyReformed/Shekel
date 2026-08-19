@@ -282,7 +282,7 @@ requirement above); savings cockpit tile states; palette polish. Every screen th
 Python: `credit_workflow.py` (delete), `entry_credit_workflow.py` (rewrite),
 `routes/transactions/mutations.py` (PATCH revert, delete teardown, mark/unmark),
 `routes/transactions/_helpers.py`, carry_forward (route + service `_context.py`),
-`state_machine.py`, `status_seam.py` (doc), `entry_service.py`, `pay_period_admin.py` (comments;
+`state_machine.py`, `status_seam/` (doc), `entry_service.py`, `pay_period_admin.py` (comments;
 behavior stays correct), `spending_analysis.py`, `posting_service.py` + `posting_reads.py` (docs),
 `db_errors.py`, `log_events.py` (EVT_CREDIT_* -> EVT_CARD_*), `balance_predicates.py` (stays;
 historical-only note), `models/transaction.py` (index + FK renamed), `models/transaction_entry.py`

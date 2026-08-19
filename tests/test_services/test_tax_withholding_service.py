@@ -52,6 +52,7 @@ from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
 from app.services import paycheck_calculator
 from app.services.auth_service import _seed_tax_data_for_user
 from app.services.tax_config_service import load_tax_configs_for_year
+from app.services.pay_calendar import calendar_for
 from app.services.tax_withholding_service import (
     CheckpointFigures,
     WithholdingToDate,
@@ -120,6 +121,24 @@ def _make_full_year_periods(user, count=26, start=date(2026, 1, 2)):
         periods.append(period)
     _db.session.flush()
     return periods
+
+
+
+def _derived(user_id, year=2026):
+    """The year's pay periods AS THE PRODUCER SEES THEM.
+
+    ``compute_withholding_to_date`` takes
+    :class:`~app.services.pay_calendar.DerivedPeriod` values since pay-calendar
+    plan step C2-f2d-3, and its production caller
+    (``tax_report_service._load_year_periods``) builds them exactly this way --
+    the owner's saved calendar filtered to the tax year.  Handing the ORM rows
+    the fixtures create would let these cases pass against a shape no caller
+    supplies.
+    """
+    return tuple(
+        period for period in calendar_for(user_id).saved()
+        if period.start_date.year == year
+    )
 
 
 def _add_checkpoint(profile, as_of_date, **figures):
@@ -321,10 +340,12 @@ class TestComputeNoCheckpoint:
         db.session.commit()
 
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026, seed_periods,
+            seed_user["user"].id, profile, 2026,
+            _derived(seed_user["user"].id),
         )
         expected = _expected_projected(
-            seed_user["user"].id, profile, 2026, seed_periods,
+            seed_user["user"].id, profile, 2026,
+            _derived(seed_user["user"].id),
         )
 
         assert isinstance(result, WithholdingToDate)
@@ -369,9 +390,10 @@ class TestComputeWithCheckpoint:
         )
         db.session.commit()
 
-        remainder = seed_periods[1:]  # P1..P9
+        remainder = _derived(seed_user["user"].id)[1:]  # P1..P9
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026, seed_periods,
+            seed_user["user"].id, profile, 2026,
+            _derived(seed_user["user"].id),
         )
         expected = _expected_projected(
             seed_user["user"].id, profile, 2026, remainder,
@@ -410,9 +432,10 @@ class TestComputeWithCheckpoint:
         _add_checkpoint(profile, date(2026, 1, 16))
         db.session.commit()
 
-        remainder = seed_periods[2:]  # P2..P9
+        remainder = _derived(seed_user["user"].id)[2:]  # P2..P9
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026, seed_periods,
+            seed_user["user"].id, profile, 2026,
+            _derived(seed_user["user"].id),
         )
         expected = _expected_projected(
             seed_user["user"].id, profile, 2026, remainder,
@@ -431,10 +454,12 @@ class TestComputeWithCheckpoint:
         db.session.commit()
 
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026, seed_periods,
+            seed_user["user"].id, profile, 2026,
+            _derived(seed_user["user"].id),
         )
         expected = _expected_projected(
-            seed_user["user"].id, profile, 2026, seed_periods,
+            seed_user["user"].id, profile, 2026,
+            _derived(seed_user["user"].id),
         )
 
         assert result.checkpoint is None
@@ -524,7 +549,7 @@ class TestCalibrationExactWithholding:
         db.session.commit()
         db.session.refresh(profile)
 
-        two_periods = seed_periods[:2]
+        two_periods = _derived(seed_user["user"].id)[:2]
         result = compute_withholding_to_date(
             seed_user["user"].id, profile, 2026, two_periods,
         )
@@ -597,7 +622,8 @@ class TestFullYearCapContext:
             name="High Earner",
             annual_salary="260000.00",
         )
-        periods = _make_full_year_periods(seed_user["user"])
+        _make_full_year_periods(seed_user["user"])
+        periods = _derived(seed_user["user"].id)
         _add_checkpoint(
             profile, date(2026, 6, 30),
             ytd_gross=Decimal("130000.00"),

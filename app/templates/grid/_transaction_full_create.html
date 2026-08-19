@@ -37,13 +37,10 @@
              placeholder="Estimated amount">
     </div>
 
-    {# Actual amount #}
-    <div class="mb-2">
-      <label class="form-label mb-0 small">Actual</label>
-      <input type="number" step="0.01" inputmode="decimal" name="actual_amount"
-             class="form-control form-control-sm"
-             placeholder="Actual amount">
-    </div>
+    {# No Actual box: a new transaction is born Projected, and a row records
+       what moved only once it HAS moved (plan step X-au-c3).  The box could
+       only ever produce a state ck_transactions_settled_amount_needs_basis
+       refuses, so it is gone rather than validated against. #}
 
     {# No status selector: a new transaction is born Projected (the create
        route assigns it).  Status changes happen later via mark-done / cancel /

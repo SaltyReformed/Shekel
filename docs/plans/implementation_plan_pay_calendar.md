@@ -3,23 +3,23 @@
 ## Where this stands
 
 **Built:** **C1**, **C2-a**, **C2-b** (both leaves, which also ticked **C5a** and the recurrence
-arc's **R-F10**), **C2-c**-**C2-e**, **C2-f1**, **C2-f2a**-**C2-f2c**, **C2-f2d-1**, **C2-f2d-2**,
-**C2-f2d-4** and **C3** -- section 4 carries each one's commit, and what reached `main` is a
+arc's **R-F10**), **C2-c**-**C2-e**, **C2-f1**, **C2-f2** (all five leaves; the container ticked
+with **C2-f2e**) and **C3** -- section 4 carries each one's commit, and what reached `main` is a
 MEASUREMENT (`git log --oneline origin/main..dev`).
 
-**Both engines, every forward PROJECTION, the WHOLE balance seam, the GRID and `/investment` read
-the DERIVED calendar.** **C2-f DECOMPOSED into three leaves 2026-08-14**,
-**`C2-f2` into five the same day**, **`C2-f2d` into three on 2026-08-16** plus a FOURTH when
-C2-f2d-2 made row **P59** visible; `C2-f2d-3`, `C2-f2e` and `C2-f3` carry the **34** `app/` call
-sites left of the 60 it opened with.
+**Both engines, every forward PROJECTION, the WHOLE balance seam, the GRID, `/investment`,
+`/savings`, `/accounts/<id>`, the BUDGET DASHBOARD and the PAYCHECK ENGINE read the DERIVED
+calendar.** **`C2-f3` alone** now carries what is left of the 60 `app/` call sites `C2-f` opened
+with, and it is the step that DELETES `get_current_period` and `get_all_periods`.
 
-**`/retirement` and `/savings` each run on ONE read pass** since `C2-f2d-1`, and `/retirement` loads
-its inputs and derives each plan once since `C2-f2d-2`. A pass is not a clock: six bare
-`date.today()` reads survive there (row **P55**) and eight modules still open their own (**P56**).
-Where a stored column disagrees with the derivation every consumer believes the derivation -- those
-shapes are in `recurrence/_occurrence.py` and section 3, all owned by **C4**, which changes ONE
-writer (`pay_period_write`) plus its readers. **A cold session starts at section 4**; the shared
-registries are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
+**A pass is not a clock, and one pass is not one calendar** -- both are now true of every RENDERING
+surface: `C2-f2e` took `/` to one pass and one derivation (**P61**) and threaded the pass's day into
+the last three `/retirement` clock reads (**P55**). **FIVE** service modules still open their own
+pass (**P56**, from eight); the layer predicate lands with `C2-f3`. Where a stored column disagrees
+with the derivation every consumer believes the derivation -- those shapes are in
+`recurrence/_occurrence.py` and section 3, owned by **C4**, which changes ONE writer.
+**A cold session starts at section 4**; the shared registries are `ledger.md`, `steps.md`,
+`conventions.md` and `verification.md`.
 
 ## Rulings
 
@@ -47,6 +47,11 @@ registries are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
 | **The modelled fold past the horizon** | **PROJECT the contributions; ruling `balance:R-AG` is SUPERSEDED. Ruled 2026-08-14 (developer)**, and the evidence is what changed rather than the argument: R-AG (2026-07-27) let the fold run a half model because no total calendar existed, `C2-e` built one, and three surfaces already project on it -- so the seam is now the only one that does not and it disagrees with the pages built on it. `C9` is the remedy and it MOVES MONEY (row **P7**, `+$5,427.07` at six months out) |
 | **How a producer gets its READ PASS** | **The ROUTE builds one per request; every producer below takes `balance_ctx` as a REQUIRED parameter and DROPS its `user_id`. Ruled 2026-08-16 (developer)**, row **P43**. A producer holding an id can manufacture a `BalanceContext`, and three did, so `/retirement` held two passes and `/savings` two plus a third calendar derivation -- two clock reads behind two cards on one screen, `$4.18` of after-tax projected savings and one paycheck of countdown apart across a midnight-into-payday render. Dropping the id makes a mismatched (owner, pass) pair unrepresentable rather than discouraged, and a required parameter fails at the call instead of silently opening a pass. It follows the seam's own convention (`balance_at(acct, ctx, day)`) and the required-`PayCalendar` ruling above. Rejected: `user_id` BESIDE the pass (two spellings, nothing reconciling them); an optional `balance_ctx=None` that builds one when absent, which is the pattern that CAUSED this; and fixing only the one leaf P43 named, which leaves the measured contradiction on screen. **It does not make a second pass unconstructible** -- eight service modules still open their own, and the layer predicate that would (row **P56**) waits on the leaves closing those doors |
 | **How a TEST builds a pass over hand-written paydays** | **ONE shared helper, `tests/_test_helpers.read_pass_over_paydays`. Ruled 2026-08-16 (developer)**, row **P54**. The pass derives its calendar into a field its own module declares private; a unit case with no database must seed it, and three sites wanted to. Rejected: a `BalanceContext.for_test(calendar=...)` constructor (a production entry point whose only caller is the suite, `CLAUDE.md` rule 13) and an optional `calendar=` on the real `build` (it hands every production caller a way to supply a calendar the module did not derive, unchecked against the owner). Also rejected, on measurement: making the calendar EAGER like the scenario -- deriving one can RAISE for an owner with no pay schedule, so every render would begin failing over a fact most never read |
+| **How the PAYCHECK ENGINE takes a period** | **A `DerivedPeriod`, and every caller supplies one. Ruled 2026-08-16 (developer)**, on a fork `C2-f2d-3` could not cross without it: the engine reads a period's `start_date` and its ID, `/savings` needed to hand it derived periods, and no adapter is honest. Measured first: an AST census found those two attributes and nothing else, so the move is a retyping over 12 call sites in 10 modules rather than a rewrite, and all 13 `app/` sites trace to a MATERIALISED producer -- which is what makes `PeriodInfo.period_id`'s non-nullability structural where three consumers KEY on it. Rejected: one shared `current_breakdown(balance_ctx)` producer for the three surfaces that each build one (it merges what two OTHER pages publish, so it wants its own ruling -- row **P62**); a narrow ORM load kept inside `savings_dashboard_service` (a second pay-period read on a render whose whole point is one); and leaving the engine alone (`/savings` then keeps an ORM reader the arc exists to delete) |
+| **`retirement_projection`'s two period parameters** | **DELETED; it reads both off the pass it already takes. Ruled 2026-08-16 (developer).** Both callers filled them from that same pass, so the pair could express only a mismatch -- the shape the "How the seam learns WHICH periods to report" ruling removed at `C2-c`. 6 arguments to 4, which retires the `too-many-arguments` / `too-many-positional-arguments` suppression at its root rather than by raising a threshold, and left `_CurrentPay`'s two period fields with ZERO readers, so they went too. Rejected: converting at the `/savings` boundary (a second pay-period read), and keeping the parameters with a new type (the pass and the arguments can still disagree, and the suppression stays) |
+| **`project_balance_horizons`'s two callers** | **Take `accounts/detail.py` onto the pass EARLY, out of `C2-f2e`. Ruled 2026-08-16 (developer).** That helper reads a period's ordinal and its id, and a `PayPeriod` spells the id `.id` where a `DerivedPeriod` spells it `.period_id` -- so its two callers could not hold two types between them for even one commit. Rejected: one module briefly holding both spellings (`accounts/detail.py` would carry a derived `current_period` for this call and an ORM one for its other fifteen reads), and splitting the rule from the lookup so each caller resolves index -> period -> balance itself (the loop written twice) |
+| **What `/` renders for an owner with no PROJECTABLE account** | **The setup card AND the position tracks, and the card names the KIND that is missing. Ruled 2026-08-18 (developer)**, ledger row **P65**. `has_account` is `resolve_grid_account`, which refuses an amortizing account by design (ruling D4) because this page renders a cash-flow balance -- so an owner who had entered a mortgage and nothing else was told to "set up an account" while `compute_tracks_section` computed a `$200,000.00` `DebtSummary` the template discarded. The tracks tier reads no grid account and no pay period, which is what lets it render beside the card rather than instead of it. Measured on both sides of `C2-f2e`, so it was this page's defect rather than that step's. Rejected: changing only the copy (the owner still cannot see a position they have entered), and leaving it (rule 8 -- a `$0.00` finding is a defect waiting for the data to change) |
+| **What holds a `tests/manual/` harness to the code it measures** | **The lint gate, at `E,F` only. Ruled 2026-08-18 (developer)**, ledger row **P66**. These are the proof instruments every cutover here is verified with, and nothing checked them: pytest does not collect the directory, CI linted only `app/`, and each probe's `_guard` records a raise AS DATA -- so a signature change makes a harness dump `{"RAISED": ...}` where a figure belongs, and a before/after diff of two such runs reads BYTE-IDENTICAL over a region never measured. FOUR sites were already dead when this was found, one since `C2-f2d-3`. `E,F` and NOT the 10.00/10 floor the other three trees hold: these scripts legitimately duplicate one another and branch wide, and what is gated is the class that rotted them. A both-sides harness naming a HEAD-only API carries a scoped disable with a `Pylint:` rationale. Rejected: a pytest smoke test that runs each harness (stronger, but it needs a seeded owner rich enough to reach every probe and the both-sides files would need skips), and leaving it recorded |
 
 ---
 
@@ -271,76 +276,12 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
       derived span must PLACE its rows by that same one: splitting those cost `$1,234.56` on a
       planted disagreement. Proof: `tests/manual/verify_period_window_cutover.py`'s docstring.
 
-- [ ] **C2-f2 -- the readers at a surface that already holds a read pass** -- the DECOMPOSED parent,
-      split into five leaves by PACKAGE 2026-08-14 (developer). Every remaining reader in a package
-      that builds or receives a `BalanceContext` takes the calendar off `ctx.calendar()` rather than
-      querying, and **`get_current_period` becomes `calendar().period_containing(ctx.as_of)` at
-      every one of them** -- which retires the process clock those sites read (ledger row **P49**'s
-      half) and puts the whole pass on one clock. Closes **P36** when the last leaf lands.
-      **The measurement the split rests on**: 20 call sites, 23 `app/` modules and 12 templates, in
-      seven packages -- and all 12 templates are the grid's, so only `C2-f2b` carries any. The `.id`
-      -> `.period_id` rename goes into the templates rather than an alias on `DerivedPeriod`, which
-      would be row **P21**'s nullable-id trap under the name a reader trusts least.
-
-- [x] **C2-f2a -- the SEAM's own reader.** `dd5c48a5`. Closed **P37**. No module under
-      `app/services/balance_at/` IMPORTS `pay_period_service`. Proof: `verify_balance_baseline`
-      byte-identical over 9 accounts / 427 grid cells / 5,978 daily points on a production clone,
-      with the harness SHOWN firing on a planted wrong axis: taking the calendar collapsed the two
-      wiring sites into ONE derivation, so one plant moves the Empower's grid column, its
-      `balance_map` and its 2029 scalar together (`-$182.29`, `-$182.29`, `-$190.39`).
-
-- [x] **C2-f2b -- the GRID.** `f4d4abe6`. Carried **P36**'s grid half. All six sites answer from the
-      pass's calendar and `get_periods_in_range` is DELETED, taking the six readers from 47 `app/`
-      call sites to 39; the COMPANION moved with it (one shared partial), `routes/grid.py` became a
-      package first (`29e4fab8`, a pure move off the 1000-line ceiling), and `period_containing` now
-      ENFORCES the "SAVED" it claimed. Proof: `verify_grid_cutover`'s docstring -- byte-identical, 0
-      mismatches on PRODUCTION, and SHOWN skipping `$5,827.75`.
-
-- [x] **C2-f2c -- `/investment`.** `d4621147`. Closed **P48**; opened **P52**-**P54**. No module in
-      that package imports `pay_period_service`; its three public entries take the calendar AND the
-      clock off the pass's `BalanceContext`, and the marker scan retired into
-      `PeriodWindow.containing_index` -- the OFFSET, because `containing` alone answers the period.
-      A contribution carries its PAYDAY (`241b7b40`), which let the period list leave three SHARED
-      signatures without moving `/retirement`. Proof: `verify_investment_cutover`'s docstring.
-
-- [ ] **C2-f2d -- `/savings` and `/retirement`** -- the DECOMPOSED parent, split into three leaves
-      2026-08-16 (developer) exactly as its own bullet predicted, and into a FOURTH when C2-f2d-2
-      made row **P59** visible. Ten modules, **99** downstream `all_periods` / `current_period`
-      references and a type change on two bundle dataclasses in
-      `savings_dashboard_service/_types.py` is a multi-session step by `lessons.md`'s own rule. The
-      split is the one that bullet named: the read pass first, then `/retirement`, then `/savings`.
-      Ticks with its last leaf.
-
-- [x] **C2-f2d-1 -- the route opens the render's ONE read pass.** `731f6b3c`. Closed **P43**, ruled
-      **P54**, opened **P55**-**P58**. **P43's `/retirement` half was measured FALSE first**: that
-      page ran on TWO passes, worth `$4.18` and one paycheck of countdown across a
-      midnight-into-payday render. Proof: `verify_retirement_pass_cutover`'s docstring, and
-      `test_one_read_pass_per_render`, which fails on `dev` at 2 / 2 / 3.
-      **A later step must not undo the required parameter** (see the ruling).
-
-- [x] **C2-f2d-2 -- the retirement picture has ONE producer.** `9e479ca5`. Closed **P57**; opened
-      **P59**, **P60**. `retirement_plan.py` replaced the SECOND implementation of "the picture at a
-      candidate plan": a `PlanPoint` says which plan, a `RetirementInputs` is what a render loads
-      once, and a memoized `picture_at` derives it, so the lever baseline IS the hero's object.
-      Byte-identical -- the rendered HTML matches apart from CSRF nonces; 179 -> 87 queries a
-      render. Proof: `verify_retirement_render`'s docstring, and `TestOneLoadPerRender`.
-
-- [x] **C2-f2d-4 -- the levers solve at the assumptions the page SHOWS.** `b84dada4`. Closed
-      **P59**; opened **P60**. The what-if sliders moved the hero and not the lever card, so a page
-      reading "65.3% funded" at a 3.5% withdrawal rate told the owner `$174.76`/paycheck closes the
-      gap when `$273.17` does. Each stepper now carries the OWNER's override alone -- a pre-filled
-      one laundered the previous solved default back as an entry -- and `PlanPoint` became RESOLVED,
-      which is what stops one plan holding two memo keys. Proof: `TestReadinessFragment`.
-
-- [ ] **C2-f2d-3 -- `/savings`'s readers and its four signatures.** The `all_periods` /
-      `current_period` cutover for `savings_dashboard_service`, whose two bundle dataclasses change
-      type; the same commit takes all four public entries onto the read pass, deleting the
-      `_pass_for` reconciler and the last `BalanceContext.build` in the package. Ticks `C2-f2d`.
-      Closes **P58**; carries **P55**'s `/savings` half and **P56**'s first door.
-
-- [ ] **C2-f2e -- the budget dashboard and `/accounts/<id>` detail.** The last two
-      `BalanceContext`-holding surfaces: `dashboard_service`, `dashboard_pulse_service` and
-      `routes/accounts/detail.py` with its templates. Ticks `C2-f2`, and with it **P36**.
+- [x] **C2-f2 -- the readers at a surface that already holds a read pass.** `531c1402`. The
+      DECOMPOSED parent and all five leaves, condensed into
+      `historical/pay_calendar_c2f2_as_built_2026-08-18.md` under `conventions.md` rule 5, with the
+      FOUR shapes a later step must not undo. Closed **P36**-**P37**, **P43**, **P48**, **P55**,
+      **P57**-**P59**, **P61**, **P65**-**P66** and three of **P56**'s eight modules (five survive);
+      opened **P52**-**P54**, **P60**, **P62**-**P63**.
 
 - [ ] **C2-f3 -- the rest, and the module's last two readers.** Every remaining site loads
       `calendar_for` ONCE per producer and threads it; the three write-path reads in
@@ -371,6 +312,23 @@ LAST row's rebuilt end is a projection off `cadence_days` as it reads at downgra
 four surviving fences of section 1, including BA-03/BA-04 and `_pp_assert_structure`'s invariants 1,
 2, 3a and 3b. Closes **P1**, **P4**, **P5**, **P8**, **P9**.
 **This step needs its own review pass**; it is the deepest cut into the spine.
+
+**What deleting the fallback stops raising, which is row P35's blast radius and belongs here rather
+than in a ledger cell** (`conventions.md` rule 4). `resolve_cadence` infers an owner's cadence from
+their last period's LENGTH when they have no `budget.pay_schedule` row, `derive_periods` refuses
+anything outside 1..365, and `app/error_handlers.py` leaves the raise on a bare 500. Two renders
+joined the blast radius after C2-c widened it to every balance page:
+
+- **`C2-f2b`** -- `/grid` derives the calendar BEFORE it looks at an account, so the zero-ACCOUNT
+  render, which used to reach `empty_grid_view()` without one, raises with the rest.
+- **`C2-f2e`** -- `/` and both its fragments answer "which period is current" from the derivation,
+  so a legacy owner whose stored span no longer covers today reaches the calendar where the pulse
+  producer's `None` used to give them the "No pay period covers today" CTA. That page's ZERO-ACCOUNT
+  render is deliberately still safe: the account guard runs before the derivation, which is the
+  opposite of `/grid`'s order and is stated at the site.
+
+Zero affected owners on either database -- registration has written the schedule row since
+`balance:X-ad-a` -- so this is a state the fallback can still produce rather than one it does.
 
 - [ ] **C5 -- the gap machinery goes, and a paycheck may owe one template twice.**
 

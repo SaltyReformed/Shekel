@@ -55,6 +55,7 @@ from app.services import balance_at
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    settlement_columns,
     append_balance_assertion,
     default_settle_day,
     mark_purchase_settled,
@@ -68,7 +69,7 @@ _APR_LAST = date(2026, 4, 30)
 def _add_txn(
     db, seed_user, period, name, amount, *,
     is_income=False, due_date=None,
-    status=StatusEnum.PROJECTED, actual_amount=None,
+    status=StatusEnum.PROJECTED, settled_amount=None,
 ):
     """Insert one transaction on ``period`` for the seed user's account."""
     type_id = ref_cache.txn_type_id(
@@ -83,8 +84,8 @@ def _add_txn(
         name=name,
         transaction_type_id=type_id,
         estimated_amount=Decimal(str(amount)),
-        actual_amount=(
-            Decimal(str(actual_amount)) if actual_amount is not None else None
+        **settlement_columns(
+            default_settle_day(period, status_id), amount, settled_amount,
         ),
         due_date=due_date,
         # A settled row must carry the day its money moved; the rule for a
@@ -264,7 +265,7 @@ class TestDailySeriesEdges:
             _add_txn(
                 db, seed_user, seed_periods[7], "Paid bill", "150.00",
                 due_date=date(2026, 4, 21),
-                status=StatusEnum.DONE, actual_amount="150.00",
+                status=StatusEnum.DONE, settled_amount="150.00",
             )
             db.session.commit()
             series = _april_series(seed_user)

@@ -37,6 +37,37 @@ from app.extensions import login_manager
 _VALID_SECRET_KEY = "0123456789abcdef" * 4  # 64 chars
 
 
+class TestTheUploadCeiling:
+    """``MAX_CONTENT_LENGTH`` bounds EVERY request body in the app.
+
+    Added for plan step ``bank_import:X-f6a-1``, the app's first file upload.
+    It is pinned here because it is a SECURITY ceiling that no feature test
+    would notice being raised: Werkzeug's default is unlimited, and an
+    adversarial review measured a CSV parse expanding its input ~52x in list
+    overhead (5.24 MB of input -> 273 MB resident) against a 1 GB container.
+    """
+
+    def test_the_ceiling_is_set_at_all(self):
+        """Unset means unlimited, which is what this exists to stop."""
+        assert BaseConfig.MAX_CONTENT_LENGTH
+
+    def test_the_ceiling_is_proportionate_to_the_real_need(self):
+        """512 KB against a measured 59 KB largest real statement.
+
+        Asserted as a RANGE rather than an equality: the point is that it stays
+        small enough that a flood of uploads cannot exhaust the container, and
+        large enough for a full year-to-date export with room to spare.  A
+        future edit that raises it into megabytes should have to change this
+        test and read why.
+        """
+        assert 128 * 1024 <= BaseConfig.MAX_CONTENT_LENGTH <= 1024 * 1024
+
+    def test_every_config_inherits_it(self):
+        """Dev, test and prod all bound their bodies."""
+        assert DevConfig.MAX_CONTENT_LENGTH == BaseConfig.MAX_CONTENT_LENGTH
+        assert TestConfig.MAX_CONTENT_LENGTH == BaseConfig.MAX_CONTENT_LENGTH
+
+
 class TestDevConfig:
     """Tests for DevConfig defaults and fallbacks."""
 

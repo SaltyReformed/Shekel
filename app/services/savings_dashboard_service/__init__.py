@@ -62,7 +62,7 @@ Module map:
   dashboard's savings tracks), and ``compute_account_balance_cell`` (the
   narrow per-account producer behind the cockpit's inline-edit Cancel /
   Escape revert, ``savings.cockpit_balance``).  The dashboard tracks
-  consumers all live in ``dashboard_pulse_service.compute_tracks_section``.
+  consumers all live in ``dashboard_service.compute_tracks_section``.
   There were TWO debt producers until plan step X-u (ruling R-BS, finding
   N-109) and the tracks section called both, so one render ran the debt
   pipeline twice; the marker's fraction is a ``DebtSummary`` field now.
@@ -76,7 +76,7 @@ Module map:
 # ``DebtSummary`` is re-exported for the same reason (plan step X-s3): it
 # crosses this package's boundary, so naming it here is what keeps its consumer
 # off ``_metrics`` directly, which the W9910 package-privacy checker forbids.
-# There were TWO such consumers until plan step X-u: ``dashboard_pulse_service``
+# There were TWO such consumers until plan step X-u: ``dashboard_service._pulse``
 # named the type to annotate the ``DebtTrack`` wrapper it composed, and X-u
 # deleted both the wrapper and that import.  ONE is left -- the dashboard
 # route's ``_DebtTrackView`` annotation (``app/routes/dashboard.py``) -- and one
@@ -93,7 +93,7 @@ Module map:
 # R-CN), because X-w put both in exactly ``DebtSummary``'s position and X-w's
 # adversarial review found the rule stated here and not applied.
 # ``compute_goal_progress`` publicly returns ``list[GoalProgress]`` and
-# ``dashboard_pulse_service`` consumes it; ``NetWorthRegion`` is what
+# ``dashboard_service._pulse`` consumes it; ``NetWorthRegion`` is what
 # ``compute_dashboard_data`` puts under ``net_worth`` and what
 # ``app/routes/savings.py`` and both cockpit templates read.  Leaving them
 # unexported is what made two signatures drop their type hints, against

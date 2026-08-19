@@ -92,9 +92,9 @@ class TestAnUnmodelledRowIsInvisible:
 
         **This test used to insert a surplus PATTERN row, and an adversarial
         review of plan step R7b-2 showed that could not fail.**  Before plan
-        step R2e-2 the picker was
-        ``db.session.query(RecurrencePattern).all()``, so a surplus pattern row
-        would have been offered and the assertion was load-bearing.  Since
+        step R2e-2 the picker read every ``ref.recurrence_patterns`` row
+        directly, so a surplus pattern row would have been offered and the
+        assertion was load-bearing.  Since
         R7b-2 they were derived from ``PATTERN_DERIVATIONS``, an ENUM-keyed
         table, and ``_picker`` did not import the pattern model at all -- so
         inserting into that table could not move the answer whatever the

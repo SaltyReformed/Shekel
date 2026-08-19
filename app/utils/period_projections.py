@@ -2,9 +2,15 @@
 Shekel Budget App -- Pay-Period Balance Projection Helpers
 
 Pure helpers for picking projected account balances at fixed future
-horizons.  No Flask, no SQLAlchemy: they operate on already-loaded
-``PayPeriod`` objects and a ``{period_id: balance}`` map, so they import
-cleanly into any route or service.
+horizons.  No Flask, no SQLAlchemy: they operate on the DERIVED pay calendar
+(:class:`~app.services.pay_calendar.DerivedPeriod` values) and a
+``{period_id: balance}`` map, so they import cleanly into any route or service.
+
+**They took ORM ``PayPeriod`` rows until pay-calendar plan step C2-f2d-3.**
+Both of the two things read off a period here -- its ordinal and its id -- are
+answered by the derived value, and the ordinal is one of the two columns plan
+step **C4** drops, so a helper keyed on the stored one would have had to move
+anyway.
 """
 
 # The 3 / 6 / 12-month balance horizons expressed as biweekly pay-period
@@ -30,12 +36,18 @@ def project_balance_horizons(current_period, all_periods, balance_map):
     (:mod:`app.services.savings_dashboard_service`).
 
     Args:
-        current_period: The user's current ``PayPeriod``, or ``None``
-            (no current period yields an empty result).
-        all_periods: Iterable of ``PayPeriod`` objects to search by
+        current_period: The
+            :class:`~app.services.pay_calendar.DerivedPeriod` covering the read
+            pass's clock, or ``None`` (no current period yields an empty
+            result).
+        all_periods: The owner's saved schedule -- a
+            :class:`~app.services.pay_calendar.PeriodWindow` -- searched by
             ``period_index``.
-        balance_map: Mapping of ``period_id`` to the projected balance
-            at that period.
+        balance_map: Mapping of ``budget.pay_periods.id`` to the projected
+            balance at that period.  Both callers get it from the
+            :mod:`app.services.balance_at` seam, which reports over the same
+            pass's ``reported_periods()``, so a period taken from that
+            window and this map name one calendar.
 
     Returns:
         Dict of horizon label ("3 months" / "6 months" / "1 year") to
@@ -48,7 +60,8 @@ def project_balance_horizons(current_period, all_periods, balance_map):
     for label, offset in HORIZON_OFFSETS:
         target_idx = current_period.period_index + offset
         for period in all_periods:
-            if period.period_index == target_idx and period.id in balance_map:
-                projected[label] = balance_map[period.id]
+            if (period.period_index == target_idx
+                    and period.period_id in balance_map):
+                projected[label] = balance_map[period.period_id]
                 break
     return projected

@@ -99,7 +99,7 @@ def _settle_one(
     """
     corrected = transfer_service.settle_transfer(
         shadow.transfer_id, statement.owner_id,
-        actual_amount=submitted,
+        submitted=submitted,
         settled_on=statement.observed_on,
     )
     # WHICH statement showed THIS LEG (ruling **R-FL**), through the transfer

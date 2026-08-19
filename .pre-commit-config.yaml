@@ -41,6 +41,31 @@ repos:
           - scripts/
           - --fail-under=10
           - --fail-on=E,F,shekel-decimal-from-float,shekel-refname-compare,shekel-bare-money-quantize,shekel-disable-rationale,shekel-transaction-status-bypass,shekel-ledger-model-bypass,shekel-unclassified-fenced-export,shekel-private-module-import
+      - id: pylint-manual-harnesses
+        name: pylint tests/manual/ (E/F only -- the proof instruments compile)
+        entry: pylint
+        language: system
+        types: [python]
+        files: ^tests/manual/.*\.py$
+        pass_filenames: false
+        # Mirrors ci.yml step 5a3 (ledger row P66, 2026-08-18). These are the
+        # harnesses every cutover is verified with, run by hand against a
+        # production CLONE and diffed -- and each probe's `_guard` records a
+        # raise AS DATA, so a signature change makes a harness dump
+        # {"RAISED": ...} where a figure belongs and a before/after diff of two
+        # such runs reads BYTE-IDENTICAL over a region never measured. FOUR
+        # sites were already dead when this gate was added, one since plan step
+        # C2-f2d-3.
+        #
+        # E/F ONLY, not the 10.00/10 floor the three trees above hold: these
+        # scripts legitimately duplicate one another and branch wide. What is
+        # gated is the class that rotted them -- a call to a function that no
+        # longer exists or no longer takes those arguments.
+        args:
+          - tests/manual/
+          - --fail-on=E,F
+          - --disable=all
+          - --enable=E,F
       - id: pylint-checkers
         name: pylint checker package (10.00/10 floor)
         entry: pylint

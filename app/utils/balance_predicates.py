@@ -156,6 +156,57 @@ def settled_status_ids() -> frozenset[int]:
     })
 
 
+def is_identity_move(row, new_status_id: int) -> bool:
+    """Return whether *row* is ALREADY in *new_status_id* -- nothing to do.
+
+    **The predicate that tells a re-submit from a transition**, and it is the
+    one question a settle verb must ask before it books anything.  A door
+    reached twice -- an HTMX double click, a stale tab, a re-POST of an empty
+    body -- asks for the status the row already holds, and answering that by
+    re-running the settle re-derives a row whose money has already moved.
+
+    Measured before this predicate existed: a settle that booked a human's
+    ``$90.00`` correction against a ``$500.00`` plan, replayed with an empty
+    body, came back ``$90.00`` on the ``derived`` basis -- the figure survived
+    and the stored answer to "did a human correct this" did not
+    (``settled_basis_id``, finding **N-241**).
+
+    **That measurement is now closed twice over, and what this UNIQUELY protects
+    is narrower than it was.**  ``Settlement.from_settle`` honours a RETAINED
+    ``corrected`` record, so a replayed MANUAL settle would re-book the same
+    figure on the same basis even without this.  What still needs it is the
+    ENVELOPE replay: ``transaction_service.settle_from_entries`` refuses an
+    immutable row by precondition, so a double-clicked Mark Paid on an
+    already-Paid envelope would answer 400 where the user has done nothing wrong
+    and nothing needs doing.  That is the case
+    ``TestAReplayedSettleIsANoOp.test_a_replayed_close_on_an_ENVELOPE_is_a_no_op_not_a_400``
+    pins -- and it is pinned because the guard had NO firing control at all
+    until then: the full 9,611-test suite passed with the early return disabled,
+    measured 2026-08-17.
+
+    **It is deliberately NARROWER than "already in the settled band"**, and the
+    difference is a refusal.  Asking the band swallows ``Settled -> Paid``,
+    which is an ILLEGAL transition ``state_machine.verify_transition`` exists to
+    reject, and turns its designed 400 into a silent 200.  Only the identity
+    move is nothing to do; every other move still owes the state machine an
+    answer.
+
+    Polymorphic over both status-bearing models for the reason
+    :func:`enters_settled_band` below states: the question is over ``status_id``
+    against ``ref.statuses.id`` and nothing else.
+
+    Args:
+        row: The :class:`~app.models.transaction.Transaction` or
+            :class:`~app.models.transfer.Transfer`, read for its CURRENT
+            ``status_id``.
+        new_status_id: The status a door is asking for.
+
+    Returns:
+        True when the row already holds that status.
+    """
+    return row.status_id == new_status_id
+
+
 def enters_settled_band(row, new_status_id: int) -> bool:
     """Return whether moving *row* to *new_status_id* SETTLES it.
 
@@ -194,28 +245,6 @@ def enters_settled_band(row, new_status_id: int) -> bool:
     """
     settled = settled_status_ids()
     return row.status_id not in settled and new_status_id in settled
-
-
-def leaves_settled_band(row, new_status_id: int) -> bool:
-    """Return whether moving *row* to *new_status_id* UNSETTLES it.
-
-    :func:`enters_settled_band`'s mirror, and it exists for the same reason:
-    the two directions are different acts and a door must not decide which is
-    which.  The only edges out of the band are ``Paid -> Projected`` and
-    ``Received -> Projected`` -- the documented unlock path, where the user is
-    saying the money did not move after all.
-
-    Args:
-        row: The :class:`~app.models.transaction.Transaction` or
-            :class:`~app.models.transfer.Transfer`, read for its CURRENT
-            ``status_id``.
-        new_status_id: The status a door is asking for.
-
-    Returns:
-        True when the move crosses OUT of the settled band.
-    """
-    settled = settled_status_ids()
-    return row.status_id in settled and new_status_id not in settled
 
 
 def settled_day(transaction_id: int, settled_on: date | None) -> date:

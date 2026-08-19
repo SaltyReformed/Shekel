@@ -629,7 +629,7 @@ class TestWhatEachRuleAnswers:
         """
         txn = add_txn(
             db.session, seed_user, seed_periods[0], "Groceries", "500.00",
-            status_enum=StatusEnum.DONE, actual_amount="462.34",
+            status_enum=StatusEnum.DONE, settled_amount="462.34",
         )
         assert owned_contribution(txn) == Decimal("462.34")
         assert _resolve(seed_user, txn) == Decimal("500.00")
@@ -1522,18 +1522,23 @@ class TestABudgetIsNotAContribution:
     def test_an_entered_actual_does_not_move_the_budget(
         self, app, db, seed_user, seed_periods,
     ):
-        """A human's figure is what the row COST, never what it was budgeted.
+        """What a row RECORDED is what it cost, never what it was budgeted.
 
-        The control on the surprises list: its two terms are the estimate and
-        the actual, so an estimate accessor that answered the actual would make
-        every delta zero and the list empty.  ``owned_amount`` and
+        The control on the surprises list: its two terms are the plan and the
+        record, so a plan accessor that answered the record would make every
+        delta zero and the list empty.  ``owned_amount`` and
         ``owned_contribution`` are the pair, and this is the row that separates
         them.
+
+        **The row is SETTLED since plan step X-au-c3.**  A figure records a
+        settle, so the projected row this used to build -- ``$60.00`` budgeted,
+        ``$81.40`` typed -- is a state the CHECKs refuse.  The separation under
+        test is unchanged and so are both figures.
         """
         txn = add_txn(
             db.session, seed_user, seed_periods[0], "Fuel", "60.00",
+            status_enum=StatusEnum.DONE, settled_amount="81.40",
         )
-        txn.actual_amount = Decimal("81.40")
         db.session.flush()
 
         assert owned_amount(txn) == Decimal("60.00")

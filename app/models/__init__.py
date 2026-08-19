@@ -23,8 +23,8 @@ from app.models.ref import (
     PostingKind,
     PostingSource,
     RaiseType,
-    RecurrencePattern,
     RecurrenceUnit,
+    StatementSource,
     Status,
     TaxType,
     TransactionType,
@@ -61,6 +61,15 @@ from app.models.loan_features import RateHistory
 from app.models.escrow_line import EscrowLine, EscrowComponentVersion
 from app.models.investment_params import InvestmentParams
 from app.models.asset_appreciation_params import AssetAppreciationParams
+from app.models.statement_import import (
+    AccountExternalIdentity,
+    BankStatementLine,
+    StatementImport,
+)
+from app.models.statement_match import (
+    StatementMatch,
+    StatementMatchMember,
+)
 
 # Salary domain
 from app.models.salary_profile import SalaryProfile
@@ -99,8 +108,8 @@ __all__ = [
     "PostingKind",
     "PostingSource",
     "RaiseType",
-    "RecurrencePattern",
     "RecurrenceUnit",
+    "StatementSource",
     "Status",
     "TaxType",
     "TransactionType",
@@ -137,6 +146,11 @@ __all__ = [
     "EscrowComponentVersion",
     "InvestmentParams",
     "AssetAppreciationParams",
+    "AccountExternalIdentity",
+    "BankStatementLine",
+    "StatementImport",
+    "StatementMatch",
+    "StatementMatchMember",
     # Salary domain
     "SalaryProfile",
     "SalaryRaise",

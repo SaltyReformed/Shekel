@@ -508,7 +508,7 @@ def grid_balance_view(
         _asset_fold.resolve(
             account, folded,
             max(period.end_date for period in window),
-            _contribution_inputs_for_account(account),
+            _contribution_inputs_for_account(account, ctx),
             # The pass's OWN calendar, and ``window`` above is its
             # ``saved()`` view -- one memoized derivation read twice, not two
             # readings of one schedule.  Plan step C2-f2a made this an

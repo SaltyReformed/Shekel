@@ -52,6 +52,7 @@ from app.services.auth_service import (
 from app.utils.dates import display_today
 # Aliased so the module-level name cannot shadow the ``seed_user``
 # pytest fixture from conftest.py.
+from scripts.seed_user import _check_production_password
 from scripts.seed_user import seed_user as run_seed_user
 
 
@@ -77,19 +78,70 @@ def _safe_env(**overrides):
 
 
 class TestSeedUserProductionGuard:
-    """Verify seed_user.py rejects unsafe passwords in production mode."""
+    """Verify ``_check_production_password`` decides, and that the script asks it.
 
-    def test_default_password_rejected_in_production(self):
-        """The default 'ChangeMe!2026' password must be rejected in production."""
-        # ``check=False`` so we can assert on the non-zero exit code
-        # rather than have subprocess raise CalledProcessError.  The
-        # whole point of this test is to verify the script exits 1
-        # with the expected stderr message.
+    **Two different questions, and they were one SUBPROCESS test each until
+    2026-08-18.**  The guard's LOGIC is a pure function of two environment
+    variables -- it reads them, returns or ``sys.exit(1)``s, and touches
+    nothing else -- so it is graded in-process here, exactly and instantly.
+    What genuinely needs a subprocess is the WIRING: that
+    ``scripts/seed_user.py`` calls the guard AT ALL and calls it BEFORE
+    ``create_app()``, which is the property its own docstring rests on ("Runs
+    before create_app() so the check works even when DATABASE_URL is not
+    set").  One case below carries that, and it is the production-REJECT case
+    because it exits at the guard and so never builds the app.
+
+    **What that split fixed.**  ``test_default_password_allowed_in_development``
+    was the only one of the three whose password is ACCEPTED, so it was the
+    only one that ran on into ``create_app()`` -- paying a full Flask +
+    SQLAlchemy import to observe that a string was ABSENT from stderr.  It
+    carried the 10-second budget sized for the two cases that exit at the
+    guard, and it measured **10.04s** on CI's runner under twelve pytest
+    workers (the app-importing cases elsewhere in this file are budgeted at
+    20 and measured 9.96s, 11.61s and 11.98s in the same run).  An absence
+    assertion behind a ten-second app boot is now a positive assertion about
+    a function call: the guard RETURNS.
+    """
+
+    def test_the_script_asks_the_guard_before_it_builds_the_app(self):
+        """WIRING: the guard decides before ``create_app()`` is ever called.
+
+        The one subprocess case, and the only thing it is for.  It passes an
+        EXPLICITLY EMPTY ``DATABASE_URL``, and that is the whole mechanism:
+        ``app/config.py`` calls ``load_dotenv()``, whose default
+        ``override=False`` leaves a variable already present in the
+        environment alone -- so the repository's own ``.env`` cannot supply a
+        database here, and ``create_app()`` cannot succeed.  The two orders
+        are then distinguishable from outside:
+
+        * guard first -- exit 1, stderr names the password;
+        * app first -- exit 1 from the app build, and the guard is never
+          reached, so the password message is ABSENT.
+
+        The password assertion IS the control, and it was measured firing on a
+        planted ``create_app()``-first ``__main__`` block.
+
+        **Two earlier levers for this were measured BLIND** (2026-08-18), which
+        is why the mechanism is spelled out.  Relying on the environment simply
+        not having a database is true in CI and false on a developer's machine.
+        Running from an empty working directory looked like the fix and is not:
+        ``find_dotenv`` walks up from the CALLING FRAME's file, which is
+        ``app/config.py``, so a SCRIPT invocation finds the repository ``.env``
+        whatever the CWD -- it only follows the CWD when the caller has no file,
+        as under ``python -c``, which is what the first probe used. Both plants
+        PASSED against those two.
+
+        It stays cheap for the same reason it is the honest wiring case: a
+        rejected password exits AT the guard, so nothing is imported.
+        """
+        # ``check=False`` so we can assert on the non-zero exit code rather
+        # than have subprocess raise CalledProcessError.
         result = subprocess.run(
             [sys.executable, "scripts/seed_user.py"],
             env=_safe_env(
                 FLASK_ENV="production",
                 SEED_USER_PASSWORD="ChangeMe!2026",
+                DATABASE_URL="",
             ),
             capture_output=True,
             text=True,
@@ -97,44 +149,105 @@ class TestSeedUserProductionGuard:
             check=False,
         )
         assert result.returncode == 1
-        assert "ChangeMe!2026" in result.stderr
+        assert "ChangeMe!2026" in result.stderr, (
+            "the script reached create_app() before asking the guard, so the "
+            "check no longer works without a database -- which is the "
+            "property _check_production_password's own docstring rests on"
+        )
 
-    def test_empty_password_rejected_in_production(self):
+    def test_default_password_rejected_in_production(self, monkeypatch, capsys):
+        """The default 'ChangeMe!2026' password must be rejected in production."""
+        monkeypatch.setenv("FLASK_ENV", "production")
+        monkeypatch.setenv("SEED_USER_PASSWORD", "ChangeMe!2026")
+
+        with pytest.raises(SystemExit) as exc:
+            _check_production_password()
+
+        assert exc.value.code == 1
+        assert "ChangeMe!2026" in capsys.readouterr().err
+
+    def test_the_default_is_the_unsafe_value_when_nothing_is_set(
+        self, monkeypatch, capsys,
+    ):
+        """An UNSET SEED_USER_PASSWORD is rejected in production too.
+
+        The guard defaults the variable to ``'ChangeMe!2026'`` rather than to
+        empty, so "nobody set one" and "somebody set the documented default"
+        are the same state to it.  The subprocess cases could not tell those
+        apart -- they always set the variable -- so this is a branch the split
+        made reachable rather than one it moved.
+        """
+        monkeypatch.setenv("FLASK_ENV", "production")
+        monkeypatch.delenv("SEED_USER_PASSWORD", raising=False)
+
+        with pytest.raises(SystemExit) as exc:
+            _check_production_password()
+
+        assert exc.value.code == 1
+        assert "ChangeMe!2026" in capsys.readouterr().err
+
+    def test_empty_password_rejected_in_production(self, monkeypatch, capsys):
         """An empty SEED_USER_PASSWORD must be rejected in production."""
-        result = subprocess.run(
-            [sys.executable, "scripts/seed_user.py"],
-            env=_safe_env(
-                FLASK_ENV="production",
-                SEED_USER_PASSWORD="",
-            ),
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        assert result.returncode == 1
-        assert "empty" in result.stderr.lower()
+        monkeypatch.setenv("FLASK_ENV", "production")
+        monkeypatch.setenv("SEED_USER_PASSWORD", "")
 
-    def test_default_password_allowed_in_development(self):
+        with pytest.raises(SystemExit) as exc:
+            _check_production_password()
+
+        assert exc.value.code == 1
+        assert "empty" in capsys.readouterr().err.lower()
+
+    def test_whitespace_password_rejected_in_production(
+        self, monkeypatch, capsys,
+    ):
+        """A whitespace-only password is empty as far as the guard is concerned.
+
+        The guard tests ``not password.strip()`` beside ``not password``, and
+        the subprocess cases only ever exercised the first half.
+        """
+        monkeypatch.setenv("FLASK_ENV", "production")
+        monkeypatch.setenv("SEED_USER_PASSWORD", "   ")
+
+        with pytest.raises(SystemExit) as exc:
+            _check_production_password()
+
+        assert exc.value.code == 1
+        assert "empty" in capsys.readouterr().err.lower()
+
+    def test_default_password_allowed_in_development(self, monkeypatch, capsys):
         """In development mode the default password is allowed.
 
-        The script proceeds past the password check and fails at
-        create_app() (no DATABASE_URL in the subprocess), but the
-        test only verifies the password-specific error is absent.
+        The positive form of what a subprocess could only assert by absence:
+        the guard RETURNS, and says nothing.  ``FLASK_ENV`` is the only thing
+        it branches on before that, so a guard that started rejecting outside
+        production would raise here rather than merely print differently.
         """
-        result = subprocess.run(
-            [sys.executable, "scripts/seed_user.py"],
-            env=_safe_env(
-                FLASK_ENV="development",
-                SEED_USER_PASSWORD="ChangeMe!2026",
-            ),
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-        # The script fails later (no DB), but NOT at the password check.
-        assert "ChangeMe!2026" not in result.stderr
+        monkeypatch.setenv("FLASK_ENV", "development")
+        monkeypatch.setenv("SEED_USER_PASSWORD", "ChangeMe!2026")
+
+        assert _check_production_password() is None
+        assert capsys.readouterr().err == ""
+
+    def test_a_short_production_password_WARNS_and_does_not_exit(
+        self, monkeypatch, capsys,
+    ):
+        """A short production password is a warning, not a refusal.
+
+        The third branch of the guard, and it had NO test at all: it prints
+        the application's 12-character minimum to stderr and then falls
+        through, so a production seed proceeds with a password the app itself
+        would refuse.  Pinned as it behaves rather than as it arguably should
+        -- whether this ought to exit is a decision, not a bug fix.
+        """
+        monkeypatch.setenv("FLASK_ENV", "production")
+        monkeypatch.setenv("SEED_USER_PASSWORD", "short1!")
+
+        assert _check_production_password() is None
+
+        err = capsys.readouterr().err
+        assert "Warning" in err
+        assert "7" in err
+        assert "12" in err
 
 
 class TestSeedUserCredentialScrub:

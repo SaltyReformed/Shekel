@@ -97,8 +97,9 @@ def _seam_batches(accounts, ctx):
 
     Args:
         accounts: The accounts being projected (any mix of kinds).
-        ctx: The shared :class:`_ProjectionContext` (its ``balance_ctx``,
-            ``all_periods`` and ``params.loan_params_map`` feed the seam).
+        ctx: The shared :class:`_ProjectionContext` (its ``balance_ctx`` and
+            ``params.loan_params_map`` feed the seam; the seam takes its own
+            reporting domain off that pass).
 
     Returns:
         The :class:`_SeamBatches` for this projection.
@@ -155,8 +156,8 @@ def _current_balance_from_map(balances, acct, ctx):
     step X-c2b2 cutover, verified by probe on a future-anchored HYSA.
 
     Args:
-        balances: The seam's period_id -> balance map, built over
-            ``ctx.all_periods``.
+        balances: The seam's period_id -> balance map, built over the pass's
+            own ``reported_periods()``.
         acct: The account to value at ``as_of`` when no period contains today.
         ctx: The shared :class:`_ProjectionContext`.
 
@@ -169,7 +170,7 @@ def _current_balance_from_map(balances, acct, ctx):
     """
     if ctx.current_period is None:
         return balance_at.balance_at(acct, ctx.balance_ctx, ctx.balance_ctx.as_of)
-    return balances[ctx.current_period.id]
+    return balances[ctx.current_period.period_id]
 
 
 def _compute_loan_account(acct, acct_loan_params, ctx):
@@ -331,8 +332,12 @@ def _project_one_account(acct, ctx, batches):
         # Every non-loan kind picks the current balance and the horizons out of
         # that single map.
         current_bal = _current_balance_from_map(balances, acct, ctx)
+        # The horizon window is the pass's OWN reporting domain -- the same
+        # window ``build_maps`` keyed ``balances`` by (pay-calendar plan step
+        # C2-f2d-3), so a horizon period and its balance column cannot come
+        # from two reads of the schedule.
         projected = project_balance_horizons(
-            ctx.current_period, ctx.all_periods, balances,
+            ctx.current_period, ctx.balance_ctx.reported_periods(), balances,
         )
 
     # "Does this account still need its params row" is a DIFFERENT question

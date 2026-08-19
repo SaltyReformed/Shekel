@@ -17,11 +17,10 @@ from flask import abort, redirect, render_template, request, url_for
 from flask_login import current_user
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.utils.auth_helpers import get_or_404
+from app.utils.auth_helpers import get_or_404, log_refused_lookup
 from app.utils.dates import display_today
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
-from app.models.pay_period import PayPeriod
 from app.models.account import Account
 from app.models.ref import (
     CalcMethod,
@@ -33,11 +32,11 @@ from app.routes._recurrence_conflict_chooser import flash_retained_notice
 from app.services import (
     account_service,
     paycheck_calculator,
-    pay_period_service,
     recurrence_engine,
     template_amount_service,
 )
 from app.services.generation_schedule import GenerationSchedule
+from app.services.pay_calendar import calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.schemas.validation import (
@@ -97,7 +96,7 @@ _state_tax_schema = StateTaxConfigSchema()
 _ytd_checkpoint_schema = YtdTaxCheckpointSchema()
 
 
-def _get_owned_profile_and_period(profile_id, period_id):
+def _get_owned_profile_and_period(profile_id, period_id, calendar):
     """Load an owned salary profile and pay period, or abort 404.
 
     The shared ownership gate for the two routes keyed on both a profile
@@ -108,12 +107,34 @@ def _get_owned_profile_and_period(profile_id, period_id):
     cross-user id 404s here per the project's "404 for both 'not found'
     and 'not yours'" rule rather than leaking existence.
 
+    **The PERIOD half is now structural** (pay-calendar plan step C2-f2d-3).
+    It was ``get_or_404(PayPeriod, period_id)`` -- a read of the global table
+    with the owner compared afterwards.  The calendar holds ONE owner's
+    paydays, so another owner's id is not found-and-rejected here; it is
+    absent, and the 404 falls out of the lookup rather than out of a
+    comparison a later edit could drop.
+    **What that move COST, and what pays it back**: ``get_or_404`` emits an
+    access event on each of its two denial branches, and for one commit the
+    calendar's refusal emitted nothing, so a cross-user id probe against these
+    two routes was silent in the audit log (adversarial code review, 2026-08-16).
+    :func:`~app.utils.auth_helpers.log_refused_lookup` restores the trail at the
+    one severity the ambiguity supports -- see that function for why it does not
+    claim CROSS_USER.
+
     Args:
         profile_id: Primary key of the requested salary profile.
         period_id: Primary key of the requested pay period.
+        calendar: The current user's
+            :class:`~app.services.pay_calendar.PayCalendar`.  Taken as a
+            parameter rather than derived here because both callers need the
+            same calendar for the paycheck engine beside this call, and one
+            derivation per request is the rule this arc is applying
+            everywhere.
 
     Returns:
-        A ``(profile, period)`` tuple, both owned by the current user.
+        A ``(profile, period)`` tuple -- the :class:`SalaryProfile` and the
+        :class:`~app.services.pay_calendar.DerivedPeriod`, both the current
+        user's.
 
     Raises:
         werkzeug.exceptions.NotFound: (via ``abort(404)``) when either id
@@ -122,8 +143,12 @@ def _get_owned_profile_and_period(profile_id, period_id):
     profile = get_or_404(SalaryProfile, profile_id)
     if profile is None:
         abort(404)
-    period = get_or_404(PayPeriod, period_id)
+    period = calendar.period_by_id(period_id)
     if period is None:
+        # See :func:`~app.utils.auth_helpers.log_refused_lookup`: the calendar
+        # cannot tell "no such period" from "not yours", and the refusal is
+        # logged anyway so a cross-user probe still leaves a trail.
+        log_refused_lookup("PayPeriod", period_id)
         abort(404)
     return profile, period
 
@@ -138,12 +163,16 @@ def _regenerate_salary_transactions(profile):
         return
 
     # One load of the owner's schedule serves both the paycheck recompute
-    # below and the regeneration's own resolution (plan step R4b-1).
+    # below and the regeneration's own resolution (plan step R4b-1).  The
+    # paycheck engine reads the schedule's DERIVED half (pay-calendar plan step
+    # C2-f2d-3); ``GenerationSchedule.__post_init__`` proves the two halves are
+    # the same periods in the same order, so this is the schedule the
+    # regeneration below resolves against and not a second read of it.
     schedule = GenerationSchedule.for_user(current_user.id)
-    periods = list(schedule.periods)
+    periods = schedule.calendar.saved()
 
     # Update the template's default_amount to the current net pay
-    current_period = pay_period_service.get_current_period(current_user.id)
+    current_period = schedule.calendar.period_containing(date.today())
     if current_period:
         # The configs are resolved for the PERIOD's own tax year, not the
         # clock's: a period straddling New Year belongs to the year it starts
@@ -219,13 +248,15 @@ def _compute_total_pre_tax(profile):
     current pay period, so the taxable base falls back to the full gross --
     mirroring the original inline behaviour in both handlers.
     """
-    current_period = pay_period_service.get_current_period(current_user.id)
+    # A plain calendar read: this helper recomputes ONE paycheck and
+    # regenerates nothing, so it needs the period window the calculator reads
+    # as ``all_periods`` and none of the rest of a GenerationSchedule.  ONE
+    # derivation answers both questions (pay-calendar plan step C2-f2d-3).
+    calendar = calendar_for(current_user.id)
+    current_period = calendar.period_containing(date.today())
     if not current_period:
         return Decimal("0")
-    # A plain schedule read: this helper recomputes ONE paycheck and
-    # regenerates nothing, so it needs the period list the calculator reads as
-    # ``all_periods`` and none of the rest of a GenerationSchedule.
-    periods = pay_period_service.get_all_periods(current_user.id)
+    periods = calendar.saved()
     tax_configs = load_tax_configs_for_year(
         current_user.id, profile, current_period.start_date.year,
     )

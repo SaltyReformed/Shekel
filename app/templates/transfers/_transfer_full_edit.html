@@ -1,17 +1,24 @@
+{% from "_money_macros.html" import money %}
 {# Transfer full edit popover -- renders inside #txn-popover container.
    Contains amount, status, category, notes, and quick status action buttons.
    Form submits via HTMX PATCH targeting the original cell by ID.
 
-   Expected context: xfer, statuses, categories.
+   Expected context: xfer, statuses, categories, settled, retained.
    Optional: source_txn_id -- when opened from a shadow transaction cell,
    the form targets #txn-cell-<source_txn_id> instead of #xfer-cell-<xfer.id>.
 
    Finalised transfers (is_immutable: Paid / Received / Settled /
-   Cancelled) lock the amount / period / category / due-date fields: those
-   inputs are disabled so they neither accept nor submit a value (matching
-   the route guard #26 -- a disabled input is omitted from the POST, so a
-   notes-only save still succeeds).  The Status dropdown and Notes stay
-   editable; set Status to Projected to unlock the amounts.
+   Cancelled) lock the BUDGET DECISIONS -- the amount, the period, the category,
+   the due date: those inputs are disabled so they neither accept nor submit a
+   value (matching the route guard #26 -- a disabled input is omitted from the
+   POST, so a notes-only save still succeeds).  The Status dropdown and Notes
+   stay editable; set Status to Projected to unlock the amounts.
+
+   **The two OBSERVED FACTS are not locked**: what the bank actually moved
+   (Actual) and the day it moved it (Money moved on).  A lock protects a
+   decision from being rewritten; an observation gets corrected when the
+   statement disagrees, and neither requires reverting the transfer (developer
+   ruling, 2026-08-17).
 #}
 {% set locked = xfer.status and xfer.status.is_immutable %}
 <div class="txn-full-edit-content">
@@ -40,25 +47,114 @@
       <input type="hidden" name="source_txn_id" value="{{ source_txn_id }}">
     {% endif %}
 
-    {# Finalised-row notice (#26): the amount / period / category /
-       due-date below are locked until the transfer is reverted to
-       Projected via the Status dropdown. #}
+    {# Finalised-row notice (#26): the amount / period / category / due-date
+       below are locked until the transfer is reverted to Projected via the
+       Status dropdown.
+
+       **It names WHICH amount, because the card has two.**  It read "Set Status
+       to Projected to edit the amount" three lines above an Actual box whose
+       own tooltip says the opposite -- two contradictory instructions about a
+       money field on one screen, and following the wrong one was measured to
+       discard the figure the user had just typed.  The transaction card was
+       disambiguated in the same step; this one was not until a neutral review
+       named it (2026-08-18). #}
     {% if locked %}
     <div class="alert alert-secondary py-1 px-2 mb-2 small" role="status">
       <i class="bi bi-lock-fill"></i> This transfer is finalised. Set
-      <strong>Status</strong> to Projected to edit the amount.
+      <strong>Status</strong> to Projected to change the <strong>amount</strong>,
+      the period or the category. What your bank actually moved, and the day it
+      moved, you can correct right here.
     </div>
     {% endif %}
 
-    {# Amount #}
-    <div class="mb-2">
-      <label class="form-label mb-0 small">Amount</label>
-      <input type="number" step="0.01" min="0.01" name="amount"
-             value="{{ xfer.amount }}"
-             class="form-control form-control-sm"
-             placeholder="Amount"
-             {{ 'disabled' if locked else '' }}>
+    {# The PLAN and the RECORD, side by side, because they are two different
+       facts about this transfer and neither edits the other (developer ruling,
+       2026-08-17).  Amount is the budget decision; Actual is what the bank
+       really moved. #}
+    <div class="row g-2 mb-2">
+      <div class="col">
+        <label class="form-label mb-0 small">Amount</label>
+        <input type="number" step="0.01" min="0.01" name="amount"
+               value="{{ xfer.amount }}"
+               class="form-control form-control-sm"
+               placeholder="Amount"
+               {{ 'disabled' if locked else '' }}>
+      </div>
+      {# **The ACTUAL: what the bank really moved.**
+
+         **Deliberately NOT disabled on a finalised transfer**, exactly like the
+         "Money moved on" date below and for the identical reason: the #26 lock
+         protects BUDGET DECISIONS from being rewritten, and this is an OBSERVED
+         FACT about the bank, which gets corrected when the statement disagrees.
+
+         **Until this box existed the transfer card was inconsistent with
+         itself**: the settle DAY was correctable in place and the FIGURE was
+         not, so restating what moved meant reverting the transfer, editing, and
+         settling again -- and a revert RETAINS the recorded figure, so the
+         re-settle silently re-booked the old number over the re-planned one.
+         The lock produced a wrong figure, not friction.
+
+         Rendered for any SETTLED transfer, because that is exactly when the
+         fact exists.  There is no purchases branch here, unlike the transaction
+         card: a shadow cannot carry purchase entries at all -- ``entry_service``
+         refuses one ("Cannot add entries to transfer transactions") and a
+         shadow is built with ``is_envelope`` unset -- so a transfer's figure is
+         always the correctable kind.  Measured on the 2026-08-17 production
+         clone: 0 shadows envelope-tracked, 0 entries attached to a shadow.
+
+         ``min`` / ``max`` mirror the schema's ``_NON_NEGATIVE_MONETARY``,
+         the same browser-first / server-backstop layering the "Money moved
+         on" box below uses: the column is ``Numeric(12, 2)``, and an
+         unbounded figure reached the DATABASE as a ``DataError`` -- not an
+         ``IntegrityError``, so no route caught it and Save 500'd in
+         silence (adversarial review, 2026-08-18).
+
+         Prefilled from ``settled[xfer.id]`` -- what the pair RECORDS -- so an
+         untouched Save posts the same figure back and the service writes
+         nothing (``status_seam.correction_record``'s echo rule).  Submitting a
+         DIFFERENT number records it on BOTH legs as a human's correction.
+
+         Both legs carry one record (Transfer Invariant 3), so this is one box
+         for the pair, exactly as "Money moved on" is one date for the pair. #}
+      {% if xfer.status and xfer.status.is_settled %}
+      {# ``none`` for a settled row that records NOTHING -- the legacy shape
+         finding **N-181** names, which this box exists to repair.  Rendered
+         as an EMPTY input rather than the string "None": a blank box means
+         nothing is recorded, and typing the real figure is the repair. #}
+      {% set recorded = settled[xfer.id] %}
+      <div class="col">
+        <label class="form-label mb-0 small" for="settled-amount-{{ xfer.id }}">
+          Actual
+        </label>
+        <input type="number" step="0.01" inputmode="decimal"
+               name="settled_amount" id="settled-amount-{{ xfer.id }}"
+               value="{{ recorded if recorded is not none else '' }}"
+               min="0" max="10000000"
+               class="form-control form-control-sm"
+               title="What your bank actually moved. Correct it if your statement shows a different amount -- you do not need to set the transfer back to Projected to do that. Clearing the box does nothing; set Status to Projected to say the money did not move.">
+      </div>
+      {% endif %}
     </div>
+
+    {# The figure a re-settle will RE-BOOK, on the surface that tells the user to
+       revert (plan step X-au-c3, developer 2026-08-17).  This card's own notice
+       says "Set Status to Projected to edit the amount", so the transfer a user
+       is most likely looking at here is exactly the one carrying a retained
+       figure -- and without this the card would show the plan for a pair that
+       will book something else.  It reads the SAME function the settle verb
+       honours (``status_seam.honoured_correction``, via
+       ``transaction_service.retained_settle_amounts_by_id``), so what this
+       promises and what a tick books cannot drift.  Read-only: the record has
+       one write door, which is a settle. #}
+    {% set will_book = retained[xfer.id] %}
+    {% if will_book is not none %}
+    <div class="alert alert-info py-1 px-2 mb-2 small" role="status">
+      <i class="bi bi-arrow-repeat"></i> Marking this paid will record
+      <strong>{{ money(will_book) }}</strong> -- the figure recorded before this
+      transfer was set back to Projected. Type a different amount when you tick
+      it on the reconcile screen to replace that.
+    </div>
+    {% endif %}
 
     {# Status selector.  Pre-hint (grid audit D2, ruled 2026-07-11):
        options the transfer state machine would reject render disabled

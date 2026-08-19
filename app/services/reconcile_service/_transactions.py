@@ -24,9 +24,10 @@ is this arc's own root cause 1.
 
 **Nothing here decides what a tick BOOKS, whether the panel may offer a box for
 it, or whether a submitted figure is a CORRECTION.**  All three are the verb's,
-published as ``transaction_service.settle_amount``,
-``transaction_service.settles_from_entries`` and
-``transaction_service.is_correction``, and read from here.  A panel showing a
+published as ``transaction_service.settle_amount`` and
+``transaction_service.settles_from_entries``, and ANSWERED BY THE ACT for the
+third: ``settle_transaction`` returns whether it booked a human's figure, so the
+count and the write cannot disagree.  A panel showing a
 figure the verb would not book, an input for a value the verb would ignore, or
 a telemetry count of corrections the verb never made, are the same defect one
 tier up.
@@ -75,10 +76,12 @@ def _cash_amount(txn: Transaction, booked: Decimal) -> "Decimal | None":
     (``cash_ledger.settled_cash_leg``), and moving the booked figure would make
     the panel disagree with the grid and the analytics.
 
-    Both terms are the cash ledger's own -- ``credit_entry_sum`` and
-    ``posted_purchase_sum`` -- rather than reductions restated here: one rule,
-    one statement, so a change to what either means cannot leave the panel
-    saying the old thing.
+    Both terms are the cash ledger's own, taken as ONE published sum
+    (``cash_ledger.off_statement_sum``) rather than as two additions restated
+    here: one rule, one statement, so a change to what either means cannot
+    leave the panel saying the old thing.  Its other callers are
+    ``cash_ledger.cash_leg_of`` -- and therefore ``settled_cash_leg`` -- and
+    the statement matcher, which asks the same question of a bank line.
 
     Args:
         txn: The row being offered, with ``entries`` loaded.
@@ -92,10 +95,7 @@ def _cash_amount(txn: Transaction, booked: Decimal) -> "Decimal | None":
         envelope, so the card term is latent; the posted term is LIVE, on 2 of
         the 9 posted purchases (`$45.85`) measured 2026-08-14.
     """
-    not_on_this_statement = (
-        cash_ledger.credit_entry_sum(txn)
-        + cash_ledger.posted_purchase_sum(txn)
-    )
+    not_on_this_statement = cash_ledger.off_statement_sum(txn)
     if not not_on_this_statement:
         return None
     return booked - not_on_this_statement
@@ -160,13 +160,17 @@ def _settle_one(
             default of the user's today.
 
     Returns:
-        Whether the verb booked *submitted* as a correction -- asked of its own
-        published predicate BEFORE the settle, because the settle mutates the
-        figures the question is about (finding **N-231**).
+        Whether the verb booked *submitted* as a correction -- **answered by the
+        verb itself** (developer ruling, 2026-08-17), which is the shape
+        ``transfer_service._settle.settle`` already had.  This asked
+        ``transaction_service.is_correction`` separately (now private), and it
+        re-resolved the row's amount to make its comparison, so one ticked row
+        paid for the profile lookup, the loan resolve and the paycheck engine
+        twice -- and the count and the write were two answers to one question
+        (finding **N-231**), which is the shape they can no longer be.
     """
-    corrected = transaction_service.is_correction(txn, submitted)
-    transaction_service.settle_transaction(
-        txn, actual_amount=submitted, settled_on=statement.observed_on,
+    corrected = transaction_service.settle_transaction(
+        txn, submitted=submitted, settled_on=statement.observed_on,
     )
     # WHICH statement showed this row (ruling **R-FL**), recorded HERE rather
     # than inside ``settle_transaction`` -- and that placement is the rule.  The

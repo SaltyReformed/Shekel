@@ -9,7 +9,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import AcctTypeEnum, StatusEnum
+from app.enums import AcctTypeEnum, SettlementBasisEnum, StatusEnum
 from app.extensions import db
 from app.models.account import Account
 from app.models.journal_entry import JournalEntry
@@ -20,7 +20,7 @@ from app.models.transfer import Transfer
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.user import User, UserSettings
 from app.models.scenario import Scenario
-from app.models.ref import AccountType, RecurrencePattern, Status
+from app.models.ref import AccountType, Status
 from app.services import balance_at, pay_period_write
 from app.services.balance_at import BalanceContext
 from app.services import transfer_service
@@ -30,6 +30,7 @@ from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
     make_every_period_rule,
+    settlement_basis_id,
     cadence_payload,
     create_account_of_type,
     create_loan_account,
@@ -61,7 +62,6 @@ def _create_template(seed_user, savings_acct, with_rule=True):
     """Helper: create a transfer template with optional recurrence rule."""
     rule = None
     if with_rule:
-        every_period = db.session.query(RecurrencePattern).filter_by(name="Every Period").one()
         rule = make_every_period_rule(db.session, seed_user["user"].id)
 
     template = TransferTemplate(
@@ -2044,13 +2044,20 @@ class TestTransferSettleDayEditDoor:
                 .one()
             )
             # The legacy shape, reproduced the only way it can be: straight at
-            # the column, behind the seam's back.
+            # the columns, behind the seam's back.  It is a row that pre-dates
+            # the settlement record entirely -- settled status, nothing recorded
+            # -- so all three columns are cleared together.  That is narrower
+            # than what the schema forbids: only the DAY needs a figure beside
+            # it (``ck_transactions_settle_day_needs_basis``), and a record with
+            # no day is the legal RETAINED state.
             for row in (
                 db.session.query(Transaction)
                 .filter_by(transfer_id=xfer.id, is_deleted=False)
                 .all()
             ):
                 row.settled_on = None
+                row.settled_amount = None
+                row.settled_basis_id = None
             db.session.commit()
             db.session.expire_all()
             assert db.session.get(Transfer, xfer.id).settled_on is None
@@ -2248,9 +2255,15 @@ class TestTransferNegativePaths:
             savings = _create_savings_account(seed_user)
             xfer = _create_transfer(seed_user, seed_periods_today, savings)
 
-            # Set to done first.
+            # Set to done first, through the service door so all three rows
+            # move together and each shadow records what moved (plan step
+            # X-au-c3): a bare status assign on the parent leaves the pair's
+            # legs Projected, and the seam then refuses to enter the settled
+            # band with no settlement record.
             done_status = db.session.query(Status).filter_by(name="Paid").one()
-            xfer.status_id = done_status.id
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id, status_id=done_status.id,
+            )
             db.session.commit()
 
             # Mark done again.
@@ -4061,3 +4074,631 @@ class TestTransferPeriodMove:
             assert resp.headers.get("HX-Trigger") == "balanceChanged"
             db.session.refresh(xfer)
             assert xfer.amount == Decimal("250.00")
+
+
+
+def _THREE_DAYS_AGO():
+    """A settle day that is NOT the user's today.
+
+    Every "a figure correction did not move the settle day" assertion needs a
+    fixture day the seam could not have re-stamped, or it grades nothing: a
+    settle stamps ``display_today()``, so on a today-dated row "preserved" and
+    "re-stamped" read the same.  Three days back is inside any generated
+    schedule, so it clears ruling **R-EL**'s floor, and it is in the past, so it
+    clears ruling **R-EJ**'s future refusal.
+    """
+    return display_today() - timedelta(days=3)
+
+
+class TestTransferActualBox:
+    """The transfer PATCH's FIGURE correction -- the Actual box.
+
+    **The settle-day door's sibling, and it exists because the card was
+    inconsistent with itself** (developer ruling, 2026-08-17): a settled
+    transfer's DAY was correctable in place while its FIGURE was not, so the
+    only way to restate what the bank moved was to revert, edit and settle
+    again -- and a revert RETAINS the recorded figure, so the re-settle silently
+    re-booked the old number over the re-planned one.  The lock produced a wrong
+    figure, not friction.
+
+    The rule the whole class grades: **a lock protects a BUDGET DECISION from
+    being rewritten; an OBSERVED FACT gets corrected when the statement
+    disagrees.**  The estimate, the period, the category and the due date are
+    locked on a finalised transfer.  What the bank moved, and the day it moved,
+    are not.
+    """
+
+    @staticmethod
+    def _settled_transfer(seed_user, seed_periods_today, day):
+        """Return a settled transfer dated *day*, ledger in step.
+
+        Callers pass a PAST day deliberately.  Settling stamps the user's today,
+        so a fixture dated today makes every "a figure correction did not move
+        the settle day" assertion blind: the mutation those assertions exist to
+        catch is the seam re-stamping today, which on a today-dated row is
+        indistinguishable from preserving.  That is finding **N-146**'s shape,
+        which this arc has already paid for once.
+        """
+        savings = _create_savings_account(seed_user)
+        xfer = _create_transfer(seed_user, seed_periods_today, savings)
+        transfer_service.update_transfer(
+            xfer.id, seed_user["user"].id,
+            status_id=ref_cache.status_id(StatusEnum.DONE),
+        )
+        transfer_service.update_transfer(
+            xfer.id, seed_user["user"].id, settled_on=day,
+        )
+        db.session.commit()
+        return xfer
+
+    @staticmethod
+    def _legs(xfer_id):
+        """Return both live shadows of *xfer_id*, expense leg first."""
+        rows = (
+            db.session.query(Transaction)
+            .filter_by(transfer_id=xfer_id, is_deleted=False)
+            .order_by(Transaction.id)
+            .all()
+        )
+        assert len(rows) == 2, f"expected a pair, got {len(rows)}"
+        return rows
+
+    def test_the_box_renders_on_a_settled_transfer_and_is_not_disabled(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A finalised transfer offers the Actual box, ENABLED.
+
+        The whole ruling in one assertion.  A draft of this step drew the
+        transaction twin of this box gated on ``locked`` -- and every
+        ``is_settled`` status is also ``is_immutable``, so it rendered
+        ``disabled`` on 100% of the rows it appeared on and was deleted as
+        unreachable.  Being disabled WAS the defect, so the test asserts the
+        box is present AND live, on both doors onto this popover.
+        """
+        with app.app_context():
+            xfer = self._settled_transfer(
+                seed_user, seed_periods_today, _THREE_DAYS_AGO(),
+            )
+            expense, _income = self._legs(xfer.id)
+
+            for url in (
+                f"/transfers/{xfer.id}/full-edit",
+                f"/transactions/{expense.id}/full-edit",
+            ):
+                body = auth_client.get(url).get_data(as_text=True)
+                assert 'name="settled_amount"' in body, (
+                    f"{url} hid the Actual box from a settled transfer"
+                )
+                assert not field_is_disabled(body, "settled_amount"), (
+                    f"{url} rendered the Actual box disabled -- that is the "
+                    "defect, not the guard: a lock protects a decision and "
+                    "what the bank moved is an observation"
+                )
+                # The BUDGET decision beside it stays locked, which is what
+                # makes the contrast the ruling draws visible on one screen.
+                assert field_is_disabled(body, "amount"), (
+                    f"{url} left the plan editable on a finalised transfer"
+                )
+
+    def test_the_box_is_absent_on_a_projected_transfer(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """No settle, no figure: there is nothing to correct.
+
+        The firing control for the render condition.  A box offered on a
+        Projected transfer would take a figure the service refuses, which is
+        the shape ruling **R-FF** removed from the reconcile panel.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            db.session.commit()
+
+            body = auth_client.get(
+                f"/transfers/{xfer.id}/full-edit"
+            ).get_data(as_text=True)
+            assert 'name="settled_amount"' not in body
+
+    def test_a_correction_lands_on_BOTH_legs_and_moves_the_ledger(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """$200.00 settled, the statement says $214.37: both legs record it.
+
+        Transfer Invariant 3 for the settlement record: a transfer's money moves
+        on its two legs and the two record the same figure, exactly as they
+        carry the same day.  The ledger follows in the same request, because the
+        figure IS the pair's confirmed cash effect -- a correction that changed
+        the record without moving the books would leave the two disagreeing.
+
+        Hand arithmetic: the settle books $200.00 out of Checking and into
+        Savings.  The correction re-books $214.37, so the net posted magnitude
+        for this transfer is $214.37, not $200.00 + $14.37 twice-counted.
+        """
+        with app.app_context():
+            day = _THREE_DAYS_AGO()
+            xfer = self._settled_transfer(seed_user, seed_periods_today, day)
+            version = db.session.get(Transfer, xfer.id).version_id
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "settled_amount": "214.37",
+                    "version_id": str(version),
+                },
+            )
+
+            assert response.status_code == 200, response.get_data(as_text=True)
+            db.session.expire_all()
+            for leg in self._legs(xfer.id):
+                assert leg.settled_amount == Decimal("214.37"), (
+                    f"leg {leg.id} did not record the correction"
+                )
+                assert leg.settled_basis_id == settlement_basis_id(
+                    SettlementBasisEnum.CORRECTED,
+                ), "a figure a human typed is a CORRECTION, not a derivation"
+                assert leg.settled_on == day, (
+                    "a figure correction moved the settle day"
+                )
+            assert net_posted_by_day(
+                JournalEntry.transfer_id == xfer.id,
+            ) == {day: Decimal("214.37")}
+
+    def test_an_ECHO_of_the_recorded_figure_records_nothing(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Saving the popover untouched must not manufacture a correction.
+
+        The box is PREFILLED with what the pair records, and this form submits
+        every input it renders -- so an untouched Save posts the same figure
+        back.  Writing it would restamp a ``derived`` record as ``corrected``
+        and destroy the only stored signal that says a human read a number off a
+        statement, which is what ruling **R-FB**'s production measurement is
+        made of.
+
+        Shown to FIRE: deleting ``correction_record``'s equality test leaves
+        both legs stamped ``corrected``.
+        """
+        with app.app_context():
+            xfer = self._settled_transfer(
+                seed_user, seed_periods_today, _THREE_DAYS_AGO(),
+            )
+            derived = settlement_basis_id(SettlementBasisEnum.DERIVED)
+            assert all(
+                leg.settled_basis_id == derived for leg in self._legs(xfer.id)
+            ), "fixture precondition: a plain settle records a DERIVED figure"
+            version = db.session.get(Transfer, xfer.id).version_id
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"settled_amount": "200.00", "version_id": str(version)},
+            )
+
+            assert response.status_code == 200
+            db.session.expire_all()
+            for leg in self._legs(xfer.id):
+                assert leg.settled_basis_id == derived, (
+                    "an echoed prefill was recorded as a human's correction"
+                )
+
+    def test_a_REVERT_carrying_the_box_drops_it_and_still_reverts(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Ruling R-EG's argument applied to the figure.
+
+        The documented way to unlock a finalised transfer is to set Status to
+        Projected in this same form -- which submits the Actual box's current
+        contents alongside it.  That figure is a stale ECHO of the state being
+        left, not an assertion that this much moved: the user picked Projected,
+        which says it did not move at all.  The route DROPS it, so the unlock
+        path keeps working; a service caller asserting both on purpose is still
+        refused (see the service tests).
+
+        What moved is RETAINED, because a revert releases the ASSERTION and
+        keeps the fact -- the two have different lifetimes.
+        """
+        with app.app_context():
+            xfer = self._settled_transfer(
+                seed_user, seed_periods_today, _THREE_DAYS_AGO(),
+            )
+            version = db.session.get(Transfer, xfer.id).version_id
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "status_id": str(ref_cache.status_id(StatusEnum.PROJECTED)),
+                    "settled_amount": "200.00",
+                    "version_id": str(version),
+                },
+            )
+
+            assert response.status_code == 200, response.get_data(as_text=True)
+            db.session.expire_all()
+            assert db.session.get(Transfer, xfer.id).status_id == (
+                ref_cache.status_id(StatusEnum.PROJECTED)
+            ), "the unlock path was broken by the echoed figure"
+            for leg in self._legs(xfer.id):
+                assert leg.settled_on is None, "a revert keeps the assertion"
+                assert leg.settled_amount == Decimal("200.00"), (
+                    "a revert destroyed what moved"
+                )
+
+    def test_a_figure_on_a_PROJECTED_transfer_is_REFUSED(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """An amount states what MOVED, and a Projected pair's money has not.
+
+        A Projected transfer records NOTHING, so a submitted figure cannot be an
+        echo of its record -- there is no record to echo.  It is therefore a
+        real assertion about money that has not moved, and it is refused rather
+        than dropped: ``TransferUpdateSchema.Meta.unknown`` is ``EXCLUDE``, and a
+        silently discarded money field is how a user's typed number disappears.
+
+        The ECHO half of the same rule -- an untouched box riding a revert, which
+        must still drop so the unlock path works -- is graded by
+        ``test_a_REVERT_carrying_the_box_drops_it_and_still_reverts``.  The two
+        cases together are the whole of ``status_seam.figure_for_status``, and
+        an earlier version of that rule read the STATUS alone and so could not
+        tell them apart.
+
+        Reached by a crafted submission rather than by the form: the box is not
+        rendered on a Projected transfer at all.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            xfer = _create_transfer(seed_user, seed_periods_today, savings)
+            db.session.commit()
+            version = xfer.version_id
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"settled_amount": "50.00", "version_id": str(version)},
+            )
+
+            assert response.status_code == 400, response.status_code
+            assert "has nothing to record" in response.get_data(as_text=True)
+            db.session.expire_all()
+            for leg in self._legs(xfer.id):
+                assert leg.settled_amount is None, (
+                    "a refused figure was written anyway"
+                )
+                assert leg.settled_basis_id is None
+
+    def test_an_ARCHIVE_carrying_a_correction_does_BOTH(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Paid -> Settled with a corrected Actual records AND archives.
+
+        The transfer half of the defect this step measured on the transaction
+        door: the correction and the status change were treated as alternatives,
+        so the archive was silently dropped and the response still said 200.
+        ``Settled`` is terminal, so this is the LAST moment the figure can be
+        corrected -- dropping either half loses something that cannot be
+        restated.
+        """
+        with app.app_context():
+            day = _THREE_DAYS_AGO()
+            xfer = self._settled_transfer(seed_user, seed_periods_today, day)
+            version = db.session.get(Transfer, xfer.id).version_id
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "status_id": str(ref_cache.status_id(StatusEnum.SETTLED)),
+                    "settled_amount": "187.65",
+                    "version_id": str(version),
+                },
+            )
+
+            assert response.status_code == 200, response.get_data(as_text=True)
+            db.session.expire_all()
+            assert db.session.get(Transfer, xfer.id).status_id == (
+                ref_cache.status_id(StatusEnum.SETTLED)
+            ), "the archive was dropped while the figure was recorded"
+            for leg in self._legs(xfer.id):
+                assert leg.status_id == ref_cache.status_id(StatusEnum.SETTLED)
+                assert leg.settled_amount == Decimal("187.65")
+            assert net_posted_by_day(
+                JournalEntry.transfer_id == xfer.id,
+            ) == {day: Decimal("187.65")}
+
+    def test_a_recordless_settled_pair_repairs_with_the_day_AND_the_figure(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The legacy shape's repair, and it needs BOTH halves in one save.
+
+        A settled row carrying no settlement record predates the record
+        entirely (finding **N-181**).  ``ck_transactions_settle_day_needs_basis``
+        pairs the day with the record, so stating the DAY alone violates it --
+        measured: the day-only save returns a designed 400 rather than
+        repairing anything.  Stating both is the repair, and the Actual box is
+        what makes it expressible.
+
+        The popover must therefore RENDER for such a pair, with both boxes
+        empty: a surface that refuses to draw cannot repair the row it is the
+        only repair path for.
+        """
+        with app.app_context():
+            xfer = self._settled_transfer(
+                seed_user, seed_periods_today, _THREE_DAYS_AGO(),
+            )
+            # The legacy shape, reproduced the only way it can be: straight at
+            # the columns, behind the seam's back.
+            for leg in self._legs(xfer.id):
+                leg.settled_on = None
+                leg.settled_amount = None
+                leg.settled_basis_id = None
+            db.session.commit()
+            db.session.expire_all()
+
+            body = auth_client.get(
+                f"/transfers/{xfer.id}/full-edit"
+            ).get_data(as_text=True)
+            assert 'name="settled_amount"' in body, (
+                "the popover hid the Actual box from the pair that needs it"
+            )
+            # Sliced to the INPUT TAG, because ``value=""`` appears
+            # unconditionally elsewhere in this body -- the Category select's
+            # "-- None --" option, and the empty notes / due-date / settle-day
+            # inputs.  A bare membership test on the whole body is a constant
+            # ``True`` and grades nothing, which is what a neutral review
+            # measured this assertion doing (2026-08-18).
+            box = body[body.index('name="settled_amount"'):]
+            box = box[:box.index(">")]
+            assert 'value=""' in box, (
+                "a figure was pre-filled onto a pair that records none: " + box
+            )
+
+            version = db.session.get(Transfer, xfer.id).version_id
+            day_only = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "settled_on": display_today().isoformat(),
+                    "version_id": str(version),
+                },
+            )
+            assert day_only.status_code == 400, (
+                "stating the day alone must be refused -- the CHECK pairs it "
+                "with the record, so it cannot succeed"
+            )
+            assert "records nothing that moved" in day_only.get_data(
+                as_text=True,
+            ), (
+                "the refusal must name the repair, not surface as the "
+                "constraint violation it used to be"
+            )
+
+            db.session.expire_all()
+            version = db.session.get(Transfer, xfer.id).version_id
+            repair = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "settled_on": display_today().isoformat(),
+                    "settled_amount": "200.00",
+                    "version_id": str(version),
+                },
+            )
+
+            assert repair.status_code == 200, repair.get_data(as_text=True)
+            db.session.expire_all()
+            for leg in self._legs(xfer.id):
+                assert leg.settled_on == display_today()
+                assert leg.settled_amount == Decimal("200.00")
+                assert leg.settled_basis_id == settlement_basis_id(
+                    SettlementBasisEnum.CORRECTED,
+                )
+
+    def test_the_rebook_notice_shows_what_a_re_settle_will_book(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A reverted transfer's card names the figure a re-settle re-books.
+
+        This card TELLS the user to set Status to Projected in order to edit the
+        amount, so the transfer they are most likely looking at here is exactly
+        the one carrying a retained correction -- and its plan ($200.00) is not
+        what a tick will book ($214.37).  Two numbers about one transfer, and
+        the second was visible on no surface but the reconcile panel.
+        """
+        with app.app_context():
+            xfer = self._settled_transfer(
+                seed_user, seed_periods_today, _THREE_DAYS_AGO(),
+            )
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id, settled_amount=Decimal("214.37"),
+            )
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            db.session.commit()
+
+            body = auth_client.get(
+                f"/transfers/{xfer.id}/full-edit"
+            ).get_data(as_text=True)
+            assert "$214.37" in body, (
+                "the card showed a $200.00 plan for a transfer that will book "
+                "$214.37, with the real figure on no surface"
+            )
+
+    def test_the_notice_is_absent_when_the_plan_IS_what_a_tick_books(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The notice's firing control.
+
+        A transfer holding no ``corrected`` record re-settles at its plan, which
+        is already on screen in the Amount box -- so drawing the notice would
+        state a difference that does not exist.
+        """
+        with app.app_context():
+            xfer = self._settled_transfer(
+                seed_user, seed_periods_today, _THREE_DAYS_AGO(),
+            )
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            db.session.commit()
+
+            body = auth_client.get(
+                f"/transfers/{xfer.id}/full-edit"
+            ).get_data(as_text=True)
+            assert "Marking this paid will record" not in body
+
+
+class TestTheTransferLockCoversTheShadowOnlyEdits:
+    """A stale popover cannot silently overwrite a figure or a day.
+
+    **A transfer and its two shadows are ONE thing** (developer ruling,
+    2026-08-18).  Both full-edit popovers pin ``Transfer.version_id``, but the
+    two facts they can correct in place -- what the bank moved and the day it
+    moved -- live on the SHADOWS, and SQLAlchemy bumps a version counter only
+    for a row it actually UPDATEs.  So the pin protected everything on the form
+    except the two money-adjacent fields the form exists to correct.
+
+    Measured before the fix: parent ``version_id = 2``; tab A corrects the
+    figure to `$214.37`, 200 OK, parent still `2`; stale tab B saves its
+    prefilled `$200.00` against the same pin, 200 OK, both legs now record
+    `$200.00`.  The statement figure gone, reported as success.
+    """
+
+    @staticmethod
+    def _settled(seed_user, seed_periods_today):
+        savings = _create_savings_account(seed_user)
+        xfer = _create_transfer(seed_user, seed_periods_today, savings)
+        transfer_service.update_transfer(
+            xfer.id, seed_user["user"].id,
+            status_id=ref_cache.status_id(StatusEnum.DONE),
+        )
+        db.session.commit()
+        db.session.expire_all()
+        return xfer
+
+    @staticmethod
+    def _legs(xfer_id):
+        return (
+            db.session.query(Transaction)
+            .filter_by(transfer_id=xfer_id, is_deleted=False)
+            .order_by(Transaction.id).all()
+        )
+
+    def test_a_stale_tab_cannot_overwrite_a_figure_correction(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Two tabs, one pin: the second save is a 409, not a lost update."""
+        with app.app_context():
+            xfer = self._settled(seed_user, seed_periods_today)
+            shared_pin = db.session.get(Transfer, xfer.id).version_id
+
+            first = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"settled_amount": "214.37",
+                      "version_id": str(shared_pin)},
+            )
+            assert first.status_code == 200, first.get_data(as_text=True)
+            db.session.expire_all()
+            assert db.session.get(Transfer, xfer.id).version_id > shared_pin, (
+                "a shadow-only write left the aggregate's counter behind"
+            )
+
+            second = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"settled_amount": "200.00",
+                      "version_id": str(shared_pin)},
+            )
+
+            assert second.status_code == 409, (
+                "a stale tab overwrote a figure correction and reported success"
+            )
+            db.session.expire_all()
+            for leg in self._legs(xfer.id):
+                assert leg.settled_amount == Decimal("214.37"), (
+                    "the stale save landed anyway"
+                )
+
+    def test_a_settle_day_correction_moves_the_counter_too(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The SAME hole one field over, closed by the same statement.
+
+        The settle-day box (ruling **R-ED**) shipped before the Actual box and
+        writes only the shadows for the identical reason, so it carried the
+        identical defect.  Fixing the figure alone would have left it standing
+        on the same form.
+        """
+        with app.app_context():
+            xfer = self._settled(seed_user, seed_periods_today)
+            shared_pin = db.session.get(Transfer, xfer.id).version_id
+
+            assert auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"settled_on": _THREE_DAYS_AGO().isoformat(),
+                      "version_id": str(shared_pin)},
+            ).status_code == 200
+            db.session.expire_all()
+
+            assert db.session.get(Transfer, xfer.id).version_id > shared_pin
+
+    def test_an_ECHO_does_not_move_the_counter(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The firing control: a write that changes nothing is not a change.
+
+        The popover re-submits every input on every Save, so an untouched
+        re-save must not bump the pin -- a counter that moved when nothing did
+        would turn a second open tab into a spurious 409 on a form nobody
+        edited.
+        """
+        with app.app_context():
+            xfer = self._settled(seed_user, seed_periods_today)
+            recorded = self._legs(xfer.id)[0].settled_amount
+            pin = db.session.get(Transfer, xfer.id).version_id
+
+            assert auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"settled_amount": str(recorded),
+                      "version_id": str(pin)},
+            ).status_code == 200
+
+            db.session.expire_all()
+            assert db.session.get(Transfer, xfer.id).version_id == pin, (
+                "an echoed prefill bumped the aggregate's counter"
+            )
+
+    def test_a_CHANGED_figure_beside_a_revert_is_refused(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The transfer twin of the silent-discard defect.
+
+        The submission rule read the STATUS alone, so a figure the user had just
+        retyped was dropped exactly like an untouched prefill -- and because a
+        revert RETAINS what moved, the stale record then governed the re-settle.
+        An echo still drops (the unlock path must keep working); a change is
+        refused, naming both acts.
+        """
+        with app.app_context():
+            xfer = self._settled(seed_user, seed_periods_today)
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                settled_amount=Decimal("214.37"),
+            )
+            db.session.commit()
+            db.session.expire_all()
+            pin = db.session.get(Transfer, xfer.id).version_id
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={
+                    "status_id": str(ref_cache.status_id(StatusEnum.PROJECTED)),
+                    "settled_amount": "111.11",
+                    "version_id": str(pin),
+                },
+            )
+
+            assert response.status_code == 400, (
+                "a figure the user CHANGED was swallowed by the revert"
+            )
+            db.session.expire_all()
+            assert db.session.get(Transfer, xfer.id).status_id == (
+                ref_cache.status_id(StatusEnum.DONE)
+            ), "a refused request reverted the transfer anyway"
+            for leg in self._legs(xfer.id):
+                assert leg.settled_amount == Decimal("214.37")

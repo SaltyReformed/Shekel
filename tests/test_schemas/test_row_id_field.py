@@ -15,12 +15,53 @@ The completeness arm at the bottom is the one that matters most: it is what
 stops the 76th declaration from being written with the lax field.
 """
 
+import ast
+
 import pytest
 from marshmallow import ValidationError, fields
 
 from app.schemas.validation import _helpers, _recurrence
 from app.schemas.validation._helpers import RowId
 from app.schemas.validation.transactions import TransactionCreateSchema
+
+
+#: Field types that CONTAIN another field rather than declaring one
+#: themselves.  ``fields.List(RowId())`` is a row-id declaration and
+#: ``fields.List(fields.Integer())`` is a lax one, and both scanners below read
+#: the OUTER callee -- so without unwrapping, a container is a hole exactly the
+#: size of this gate.  Added at plan step ``bank_import:X-f6a-2``, which
+#: declared the package's first ``fields.List`` of ids and was caught by the
+#: completeness arm rather than by the sweep the arm exists to protect.
+_CONTAINER_FIELD_SPELLINGS = frozenset({"List", "Tuple"})
+
+
+def _field_callee(call):
+    """Return the field type a declaration's right-hand side really builds.
+
+    Reads the callee token, then UNWRAPS a container: a ``fields.List`` is not
+    a field type, it is a wrapper around one, and grading the wrapper would
+    grade nothing.  Nested containers unwrap all the way down, because
+    ``List(List(Integer()))`` is as lax as ``Integer()``.
+
+    A container built with no inner field -- ``fields.List()`` is a
+    ``TypeError`` at import, so this cannot arise from working code -- reports
+    the container itself, which fails the completeness arm rather than passing
+    silently.
+
+    Args:
+        call: The :class:`ast.Call` on the right of the assignment.
+
+    Returns:
+        The callee token as a string, or ``None`` for a callee shape neither
+        scanner recognises (which the completeness arm then reports).
+    """
+    func = call.func
+    name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+    if name in _CONTAINER_FIELD_SPELLINGS and call.args:
+        inner = call.args[0]
+        if isinstance(inner, ast.Call):
+            return _field_callee(inner)
+    return name
 
 
 class TestTheFieldRefusesWhatIntegerAccepted:
@@ -350,7 +391,6 @@ class TestNoIdFieldWasMissed:
         Returns:
             list of ``(file, lineno, attribute, field class)`` tuples.
         """
-        import ast  # pylint: disable=import-outside-toplevel
         from pathlib import Path  # pylint: disable=import-outside-toplevel
 
         package = Path(__file__).resolve().parents[2] / "app" / "schemas"
@@ -373,13 +413,8 @@ class TestNoIdFieldWasMissed:
                 call = node.value
                 if not isinstance(call, ast.Call):
                     continue
-                func = call.func
-                name = (
-                    func.attr if isinstance(func, ast.Attribute)
-                    else getattr(func, "id", None)
-                )
                 found.append(
-                    (path.name, node.lineno, target.id, name),
+                    (path.name, node.lineno, target.id, _field_callee(call)),
                 )
         return found
 
@@ -441,7 +476,6 @@ class TestNoIdFieldWasMissed:
         Returns:
             list of ``(file, attribute, callee token)`` tuples.
         """
-        import ast  # pylint: disable=import-outside-toplevel
         from pathlib import Path  # pylint: disable=import-outside-toplevel
 
         package = Path(__file__).resolve().parents[2] / "app" / "schemas"
@@ -462,12 +496,8 @@ class TestNoIdFieldWasMissed:
                         continue
                     if not isinstance(stmt.value, ast.Call):
                         continue
-                    func = stmt.value.func
                     found.append((
-                        path.name,
-                        target.id,
-                        func.attr if isinstance(func, ast.Attribute)
-                        else getattr(func, "id", None),
+                        path.name, target.id, _field_callee(stmt.value),
                     ))
         return found
 

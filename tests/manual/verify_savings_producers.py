@@ -17,7 +17,7 @@ proof.  This dumps the layer that step actually changes:
   cockpit balance cell for every account) plus the principal-paid fraction,
   which was a narrow producer of its own until plan step X-u;
 * the ROUTE's serialized ``data-chart`` payload (the float boundary);
-* ``dashboard_pulse_service.compute_tracks_section`` -- the debt track that
+* ``dashboard_service.compute_tracks_section`` -- the debt track that
   carries the summary.
 
 **NORMALIZED across the intended shape changes**, so a deliberate diff cannot
@@ -106,7 +106,7 @@ from app import create_app
 from app.extensions import db
 from app.models.user import User
 from app.routes.savings import _serialize_net_worth_chart, _serialize_sparklines
-from app.services import balance_at, dashboard_pulse_service
+from app.services import balance_at, dashboard_service
 from app.services import savings_dashboard_service
 from app.services.balance_at import BalanceContext
 from app.services.scenario_resolver import get_baseline_scenario
@@ -455,7 +455,9 @@ def _dump_user(user_id):
     """
     if get_baseline_scenario(user_id) is None:
         return {"skipped": "no baseline scenario"}
-    data = savings_dashboard_service.compute_dashboard_data(user_id)
+    data = savings_dashboard_service.compute_dashboard_data(
+        BalanceContext.build(user_id),
+    )
     account_data = data["account_data"]
     # The pre-X-w fallback for ``_balances`` (see it for why).  Built from
     # the seam directly, so it is the SAME entry both trees answer from.
@@ -464,7 +466,9 @@ def _dump_user(user_id):
         BalanceContext.build(user_id),
     )
     # ONE narrow debt build per user, shared by the two keys that read it.
-    narrow_summary = savings_dashboard_service.compute_debt_summary(user_id)
+    narrow_summary = savings_dashboard_service.compute_debt_summary(
+        BalanceContext.build(user_id),
+    )
     return {
         "account_data": [_projection(ad, seam_maps) for ad in account_data],
         "grouped_accounts": {
@@ -543,7 +547,7 @@ def _dump_user(user_id):
         "narrow_goal_progress": [
             _goal(datum)
             for datum in savings_dashboard_service.compute_goal_progress(
-                user_id,
+                BalanceContext.build(user_id),
             )
         ],
         "narrow_balance_cells": {
@@ -553,7 +557,9 @@ def _dump_user(user_id):
             for ad in account_data
         },
         "tracks_section": _tracks(
-            dashboard_pulse_service.compute_tracks_section(user_id),
+            dashboard_service.compute_tracks_section(
+                BalanceContext.build(user_id),
+            ),
         ),
     }
 
@@ -566,7 +572,7 @@ def _cell(user_id, account_id, seam_maps):
     confined to a narrow path's ``balances`` becomes visible to this file.
     """
     cell = savings_dashboard_service.compute_account_balance_cell(
-        user_id, account_id,
+        BalanceContext.build(user_id), account_id,
     )
     if cell is None:
         return None

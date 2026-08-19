@@ -54,7 +54,7 @@ gone -- is two of them, composing in one direction:
 What a row is worth once it has SETTLED -- money that really moved -- is the
 third, and it is deliberately none of the above:
 
-  * :func:`settled_cash_leg` is ``owned_contribution - Sigma(credit entries) -
+  * :func:`._cash_leg.settled_cash_leg` is ``owned_contribution - Sigma(credit entries) -
     Sigma(posted purchases)``, signed by transaction type.  Neither read-time
     adjustment above can reach a settled row (both filter to ``is_projected``),
     and a reservation would be meaningless for cash already gone.  It arrived
@@ -84,7 +84,6 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from app.models.transaction import Transaction
 # ``owned_amount`` is imported for the package's public surface rather than for
 # this module's own use: ``__init__`` re-exports the pair from here so a reader
 # takes both budget accessors from one place (see the module docstring).
@@ -94,7 +93,7 @@ from app.services.row_valuation import (  # pylint: disable=unused-import
     owned_amount,
     owned_contribution,
 )
-from app.utils.balance_predicates import is_balance_contributing, is_projected
+from app.utils.balance_predicates import is_projected
 
 from ._amount_source import (
     AmountBasis,
@@ -397,8 +396,8 @@ def contributed_amount(txn, resolved: Decimal) -> Decimal:
             reader's own live figure where one supersedes it.
 
     Returns:
-        ``0`` for a row that contributes nothing, the entered ``actual_amount``
-        when there is one, else *resolved*.
+        ``0`` for a row that contributes nothing, what the row RECORDED as
+        having moved once it has settled, else *resolved*.
     """
     fixed = fixed_contribution(txn)
     return resolved if fixed is None else fixed
@@ -613,7 +612,7 @@ def _entry_aware_amount(txn, basis: AmountBasis) -> Decimal:
     property ruling R-FM turns on: the posted debits are in the ledger at
     their own days, this reservation holds the rest, and the envelope's
     close books ``sum(entries) - credit - posted_debit``
-    (:func:`settled_cash_leg`).  So recording a purchase and truing the
+    (:func:`._cash_leg.settled_cash_leg`).  So recording a purchase and truing the
     anchor up by the same amount still cannot move the projected end
     balance (ruling R-DH (c)) -- and it stops depending on the anchor RESET
     dropping the balance by exactly what the reservation released, which is
@@ -665,7 +664,7 @@ def _entry_aware_amount(txn, basis: AmountBasis) -> Decimal:
     doors (:func:`app.services.entry_service._reject_future_purchase_date`)
     -- and a purchase that happened belongs in the reservation whatever date the
     reader is asking from.  What a row is WORTH is a function of the row, as
-    :func:`settled_cash_leg` beside it already is; the reader's clock decides
+    :func:`._cash_leg.settled_cash_leg` beside it already is; the reader's clock decides
     WHEN the row lands (ruling R-G's clamp, in the seam's fold), never what it
     is worth.
 
@@ -726,9 +725,16 @@ def _entry_aware_amount(txn, basis: AmountBasis) -> Decimal:
     # short-circuit and keeping non-ORM tests stable.
     entries = getattr(txn, "entries", ())
     # This check stays AHEAD of ``is_projected`` and that ordering is
-    # load-bearing, not stylistic: ``is_projected`` reads ``txn.status_id``
-    # through ``ref_cache`` and so raises on a non-ORM fake, which the
-    # no-entries short-circuit above is documented to keep working.
+    # load-bearing, not stylistic: ``is_projected`` resolves a ``ref_cache`` id,
+    # which is work an entry-less row has no reason to pay for.
+    #
+    # **The reason it used to give was that ``is_projected`` raises on a non-ORM
+    # fake, and plan step X-au-c3 voided it**: every valuation now asks the
+    # STATUS whether a row is worth what it RECORDED or what it PLANS, so a row
+    # carrying no ``status_id`` is one no valuation could ever see.  The
+    # ordering is graded by a call-counting spy instead of by a missing
+    # attribute, and that spy still fails when the two guards are swapped --
+    # verified by making the swap.
     if not entries:
         return contribution_of(txn, basis)
 
@@ -751,157 +757,6 @@ def _entry_aware_amount(txn, basis: AmountBasis) -> Decimal:
     )
 
 
-def credit_entry_sum(txn: Transaction) -> Decimal:
-    """Return the sum of a transaction's credit (credit-card) entry amounts.
-
-    The ``Sigma(credit entry amounts)`` term of the confirmed-cash-effect
-    formula: an envelope's credit purchases are excluded from the checking
-    outflow because each posts its own CC Payback when that payback settles
-    (``credit_workflow``), so counting them here would double-count against the
-    payback.  A plain transaction has no entries, so this is ``Decimal("0")``
-    and the effect collapses to ``effective_amount``.
-
-    **PUBLIC since plan step X-f2-c3, for the reconcile panel** (finding
-    **N-226**).  That panel offers an envelope at what a tick would BOOK, which
-    is ``sum(entries)`` over every entry INCLUDING the card ones -- against a
-    statement that shows only the debit half.  The panel therefore prints the
-    cash figure beside the booked one, and it takes this term rather than
-    writing ``entry.is_credit`` a second time: the two would then be one rule
-    in two places, on the screen a user reads beside a paper statement.
-
-    Args:
-        txn: The transaction whose credit entries to sum.
-
-    Returns:
-        The sum of ``amount`` over the transaction's ``is_credit`` entries, as a
-        ``Decimal`` (``Decimal("0")`` when there are none).
-    """
-    return sum(
-        (entry.amount for entry in txn.entries if entry.is_credit),
-        Decimal("0"),
-    )
-
-
-def posted_purchase_sum(txn: Transaction) -> Decimal:
-    """Return the sum of a transaction's purchases that have ALREADY posted.
-
-    The ``Sigma(posted debit purchases)`` term ruling **R-FM** adds to the
-    confirmed cash effect (plan step X-f3b).  A purchase carrying a recorded
-    bank posting day books its OWN cash leg on its OWN day
-    (``posting_service.sync_purchase_postings``), so its envelope's close must
-    book only the remainder or the same dollars leave the account twice.
-
-    A DEBIT purchase only: a card purchase never touches checking at all, and
-    :func:`credit_entry_sum` is the term that removes it.  The two are disjoint
-    by construction (``is_credit`` partitions the entries), so subtracting both
-    subtracts nothing twice.  A plain transaction has no entries, so this is
-    ``Decimal("0")`` and the effect collapses to ``effective_amount``.
-
-    **PUBLIC for the same reason** :func:`credit_entry_sum` **is**: the reconcile
-    panel prints what the STATEMENT will show for a tick beside what the tick
-    BOOKS, and those differ by exactly these two terms.  It takes this one rather
-    than writing ``entry.settled_on is not None`` a second time, so a change to
-    what "already posted" means cannot leave the panel saying the old thing.
-
-    Args:
-        txn: The transaction whose posted purchases to sum.
-
-    Returns:
-        The sum of ``amount`` over the transaction's debit entries carrying a
-        ``settled_on``, as a ``Decimal`` (``Decimal("0")`` when there are none).
-    """
-    return sum(
-        (
-            entry.amount for entry in txn.entries
-            if not entry.is_credit and entry.settled_on is not None
-        ),
-        Decimal("0"),
-    )
-
-
-def settled_cash_leg(txn: Transaction) -> Decimal:
-    """Return the confirmed cash effect of a SETTLED row: what really moved.
-
-    The settled counterpart of the projected valuations beside it, and the ONE
-    statement of that rule: ``effective_amount - Sigma(credit entry amounts) -
-    Sigma(posted debit purchases)``, signed ``+`` for income (money entering the
-    account) and ``-`` for an expense (money leaving).  The sign follows the
-    transaction TYPE, never the account class, so the leg is correct whether the
-    cash account is an asset (Checking) or a liability (a direct charge on a
-    Credit Card account).
-
-    For a plain transaction both entry sums are zero and the effect collapses to
-    ``+/-effective_amount``.  For an ENVELOPE at settle ``effective_amount``
-    equals the sum of ALL its entries (``compute_actual_from_entries`` sets
-    ``actual_amount`` so), and subtracting the two collapses the result to the
-    UNPOSTED debit outflow -- with no branch on "is this an envelope".
-
-    **The third term is ruling R-FM** (plan step X-f3b), and it is what makes
-    "an envelope's close books only what its purchases did not" one expression
-    rather than a second rule.  A purchase whose bank posting day is recorded is
-    a cash movement of its own, dated on its own day
-    (:func:`~._events.settled_cash_facts`, ``posting_service``'s purchase
-    sync); the close therefore books the rest.  The two always sum to the row's
-    whole debit total, so nothing is lost and nothing is counted twice --
-    measured on a production clone 2026-08-14: entry 89 (``$12.79``, taken by
-    the bank on 08-12, inside the ``$2,193.69`` the owner asserted for that day)
-    was being taken a SECOND time by its envelope's 08-13 close, which read the
-    whole of 08-13 ``$12.79`` low (finding **N-274**).
-
-    **This is why the rule lives HERE (plan step X-a), not in the posting
-    writer.**  It was ``posting_service._signed_cash_leg``, private to the
-    module that WRITES the ledger -- the same inversion plan step B0 corrected on
-    the loan side, where the payment split lived inside the posting package and
-    every other consumer had to reach through its privates for it.  Two
-    consumers need this rule now: the writer, which posts the effect, and the
-    cash WALK (:func:`app.services.cash_ledger.walk_cash_ledger`), which folds
-    it.  A second copy would let the projection and the posted ledger disagree
-    about what a settled row was worth -- measured on production 2026-07-25
-    before this move, a ``effective_amount``-only walk diverged from the posted
-    ledger on 10 of 130 Checking rows and by up to ``$181.58`` on one, because
-    every one of them was an envelope carrying credit-card entries.
-
-    The bulk oracle reader ``posting_reads.settled_transaction_effect`` computes
-    the same sum in SQL and deliberately stays independent: it is the Step-3
-    reconciliation oracle's own window onto the ledger, and an oracle that
-    shared this implementation could not grade it.
-
-    **TOTAL: a non-contributing row is worth exactly zero.**  A soft-deleted or
-    Credit / Cancelled row has an ``effective_amount`` of zero, but its ENTRIES
-    survive on the row -- so without the guard below,
-    ``0 - Sigma(credit) - Sigma(posted)`` negated for an expense returns a
-    FABRICATED INFLOW: a deleted grocery envelope carrying an $80.00 credit
-    purchase valued at ``+$80.00``, money the account never received.
-    Unreachable through today's
-    two callers (the walk pre-filters with
-    :func:`~app.utils.balance_predicates.balance_contributing_clause`, and the
-    writer resolves a target only on the settle side), which is exactly why it
-    would have waited to be discovered by a third.  A function whose answer is
-    correct only because every caller happens to pre-filter is a contract nobody
-    can see; this one is total instead.  **The same gate governs the row's
-    PURCHASES** (ruling R-FM): a non-contributing row's purchases post nothing
-    either, in the walk (:func:`~._events.settled_cash_facts`) and in the ledger
-    (``posting_service``), so the zero here is the whole family's zero rather
-    than the parent leg's alone.
-
-    Args:
-        txn: The transaction whose confirmed cash effect to value.  A
-            non-contributing row (soft-deleted, Credit, or Cancelled) returns
-            ``0.00`` whatever entries it carries.
-
-    Returns:
-        The signed confirmed cash effect as a ``Decimal``.
-    """
-    if not is_balance_contributing(txn):
-        return Decimal("0.00")
-    net = (
-        owned_contribution(txn)
-        - credit_entry_sum(txn)
-        - posted_purchase_sum(txn)
-    )
-    return net if txn.is_income else -net
-
-
 def income_amount(txn, basis: AmountBasis):
     """Return the income contribution for ``txn``, honoring a live override.
 
@@ -915,18 +770,16 @@ def income_amount(txn, basis: AmountBasis):
     later profile, calibration or code change may have invalidated; absent one
     the row is valued through the amount model
     (:func:`contribution_of`) -- ``0`` for a row that contributes
-    nothing, a human's ``actual_amount`` where one is entered, else what the
-    row's amount RESOLVES to.
+    nothing, what a SETTLED row recorded as having moved, else what the row's
+    amount RESOLVES to.
 
-    **The override outranking an entered actual is preserved rather than ruled**
-    (plan step X-au-c2).  The settle door orders the two the other way
-    (``transaction_service._settle._freshest_amount`` refuses to refresh a row
-    carrying an actual), so the app holds two precedences for one pair -- which
-    is finding **N-224**'s family.  It is unreachable on production, measured:
-    of 707 projected rows, ZERO carry an ``actual_amount``, and the override
-    map's producers take Projected rows only.  Changing it here would move a
-    number before the schema change that makes the new answer structural, so
-    this leaf preserves it and X-au-d deletes the arm outright.
+    **The override outranks the amount model here, preserved rather than ruled**
+    (plan step X-au-c2), and unreachable on production: the override map's
+    producers take Projected rows only, and a Projected row records nothing.
+    X-au-d deletes the arm outright.  This paragraph also named a SECOND
+    precedence -- ``_freshest_amount`` refusing to refresh a row carrying an
+    ``actual_amount`` -- which plan step X-au-c3 deleted with the column that
+    made a machine's figure and a human's indistinguishable.
 
     **It takes the ``AmountBasis`` directly since plan step X-f3b**, where it
     took a ``ProjectedBasis`` wrapper before.  That record bundled TWO

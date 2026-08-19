@@ -6,17 +6,23 @@ test app, a freshly-cloned per-test database, an authenticated
 client, and factory helpers for creating test data.
 
 Strategy: each test gets a brand-new database cloned from
-``shekel_test_template`` via PG 18's reflink-backed
-``CREATE DATABASE ... TEMPLATE ... STRATEGY FILE_COPY`` path
+``shekel_test_template`` via ``CREATE DATABASE ... TEMPLATE ...``
 (Phase 3b of
-``docs/audits/test_improvements/test-performance-implementation-plan.md``).
-Replaces the prior per-test TRUNCATE+reseed cycle with a constant-
-time metadata copy on btrfs-backed PGDATA; the per-test isolation
-contract (empty ``system.audit_log``, no rows in ``budget.*`` /
-``auth.*`` / ``salary.*``, full ref-data seed, in-process
-``ref_cache`` matching the seeded IDs) is bit-for-bit identical
-between the two mechanisms -- only the underlying delivery
-changes.
+``docs/audits/test_improvements/test-performance-implementation-plan.md``),
+replacing the prior per-test TRUNCATE+reseed cycle.  The per-test
+isolation contract (empty ``system.audit_log``, no rows in
+``budget.*`` / ``auth.*`` / ``salary.*``, full ref-data seed,
+in-process ``ref_cache`` matching the seeded IDs) is bit-for-bit
+identical between the two mechanisms -- only the underlying
+delivery changes.
+
+The clone uses ``STRATEGY WAL_LOG``.  Phase 3b's original
+``STRATEGY FILE_COPY`` was chosen for the reflink path on the dev
+box's btrfs PGDATA and is 20x SLOWER on any cluster that has not
+switched durability off -- which CI's postgres service container
+has not.  ``_clone_worker_database`` below carries the measurements
+and the failures that decision produced; do not restore
+``FILE_COPY`` without re-measuring against a durable cluster.
 """
 
 # pylint: disable=wrong-import-position,wrong-import-order
@@ -40,7 +46,17 @@ import pathlib
 import statistics
 import time
 from contextlib import contextmanager
-from datetime import date, datetime, time, timedelta, timezone
+# ``datetime.time`` is aliased, NOT imported under its own name: the bare name
+# ``time`` above is the stdlib MODULE, and the profile harness below calls
+# ``time.perf_counter()``.  An unaliased ``from datetime import time`` shadows
+# it two lines after it is imported, which is exactly what happened between
+# 2026-07-26 (commit d3489728) and this line: every test errored with
+# ``AttributeError: type object 'datetime.time' has no attribute
+# 'perf_counter'`` the moment ``SHEKEL_TEST_FIXTURE_PROFILE=1`` was set, so the
+# one instrument this project has for diagnosing test performance was dead for
+# three weeks and nothing reported it (``tests/`` is outside the pylint scope
+# that would have flagged the reimport).
+from datetime import date, datetime, time as dt_time, timedelta, timezone
 from decimal import Decimal
 from urllib.parse import urlparse, urlunparse
 
@@ -153,7 +169,7 @@ _FIXTURE_PROFILE_STEPS = (
 _FIXTURE_PROFILE_LABELS = {
     "setup_rollback": "rollback",
     "setup_drop_db": "DROP DATABASE WITH (FORCE)",
-    "setup_clone_template": "CREATE DATABASE TEMPLATE STRATEGY FILE_COPY",
+    "setup_clone_template": "CREATE DATABASE TEMPLATE STRATEGY WAL_LOG",
     "setup_refresh_ref_cache": "refresh_ref_cache",
     "call": "Test body (call)",
     "teardown": "Teardown",
@@ -441,18 +457,14 @@ def _bootstrap_worker_database():
                     "Run: python scripts/build_test_template.py"
                 )
 
-            # Phase 3b: initial clone uses STRATEGY FILE_COPY so PG
-            # 18's file_copy_method=clone GUC engages the kernel
-            # FICLONE reflink ioctl on the btrfs-backed PGDATA from
-            # Phase 3a.  The default WAL_LOG strategy would NOT use
-            # FICLONE for the ~50 MB template even with the GUC set
-            # globally -- explicit STRATEGY FILE_COPY is the only
-            # form that consumes the GUC.  Steady-state ~4-5 ms per
-            # clone on btrfs (vs ~10 ms for the WAL_LOG default and
-            # ~seconds without reflink).
+            # STRATEGY WAL_LOG, not FILE_COPY -- see the measurement
+            # table in _clone_worker_database below.  The one-per-
+            # session clone here is not itself expensive; it matches
+            # the per-test helper so the two cannot drift into
+            # producing databases by different mechanisms.
             cur.execute(
                 sql.SQL(
-                    "CREATE DATABASE {} TEMPLATE {} STRATEGY FILE_COPY"
+                    "CREATE DATABASE {} TEMPLATE {} STRATEGY WAL_LOG"
                 ).format(
                     sql.Identifier(db_name),
                     sql.Identifier(_TEST_TEMPLATE_DATABASE),
@@ -555,12 +567,47 @@ def _clone_worker_database(db_name, admin_url):
     ``salary.*``, full ref-data seed in ``ref.*``.  The template's
     contents come from ``scripts/build_test_template.py``.
 
-    Explicit ``STRATEGY FILE_COPY`` engages PG 18's reflink path
-    under ``file_copy_method=clone`` (Phase 3a's GUC) -- the default
-    ``WAL_LOG`` strategy would NOT use ``FICLONE`` on a ~50 MB
-    template even with the GUC set globally; the explicit form is
-    the only one that consumes the GUC.  Steady-state ~4-5 ms per
-    clone on btrfs PGDATA.
+    **Why ``STRATEGY WAL_LOG`` and not ``FILE_COPY``.**  This clone
+    runs once per TEST, so its cost is multiplied by ~9,000.
+    ``FILE_COPY`` makes PostgreSQL force three cluster-wide
+    checkpoints per statement (one ``immediate force wait
+    flush-all`` before the copy plus one after, and one more for the
+    paired ``DROP DATABASE``); ``WAL_LOG`` forces none of its own,
+    leaving only the DROP's.  Counted, not assumed: 20 drop+create
+    cycles emit 60 forced checkpoints under ``FILE_COPY`` and 20
+    under ``WAL_LOG``.
+
+    Those checkpoints are free only on a cluster with durability
+    switched off, which is exactly what ``docker-compose.dev.yml``
+    gives the dev test-db and what CI's stock postgres service
+    container does NOT.  Measured on one host against the real
+    12 MB template, 20 drop+create cycles, per cycle:
+
+    ==========================  ===========  ==========
+    cluster                     FILE_COPY    WAL_LOG
+    ==========================  ===========  ==========
+    stock durable (CI's)        1618 ms      80 ms
+    ``fsync=off`` (dev's)       31 ms        26 ms
+    ==========================  ===========  ==========
+
+    So ``FILE_COPY`` was 20x slower than the default strategy on any
+    durable cluster and never faster on a non-durable one, which is
+    how CI came to spend 702.8 s of a 1733.55 s run inside a
+    single-threaded checkpointer that all 12 xdist workers block on
+    -- and why tests carrying a fixed wall-clock budget (the
+    ``url_map`` sweep at pytest-timeout's 30 s, the ``seed_user.py``
+    subprocesses at 10 s) began failing about half the time from
+    2026-08-16.  ``file_copy_method=clone`` does not rescue it: the
+    reflink ioctl saves the byte copy, not the checkpoints, and
+    measured 1594 ms per cycle on the durable cluster.
+
+    The two strategies differ only in how blocks reach the new
+    database, never in what it contains -- verified by diffing
+    ``pg_dump`` of a ``FILE_COPY`` clone against a ``WAL_LOG`` clone
+    of the same template: identical but for pg_dump's own random
+    ``\\restrict`` nonce.  Row IDs, sequences and the
+    ``ref.account_types`` count the bootstrap verifies are therefore
+    unchanged.
 
     Args:
         db_name: Name of the per-worker DB to create.
@@ -572,7 +619,7 @@ def _clone_worker_database(db_name, admin_url):
         with admin_conn.cursor() as cur:
             cur.execute(
                 sql.SQL(
-                    "CREATE DATABASE {} TEMPLATE {} STRATEGY FILE_COPY"
+                    "CREATE DATABASE {} TEMPLATE {} STRATEGY WAL_LOG"
                 ).format(
                     sql.Identifier(db_name),
                     sql.Identifier(_TEST_TEMPLATE_DATABASE),
@@ -602,7 +649,7 @@ from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.transfer_template import TransferTemplate
 from app.models.ref import (
-    AccountType, FilingStatus, RecurrencePattern, Status, TransactionType,
+    AccountType, FilingStatus, Status, TransactionType,
 )
 from app.services import account_service, pay_period_write
 from app.services.auth_service import hash_password
@@ -720,7 +767,7 @@ def _calendar_sweep():
     import time_machine
 
     target = datetime.combine(
-        date.fromisoformat(fake), time(12, 0), tzinfo=DISPLAY_TIMEZONE,
+        date.fromisoformat(fake), dt_time(12, 0), tzinfo=DISPLAY_TIMEZONE,
     )
     with time_machine.travel(target, tick=True):
         yield
@@ -775,8 +822,8 @@ def db(app, setup_database, request):
     """Provide a freshly-cloned database for each test.
 
     Drops the per-worker DB and re-clones it from
-    ``shekel_test_template`` via PG 18's reflink-backed
-    ``CREATE DATABASE ... TEMPLATE ... STRATEGY FILE_COPY``
+    ``shekel_test_template`` via
+    ``CREATE DATABASE ... TEMPLATE ... STRATEGY WAL_LOG``
     (Phase 3b of test-performance-implementation-plan.md).  Each
     test gets bit-for-bit the same start state the prior
     TRUNCATE+reseed cycle provided:
@@ -811,9 +858,8 @@ def db(app, setup_database, request):
          {worker_db} WITH (FORCE)``.
       4. ``setup_clone_template`` -- admin-DSN ``CREATE DATABASE
          {worker_db} TEMPLATE shekel_test_template STRATEGY
-         FILE_COPY``.  Reflink-backed on btrfs PGDATA with
-         ``file_copy_method=clone`` set on the cluster (Phase 3a);
-         steady-state ~4-5 ms.
+         WAL_LOG``.  See ``_clone_worker_database`` for why the
+         strategy is named explicitly and what ``FILE_COPY`` cost.
       5. ``setup_refresh_ref_cache`` -- re-seat the in-process
          ref_cache and Jinja globals against the cloned DB.  The
          row IDs are identical to the template's (CLONE preserves
@@ -1138,7 +1184,7 @@ def _pin_opening_to(db, account, anchor_period):
     restamp_opening_assertion(
         db.session, account,
         datetime.combine(
-            anchor_period.start_date, time.min, tzinfo=DISPLAY_TIMEZONE,
+            anchor_period.start_date, dt_time.min, tzinfo=DISPLAY_TIMEZONE,
         ).astimezone(timezone.utc),
     )
 
@@ -1210,7 +1256,7 @@ def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
         # is the previous EVENING in the display zone and would file the
         # opening one day before its own period (finding N-132).
         "created_at": datetime.combine(
-            new_anchor_period.start_date, time.min, tzinfo=DISPLAY_TIMEZONE,
+            new_anchor_period.start_date, dt_time.min, tzinfo=DISPLAY_TIMEZONE,
         ).astimezone(timezone.utc),
     })
     db.session.flush()

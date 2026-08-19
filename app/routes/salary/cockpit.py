@@ -22,12 +22,12 @@ from datetime import date
 from flask import abort, render_template, request
 from flask_login import current_user, login_required
 
-from app.utils.auth_helpers import get_or_404, require_owner
+from app.utils.auth_helpers import get_or_404, require_owner, log_refused_lookup
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
-from app.models.pay_period import PayPeriod
-from app.services import paycheck_calculator, pay_period_service
+from app.services import paycheck_calculator
 from app.services import salary_cockpit_service
+from app.services.pay_calendar import calendar_for
 from app.services.tax_config_service import (
     load_tax_configs_for_periods,
     load_tax_configs_for_year,
@@ -99,25 +99,44 @@ def _select_profile(profiles):
     return profile
 
 
-def _select_period(periods, current_period):
+def _select_period(calendar, current_period):
     """Resolve the focused period from ``?period=`` or the default.
 
     The default is the current period (or the first period when today
     falls outside every period).  A supplied ``?period`` must be an owned
     pay period, else 404.
 
+    **Ownership is now STRUCTURAL rather than a check** (pay-calendar plan
+    step C2-f2d-3).  This looked the id up with ``get_or_404(PayPeriod, ...)``,
+    which is a global-table read filtered by owner afterwards; it now asks
+    THIS owner's calendar, which holds their paydays and nobody else's, so a
+    cross-user id is not "found and rejected" -- it is absent.  Same 404 for
+    both "not found" and "not yours", reached without a query that could see
+    another owner's row at all.  The forensic trail ``get_or_404`` emitted is
+    kept by :func:`~app.utils.auth_helpers.log_refused_lookup`; it went missing
+    for one commit, which an adversarial code review caught.
+
     Args:
-        periods: The user's pay periods, ordered by index.
+        calendar: The owner's
+            :class:`~app.services.pay_calendar.PayCalendar`.
         current_period: The period containing today, or ``None``.
 
     Returns:
-        The selected :class:`PayPeriod`.
+        The selected :class:`~app.services.pay_calendar.DerivedPeriod`.
     """
     requested = request.args.get("period", type=int)
     if requested is None:
-        return current_period if current_period is not None else periods[0]
-    period = get_or_404(PayPeriod, requested)
+        return (
+            current_period if current_period is not None
+            else calendar.saved()[0]
+        )
+    period = calendar.period_by_id(requested)
     if period is None:
+        # The calendar holds ONE owner's paydays, so it cannot tell "no such
+        # period" from "not yours" -- which is the point.  The refusal is still
+        # logged, because a cross-user id probe used to leave a trail through
+        # ``get_or_404`` and must not stop leaving one.
+        log_refused_lookup("PayPeriod", requested)
         abort(404)
     return period
 
@@ -132,8 +151,10 @@ def _anatomy_context(profile, period, periods, breakdown, calibration_active):
 
     Args:
         profile: The focused :class:`SalaryProfile`.
-        period: The focused :class:`PayPeriod`.
-        periods: The user's pay periods, ordered by index.
+        period: The focused
+            :class:`~app.services.pay_calendar.DerivedPeriod`.
+        periods: The owner's saved schedule as a
+            :class:`~app.services.pay_calendar.PeriodWindow`.
         breakdown: The focused period's paycheck breakdown.
         calibration_active: Whether the profile's calibration is active.
 
@@ -146,8 +167,8 @@ def _anatomy_context(profile, period, periods, breakdown, calibration_active):
         banner marks the paycheck where a raise takes effect rather than
         repeating on every paycheck of the raise month (P-SA1).
     """
-    period_ids = [p.id for p in periods]
-    pos = period_ids.index(period.id)
+    period_ids = [p.period_id for p in periods]
+    pos = period_ids.index(period.period_id)
     prev_id = period_ids[pos - 1] if pos > 0 else None
     next_id = period_ids[pos + 1] if pos < len(period_ids) - 1 else None
     # Collapse the raise banner to the run's first paycheck: the calculator
@@ -253,8 +274,17 @@ def cockpit():
         return render_template("salary/cockpit.html", **context)
 
     profile = _select_profile(profiles)
-    periods = pay_period_service.get_all_periods(current_user.id)
-    current_period = pay_period_service.get_current_period(current_user.id)
+    # ONE clock and ONE calendar derivation for the whole render.  Both were
+    # read twice: ``get_current_period`` resolved its own ``date.today()`` and
+    # the chart series read another below, so a render crossing midnight could
+    # focus one paycheck and plot the Today marker on the next (pay-calendar
+    # plan step C2-f2d-3, ledger row **P55**'s family).  The calendar answers
+    # both period questions this page asks, where two SQL readers could answer
+    # from two reads.
+    today = date.today()
+    calendar = calendar_for(current_user.id)
+    periods = calendar.saved()
+    current_period = calendar.period_containing(today)
     requested_period_id = request.args.get("period", type=int)
     # Block when there is no period to focus: no periods at all, or no
     # period covering today and none explicitly requested.  A lone stale
@@ -270,23 +300,24 @@ def cockpit():
         context["calibration"] = profile.calibration
         return render_template("salary/cockpit.html", **context)
 
-    focused_period = _select_period(periods, current_period)
+    focused_period = _select_period(calendar, current_period)
     configs_by_year = load_tax_configs_for_periods(current_user.id, profile, periods)
     breakdowns = paycheck_calculator.project_salary(
         profile, periods, configs_by_year=configs_by_year,
         calibration=profile.calibration,
     )
     pairs = list(zip(periods, breakdowns))
-    focused_breakdown = breakdowns[[p.id for p in periods].index(focused_period.id)]
-    calibration_active = _calibration_active(profile)
-    today = date.today()
+    focused_breakdown = breakdowns[
+        [p.period_id for p in periods].index(focused_period.period_id)
+    ]
 
     chart_series = salary_cockpit_service.build_chart_series(pairs, today)
     salary_path = salary_cockpit_service.build_salary_path(pairs, today)
 
     context = _base_cockpit_context()
     context.update(_anatomy_context(
-        profile, focused_period, periods, focused_breakdown, calibration_active,
+        profile, focused_period, periods, focused_breakdown,
+        _calibration_active(profile),
     ))
     context.update({
         "profiles": profiles,
@@ -312,9 +343,12 @@ def anatomy(profile_id, period_id):
     neighbouring period updates both at once.  Ownership of both the
     profile and the period is verified (404 for not-found and not-yours).
     """
-    profile, period = _get_owned_profile_and_period(profile_id, period_id)
+    calendar = calendar_for(current_user.id)
+    profile, period = _get_owned_profile_and_period(
+        profile_id, period_id, calendar,
+    )
 
-    periods = pay_period_service.get_all_periods(current_user.id)
+    periods = calendar.saved()
     # Resolve the period's OWN tax year (DH-#30), substituting the latest
     # CONFIGURED year at or before it -- identical resolution to the
     # projection path so the fragment and the cockpit's initial render agree

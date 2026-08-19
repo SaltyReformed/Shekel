@@ -251,9 +251,9 @@ def get_payment_history(
     would fail LOUDLY here instead of feeding a ``None`` into the amortization
     engine.
 
-    The valuation itself is unchanged: ``actual_amount`` when populated, else
-    the row's own ``estimated_amount``, with correct zero-vs-null handling (the
-    5A.1 fix), and ``0`` for a row that contributes nothing.
+    The valuation runs through ``row_valuation.owned_contribution``: ``0`` for a
+    row contributing nothing, what a SETTLED row RECORDED as moved, else the
+    row's own amount (``actual_amount`` before plan step X-au-c3's record).
 
     Each record carries all three of a loan payment's dates (see
     :class:`~app.services.amortization_engine.PaymentRecord`): ``payment_date``
@@ -668,14 +668,26 @@ def _manual_shadow_amount(
     top (spec Sec. 6.1, "extra added in BOTH modes"), and the settle freeze
     captures the same base + extra so the split routes the extra into principal.
 
-    The base is ``estimated_amount`` (the recurring base), NOT the row's
-    CONTRIBUTION:
-    a projected shadow can carry an operator-typed ``actual_amount`` while still
-    ``is_projected`` and NOT ``is_override`` (a grid full-edit does not set the
-    override flag), and the contribution would return that actual, stacking
-    ``extra`` on a per-instance typed value.  Keying to ``estimated_amount`` (NOT
-    NULL, always the generated base) makes manual mode COHERENT with derive mode,
-    which likewise recomputes from config and ignores a pre-settle typed actual.
+    The base is ``estimated_amount`` (the recurring base), which is what keeps
+    manual mode COHERENT with derive mode: that arm recomputes from config and
+    names no per-instance figure either.
+
+    **The reason this used to be a DISTINCTION is gone, and saying so beats
+    leaving a rationale that names a state nothing can reach** (plan step
+    X-au-c3).  It read: a projected shadow could carry an operator-typed
+    ``actual_amount`` while still ``is_projected`` and not ``is_override``, and
+    the row's CONTRIBUTION would return that actual, stacking ``extra`` on a
+    per-instance typed value.  A figure now RECORDS a settle, and what keeps one
+    out of this answer is the STATUS: ``row_valuation.settled_figure`` returns
+    ``None`` for an unsettled row whatever it still carries, and
+    :meth:`LoanPricing.live_cash` gates on ``is_projected``.  So the two
+    expressions answer the same number for every reachable input.  (An earlier
+    draft credited ``ck_transactions_settled_amount_needs_basis``; that CHECK
+    says nothing about status, and an unsettled row carrying a recorded figure
+    is the legal RETAINED state.  The conclusion held, the reason did not.)  The column is
+    still the right thing to name, because it is what the RECURRENCE writes and
+    what the extra is defined against; it is simply no longer a choice between
+    two answers.
 
     Args:
         shadow: The projected loan-payment shadow whose recurring base is added to.

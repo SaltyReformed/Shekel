@@ -328,8 +328,17 @@ def _dashboard_value(ctx):
     period's END, and the fold made the as-of-today scalar diverge from it by
     the unpaid remainder of the period).  The fixture pins today inside the
     anchor period, so this equals the anchor-period balance.
+
+    It goes through ``resolve_section`` since pay-calendar plan step C2-f2e,
+    which is what the ROUTE does: the producer takes the resolved section
+    rather than a ``user_id``, and reading this surface any other way would
+    grade a door production does not use.  The section is built over
+    :func:`_bctx`'s pass, so every surface in this lock still shares one
+    scenario and one clock.
     """
-    data = dashboard_service.compute_balance_section(ctx["user_id"])
+    data = dashboard_service.compute_balance_section(
+        dashboard_service.resolve_section(_bctx(ctx)),
+    )
     return data["hero"]["balance"]
 
 
@@ -340,7 +349,9 @@ def _savings_value(ctx):
     each carries a ``current_balance`` Decimal that the template
     renders directly into the per-account card.
     """
-    data = savings_dashboard_service.compute_dashboard_data(ctx["user_id"])
+    data = savings_dashboard_service.compute_dashboard_data(
+        BalanceContext.build(ctx["user_id"]),
+    )
     matches = [
         ad for ad in data["account_data"]
         if ad.account.id == ctx["account_id"]
@@ -952,7 +963,9 @@ def _net_worth_series(ctx):
     ``current_index`` (the position of today's period in the trend window);
     the per-kind trend readers index into it at ``current_index``.
     """
-    data = savings_dashboard_service.compute_dashboard_data(ctx["user_id"])
+    data = savings_dashboard_service.compute_dashboard_data(
+        BalanceContext.build(ctx["user_id"]),
+    )
     return data["net_worth"].series
 
 
@@ -963,7 +976,9 @@ def _savings_tile_value(ctx):
     the per-account tile is a positive balance regardless of kind, so one
     reader serves every kind's ``savings`` surface.
     """
-    data = savings_dashboard_service.compute_dashboard_data(ctx["user_id"])
+    data = savings_dashboard_service.compute_dashboard_data(
+        BalanceContext.build(ctx["user_id"]),
+    )
     return _match_account_data(data, ctx["account_id"]).current_balance
 
 
@@ -1618,7 +1633,7 @@ class TestSecuredHomeEquityEquality:
                 BalanceContext.build(ctx["property_account"].user_id),
             )
             dashboard = savings_dashboard_service.compute_dashboard_data(
-                ctx["user_id"],
+                BalanceContext.build(ctx["user_id"]),
             )
             prop_tile = _match_account_data(
                 dashboard, ctx["property_account_id"],

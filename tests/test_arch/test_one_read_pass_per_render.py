@@ -50,26 +50,37 @@ in.
 **The gate that WOULD be structural is a layer predicate** -- "no module under
 ``app/services/**`` calls ``BalanceContext.build``", the pass built at the HTTP
 boundary and nowhere below it (adversarial design review, 2026-08-16).  That is
-not a name list and it is the right end state; **eight service modules stand
-between here and it**, measured with ``grep -rl "BalanceContext\\.build("
-app/services/`` -- the trailing paren matters, because the bare name also
-matches the docstring in ``retirement_projection`` that records the call this
-leaf DELETED, and reports nine.  They are ``calendar_service``,
-``dashboard_pulse_service``, ``dashboard_service``,
+not a name list and it is the right end state; **FIVE service modules stand
+between here and it**, re-measured 2026-08-18 with
+``grep -rl "BalanceContext\\.build(" app/services/`` -- the trailing paren
+matters, because the bare name also matches docstrings recording calls that
+were deleted.  They are ``calendar_service``,
 ``investment_dashboard_service/_context``,
-``investment_dashboard_service/_orchestrator``, ``loan_recurrence_sync``,
-``savings_dashboard_service/_orchestrator`` and ``tax_report_service``.  The
-seventh is one of THESE two pages -- it is ``/savings``'s own door, left
-deliberately (see ``_orchestrator._pass_for``) and owned by ``C2-f2d-3``.
-Ledger row **P56** carries the layer predicate.  Asserting it here today would fail on
-eight modules this leaf does not touch, so the gate is per-render and grows a
+``investment_dashboard_service/_orchestrator``, ``loan_recurrence_sync`` and
+``tax_report_service``.
+
+**This paragraph named EIGHT and three of the names were already wrong**, which
+is why it now carries its date.  It listed
+``savings_dashboard_service/_orchestrator`` (a door ``C2-f2d-3`` had closed)
+and cited ``_orchestrator._pass_for``, a symbol ``git grep`` finds nowhere in
+``app/``; and it went on naming both dashboard modules after ``C2-f2e`` retired
+them into a package no part of which calls ``build``.  Found by that step's
+adversarial design review, in the file the step had just added 281 lines to --
+which is the residue rule's own case: editing a file clears that file's stale
+claims.  Ledger row **P56** carries the predicate, and asserting it here today
+would still fail on the five above, so the gate stays per-render and grows a
 render at a time.
 
 **What this file therefore does NOT prove.** It counts read passes, not clock
-reads: ``compute_pension_summary``, ``compute_gap_net_biweekly`` and
-``build_employer_salary_basis`` each still call ``date.today()`` for themselves
-on the very renders below, so these can be green while two cards disagree
-across a New Year boundary.  Ledger row **P55** owns that.
+reads.  That gap was real and is now closed for these renders: until
+pay-calendar plan step C2-f2e, ``compute_pension_summary``,
+``compute_gap_net_biweekly`` and ``build_employer_salary_basis`` each called
+``date.today()`` for themselves on the very renders below, so this file could
+be green while two cards disagreed across a New Year boundary (ledger row
+**P55**, measured at a salary path one year shorter across 2026-12-31 ->
+2027-01-01).  All three take the pass's day now, and the gate for THAT claim is
+``test_retirement_dashboard_service.TestTheRenderDayOpensTheSalaryPath`` --
+still a different question from the one counted here.
 
 One LOAD, and one derivation per plan (C2-f2d-2)
 -----------------------------------------------
@@ -109,11 +120,14 @@ Test IDs
 from datetime import date
 from decimal import Decimal
 
+from app.services import account_resolver
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     counting_calls,
     counting_read_passes,
+    create_loan_account,
     make_investment_account,
+    make_salary_profile,
 )
 
 #: The producers plan step C2-f2d-2 collapsed, as ``(module path, attribute)``.
@@ -125,6 +139,31 @@ _ONCE_PER_RENDER = (
     ("app.services.retirement_projection", "load_projection_batch"),
 )
 _PER_PLAN = ("app.services.retirement_projection", "project_accounts_with_batch")
+
+#: The one database door every pay-calendar derivation goes through.
+#: A read pass MEMOIZES the calendar, so "one pass" and "one derivation" ought
+#: to be the same claim -- and they were not.  Measured across pay-calendar plan
+#: step C2-f2d-3: ``/savings`` opened ONE pass and derived the owner's schedule
+#: SEVEN times, ``/retirement`` SIX, growing with the owner's investment-account
+#: count, because two producers reached ``income_service`` through call chains
+#: that held a pass and did not hand it over.  The pass counter beside this one
+#: read 1 throughout.  Two counts of one question, and only one of them could
+#: see it.
+_CALENDAR_DOOR = ("app.services.pay_calendar._loader", "calendar_for")
+
+#: What the budget dashboard resolves about its own SUBJECT, as
+#: ``(module path, attribute)``.  A render answers "which account is this page
+#: about" and "what are this owner's settings" ONCE; ``/`` answered each twice
+#: before pay-calendar plan step C2-f2e -- the account because the route
+#: resolved one for its ``has_account`` flag while the pulse producer resolved
+#: another, the settings because the producer's own head-of-function resolution
+#: loaded the row and then its hero loaded it again for the staleness
+#: threshold.  Neither is a pass and neither is a calendar, so the two counters
+#: above were blind to both.
+_SECTION_RESOLUTION = (
+    ("app.services.account_resolver", "resolve_grid_account"),
+    ("app.services.dashboard_service._section", "_get_user_settings"),
+)
 
 
 def _seed_projecting_account(db, seed_user, seed_periods_today):
@@ -167,11 +206,57 @@ def _seed_projecting_account(db, seed_user, seed_periods_today):
         .one()
     )
     settings.planned_retirement_date = add_months(date.today(), 240)
+    # **The SALARY PROFILE is load-bearing and was missing until 2026-08-16.**
+    # ``income_service.get_current_gross_biweekly`` returns at its profile
+    # lookup for an owner who has none, and every producer that reaches it does
+    # so behind that early return -- so a calendar count taken without a
+    # profile read the same number on the tree that derived the owner's
+    # schedule SEVEN times and on the tree that derives it once.  That is the
+    # arm-that-cannot-fail shape one line up, found the same way: by an
+    # adversarial review re-running the measurement over a richer owner.
+    make_salary_profile(seed_user, db.session)
     account = make_investment_account(
         seed_user, db.session, seed_periods_today[0], Decimal("100000.00"),
     )
     db.session.commit()
     return account
+
+
+def _seed_dashboard_owner(db, seed_user, seed_periods_today):
+    """Widen :func:`_seed_projecting_account`'s owner until ``/`` runs it all.
+
+    **Necessary for the budget dashboard, and the reason is the recorded
+    lesson one function up.**  ``/`` runs three producers, and two of them --
+    the savings-goal tracks and the debt track -- return an empty answer for an
+    owner with no active goal and no loan account.  A count taken on the
+    narrower fixture would therefore be taken over a render whose tracks tier
+    never executed, which is the arm-that-cannot-fail shape
+    ``docs/plans/lessons.md`` records and which cost pay-calendar plan step
+    C2-f2d-3 a false measurement.
+
+    Returns:
+        The seeded loan :class:`~app.models.account.Account`, so a caller can
+        assert the tier it feeds actually rendered.
+    """
+    # pylint: disable=import-outside-toplevel
+    from app.models.savings_goal import SavingsGoal
+    from app.utils.dates import add_months, display_today
+
+    _seed_projecting_account(db, seed_user, seed_periods_today)
+    loan = create_loan_account(
+        seed_user, db.session, name="Dashboard Mortgage",
+        principal=Decimal("200000.00"),
+    )
+    db.session.add(SavingsGoal(
+        user_id=seed_user["user"].id,
+        account_id=seed_user["account"].id,
+        name="Dashboard Emergency Fund",
+        target_amount=Decimal("10000.00"),
+        target_date=add_months(display_today(), 24),
+        is_active=True,
+    ))
+    db.session.commit()
+    return loan
 
 
 class TestOneReadPassPerRender:
@@ -221,6 +306,63 @@ class TestOneReadPassPerRender:
             f"/savings opened {counter['n']} read passes; the Horizon's "
             "engine reuse must run in the page's own pass"
         )
+
+    def test_dashboard_render_opens_one_read_pass(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET / opens ONE pass, though it runs two producers.
+
+        The budget dashboard's two producers -- the pulse region and the
+        position tracks -- each opened a pass of their own until pay-calendar
+        plan step C2-f2e (ledger row **P61**), so this render held two and
+        derived the owner's pay calendar twice.  It is the same defect
+        ``/retirement`` had at C2-f2d-1 and the same remedy: the ROUTE opens
+        the pass.
+        """
+        with app.app_context():
+            _seed_dashboard_owner(db, seed_user, seed_periods_today)
+
+        with counting_read_passes() as counter:
+            resp = auth_client.get("/")
+
+        assert resp.status_code == 200
+        assert counter["n"] == 1, (
+            f"/ opened {counter['n']} read passes; the route builds one and "
+            "both the pulse region and the position tracks must take it"
+        )
+
+    def test_dashboard_fragments_open_one_read_pass_each(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Each dashboard HTMX fragment opens exactly ONE pass.
+
+        **A PIN rather than a gate, and it says so** (C2-f2e's adversarial
+        design review, 2026-08-18): both fragments already opened exactly one
+        pass on the merge base, because each ran a single producer that built
+        one.  What moved is WHO builds it.  It is here so that a later step
+        wiring a second producer onto either fragment -- which is exactly how
+        ``/retirement`` acquired its two -- fails at that commit rather than at
+        the next measurement.
+
+        The two fragments are their own entry points -- the ``balanceChanged``
+        pulse refresh and the anchor editor's revert target -- so "the route is
+        the door" has to hold for them separately from the page.  The revert
+        target is the interesting one: it renders the same ``#balance-display``
+        control the pulse region carries, so a second pass here would let the
+        swapped-back fragment disagree with the region around it.
+        """
+        with app.app_context():
+            _seed_dashboard_owner(db, seed_user, seed_periods_today)
+
+        for path in ("/dashboard/pulse", "/dashboard/balance"):
+            with counting_read_passes() as counter:
+                resp = auth_client.get(path, headers={"HX-Request": "true"})
+
+            assert resp.status_code == 200
+            assert counter["n"] == 1, (
+                f"{path} opened {counter['n']} read passes; a fragment is a "
+                "render and gets one pass like any other"
+            )
 
     def test_readiness_whatif_fragment_opens_one_read_pass(
         self, app, db, auth_client, seed_user, seed_periods_today,
@@ -279,6 +421,103 @@ class TestOneReadPassPerRender:
         assert render_plus_one["n"] == render_only["n"] + 1, (
             "the read-pass counter did not see a deliberately opened second "
             "pass, so the assertions beside it grade nothing"
+        )
+
+
+class TestOneSubjectResolutionPerRender:
+    """The budget dashboard resolves its account and its settings ONCE.
+
+    **A THIRD count of the same question, for the same reason the second one
+    exists** (pay-calendar plan step C2-f2e).
+    :class:`TestOneReadPassPerRender` proves the render opens one pass and
+    :class:`TestOneCalendarDerivationPerRender` proves it derives one calendar;
+    neither can see a render that holds both and still resolves the same
+    ACCOUNT twice, because resolving an account opens nothing and derives
+    nothing.  ``/`` did exactly that, and so did every one of its fragments
+    with the settings row.
+    """
+
+    def test_dashboard_resolves_its_subject_once(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET / resolves the account once and the settings row once.
+
+        Measured at 2 and 2 on the merge base over this fixture's owner --
+        with the settings target repointed at ``app.services.dashboard_service``,
+        because the package this names does not exist there.  Said because
+        "shown firing" means the CLAIM was graded on that tree, not that this
+        file ran on it unchanged.
+        """
+        with app.app_context():
+            _seed_dashboard_owner(db, seed_user, seed_periods_today)
+
+        with counting_calls(*_SECTION_RESOLUTION) as counts:
+            resp = auth_client.get("/")
+
+        assert resp.status_code == 200
+        assert counts == {"resolve_grid_account": 1, "_get_user_settings": 1}, (
+            f"/ resolved its own subject {counts}; the route resolves one "
+            "section and the page's has_account flag, the pulse hero and the "
+            "chart threshold all read that one answer"
+        )
+
+    def test_the_pulse_fragment_resolves_its_subject_once(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """The pulse fragment resolves the settings row once, not twice.
+
+        Measured at 2 on the merge base: ``_resolve_section_context`` loaded
+        the row to resolve the account and ``compute_pulse_section`` loaded it
+        again for the hero's staleness threshold.  This fragment is on the
+        ``balanceChanged`` refresh path, so it re-renders on every settle.
+        """
+        with app.app_context():
+            _seed_dashboard_owner(db, seed_user, seed_periods_today)
+
+        with counting_calls(*_SECTION_RESOLUTION) as counts:
+            resp = auth_client.get(
+                "/dashboard/pulse", headers={"HX-Request": "true"},
+            )
+
+        assert resp.status_code == 200
+        assert counts == {"resolve_grid_account": 1, "_get_user_settings": 1}, (
+            f"the pulse fragment resolved its subject {counts}"
+        )
+
+    def test_the_subject_counter_sees_a_second_resolution(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """NEGATIVE CONTROL: the counter must be able to report a failure.
+
+        Stated as a DIFFERENCE rather than against a literal, so it grades the
+        instrument and only the instrument -- the same argument the two
+        controls above it make.
+
+        **The repeat goes through the MODULE ATTRIBUTE, not through a name this
+        file imported**, and that is not style.  ``counting_calls`` patches
+        every ``app.*`` module that holds the target, and a test module is not
+        one -- so a direct ``from ... import resolve_grid_account`` here would
+        call straight past the counter and this control would fail against a
+        working instrument.  It did, on the first draft.
+        """
+        with app.app_context():
+            _seed_dashboard_owner(db, seed_user, seed_periods_today)
+            settings = seed_user["settings"]
+
+        with counting_calls(*_SECTION_RESOLUTION) as render_only:
+            assert auth_client.get("/").status_code == 200
+        baseline = render_only["resolve_grid_account"]
+
+        with counting_calls(*_SECTION_RESOLUTION) as render_plus_one:
+            assert auth_client.get("/").status_code == 200
+            with app.app_context():
+                account_resolver.resolve_grid_account(
+                    seed_user["user"].id, settings,
+                )
+
+        assert render_plus_one["resolve_grid_account"] == baseline + 1, (
+            "the resolution counter did not see a deliberately repeated "
+            "resolve, so the assertions beside it grade nothing"
         )
 
 
@@ -387,4 +626,164 @@ class TestOneLoadPerRender:
         assert render_plus_one["load_gap_inputs"] == baseline + 1, (
             "the call counter did not see a deliberately repeated load, so "
             "the assertions beside it grade nothing"
+        )
+
+
+class TestOneCalendarDerivationPerRender:
+    """Every render below derives the owner's pay calendar exactly ONCE.
+
+    **A read pass memoizes the calendar, so this ought to be the pass count
+    restated -- and for three renders it was not** (pay-calendar plan step
+    C2-f2d-3, found by that step's adversarial design review).  Measured
+    through the routes over an owner with a salary profile and three
+    investment accounts: ``/savings`` derived it SEVEN times and
+    ``/retirement`` SIX, against ONE read pass each, because
+    ``income_service.get_current_gross_biweekly`` derived its own from a
+    ``user_id`` while every chain reaching it already held the pass.  The
+    count grew with the account count, since the seam asks for a
+    per-account contribution feed.
+
+    **This is a SECOND count of the same question and that is the point.**
+    ``TestOneReadPassPerRender`` proves the render opens one pass; it cannot
+    see a producer that holds the pass and derives anyway, because opening
+    nothing is exactly what such a producer does.
+
+    **``/`` joined this class at pay-calendar plan step C2-f2e**, which closed
+    ledger row **P61**.  It was excluded on the ground that it opened TWO
+    passes -- one per producer -- and so derived twice by construction, where
+    pinning 2 would have pinned the defect.  The route opens the one pass now
+    and both producers take it, so the budget dashboard is graded here like
+    every other render, and its two HTMX fragments with it.
+    """
+
+    def test_savings_derives_the_calendar_once(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET /savings derives the owner's pay calendar exactly once."""
+        with app.app_context():
+            _seed_projecting_account(db, seed_user, seed_periods_today)
+
+        with counting_calls(_CALENDAR_DOOR) as counts:
+            resp = auth_client.get("/savings")
+
+        assert resp.status_code == 200
+        assert counts["calendar_for"] == 1, (
+            f"/savings derived the pay calendar {counts['calendar_for']} "
+            "times; the route opens one read pass and every producer below it "
+            "must read that pass's memo"
+        )
+
+    def test_retirement_derives_the_calendar_once(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET /retirement derives the owner's pay calendar exactly once."""
+        with app.app_context():
+            _seed_projecting_account(db, seed_user, seed_periods_today)
+
+        with counting_calls(_CALENDAR_DOOR) as counts:
+            resp = auth_client.get("/retirement")
+
+        assert resp.status_code == 200
+        assert counts["calendar_for"] == 1, (
+            f"/retirement derived the pay calendar {counts['calendar_for']} "
+            "times; see the class docstring"
+        )
+
+    def test_dashboard_derives_the_calendar_once(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET / derives the owner's pay calendar exactly once.
+
+        Measured at **2** on the merge base (pay-calendar plan step C2-f2e's
+        own baseline, taken over this fixture's owner): the pulse region
+        derived one calendar and the position tracks another, because each
+        producer opened its own read pass.
+
+        The render is asserted to have actually PRODUCED both tiers, not merely
+        to have returned 200 -- an owner with no goal and no loan renders an
+        empty tracks tier, and a count taken over that render would read 1 on
+        the broken tree as well as the fixed one.
+        """
+        with app.app_context():
+            _seed_dashboard_owner(db, seed_user, seed_periods_today)
+
+        with counting_calls(_CALENDAR_DOOR) as counts:
+            resp = auth_client.get("/")
+
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert "Dashboard Emergency Fund" in body, (
+            "the goal track did not render, so this count was taken over a "
+            "producer that returned early"
+        )
+        assert "Debt" in body, (
+            "the debt track did not render, so this count was taken over a "
+            "producer that returned early"
+        )
+        assert counts["calendar_for"] == 1, (
+            f"/ derived the pay calendar {counts['calendar_for']} times; the "
+            "route opens one read pass and every producer below it must read "
+            "that pass's memo"
+        )
+
+    def test_dashboard_fragments_derive_the_calendar_once_each(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Each dashboard HTMX fragment derives the pay calendar exactly once.
+
+        **Only the ``/dashboard/balance`` half of this case can fail on the
+        merge base, and it fails at 0 rather than at 2** (C2-f2e's adversarial
+        design review, 2026-08-18): that fragment derived the calendar ZERO
+        times there because it answered "which period is current" from
+        ``pay_period_service.get_current_period`` -- SQL over the stored span,
+        against its own ``date.today()``.  So this case pins a +1 the step
+        deliberately INTRODUCED, not a defect it removed.  ``/dashboard/pulse``
+        derived it once on both trees; that half is a pin.
+
+        The +1 is the trade: the fragment is the anchor editor's revert target
+        and swaps back into the pulse region, so both must name the same
+        paycheck, and one derivation is what makes that structural rather than
+        a coincidence of two queries agreeing.
+        """
+        with app.app_context():
+            _seed_dashboard_owner(db, seed_user, seed_periods_today)
+
+        for path in ("/dashboard/pulse", "/dashboard/balance"):
+            with counting_calls(_CALENDAR_DOOR) as counts:
+                resp = auth_client.get(path, headers={"HX-Request": "true"})
+
+            assert resp.status_code == 200
+            assert counts["calendar_for"] == 1, (
+                f"{path} derived the pay calendar {counts['calendar_for']} "
+                "times; see the class docstring"
+            )
+
+    def test_the_count_grows_with_the_account_set_when_a_producer_derives(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """NEGATIVE CONTROL: a per-account derivation would be VISIBLE here.
+
+        The regression these two cases exist for scaled with the owner's
+        investment-account count, so the control adds accounts and requires the
+        count NOT to move.  A counter that never incremented, or a fixture whose
+        producers sat behind an early return, would pass the two assertions
+        above on the tree that derived seven times -- which is what happened.
+        """
+        with app.app_context():
+            _seed_projecting_account(db, seed_user, seed_periods_today)
+            for index in range(2):
+                make_investment_account(
+                    seed_user, db.session, seed_periods_today[0],
+                    Decimal("50000.00"), name=f"extra-401k-{index}",
+                )
+            db.session.commit()
+
+        with counting_calls(_CALENDAR_DOOR) as counts:
+            resp = auth_client.get("/savings")
+
+        assert resp.status_code == 200
+        assert counts["calendar_for"] == 1, (
+            f"/savings derived the pay calendar {counts['calendar_for']} times "
+            "for three investment accounts, so a producer is deriving PER "
+            "ACCOUNT rather than reading the read pass's memo"
         )

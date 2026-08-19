@@ -662,14 +662,13 @@ class PayCalendar:
 
         The one question here that is not about a DATE.
 
-        **Its last ``app/`` caller went at plan step R7b-4**, which folded
-        ``recurrence_rules.start_period_id`` into a date -- so no rule names a
-        pay period by stored id any more and nothing in the application asks
-        this.  The method is kept rather than deleted because it is the pay
-        calendar's public surface and a stored-id lookup is a reasonable thing
-        for that value to answer; whether it survives is the pay-calendar arc's
-        to rule, not the recurrence arc's to decide by deleting.  Stated here
-        so the next reader does not infer a live consumer from its existence.
+        **It has FIVE live ``app/`` callers, and this paragraph claimed ZERO
+        until 2026-08-16.**  Plan step R7b-4's note -- "nothing in the
+        application asks this" -- was already false then (``grid/partials.py``,
+        ``companion_service.py``), and pay-calendar plan step C2-f2d-3 added the
+        salary cockpit's period selector, its anatomy fragment and the
+        recurrence engine's pricing lookup.  **A sentence about the tree goes
+        stale exactly like one about the code**; this method is load-bearing.
 
         Never answers a projected period, which has no id.
 

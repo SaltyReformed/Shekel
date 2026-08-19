@@ -16,7 +16,7 @@ about what any of them says.
 
 import logging
 
-from flask import render_template, request
+from flask import current_app, render_template, request
 from flask_login import current_user
 
 from app.exceptions import BaselineMissingError, RecurrenceCadenceUnsupported
@@ -76,6 +76,25 @@ def register_error_handlers(app):
         Triggers when the requested URL does not match any route.
         """
         return render_template("errors/404.html"), 404
+
+    @app.errorhandler(413)
+    def payload_too_large(_e):
+        """Handle 413 Payload Too Large.
+
+        Werkzeug raises ``RequestEntityTooLarge`` when a request body
+        exceeds ``MAX_CONTENT_LENGTH``, which the app sets because plan
+        step ``bank_import:X-f6a-1`` gives it its first file upload.
+        Without this handler that is Werkzeug's own bare HTML page --
+        outside the app's layout, with no navigation back and no mention
+        of what the limit actually is.
+
+        The limit is read from the live config rather than restated, so
+        the page cannot come to disagree with the ceiling it describes.
+        """
+        return render_template(
+            "errors/413.html",
+            max_upload_kb=current_app.config["MAX_CONTENT_LENGTH"] // 1024,
+        ), 413
 
     @app.errorhandler(429)
     def rate_limit_exceeded(_e):

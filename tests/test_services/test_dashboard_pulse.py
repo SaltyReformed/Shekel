@@ -1,7 +1,7 @@
 """
 Shekel Budget App -- Dashboard Pulse / Tracks Producer Tests (Loop B B-1)
 
-Tests for ``dashboard_pulse_service`` -- the additive producers behind the
+Tests for ``dashboard_service._pulse`` -- the additive producers behind the
 Terminal Road dashboard rebuild:
 
   * ``compute_pulse_section`` and its helpers: the as-of-today hero
@@ -36,7 +36,8 @@ from app.models.account import AccountAnchorHistory
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
-from app.services import account_service, cash_ledger, dashboard_pulse_service, pay_period_write
+from app.services import account_service, cash_ledger, dashboard_service, pay_period_write
+from app.services.dashboard_service import _pulse
 from app.services import transfer_service
 from app.services import balance_at, pay_period_service, savings_dashboard_service
 from app.services.balance_at import BalanceContext
@@ -47,9 +48,12 @@ from tests._test_helpers import (
     create_hysa_account,
     create_loan_account,
     create_savings_account,
+    dashboard_section,
     default_settle_day,
+    settlement_columns,
     make_investment_account,
     make_salary_profile,
+    period_window,
     set_default_grid_account,
 )
 
@@ -80,9 +84,13 @@ def _add_expense(
         estimated_amount=Decimal(str(amount)),
         due_date=due_date,
         is_deleted=is_deleted,
-        # A settled row must carry the day its money moved; the rule for a
-        # BARE-built fixture row is shared rather than restated (X-f1).
+        # A settled row must carry the day its money moved AND the record of
+        # what moved -- one fact in three columns (plan steps X-f1 / X-au-c3),
+        # both resolved by the shared helpers rather than restated.
         settled_on=default_settle_day(period, status_id),
+        **settlement_columns(
+            default_settle_day(period, status_id), Decimal(str(amount)),
+        ),
     )
     db_session.add(txn)
     db_session.flush()
@@ -118,8 +126,8 @@ class TestPulseHero:
         2026-03-20); its start_date is 2026-03-13 and end_date 2026-03-26.
         """
         with app.app_context():
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             hero = result["hero"]
             assert hero["account_id"] == seed_user["account"].id
@@ -147,8 +155,8 @@ class TestPulseHero:
         could not have caught the divergence and the label is what settles it.
         """
         with app.app_context():
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             assert result["hero"]["balance"] == Decimal("1000.00")
 
@@ -159,8 +167,8 @@ class TestPulseHero:
         start_date > today is period 6 (starts 2026-03-27).
         """
         with app.app_context():
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             assert (
                 result["hero"]["next_paycheck_date"]
@@ -198,8 +206,8 @@ class TestPulseHero:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             assert result is not None
             assert result["hero"]["next_paycheck_date"] is None
@@ -221,8 +229,8 @@ class TestPulseHero:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             assert result["hero"]["is_stale"] is False
             assert result["hero"]["last_updated_date"] is not None
@@ -243,8 +251,8 @@ class TestPulseHero:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             assert result["hero"]["is_stale"] is True
 
@@ -276,8 +284,8 @@ class TestPulseHero:
                 seed_user["account"].id,
             ).observed_day
             assert last_observed is None
-            assert dashboard_pulse_service._anchor_is_stale(
-                last_observed, seed_user["settings"],
+            assert _pulse._anchor_is_stale(
+                last_observed, seed_user["settings"], _TODAY,
             ) is True
 
 
@@ -288,9 +296,19 @@ class TestPulseChart:
     """The projected end-balance chart series and threshold passthrough."""
 
     def _periods_and_balances(self, periods, per_period_balance="100.00"):
-        """Build a forward-period list and a flat end-balance map for it."""
-        end_balances = {p.id: Decimal(per_period_balance) for p in periods}
-        return periods, end_balances
+        """Build a forward DERIVED-period list and a flat end-balance map.
+
+        The producer's forward set is ``balance_ctx.reported_periods()`` since
+        pay-calendar plan step C2-f2e -- a window of
+        :class:`~app.services.pay_calendar.DerivedPeriod`, not the ORM rows --
+        so the helper it feeds is handed the same type production hands it,
+        and the map is keyed by ``period_id`` as the seam's own maps are.
+        """
+        derived = list(period_window(periods))
+        end_balances = {
+            p.period_id: Decimal(per_period_balance) for p in derived
+        }
+        return derived, end_balances
 
     def test_chart_caps_at_13_points(self, app, seed_user, db):
         """The chart slices to at most 13 points even with more periods.
@@ -308,7 +326,7 @@ class TestPulseChart:
             db.session.commit()
             forward, balances = self._periods_and_balances(periods)
 
-            chart = dashboard_pulse_service._pulse_chart(forward, balances, None)
+            chart = _pulse._chart(forward, balances, None)
             assert len(chart["points"]) == 13
             # The points are the first 13 periods, in order.
             assert [pt["end_date"] for pt in chart["points"]] == [
@@ -323,11 +341,11 @@ class TestPulseChart:
         balance.
         """
         with app.app_context():
-            forward = seed_periods[_CURRENT_IDX:]
+            forward = list(period_window(seed_periods[_CURRENT_IDX:]))
             assert len(forward) == 5
-            balances = {p.id: Decimal("250.00") for p in forward}
+            balances = {p.period_id: Decimal("250.00") for p in forward}
 
-            chart = dashboard_pulse_service._pulse_chart(forward, balances, None)
+            chart = _pulse._chart(forward, balances, None)
             assert len(chart["points"]) == 5
             assert all(
                 pt["balance"] == Decimal("250.00") for pt in chart["points"]
@@ -341,11 +359,11 @@ class TestPulseChart:
         Decimal("500").
         """
         with app.app_context():
-            forward = seed_periods[_CURRENT_IDX:]
-            balances = {p.id: Decimal("100.00") for p in forward}
+            forward = list(period_window(seed_periods[_CURRENT_IDX:]))
+            balances = {p.period_id: Decimal("100.00") for p in forward}
             settings = seed_user["settings"]
 
-            chart = dashboard_pulse_service._pulse_chart(
+            chart = _pulse._chart(
                 forward, balances, settings,
             )
             assert chart["low_balance_threshold"] == Decimal("500")
@@ -360,13 +378,13 @@ class TestPulseChart:
         updates dynamically with the user's configured value.
         """
         with app.app_context():
-            forward = seed_periods[_CURRENT_IDX:]
-            balances = {p.id: Decimal("100.00") for p in forward}
+            forward = list(period_window(seed_periods[_CURRENT_IDX:]))
+            balances = {p.period_id: Decimal("100.00") for p in forward}
             settings = seed_user["settings"]
             settings.low_balance_threshold = 800
             db.session.commit()
 
-            chart = dashboard_pulse_service._pulse_chart(
+            chart = _pulse._chart(
                 forward, balances, settings,
             )
             assert chart["low_balance_threshold"] == Decimal("800")
@@ -376,10 +394,10 @@ class TestPulseChart:
     ):
         """With no settings the threshold is None (no dashed line drawn)."""
         with app.app_context():
-            forward = seed_periods[_CURRENT_IDX:]
-            balances = {p.id: Decimal("100.00") for p in forward}
+            forward = list(period_window(seed_periods[_CURRENT_IDX:]))
+            balances = {p.period_id: Decimal("100.00") for p in forward}
 
-            chart = dashboard_pulse_service._pulse_chart(forward, balances, None)
+            chart = _pulse._chart(forward, balances, None)
             assert chart["low_balance_threshold"] is None
 
 
@@ -396,12 +414,12 @@ class TestPulseTrough:
         The minimum is 300 at period 7, offset 7 - 5 = 2.
         """
         with app.app_context():
-            forward = seed_periods[_CURRENT_IDX:]
+            forward = list(period_window(seed_periods[_CURRENT_IDX:]))
             values = ["500.00", "400.00", "300.00", "350.00", "450.00"]
-            balances = {p.id: Decimal(v) for p, v in zip(forward, values)}
+            balances = {p.period_id: Decimal(v) for p, v in zip(forward, values)}
 
-            trough = dashboard_pulse_service._pulse_trough(
-                forward, balances, seed_periods[_CURRENT_IDX],
+            trough = _pulse._trough(
+                forward, balances, forward[0],
             )
             assert trough["balance"] == Decimal("300.00")
             assert trough["end_date"] == seed_periods[_CURRENT_IDX + 2].end_date
@@ -429,22 +447,22 @@ class TestPulseTrough:
 
             # Treat the whole generated run as the forward horizon and its
             # first period as the current (offset origin) -- this is a pure
-            # _pulse_trough / _pulse_chart test, independent of today.
-            forward = periods
+            # _trough / _chart test, independent of today.
+            forward = list(period_window(periods))
             current = forward[0]
             assert len(forward) == 15  # 15 forward periods; chart caps at 13.
 
-            balances = {p.id: Decimal("500.00") for p in forward}
+            balances = {p.period_id: Decimal("500.00") for p in forward}
             dip_period = forward[14]  # the 15th forward period (beyond chart)
-            balances[dip_period.id] = Decimal("-250.00")
+            balances[dip_period.period_id] = Decimal("-250.00")
 
             # The chart sees only the first 13 -- all positive.
-            chart = dashboard_pulse_service._pulse_chart(forward, balances, None)
+            chart = _pulse._chart(forward, balances, None)
             assert len(chart["points"]) == 13
             assert all(pt["balance"] > Decimal("0") for pt in chart["points"])
 
             # The trough scans all 15 and finds the dip beyond the chart.
-            trough = dashboard_pulse_service._pulse_trough(
+            trough = _pulse._trough(
                 forward, balances, current,
             )
             assert trough["balance"] == Decimal("-250.00")
@@ -453,13 +471,29 @@ class TestPulseTrough:
             assert trough["offset"] == dip_period.period_index - current.period_index
             assert trough["offset"] == 14
 
-    def test_trough_none_when_no_balances(self, app, seed_user, seed_periods, db):
-        """An empty end-balance map -> trough is None (no projection)."""
+    def test_trough_none_without_a_forward_period(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """An EMPTY forward window -> trough is None.
+
+        **This case graded an empty end-balance MAP until C2-f2e's adversarial
+        code review** (2026-08-18), and that state is now unconstructible:
+        ``cash_balance_map`` is a TOTAL fold over ``reported_periods()`` and
+        ``forward_periods`` is a slice of that same window, so every key is
+        present by construction and the scan INDEXES rather than skipping. A
+        test that builds a state production cannot reach grades the skip it
+        depends on and nothing else -- which is why deleting the skip is what
+        found it.
+
+        What remains is the arm that CAN answer ``None``: no forward period at
+        all. ``compute_pulse_section``'s own current-period guard refuses that
+        owner before this helper is reached, so the arm is defensive -- and it
+        is pinned rather than deleted because the helper is public to its
+        module and its ``Returns`` block states it.
+        """
         with app.app_context():
-            forward = seed_periods[_CURRENT_IDX:]
-            trough = dashboard_pulse_service._pulse_trough(
-                forward, {}, seed_periods[_CURRENT_IDX],
-            )
+            current = list(period_window(seed_periods[_CURRENT_IDX:]))[0]
+            trough = _pulse._trough([], {}, current)
             assert trough is None
 
 
@@ -483,12 +517,12 @@ class TestPulsePeak:
         point.
         """
         with app.app_context():
-            forward = seed_periods[_CURRENT_IDX:]
+            forward = list(period_window(seed_periods[_CURRENT_IDX:]))
             values = ["300.00", "400.00", "500.00", "450.00", "350.00"]
-            balances = {p.id: Decimal(v) for p, v in zip(forward, values)}
+            balances = {p.period_id: Decimal(v) for p, v in zip(forward, values)}
 
-            peak = dashboard_pulse_service._pulse_peak(
-                forward, balances, seed_periods[_CURRENT_IDX],
+            peak = _pulse._peak(
+                forward, balances, forward[0],
             )
             assert peak["balance"] == Decimal("500.00")
             assert peak["end_date"] == seed_periods[_CURRENT_IDX + 2].end_date
@@ -507,12 +541,12 @@ class TestPulsePeak:
         period.
         """
         with app.app_context():
-            forward = seed_periods[_CURRENT_IDX:]
+            forward = list(period_window(seed_periods[_CURRENT_IDX:]))
             values = ["500.00", "400.00", "300.00", "350.00", "450.00"]
-            balances = {p.id: Decimal(v) for p, v in zip(forward, values)}
+            balances = {p.period_id: Decimal(v) for p, v in zip(forward, values)}
 
-            peak = dashboard_pulse_service._pulse_peak(
-                forward, balances, seed_periods[_CURRENT_IDX],
+            peak = _pulse._peak(
+                forward, balances, forward[0],
             )
             assert peak["balance"] == Decimal("500.00")
             assert peak["end_date"] == seed_periods[_CURRENT_IDX].end_date
@@ -540,24 +574,24 @@ class TestPulsePeak:
 
             # Treat the whole generated run as the forward horizon and its
             # first period as the current (offset origin) -- this is a pure
-            # _pulse_peak / _pulse_chart test, independent of today.
-            forward = periods
+            # _peak / _chart test, independent of today.
+            forward = list(period_window(periods))
             current = forward[0]
             assert len(forward) == 15  # 15 forward periods; chart caps at 13.
 
-            balances = {p.id: Decimal("500.00") for p in forward}
+            balances = {p.period_id: Decimal("500.00") for p in forward}
             rise_period = forward[14]  # the 15th forward period (beyond chart)
-            balances[rise_period.id] = Decimal("1250.00")
+            balances[rise_period.period_id] = Decimal("1250.00")
 
             # The chart sees only the first 13 -- all 500.00, none the peak.
-            chart = dashboard_pulse_service._pulse_chart(forward, balances, None)
+            chart = _pulse._chart(forward, balances, None)
             assert len(chart["points"]) == 13
             assert all(
                 pt["balance"] == Decimal("500.00") for pt in chart["points"]
             )
 
             # The peak scans all 15 and finds the rise beyond the chart.
-            peak = dashboard_pulse_service._pulse_peak(
+            peak = _pulse._peak(
                 forward, balances, current,
             )
             assert peak["balance"] == Decimal("1250.00")
@@ -566,13 +600,29 @@ class TestPulsePeak:
             assert peak["offset"] == rise_period.period_index - current.period_index
             assert peak["offset"] == 14
 
-    def test_peak_none_when_no_balances(self, app, seed_user, seed_periods, db):
-        """An empty end-balance map -> peak is None (no projection)."""
+    def test_peak_none_without_a_forward_period(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """An EMPTY forward window -> peak is None.
+
+        **This case graded an empty end-balance MAP until C2-f2e's adversarial
+        code review** (2026-08-18), and that state is now unconstructible:
+        ``cash_balance_map`` is a TOTAL fold over ``reported_periods()`` and
+        ``forward_periods`` is a slice of that same window, so every key is
+        present by construction and the scan INDEXES rather than skipping. A
+        test that builds a state production cannot reach grades the skip it
+        depends on and nothing else -- which is why deleting the skip is what
+        found it.
+
+        What remains is the arm that CAN answer ``None``: no forward period at
+        all. ``compute_pulse_section``'s own current-period guard refuses that
+        owner before this helper is reached, so the arm is defensive -- and it
+        is pinned rather than deleted because the helper is public to its
+        module and its ``Returns`` block states it.
+        """
         with app.app_context():
-            forward = seed_periods[_CURRENT_IDX:]
-            peak = dashboard_pulse_service._pulse_peak(
-                forward, {}, seed_periods[_CURRENT_IDX],
-            )
+            current = list(period_window(seed_periods[_CURRENT_IDX:]))[0]
+            peak = _pulse._peak([], {}, current)
             assert peak is None
 
     def test_peak_wired_through_compute_pulse_section(
@@ -585,7 +635,7 @@ class TestPulsePeak:
         the highest point in the all-else-flat horizon (the later periods
         carry the same 2,200.00 balance forward, so the peak is the FIRST
         such period -- the current one, offset 0).  This proves the
-        producer wires _pulse_peak through, not just the helper in
+        producer wires _peak through, not just the helper in
         isolation.
         """
         with app.app_context():
@@ -602,8 +652,8 @@ class TestPulsePeak:
             db.session.add(income)
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             peak = result["peak"]
             # 1,000.00 anchor + 1,200.00 income = 2,200.00 end balance.
@@ -634,8 +684,8 @@ class TestPulseStillDue:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             still = result["still_due"]
             assert still["current_period"] == Decimal("300.00")
@@ -659,8 +709,8 @@ class TestPulseStillDue:
             _add_entry(db.session, seed_user, txn, "30.00", date(2026, 3, 19))
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             assert result["still_due"]["current_period"] == Decimal("120.00")
 
@@ -682,8 +732,8 @@ class TestPulseStillDue:
             _add_entry(db.session, seed_user, txn, "60.00", date(2026, 3, 19))
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             assert result["still_due"]["current_period"] == Decimal("0.00")
 
@@ -703,8 +753,8 @@ class TestPulseStillDue:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             assert result["still_due"]["current_period"] == Decimal("150.00")
 
@@ -748,8 +798,8 @@ class TestPulseStillDue:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             # The transfer-out shadow is the only obligation: $400.00.
             assert result["still_due"]["current_period"] == Decimal("400.00")
@@ -773,8 +823,8 @@ class TestPulseStillDue:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             still = result["still_due"]
             assert still["current_period"] == Decimal("300.00")
@@ -806,8 +856,8 @@ class TestPulseStillDue:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             still = result["still_due"]
             assert still["next_period"] == Decimal("0.00")
@@ -830,8 +880,8 @@ class TestPulseStillDue:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             assert result["still_due"]["current_period"] == Decimal("0.00")
 
@@ -858,8 +908,8 @@ class TestPulseStreet:
             today_offset = (2026-03-20 - 2026-03-13).days = 7.
         """
         with app.app_context():
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             street = result["street"]
             assert street["days_total"] == 13
@@ -887,8 +937,8 @@ class TestPulseStreet:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             street = result["street"]
             offsets = {
@@ -925,8 +975,8 @@ class TestPulseDueSoon:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             names = [b["name"] for b in result["due_soon"]]
             assert names == ["Current bill"]
@@ -951,8 +1001,8 @@ class TestPulseDueSoon:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             due_soon = result["due_soon"]
             # Dated first (chronological), undated last.
@@ -982,8 +1032,8 @@ class TestPulseDueSoon:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             assert [b["name"] for b in result["due_soon"]] == ["Early", "Late"]
 
@@ -1018,8 +1068,8 @@ class TestPulseDueSoonStations:
                 )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             stations = result["due_soon_stations"]
             assert len(stations) == 1
@@ -1051,8 +1101,8 @@ class TestPulseDueSoonStations:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             stations = result["due_soon_stations"]
             # day_offset 2 = (03-15 - 03-13); day_offset 9 = (03-22 - 03-13).
@@ -1073,8 +1123,8 @@ class TestPulseDueSoonStations:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             stations = result["due_soon_stations"]
             assert len(stations) == 1
@@ -1099,8 +1149,8 @@ class TestPulseDueSoonStations:
                 )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             station = result["due_soon_stations"][0]
             assert station["days_until_due"] == 2  # (03-22 - 03-20).days
@@ -1128,8 +1178,8 @@ class TestPulseDueSoonStations:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             stations = result["due_soon_stations"]
             # Only the dated bill forms a station.
@@ -1198,18 +1248,16 @@ class TestHeroChartIdentity:
             )
             db.session.commit()
 
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             hero_balance = result["hero"]["balance"]
             first_point = result["chart"]["points"][0]["balance"]
             assert hero_balance == first_point
             # The anchor-editor's revert fragment renders this same control
             # from its own producer call -- the pair that can still drift.
-            # pylint: disable=import-outside-toplevel
-            from app.services import dashboard_service
             assert dashboard_service.compute_balance_section(
-                seed_user["user"].id,
+                dashboard_section(seed_user["user"].id),
             )["hero"]["balance"] == hero_balance
             # And the first chart point is the current period's end date.
             assert (
@@ -1275,8 +1323,8 @@ class TestPulseCashFlowViewForAnyKindGridAccount:
             # interest, so the kind-correct map exceeds the flat cash carry.
             assert accrued[current.id] > Decimal("50000.00")
 
-            section = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            section = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
 
             # Every charted point is the flat cash value, never the accrued
@@ -1320,8 +1368,8 @@ class TestPulseCashFlowViewForAnyKindGridAccount:
             modeled = balance_at.balance_at(inv, bctx, _TODAY)
             assert modeled > Decimal("100000.00")
 
-            section = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            section = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             # The hero is the cash carry: anchor $100,000.00 carried flat to
             # today with no contributions -> $100,000.00, not the modeled value.
@@ -1338,12 +1386,15 @@ class TestPulseSectionDegraded:
     def test_no_current_period_returns_none(self, app, seed_user):
         """No period contains today -> None.
 
-        seed_user (no seed_periods) has only the 2024 bootstrap period, so
-        get_current_period returns None and the producer short-circuits.
+        ``seed_user`` (no ``seed_periods``) has only the 2024 bootstrap period,
+        so no SAVED period contains the pass's day, ``containing_index``
+        answers ``None`` and the producer short-circuits.  That reader was
+        ``pay_period_service.get_current_period`` until pay-calendar plan step
+        C2-f2e; the state is the same one and the door is not.
         """
         with app.app_context():
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             assert result is None
 
@@ -1352,13 +1403,184 @@ class TestPulseSectionDegraded:
     ):
         """A populated pulse section carries exactly the eight region keys."""
         with app.app_context():
-            result = dashboard_pulse_service.compute_pulse_section(
-                seed_user["user"].id,
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id),
             )
             assert set(result.keys()) == {
                 "hero", "chart", "trough", "peak",
                 "still_due", "street", "due_soon", "due_soon_stations",
             }
+
+
+# ── One clock and one period per render (plan step C2-f2e) ─────────
+
+
+class TestOneClockPerRender:
+    """Every day-sensitive figure in the region reads the READ PASS's day.
+
+    Three of them resolved ``date.today()`` for themselves before pay-calendar
+    plan step **C2-f2e** -- the hero's staleness count, the street band's
+    "Today" marker, and each bill's ``days_until_due`` -- so a render crossing
+    midnight could count staleness against one day, place the marker on the
+    next, and label a bill against either.  Ledger row **P55** names the class.
+
+    These cases pin the day by PASSING one, which is also what makes them
+    honest all year: they assert a figure MOVES with the pass's ``as_of``, so a
+    producer that quietly re-read the wall clock would answer the frozen
+    fixture day and fail.  A test that only asserted "the marker is where today
+    is" would pass on both trees.
+
+    **They could not be written against the merge base at all**, and that is
+    the finding rather than a gap in the evidence: ``compute_pulse_section``
+    took a ``user_id`` and built its own read pass, so no caller had a day to
+    pin.  What CAN be graded on both sides is the period itself, and
+    :class:`TestPeriodIsDerivedNotStored` below is that case -- run against
+    ``5ab457b7`` it fails with the whole region ``None``.
+    """
+
+    def test_the_street_marker_follows_the_pass_day(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """The "Today" marker moves with the pass's ``as_of``, not the wall clock.
+
+        Period 5 runs 2026-03-13 .. 2026-03-26.  A pass pinned to 2026-03-13
+        puts the marker at offset 0 and a pass pinned to 2026-03-20 at offset
+        7 -- ``(2026-03-20 - 2026-03-13).days``.  A producer reading its own
+        ``date.today()`` would answer 7 for both, the suite's frozen day.
+        """
+        with app.app_context():
+            opening = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id, as_of=date(2026, 3, 13)),
+            )
+            later = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id, as_of=_TODAY),
+            )
+
+            assert opening["street"]["today_offset"] == 0
+            assert later["street"]["today_offset"] == 7
+            # Both passes are inside ONE period, so the band itself did not move.
+            assert opening["street"]["days_total"] == 13
+            assert later["street"]["days_total"] == 13
+
+    def test_days_until_due_counts_from_the_pass_day(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """A bill's ``days_until_due`` counts from the pass's day.
+
+        A $50.00 bill due 2026-03-24 in the current period: 11 days out from a
+        pass pinned to 2026-03-13, 4 days out from one pinned to 2026-03-20.
+        """
+        with app.app_context():
+            _add_expense(
+                db.session, seed_user, seed_periods[_CURRENT_IDX],
+                "Water Bill", "50.00", due_date=date(2026, 3, 24),
+            )
+            db.session.commit()
+
+            def _water(as_of):
+                section = dashboard_service.compute_pulse_section(
+                    dashboard_section(seed_user["user"].id, as_of=as_of),
+                )
+                return next(
+                    bill for bill in section["due_soon"]
+                    if bill["name"] == "Water Bill"
+                )
+
+            assert _water(date(2026, 3, 13))["days_until_due"] == 11
+            assert _water(_TODAY)["days_until_due"] == 4
+
+    def test_anchor_staleness_counts_from_the_pass_day(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """The hero's ``is_stale`` flag measures from the pass's day.
+
+        The seed account's anchor was asserted on 2026-01-02 and the default
+        threshold is 14 days.  A pass pinned to 2026-01-10 is 8 days out and
+        NOT stale; the frozen 2026-03-20 is 77 days out and stale.  The
+        threshold sits between the two, so the flag has to flip -- which a
+        producer reading its own clock could not do.
+        """
+        with app.app_context():
+            observed = cash_ledger.reconciled_through(
+                seed_user["account"].id,
+            ).observed_day
+            assert observed == date(2026, 1, 2)
+            assert seed_user["settings"].anchor_staleness_days == 14
+
+            fresh = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id, as_of=date(2026, 1, 10)),
+            )
+            stale = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id, as_of=_TODAY),
+            )
+
+            assert fresh["hero"]["is_stale"] is False
+            assert stale["hero"]["is_stale"] is True
+
+
+class TestPeriodIsDerivedNotStored:
+    """The region's period comes from the PAYDAYS, not from the stored span.
+
+    Until pay-calendar plan step **C2-f2e** the current period was
+    ``pay_period_service.get_current_period`` -- SQL matching
+    ``start_date <= today <= end_date`` over the two columns plan step **C4**
+    drops.  Where a stored ``end_date`` disagrees with the one the owner's
+    paydays imply (plan finding **P1**, the disagreement nothing reconciles)
+    that query and the calendar name DIFFERENT paychecks, and this page then
+    labelled one period's balance with another's dates.
+
+    **The disagreement has TWO directions and only one is covered here**
+    (C2-f2e's adversarial design review, 2026-08-18).  The case below is the
+    stored span being SHORTER than the derivation, where the derivation is the
+    generous answer and the pre-cutover tree blanked the page.  The inverse --
+    a derived end EARLIER than the stored one -- can only arise on the LAST
+    period, whose end is projected from ``budget.pay_schedule.cadence_days``,
+    and it is the direction where the new code refuses where the old answered.
+    It is not tested because it is not reachable through an app write door:
+    ``pay_schedule_service.upsert_schedule`` has one caller
+    (``pay_period_write._apply``), which runs only when the batch records a
+    payday and then rewrites the derivation onto every row.  It needs
+    hand-edited rows or legacy data, which is ledger row **P35**'s owner.
+    """
+
+    def test_a_wrong_stored_end_date_does_not_move_the_hero(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """A doctored stored ``end_date`` changes nothing the hero renders.
+
+        Period 5 runs 2026-03-13 .. 2026-03-26 because period 6's payday is
+        2026-03-27 -- the derivation.  Rewriting period 5's stored ``end_date``
+        to 2026-03-19 (the day BEFORE the frozen today) leaves the paydays
+        untouched, so the calendar still places 2026-03-20 in period 5.  The
+        pre-cutover query would have found no period covering today at all and
+        the producer would have answered ``None``: a page that goes blank
+        because a derived column drifted.  **Measured, not argued** -- this
+        case was run verbatim against the merge base ``5ab457b7`` and failed on
+        ``result is not None``, with the region gone and the page rendering its
+        "No pay period covers today" CTA to an owner mid-paycheck.
+        """
+        with app.app_context():
+            stored = db.session.get(
+                type(seed_periods[_CURRENT_IDX]),
+                seed_periods[_CURRENT_IDX].id,
+            )
+            stored.end_date = date(2026, 3, 19)
+            db.session.commit()
+
+            # The premise, asserted rather than assumed: the stored span no
+            # longer covers the frozen today, so the retired reader answers
+            # nothing.
+            assert pay_period_service.get_current_period(
+                seed_user["user"].id, as_of=_TODAY,
+            ) is None
+
+            result = dashboard_service.compute_pulse_section(
+                dashboard_section(seed_user["user"].id, as_of=_TODAY),
+            )
+            assert result is not None
+            assert result["hero"]["period_start_date"] == date(2026, 3, 13)
+            assert result["hero"]["period_end_date"] == date(2026, 3, 26)
+            assert result["street"]["days_total"] == 13
 
 
 # ── Tracks: savings goal trajectory passthrough + debt fraction ─────
@@ -1392,8 +1614,8 @@ class TestTracksGoals:
             db.session.add(goal)
             db.session.commit()
 
-            tracks = dashboard_pulse_service.compute_tracks_section(
-                seed_user["user"].id,
+            tracks = dashboard_service.compute_tracks_section(
+                BalanceContext.build(seed_user["user"].id),
             )
             goal_tracks = [g for g in tracks["goals"] if g["account_id"] == acct.id]
             assert len(goal_tracks) == 1
@@ -1437,15 +1659,15 @@ class TestTracksGoals:
             db.session.add(goal)
             db.session.commit()
 
-            tracks = dashboard_pulse_service.compute_tracks_section(
-                seed_user["user"].id,
+            tracks = dashboard_service.compute_tracks_section(
+                BalanceContext.build(seed_user["user"].id),
             )
             track = next(
                 g for g in tracks["goals"] if g["account_id"] == acct.id
             )
             sav = next(
                 gd for gd in savings_dashboard_service.compute_goal_progress(
-                    seed_user["user"].id,
+                    BalanceContext.build(seed_user["user"].id),
                 )
                 if gd.goal.account_id == acct.id
             )
@@ -1460,8 +1682,8 @@ class TestTracksGoals:
     def test_no_goals_empty_list(self, app, seed_user, seed_periods, db):
         """No active goals -> goals is an empty list."""
         with app.app_context():
-            tracks = dashboard_pulse_service.compute_tracks_section(
-                seed_user["user"].id,
+            tracks = dashboard_service.compute_tracks_section(
+                BalanceContext.build(seed_user["user"].id),
             )
             assert tracks["goals"] == []
 
@@ -1478,8 +1700,8 @@ class TestTracksDebt:
     def test_no_debt_returns_none(self, app, seed_user, seed_periods, db):
         """No loan accounts -> debt is None (no track rendered)."""
         with app.app_context():
-            tracks = dashboard_pulse_service.compute_tracks_section(
-                seed_user["user"].id,
+            tracks = dashboard_service.compute_tracks_section(
+                BalanceContext.build(seed_user["user"].id),
             )
             assert tracks["debt"] is None
 
@@ -1502,8 +1724,8 @@ class TestTracksDebt:
         with app.app_context():
             create_loan_account(seed_user, db.session, name="Pulse Loan")
 
-            tracks = dashboard_pulse_service.compute_tracks_section(
-                seed_user["user"].id,
+            tracks = dashboard_service.compute_tracks_section(
+                BalanceContext.build(seed_user["user"].id),
             )
             debt = tracks["debt"]
             assert debt is not None
@@ -1524,7 +1746,7 @@ class TestTracksDebt:
             # control therefore plants its defect in ``total_debt``, which the
             # fixture does populate.
             assert debt == savings_dashboard_service.compute_debt_summary(
-                seed_user["user"].id,
+                BalanceContext.build(seed_user["user"].id),
             )
             # The honest fraction is present and is a Decimal in [0, 1].
             fraction = debt.principal_paid_fraction
@@ -1558,8 +1780,8 @@ class TestTracksDebt:
                 origination_date=_TODAY, payment_day=_TODAY.day,
             )
 
-            tracks = dashboard_pulse_service.compute_tracks_section(
-                seed_user["user"].id,
+            tracks = dashboard_service.compute_tracks_section(
+                BalanceContext.build(seed_user["user"].id),
             )
             debt = tracks["debt"]
             assert debt.total_debt == Decimal("1000.00")
@@ -1602,8 +1824,8 @@ class TestTracksDebt:
                 _orchestrator, "_compute_account_projections", _counting,
             )
 
-            tracks = dashboard_pulse_service.compute_tracks_section(
-                seed_user["user"].id,
+            tracks = dashboard_service.compute_tracks_section(
+                BalanceContext.build(seed_user["user"].id),
             )
 
             # The render really did produce the debt track (an empty result
@@ -1650,8 +1872,8 @@ class TestTracksIncomeRelativeGoal:
             db.session.add(goal)
             db.session.commit()
 
-            tracks = dashboard_pulse_service.compute_tracks_section(
-                seed_user["user"].id,
+            tracks = dashboard_service.compute_tracks_section(
+                BalanceContext.build(seed_user["user"].id),
             )
             track = next(
                 g for g in tracks["goals"] if g["account_id"] == acct.id

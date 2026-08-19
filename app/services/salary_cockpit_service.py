@@ -21,7 +21,7 @@ from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 
 from app.enums import DeductionTimingEnum
-from app.models.pay_period import PayPeriod
+from app.services.pay_calendar import DerivedPeriod
 from app.services.paycheck_calculator import PaycheckBreakdown
 from app.utils.money import HUNDRED, ZERO
 
@@ -41,7 +41,7 @@ _PCT_QUANTUM = Decimal("0.1")
 
 # The pair the calculator surfaces per period: the period itself plus the
 # breakdown computed for it.  Every producer below consumes this shape.
-PeriodPair = tuple[PayPeriod, PaycheckBreakdown]
+PeriodPair = tuple[DerivedPeriod, PaycheckBreakdown]
 
 
 def _add_months(base: date, months: int) -> date:
@@ -211,17 +211,17 @@ def raise_run_start_period_ids(pairs: list[PeriodPair]) -> set[int]:
     (:func:`_is_raise_run_start`) -- so a raise the calculator badges on
     every period of its month is flagged once, on the step, rather than
     repeating a badge on every paycheck of the month (P-SA1, projection
-    surface).  The template checks ``period.id in`` this set.
+    surface).  The template checks ``period.period_id in`` this set.
 
     Args:
         pairs: The full ordered ``(period, breakdown)`` list.
 
     Returns:
-        The set of ``period.id`` values that start a raise run (empty when
-        no period carries a raise event).
+        The set of ``period.period_id`` values that start a raise run (empty
+        when no period carries a raise event).
     """
     return {
-        pair[0].id
+        pair[0].period_id
         for idx, pair in enumerate(pairs)
         if _is_raise_run_start(pairs, idx)
     }
@@ -456,7 +456,7 @@ def build_deduction_rows(breakdown: PaycheckBreakdown) -> list[dict[str, object]
 
 def _window_with_index(
     pairs: list[PeriodPair], today: date, lookback: int,
-) -> list[tuple[int, PayPeriod, PaycheckBreakdown]]:
+) -> list[tuple[int, DerivedPeriod, PaycheckBreakdown]]:
     """Return the display window as ``(global_index, period, breakdown)``.
 
     The window anchors on the first period whose ``end_date`` is on or
@@ -484,7 +484,7 @@ def _window_with_index(
     )
     start = max(0, anchor - lookback)
     horizon_end = _add_months(today, HORIZON_MONTHS)
-    result: list[tuple[int, PayPeriod, PaycheckBreakdown]] = []
+    result: list[tuple[int, DerivedPeriod, PaycheckBreakdown]] = []
     for i in range(start, len(pairs)):
         period, breakdown = pairs[i]
         if period.start_date > horizon_end:

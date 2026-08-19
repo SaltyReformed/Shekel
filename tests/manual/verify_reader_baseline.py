@@ -67,7 +67,7 @@ from app.models.transaction import Transaction
 from app.models.user import User
 from app.services import (
     calendar_service,
-    dashboard_pulse_service,
+    dashboard_service,
     loan_payment_service,
     loan_posting_service,
     pay_period_service,
@@ -217,8 +217,9 @@ def _pulse(user_id):
     Both read the ONE contributions map this step introduces, so a divergence
     between them would show here as well as a move in either.
     """
-    section = _guard("pulse", lambda: dashboard_pulse_service
-                     .compute_pulse_section(user_id))
+    section = _guard("pulse", lambda: dashboard_service.compute_pulse_section(
+        dashboard_service.resolve_section(BalanceContext.build(user_id)),
+    ))
     if section is None or "RAISED" in section:
         return section
     return {
@@ -283,8 +284,12 @@ def _spending(user_id, account_id):
 
 def _savings(user_id):
     """The savings dashboard's emergency-fund metrics (the settled-spend feed)."""
-    return _plain(_guard("savings", lambda: savings_dashboard_service
-                         .compute_dashboard_data(user_id)))
+    return _plain(_guard(
+        "savings",
+        lambda: savings_dashboard_service.compute_dashboard_data(
+            BalanceContext.build(user_id),
+        ),
+    ))
 
 
 def _investment(user_id, accounts):
@@ -311,14 +316,19 @@ def _retirement(user_id):
     convenience wrapper because plan step C2-f2d-2 deleted that wrapper: it had
     no ``app/`` caller once the retirement picture became the one producer, and
     a public entry whose only callers are harnesses is dead production surface.
-    """
-    periods = pay_period_service.get_all_periods(user_id)
-    current = pay_period_service.get_current_period(user_id)
 
+    **This probe was DEAD from plan step C2-f2d-3 until C2-f2e's adversarial
+    code review found it** (2026-08-18). That step dropped
+    ``build_projection_context``'s two PERIOD parameters -- both are derived
+    from the pass now -- and did not update this call, which kept passing six
+    positional arguments to a four-argument function. Every run since recorded
+    a ``TypeError`` in the dump where the retirement figures belong, and a diff
+    of two such runs reads as "nothing moved". `pylint tests/manual/` sees this
+    class (``E1121``) and nothing runs it; ledger row **P66** carries that.
+    """
     def _project():
         ctx = retirement_projection.build_projection_context(
-            BalanceContext.build(user_id), periods, current,
-            None, None, None,
+            BalanceContext.build(user_id), None, None, None,
         )
         return retirement_projection.project_accounts_with_batch(
             ctx,
