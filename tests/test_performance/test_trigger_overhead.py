@@ -39,19 +39,18 @@ def _create_template(perf_user):
     """
     expense_type = db.session.query(TransactionType).filter_by(name="Expense").one()
 
-    rule = make_every_period_rule(db.session, perf_user["user"].id)
-
     template = TransactionTemplate(
         user_id=perf_user["user"].id,
         account_id=perf_user["account"].id,
         category_id=perf_user["category"].id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=expense_type.id,
         name="Benchmark Expense",
         default_amount=Decimal("150.00"),
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
 
     # Reload to get relationships populated.
     db.session.refresh(template)

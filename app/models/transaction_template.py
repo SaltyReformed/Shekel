@@ -60,9 +60,6 @@ class TransactionTemplate(
         db.Integer, db.ForeignKey("budget.categories.id", ondelete="RESTRICT"),
         nullable=False,
     )
-    recurrence_rule_id = db.Column(
-        db.Integer, db.ForeignKey("budget.recurrence_rules.id", ondelete="SET NULL"),
-    )
     transaction_type_id = db.Column(
         db.Integer, db.ForeignKey("ref.transaction_types.id", ondelete="RESTRICT"),
         nullable=False,
@@ -77,7 +74,22 @@ class TransactionTemplate(
     # Relationships
     account = db.relationship("Account", lazy="joined")
     category = db.relationship("Category", lazy="joined")
-    recurrence_rule = db.relationship("RecurrenceRule", lazy="joined")
+    # 0-or-1 cadence, and the FK is on the RULE (plan step R-F6): a template
+    # that does not repeat simply has no rule row, where it used to hold a NULL
+    # in a ``recurrence_rule_id`` column.  ``uselist=False`` because
+    # ``uq_recurrence_rules_transaction_template_id`` makes at most one possible;
+    # ``lazy="joined"`` preserves the load this was doing from the other side,
+    # so every reader of ``template.recurrence_rule`` still costs no second
+    # query.  ``delete-orphan`` is what makes "this no longer repeats"
+    # (``_recurrence_form_helpers._clear_recurrence_rule``) a disposal rather
+    # than a detach -- and the DB FK is ``ON DELETE CASCADE`` besides, for the
+    # hard-delete route's bulk path and for every writer that never sees this
+    # mapper.  Exactly the pair ``amount_versions`` below already carries.
+    recurrence_rule = db.relationship(
+        "RecurrenceRule", uselist=False, lazy="joined",
+        cascade="all, delete-orphan",
+        back_populates="transaction_template",
+    )
     transaction_type = db.relationship("TransactionType", lazy="joined")
     transactions = db.relationship(
         "Transaction", back_populates="template", lazy="select"

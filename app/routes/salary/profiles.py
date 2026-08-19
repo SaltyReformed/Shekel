@@ -179,19 +179,10 @@ def _paycheck_template(
         carrying an id the profile can link.
     """
     calendar = calendar_for(current_user.id)
-    rule = author_rule(
-        RecurrenceSpec(
-            user_id=current_user.id,
-            unit=RecurrenceUnitEnum.PERIOD,
-            starts_on=calendar.opening_bound(),
-        ),
-        calendar,
-    )
     template = TransactionTemplate(
         user_id=current_user.id,
         account_id=account_id,
         category_id=category_id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
         name=data["name"],
         default_amount=calendar.cadence.annual_to_per_paycheck(
@@ -201,6 +192,18 @@ def _paycheck_template(
     )
     db.session.add(template)
     db.session.flush()
+    # **The paycheck cadence is authored ONTO the template** (plan step R-F6):
+    # the rule carries its owner's FK, so the definition has to exist first.
+    # The order reversed here; the cadence itself is unchanged.
+    author_rule(
+        RecurrenceSpec(
+            user_id=current_user.id,
+            unit=RecurrenceUnitEnum.PERIOD,
+            starts_on=calendar.opening_bound(),
+        ),
+        calendar,
+        template,
+    )
     return template
 
 

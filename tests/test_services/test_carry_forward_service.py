@@ -1063,8 +1063,6 @@ class TestCarryForwardOverrideSibling:
             # two-axis columns are NOT NULL, so a rule naming only a pattern
             # cannot be stored.  It starts on the schedule's opening payday,
             # which is where an unbounded rule always resolved to.
-            rule = make_every_period_rule(db.session, seed_user["user"].id)
-
             template = TransactionTemplate(
                 user_id=seed_user["user"].id,
                 account_id=seed_user["account"].id,
@@ -1072,10 +1070,11 @@ class TestCarryForwardOverrideSibling:
                 transaction_type_id=expense_type.id,
                 name="Recurring with rule",
                 default_amount=Decimal("400.00"),
-                recurrence_rule_id=rule.id,
             )
             db.session.add(template)
             db.session.flush()
+            # The definition first, then the cadence onto it (plan step R-F6).
+            rule = make_every_period_rule(db.session, template)
             db.session.refresh(template)
 
             # Initial generation populates rule-generated rows for
@@ -1245,8 +1244,6 @@ class TestCarryForwardOverrideSiblingTransfers:
             # two-axis columns are NOT NULL, so a rule naming only a pattern
             # cannot be stored.  It starts on the schedule's opening payday,
             # which is where an unbounded rule always resolved to.
-            rule = make_every_period_rule(db.session, seed_user["user"].id)
-
             template = TransferTemplate(
                 user_id=seed_user["user"].id,
                 from_account_id=seed_user["account"].id,
@@ -1254,10 +1251,11 @@ class TestCarryForwardOverrideSiblingTransfers:
                 category_id=seed_user["categories"]["Rent"].id,
                 name="Recurring Transfer with rule",
                 default_amount=Decimal("300.00"),
-                recurrence_rule_id=rule.id,
             )
             db.session.add(template)
             db.session.flush()
+            # The definition first, then the cadence onto it (plan step R-F6).
+            rule = make_every_period_rule(db.session, template)
             db.session.refresh(template)
 
             # Initial generation: rule-generated transfers in periods 0
@@ -1325,15 +1323,10 @@ def _create_envelope_template(
         db.session.query(TransactionType)
         .filter_by(name=txn_type_name).one()
     )
-    rule = None
-    if with_rule:
-        rule = make_every_period_rule(db.session, seed_user["user"].id)
-
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"][category_key].id,
-        recurrence_rule_id=rule.id if rule else None,
         transaction_type_id=txn_type.id,
         name=name,
         default_amount=Decimal(default_amount),
@@ -1341,6 +1334,9 @@ def _create_envelope_template(
     )
     db.session.add(template)
     db.session.flush()
+    if with_rule:
+        # The definition first, then the cadence onto it (plan step R-F6).
+        make_every_period_rule(db.session, template)
     return template
 
 

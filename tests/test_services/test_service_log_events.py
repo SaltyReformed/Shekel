@@ -412,8 +412,6 @@ def _envelope_transaction(app, db, seed_user, seed_periods):
     # pattern is a NOT NULL violation now, and ``make_every_period_rule``
     # starts it on the schedule's OPENING payday -- ``seed_periods[0]``, the
     # period this used to name directly.
-    rule = make_every_period_rule(db.session, seed_user["user"].id)
-
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
@@ -422,11 +420,12 @@ def _envelope_transaction(app, db, seed_user, seed_periods):
         name="Groceries Envelope",
         default_amount=Decimal("400.00"),
         is_envelope=True,
-        recurrence_rule_id=rule.id,
         is_active=True,
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
 
     txn = Transaction(
         pay_period_id=seed_periods[0].id,
@@ -699,8 +698,6 @@ def _recurrence_setup(app, db, seed_user, seed_periods):
     # pattern is a NOT NULL violation now, and ``make_every_period_rule``
     # starts it on the schedule's OPENING payday -- ``seed_periods[0]``, the
     # period this used to name directly.
-    rule = make_every_period_rule(db.session, seed_user["user"].id)
-
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
@@ -708,11 +705,12 @@ def _recurrence_setup(app, db, seed_user, seed_periods):
         transaction_type_id=expense_type.id,
         name="Recurring Test",
         default_amount=Decimal("100.00"),
-        recurrence_rule_id=rule.id,
         is_active=True,
     )
     db.session.add(template)
     db.session.commit()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
     return template
 
 
@@ -908,8 +906,6 @@ class TestTransferRecurrenceLogging:
         # Build a transfer template and rule.
         from app.models.transfer_template import TransferTemplate  # noqa: WPS433
 
-        rule = make_every_period_rule(db.session, td["user"].id)
-
         template = TransferTemplate(
             user_id=td["user"].id,
             from_account_id=td["account"].id,
@@ -917,11 +913,12 @@ class TestTransferRecurrenceLogging:
             category_id=td["category"].id,
             name="Recurring Transfer",
             default_amount=Decimal("75.00"),
-            recurrence_rule_id=rule.id,
             is_active=True,
         )
         db.session.add(template)
         db.session.commit()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_every_period_rule(db.session, template)
 
         with app.app_context(), _LogCapture(
             "app.services.transfer_recurrence",

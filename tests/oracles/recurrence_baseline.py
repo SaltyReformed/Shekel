@@ -405,8 +405,17 @@ def build_shape_rule(
     nothing reads that column, so a transient rule carrying ``None`` there
     differs from a production row in a field neither of them is read for.
 
+    **The rule carries an unsaved OWNER from plan step R-F6**, built inside
+    ``build_transient_rule`` from the spec's own ``user_id``: a recurrence rule
+    belongs to exactly one definition, and ``RecurrenceRule.user_id`` reads
+    through to it.  Nothing is added to a session, so the blob is still
+    captured without touching the database -- and it stayed byte-identical
+    across the step, which is what says the ownership move changed no
+    occurrence and no due date.
+
     Args:
         shape: The configuration to build.
+        calendar: The schedule the shape resolves against.
 
     Returns:
         An unsaved :class:`~app.models.recurrence_rule.RecurrenceRule`.

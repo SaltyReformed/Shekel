@@ -50,23 +50,97 @@ application can state two closing bounds, so nothing has to check.
 caller states what it AUTHORS -- a ``RecurrenceSpec``, never a column -- and
 the seam writes the whole spec.  Nothing in ``app/`` or ``scripts/`` constructs
 or mutates this model outside that seam.
+
+**A rule is OWNED BY its template, and plan step R-F6 turned that arrow
+around.**  The FK used to point from the template to the rule
+(``transaction_templates.recurrence_rule_id ON DELETE SET NULL``, and its
+transfer twin), which is a satellite referenced by its parent rather than
+declaring one -- and three consequences followed from the direction alone:
+
+1. **A hard-deleted template stranded its rule forever** (finding **F-6**).
+   ``SET NULL`` fires on the wrong side, so no ``ondelete`` in that direction
+   could dispose of the rule; the two hard-delete routes each had to remember,
+   and neither did.  Three rows had accumulated on production.
+2. **1:1 was unstateable**, so the application carried a runtime census --
+   ``_recurrence_form_helpers._rule_is_exclusively_owned`` -- counting the
+   templates referencing a rule before daring to delete it, and
+   ``scripts/integrity_check`` carried check **OR-02** scanning for the
+   orphans afterwards.  Both are DELETED: the arc plus a unique index per arm
+   says what they asked.
+3. **The rule carried its own ``user_id``**, which the template also carried,
+   with nothing tying the two together.  It is a property now
+   (:attr:`RecurrenceRule.user_id`), read through the owner, so the pair
+   cannot disagree.
+
+The shape is ``budget.template_amount_versions``' exactly (developer,
+2026-08-11) -- the OTHER satellite of these same two parents: an exclusive arc
+of two nullable typed FKs under one CHECK, ``ON DELETE CASCADE`` on each. The
+arc is EXACTLY-one rather than at-most-one, for that table's own reason one
+noun over: a cadence nothing repeats is not a cadence.
 """
 
 from app.extensions import db
-from app.models.mixins import CreatedAtMixin, UserScopedMixin
+from app.models.mixins import CreatedAtMixin
 
 
-class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
-    """A recurrence pattern attached to a transaction template.
+class RecurrenceRule(CreatedAtMixin, db.Model):
+    """A recurrence pattern owned by exactly one recurring definition.
 
     **Written only through :mod:`app.services.recurrence`**, which takes a
     complete authored spec rather than a column at a time.  See the module
     docstring for why the two-axis values the redesign adds are computed
-    rather than stored.
+    rather than stored, and for why the owning FK points from this table
+    rather than at it.
     """
 
     __tablename__ = "recurrence_rules"
     __table_args__ = (
+        # ---- The OWNING arc (plan step R-F6) -----------------------------
+        #
+        # Exactly one owner.  ``<>`` on two NULL tests is XOR, so both-set and
+        # neither-set are equally refused -- and NEITHER-set is what finding
+        # **F-6** measured three of on production, a rule whose template was
+        # hard-deleted out from under it.  With the FK pointing this way the
+        # disposal is the DATABASE'S (``ON DELETE CASCADE`` on each arm below),
+        # so it holds for every door that will ever delete a template rather
+        # than for the two that exist today.
+        #
+        # EXACTLY-one rather than at-most-one, which is the same choice
+        # ``ck_template_amount_versions_one_owner`` made and for the same kind
+        # of reason: an amount nobody stated for anything is not an amount, and
+        # a cadence nothing repeats on is not a cadence.  Nothing in the
+        # application holds an owner-less rule at all, not even an unsaved one:
+        # ``build_transient_rule`` takes an owner exactly as ``author_rule``
+        # does, so what a transient rule lacks is a ROW, never an owner.
+        db.CheckConstraint(
+            "(transaction_template_id IS NULL) <> (transfer_template_id IS NULL)",
+            name="ck_recurrence_rules_one_owner",
+        ),
+        # 1:1, per arm, and this is what the runtime census plan step R-F6
+        # deleted was standing in for: ``_rule_is_exclusively_owned`` counted
+        # the templates referencing a rule on every clear, because with the FK
+        # on the other side two templates COULD name one rule and deleting it
+        # would have stripped a second definition's cadence silently.  A
+        # template names at most one rule because it has no column to name a
+        # second with; a rule serves at most one template because of these.
+        #
+        # PARTIAL for the reason the precedent table's twins are: half this
+        # table's rows carry NULL in either key, and an index over those NULLs
+        # answers no query.  Each doubles as the index the reverse lookup
+        # needs, which is every read of ``rule.user_id`` and every ORM load of
+        # the owner.
+        db.Index(
+            "uq_recurrence_rules_transaction_template_id",
+            "transaction_template_id",
+            unique=True,
+            postgresql_where=db.text("transaction_template_id IS NOT NULL"),
+        ),
+        db.Index(
+            "uq_recurrence_rules_transfer_template_id",
+            "transfer_template_id",
+            unique=True,
+            postgresql_where=db.text("transfer_template_id IS NOT NULL"),
+        ),
         db.CheckConstraint("interval_n > 0", name="ck_recurrence_rules_positive_interval"),
         # At most ONE closing bound -- the EXCLUSIVE ARC this pair of nullable
         # columns is.  A rule that both ends on a date and after N occurrences
@@ -159,6 +233,50 @@ class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
     )
 
     id = db.Column(db.Integer, primary_key=True)
+    # ---- The owner: exactly one of these two (plan step R-F6) ------------
+    #
+    # ``ON DELETE CASCADE`` is the whole of finding **F-6**'s fix: the rule
+    # goes when its definition does, from the hard-delete routes, from a user
+    # deletion, from a restore, from hand SQL -- from anywhere, because it is
+    # the database that disposes of it rather than a route that remembers to.
+    # ``budget.recurrence_rules`` is in ``audit_infrastructure.AUDITED_TABLES``
+    # and a cascaded DELETE fires row-level triggers, so the disposal is still
+    # recorded in ``system.audit_log`` (verified against the live server).
+    #
+    # Nullable, and the nullability is the ARC rather than an optional owner:
+    # ``ck_recurrence_rules_one_owner`` above requires exactly one, so every
+    # row has an owner and no row has two.
+    #
+    # Pylint: ``duplicate-code`` -- the arc's two FK columns and the two
+    # relationships below read almost verbatim like
+    # ``template_amount_version``'s, and that is the POINT rather than an
+    # accident: both are satellites of the same two parent tables and the
+    # developer ruled the same shape for both (2026-08-11 there, 2026-08-18
+    # here).  What is shared is a SCHEMA DECLARATION, not logic -- the two
+    # tables' unique indexes differ (one row per owner here, one per owner per
+    # date there), their relationships carry different ``back_populates`` and
+    # cardinality, and their ``__table_args__`` share nothing else -- so a
+    # mixin could hoist the two ``db.Column`` calls and would leave every
+    # constraint that gives them meaning behind, which is indirection that
+    # removes no rule (coding-standards rule 13).  One-sided disable; the
+    # precedent module stays un-disabled.
+    # pylint: disable=duplicate-code
+    transaction_template_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "budget.transaction_templates.id", ondelete="CASCADE",
+            name="fk_recurrence_rules_transaction_template_id",
+        ),
+        nullable=True,
+    )
+    transfer_template_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "budget.transfer_templates.id", ondelete="CASCADE",
+            name="fk_recurrence_rules_transfer_template_id",
+        ),
+        nullable=True,
+    )
     # ---- The cadence: the two axes, their interval and their anchor ------
     #
     # **The WHOLE of what a rule says about when it fires, since plan step
@@ -325,6 +443,63 @@ class RecurrenceRule(UserScopedMixin, CreatedAtMixin, db.Model):
         cascade="all, delete-orphan", passive_deletes=True,
         back_populates="rule",
     )
+    # The owning definition, one arm of the exclusive arc each.  MANY-TO-ONE
+    # onto a primary key, so SQLAlchemy resolves each from the identity map
+    # when the owner is already loaded (the ``use_get`` path) -- which is every
+    # reader that reached the rule through ``template.recurrence_rule``, so
+    # reading :attr:`user_id` back off a rule costs no query on the paths that
+    # have one.  ``lazy="select"`` rather than joined: a rule is loaded FROM
+    # its template far more often than the reverse, and eager-joining the owner
+    # would re-fetch on every such load the row the caller is already holding.
+    transaction_template = db.relationship(
+        "TransactionTemplate", back_populates="recurrence_rule",
+    )
+    transfer_template = db.relationship(
+        "TransferTemplate", back_populates="recurrence_rule",
+    )
+
+    @property
+    def user_id(self) -> int:
+        """The owner, reached through the definition this rule belongs to.
+
+        A COLUMN until plan step R-F6, beside the ``user_id`` its template
+        carried, with nothing tying the two together -- so the pair could
+        disagree and one runtime comparison in one route helper was the whole
+        of what noticed.  Derived here instead, which is what makes them one
+        value rather than two that agree.
+
+        Kept under the column's own name deliberately: every reader states
+        ``calendar_for(rule.user_id)`` or ``RecurrenceSpec(user_id=...)``, and
+        those readers are asking who owns the rule, not which table holds the
+        answer.
+
+        Returns:
+            The owning user's id.
+
+        Raises:
+            ValueError: The rule has no owner at all.  Unreachable through
+                either write door -- both take one -- and unreachable for a
+                row, which ``ck_recurrence_rules_one_owner`` refuses without
+                one.  What it catches is a rule CONSTRUCTED directly, which is
+                a fixture bypassing the seam rather than an application state,
+                and it names that rather than surfacing as an ``AttributeError``
+                on ``None`` three frames down.
+        """
+        # ``is None`` rather than truthiness, per the coding standard: an ORM
+        # instance defines no ``__bool__`` today, so the two agree -- and a
+        # model that later defined one would silently make this read the wrong
+        # arm of the arc.
+        owner = self.transaction_template
+        if owner is None:
+            owner = self.transfer_template
+        if owner is None:
+            raise ValueError(
+                "this RecurrenceRule has no owning template, so it has no "
+                "owner to report.  A rule with neither owning FK set is a "
+                "TRANSIENT rule (build_transient_rule); state the user on the "
+                "RecurrenceSpec instead of reading it back off the rule."
+            )
+        return owner.user_id
 
     def __repr__(self):
         return (

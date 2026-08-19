@@ -61,19 +61,18 @@ def _create_savings_account(seed_user):
 
 def _create_template(seed_user, savings_acct, with_rule=True):
     """Helper: create a transfer template with optional recurrence rule."""
-    rule = None
-    if with_rule:
-        rule = make_every_period_rule(db.session, seed_user["user"].id)
-
     template = TransferTemplate(
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
         to_account_id=savings_acct.id,
-        recurrence_rule_id=rule.id if rule else None,
         name="Monthly Savings",
         default_amount=Decimal("200.00"),
     )
     db.session.add(template)
+    db.session.flush()
+    if with_rule:
+        # The definition first, then the cadence onto it (plan step R-F6).
+        make_every_period_rule(db.session, template)
     db.session.commit()
     return template
 
@@ -584,7 +583,7 @@ class TestTemplateCreate:
 
             # RecurrenceRule count: exactly 1 for this template.
             rule_count = db.session.query(RecurrenceRule).filter_by(
-                id=template.recurrence_rule_id,
+                id=template.recurrence_rule.id,
             ).count()
             assert rule_count == 1, (
                 f"Expected 1 recurrence rule, found {rule_count}"
@@ -2851,7 +2850,7 @@ class TestOneTimeTransfer:
                 )
                 .one()
             )
-            assert tmpl.recurrence_rule_id is None
+            assert tmpl.recurrence_rule is None
             assert tmpl.recurrence_rule is None
 
             # Transfer was created via the service.
@@ -3068,7 +3067,7 @@ class TestOneTimeTransfer:
                 .filter_by(user_id=seed_user["user"].id, name="No Pattern Key")
                 .one()
             )
-            assert tmpl.recurrence_rule_id is None
+            assert tmpl.recurrence_rule is None
             xfer = (
                 db.session.query(Transfer)
                 .filter_by(transfer_template_id=tmpl.id)
@@ -3409,7 +3408,7 @@ class TestOneTimeTransfer:
 
         **The probe MOVED at plan step R7b-4 and this test is now its
         primary coverage.**  It sat in the kind-agnostic F-24 builder
-        (``build_recurrence_rule_from_form``) because that ``<select>`` was
+        (``recurrence_spec_from_form``) because that ``<select>`` was
         also the recurrence's "First paycheck"; the recurrence takes a DATE
         now, so the field has one job -- which period a NON-repeating transfer
         lands in -- and ``create_transfer_template`` owner-checks it before

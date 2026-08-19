@@ -60,6 +60,7 @@ from app.enums import (
 )
 from app.extensions import db
 from app.models.recurrence_rule import RecurrenceRule
+from tests._test_helpers import bare_expense_template
 
 #: A first occurrence inside the calendar window, on a day every month holds.
 #:
@@ -103,6 +104,25 @@ def _storable_columns(**overrides):
     return columns
 
 
+def _owner_id(seed_user):
+    """Return a flushed, cadence-less template id for a rule to hang off.
+
+    **Plan step R-F6 is why every construction below needs one**: the owning
+    FK moved onto ``budget.recurrence_rules`` under
+    ``ck_recurrence_rules_one_owner``, so a rule with no definition is refused
+    by a constraint that is not the one any case here is about -- and a case
+    that failed on the wrong constraint would still be green, which is exactly
+    the confusion :func:`_refused` names the constraint to avoid.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+
+    Returns:
+        The new template's id.
+    """
+    return bare_expense_template(db.session, seed_user).id
+
+
 def _refused(seed_user, constraint, label="", **columns):
     """Flush a rule built from *columns* and assert *constraint* refuses it.
 
@@ -118,7 +138,7 @@ def _refused(seed_user, constraint, label="", **columns):
             failure apart from the refusal the case is about.
     """
     rule = RecurrenceRule(
-        user_id=seed_user["user"].id, **_storable_columns(**columns),
+        transaction_template_id=_owner_id(seed_user), **_storable_columns(**columns),
     )
     db.session.add(rule)
     with pytest.raises(IntegrityError) as exc_info:
@@ -175,7 +195,7 @@ class TestRecurrenceRuleRangeConstraints:
         """
         with app.app_context():
             rule = RecurrenceRule(
-                user_id=seed_user["user"].id, **_storable_columns(),
+                transaction_template_id=_owner_id(seed_user), **_storable_columns(),
             )
             db.session.add(rule)
             db.session.flush()
@@ -193,7 +213,7 @@ class TestRecurrenceRuleRangeConstraints:
         """
         with app.app_context():
             rule = RecurrenceRule(
-                user_id=seed_user["user"].id, **_storable_columns(),
+                transaction_template_id=_owner_id(seed_user), **_storable_columns(),
             )
             db.session.add(rule)
             db.session.flush()
@@ -222,7 +242,7 @@ class TestTheNominalDayIsOnlyEverAClamp:
         """
         with app.app_context():
             rule = RecurrenceRule(
-                user_id=seed_user["user"].id,
+                transaction_template_id=_owner_id(seed_user),
                 **_storable_columns(
                     starts_on=date(2026, 4, 30), nominal_day=31,
                 ),
@@ -310,7 +330,7 @@ class TestTheWindowIsHeldAtTheDoorsAndNotTheTable:
         """
         with app.app_context():
             rule = RecurrenceRule(
-                user_id=seed_user["user"].id,
+                transaction_template_id=_owner_id(seed_user),
                 **_storable_columns(
                     starts_on=date(2026, 9, 1), end_date=date(2026, 8, 15),
                 ),
@@ -330,7 +350,7 @@ class TestTheWindowIsHeldAtTheDoorsAndNotTheTable:
         """
         with app.app_context():
             rule = RecurrenceRule(
-                user_id=seed_user["user"].id,
+                transaction_template_id=_owner_id(seed_user),
                 **_storable_columns(
                     starts_on=date(2026, 6, 1), end_date=date(2026, 6, 1),
                 ),
@@ -349,7 +369,7 @@ class TestTheWindowIsHeldAtTheDoorsAndNotTheTable:
         """
         with app.app_context():
             rule = RecurrenceRule(
-                user_id=seed_user["user"].id,
+                transaction_template_id=_owner_id(seed_user),
                 **_storable_columns(end_date=None),
             )
             db.session.add(rule)
@@ -407,7 +427,7 @@ class TestTheStartFallsInsideTheCalendar:
         """
         with app.app_context():
             rule = RecurrenceRule(
-                user_id=seed_user["user"].id,
+                transaction_template_id=_owner_id(seed_user),
                 **_storable_columns(starts_on=starts_on),
             )
             db.session.add(rule)

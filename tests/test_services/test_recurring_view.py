@@ -90,15 +90,18 @@ def _calendar(periods):
     return calendar_for(periods[0].user_id)
 
 
-def _create_rule(seed_user, cadence, *, interval_n=1,
-                 day_of_month=None, month_of_year=None, end_date=None):
-    """Author and flush a RecurrenceRule for the seed user.
+def _author_cadence(tmpl, cadence, *, interval_n=1,
+                    day_of_month=None, month_of_year=None, end_date=None):
+    """Author *cadence* onto *tmpl*, through the write door.
 
-    Through the write door since plan step R7c-b, which made the two-axis
-    columns NOT NULL: a rule naming only a pattern no longer produces a row.
+    Through that door since plan step R7c-b, which made the two-axis columns
+    NOT NULL: a rule naming only a pattern no longer produces a row.  It takes
+    the OWNING template since plan step R-F6, which put the owning FK on
+    ``budget.recurrence_rules`` -- so a rule cannot exist before the definition
+    it belongs to, and these fixtures build the definition first.
     """
     return make_cadence_rule(
-        seed_user["user"].id, cadence,
+        tmpl, cadence,
         interval_n=interval_n,
         fires_on_day=day_of_month,
         fires_in_month=month_of_year,
@@ -106,13 +109,17 @@ def _create_rule(seed_user, cadence, *, interval_n=1,
     )
 
 
-def _create_txn_template(seed_user, rule, amount, *, type_enum, name):
-    """Create and flush an income or expense TransactionTemplate."""
+def _create_txn_template(seed_user, cadence, amount, *, type_enum, name,
+                         **rule_kwargs):
+    """Create and flush an income or expense TransactionTemplate.
+
+    ``cadence`` may be ``None`` -- that is how a definition says "does not
+    repeat" since plan step R2e-3.
+    """
     tmpl = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Rent"].id,
-        recurrence_rule_id=rule.id if rule else None,
         transaction_type_id=ref_cache.txn_type_id(type_enum),
         name=name,
         default_amount=amount,
@@ -120,20 +127,26 @@ def _create_txn_template(seed_user, rule, amount, *, type_enum, name):
     )
     db.session.add(tmpl)
     db.session.flush()
+    if cadence is not None:
+        _author_cadence(tmpl, cadence, **rule_kwargs)
     return tmpl
 
 
-def _create_expense(seed_user, rule, amount, *, name="Expense"):
-    """Create and flush an expense TransactionTemplate."""
+def _create_expense(seed_user, cadence, amount, *, name="Expense",
+                    **rule_kwargs):
+    """Create and flush an expense TransactionTemplate with its cadence."""
     return _create_txn_template(
-        seed_user, rule, amount, type_enum=TxnTypeEnum.EXPENSE, name=name,
+        seed_user, cadence, amount, type_enum=TxnTypeEnum.EXPENSE, name=name,
+        **rule_kwargs,
     )
 
 
-def _create_income(seed_user, rule, amount, *, name="Income"):
-    """Create and flush an income TransactionTemplate."""
+def _create_income(seed_user, cadence, amount, *, name="Income",
+                   **rule_kwargs):
+    """Create and flush an income TransactionTemplate with its cadence."""
     return _create_txn_template(
-        seed_user, rule, amount, type_enum=TxnTypeEnum.INCOME, name=name,
+        seed_user, cadence, amount, type_enum=TxnTypeEnum.INCOME, name=name,
+        **rule_kwargs,
     )
 
 
@@ -153,19 +166,20 @@ def _create_savings(seed_user, name="Test Savings"):
     return account
 
 
-def _create_transfer(seed_user, rule, amount, to_account, *, name="Transfer"):
-    """Create and flush a recurring TransferTemplate."""
+def _create_transfer(seed_user, cadence, amount, to_account, *,
+                     name="Transfer", **rule_kwargs):
+    """Create and flush a recurring TransferTemplate with its cadence."""
     tmpl = TransferTemplate(
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
         to_account_id=to_account.id,
-        recurrence_rule_id=rule.id,
         name=name,
         default_amount=amount,
         is_active=True,
     )
     db.session.add(tmpl)
     db.session.flush()
+    _author_cadence(tmpl, cadence, **rule_kwargs)
     return tmpl
 
 
@@ -179,8 +193,7 @@ class TestUnitEquivalents:
         """A $100 every-paycheck expense: monthly = 100 * 26 / 12 = $216.67,
         per-paycheck = that monthly re-expressed = exactly $100.00.
         """
-        rule = _create_rule(seed_user, EVERY_PERIOD)
-        tmpl = _create_expense(seed_user, rule, Decimal("100.00"))
+        tmpl = _create_expense(seed_user, EVERY_PERIOD, Decimal("100.00"))
 
         view = recurring_view.build_view(
             [], [tmpl], [], _calendar(seed_periods_today), date.today(),
@@ -195,10 +208,7 @@ class TestUnitEquivalents:
         """A $500 monthly expense: monthly = $500.00,
         per-paycheck = 500 * 12 / 26 = 230.7692... -> $230.77.
         """
-        rule = _create_rule(
-            seed_user, MONTHLY, day_of_month=15,
-        )
-        tmpl = _create_expense(seed_user, rule, Decimal("500.00"))
+        tmpl = _create_expense(seed_user, MONTHLY, Decimal("500.00"), day_of_month=15)
 
         view = recurring_view.build_view(
             [], [tmpl], [], _calendar(seed_periods_today), date.today(),
@@ -212,11 +222,7 @@ class TestUnitEquivalents:
         """A $1,200 annual expense: monthly = 1200 / 12 = $100.00,
         per-paycheck = 1200 / 26 = 46.1538... -> $46.15.
         """
-        rule = _create_rule(
-            seed_user, ANNUAL,
-            day_of_month=1, month_of_year=6,
-        )
-        tmpl = _create_expense(seed_user, rule, Decimal("1200.00"))
+        tmpl = _create_expense(seed_user, ANNUAL, Decimal("1200.00"), day_of_month=1, month_of_year=6)
 
         view = recurring_view.build_view(
             [], [tmpl], [], _calendar(seed_periods_today), date.today(),
@@ -243,12 +249,8 @@ class TestSubtotals:
 
         $100 biweekly (216.67) + $500 monthly (500.00) = $716.67.
         """
-        rule_bw = _create_rule(seed_user, EVERY_PERIOD)
-        rule_mo = _create_rule(
-            seed_user, MONTHLY, day_of_month=15,
-        )
-        e1 = _create_expense(seed_user, rule_bw, Decimal("100.00"), name="A")
-        e2 = _create_expense(seed_user, rule_mo, Decimal("500.00"), name="B")
+        e1 = _create_expense(seed_user, EVERY_PERIOD, Decimal("100.00"), name="A")
+        e2 = _create_expense(seed_user, MONTHLY, Decimal("500.00"), name="B", day_of_month=15)
         as_of = date.today()
 
         view = recurring_view.build_view(
@@ -268,12 +270,8 @@ class TestSubtotals:
         Full monthly total = 100*26/12 + 500 = 716.6667;
         per-paycheck = 716.6667 * 12 / 26 = 330.769... -> $330.77.
         """
-        rule_bw = _create_rule(seed_user, EVERY_PERIOD)
-        rule_mo = _create_rule(
-            seed_user, MONTHLY, day_of_month=15,
-        )
-        e1 = _create_expense(seed_user, rule_bw, Decimal("100.00"), name="A")
-        e2 = _create_expense(seed_user, rule_mo, Decimal("500.00"), name="B")
+        e1 = _create_expense(seed_user, EVERY_PERIOD, Decimal("100.00"), name="A")
+        e2 = _create_expense(seed_user, MONTHLY, Decimal("500.00"), name="B", day_of_month=15)
 
         view = recurring_view.build_view(
             [], [e1, e2], [], _calendar(seed_periods_today), date.today(),
@@ -310,9 +308,8 @@ class TestNonRecurringRows:
         """A rule-less expense appears as a row with a blank equivalent
         and no next date, and adds $0 to the subtotal.
         """
-        recurring = _create_rule(seed_user, EVERY_PERIOD)
         once = _create_expense(seed_user, None, Decimal("999.00"), name="OneTime")
-        real = _create_expense(seed_user, recurring, Decimal("100.00"), name="Real")
+        real = _create_expense(seed_user, EVERY_PERIOD, Decimal("100.00"), name="Real")
 
         view = recurring_view.build_view(
             [], [once, real], [], _calendar(seed_periods_today), date.today(),
@@ -365,11 +362,7 @@ class TestNonRecurringRows:
         a manageable row with a blank equivalent and no next date, and adds
         nothing to the subtotal (it is no longer a future commitment).
         """
-        rule = _create_rule(
-            seed_user, EVERY_PERIOD,
-            end_date=date.today() - timedelta(days=1),
-        )
-        tmpl = _create_expense(seed_user, rule, Decimal("1500.00"), name="Expired")
+        tmpl = _create_expense(seed_user, EVERY_PERIOD, Decimal("1500.00"), name="Expired", end_date=date.today() - timedelta(days=1))
 
         view = recurring_view.build_view(
             [], [tmpl], [], _calendar(seed_periods_today), date.today(),
@@ -398,14 +391,10 @@ class TestSummaryBand:
         net per-paycheck = 1500.00 - 100.00 - 230.77 = 1169.23
         """
         savings = _create_savings(seed_user)
-        rule_bw = _create_rule(seed_user, EVERY_PERIOD)
-        rule_mo = _create_rule(
-            seed_user, MONTHLY, day_of_month=1,
-        )
-        income = _create_income(seed_user, rule_bw, Decimal("1500.00"))
-        expense = _create_expense(seed_user, rule_bw, Decimal("100.00"))
+        income = _create_income(seed_user, EVERY_PERIOD, Decimal("1500.00"))
+        expense = _create_expense(seed_user, EVERY_PERIOD, Decimal("100.00"))
         transfer = _create_transfer(
-            seed_user, rule_mo, Decimal("500.00"), savings,
+            seed_user, MONTHLY, Decimal("500.00"), savings, day_of_month=1,
         )
 
         view = recurring_view.build_view(
@@ -424,8 +413,7 @@ class TestSummaryBand:
         self, seed_user, seed_periods_today,
     ):
         """With no income, the expenses-percent-of-income chip is None."""
-        rule = _create_rule(seed_user, EVERY_PERIOD)
-        expense = _create_expense(seed_user, rule, Decimal("100.00"))
+        expense = _create_expense(seed_user, EVERY_PERIOD, Decimal("100.00"))
 
         view = recurring_view.build_view(
             [], [expense], [], _calendar(seed_periods_today), date.today(),
@@ -456,12 +444,8 @@ class TestSharesAndOrdering:
         share A = 216.6667 / 716.6667 * 100 = 30.2326 -> 30.2
         share B = 500 / 716.6667 * 100      = 69.7674 -> 69.8
         """
-        rule_bw = _create_rule(seed_user, EVERY_PERIOD)
-        rule_mo = _create_rule(
-            seed_user, MONTHLY, day_of_month=15,
-        )
-        _create_expense(seed_user, rule_bw, Decimal("100.00"), name="Small")
-        _create_expense(seed_user, rule_mo, Decimal("500.00"), name="Big")
+        _create_expense(seed_user, EVERY_PERIOD, Decimal("100.00"), name="Small")
+        _create_expense(seed_user, MONTHLY, Decimal("500.00"), name="Big", day_of_month=15)
 
         view = recurring_view.build_view(
             [],
@@ -483,10 +467,9 @@ class TestSharesAndOrdering:
         would put it first; it sorts last because a rule-less definition has
         no monthly equivalent at all.
         """
-        rule = _create_rule(seed_user, MONTHLY, day_of_month=1)
-        _create_expense(seed_user, rule, Decimal("300.00"), name="Mid")
-        _create_expense(seed_user, rule, Decimal("900.00"), name="High")
-        _create_expense(seed_user, rule, Decimal("100.00"), name="Low")
+        _create_expense(seed_user, MONTHLY, Decimal("300.00"), name="Mid", day_of_month=1)
+        _create_expense(seed_user, MONTHLY, Decimal("900.00"), name="High", day_of_month=1)
+        _create_expense(seed_user, MONTHLY, Decimal("100.00"), name="Low", day_of_month=1)
         _create_expense(seed_user, None, Decimal("999.00"), name="Once")
 
         view = recurring_view.build_view(
@@ -510,16 +493,17 @@ class TestNextDates:
         on the 15th.
         """
         today = date.today()
-        rule = _create_rule(
-            seed_user, MONTHLY, day_of_month=15,
-        )
-        tmpl = _create_expense(seed_user, rule, Decimal("100.00"))
+        tmpl = _create_expense(seed_user, MONTHLY, Decimal("100.00"), day_of_month=15)
 
         view = recurring_view.build_view(
             [], [tmpl], [], _calendar(seed_periods_today), today,
         )
         next_date = view.expenses.rows[0].next_date
         # Independent engine recomputation of the contract.
+        # Reached through the template that owns it (plan step R-F6): the
+        # rule is authored onto the definition, so the definition is what a
+        # caller holds a handle to.
+        rule = tmpl.recurrence_rule
         matched = [
             placement.period
             for placement in rule_occurrences(
@@ -544,8 +528,7 @@ class TestNextDates:
         after today (the current period's start is already past).
         """
         today = date.today()
-        rule = _create_rule(seed_user, EVERY_PERIOD)
-        tmpl = _create_expense(seed_user, rule, Decimal("50.00"))
+        tmpl = _create_expense(seed_user, EVERY_PERIOD, Decimal("50.00"))
 
         view = recurring_view.build_view(
             [], [tmpl], [], _calendar(seed_periods_today), today,
@@ -596,10 +579,7 @@ class TestTheRecurrenceDescription:
         the recurrence MEANS against the owner's schedule, which a template
         holds neither of.
         """
-        rule = _create_rule(
-            seed_user, MONTHLY, day_of_month=22,
-        )
-        tmpl = _create_expense(seed_user, rule, Decimal("100.00"))
+        tmpl = _create_expense(seed_user, MONTHLY, Decimal("100.00"), day_of_month=22)
 
         view = recurring_view.build_view(
             [], [tmpl], [], _calendar(seed_periods_today), date.today(),
@@ -639,11 +619,7 @@ class TestTheRecurrenceDescription:
         carries the stop whether or not the schedule reaches it.
         """
         end = date(2029, 9, 15)
-        rule = _create_rule(
-            seed_user, MONTHLY,
-            day_of_month=22, end_date=end,
-        )
-        tmpl = _create_expense(seed_user, rule, Decimal("100.00"))
+        tmpl = _create_expense(seed_user, MONTHLY, Decimal("100.00"), day_of_month=22, end_date=end)
 
         view = recurring_view.build_view(
             [], [tmpl], [], _calendar(seed_periods_today), date.today(),
@@ -656,8 +632,7 @@ class TestTheRecurrenceDescription:
     ):
         """The transfers section takes the same producer, not a second one."""
         savings = _create_savings(seed_user)
-        rule = _create_rule(seed_user, EVERY_PERIOD)
-        tmpl = _create_transfer(seed_user, rule, Decimal("50.00"), savings)
+        tmpl = _create_transfer(seed_user, EVERY_PERIOD, Decimal("50.00"), savings)
 
         view = recurring_view.build_view(
             [], [], [tmpl], _calendar(seed_periods_today), date.today(),
@@ -679,12 +654,8 @@ class TestTheRecurrenceDescription:
         (``_reading.resolve``), not at this module's imported name: patching a
         re-export proves only that the harness reads what it reads.
         """
-        rule = _create_rule(
-            seed_user, MONTHLY, day_of_month=22,
-        )
-        expense = _create_expense(seed_user, rule, Decimal("100.00"))
-        income_rule = _create_rule(seed_user, EVERY_PERIOD)
-        income = _create_income(seed_user, income_rule, Decimal("2000.00"))
+        expense = _create_expense(seed_user, MONTHLY, Decimal("100.00"), day_of_month=22)
+        income = _create_income(seed_user, EVERY_PERIOD, Decimal("2000.00"))
 
         calls = []
         real_resolve = _reading.resolve
@@ -721,11 +692,7 @@ class TestTheArchivedDrawer:
         self, seed_user, seed_periods_today,
     ):
         """The drawer shows how a definition repeated before it was archived."""
-        rule = _create_rule(
-            seed_user, ANNUAL,
-            day_of_month=1, month_of_year=11,
-        )
-        tmpl = _create_expense(seed_user, rule, Decimal("400.00"))
+        tmpl = _create_expense(seed_user, ANNUAL, Decimal("400.00"), day_of_month=1, month_of_year=11)
         tmpl.is_active = False
         db.session.flush()
 
@@ -780,10 +747,7 @@ class TestTheArchivedDrawer:
         door's FIRST step alone.  Computing placements and discarding them is
         the defect ledger row D26 names, one surface over.
         """
-        rule = _create_rule(
-            seed_user, MONTHLY, day_of_month=9,
-        )
-        tmpl = _create_expense(seed_user, rule, Decimal("50.00"))
+        tmpl = _create_expense(seed_user, MONTHLY, Decimal("50.00"), day_of_month=9)
         tmpl.is_active = False
         db.session.flush()
 
@@ -829,11 +793,7 @@ class TestNoneMeansDoesNotRepeat:
         self, seed_user, seed_periods_today,
     ):
         """A repeating definition is never described as non-repeating."""
-        rule = _create_rule(
-            seed_user, QUARTERLY,
-            day_of_month=2, month_of_year=3,
-        )
-        tmpl = _create_expense(seed_user, rule, Decimal("60.00"))
+        tmpl = _create_expense(seed_user, QUARTERLY, Decimal("60.00"), day_of_month=2, month_of_year=3)
         empty = PayCalendar.from_paydays(
             paydays=(), cadence_days=14, user_id=seed_user["user"].id,
         )
@@ -845,10 +805,7 @@ class TestNoneMeansDoesNotRepeat:
         self, seed_user, seed_periods_today,
     ):
         """Both row kinds reach the same discriminator."""
-        rule = _create_rule(
-            seed_user, MONTHLY, day_of_month=9,
-        )
-        tmpl = _create_expense(seed_user, rule, Decimal("25.00"))
+        tmpl = _create_expense(seed_user, MONTHLY, Decimal("25.00"), day_of_month=9)
         tmpl.is_active = False
         db.session.flush()
         empty = PayCalendar.from_paydays(
@@ -939,10 +896,7 @@ class TestAnAbsentCadenceIsRefused:
         calendar must not.  Both halves are asserted, because the first alone
         would pass if the property were removed from the value entirely.
         """
-        rule = _create_rule(
-            seed_user, MONTHLY, day_of_month=9,
-        )
-        tmpl = _create_expense(seed_user, rule, Decimal("25.00"))
+        tmpl = _create_expense(seed_user, MONTHLY, Decimal("25.00"), day_of_month=9)
         tmpl.is_active = False
         db.session.flush()
         calendar = _calendar(seed_periods_today)
@@ -975,25 +929,22 @@ class TestTheValuesCannotDisagree:
         """A docstring guarantee the generated ``__init__`` does not enforce
         is what ``OccurrencePlacement.__post_init__`` exists to stop repeating.
         """
-        rule = _create_rule(
-            seed_user, EVERY_PERIOD,
-        )
-        tmpl = _create_expense(seed_user, rule, Decimal("10.00"))
+        tmpl = _create_expense(seed_user, EVERY_PERIOD, Decimal("10.00"))
 
         with pytest.raises(ValueError, match="rule and its reading"):
             recurring_view._PreparedRow(
-                template=tmpl, monthly_full=None, rule=rule, reading=None,
+                template=tmpl, monthly_full=None,
+                rule=tmpl.recurrence_rule, reading=None,
             )
 
     def test_a_prepared_row_refuses_a_reading_without_its_rule(
         self, seed_user, seed_periods_today,
     ):
         """The other direction, so the check is a biconditional not a guard."""
-        rule = _create_rule(
-            seed_user, EVERY_PERIOD,
+        tmpl = _create_expense(seed_user, EVERY_PERIOD, Decimal("10.00"))
+        reading = read_rule(
+            tmpl.recurrence_rule, _calendar(seed_periods_today),
         )
-        tmpl = _create_expense(seed_user, rule, Decimal("10.00"))
-        reading = read_rule(rule, _calendar(seed_periods_today))
 
         with pytest.raises(ValueError, match="rule and its reading"):
             recurring_view._PreparedRow(

@@ -280,35 +280,25 @@ def _create_investment_account_with_contributions(seed_user, seed_periods):
     return acct, params, profile, deduction
 
 
-def _create_recurrence_rule(seed_user, cadence, interval_n=1):
-    """Create a recurrence rule for the test user.
-
-    Args:
-        seed_user: The seed user fixture dict.
-        cadence: A ``tests.oracles.recurrence_baseline`` cadence
-            constant.
-        interval_n: Interval for the every-N-paychecks cadence
-            (default 1).
-
-    Returns:
-        RecurrenceRule: the new rule, flushed for id assignment.
-    """
-    return make_cadence_rule(
-        seed_user["user"].id, cadence, interval_n=interval_n,
-    )
-
-
-def _create_expense_template(seed_user, rule, amount, name="Test Expense",
-                             is_active=True):
+def _create_expense_template(seed_user, cadence, amount, name="Test Expense",
+                             is_active=True, interval_n=1):
     """Create an expense template on the seed user's checking account.
 
+    **It takes the CADENCE rather than a pre-built rule, since plan step
+    R-F6**, and authors it here: a rule carries its owning template's FK, so it
+    cannot exist before the template does.  The two calls a caller used to make
+    -- build the rule, then pass it in -- collapse into this one, and the
+    separate ``_create_recurrence_rule`` helper is deleted.
+
     Args:
         seed_user: The seed user fixture dict.
-        rule: RecurrenceRule object, or ``None`` for a template that does not
-            repeat (plan step R2e-3's shape).
+        cadence: A ``tests.oracles.recurrence_baseline`` cadence constant, or
+            ``None`` for a template that does not repeat (plan step R2e-3's
+            shape).
         amount: Decimal default amount.
         name: Template display name.
         is_active: Whether the template is active (default True).
+        interval_n: Interval for the every-N-paychecks cadence (default 1).
 
     Returns:
         TransactionTemplate: the new template, flushed for id assignment.
@@ -317,7 +307,6 @@ def _create_expense_template(seed_user, rule, amount, name="Test Expense",
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Rent"].id,
-        recurrence_rule_id=rule.id if rule is not None else None,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         name=name,
         default_amount=amount,
@@ -325,17 +314,22 @@ def _create_expense_template(seed_user, rule, amount, name="Test Expense",
     )
     db.session.add(tmpl)
     db.session.flush()
+    if cadence is not None:
+        make_cadence_rule(tmpl, cadence, interval_n=interval_n)
     return tmpl
 
 
-def _create_test_transfer_template(seed_user, to_account, rule, amount,
+def _create_test_transfer_template(seed_user, to_account, cadence, amount,
                                    name="Test Transfer", is_active=True):
     """Create a transfer template from checking to another account.
+
+    Takes the CADENCE rather than a pre-built rule, for the reason
+    :func:`_create_expense_template` gives.
 
     Args:
         seed_user: The seed user fixture dict (checking is the source).
         to_account: Destination Account object.
-        rule: RecurrenceRule object.
+        cadence: A ``tests.oracles.recurrence_baseline`` cadence constant.
         amount: Decimal default amount.
         name: Template display name.
         is_active: Whether the template is active (default True).
@@ -347,13 +341,13 @@ def _create_test_transfer_template(seed_user, to_account, rule, amount,
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
         to_account_id=to_account.id,
-        recurrence_rule_id=rule.id,
         name=name,
         default_amount=amount,
         is_active=is_active,
     )
     db.session.add(tmpl)
     db.session.flush()
+    make_cadence_rule(tmpl, cadence)
     return tmpl
 
 
@@ -1283,11 +1277,8 @@ class TestEmergencyFundCommittedBaseline:
             )
 
             # Transfer template: checking -> savings, every period.
-            rule = _create_recurrence_rule(
-                seed_user, EVERY_PERIOD,
-            )
             _create_test_transfer_template(
-                seed_user, savings, rule, Decimal("1500.00"),
+                seed_user, savings, EVERY_PERIOD, Decimal("1500.00"),
                 name="Mortgage Payment",
             )
             db.session.commit()
@@ -1350,11 +1341,8 @@ class TestEmergencyFundCommittedBaseline:
                 db.session.add(txn)
 
             # Transfer template with higher committed amount.
-            rule = _create_recurrence_rule(
-                seed_user, EVERY_PERIOD,
-            )
             _create_test_transfer_template(
-                seed_user, savings, rule, Decimal("1500.00"),
+                seed_user, savings, EVERY_PERIOD, Decimal("1500.00"),
                 name="Mortgage Payment",
             )
             db.session.commit()
@@ -1471,11 +1459,8 @@ class TestEmergencyFundCommittedBaseline:
             )
 
             # Monthly expense template = $2,000/month.
-            rule = _create_recurrence_rule(
-                seed_user, MONTHLY,
-            )
             _create_expense_template(
-                seed_user, rule, Decimal("2000.00"),
+                seed_user, MONTHLY, Decimal("2000.00"),
                 name="Monthly Bills",
             )
             db.session.commit()
@@ -1524,11 +1509,8 @@ class TestEmergencyFundCommittedBaseline:
         monthly equivalent -- NOT multiplied by 26/12.
         """
         with app.app_context():
-            rule = _create_recurrence_rule(
-                seed_user, MONTHLY,
-            )
             tmpl = _create_expense_template(
-                seed_user, rule, Decimal("500.00"),
+                seed_user, MONTHLY, Decimal("500.00"),
                 name="Monthly Subscription",
             )
             db.session.commit()
@@ -1555,11 +1537,8 @@ class TestEmergencyFundCommittedBaseline:
                 name="One-Time Purchase",
             )
 
-            every_rule = _create_recurrence_rule(
-                seed_user, EVERY_PERIOD,
-            )
             recurring_tmpl = _create_expense_template(
-                seed_user, every_rule, Decimal("100.00"),
+                seed_user, EVERY_PERIOD, Decimal("100.00"),
                 name="Recurring Bill",
             )
             db.session.commit()
@@ -1596,20 +1575,14 @@ class TestEmergencyFundCommittedBaseline:
             )
 
             # Inactive template -- excluded by route query.
-            rule1 = _create_recurrence_rule(
-                seed_user, EVERY_PERIOD,
-            )
             _create_expense_template(
-                seed_user, rule1, Decimal("999.00"),
+                seed_user, EVERY_PERIOD, Decimal("999.00"),
                 name="Inactive Bill", is_active=False,
             )
 
             # Active template -- included.
-            rule2 = _create_recurrence_rule(
-                seed_user, EVERY_PERIOD,
-            )
             _create_expense_template(
-                seed_user, rule2, Decimal("1500.00"),
+                seed_user, EVERY_PERIOD, Decimal("1500.00"),
                 name="Active Bill",
             )
             db.session.commit()
@@ -1674,13 +1647,9 @@ class TestEmergencyFundCommittedBaseline:
         $600 * (26/2) / 12 = $650.00 per month.
         """
         with app.app_context():
-            rule = _create_recurrence_rule(
-                seed_user, EVERY_N_PERIODS,
-                interval_n=2,
-            )
             tmpl = _create_expense_template(
-                seed_user, rule, Decimal("600.00"),
-                name="Biweekly Alternating",
+                seed_user, EVERY_N_PERIODS, Decimal("600.00"),
+                name="Biweekly Alternating", interval_n=2,
             )
             db.session.commit()
 
@@ -1696,11 +1665,8 @@ class TestEmergencyFundCommittedBaseline:
     ):
         """An annual template with $1,200 contributes $100.00 per month."""
         with app.app_context():
-            rule = _create_recurrence_rule(
-                seed_user, ANNUAL,
-            )
             tmpl = _create_expense_template(
-                seed_user, rule, Decimal("1200.00"),
+                seed_user, ANNUAL, Decimal("1200.00"),
                 name="Annual Insurance",
             )
             db.session.commit()
@@ -2913,20 +2879,18 @@ class TestTrajectoryDisplay:
         with app.app_context():
             acct = _create_savings_account(seed_user)
 
-            rule = make_cadence_rule(
-                seed_user["user"].id, MONTHLY,
-            )
-
             template = TransferTemplate(
                 user_id=seed_user["user"].id,
                 from_account_id=seed_user["account"].id,
                 to_account_id=acct.id,
                 name="Monthly Savings",
                 default_amount=Decimal("500.00"),
-                recurrence_rule_id=rule.id,
                 is_active=True,
             )
             db.session.add(template)
+            db.session.flush()
+            # The definition first, then the cadence onto it (plan step R-F6).
+            make_cadence_rule(template, MONTHLY)
 
             goal = _create_goal(seed_user, acct, name="Trajectory Goal")
             db.session.commit()
@@ -3029,20 +2993,18 @@ class TestTrajectoryDisplay:
         with app.app_context():
             acct = _create_savings_account(seed_user)
 
-            rule = make_cadence_rule(
-                seed_user["user"].id, EVERY_PERIOD,
-            )
-
             template = TransferTemplate(
                 user_id=seed_user["user"].id,
                 from_account_id=seed_user["account"].id,
                 to_account_id=acct.id,
                 name="Biweekly Savings",
                 default_amount=Decimal("500.00"),
-                recurrence_rule_id=rule.id,
                 is_active=True,
             )
             db.session.add(template)
+            db.session.flush()
+            # The definition first, then the cadence onto it (plan step R-F6).
+            make_cadence_rule(template, EVERY_PERIOD)
 
             goal = _create_goal(seed_user, acct, name="Biweekly Goal")
             db.session.commit()

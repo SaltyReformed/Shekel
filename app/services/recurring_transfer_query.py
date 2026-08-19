@@ -24,8 +24,9 @@ def active_recurring_transfer_template(
     """Return the active recurring transfer template paying INTO *account_id*.
 
     An active (``is_active``) :class:`TransferTemplate` owned by *user_id* whose
-    destination is *account_id* and which carries a recurrence rule
-    (``recurrence_rule_id`` set).  Only the FIRST is returned: more than one
+    destination is *account_id* and which carries a recurrence rule (a
+    ``budget.recurrence_rules`` row names it).  Only the FIRST is returned:
+    more than one
     recurring transfer into a single account is a user misconfiguration, not a
     modeled case.  ``None`` when the account has no recurring funding transfer.
     The 1:1 ``settings`` row is eager-loaded, since the loan callers read its
@@ -47,7 +48,20 @@ def active_recurring_transfer_template(
             TransferTemplate.user_id == user_id,
             TransferTemplate.to_account_id == account_id,
             TransferTemplate.is_active.is_(True),
-            TransferTemplate.recurrence_rule_id.isnot(None),
+            # "Carries a recurrence rule", as an EXISTS rather than a NOT NULL
+            # column test: the owning FK moved onto the rule at plan step
+            # R-F6, so what used to be ``recurrence_rule_id IS NOT NULL`` here
+            # is now a row on the other side.
+            #
+            # ``uq_recurrence_rules_transfer_template_id`` covers the join
+            # column, so the subquery is index-ABLE -- which is a statement
+            # about what happens as the table grows, not about today.  Measured
+            # on a production clone (6 transfer templates, 43 rules), the
+            # planner chooses a nested loop over sequential scans and is right
+            # to: an index probe costs more than reading two tiny tables.  The
+            # earlier comment here claimed the probe as fact and an adversarial
+            # review measured otherwise.
+            TransferTemplate.recurrence_rule.has(),
         )
         .first()
     )

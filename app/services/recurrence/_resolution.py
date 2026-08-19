@@ -47,7 +47,7 @@ decode pair.  What this module reads is what a caller authored.
 that.**  ``Once`` used to be the exception -- it meant "does not recur", so no
 honest cadence existed for it, and it resolved to the same inert value as
 "every paycheck" while four separate guards elsewhere did the real suppressing.
-Plan step R2e-3 deleted it: "does not recur" is ``recurrence_rule_id IS NULL``
+Plan step R2e-3 deleted it: "does not recur" is NO RULE naming the definition,
 on either template kind, which never reaches this module at all.
 
 Pure: no Flask, no ORM, no clock, no database.  Its two inputs are the

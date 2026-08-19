@@ -247,23 +247,27 @@ def check_orphaned_records(session):
         session: SQLAlchemy session.
 
     Returns:
-        List of CheckResult for checks OR-01 through OR-06.
+        List of CheckResult for the live OR-* checks (OR-01 and OR-03 through
+        OR-06; OR-02 retired at plan step R-F6, see below).
     """
     checks = [
+        # **OR-02 is DELETED, not renumbered** (plan step R-F6).  It scanned
+        # for recurrence rules no template referenced -- finding **F-6**, three
+        # rows on production -- and that state stopped being expressible when
+        # the owning FK moved onto ``budget.recurrence_rules`` under
+        # ``ck_recurrence_rules_one_owner``: a rule without an owner is refused
+        # by the database, and a rule whose owner is deleted goes with it
+        # (``ON DELETE CASCADE``).  A checker for a state the schema forbids
+        # reports on the constraint's behalf and can only ever say zero.  The
+        # id is left retired rather than reused so an old report's OR-02 still
+        # means what it meant.
         ("OR-01", "Transaction templates with no recurrence rule and no transactions", """
             SELECT tt.id, tt.name
             FROM budget.transaction_templates tt
             LEFT JOIN budget.transactions t ON t.template_id = tt.id
-            WHERE tt.recurrence_rule_id IS NULL
+            LEFT JOIN budget.recurrence_rules r ON r.transaction_template_id = tt.id
+            WHERE r.id IS NULL
               AND t.id IS NULL
-        """),
-        ("OR-02", "Recurrence rules not referenced by any template", """
-            SELECT r.id
-            FROM budget.recurrence_rules r
-            LEFT JOIN budget.transaction_templates tt ON tt.recurrence_rule_id = r.id
-            LEFT JOIN budget.transfer_templates tft ON tft.recurrence_rule_id = r.id
-            WHERE tt.id IS NULL
-              AND tft.id IS NULL
         """),
         ("OR-03", "Categories not used by any template or transaction", """
             SELECT c.id, c.group_name, c.item_name

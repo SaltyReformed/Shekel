@@ -186,8 +186,9 @@ def create_contribution_transfer(account_id):
     """
     # Pylint: ``duplicate-code`` -- this route is the parallel near-fork of
     # ``loan.create_payment_transfer``: both run the same
-    # validate-source -> compute-amount -> build-rule -> build-template ->
-    # flush -> generate -> commit -> notify sequence, diverging only in the
+    # validate-source -> compute-amount -> state-cadence -> build-template ->
+    # flush -> author-cadence -> generate -> commit -> notify sequence,
+    # diverging only in the
     # amount derivation, the recurrence pattern, and the user-facing copy.
     # The substantive shared logic is already extracted into
     # ``app/routes/_transfer_creation_helpers.py``; what remains duplicated
@@ -259,8 +260,9 @@ def create_contribution_transfer(account_id):
         else:
             transfer_amount = _DEFAULT_SUGGESTED_AMOUNT
 
-    # Create every-period recurrence rule (one occurrence per paycheck),
-    # starting at the OPENING of the owner's schedule.
+    # State the every-period cadence (one occurrence per paycheck), starting
+    # at the OPENING of the owner's schedule.  WRITTEN below, once the template
+    # that owns it exists (plan step R-F6).
     #
     # That is what this route has always done and it is stated rather than
     # implied since plan step R7c-b made ``starts_on`` required: the spec
@@ -272,13 +274,10 @@ def create_contribution_transfer(account_id):
     # $10,000.00 of backdated rent).  Whether these two programmatic routes
     # should do the same is plan ledger row **D34**, opened rather than decided
     # here: changing it MOVES MONEY and is nothing this step was asked to do.
-    rule = author_rule(
-        RecurrenceSpec(
-            user_id=current_user.id,
-            unit=RecurrenceUnitEnum.PERIOD,
-            starts_on=calendar.opening_bound(),
-        ),
-        calendar,
+    contribution_cadence = RecurrenceSpec(
+        user_id=current_user.id,
+        unit=RecurrenceUnitEnum.PERIOD,
+        starts_on=calendar.opening_bound(),
     )
 
     # Create transfer template via the shared builder (a contribution gets
@@ -288,7 +287,6 @@ def create_contribution_transfer(account_id):
     template = build_recurring_transfer_template(
         source_account=source_account,
         dest_account=account,
-        rule=rule,
         name=template_name,
         default_amount=transfer_amount,
     )
@@ -312,6 +310,13 @@ def create_contribution_transfer(account_id):
     )
     if namedup_redirect is not None:
         return namedup_redirect
+
+    # **The cadence is authored ONTO the template** (plan step R-F6): the rule
+    # carries its owner's FK, so the definition has to exist first.  After the
+    # name-collision flush rather than before it, because ``author_rule``
+    # flushes and an earlier one would surface a duplicate name as an unhandled
+    # ``IntegrityError`` instead of that helper's redirect.
+    author_rule(contribution_cadence, calendar, template)
 
     # Generate transfers for existing pay periods.
     generate_transfers_for_all_periods(template)

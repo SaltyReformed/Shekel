@@ -1143,20 +1143,19 @@ class TestHardDeleteTemplateIsNotStepUpGated:
         # Authored through the write door (plan step R7c-b): the two-axis
         # columns are NOT NULL, so a rule naming only a pattern cannot be
         # stored.
-        rule = make_every_period_rule(db.session, seed_user["user"].id)
-
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]["Rent"].id,
             transaction_type_id=db.session.query(TransactionType)
             .filter_by(name="Expense").one().id,
-            recurrence_rule_id=rule.id,
             name="Step-Up Test Template",
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.commit()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_every_period_rule(db.session, template)
         return template
 
     def test_stale_fresh_login_still_deletes(
