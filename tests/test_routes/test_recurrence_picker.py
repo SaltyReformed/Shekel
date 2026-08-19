@@ -245,8 +245,8 @@ def _expense_type_id():
     return ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
 
 
-def _rule_on_cadence(seed_user, cadence, interval_n=None, unit_id=None):
-    """Create and flush a rule of *cadence*, bypassing the write door.
+def _rule_on_cadence(owner, cadence, interval_n=None, unit_id=None):
+    """Create and flush a rule of *cadence* on *owner*, bypassing the write door.
 
     Deliberately constructed rather than authored: ``author_rule`` resolves
     before it writes, so it REFUSES an unreadable cadence -- which is the guard
@@ -258,8 +258,15 @@ def _rule_on_cadence(seed_user, cadence, interval_n=None, unit_id=None):
     disagree with each other is one no application path can write, and a sweep
     over such rows measures the fixture rather than the mapping.
 
+    **The OWNER is still stated, even bypassing the door** (plan step R-F6):
+    ``ck_recurrence_rules_one_owner`` refuses a rule belonging to nothing, so
+    what this fixture bypasses is the RESOLUTION, not the ownership.  Assigned
+    through ``owner.recurrence_rule`` so it stays kind-agnostic across the two
+    definition kinds, exactly as ``author_rule`` does.
+
     Args:
-        seed_user: The owner fixture.
+        owner: The ``TransactionTemplate`` or ``TransferTemplate`` the rule
+            belongs to.  Mutated: its ``recurrence_rule`` is set.
         cadence: One of :data:`BASELINE_CADENCES`.
         interval_n: The interval to store; defaults to the cadence's own.
         unit_id: A ``ref.recurrence_units`` id to store INSTEAD of the
@@ -270,7 +277,6 @@ def _rule_on_cadence(seed_user, cadence, interval_n=None, unit_id=None):
     """
     own_interval = 1 if cadence.interval_n is None else cadence.interval_n
     rule = RecurrenceRule(
-        user_id=seed_user["user"].id,
         interval_n=own_interval if interval_n is None else interval_n,
         unit_id=(
             ref_cache.recurrence_unit_id(cadence.unit) if unit_id is None
@@ -280,6 +286,7 @@ def _rule_on_cadence(seed_user, cadence, interval_n=None, unit_id=None):
         shift_id=ref_cache.business_day_shift_id(BusinessDayShiftEnum.NONE),
         starts_on=date(2026, 1, 1),
     )
+    owner.recurrence_rule = rule
     db.session.add(rule)
     db.session.flush()
     return rule
@@ -289,7 +296,6 @@ def _template_with_cadence(
     seed_user, cadence, interval_n=None, unit_id=None,
 ):
     """Create a committed transaction template carrying a rule of that cadence."""
-    rule = _rule_on_cadence(seed_user, cadence, interval_n, unit_id)
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         name="Rent",
@@ -297,9 +303,11 @@ def _template_with_cadence(
         category_id=seed_user["categories"]["Rent"].id,
         transaction_type_id=_expense_type_id(),
         account_id=seed_user["account"].id,
-        recurrence_rule_id=rule.id,
     )
     db.session.add(template)
+    db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    _rule_on_cadence(template, cadence, interval_n, unit_id)
     db.session.commit()
     return template
 
@@ -308,7 +316,6 @@ def _transfer_template_with_cadence(
     seed_user, destination, cadence, unit_id=None,
 ):
     """Create a committed transfer template carrying that cadence."""
-    rule = _rule_on_cadence(seed_user, cadence, unit_id=unit_id)
     template = TransferTemplate(
         user_id=seed_user["user"].id,
         name="To Savings",
@@ -316,9 +323,11 @@ def _transfer_template_with_cadence(
         from_account_id=seed_user["account"].id,
         to_account_id=destination.id,
         category_id=seed_user["categories"]["Rent"].id,
-        recurrence_rule_id=rule.id,
     )
     db.session.add(template)
+    db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    _rule_on_cadence(template, cadence, unit_id=unit_id)
     db.session.commit()
     return template
 
@@ -907,7 +916,7 @@ class TestAnUnreadableRuleCannotBeDestroyedBySavingIt:
             template = _template_with_cadence(
                 seed_user, MONTHLY, unit_id=surplus_id,
             )
-            template_id, rule_id = template.id, template.recurrence_rule_id
+            template_id, rule_id = template.id, template.recurrence_rule.id
 
             resp = auth_client.post(f"/templates/{template_id}", data={
                 "name": "Rent",
@@ -927,7 +936,7 @@ class TestAnUnreadableRuleCannotBeDestroyedBySavingIt:
             )[0].encode() in resp.data
             db.session.expire_all()
             reloaded = db.session.get(TransactionTemplate, template_id)
-            assert reloaded.recurrence_rule_id == rule_id, (
+            assert reloaded.recurrence_rule.id == rule_id, (
                 "the rule was detached by a save the form promised to refuse"
             )
             assert db.session.get(RecurrenceRule, rule_id) is not None, (
@@ -954,7 +963,7 @@ class TestAnUnreadableRuleCannotBeDestroyedBySavingIt:
                 seed_user, savings, MONTHLY, unit_id=surplus_id,
             )
             template_id = template.id
-            rule_id = template.recurrence_rule_id
+            rule_id = template.recurrence_rule.id
 
             resp = auth_client.post(f"/transfers/{template_id}", data={
                 "name": "To Savings",
@@ -969,7 +978,7 @@ class TestAnUnreadableRuleCannotBeDestroyedBySavingIt:
             assert resp.status_code == 200
             db.session.expire_all()
             reloaded = db.session.get(TransferTemplate, template_id)
-            assert reloaded.recurrence_rule_id == rule_id
+            assert reloaded.recurrence_rule.id == rule_id
             assert db.session.get(RecurrenceRule, rule_id) is not None
             assert reloaded.default_amount == Decimal("50.00")
 
@@ -991,7 +1000,7 @@ class TestAnUnreadableRuleCannotBeDestroyedBySavingIt:
             template = _template_with_cadence(
                 seed_user, MONTHLY, unit_id=surplus_id,
             )
-            template_id, rule_id = template.id, template.recurrence_rule_id
+            template_id, rule_id = template.id, template.recurrence_rule.id
             month_id = ref_cache.recurrence_unit_id(
                 RecurrenceUnitEnum.MONTH,
             )
@@ -1010,7 +1019,7 @@ class TestAnUnreadableRuleCannotBeDestroyedBySavingIt:
             reloaded = db.session.get(TransactionTemplate, template_id)
             # The SAME rule row, re-pointed -- not a new one, so every
             # generated row keeps its lineage.
-            assert reloaded.recurrence_rule_id == rule_id
+            assert reloaded.recurrence_rule.id == rule_id
             assert reloaded.recurrence_rule.unit_id == month_id
             # The repaired rule fires on the date the form stated, which is
             # the whole of what it says about its cycle since plan step
@@ -1121,7 +1130,7 @@ class TestTheWriteDoorsRefuseAnUnstorableCadence:
                 RecurrenceUnitEnum.MONTH,
             )
             template = _template_with_cadence(seed_user, MONTHLY)
-            template_id, rule_id = template.id, template.recurrence_rule_id
+            template_id, rule_id = template.id, template.recurrence_rule.id
 
             resp = auth_client.post(f"/templates/{template_id}", data={
                 "name": "Rent",
@@ -1133,7 +1142,7 @@ class TestTheWriteDoorsRefuseAnUnstorableCadence:
             assert self._REFUSAL in resp.data
             db.session.expire_all()
             reloaded = db.session.get(TransactionTemplate, template_id)
-            assert reloaded.recurrence_rule_id == rule_id
+            assert reloaded.recurrence_rule.id == rule_id
             assert reloaded.recurrence_rule.unit_id == month_id
 
 
@@ -1179,7 +1188,7 @@ class TestAClearedIntervalBoxCannotReCadenceARule:
         assert seed_periods_today
         with app.app_context():
             template = _template_with_cadence(seed_user, QUARTERLY)
-            template_id, rule_id = template.id, template.recurrence_rule_id
+            template_id, rule_id = template.id, template.recurrence_rule.id
             assert template.recurrence_rule.interval_n == 3
 
             resp = auth_client.post(f"/templates/{template_id}", data={
@@ -1198,7 +1207,7 @@ class TestAClearedIntervalBoxCannotReCadenceARule:
             assert self._REFUSAL in resp.data
             db.session.expire_all()
             reloaded = db.session.get(TransactionTemplate, template_id)
-            assert reloaded.recurrence_rule_id == rule_id
+            assert reloaded.recurrence_rule.id == rule_id
             assert reloaded.recurrence_rule.interval_n == 3
 
     def test_a_create_that_clears_it_authors_no_rule(
@@ -1273,7 +1282,7 @@ class TestAClearedIntervalBoxCannotReCadenceARule:
         assert seed_periods_today
         with app.app_context():
             template = _template_with_cadence(seed_user, QUARTERLY)
-            template_id, rule_id = template.id, template.recurrence_rule_id
+            template_id, rule_id = template.id, template.recurrence_rule.id
 
             resp = auth_client.post(f"/templates/{template_id}", data={
                 "name": "Rent",
@@ -1284,7 +1293,7 @@ class TestAClearedIntervalBoxCannotReCadenceARule:
             db.session.expire_all()
             reloaded = db.session.get(TransactionTemplate, template_id)
             assert reloaded.default_amount == Decimal("1300.00")
-            assert reloaded.recurrence_rule_id == rule_id
+            assert reloaded.recurrence_rule.id == rule_id
             assert reloaded.recurrence_rule.interval_n == 3
 
 
@@ -1369,7 +1378,7 @@ class TestADeliberateClearStillWorks:
         assert seed_periods_today
         with app.app_context():
             template = _template_with_cadence(seed_user, EVERY_PERIOD)
-            template_id, rule_id = template.id, template.recurrence_rule_id
+            template_id, rule_id = template.id, template.recurrence_rule.id
 
             resp = auth_client.post(f"/templates/{template_id}", data={
                 "name": "Rent",
@@ -1380,7 +1389,7 @@ class TestADeliberateClearStillWorks:
             assert resp.status_code == 200
             db.session.expire_all()
             reloaded = db.session.get(TransactionTemplate, template_id)
-            assert reloaded.recurrence_rule_id is None
+            assert reloaded.recurrence_rule is None
             assert db.session.get(RecurrenceRule, rule_id) is None
 
 

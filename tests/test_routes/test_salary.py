@@ -76,13 +76,10 @@ def _create_profile(seed_user):
         db.session.add(cat)
         db.session.flush()
 
-    rule = make_every_period_rule(db.session, seed_user["user"].id)
-
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=cat.id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=income_type.id,
         name="Day Job",
         default_amount=Decimal("75000.00") / 26,
@@ -90,6 +87,8 @@ def _create_profile(seed_user):
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
 
     profile = SalaryProfile(
         user_id=seed_user["user"].id,
@@ -161,13 +160,10 @@ def _create_other_user_profile():
     db.session.add(cat)
     db.session.flush()
 
-    rule = make_every_period_rule(db.session, other_user.id)
-
     template = TransactionTemplate(
         user_id=other_user.id,
         account_id=account.id,
         category_id=cat.id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=income_type.id,
         name="Other Job",
         default_amount=Decimal("60000.00") / 26,
@@ -175,6 +171,8 @@ def _create_other_user_profile():
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
 
     profile = SalaryProfile(
         user_id=other_user.id,
@@ -2010,13 +2008,10 @@ def _create_second_user_salary_profile(second_user_data):
         db.session.add(cat)
         db.session.flush()
 
-    rule = make_every_period_rule(db.session, second_user_data["user"].id)
-
     template = TransactionTemplate(
         user_id=second_user_data["user"].id,
         account_id=second_user_data["account"].id,
         category_id=cat.id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=income_type.id,
         name="Other Job",
         default_amount=Decimal("60000.00") / 26,
@@ -2024,6 +2019,8 @@ def _create_second_user_salary_profile(second_user_data):
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
 
     profile = SalaryProfile(
         user_id=second_user_data["user"].id,
@@ -3463,12 +3460,10 @@ def _create_inactive_profile(seed_user, name="Old Job"):
         cat = Category(user_id=seed_user["user"].id, group_name="Income", item_name="Salary")
         db.session.add(cat)
         db.session.flush()
-    rule = make_every_period_rule(db.session, seed_user["user"].id)
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=cat.id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=income_type.id,
         name=name,
         default_amount=Decimal("40000.00") / 26,
@@ -3476,6 +3471,8 @@ def _create_inactive_profile(seed_user, name="Old Job"):
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
     profile = SalaryProfile(
         user_id=seed_user["user"].id,
         scenario_id=seed_user["scenario"].id,

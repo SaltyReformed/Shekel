@@ -27,6 +27,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db
+from tests._test_helpers import bare_expense_template
 
 
 # ---------------------------------------------------------------------------
@@ -274,19 +275,21 @@ def test_server_default_fills_omitted_recurrence_integers(db, seed_user):
         RecurrenceUnitEnum,
     )
 
-    user_id = seed_user["user"].id
     # The cadence columns are stated because plan step R7c-b made them NOT
-    # NULL.  Omitting them would make this INSERT fail on a null before the
-    # server_default under test was ever reached -- which is the same
-    # IntegrityError, from a different cause, on a case whose whole point is
-    # that a storage-tier-only INSERT lands the documented default.
+    # NULL, and the OWNER because plan step R-F6 made a rule belong to exactly
+    # one definition (``ck_recurrence_rules_one_owner``).  Omitting either
+    # would make this INSERT fail before the server_default under test was
+    # ever reached -- the same IntegrityError from a different cause, on a
+    # case whose whole point is that a storage-tier-only INSERT lands the
+    # documented default.
+    owner_id = bare_expense_template(db.session, seed_user).id
     db.session.execute(db.text(
         "INSERT INTO budget.recurrence_rules "
-        "(user_id, unit_id, placement_id, shift_id, starts_on) "
-        "VALUES (:user_id, :unit_id, :placement_id, :shift_id, "
+        "(transaction_template_id, unit_id, placement_id, shift_id, starts_on) "
+        "VALUES (:owner_id, :unit_id, :placement_id, :shift_id, "
         "DATE '2026-01-02')"
     ), {
-        "user_id": user_id,
+        "owner_id": owner_id,
         "unit_id": ref_cache.recurrence_unit_id(RecurrenceUnitEnum.PERIOD),
         "placement_id": ref_cache.period_placement_id(
             PeriodPlacementEnum.CONTAINING_DATE,
@@ -298,8 +301,8 @@ def test_server_default_fills_omitted_recurrence_integers(db, seed_user):
     db.session.commit()
     row = db.session.execute(db.text(
         "SELECT interval_n FROM budget.recurrence_rules "
-        "WHERE user_id = :user_id"
-    ), {"user_id": user_id}).one()
+        "WHERE transaction_template_id = :owner_id"
+    ), {"owner_id": owner_id}).one()
     assert row.interval_n == 1
 
 

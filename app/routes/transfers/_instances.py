@@ -94,7 +94,7 @@ def _materialize_one_time_transfer(template, start_period_id):
 
     Re-fetches ``start_period_id`` and re-verifies ownership so a tampered
     period id cannot leak into the transfer service -- defence in depth behind
-    :func:`~app.routes._recurrence_form_helpers.build_recurrence_rule_from_form`'s
+    :func:`~app.routes._recurrence_form_helpers.recurrence_spec_from_form`'s
     probe, which plan step R2e-3 moved ahead of that helper's no-pattern early
     return so this path is owner-checked before anything is written at all.
 
@@ -215,7 +215,7 @@ def materialize_initial_transfers(template, rule, start_period_id):
     # A no-op for every non-loan destination, so no kind check is needed here.
     #
     # Below the rule-less return rather than above it, and that is a FIX: a
-    # loan's recurring payment is found by ``recurrence_rule_id IS NOT NULL``
+    # loan's recurring payment is found by whether a rule names it
     # (``recurring_transfer_query``), so a ``Once`` transfer into a loan used
     # to be bound here and could then be returned as that loan's standing
     # payment.  A one-time transfer is not a cadence and no longer binds one.

@@ -29,6 +29,7 @@ the anchor resolution is deterministic.  See
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 
@@ -46,7 +47,7 @@ from app.models.journal_entry import JournalEntry
 from app.models.pay_period import PayPeriod
 from app.models.recurrence_rule import RecurrenceRule
 from app.services.pay_calendar import calendar_for
-from app.services.recurrence import recurrence_spec, resolve
+from app.services.recurrence import reauthor_rule, recurrence_spec, resolve
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
@@ -163,23 +164,23 @@ def _make_every_n_template(db_session, seed_user, start_period, interval_n=2):
 
     Returns the created template (flushed; the caller commits).
     """
-    rule = make_cadence_rule(
-        seed_user["user"].id,
-        EVERY_N_PERIODS,
-        starts_on=start_period.start_date,
-        interval_n=interval_n,
-    )
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Rent"].id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         name="Every-other Bill",
         default_amount=Decimal("300.00"),
     )
     db_session.add(template)
     db_session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_cadence_rule(
+        template,
+        EVERY_N_PERIODS,
+        starts_on=start_period.start_date,
+        interval_n=interval_n,
+    )
     return template
 
 
@@ -396,13 +397,20 @@ class TestResetHappyPath:
             # A date inside the OLD schedule and a year before the rebuilt
             # one, so a reset that re-pointed anything could not leave it here.
             stated_start = date(2026, 1, 30)
-            rule = make_cadence_rule(
-                seed_user["user"].id,
-                EVERY_PERIOD,
-                starts_on=stated_start,
-            )
             template = make_expense_template(db.session, seed_user)
-            template.recurrence_rule_id = rule.id
+            # The shared factory gives the template an every-paycheck rule
+            # opening at the schedule's own start; this case needs one opening
+            # INSIDE the old schedule, so the rule it carries is re-pointed
+            # rather than a second one authored beside it -- which
+            # ``uq_recurrence_rules_transaction_template_id`` refuses since
+            # plan step R-F6, and refuses for the reason this line relies on:
+            # a definition has ONE cadence.
+            rule = template.recurrence_rule
+            reauthor_rule(
+                rule,
+                replace(recurrence_spec(rule), starts_on=stated_start),
+                calendar_for(user_id),
+            )
             db.session.commit()
             assert rule.starts_on == stated_start
             assert stated_start < _NEW_START

@@ -1374,18 +1374,18 @@ def _create_transfer_template(db_session, user_id, from_id, to_id,
 
     # Authored through the write door (plan step R7c-b): the two-axis columns
     # are NOT NULL, so a rule naming only a pattern cannot be stored.
-    rule = make_every_period_rule(db_session, user_id)
     tpl = TransferTemplate(
         user_id=user_id,
         from_account_id=from_id,
         to_account_id=to_id,
-        recurrence_rule_id=rule.id,
         name=f"Contribution {from_id}->{to_id}",
         default_amount=Decimal("200.00"),
         is_active=is_active,
     )
     db_session.add(tpl)
     db_session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db_session, tpl)
     return tpl
 
 
@@ -1527,7 +1527,6 @@ class TestContributionPrompt:
         self, auth_client, seed_user, db, seed_periods_today,
     ):
         """POST with valid source creates RecurrenceRule + TransferTemplate."""
-        from app.models.recurrence_rule import RecurrenceRule as RR
         from app.models.transfer_template import TransferTemplate as TT
 
         acct = _create_investment_account(
@@ -1561,10 +1560,11 @@ class TestContributionPrompt:
         assert tpl.is_active is True
         assert tpl.from_account_id == checking.id
         assert tpl.default_amount == Decimal("269.23")
-        assert tpl.recurrence_rule_id is not None
+        assert tpl.recurrence_rule is not None
 
-        rule = db.session.get(RR, tpl.recurrence_rule_id)
-        assert rule is not None
+        # Reached through the OWNING relationship (plan step R-F6); a
+        # second fetch by id would re-assert what the line above says.
+        assert tpl.recurrence_rule.transfer_template_id == tpl.id
 
     def test_create_transfer_generates_shadows(
         self, auth_client, seed_user, db, seed_periods_today,

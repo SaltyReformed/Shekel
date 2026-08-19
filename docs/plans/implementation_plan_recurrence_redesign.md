@@ -654,16 +654,12 @@ nothing; that record names all three hashes, and says why `R-F1` stayed.
       uses this id as its worked example of the PREFIX trap, and archiving it emptied that trap out
       of the corpus. Finding **D42**.
 
-- [ ] **R-F6 -- Close the recurrence-rule leak, then delete what leaked** (finding F-6).
-
-`templates.hard_delete_template` (`:904`) deletes a `TransactionTemplate` and leaves its
-`RecurrenceRule` unreferenced forever; the transfer-template path is the same shape. Three rows have
-accumulated on production (ids 4, 44, 47 -- R2e-3 deleted 41 and 43, which were `Once` rules too).
-**Starts with a ruling, not a keystroke**: either the deletion path deletes the rule with its
-template, or ownership inverts so the rule carries the template id and CASCADEs. The FK change R9
-used to propose cannot fix it -- see R-R7. Deleting the 3 existing rows rides in the SAME commit, so
-the cleanup and its cause are reviewed together; that makes the migration destructive, so it carries
-the `Review:` line and a downgrade that refuses with the literal SQL.
+- [x] **R-F6 -- a rule is owned by its definition.** `a679bb2e`, migration `e7a2c4f18d05`. Ownership
+      INVERTED (developer ruling 2026-08-18): the owning FK is an exclusive arc on
+      `budget.recurrence_rules` under `ON DELETE CASCADE`, so the orphan is inexpressible rather
+      than fixed. `recurrence_rules.user_id`, `_rule_is_exclusively_owned` and `integrity_check`
+      **OR-02** all went with it. Closed **F-6**. **R5 must re-examine `build_transient_rule`**: its
+      last callers are tests needing a rule only because `compute_due_date` takes one.
 
 - [x] **R-F10 -- delete the gap machinery.** `fe365de1`. Closed **F-10**; the LOSS survives as
       `pay_calendar:P16`. Account archived to `historical/recurrence_as_built_2026-08-15.md`.

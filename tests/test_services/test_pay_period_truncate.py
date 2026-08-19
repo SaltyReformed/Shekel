@@ -59,6 +59,7 @@ from tests._test_helpers import (
     all_periods,
     add_txn,
     assert_pay_period_invariants,
+    bare_expense_template,
     create_savings_account,
     make_every_period_rule,
     make_expense_template,
@@ -586,8 +587,11 @@ class TestTruncateHardLocks:
             periods = _future_periods(db.session, seed_user, count=6)
             user_id = seed_user["user"].id
             stated_start = periods[2].start_date  # index 3
+            # The definition first, then the cadence onto it (plan step
+            # R-F6): a rule carries its owner's FK, so it cannot be written
+            # before there is an owner.
             rule = make_cadence_rule(
-                user_id, EVERY_PERIOD,
+                bare_expense_template(db.session, seed_user), EVERY_PERIOD,
                 starts_on=stated_start,
             )
             assert rule.starts_on == stated_start, (

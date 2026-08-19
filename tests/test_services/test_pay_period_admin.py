@@ -46,6 +46,7 @@ from app.utils.dates import display_today
 from tests._test_helpers import (
     add_txn,
     assert_pay_period_invariants,
+    bare_expense_template,
     freeze_today,
     open_calendar_hole,
 )
@@ -247,6 +248,8 @@ class TestClassifyPeriodLock:
                     starts_on=periods[3].start_date,
                 ),
                 calendar_for(seed_user["user"].id),
+                # The definition the rule belongs to (plan step R-F6).
+                bare_expense_template(db.session, seed_user),
             )
             db.session.flush()
 

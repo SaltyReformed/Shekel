@@ -189,9 +189,14 @@ def build_rule(cadence=EVERY_PERIOD,
     #
     # ``None`` for the one constant that fixes no interval of its own, which
     # is the shape a caller varies.
+    #
+    # **The unsaved OWNER is plan step R-F6's**, and it is what makes
+    # ``rule.user_id`` answerable: a recurrence rule belongs to exactly one
+    # definition, so its owner is where the owner is read from -- there is no
+    # ``user_id`` column any more.  The template is transient like the rule;
+    # neither is added to a session, so these stay pure tests.
     own_interval = 1 if cadence.interval_n is None else cadence.interval_n
-    return RecurrenceRule(
-        user_id=_MATCH_USER_ID,
+    rule = RecurrenceRule(
         interval_n=(
             own_interval if interval_n is _CADENCES_OWN_INTERVAL
             else interval_n
@@ -204,6 +209,8 @@ def build_rule(cadence=EVERY_PERIOD,
         due_day_of_month=due_day_of_month,
         end_date=end_date,
     )
+    TransactionTemplate(user_id=_MATCH_USER_ID).recurrence_rule = rule
+    return rule
 
 
 class FakePeriod:
@@ -248,20 +255,20 @@ class TestRecurrenceGeneration:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence, **rule_kwargs,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]['Car Payment'].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name='Test Recurring',
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence, **rule_kwargs,
+        )
 
         # Load the relationships for the recurrence engine.
         db.session.refresh(template)
@@ -340,15 +347,16 @@ class TestRecurrenceGeneration:
             template = self._make_template_with_rule(
                 seed_user, EVERY_PERIOD,
             )
-            # Both sides plus the row itself, exactly as
-            # ``_recurrence_form_helpers._clear_recurrence_rule`` does: the
-            # relationship is ``lazy="joined"`` and already loaded, so nulling
-            # only the FK leaves the engine reading the stale object.
-            rule = template.recurrence_rule
+            # ONE statement, exactly as
+            # ``_recurrence_form_helpers._clear_recurrence_rule`` does since
+            # plan step R-F6: dis-associating the rule is what deletes it,
+            # because the relationship carries ``delete-orphan`` and the rule
+            # holds the owning FK.  It was three statements -- null both sides,
+            # then delete the row -- while the FK sat on the template, and an
+            # explicit delete after this one now reports
+            # ``expected to delete 1 row(s); 0 were matched``, because the
+            # dis-association already removed it.
             template.recurrence_rule = None
-            template.recurrence_rule_id = None
-            db.session.flush()
-            db.session.delete(rule)
             db.session.flush()
             assert template.recurrence_rule is None
 
@@ -1038,20 +1046,20 @@ class TestGenerateForTemplate:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence, **rule_kwargs,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]['Car Payment'].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name='Test Recurring',
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence, **rule_kwargs,
+        )
 
         # Load the relationships for the recurrence engine.
         db.session.refresh(template)
@@ -1401,20 +1409,20 @@ class TestThePlacedPeriodsBound:
             ordinal if opening.day <= _MONTHLY_DAY else ordinal + 1,
             _MONTHLY_DAY,
         )
-        rule = make_cadence_rule(
-            seed_user["user"].id, MONTHLY, starts_on=first_fifteenth,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]["Car Payment"].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name="Bounded Bill",
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, MONTHLY, starts_on=first_fifteenth,
+        )
         db.session.refresh(template)
         return template
 
@@ -1931,20 +1939,20 @@ class TestALegacyScheduleHole:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence, **rule_kwargs,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]['Car Payment'].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name='Gap Bill',
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence, **rule_kwargs,
+        )
 
         # Load the relationships for the recurrence engine.
         db.session.refresh(template)
@@ -1968,20 +1976,20 @@ class TestRegenerateForTemplate:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence, **rule_kwargs,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]['Car Payment'].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name='Test Recurring',
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence, **rule_kwargs,
+        )
 
         # Load the relationships for the recurrence engine.
         db.session.refresh(template)
@@ -2607,7 +2615,7 @@ class TestRegenerateForTemplate:
             db.session.flush()
 
             template.recurrence_rule = None
-            template.recurrence_rule_id = None
+            template.recurrence_rule = None
             db.session.flush()
 
             with pytest.raises(RecurrenceConflict) as raised:
@@ -2649,7 +2657,7 @@ class TestRegenerateForTemplate:
             db.session.flush()
 
             template.recurrence_rule = None
-            template.recurrence_rule_id = None
+            template.recurrence_rule = None
             db.session.flush()
 
             with pytest.raises(RecurrenceConflict) as raised:
@@ -2841,20 +2849,20 @@ class TestResolveConflicts:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence, **rule_kwargs,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"][category_key or "Car Payment"].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name='Test Recurring',
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence, **rule_kwargs,
+        )
 
         # Load the relationships for the recurrence engine.
         db.session.refresh(template)
@@ -3286,18 +3294,18 @@ class TestResolveConflictsShadowGuard:
                 .filter_by(name="Expense")
                 .one()
             )
-            rule = make_every_period_rule(db.session, seed_user["user"].id)
             template = TransactionTemplate(
                 user_id=seed_user["user"].id,
                 account_id=seed_user["account"].id,
                 category_id=seed_user["categories"]["Car Payment"].id,
-                recurrence_rule_id=rule.id,
                 transaction_type_id=expense_type.id,
                 name="Regular Recurring",
                 default_amount=Decimal("100.00"),
             )
             db.session.add(template)
             db.session.flush()
+            # The definition first, then the cadence onto it (plan step R-F6).
+            rule = make_every_period_rule(db.session, template)
 
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
@@ -3345,20 +3353,20 @@ class TestCrossUserIsolation:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence, **rule_kwargs,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]['Car Payment'].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name='Test Recurring',
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence, **rule_kwargs,
+        )
 
         # Load the relationships for the recurrence engine.
         db.session.refresh(template)
@@ -3431,20 +3439,20 @@ class TestNegativePaths:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence, **rule_kwargs,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]['Car Payment'].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name='Test Recurring NP',
             default_amount=default_amount,
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence, **rule_kwargs,
+        )
 
         # Load the relationships for the recurrence engine.
         db.session.refresh(template)
@@ -3496,7 +3504,6 @@ class TestNegativePaths:
                 user_id=seed_user["user"].id,
                 account_id=seed_user["account"].id,
                 category_id=seed_user["categories"]["Car Payment"].id,
-                recurrence_rule_id=None,
                 transaction_type_id=expense_type.id,
                 name="No Rule Template",
                 default_amount=Decimal("100.00"),
@@ -3940,20 +3947,20 @@ class TestEndDateIntegration:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence, **rule_kwargs,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]['Car Payment'].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name='Test Recurring End Date',
             default_amount=Decimal("50.00"),
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence, **rule_kwargs,
+        )
 
         # Load the relationships for the recurrence engine.
         db.session.refresh(template)
@@ -4049,20 +4056,20 @@ class TestDueDateGeneration:
             .filter_by(name="Expense")
             .one()
         )
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence, **rule_kwargs,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]['Rent'].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=expense_type.id,
             name='Test Template',
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence, **rule_kwargs,
+        )
 
         # Load the relationships for the recurrence engine.
         db.session.refresh(template)
@@ -4378,7 +4385,6 @@ class TestDueDateGeneration:
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
                 account_id=seed_user["account"].id,
-                recurrence_rule_id=None,
             )
             db.session.add(template)
             db.session.flush()

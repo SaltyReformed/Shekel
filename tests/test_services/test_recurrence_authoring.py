@@ -72,7 +72,14 @@ from app.services.recurrence import (
 # ``_author``'s own source, so naming the package re-export would let the
 # assertion pass while looking at a different function than the one under test.
 from app.services.recurrence import _authoring
-from tests._test_helpers import create_loan_account
+from tests._test_helpers import (
+    bare_expense_template,
+    create_loan_account,
+    create_savings_account,
+    make_expense_template,
+    make_transfer_template,
+    sole_rule_owned_by,
+)
 
 
 #: Every column of ``budget.recurrence_rules`` a CALLER states.  Named once so
@@ -92,9 +99,34 @@ from tests._test_helpers import create_loan_account
 #: whose stored value can differ from the request is derived, whatever the
 #: request looks like -- and filing it here would have made
 #: :func:`assert_reauthoring_changes_nothing` assert the wrong thing about it.
+#: **``user_id`` LEFT this list at plan step R-F6, with the column.**  A rule's
+#: owner is the definition holding it now, and
+#: :attr:`~app.models.recurrence_rule.RecurrenceRule.user_id` reads through to
+#: that definition's -- so it is neither authored nor derived here; it is not a
+#: column at all, and the two owning FKs that replaced it are
+#: :data:`_OWNING_ARC_COLUMNS`.
 _AUTHORED_COLUMNS = (
-    "user_id", "due_day_of_month", "end_date", "max_occurrences",
+    "due_day_of_month", "end_date", "max_occurrences",
 )
+
+#: The OWNING ARC: which definition this rule belongs to (plan step R-F6).
+#:
+#: A FOURTH category, and it is a category rather than an exception because
+#: these two columns are written by a different function than every other one:
+#: :func:`~app.services.recurrence.author_rule` sets them from the ``owner`` it
+#: takes, through ``owner.recurrence_rule``, while ``_author`` writes the
+#: cadence.  The split is deliberate -- an owner is not part of what a caller
+#: AUTHORS about a recurrence, and ``reauthor_rule`` must not be able to move a
+#: rule between definitions -- so the assignment census below cannot see them
+#: and a behavioural proof stands in its place
+#: (:meth:`TestTheAuthoredSurfaceIsWholeAndClosed.test_the_owning_arc_is_written_and_exclusive`).
+#:
+#: Listing them here rather than loosening an assertion is what keeps the gate
+#: strict: a THIRD owning arm, or any other column added and forgotten, still
+#: fails the partition because it will not be on this list.
+_OWNING_ARC_COLUMNS = frozenset({
+    "transaction_template_id", "transfer_template_id",
+})
 
 #: Every column the write door DERIVES, from ``resolve`` and the owner's
 #: schedule rather than from the request.
@@ -348,6 +380,7 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
 
         assert _columns_assigned_by_the_write_door() == (
             table_columns - _DB_ASSIGNED_COLUMNS - _RETIRED_COLUMNS
+            - _OWNING_ARC_COLUMNS
         ), (
             "budget.recurrence_rules and the write door have diverged.  A "
             "column ``_author`` does not assign cannot be authored at all -- "
@@ -379,7 +412,58 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
 
         assert set(_AUTHORED_COLUMNS) | set(_DERIVED_COLUMNS) == (
             table_columns - _DB_ASSIGNED_COLUMNS - _RETIRED_COLUMNS
+            - _OWNING_ARC_COLUMNS
         )
+
+    @pytest.mark.usefixtures("seed_periods")
+    def test_the_owning_arc_is_written_and_exclusive(self, seed_user, db):
+        """``author_rule`` fills exactly one arm of the arc, for either kind.
+
+        The behavioural stand-in for the AST census above, which cannot see
+        these two columns because ``_author`` does not assign them --
+        :func:`~app.services.recurrence.author_rule` does, from the ``owner``
+        it takes.  Without this the pair would sit outside every assertion in
+        this file: a door that stopped linking the owner would leave both NULL,
+        and only ``ck_recurrence_rules_one_owner`` firing at flush would say
+        so, which is a constraint reporting a code defect rather than a test
+        catching one.
+
+        Both kinds, because the arc has two arms and one call site fills either
+        -- ``owner.recurrence_rule`` dispatches on the owner's own mapper, so a
+        regression that hard-coded one arm would pass on half the definitions.
+
+        Args:
+            seed_user: The owner fixture.
+            db: The session fixture.
+        """
+        user_id = seed_user["user"].id
+        savings = create_savings_account(
+            seed_user, db.session, "Arc Savings", Decimal("0.00"),
+        )
+        expense = make_expense_template(db.session, seed_user)
+        transfer = make_transfer_template(db.session, seed_user, savings)
+        db.session.flush()
+
+        for owner, filled, empty in (
+            (expense, "transaction_template_id", "transfer_template_id"),
+            (transfer, "transfer_template_id", "transaction_template_id"),
+        ):
+            rule = owner.recurrence_rule
+            assert rule is not None, (
+                f"{type(owner).__name__} carries no rule, so the arc this "
+                f"test grades was never written"
+            )
+            assert getattr(rule, filled) == owner.id, (
+                f"author_rule did not point {filled} at the "
+                f"{type(owner).__name__} it was given"
+            )
+            assert getattr(rule, empty) is None, (
+                f"author_rule filled BOTH arms of the arc; "
+                f"ck_recurrence_rules_one_owner allows exactly one"
+            )
+            assert rule.user_id == user_id, (
+                "the derived user_id does not read through to the owner's"
+            )
 
     def test_the_derived_columns_equal_the_resolver(self, seed_user, db, seed_periods):  # pylint: disable=unused-argument
         """Every DERIVED column holds what the resolver answers, per cadence.
@@ -412,6 +496,7 @@ class TestTheAuthoredSurfaceIsWholeAndClosed:
                     starts_on=date(2026, 1, 15),
                 ),
                 calendar,
+                bare_expense_template(db.session, seed_user),
             )
             db.session.flush()
             resolved = resolve(recurrence_spec(rule), calendar)
@@ -518,9 +603,7 @@ class TestSalaryProfileWriter:
         })
         assert resp.status_code == 302
 
-        rule = db.session.query(RecurrenceRule).filter_by(
-            user_id=seed_user["user"].id,
-        ).one()
+        rule = sole_rule_owned_by(seed_user["user"].id)
         assert_resolves_completely(rule)
         assert_reauthoring_changes_nothing(rule)
         resolved = resolved_for(rule)
@@ -569,9 +652,7 @@ class TestLoanPaymentTransferWriter:
         )
         assert resp.status_code == 302
 
-        rule = db.session.query(RecurrenceRule).filter_by(
-            user_id=seed_user["user"].id,
-        ).one()
+        rule = sole_rule_owned_by(seed_user["user"].id)
         assert_resolves_completely(rule)
         assert_reauthoring_changes_nothing(rule)
         assert scheduling_day_of_month(rule) == 1
@@ -621,6 +702,7 @@ class TestLoanPaymentTransferWriter:
                 starts_on=date(2026, 2, 1),
             ),
             calendar_for(seed_user["user"].id),
+            bare_expense_template(db.session, seed_user),
         )
         loan_recurrence_sync.bind_rule_to_loan(rule, loan.id)
         db.session.flush()
@@ -670,6 +752,7 @@ class TestScheduleRebuildRepoint:
                 starts_on=seed_periods[0].start_date,
             ),
             calendar_for(user_id),
+            bare_expense_template(db.session, seed_user),
         )
         db.session.flush()
         assert resolved_for(rule).starts_on == date(2026, 1, 2)
@@ -738,6 +821,7 @@ class TestScheduleRebuildRepoint:
                 starts_on=stated_start,
             ),
             calendar_for(user_id),
+            bare_expense_template(db.session, seed_user),
         )
         db.session.flush()
 
@@ -775,6 +859,7 @@ class TestScheduleRebuildRepoint:
                 starts_on=seed_periods[2].start_date,
             ),
             calendar_for(user_id),
+            bare_expense_template(db.session, seed_user),
         )
         db.session.flush()
         assert resolved_for(rule).offset_periods == 2  # index 2 % interval 3
@@ -827,6 +912,7 @@ class TestScheduleRebuildRepoint:
                 user_id=user_id,
             ),
             calendar_for(user_id),
+            bare_expense_template(db.session, seed_user),
         )
         db.session.flush()
         assert rule.starts_on == seed_periods[0].start_date
@@ -889,6 +975,7 @@ class TestTheClampIsResolvedAndStoredOnTheRule:
                 nominal_day=31,
             ),
             calendar_for(user_id),
+            bare_expense_template(db.session, seed_user),
         )
         db.session.flush()
 
@@ -921,6 +1008,7 @@ class TestTheClampIsResolvedAndStoredOnTheRule:
                 nominal_day=31,
             ),
             calendar_for(user_id),
+            bare_expense_template(db.session, seed_user),
         )
         db.session.flush()
         assert resolved_for(rule).nominal_day == 31
@@ -1000,6 +1088,7 @@ class TestTheIntervalColumnSaysWhatTheCadenceSays:
                 cadence, user_id=user_id, starts_on=date(2026, 1, 15),
             ),
             calendar_for(user_id),
+            bare_expense_template(db.session, seed_user),
         )
         db.session.flush()
 
@@ -1044,6 +1133,7 @@ class TestPhasePreservedAcrossAnEdit:
                 starts_on=seed_periods[2].start_date,
             ),
             calendar_for(user_id),
+            bare_expense_template(db.session, seed_user),
         )
         db.session.flush()
         # index 2 % interval 3.  Read through the RESOLVER since plan step
@@ -1100,6 +1190,7 @@ class TestWhatTheWriteDoorNORMALISES:
                 EVERY_PERIOD, user_id=user_id, starts_on=mid_period,
             ),
             calendar_for(user_id),
+            bare_expense_template(db.session, seed_user),
         )
         db.session.flush()
 
@@ -1129,6 +1220,7 @@ class TestWhatTheWriteDoorNORMALISES:
                 starts_on=date(2026, 3, 15),
             ),
             calendar_for(user_id),
+            bare_expense_template(db.session, seed_user),
         )
         db.session.flush()
 
@@ -1190,6 +1282,7 @@ class TestTheIntervalRoundTripsThroughTheColumn:
                 starts_on=date(2026, 2, 10),
             ),
             calendar_for(user_id),
+            bare_expense_template(db.session, seed_user),
         )
         db.session.flush()
 
@@ -1216,6 +1309,7 @@ class TestTheIntervalRoundTripsThroughTheColumn:
                 starts_on=seed_periods[0].start_date,
             ),
             calendar_for(user_id),
+            bare_expense_template(db.session, seed_user),
         )
         db.session.flush()
 
@@ -1264,6 +1358,7 @@ class TestEveryCadenceAuthorsAndResolves:
                 starts_on=seed_periods[1].start_date,
             ),
             calendar_for(user_id),
+            bare_expense_template(db.session, seed_user),
         )
         db.session.flush()
 
@@ -1282,6 +1377,7 @@ class TestEveryCadenceAuthorsAndResolves:
                 user_id=user_id,
             ),
             calendar_for(user_id),
+            bare_expense_template(_db.session, seed_user),
         )
 
         assert rule.id is not None

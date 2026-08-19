@@ -277,7 +277,7 @@ def refuse_recurrence_update(
     # ``extra_principal`` half of the harm this refusal names.
     # ``owns_validity_window`` asks whether ``loan_recurrence_sync`` writes
     # this template's bounds, which is the right question for the rest of it:
-    # clearing the recurrence nulls ``recurrence_rule_id``, and that is how
+    # clearing the recurrence DELETES the rule row, and its existence is how
     # ``recurring_transfer_query.active_recurring_transfer_template`` FINDS a
     # loan's payment -- so the loan goes on amortizing with nothing projecting
     # a payment against it.

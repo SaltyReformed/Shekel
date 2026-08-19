@@ -89,23 +89,22 @@ class TestTransferGeneration:
         db.session.add(savings)
         db.session.flush()
 
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence,
-            interval_n=rule_kwargs.get("interval_n", 1),
-            fires_on_day=rule_kwargs.get("day_of_month"),
-            fires_in_month=rule_kwargs.get("month_of_year"),
-        )
-
         template = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
             to_account_id=savings.id,
-            recurrence_rule_id=rule.id,
             name="Test Transfer",
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence,
+            interval_n=rule_kwargs.get("interval_n", 1),
+            fires_on_day=rule_kwargs.get("day_of_month"),
+            fires_in_month=rule_kwargs.get("month_of_year"),
+        )
 
         db.session.refresh(template)
         return template
@@ -193,7 +192,6 @@ class TestTransferGeneration:
                 user_id=seed_user["user"].id,
                 from_account_id=seed_user["account"].id,
                 to_account_id=savings.id,
-                recurrence_rule_id=None,
                 name="No Rule Transfer",
                 default_amount=Decimal("50.00"),
             )
@@ -225,15 +223,16 @@ class TestTransferGeneration:
             template = self._make_template_with_rule(
                 seed_user, EVERY_PERIOD
             )
-            # Both sides plus the row itself, exactly as
-            # ``_recurrence_form_helpers._clear_recurrence_rule`` does: the
-            # relationship is ``lazy="joined"`` and already loaded, so nulling
-            # only the FK leaves the engine reading the stale object.
-            rule = template.recurrence_rule
+            # ONE statement, exactly as
+            # ``_recurrence_form_helpers._clear_recurrence_rule`` does since
+            # plan step R-F6: dis-associating the rule is what deletes it,
+            # because the relationship carries ``delete-orphan`` and the rule
+            # holds the owning FK.  It was three statements -- null both sides,
+            # then delete the row -- while the FK sat on the template, and an
+            # explicit delete after this one now reports
+            # ``expected to delete 1 row(s); 0 were matched``, because the
+            # dis-association already removed it.
             template.recurrence_rule = None
-            template.recurrence_rule_id = None
-            db.session.flush()
-            db.session.delete(rule)
             db.session.flush()
             assert template.recurrence_rule is None
 
@@ -465,23 +464,22 @@ class TestTransferRegeneration:
         db.session.add(savings)
         db.session.flush()
 
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence,
-            interval_n=rule_kwargs.get("interval_n", 1),
-            fires_on_day=rule_kwargs.get("day_of_month"),
-            fires_in_month=rule_kwargs.get("month_of_year"),
-        )
-
         template = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
             to_account_id=savings.id,
-            recurrence_rule_id=rule.id,
             name="Test Transfer",
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence,
+            interval_n=rule_kwargs.get("interval_n", 1),
+            fires_on_day=rule_kwargs.get("day_of_month"),
+            fires_in_month=rule_kwargs.get("month_of_year"),
+        )
 
         db.session.refresh(template)
         return template
@@ -663,23 +661,22 @@ class TestTransferResolveConflicts:
         db.session.add(savings)
         db.session.flush()
 
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence,
-            interval_n=rule_kwargs.get("interval_n", 1),
-            fires_on_day=rule_kwargs.get("day_of_month"),
-            fires_in_month=rule_kwargs.get("month_of_year"),
-        )
-
         template = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
             to_account_id=savings.id,
-            recurrence_rule_id=rule.id,
             name="Test Transfer",
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence,
+            interval_n=rule_kwargs.get("interval_n", 1),
+            fires_on_day=rule_kwargs.get("day_of_month"),
+            fires_in_month=rule_kwargs.get("month_of_year"),
+        )
 
         db.session.refresh(template)
         return template
@@ -941,23 +938,22 @@ class TestNegativePaths:
             db.session.flush()
             to_account_id = savings.id
 
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence,
-            interval_n=rule_kwargs.get("interval_n", 1),
-            fires_on_day=rule_kwargs.get("day_of_month"),
-            fires_in_month=rule_kwargs.get("month_of_year"),
-        )
-
         template = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=from_account_id or seed_user["account"].id,
             to_account_id=to_account_id,
-            recurrence_rule_id=rule.id,
             name="Test Transfer NP",
             default_amount=default_amount,
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence,
+            interval_n=rule_kwargs.get("interval_n", 1),
+            fires_on_day=rule_kwargs.get("day_of_month"),
+            fires_in_month=rule_kwargs.get("month_of_year"),
+        )
         db.session.refresh(template)
         return template
 
@@ -1177,24 +1173,23 @@ class TestShadowTransactionCreation:
         db.session.add(savings)
         db.session.flush()
 
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence,
-            interval_n=rule_kwargs.get("interval_n", 1),
-            fires_on_day=rule_kwargs.get("day_of_month"),
-            fires_in_month=rule_kwargs.get("month_of_year"),
-        )
-
         template = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
             to_account_id=savings.id,
-            recurrence_rule_id=rule.id,
             name="Shadow Test Transfer",
             default_amount=Decimal("150.00"),
             category_id=category_id,
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence,
+            interval_n=rule_kwargs.get("interval_n", 1),
+            fires_on_day=rule_kwargs.get("day_of_month"),
+            fires_in_month=rule_kwargs.get("month_of_year"),
+        )
         db.session.refresh(template)
         return template, savings
 
@@ -1385,21 +1380,20 @@ class TestResolveConflictsServiceRouting:
         db.session.add(savings)
         db.session.flush()
 
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence,
-            interval_n=rule_kwargs.get("interval_n", 1),
-        )
-
         template = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
             to_account_id=savings.id,
-            recurrence_rule_id=rule.id,
             name="Test Transfer L1",
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence,
+            interval_n=rule_kwargs.get("interval_n", 1),
+        )
         db.session.refresh(template)
         return template
 
@@ -1697,23 +1691,22 @@ class TestRegenerateDeletionRoutedThroughService:
         db.session.add(savings)
         db.session.flush()
 
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence,
-            interval_n=rule_kwargs.get("interval_n", 1),
-            fires_on_day=rule_kwargs.get("day_of_month"),
-            fires_in_month=rule_kwargs.get("month_of_year"),
-        )
-
         template = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
             to_account_id=savings.id,
-            recurrence_rule_id=rule.id,
             name="Commit 34 Transfer",
             default_amount=Decimal("100.00"),
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, cadence,
+            interval_n=rule_kwargs.get("interval_n", 1),
+            fires_on_day=rule_kwargs.get("day_of_month"),
+            fires_in_month=rule_kwargs.get("month_of_year"),
+        )
         db.session.refresh(template)
         return template
 
