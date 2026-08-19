@@ -11,8 +11,8 @@ a clean sweep:
 * lines that predate the owner's pay calendar, which nothing can ever match --
   130 of the developer's own 361 lines, and listing them beside genuine
   failures would bury the ones worth acting on;
-* days too crowded to search for groups
-  (:func:`~._propose.skipped_group_days`);
+* days too crowded to search for groups, as the SEARCH reports them
+  (:attr:`~._propose.ProposedMatches.crowded_days`);
 * matches whose rows no longer carry the day the bank stated, which is what a
   later hand edit produces and what makes a match re-reviewable rather than
   quietly stale.
@@ -27,27 +27,26 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import selectinload
 
-from app import ref_cache
-from app.enums import SettlementBasisEnum
 from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app.models.statement_import import BankStatementLine
 from app.models.statement_match import StatementMatch, StatementMatchMember
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import cash_ledger, pay_calendar
-from app.utils.balance_predicates import (
-    balance_contributing_clause,
-    is_balance_contributing,
-    not_archived_clause,
-)
+from app.services import cash_ledger
+from app.utils.balance_predicates import is_balance_contributing
 from app.utils.money import round_money
 
-from ._candidates import candidates_for
+from ._candidates import (
+    matched_subjects,
+    unmatched_destinations,
+    unmatched_rows,
+)
 from ._offers import BankLine, CandidateRow, MatchProposal, PurchaseDestination
-from ._propose import propose, skipped_group_days
+from ._propose import propose
+from ._scope import ReviewScope
 
 
 @dataclass(frozen=True)
@@ -122,8 +121,8 @@ class ReviewBounds:
             not work, they are the statement being older than the budget.
             Measured at 130 of 361 on the developer's own export.
         before_calendar_last_day: The latest of those days, or ``None``.
-        crowded_days: Days :func:`~._propose.skipped_group_days` refused to
-            search for GROUP matches.
+        crowded_days: Days the GROUP search refused to look at, as it
+            reports them (:attr:`~._propose.ProposedMatches.crowded_days`).
         unpriceable_count: How many of the account's rows the amount model
             could not price, so they could not be offered
             (:class:`~._offers.Candidates`).
@@ -521,121 +520,6 @@ def _by_id(model, ids: "set[int]") -> dict:
     }
 
 
-def destinations_for(
-    owner_id: int, account_id: int,
-) -> "list[PurchaseDestination]":
-    """Return every budget line a bank line could become a purchase against.
-
-    **ONE scope, shared by the screen that offers a destination and the door
-    that writes into it** (:func:`~._create._existing_envelope`), which is the
-    property :func:`~._accept._load_rows` rests on: a row this does not return
-    cannot be reached by crafting a request, and a row it does return cannot be
-    refused by the write door.  Every clause below is one of those doors'.
-
-    Scope, and what each clause is:
-
-    * on THIS account, and its pay period is this OWNER's -- a statement is one
-      bank's record of one account, and ``Transaction`` carries no ``user_id``
-      of its own;
-    * it TRACKS PURCHASES -- ``entry_service.create_entry`` refuses a parent
-      that does not, and a purchase needs a container that can hold more than
-      one;
-    * it is not a TRANSFER and not INCOME -- both are ``create_entry``
-      refusals: a transfer's legs are the transfer service's, and money coming
-      in is not a purchase;
-    * it CONTRIBUTES to a balance and is not soft-deleted
-      (:func:`~app.utils.balance_predicates.balance_contributing_clause`) -- a
-      Credit or Cancelled row records no cash, so a purchase filed under one
-      would post nothing (ruling **R-FM**);
-    * it is not ARCHIVED -- finding **N-229**: an archived row's purchases are
-      history, and ``_candidates._purchase_candidates`` already declines to
-      offer one;
-    * if it has SETTLED, its recorded figure IS its purchases.  **This is the
-      money clause** (:func:`~app.services.entry_service._doors
-      ._reject_settled_addition`): on a ``purchases`` basis a new purchase
-      raises what the row cost by exactly its own amount and the row's cash leg
-      does not move, so the movement is recorded; on a stored-figure basis the
-      gross cannot rise, and ``settled_cash_leg`` then subtracts money the gross
-      never held -- measured on a production clone, `-163.95` became `+203.67`
-      while the anchor true-up moved `$0.00`;
-    * it is NOT ITSELF MATCHED to a bank line.  ``accept_match``'s
-      :func:`~._accept._reject_parent_and_its_own_purchase` refuses a purchase
-      whose parent another match already names, so offering such an envelope
-      would render a chooser whose submission always fails.
-
-      **Finding N-317 said this clause was wider than the money needs, and the
-      re-measurement REFUTED it** (plan step ``bank_import:X-f6a-3c``,
-      developer ruling 2026-08-19).  Its argument was that a purchase BORN
-      carrying its posting day moves its parent's leg by zero, so the earlier
-      match still balances.  That is true of two envelope shapes and false of
-      the third, and the third is offerable here: adding a `$30.00` posted
-      purchase to a row on a production clone moved the cash leg by `$0.00`
-      for an envelope settled on a purchases basis (`Gas` 2223, `-88.01`
-      unchanged) and for a projected envelope already holding purchases, and by
-      **`+111.02`** for a projected envelope holding NONE (`Gas` 2232,
-      budgeted `$111.02`, leg `-111.02` to `0.00`).  The reason is
-      ``settles_from_entries``: an envelope with no entries is valued at its
-      own figure, and the first purchase flips it onto ``sum(entries)`` while
-      that purchase's own posting day is subtracted again.  A match accepted
-      against such a row would be left explaining money the app no longer holds
-      anywhere.  So the clause stays whole, and the finding is CLOSED as a
-      misdiagnosis rather than acted on.
-
-    Args:
-        owner_id: The user whose budget lines may be offered.
-        account_id: The cash account the statement is for.
-
-    Returns:
-        One :class:`~._offers.PurchaseDestination` per offerable row, oldest
-        pay period first and then by name -- a deterministic order, so the
-        chooser a screen shows does not depend on what the planner returned.
-    """
-    matched = {
-        row[0] for row in db.session.query(
-            StatementMatchMember.transaction_id,
-        ).filter(
-            StatementMatchMember.account_id == account_id,
-            StatementMatchMember.transaction_id.isnot(None),
-        ).all()
-    }
-    purchases_basis = ref_cache.settlement_basis_id(
-        SettlementBasisEnum.PURCHASES,
-    )
-    rows = (
-        db.session.query(Transaction)
-        .options(joinedload(Transaction.pay_period))
-        .filter(
-            Transaction.account_id == account_id,
-            Transaction.transfer_id.is_(None),
-            balance_contributing_clause(),
-            not_archived_clause(Transaction),
-            Transaction.pay_period.has(user_id=owner_id),
-        )
-        .all()
-    )
-    offered = [
-        PurchaseDestination(
-            transaction_id=txn.id,
-            label=(
-                f"{txn.name} "
-                f"({txn.pay_period.start_date} - {txn.pay_period.end_date})"
-            ),
-            pay_period_id=txn.pay_period_id,
-            is_settled=txn.status.is_settled,
-        )
-        for txn in rows
-        if txn.id not in matched
-        and txn.tracks_purchases
-        and not txn.is_income
-        and (
-            not txn.status.is_settled
-            or txn.settled_basis_id == purchases_basis
-        )
-    ]
-    offered.sort(key=lambda d: (d.pay_period_id, d.label))
-    return offered
-
-
 def _creatable_lines(
     calendar, unmatched: "list[BankLine]",
     destinations: "list[PurchaseDestination]",
@@ -649,7 +533,9 @@ def _creatable_lines(
             (:func:`review_set`).
         unmatched: The bank lines inside the calendar no proposal explains.
         destinations: Every offerable budget line
-            (:func:`destinations_for`), read ONCE and grouped here rather than
+            (:func:`~._candidates.destinations_for`, narrowed by
+            :func:`~._candidates.unmatched_destinations`), read ONCE for the
+            whole pass and grouped here rather than
             re-queried per line -- a redundant producer call inside one request
             is this project's DRY violation rather than a cost.
 
@@ -662,22 +548,25 @@ def _creatable_lines(
     outflows = [line for line in unmatched if line.amount < 0]
     if not outflows:
         return ()
-    by_period: "dict[int, tuple[PurchaseDestination, ...]]" = {}
+    # ONE pass over the destinations, and ONE placement per line.  Both were
+    # asked twice: the grouping rescanned every destination once per period,
+    # and each line placed itself once for its id and again for its lookup --
+    # 182 calls for 91 outflows.  A redundant producer call inside one request
+    # is this project's DRY violation rather than a cost.
+    by_period: "dict[int, list[PurchaseDestination]]" = {}
     for destination in destinations:
-        by_period.setdefault(destination.pay_period_id, ())
-    for period_id in by_period:
-        by_period[period_id] = tuple(
-            d for d in destinations if d.pay_period_id == period_id
-        )
+        by_period.setdefault(destination.pay_period_id, []).append(destination)
+    placed = [
+        (line, _period_id_for(calendar, line.happened_on))
+        for line in outflows
+    ]
     return tuple(
         CreatableLine(
             line=line,
-            pay_period_id=_period_id_for(calendar, line.happened_on),
-            destinations=by_period.get(
-                _period_id_for(calendar, line.happened_on), (),
-            ),
+            pay_period_id=period_id,
+            destinations=tuple(by_period.get(period_id, ())),
         )
-        for line in outflows
+        for line, period_id in placed
     )
 
 
@@ -722,7 +611,51 @@ def _split_at_calendar_open(
     return before, [line for line in recorded if line.id not in before_ids]
 
 
-def review_set(owner_id: int, account_id: int) -> ReviewSet:
+def _rows_the_bank_never_showed(
+    offerable: "list[CandidateRow]",
+    proposals: "tuple[MatchProposal, ...]",
+    account_id: int,
+) -> "tuple[CandidateRow, ...]":
+    """Return the app's own rows the statement could have shown and did not.
+
+    Ruling **R-FP**'s other side, and the more valuable half for a budget: a row
+    the bank never showed is a payment the records claim happened and the bank
+    did not make.
+
+    **The span is every RECORDED line's, not the unmatched ones'.**  Taking it
+    from the leftovers made the window SHRINK as matches were accepted --
+    matching the earliest or latest line silently dropped app rows from the
+    list, and matching every line left no span at all -- while the card went on
+    claiming these "fall inside the span your statement covers".
+
+    **A row is measured on the WINDOW the app expects it in**, which is its
+    settle day where it has one and its projection's span where it does not.
+    Using "undated is always in" put every forward projection on the account
+    into the list: 712 rows on the developer's own, most of them dated months
+    ahead.  A projection the bank could not yet have shown is not a payment the
+    bank failed to make.  Both found by adversarial review 2026-08-17.
+
+    Args:
+        offerable: The candidate rows no accepted match has claimed.
+        proposals: What this pass proposes, whose rows are already explained.
+        account_id: The account, for the recorded span.
+
+    Returns:
+        The rows, in the candidate order.
+    """
+    spoken_for = {
+        (row.kind, row.row_id)
+        for proposal in proposals for row in proposal.rows
+    }
+    covered = _covered_span(account_id)
+    return tuple(
+        row for row in offerable
+        if (row.kind, row.row_id) not in spoken_for
+        and _could_have_been_shown(row, covered)
+    )
+
+
+def review_set(scope: ReviewScope) -> ReviewSet:
     """Return everything the review screen shows for one account.
 
     ONE assembly, so the proposals, the leftovers and the bounds are all
@@ -730,65 +663,51 @@ def review_set(owner_id: int, account_id: int) -> ReviewSet:
     screen whose "unmatched" list came from a second pass could disagree with
     its own proposals.
 
+    **The SCOPE is a parameter since plan step ``bank_import:X-f6a-3c-2``**, so
+    the screen and the doors it posts to derive an account once between them
+    rather than once each.  This reader built its own until then, and the batch
+    door's response re-renders this same set: two derivations of 827 priced rows
+    in one request, at 3.593 s apiece.
+
     Args:
-        owner_id: The user the route proved owns the account.
-        account_id: The account whose statements to review.
+        scope: The pass's derived offer set (:class:`~._scope.ReviewScope`).
 
     Returns:
         Its :class:`ReviewSet`.
     """
-    # **ONE calendar for the whole pass.**  Three sites asked the same question
-    # in one request until adversarial financial review 2026-08-19 -- this
-    # reader's own ``MIN(start_date)``, ``candidates_for``'s window source and
-    # ``_creatable_lines``' line placer -- and two of them could disagree under
-    # READ COMMITTED.  ``opening_bound`` is the calendar's own answer to what
-    # ``_calendar_opens`` used to query for, so the query went with it.
-    calendar = pay_calendar.calendar_for(owner_id)
+    calendar = scope.calendar
+    account_id = scope.account_id
     opens = calendar.opening_bound()
     before, inside = _split_at_calendar_open(
         _unmatched_lines(account_id), opens,
     )
 
-    candidates = candidates_for(account_id, calendar)
+    # **What is already CLAIMED is read HERE, not carried in the scope.**  The
+    # doors re-read it per act, and this screen is rendered after them inside
+    # the same request, so a reader taking it off the scope would list rows the
+    # batch had just matched.
+    matched = matched_subjects(account_id)
+    candidates = scope.candidates
+    offerable = unmatched_rows(candidates, matched)
     bank_lines = [_as_bank_line(line) for line in inside]
-    proposals = propose(bank_lines, candidates.rows)
+    proposed = propose(bank_lines, offerable)
+    proposals = proposed.proposals
     explained = {
         line.line_id for proposal in proposals for line in proposal.lines
     }
-    spoken_for = {
-        (row.kind, row.row_id)
-        for proposal in proposals for row in proposal.rows
-    }
-    # The rows the STATEMENT could have shown and did not.
-    #
-    # **The span is every RECORDED line's, not the unmatched ones'.**  Taking
-    # it from the leftovers made the window SHRINK as matches were accepted --
-    # matching the earliest or latest line silently dropped app rows from the
-    # list, and matching every line left no span at all -- while the card went
-    # on claiming these "fall inside the span your statement covers".
-    #
-    # **A row is measured on the WINDOW the app expects it in**, which is its
-    # settle day where it has one and its projection's span where it does not.
-    # Using "undated is always in" put every forward projection on the account
-    # into the list: 712 rows on the developer's own, most of them dated months
-    # ahead.  A projection the bank could not yet have shown is not a payment
-    # the bank failed to make.  Both found by adversarial review 2026-08-17.
-    covered = _covered_span(account_id)
-    unmatched_rows = tuple(
-        row for row in candidates.rows
-        if (row.kind, row.row_id) not in spoken_for
-        and _could_have_been_shown(row, covered)
-    )
     unmatched = [
         line for line in bank_lines if line.line_id not in explained
     ]
     return ReviewSet(
-        proposals=tuple(proposals),
+        proposals=proposals,
         unmatched=tuple(unmatched),
-        unmatched_rows=unmatched_rows,
-        accepted=tuple(_accepted_groups(owner_id, account_id)),
+        unmatched_rows=_rows_the_bank_never_showed(
+            offerable, proposals, account_id,
+        ),
+        accepted=tuple(_accepted_groups(scope.owner_id, account_id)),
         creatable=_creatable_lines(
-            calendar, unmatched, destinations_for(owner_id, account_id),
+            calendar, unmatched,
+            unmatched_destinations(scope.destinations, matched),
         ),
         bounds=ReviewBounds(
             calendar_opens=opens,
@@ -796,7 +715,12 @@ def review_set(owner_id: int, account_id: int) -> ReviewSet:
             before_calendar_last_day=(
                 max(line.posted_on for line in before) if before else None
             ),
-            crowded_days=tuple(skipped_group_days(candidates.rows)),
+            # **The days the SEARCH skipped, published by the search** (finding
+            # **N-322**).  This reader re-derived them over every candidate
+            # until plan step X-f6a-3c-2, while ``propose`` searches only the
+            # rows no one-to-one proposal claimed -- a superset, so the screen
+            # could name a day too crowded to search that had been searched.
+            crowded_days=proposed.crowded_days,
             unpriceable_count=len(candidates.unpriceable_ids),
         ),
     )

@@ -1,0 +1,629 @@
+{% from "_money_macros.html" import money %}
+
+{# THE WHOLE REVIEWABLE SURFACE, and the batch POST's own answer.
+
+   Plan step bank_import:X-f6a-3c-2.  It is a partial rather than part of the
+   page because applying a reviewed pass ANSWERS WITH THIS: the outcome panel
+   at the top says what landed and quotes every refusal, and the lists below it
+   are re-derived from the state that pass left.  One template, so what htmx
+   swaps in after a POST cannot drift from what a reload shows.
+
+   Why not flash messages: they ride in the signed session cookie, and the
+   longest sentence a batch item can carry measures 497 bytes against the 4 KB
+   a browser will store -- so NINE of them overflow it, and an overflowed
+   cookie is dropped, which logs the owner out.  A toast also auto-hides after
+   five seconds, which is not where a sentence naming work still to do
+   belongs.
+
+   R-FP -- nothing is applied that the owner did not accept -- is structural
+   here: a proposal needs its tick, and a bank line needs its destination
+   select moved off "leave this line alone".  There is no state in which an
+   untouched control writes money.
+
+   Context: account, review (ReviewSet), categories, outcome (BatchOutcome or
+   None), error (a sentence or None). #}
+
+<div id="statement-review-body">
+
+  <div class="alert alert-warning d-flex gap-2 align-items-start" role="alert">
+    <i class="bi bi-exclamation-triangle mt-1"></i>
+    <div>
+      <strong>Applying what you ticked changes your records.</strong>
+      Every row in a match takes the day your bank posted it. A row you had not
+      marked as having happened becomes marked; a row dated wrongly moves onto
+      the bank's day; a line you name a place for becomes a purchase you did
+      not have. Nothing here happens until you press Apply.
+    </div>
+  </div>
+
+  {# ── What the last pass did ─────────────────────────────────────────── #}
+  {% if error %}
+  <div class="alert alert-danger d-flex gap-2 align-items-start" role="alert">
+    <i class="bi bi-x-octagon mt-1"></i>
+    <div>{{ error }}</div>
+  </div>
+  {% endif %}
+
+  {% if outcome %}
+  <div class="card mb-3 border-{% if outcome.refused_count %}warning{% else %}success{% endif %}">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-clipboard-check"></i> What that pass did</span>
+      <span class="badge text-bg-secondary">
+        {{ outcome.applied_count }} applied{% if outcome.refused_count %}, {{ outcome.refused_count }} refused{% endif %}
+      </span>
+    </div>
+    <div class="card-body">
+      {% if outcome.moved_nothing %}
+      <p class="mb-0 text-body-secondary">
+        Nothing moved. Everything that was applied confirmed a day you already
+        had.
+      </p>
+      {% else %}
+      <ul class="mb-0 small">
+        {% if outcome.settled_count %}
+        <li>{{ outcome.settled_count }} row(s) marked as having happened.</li>
+        {% endif %}
+        {% if outcome.corrected_count %}
+        <li>{{ outcome.corrected_count }} row(s) moved onto the bank's day.</li>
+        {% endif %}
+        {% if outcome.redated_count %}
+        <li>{{ outcome.redated_count }} purchase date(s) corrected.</li>
+        {% endif %}
+        {% if outcome.recorded_count %}
+        <li>
+          {{ outcome.recorded_count }} bank line(s) recorded as a purchase your
+          records did not have{% if outcome.envelopes_created %}, {{ outcome.envelopes_created }} of them in an envelope this created{% endif %}.
+        </li>
+        {% endif %}
+      </ul>
+      {% endif %}
+      {% if outcome.applied %}
+      {# THE ITEMISATION, and it is folded rather than dropped.  The counts
+         above say how much moved; only these say WHERE -- which envelope took
+         a purchase, which day a row moved onto.  A pass can apply 195 items on
+         the developer's own statement, so the headline is the summary and the
+         record is one click away, rather than the record being cut to fit. #}
+      <details class="mt-2">
+        <summary class="small text-body-secondary">
+          What each of the {{ outcome.applied_count }} applied did
+        </summary>
+        <ul class="mt-2 mb-0 small">
+          {% for item in outcome.applied %}
+          {# The SUMMARY alone: it names the figure and the day, which is how
+             the owner recognises the act.  A bank line's id is opaque -- this
+             screen renders one nowhere the owner can see -- so a "Line 4711:"
+             prefix pointed at nothing. #}
+          <li class="mb-1">{{ item.summary }}</li>
+          {% endfor %}
+        </ul>
+      </details>
+      {% endif %}
+    </div>
+    {% if outcome.refused %}
+    {# EVERY refusal, quoted in the service's own words (developer ruling,
+       2026-08-19).  Not summarised and not capped: each sentence names its own
+       figures, and the payroll gap that motivated the ruling is only
+       actionable because it states the difference to the cent. #}
+    <div class="card-body border-top">
+      <p class="fw-semibold mb-2">
+        These were not applied, and nothing was changed for them:
+      </p>
+      <ul class="mb-0 small">
+        {% for item in outcome.refused %}
+        <li class="mb-1">{{ item.reason }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {# ── The reviewed pass: tick what you agree with, then Apply ─────────── #}
+  <form method="post"
+        action="{{ url_for('accounts.apply_statement_review', account_id=account.id) }}"
+        hx-post="{{ url_for('accounts.apply_statement_review', account_id=account.id) }}"
+        hx-target="#statement-review-body"
+        hx-swap="outerHTML"
+        hx-disabled-elt="find button[type=submit]"
+        data-statement-review-form>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+    {# ── What the app proposes ───────────────────────────────────────── #}
+    <div class="card mb-3">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-link-45deg"></i> Proposed matches</span>
+        <span class="badge text-bg-secondary">{{ review.proposals | length }}</span>
+      </div>
+      {% if review.proposals %}
+      {# THE THREE CLASSES, and they PARTITION the proposals rather than
+         overlapping: a proposal either confirms the day the app already had,
+         moves a day it got wrong, or marks a row as having happened for the
+         first time.  Measured on the developer's own statement: 27 / 46 / 51
+         of 124.
+
+         Sweeping by CLASS rather than by one "tick all" is the developer's
+         ruling of 2026-08-19, and it is what keeps R-FP meaningful at this
+         volume: the review happens once per class, so the riskiest class is
+         never swept by the same click as the safest.  None is ticked by
+         default. #}
+      <div class="card-body border-bottom py-2">
+        <div class="d-flex flex-wrap gap-3 small">
+          {% for group, label in [
+            ('confirm', 'that only confirm a day you already had'),
+            ('correct', "that move a day onto the bank's"),
+            ('settle', 'that mark a row as having happened'),
+          ] %}
+          {% set count = review.proposals | selectattr('review_class', 'equalto', group) | list | length %}
+          {% if count %}
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox"
+                   id="tick-all-{{ group }}"
+                   data-tick-all="{{ group }}">
+            <label class="form-check-label" for="tick-all-{{ group }}">
+              tick all {{ count }} {{ label }}
+            </label>
+          </div>
+          {% endif %}
+          {% endfor %}
+        </div>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0">
+          <thead>
+            <tr>
+              <th scope="col" class="text-center">Apply</th>
+              <th scope="col">Your bank says</th>
+              <th scope="col">Your budget holds</th>
+              <th scope="col" class="text-end">What accepting does</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for proposal in review.proposals %}
+            {% set item = loop.index0 %}
+            <tr>
+              <td class="text-center">
+                {# The tick, and the ids it applies.  The hidden inputs are
+                   rendered for every proposal and the ``apply`` value is what
+                   SELECTS: a browser submits a checkbox only when it is
+                   ticked, so an untouched proposal contributes ids nobody acts
+                   on.  The ids travel with the tick rather than being
+                   re-derived server-side, because R-FP asks that what commits
+                   is what was reviewed -- a proposal re-derived at POST time
+                   could differ from the one on the screen. #}
+                <input class="form-check-input" type="checkbox"
+                       name="apply" value="{{ item }}"
+                       data-proposal-class="{{ proposal.review_class }}"
+                       id="apply-{{ item }}"
+                       aria-label="Apply this proposed match">
+                {% for line in proposal.lines %}
+                <input type="hidden" name="match-{{ item }}-line_ids" value="{{ line.line_id }}">
+                {% endfor %}
+                {% for row in proposal.rows %}
+                {% if row.kind.value == 'transaction' %}
+                <input type="hidden" name="match-{{ item }}-transaction_ids" value="{{ row.row_id }}">
+                {% else %}
+                <input type="hidden" name="match-{{ item }}-entry_ids" value="{{ row.row_id }}">
+                {% endif %}
+                {% endfor %}
+              </td>
+              <td>
+                {% for line in proposal.lines %}
+                <div>
+                  <span class="fw-semibold">{{ money(line.amount) }}</span>
+                  <span class="text-body-secondary">{{ line.posted_on }}</span>
+                  <div class="small text-body-secondary">{{ line.description }}</div>
+                </div>
+                {% endfor %}
+              </td>
+              <td>
+                {% for row in proposal.rows %}
+                <div>
+                  <span class="fw-semibold">{{ money(row.cash_amount) }}</span>
+                  {{ row.label }}
+                  <span class="small text-body-secondary">
+                    {# A row you have not marked as happened is offered because
+                       the paycheck it is budgeted in reaches the bank's day, so
+                       the paycheck is the fact to check -- two months of the
+                       same commitment are both called "Transfer to Mortgage". #}
+                    {% if row.settled_on %}({{ row.settled_on }}){% else %}(not yet recorded as happened{% if row.expected_on %}, budgeted {{ row.expected_on }} - {{ row.expected_through }}{% endif %}){% endif %}
+                  </span>
+                </div>
+                {% endfor %}
+              </td>
+              <td class="text-end small">
+                {% set settles = proposal.rows | rejectattr('is_settled') | list %}
+                {% if settles %}
+                <div>marks {{ settles | length }} row(s) as happened</div>
+                {% endif %}
+                {% if proposal.confirms %}
+                <div class="text-body-secondary">confirms the day you already had</div>
+                {% elif proposal.day_gap is none %}
+                <div>records it as having moved on {{ proposal.posts_on }}</div>
+                {% else %}
+                <div>moves the day by {{ proposal.day_gap }} day(s) to {{ proposal.posts_on }}</div>
+                {% endif %}
+                {# The PURCHASE day, which is a different clock from the one
+                   above and moves under a different rule (R-FW): the posting
+                   day is the day the bank took the money and this is the day
+                   you made the purchase.  Shown only when accepting would move
+                   it, which is when the day you recorded is later than the day
+                   the bank posted it -- an impossibility rather than a
+                   disagreement. #}
+                {% if proposal.redated_purchases %}
+                <div class="text-warning-emphasis">
+                  corrects {{ proposal.redated_purchases | length }} purchase date(s)
+                  to {{ proposal.made_on }}, moving
+                  {% if proposal.redated_purchases | length == 1 %}it{% else %}one{% endif %}
+                  back {{ proposal.redate_gap }} day(s)
+                </div>
+                {% for row in proposal.redated_purchases %}
+                <div class="small text-body-secondary">
+                  {{ row.label }}: recorded {{ row.expected_on }}
+                </div>
+                {% endfor %}
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <div class="card-body text-body-secondary">
+        Nothing to propose. Either every line your bank sent is already matched, or
+        none of them line up with a row this account holds.
+      </div>
+      {% endif %}
+    </div>
+
+    {# ── Lines that are a purchase you never recorded ──────────────────── #}
+    {# Ruling R-FS's THIRD shape, plan step bank_import:X-f6a-3b.  THIS CARD
+       MOVES MONEY, and differently from the proposals above: accepting a match
+       re-dates a movement your records already held, and recording a line here
+       ADDS one they did not have.  Measured on the developer's own statement,
+       91 unmatched outflows survive every proposal -- 74 of them card swipes
+       worth $3,383.49 -- and none can ever be matched, because the app records
+       a period's groceries as one envelope and the bank records every swipe.
+
+       A line appears BOTH here and in the hand-build list below on purpose:
+       the same fact can be something to group with existing rows or something
+       to record as new, and the owner is the one who knows which.
+
+       Inflows are absent: a purchase is an expense, so a deposit or a card
+       refund can only ever be matched to a row.
+
+       THE SELECT IS THE TICK (developer ruling, 2026-08-19).  Its default is
+       "leave this line alone", so a line is recorded only where the owner
+       named a place for it.  It used to default to the first envelope in the
+       line's pay period -- which on the developer's own data has already
+       CLOSED at a fixed figure on 78 of these 91 lines -- and the category
+       select defaulted to the first active category, "Auto: Property Tax".
+       One press per line hid that; one press for forty would not. #}
+    {% if review.creatable %}
+    <div class="card mb-3">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-plus-square"></i> Lines that are a purchase you never recorded</span>
+        <span class="badge text-bg-secondary">{{ review.creatable | length }}</span>
+      </div>
+      <div class="card-body">
+        <p class="text-body-secondary small mb-0">
+          These are every line of money LEAVING your account that no match above
+          explains. Recording one adds a purchase your records did not have, dated
+          the day your bank took it. Whether your balance falls depends on the
+          envelope you file it under: one that had already reserved for this
+          spending absorbs it, and one that had not does not.
+        </p>
+        <p class="text-body-secondary small mb-0">
+          <strong>Some of these may already be in your budget in another shape</strong>
+          -- a card payment your app records as payback rows, an insurance premium
+          recorded as a bill. Recording one of those here would count that money a
+          second time; those belong in the match form below, not in this list.
+        </p>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0">
+          <thead>
+            <tr>
+              <th scope="col">Your bank says</th>
+              <th scope="col">Record it in</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in review.creatable %}
+            <tr>
+              <td>
+                <span class="fw-semibold">{{ money(item.line.amount) }}</span>
+                <span class="text-body-secondary">{{ item.line.posted_on }}</span>
+                {% if item.line.transaction_on %}
+                <span class="small text-body-secondary">(made {{ item.line.transaction_on }})</span>
+                {% endif %}
+                <div class="small text-body-secondary">{{ item.line.description }}</div>
+              </td>
+              <td>
+                {% if item.pay_period_id is none %}
+                <span class="small text-warning-emphasis">
+                  No pay period covers {{ item.line.transaction_on or item.line.posted_on }},
+                  the day this was made, so there is no budget for it to belong to.
+                  That day is usually before your pay calendar opens, which no
+                  amount of extending it forward will reach.
+                </span>
+                {% else %}
+                <div class="row g-2 align-items-center" data-creatable-row>
+                  <div class="col-12 col-lg-5">
+                    <select class="form-select form-select-sm"
+                            name="destination-{{ item.line.line_id }}"
+                            data-destination
+                            aria-label="Where this line should be recorded">
+                      <option value="" selected>-- leave this line alone --</option>
+                      {% for destination in item.destinations %}
+                      <option value="{{ destination.transaction_id }}">
+                        {{ destination.label }}{% if destination.is_settled %} -- closed{% endif %}
+                      </option>
+                      {% endfor %}
+                      <option value="new">-- a new envelope --</option>
+                    </select>
+                  </div>
+                  <div class="col-12 col-lg-4 d-none" data-new-envelope-field>
+                    <input class="form-control form-control-sm" type="text"
+                           name="envelope_name-{{ item.line.line_id }}" maxlength="200"
+                           value="{{ item.line.merchant }}"
+                           aria-label="Name for the new envelope">
+                  </div>
+                  <div class="col-12 col-lg-3 d-none" data-new-envelope-field>
+                    <select class="form-select form-select-sm"
+                            name="category_id-{{ item.line.line_id }}"
+                            aria-label="Category for the new envelope">
+                      {# NO default, and that is deliberate: the category is
+                         what every spending report groups by, so a new
+                         envelope filed under whichever category sorts first is
+                         a misclassification nobody chose.  The service refuses
+                         a new envelope stated by halves. #}
+                      <option value="" selected>-- choose a category --</option>
+                      {% for category in categories %}
+                      <option value="{{ category.id }}">{{ category.display_name }}</option>
+                      {% endfor %}
+                    </select>
+                  </div>
+                  {% if not item.destinations %}
+                  <div class="col-12 small text-body-secondary">
+                    No envelope in this pay period can take a purchase -- every one of
+                    them closed at a fixed figure, so adding to it would not record
+                    this money. "A new envelope" is the only place open to it.
+                  </div>
+                  {% endif %}
+                </div>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="card-footer small text-body-secondary">
+        The name and category appear only when you pick "a new envelope"; the new
+        row budgets $0.00, because nothing budgeted this.
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="d-flex justify-content-end align-items-center gap-2 mb-3">
+      <span class="htmx-indicator text-body-secondary small">
+        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+        Applying...
+      </span>
+      <button type="submit" class="btn btn-primary">
+        Apply what I ticked
+      </button>
+    </div>
+  </form>
+
+  {# ── Build a match by hand ────────────────────────────────────────────── #}
+  {# THE HAND-BUILD FORM IS WHAT MAKES THE ACCEPT DOOR'S REFUSALS REACHABLE.
+     Without it, _reject_unbalanced and _reject_parent_and_its_own_purchase fire
+     only on a crafted POST -- so the $0.05 payroll gap (finding N-239) is never
+     put in front of the person who can fix it, and the proposer's own docstring
+     claim that "the owner may still build such a group by hand" is false about
+     the shipped app.  Found by adversarial design review, 2026-08-17.
+
+     It is its OWN form with its own button, and it posts to the same batch
+     door as a pass of exactly one match: the ``apply`` index is hidden rather
+     than a checkbox because its whole submission IS the group -- there is
+     nothing here to tick that is not already a member.
+
+     ITS INDEX IS "hand", NOT 0, and that is a separation rather than a label.
+     Proposal 0 emits ``apply=0`` and ``match-0-line_ids``; so did this form,
+     and the two are only kept apart today by being separate <form> elements --
+     a property of the document.  Merge them, or add an hx-include, and
+     _match_items would union proposal 0's hidden ids with this group's ticks
+     into ONE submission naming rows the owner never grouped.  A non-numeric
+     index cannot collide with a rendered position, and _sort_key already sorts
+     it last.  Named by adversarial test-quality review 2026-08-19. #}
+  <form method="post"
+        action="{{ url_for('accounts.apply_statement_review', account_id=account.id) }}"
+        hx-post="{{ url_for('accounts.apply_statement_review', account_id=account.id) }}"
+        hx-target="#statement-review-body"
+        hx-swap="outerHTML"
+        hx-disabled-elt="find button[type=submit]">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="apply" value="hand">
+    <div class="row g-3 mb-3">
+      <div class="col-12 col-lg-6">
+        <div class="card h-100">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="bi bi-bank"></i> Lines your bank shows and nothing explains</span>
+            <span class="badge text-bg-secondary">{{ review.unmatched | length }}</span>
+          </div>
+          <div class="card-body">
+            <p class="text-body-secondary small mb-2">
+              Nothing this account holds matches these on amount. Many are card
+              purchases the app records inside an envelope rather than one by one.
+              If some of your rows DO add up to one of these, tick them here and
+              on the right, then match them.
+            </p>
+            {% if review.unmatched %}
+            <div class="table-responsive stmt-pick-list">
+              <table class="table table-sm mb-0">
+                <tbody>
+                  {% for line in review.unmatched %}
+                  <tr>
+                    <td class="align-middle">
+                      <input class="form-check-input" type="checkbox"
+                             name="match-hand-line_ids" value="{{ line.line_id }}"
+                             id="line-{{ line.line_id }}">
+                    </td>
+                    <td class="text-nowrap"><label for="line-{{ line.line_id }}" class="mb-0">{{ line.posted_on }}</label></td>
+                    <td class="text-end fw-semibold text-nowrap">{{ money(line.amount) }}</td>
+                    <td class="small text-body-secondary">{{ line.description }}</td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% else %}
+            <p class="mb-0 text-body-secondary">None.</p>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+
+      <div class="col-12 col-lg-6">
+        <div class="card h-100">
+          <div class="card-header d-flex justify-content-between align-items-center">
+            <span><i class="bi bi-journal-text"></i> Rows you recorded and the bank never showed</span>
+            <span class="badge text-bg-secondary">{{ review.unmatched_rows | length }}</span>
+          </div>
+          <div class="card-body">
+            <p class="text-body-secondary small mb-2">
+              These fall inside the span your statement covers, and no line on it
+              explains them. A row here that you expected the bank to show is a
+              payment your records claim happened and your bank did not make.
+            </p>
+            {% if review.unmatched_rows %}
+            <div class="table-responsive stmt-pick-list">
+              <table class="table table-sm mb-0">
+                <tbody>
+                  {% for row in review.unmatched_rows %}
+                  <tr>
+                    <td class="align-middle">
+                      <input class="form-check-input" type="checkbox"
+                             id="row-{{ row.kind.value }}-{{ row.row_id }}"
+                             name="{% if row.kind.value == 'transaction' %}match-hand-transaction_ids{% else %}match-hand-entry_ids{% endif %}"
+                             value="{{ row.row_id }}">
+                    </td>
+                    <td class="text-nowrap">
+                      <label for="row-{{ row.kind.value }}-{{ row.row_id }}" class="mb-0">
+                        {% if row.settled_on %}{{ row.settled_on }}{% else %}<span class="text-body-secondary">not recorded</span>{% endif %}
+                      </label>
+                      {% if not row.settled_on and row.expected_on %}
+                      <div class="small text-body-secondary">
+                        budgeted {{ row.expected_on }} - {{ row.expected_through }}
+                      </div>
+                      {% endif %}
+                    </td>
+                    <td class="text-end fw-semibold text-nowrap">{{ money(row.cash_amount) }}</td>
+                    <td class="small">{{ row.label }}</td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+            {% else %}
+            <p class="mb-0 text-body-secondary">None.</p>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="d-flex justify-content-end mb-3">
+      <button type="submit" class="btn btn-outline-primary">
+        Match the ticked lines and rows
+      </button>
+    </div>
+  </form>
+
+  {# ── The bounds, stated rather than left silent ──────────────────────── #}
+  {% if review.bounds.any_limit %}
+  <div class="alert alert-secondary" role="alert">
+    <div class="fw-semibold mb-1">What this page did not look at</div>
+    <ul class="mb-0 small">
+      {% if review.bounds.before_calendar_count %}
+      <li>
+        {{ review.bounds.before_calendar_count }} line(s) up to
+        {{ review.bounds.before_calendar_last_day }} are older than your pay calendar,
+        which starts {{ review.bounds.calendar_opens }}. There are no rows before that
+        day for them to match, so they are not listed above.
+      </li>
+      {% endif %}
+      {% if review.bounds.crowded_days %}
+      <li>
+        {{ review.bounds.crowded_days | length }} day(s) hold too many rows to search
+        for combinations, so no grouped match was proposed for them:
+        {{ review.bounds.crowded_days | join(', ') }}. A day counts the rows you
+        recorded as happening on it AND the ones you have not marked yet whose
+        paycheck covers it, so a crowded day is usually a busy pay period rather
+        than a busy day.
+      </li>
+      {% endif %}
+      {% if review.bounds.unpriceable_count %}
+      <li>
+        {{ review.bounds.unpriceable_count }} row(s) on this account could not be
+        valued, so they were not offered as matches.
+      </li>
+      {% endif %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {# ── What has already been accepted ──────────────────────────────────── #}
+  <div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-check2-square"></i> Accepted matches</span>
+      <span class="badge text-bg-secondary">{{ review.accepted | length }}</span>
+    </div>
+    {% if review.accepted %}
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <tbody>
+          {% for group in review.accepted %}
+          <tr {% if not group.agrees %}class="table-warning"{% endif %}>
+            <td class="text-nowrap">{{ group.posts_on }}</td>
+            <td class="text-end fw-semibold text-nowrap">{{ money(group.amount) }}</td>
+            <td class="small">
+              {% for description in group.descriptions %}
+              <div class="text-body-secondary">{{ description }}</div>
+              {% endfor %}
+              {% for row in group.rows %}
+              <div>
+                {{ row.label }}
+                {% if not row.agrees %}
+                <span class="text-warning-emphasis">
+                  -- now dated {{ row.settled_on or 'not recorded' }}, not the bank's day
+                </span>
+                {% endif %}
+              </div>
+              {% endfor %}
+            </td>
+            <td class="text-end">
+              <form method="post"
+                    action="{{ url_for('accounts.release_statement_match', account_id=account.id) }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="match_id" value="{{ group.match_id }}">
+                <button type="submit" class="btn btn-sm btn-outline-secondary">Undo</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="card-footer small text-body-secondary">
+      Undoing a match puts those statement lines back among the unexplained. It
+      does not put the dates back -- your bank is still the best record of when
+      that money moved.
+    </div>
+    {% else %}
+    <div class="card-body text-body-secondary">Nothing accepted yet.</div>
+    {% endif %}
+  </div>
+
+</div>

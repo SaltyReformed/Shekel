@@ -31,7 +31,13 @@ from app.services import balance_at, entry_service, statement_match
 from app.services.balance_at import BalanceContext
 from app.services.statement_match import MatchSubmission
 
-from ._builders import a_bank_line, a_purchase, a_transaction, an_import
+from ._builders import (
+    a_bank_line,
+    a_purchase,
+    a_scope,
+    a_transaction,
+    an_import,
+)
 
 
 def _submit(seed_user, lines=(), transactions=(), entries=()):
@@ -46,13 +52,16 @@ def _submit(seed_user, lines=(), transactions=(), entries=()):
     Returns:
         The :class:`~app.services.statement_match.AcceptedMatch`.
     """
-    return statement_match.accept_match(MatchSubmission(
-        owner_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        line_ids=frozenset(line.id for line in lines),
-        transaction_ids=frozenset(txn.id for txn in transactions),
-        entry_ids=frozenset(entry.id for entry in entries),
-    ))
+    return statement_match.accept_match(
+        MatchSubmission(
+            line_ids=frozenset(line.id for line in lines),
+            transaction_ids=frozenset(txn.id for txn in transactions),
+            entry_ids=frozenset(entry.id for entry in entries),
+        ),
+        # DERIVED HERE, so every call sees the rows this test has staged.  A
+        # scope built once per test would be a snapshot older than the fixture.
+        a_scope(seed_user),
+    )
 
 
 class TestABalancedMatchIsRecorded:
@@ -359,13 +368,14 @@ class TestEveryOtherRefusalFires:
         txn = a_transaction(seed_user, amount="180.00")
 
         with pytest.raises(ValidationError, match="no longer on this account"):
-            statement_match.accept_match(MatchSubmission(
-                owner_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
+            statement_match.accept_match(
+                MatchSubmission(
                 line_ids=frozenset({999999}),
                 transaction_ids=frozenset({txn.id}),
                 entry_ids=frozenset(),
-            ))
+            ),
+                a_scope(seed_user),
+            )
 
     def test_a_second_match_on_one_LINE_is_refused(self, app, db, seed_user):
         """The line twin of the row guard below, and it was missing.
@@ -703,9 +713,7 @@ class TestAnAcceptedMatchStopsAgreeingWhenItStopsHolding:
 
     def _groups(self, seed_user):
         """Return the accepted groups the screen would render."""
-        return statement_match.review_set(
-            seed_user["user"].id, seed_user["account"].id,
-        ).accepted
+        return statement_match.review_set(a_scope(seed_user)).accepted
 
     def test_it_agrees_while_it_holds(self, app, db, seed_user):
         """The control, without which every arm below could pass vacuously."""
@@ -773,17 +781,13 @@ class TestAMatchStopsHoldingWhenAPURCHASELEAVESTHEACCOUNT:
             seed_user, statement, amount="-25.00", posted_on=bank_day,
         )
         _submit(seed_user, lines=[line], entries=[purchase])
-        before = statement_match.review_set(
-            seed_user["user"].id, seed_user["account"].id,
-        ).accepted
+        before = statement_match.review_set(a_scope(seed_user)).accepted
         assert before[0].agrees is True
 
         purchase.is_credit = True
         db.session.flush()
 
-        after = statement_match.review_set(
-            seed_user["user"].id, seed_user["account"].id,
-        ).accepted
+        after = statement_match.review_set(a_scope(seed_user)).accepted
         assert after[0].agrees is False
         assert after[0].rows[0].settled_on == bank_day, (
             "the day is untouched -- which is why a day-only test was blind"
@@ -1248,9 +1252,7 @@ class TestTheStoredTransactionDayReachesTheScreen:
             transaction_on=swipe_day,
         )
 
-        review = statement_match.review_set(
-            seed_user["user"].id, seed_user["account"].id,
-        )
+        review = statement_match.review_set(a_scope(seed_user))
 
         offered = [p for p in review.proposals if p.redated_purchases]
         assert len(offered) == 1
@@ -1284,15 +1286,12 @@ class TestTheStoredTransactionDayReachesTheScreen:
             seed_user, statement, amount="-25.00", posted_on=bank_day,
             transaction_on=bank_day - timedelta(days=1),
         )
-        review = statement_match.review_set(
-            seed_user["user"].id, seed_user["account"].id,
-        )
+        review = statement_match.review_set(a_scope(seed_user))
         assert review.proposals
 
         for proposal in review.proposals:
-            statement_match.accept_match(MatchSubmission(
-                owner_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
+            statement_match.accept_match(
+                MatchSubmission(
                 line_ids=frozenset(l.line_id for l in proposal.lines),
                 transaction_ids=frozenset(
                     r.row_id for r in proposal.rows
@@ -1302,7 +1301,9 @@ class TestTheStoredTransactionDayReachesTheScreen:
                     r.row_id for r in proposal.rows
                     if r.kind is statement_match.RowKind.PURCHASE
                 ),
-            ))
+            ),
+                a_scope(seed_user),
+            )
 
 
 class TestTheNarrownessBoundary:

@@ -1,7 +1,7 @@
-"""The ONE door that records a match, and the only place here that MOVES MONEY.
+"""The ONE place a match is recorded, and the only place here that MOVES MONEY.
 
 An accepted match asserts that a set of bank lines and a set of the app's own
-rows are ONE movement.  Two things follow from that assertion and this door
+rows are ONE movement.  Two things follow from that assertion and this module
 does both:
 
 * every member row takes the bank's posted day, which SETTLES a row still
@@ -19,11 +19,31 @@ door stores the fact and leaves the derivation alone.  The settle doors it
 calls RELEASE any prior link as they move the day, which is correct: that link
 recorded a statement showing this money on a day the bank has just contradicted.
 
+**RESOLVING and RECORDING are two acts, and splitting them is plan step
+``bank_import:X-f6a-3c-2``.**  :func:`resolve_rows` turns submitted IDS into
+priced rows under the owner's own scope; :func:`record_match` takes rows a
+caller already holds and writes the match.  :func:`accept_match` is the form
+door and does both.  The split is not tidiness: ``_create`` creates a purchase
+and then records a match naming it, and a row an act has just created cannot be
+in a scope derived before it -- measured, all 91 of the developer's creatable
+lines were refused as "no longer available to match" the first time a whole
+statement ran against one shared derivation.  What that door needed was never a
+scope proof (it built the row itself) but the recording, so it now calls the
+recording.  **There is still exactly ONE function that writes a match**, which
+is what rulings **R-FT** and **R-FV** actually ask for.
+
 **Every refusal fires before anything is written.**  The ids are re-derived
 under the owner's own scope, the group is checked for balance, and only then
 does a settle verb run -- so a refused match leaves the database exactly as it
 was without depending on the rollback, the same discipline
 ``statement_import.record_statement`` states for itself.
+
+**What is ALREADY CLAIMED is read by the ACT, never by the scope.**  Every
+refusal here that asks "is this already matched" takes a
+:class:`~._candidates.MatchedSubjects` its caller read for this act alone, so a
+batch applying 215 items cannot hand its fourth item a row its third has just
+claimed.  One read serves the line refusal, the row refusal and the
+parent/child guard, where there were two queries answering the same question.
 
 **This door applies no DATE bound, and that asymmetry is deliberate.**  The
 proposer refuses to OFFER a pairing outside the row's own window
@@ -31,10 +51,10 @@ proposer refuses to OFFER a pairing outside the row's own window
 review screen exists precisely so an owner may assert a grouping the proposer
 would not guess, so refusing one here on a date would refuse the act ruling
 **R-FP** reserves to them.  What this door does enforce is the SCOPE: every id
-is re-derived through ``_candidates.candidates_for``, so no request can reach a
-row the screen could not have shown.  Stated because an adversarial review read
-the missing bound as an oversight 2026-08-19, which is what an unstated
-deliberate asymmetry looks like.
+is resolved against the pass's own offer set (:class:`~._scope.ReviewScope`), so
+no request can reach a row the screen could not have shown.  Stated because an
+adversarial review read the missing bound as an oversight 2026-08-19, which is
+what an unstated deliberate asymmetry looks like.
 
 **The settle verbs are the app's own, never restated.**  An ordinary row goes
 through ``transaction_service.apply_requested_status``, the route layer's one
@@ -65,7 +85,6 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import (
     entry_service,
-    pay_calendar,
     transaction_service,
     transfer_service,
 )
@@ -77,7 +96,12 @@ from app.utils.log_events import (
 )
 from app.utils.money import round_money
 
-from ._candidates import candidates_for
+from ._candidates import (
+    MatchedSubjects,
+    matched_subjects,
+    repriced,
+    unmatched_rows,
+)
 from ._offers import (
     CandidateRow,
     MatchDays,
@@ -85,6 +109,7 @@ from ._offers import (
     RowKind,
     corrected_purchase_day,
 )
+from ._scope import ReviewScope
 
 _logger = logging.getLogger(__name__)
 
@@ -128,8 +153,8 @@ class AcceptedMatch:
     redated_count: int
 
 
-def _load_lines(
-    account_id: int, line_ids: "frozenset[int]",
+def load_lines(
+    account_id: int, line_ids: "frozenset[int]", matched: MatchedSubjects,
 ) -> "list[BankStatementLine]":
     """Return the submitted bank lines, refusing any this account cannot match.
 
@@ -144,9 +169,18 @@ def _load_lines(
     just matched is two clicks.  Found by adversarial security review
     2026-08-17.
 
+    **PUBLIC within the package since plan step X-f6a-3c-2**, because
+    :mod:`._create` needs exactly this refusal for the one line it records and
+    had grown its own copy of it.  Two implementations of "is this line on this
+    account, and has something already claimed it" is two places for the
+    refusal to stop firing.
+
     Args:
         account_id: The account the match is for.
         line_ids: The submitted ids.
+        matched: What this account's matches have already claimed, read by the
+            ACT rather than queried here -- so a batch's fourth item sees the
+            lines its third item claimed.
 
     Returns:
         The lines, ascending by posted day then id.
@@ -159,6 +193,12 @@ def _load_lines(
             dropping a member would change what the match MEANS while
             reporting success.
     """
+    if line_ids & matched.lines:
+        raise ValidationError(
+            "A statement line you picked is already matched to something "
+            "else.  Undo that match first if it is wrong.  Nothing was "
+            "changed."
+        )
     lines = (
         db.session.query(BankStatementLine)
         .filter(
@@ -170,65 +210,83 @@ def _load_lines(
     )
     if len(lines) != len(line_ids):
         raise ValidationError(
-            "One of the statement lines in this match is no longer on this "
-            "account.  Reload the page and try again -- nothing was changed."
-        )
-    already = (
-        db.session.query(StatementMatchMember.bank_statement_line_id)
-        .filter(
-            StatementMatchMember.account_id == account_id,
-            StatementMatchMember.bank_statement_line_id.in_(line_ids),
-        )
-        .first()
-    )
-    if already is not None:
-        raise ValidationError(
-            "One of these statement lines is already matched to something "
-            "else.  Undo that match first if it is wrong.  Nothing was "
-            "changed."
+            "A statement line you picked is no longer on this account.  "
+            "Reload the page and try again -- nothing was changed."
         )
     return lines
 
 
-def _load_rows(
+def resolve_rows(
     submission: MatchSubmission,
+    scope: ReviewScope,
+    matched: MatchedSubjects,
 ) -> "list[CandidateRow]":
     """Return the submitted app rows as priced candidates, refusing the rest.
 
-    **Re-derived through :func:`~._candidates.candidates_for` rather than
-    queried directly**, so the set this door may act on is exactly the set the
-    screen may offer.  One scope, shared by the reader and the writer, is the
-    security property ``reconcile_service`` is built on: an id belonging to
-    another user, another account, a non-contributing row, a card purchase or
-    a row already spoken for by another match is not a candidate and cannot be
-    matched by crafting a request.
+    **Looked up in the pass's own offer set rather than queried directly**, so
+    the set this door may act on is exactly the set the screen may offer.  One
+    scope, shared by the reader and the writer, is the security property
+    ``reconcile_service`` is built on: an id belonging to another user, another
+    account, a non-contributing row, a card purchase or a row already spoken
+    for by another match is not a candidate and cannot be matched by crafting a
+    request.
+
+    **The scope is a PARAMETER, the claims are re-read per act, and the FIGURE
+    is re-derived per act** (plan step X-f6a-3c-2).  This function derived the
+    whole account itself until that step, at 3.593 s a call on the developer's
+    own data, which is 12.88 minutes to work one statement's 215 acts.  What
+    made the derivation shareable is that its parts move at different rates:
+
+    * WHICH rows exist and may be offered cannot change while a pass runs, so
+      that is derived once and arrives on *scope*.  It is also the expensive
+      half -- an 827-row scan -- and the security-bearing one;
+    * WHICH of them are already spoken for changes with every item, so that is
+      the *matched* argument, re-read by every act;
+    * WHAT one is WORTH can be moved by a SIBLING act, so it is re-derived here
+      through :func:`~._candidates.repriced`.
+
+    **That third bullet replaces an argument adversarial financial review
+    measured FALSE on 2026-08-19.**  The claim was that only a parent/child
+    pairing can move a figure another item names, and that
+    :func:`_reject_parent_and_its_own_purchase` refuses it.  But settling a
+    matched purchase runs ``entry_service.update_entry``, which re-derives the
+    envelope's CC Payback through ``sync_entry_payback`` and WRITES its
+    ``estimated_amount`` -- and that payback is a candidate on the same
+    account, a SIBLING of the purchase rather than its parent, invisible to
+    that guard.  Measured: a `$60.00` payback dropping to `$50.00` mid-pass,
+    with the second match accepted against the stale `$60.00` and the ledger
+    booking `$50.00` for a `-$60.00` bank line.  Re-pricing is total where an
+    enumeration of sibling writers is one writer from being wrong again.
 
     Args:
         submission: What the owner accepted.
+        scope: The pass's derived offer set.
+        matched: What this account's matches have already claimed, as of this
+            act.
 
     Returns:
-        The candidates the submission names, transactions first.
+        The candidates the submission names, transactions first, priced as they
+        stand NOW.
 
     Raises:
         ValidationError: When an id names nothing the screen could have
-            offered.
+            offered, names a row another match has since claimed, or names one
+            that can no longer be priced at all.
     """
     wanted = {
         (RowKind.TRANSACTION, row_id) for row_id in submission.transaction_ids
     } | {
         (RowKind.PURCHASE, row_id) for row_id in submission.entry_ids
     }
-    # ONE calendar for this act's own read pass, the way
-    # :func:`~._reads.review_set` holds one for the screen's: every candidate's
-    # window is read off it, and a producer that rebuilt its caller's is the
-    # second copy that parameter exists to remove.
-    found = [
-        row
-        for row in candidates_for(
-            submission.account_id,
-            pay_calendar.calendar_for(submission.owner_id),
-        ).rows
+    offered = [
+        row for row in unmatched_rows(scope.candidates, matched)
         if (row.kind, row.row_id) in wanted
+    ]
+    found = [
+        fresh for fresh in (
+            repriced(row, scope.calendar) for row in offered
+        )
+        if fresh is not None
     ]
     if len(found) != len(wanted):
         raise ValidationError(
@@ -265,7 +323,7 @@ def _reject_empty_side(
 
 
 def _reject_parent_and_its_own_purchase(
-    rows: "list[CandidateRow]", account_id: int,
+    rows: "list[CandidateRow]", matched: MatchedSubjects,
 ) -> None:
     """Refuse an envelope and a purchase under it -- in this match OR another.
 
@@ -286,10 +344,25 @@ def _reject_parent_and_its_own_purchase(
     an envelope and its purchases side by side, so it is two clicks.  Found by
     adversarial financial review 2026-08-17.
 
+    **The cross-match half takes the claims its ACT read** (plan step
+    X-f6a-3c-2).  It ran its own query over ``statement_match_members`` until
+    this step, which was a second answer to the question
+    :func:`~._candidates.matched_subjects` already answers -- and the same read
+    now also decides which rows and lines are still available, so all three
+    refusals see one state.
+
+    **It is NOT what keeps a batch's prices honest**, and a first draft of this
+    step said it was.  That argument -- *the only way one item can move a row
+    another item names is by adding to or posting a purchase under it* -- was
+    measured false by adversarial financial review 2026-08-19 on a SIBLING
+    write (``sync_entry_payback``); the answer is that every act re-prices the
+    rows it names (:func:`~._candidates.repriced`), and this guard is left to
+    do the one job it can actually do.
+
     Args:
         rows: The submitted app rows, already priced.
-        account_id: The account being matched into, whose existing matches the
-            cross-match half is read from.
+        matched: What this account's matches have already claimed, as of this
+            act.
 
     Raises:
         ValidationError: When a submitted purchase's parent is submitted or
@@ -301,17 +374,16 @@ def _reject_parent_and_its_own_purchase(
     entry_ids = {row.row_id for row in rows if row.kind is RowKind.PURCHASE}
     if not transaction_ids and not entry_ids:
         return
-    matched_transactions, matched_entries = _matched_relatives(account_id)
     clash = db.session.query(TransactionEntry.id).filter(
         db.or_(
             db.and_(
                 TransactionEntry.id.in_(entry_ids or {0}),
                 TransactionEntry.transaction_id.in_(
-                    (transaction_ids | matched_transactions) or {0},
+                    (transaction_ids | matched.transactions) or {0},
                 ),
             ),
             db.and_(
-                TransactionEntry.id.in_(matched_entries or {0}),
+                TransactionEntry.id.in_(matched.entries or {0}),
                 TransactionEntry.transaction_id.in_(transaction_ids or {0}),
             ),
         )
@@ -324,28 +396,6 @@ def _reject_parent_and_its_own_purchase(
             "its own purchases.  Match the envelope OR its purchases, not "
             "both.  Nothing was changed."
         )
-
-
-def _matched_relatives(account_id: int) -> "tuple[set[int], set[int]]":
-    """Return every transaction and purchase *account_id* has already matched.
-
-    One statement over this account's members, because the clash test above has
-    to see a parent/child relation that spans two separate acts.
-
-    Args:
-        account_id: The account being matched into.
-
-    Returns:
-        ``(matched transaction ids, matched purchase ids)``.
-    """
-    rows = db.session.query(
-        StatementMatchMember.transaction_id,
-        StatementMatchMember.transaction_entry_id,
-    ).filter(StatementMatchMember.account_id == account_id).all()
-    return (
-        {row[0] for row in rows if row[0] is not None},
-        {row[1] for row in rows if row[1] is not None},
-    )
 
 
 def _reject_unbalanced(
@@ -386,7 +436,7 @@ def _reject_unbalanced(
 
 
 def _apply_day(
-    row: CandidateRow, submission: MatchSubmission, days: "MatchDays",
+    row: CandidateRow, owner_id: int, days: "MatchDays",
 ) -> str:
     """Move one member row onto the bank's days through its own settle door.
 
@@ -407,7 +457,7 @@ def _apply_day(
 
     Args:
         row: The member being moved.
-        submission: The act, for its owner id.
+        owner_id: The user the route proved owns the account.
         days: The days the bank states for this match.
 
     Returns:
@@ -446,17 +496,17 @@ def _apply_day(
         moves = {"settled_on": posts_on}
         if purchase_day is not None:
             moves["purchased_on"] = purchase_day
-        entry_service.update_entry(row.row_id, submission.owner_id, **moves)
+        entry_service.update_entry(row.row_id, owner_id, **moves)
         return outcome
 
     if row.transfer_id is not None:
         if row.is_settled:
             transfer_service.update_transfer(
-                row.transfer_id, submission.owner_id, settled_on=posts_on,
+                row.transfer_id, owner_id, settled_on=posts_on,
             )
         else:
             transfer_service.settle_transfer(
-                row.transfer_id, submission.owner_id, settled_on=posts_on,
+                row.transfer_id, owner_id, settled_on=posts_on,
             )
         return outcome
 
@@ -472,36 +522,36 @@ def _apply_day(
 
 
 def _record(
-    submission: MatchSubmission,
+    owner_id: int,
+    account_id: int,
     lines: "list[BankStatementLine]",
     rows: "list[CandidateRow]",
 ) -> StatementMatch:
     """Stage the match act and one member per subject.
 
     Args:
-        submission: The act, for its owner and account.
+        owner_id: The user the act belongs to.
+        account_id: The account both sides belong to.
         lines: The bank lines it explains.
         rows: The app rows it names.
 
     Returns:
         The staged, flushed :class:`~app.models.statement_match.StatementMatch`.
     """
-    match = StatementMatch(
-        account_id=submission.account_id, user_id=submission.owner_id,
-    )
+    match = StatementMatch(account_id=account_id, user_id=owner_id)
     db.session.add(match)
     # The members carry the act's id in a composite key, so the act must exist
     # before they are staged.
     db.session.flush()
     for line in lines:
         db.session.add(StatementMatchMember(
-            match_id=match.id, account_id=submission.account_id,
+            match_id=match.id, account_id=account_id,
             bank_statement_line_id=line.id,
         ))
     for row in rows:
         db.session.add(StatementMatchMember(
             match_id=match.id,
-            account_id=submission.account_id,
+            account_id=account_id,
             transaction_id=(
                 row.row_id if row.kind is RowKind.TRANSACTION else None
             ),
@@ -513,12 +563,27 @@ def _record(
     return match
 
 
-def accept_match(submission: MatchSubmission) -> AcceptedMatch:
+def record_match(
+    owner_id: int,
+    account_id: int,
+    lines: "list[BankStatementLine]",
+    rows: "list[CandidateRow]",
+    matched: MatchedSubjects,
+) -> AcceptedMatch:
     """Record that these bank lines ARE these app rows, and move the day.
 
-    The whole act, in the order its refusals have to happen: the ids are
-    re-derived under the owner's scope, both sides are checked for presence and
-    for balance, and only then does any settle door run.
+    **The ONE function that writes a match**, and the half of the old
+    ``accept_match`` that does not care where its rows came from (plan step
+    X-f6a-3c-2).  Its two callers hold their rows for different reasons:
+    :func:`accept_match` resolved them from submitted ids under the pass's
+    scope, and :func:`~._create.create_purchase_from_line` just created the one
+    it names.  Both reach the same guards, the same day derivation, the same
+    settle verbs and the same record, which is what rulings **R-FT** and
+    **R-FV** ask for.
+
+    The order its refusals have to happen in: both sides are checked for
+    presence, for the double-count pairing and for balance, and only then does
+    any settle door run.
 
     **The purchases move first**, for the reason
     ``reconcile_service.record_reconciliation`` states for its own order: a
@@ -535,33 +600,31 @@ def accept_match(submission: MatchSubmission) -> AcceptedMatch:
     may name, the sequence is already the safe one rather than something that
     has to be rediscovered.
 
-    Does NOT commit -- the route owns the session boundary.
+    Does NOT commit -- the caller owns the session boundary.
 
     Args:
-        submission: What the owner accepted, ids only.
+        owner_id: The user the route proved owns the account.
+        account_id: The account both sides belong to.
+        lines: The bank lines this match explains, already scoped by
+            :func:`load_lines`.
+        rows: The app rows that explain them, already priced -- resolved by
+            :func:`resolve_rows` or built by the door that created one.
+        matched: What this account's matches have already claimed, as of this
+            act.
 
     Returns:
         The :class:`AcceptedMatch`.
 
     Raises:
-        ValidationError: On any of this door's refusals or a settle door's.
+        ValidationError: On any of this function's refusals or a settle door's.
             A 400: every one of them is reachable by an ordinary owner working
             from a stale page.
-        PayCalendarError: From
-            :func:`~app.services.pay_calendar.calendar_for`, when the owner has
-            paydays and no resolvable cadence.  Fails loud rather than
-            rendering as a designed refusal: a matcher cannot bound a row
-            without the calendar that says which paycheck it is budgeted in,
-            and answering anyway is the unbounded state finding **N-312**
-            records.  The review screen this door is reached from reads the
-            same value, so the page is unreachable before the door is.
         PostingError: From a ledger reconcile, on a broken invariant.  Fails
-            loud rather than rendering as a designed refusal.
+            loud rather than rendering as a designed refusal, and in a batch it
+            fails the WHOLE request rather than one item (:mod:`._batch`).
     """
-    lines = _load_lines(submission.account_id, submission.line_ids)
-    rows = _load_rows(submission)
     _reject_empty_side(lines, rows)
-    _reject_parent_and_its_own_purchase(rows, submission.account_id)
+    _reject_parent_and_its_own_purchase(rows, matched)
     _reject_unbalanced(lines, rows)
 
     # THE LATEST bank day for the posting, the EARLIEST stated day for the
@@ -579,8 +642,8 @@ def accept_match(submission: MatchSubmission) -> AcceptedMatch:
     redated_count = sum(
         1 for row in ordered if corrected_purchase_day(row, days) is not None
     )
-    outcomes = [_apply_day(row, submission, days) for row in ordered]
-    match = _record(submission, lines, rows)
+    outcomes = [_apply_day(row, owner_id, days) for row in ordered]
+    match = _record(owner_id, account_id, lines, rows)
 
     amount = round_money(sum((line.amount for line in lines), Decimal("0.00")))
     accepted = AcceptedMatch(
@@ -595,8 +658,8 @@ def accept_match(submission: MatchSubmission) -> AcceptedMatch:
     log_event(
         _logger, logging.INFO, EVT_STATEMENT_MATCHED, BUSINESS,
         "A bank statement's lines were matched to the rows they explain.",
-        user_id=submission.owner_id,
-        account_id=submission.account_id,
+        user_id=owner_id,
+        account_id=account_id,
         match_id=accepted.match_id,
         posts_on=days.posts_on.isoformat(),
         happened_on=days.happened_on.isoformat(),
@@ -607,6 +670,45 @@ def accept_match(submission: MatchSubmission) -> AcceptedMatch:
         redated_count=accepted.redated_count,
     )
     return accepted
+
+
+def accept_match(
+    submission: MatchSubmission, scope: ReviewScope,
+) -> AcceptedMatch:
+    """Record that the SUBMITTED bank lines ARE the SUBMITTED app rows.
+
+    The form door: it turns ids into scoped, priced subjects and hands them to
+    :func:`record_match`.  Nothing a request posts can reach a row the review
+    screen could not have shown, because both sides come out of the same
+    *scope* the screen was rendered from and the same claims read for this act.
+
+    Does NOT commit -- the caller owns the session boundary.
+
+    Args:
+        submission: What the owner accepted, ids only.
+        scope: The pass's derived offer set (:class:`~._scope.ReviewScope`).
+            **Required rather than defaulted**: a door that could build its own
+            is a door a batch will accidentally call 215 times, which is the
+            12.88 minutes plan step X-f6a-3c-2 exists to remove.  **It is also
+            the ONE statement of whose account this is** -- the submission
+            names only WHAT, never WHOSE, so no id here can be scoped by one
+            account and written against another.
+
+    Returns:
+        The :class:`AcceptedMatch`.
+
+    Raises:
+        ValidationError: On any refusal of this door's or a settle door's.
+        PostingError: From a ledger reconcile, on a broken invariant.
+    """
+    matched = matched_subjects(scope.account_id)
+    return record_match(
+        scope.owner_id,
+        scope.account_id,
+        load_lines(scope.account_id, submission.line_ids, matched),
+        resolve_rows(submission, scope, matched),
+        matched,
+    )
 
 
 def release_match(match_id: int, owner_id: int, account_id: int) -> int:

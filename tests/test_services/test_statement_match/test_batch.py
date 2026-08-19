@@ -1,0 +1,1100 @@
+"""Applying a whole reviewed pass in one request -- plan step X-f6a-3c-2.
+
+Finding **N-306**.  The review screen offers two acts and, until this step,
+each was its own request through its own money door: 215 round trips on the
+developer's own statement, each paying 3.593 s of ``candidates_for`` before it
+wrote a row.  This module is about what changed and what must not have.
+
+**The three properties that carry the money risk:**
+
+1. **Isolation.**  A refused item leaves NOTHING behind and the rest still
+   land.  Measured on the developer's own data, 5 of 124 proposals refuse
+   today and will keep refusing (a settled credit-card payback whose derived
+   figure has drifted), so a pass that failed whole would lose 119 good
+   corrections to one divergence.
+2. **Freshness.**  One derivation serves the whole pass, so an item must not be
+   handed a row or an envelope an EARLIER item in the same pass has claimed.
+   That is what :func:`~app.services.statement_match.matched_subjects` being
+   re-read per act buys, and it is the arm a snapshot would silently break.
+3. **Failing loud.**  A ``PostingError`` is a broken ledger invariant rather
+   than one item's refusal, so it takes the whole request down.
+
+**What the collision cases here fix in place is a REAL number**: 4 envelopes on
+the developer's own statement are both named by a proposal and offered as a
+destination, so 15 of the 91 creatable lines aim at one.
+"""
+
+from datetime import timedelta
+from decimal import Decimal
+
+import pytest
+
+from app import ref_cache
+from app.enums import StatusEnum, TxnTypeEnum
+from app.exceptions import ValidationError
+from app.extensions import db as _db
+from app.models.statement_match import StatementMatch
+from app.models.transaction import Transaction
+from app.services import balance_at, statement_match
+from app.services.posting_reads import PostingError
+from app.services.statement_match import (
+    MatchSubmission,
+    NewEnvelope,
+    PurchaseCreation,
+    ReviewedBatch,
+)
+
+from ._builders import (
+    a_bank_line,
+    a_purchase,
+    a_scope,
+    a_transaction,
+    an_import,
+)
+
+
+def _batch(seed_user, matches=(), creations=()):
+    """Apply one reviewed pass over the seeded account.
+
+    Args:
+        seed_user: The seeded user bundle.
+        matches: :class:`MatchSubmission` values.
+        creations: :class:`PurchaseCreation` values.
+
+    Returns:
+        The :class:`~app.services.statement_match.BatchOutcome`.
+    """
+    return statement_match.apply_reviewed(
+        ReviewedBatch(
+            matches=tuple(matches),
+            creations=tuple(creations),
+        ),
+        # DERIVED HERE, so every pass sees the rows this test has staged.  The
+        # ROUTE is what builds one in the app; a door that built its own would
+        # force its caller to derive a second time for the refusal render.
+        a_scope(seed_user),
+    )
+
+
+def _match(seed_user, lines=(), transactions=(), entries=()):
+    """Return one match item naming exactly these subjects."""
+    return MatchSubmission(
+        line_ids=frozenset(line.id for line in lines),
+        transaction_ids=frozenset(txn.id for txn in transactions),
+        entry_ids=frozenset(entry.id for entry in entries),
+    )
+
+
+def _creation(seed_user, line, *, transaction_id=None, new_envelope=None):
+    """Return one creation item for *line*."""
+    return PurchaseCreation(
+        line_id=line.id,
+        transaction_id=transaction_id,
+        new_envelope=new_envelope,
+    )
+
+
+class TestARefusedItemDoesNotCostTheOthers:
+    """The developer's ruling of 2026-08-19, which is the whole failure policy.
+
+    Not a hypothetical: 5 of the developer's own 124 proposals refuse today
+    with ``Payback 2457 has settled at 50.80, so it cannot be re-derived to
+    49.52``, and every one of the other 119 is a correction worth making.
+    """
+
+    @staticmethod
+    def _good_and_bad(seed_user):
+        """Return (a match that lands, a match that cannot).
+
+        The bad one is UNBALANCED -- the shape finding **N-239** takes on the
+        developer's own payroll, where the bank shows `$0.05` more than the
+        app's rows sum to.
+        """
+        statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        good_line = a_bank_line(
+            seed_user, statement, amount="-180.00", posted_on=day,
+        )
+        good_row = a_transaction(
+            seed_user, name="Electricity", amount="180.00",
+            status=StatusEnum.DONE, settled_on=day + timedelta(days=3),
+        )
+        bad_line = a_bank_line(
+            seed_user, statement, amount="2573.43", posted_on=day,
+            sequence_in_group=1,
+        )
+        bad_row = a_transaction(
+            seed_user, name="Salary", amount="2473.38", income=True,
+        )
+        return (good_line, good_row, bad_line, bad_row)
+
+    def test_the_good_one_lands_and_the_bad_one_is_quoted(
+        self, app, db, seed_user,
+    ):
+        """One pass, two outcomes, and the refusal keeps its own sentence."""
+        with app.app_context():
+            good_line, good_row, bad_line, bad_row = self._good_and_bad(
+                seed_user,
+            )
+
+            outcome = _batch(seed_user, matches=[
+                _match(seed_user, lines=[bad_line], transactions=[bad_row]),
+                _match(seed_user, lines=[good_line], transactions=[good_row]),
+            ])
+
+            assert outcome.applied_count == 1
+            assert outcome.refused_count == 1
+            assert "do not add up" in outcome.refused[0].reason
+            assert outcome.refused[0].line_ids == (bad_line.id,)
+            assert outcome.applied[0].line_ids == (good_line.id,)
+
+    def test_the_refused_item_wrote_nothing(self, app, db, seed_user):
+        """The item that could not be applied left no trace of trying.
+
+        **This refusal fires BEFORE the item writes anything** -- an unbalanced
+        match is rejected before any settle verb runs -- so it grades the
+        loop's ``continue`` rather than the savepoint.  The savepoint's own
+        property, an item that has ALREADY written when it is refused, is
+        :meth:`test_a_HALF_APPLIED_group_is_undone` and
+        :meth:`test_a_refused_CREATION_takes_its_new_envelope_with_it`.  Stated
+        because a test whose name promises the stronger thing is worse than no
+        test: both survive removing the savepoint entirely, and only the two
+        named here fail.
+        """
+        with app.app_context():
+            _, good_row, bad_line, bad_row = self._good_and_bad(seed_user)
+
+            _batch(seed_user, matches=[
+                _match(seed_user, lines=[bad_line], transactions=[bad_row]),
+                _match(
+                    seed_user,
+                    lines=[db.session.query(
+                        type(bad_line),
+                    ).filter_by(amount=Decimal("-180.00")).one()],
+                    transactions=[good_row],
+                ),
+            ])
+            db.session.flush()
+
+            assert bad_row.settled_on is None
+            assert good_row.settled_on is not None
+            assert db.session.query(StatementMatch).count() == 1
+
+    def test_a_HALF_APPLIED_group_is_undone(self, app, db, seed_user):
+        """A match can refuse AFTER it has already moved one of its members.
+
+        The accept door applies each member in turn, and a settle verb can
+        refuse on the second -- which is exactly the developer's own 5 refusing
+        proposals, where a settled credit-card payback cannot be re-derived.
+        Here the shape is narrower and buildable: a purchase whose recorded day
+        the bank's stated day would move PAST the day the bank posted, which
+        ``entry_service.update_entry`` refuses because money cannot clear
+        before it is spent.
+
+        Without a savepoint the first purchase keeps the settle day the refused
+        match wrote, so the app records money as having moved on the strength
+        of a match it also says was never accepted.
+        """
+        with app.app_context():
+            statement = an_import(seed_user)
+            day = seed_user["bootstrap_period"].start_date
+            envelope = a_transaction(
+                seed_user, name="Groceries", amount="100.00", is_envelope=True,
+            )
+            first = a_purchase(
+                seed_user, envelope, amount="10.00", description="Aldi",
+                purchased_on=day,
+            )
+            second = a_purchase(
+                seed_user, envelope, amount="15.00", description="Kroger",
+                purchased_on=day + timedelta(days=3),
+            )
+            line = a_bank_line(
+                seed_user, statement, amount="-25.00", posted_on=day,
+                transaction_on=day + timedelta(days=2),
+            )
+
+            outcome = _batch(seed_user, matches=[
+                _match(seed_user, lines=[line], entries=[first, second]),
+            ])
+            db.session.flush()
+
+            assert outcome.applied_count == 0
+            assert outcome.refused_count == 1
+            assert first.settled_on is None, (
+                "the first member kept the day a REFUSED match wrote"
+            )
+            assert second.settled_on is None
+            assert db.session.query(StatementMatch).count() == 0
+
+    def test_a_refused_CREATION_takes_its_new_envelope_with_it(
+        self, app, db, seed_user,
+    ):
+        """The arm that stages a budget row BEFORE the refusal can fire.
+
+        A creation stages an envelope, then a purchase, and only then records
+        the match -- so an item refused at the last step has a budget line to
+        undo.  Without the savepoint that row survives into the commit, and the
+        owner gets an envelope for a purchase that was never recorded.
+
+        **The refusal has to fire AFTER the envelope is staged**, or this
+        asserts nothing about a savepoint.  The one that does is a line the
+        bank says was MADE after it POSTED -- 2 of 361 of the developer's own
+        OFX lines are that shape -- because ``entry_service.create_entry``
+        refuses a posting day before its purchase day, and by then
+        ``_create_envelope`` has already flushed a budget row.  A first draft
+        used an INFLOW, which ``_load_line`` refuses before anything at all is
+        staged; it passed against a door with no savepoint.
+        """
+        with app.app_context():
+            statement = an_import(seed_user)
+            day = seed_user["bootstrap_period"].start_date
+            made_later = a_bank_line(
+                seed_user, statement, amount="-12.00", posted_on=day,
+                transaction_on=day + timedelta(days=1),
+            )
+            ordinary = a_bank_line(
+                seed_user, statement, amount="-12.00", posted_on=day,
+                sequence_in_group=1,
+            )
+            category = seed_user["categories"]["Groceries"]
+
+            outcome = _batch(seed_user, creations=[
+                _creation(
+                    seed_user, made_later,
+                    new_envelope=NewEnvelope(
+                        name="Refused", category_id=category.id,
+                    ),
+                ),
+                _creation(
+                    seed_user, ordinary,
+                    new_envelope=NewEnvelope(
+                        name="Landed", category_id=category.id,
+                    ),
+                ),
+            ])
+            db.session.flush()
+
+            assert outcome.applied_count == 1
+            assert outcome.refused_count == 1
+            assert outcome.refused[0].line_ids == (made_later.id,)
+            names = {
+                row.name for row in db.session.query(Transaction).all()
+            }
+            assert "Landed" in names
+            assert "Refused" not in names, (
+                "the refused item's envelope survived, so the savepoint did "
+                "not roll its staged rows back"
+            )
+
+
+class TestOneDerivationStAYSCorrectAcrossThePass:
+    """Freshness: what an EARLIER item claims, a later item cannot.
+
+    The scope is derived once for a whole pass -- 3.593 s against 215 acts --
+    and holds every row the account could offer, priced.  What it deliberately
+    does NOT hold is which of them a match has claimed, because that is exactly
+    what the pass changes.  These are the cases that fail against a scope with
+    the claims baked in.
+    """
+
+    def test_a_second_item_cannot_name_a_row_the_first_matched(
+        self, app, db, seed_user,
+    ):
+        """The same row, twice in one pass.
+
+        ``propose`` partitions its rows, so the screen cannot produce this --
+        but a crafted submission can, and ``uq_statement_match_members_
+        transaction`` would answer it with an ``IntegrityError`` after the
+        first item had already moved a day.
+        """
+        with app.app_context():
+            statement = an_import(seed_user)
+            day = seed_user["bootstrap_period"].start_date
+            first = a_bank_line(
+                seed_user, statement, amount="-180.00", posted_on=day,
+            )
+            second = a_bank_line(
+                seed_user, statement, amount="-180.00", posted_on=day,
+                sequence_in_group=1,
+            )
+            row = a_transaction(
+                seed_user, name="Electricity", amount="180.00",
+                status=StatusEnum.DONE, settled_on=day,
+            )
+
+            outcome = _batch(seed_user, matches=[
+                _match(seed_user, lines=[first], transactions=[row]),
+                _match(seed_user, lines=[second], transactions=[row]),
+            ])
+
+            assert outcome.applied_count == 1
+            assert outcome.refused_count == 1
+            assert "no longer available" in outcome.refused[0].reason
+            assert db.session.query(StatementMatch).count() == 1
+
+    def test_a_creation_cannot_target_an_envelope_a_match_claimed(
+        self, app, db, seed_user,
+    ):
+        """The collision the developer ruled on, in the order they ruled.
+
+        4 envelopes on the developer's own statement are both named by a
+        proposal and offered as a destination for a creatable line, so 15 of
+        the 91 lines land here.  Matches run first and the CREATION is refused:
+        the proposal explains money the records already hold against a line the
+        bank showed, where the line can be re-aimed next pass.
+
+        It also has to be refused for a money reason.  An envelope's cash leg
+        already covers its own outstanding purchases, so a match on the
+        envelope AND a new purchase inside it would count that purchase twice.
+        """
+        with app.app_context():
+            statement = an_import(seed_user)
+            day = seed_user["bootstrap_period"].start_date
+            envelope = a_transaction(
+                seed_user, name="Groceries", amount="500.00", is_envelope=True,
+            )
+            matched_line = a_bank_line(
+                seed_user, statement, amount="-500.00", posted_on=day,
+            )
+            swipe = a_bank_line(
+                seed_user, statement, amount="-57.96", posted_on=day,
+                sequence_in_group=1,
+            )
+
+            outcome = _batch(
+                seed_user,
+                matches=[_match(
+                    seed_user, lines=[matched_line], transactions=[envelope],
+                )],
+                creations=[_creation(
+                    seed_user, swipe, transaction_id=envelope.id,
+                )],
+            )
+            db.session.flush()
+
+            assert outcome.applied_count == 1
+            assert outcome.refused_count == 1
+            assert "not one this purchase can go into" in (
+                outcome.refused[0].reason
+            )
+            assert outcome.refused[0].line_ids == (swipe.id,)
+            assert envelope.entries == []
+
+    def test_a_matched_purchase_blocks_a_later_match_on_its_PARENT(
+        self, app, db, seed_user,
+    ):
+        """The interaction that makes a shared PRICE safe at all.
+
+        A candidate's figure is ``gross - card entries - posted purchases``, so
+        the ONLY way one item can move a figure another item names is by
+        posting or adding a purchase under it -- which makes the two a parent
+        and its own child.  That pairing is refused across matches, and the
+        guard reads the database, so each item flushing before the next is
+        validated is what keeps the once-derived price true.
+
+        Without it: matching the purchase first drops the envelope's leg by the
+        purchase's amount, and the second item would then be accepted against a
+        price the app no longer holds.
+
+        **The sentence is the RE-PRICING one, not the double-count one, and
+        that is the correct order of refusals.**  Posting the envelope's only
+        purchase leaves the envelope worth `$0.00`, and a row worth nothing can
+        match no bank line -- so ``resolve_rows`` refuses it before
+        ``record_match``'s guard is ever asked.  The guard still owns the OTHER
+        direction, where the envelope is matched first and keeps a figure;
+        :meth:`test_the_double_count_guard_still_names_itself` is that case.
+        """
+        with app.app_context():
+            statement = an_import(seed_user)
+            day = seed_user["bootstrap_period"].start_date
+            envelope = a_transaction(
+                seed_user, name="Groceries", amount="100.00", is_envelope=True,
+            )
+            purchase = a_purchase(
+                seed_user, envelope, amount="25.00", purchased_on=day,
+            )
+            child_line = a_bank_line(
+                seed_user, statement, amount="-25.00", posted_on=day,
+            )
+            parent_line = a_bank_line(
+                seed_user, statement, amount="-100.00", posted_on=day,
+                sequence_in_group=1,
+            )
+
+            outcome = _batch(seed_user, matches=[
+                _match(seed_user, lines=[child_line], entries=[purchase]),
+                _match(
+                    seed_user, lines=[parent_line], transactions=[envelope],
+                ),
+            ])
+
+            assert outcome.applied_count == 1
+            assert outcome.refused_count == 1
+            assert "no longer available" in outcome.refused[0].reason
+            assert envelope.settled_on is None, (
+                "the envelope was matched against a figure the pass had "
+                "already moved"
+            )
+
+
+    def test_the_double_count_guard_still_names_itself(
+        self, app, db, seed_user,
+    ):
+        """The other direction, where the specific sentence is the useful one.
+
+        An envelope matched FIRST keeps its figure, so re-pricing has nothing
+        to say about the purchase inside it -- and what must refuse the second
+        item is the guard that knows WHY: the envelope's cash leg already
+        covers its own outstanding purchases, so naming both counts that
+        purchase in two terms.  Measured on a production clone at plan step
+        X-f6a-2: two matched line-sets worth `-284.33` backed by `-265.69` of
+        ledger, the projected balance `$18.64` high.
+        """
+        with app.app_context():
+            statement = an_import(seed_user)
+            day = seed_user["bootstrap_period"].start_date
+            envelope = a_transaction(
+                seed_user, name="Groceries", amount="300.00", is_envelope=True,
+            )
+            purchase = a_purchase(
+                seed_user, envelope, amount="25.00", purchased_on=day,
+            )
+            parent_line = a_bank_line(
+                seed_user, statement, amount="-25.00", posted_on=day,
+            )
+            child_line = a_bank_line(
+                seed_user, statement, amount="-25.00", posted_on=day,
+                sequence_in_group=1,
+            )
+
+            outcome = _batch(seed_user, matches=[
+                _match(
+                    seed_user, lines=[parent_line], transactions=[envelope],
+                ),
+                _match(seed_user, lines=[child_line], entries=[purchase]),
+            ])
+
+            assert outcome.applied_count == 1
+            assert outcome.refused_count == 1
+            assert "count the same money twice" in outcome.refused[0].reason
+
+
+class TestASIBLINGWriteCannotBookAgainstAStalePrice:
+    """The counterexample that refuted this step's first safety argument.
+
+    That argument was: one act can only move a figure another act names by
+    adding a purchase to that row or posting one under it, which makes the two
+    an envelope and its own child -- and
+    ``_reject_parent_and_its_own_purchase`` refuses exactly that.  **Measured
+    false by adversarial financial review 2026-08-19**, with a booked figure.
+
+    ``entry_service.update_entry`` -- which every matched PURCHASE goes through
+    -- calls ``entry_credit_workflow.sync_entry_payback``, and that WRITES the
+    envelope's CC Payback ``estimated_amount`` down to the sum of its card
+    entries.  A payback is a transaction on the SAME account, so it is a
+    candidate priced off that column; and it is the purchase's SIBLING under
+    one envelope, not its parent, so no guard here can see the relation.
+
+    Against a once-derived price the second act was accepted at the stale
+    figure: the ledger booked `$50.00` for a `-$60.00` bank line and the
+    account read **`$10.00` high**.  The answer is that every act re-prices the
+    rows it names (:func:`~app.services.statement_match.repriced`), which is
+    total where an enumeration of sibling writers is one writer from being
+    wrong again.
+
+    **Both acts are ordinary screen proposals in the same sweep class**, so one
+    click of "tick all that mark a row as having happened" plus Apply submits
+    them together.
+    """
+
+    @staticmethod
+    def _drifted_payback(db, seed_user):
+        """Stage an envelope, a card entry, its payback, and a debit purchase.
+
+        The payback's own figure is moved off the sum of its card entries --
+        which is what an owner does when they correct a projected CC Payback to
+        what their card statement says, through the ordinary transaction edit
+        door.  It is the state that arms the defect.
+        """
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="300.00", is_envelope=True,
+        )
+        a_purchase(
+            seed_user, envelope, amount="50.00", description="Card",
+            purchased_on=seed_user["bootstrap_period"].start_date,
+            is_credit=True,
+        )
+        debit = a_purchase(
+            seed_user, envelope, amount="25.00", description="Aldi",
+            purchased_on=seed_user["bootstrap_period"].start_date,
+        )
+        # **Built the way ``credit_workflow._create_payback`` builds one**, and
+        # it has to be: ``ck_transactions_one_pricing_link`` admits at most one
+        # of ``template_id`` / ``transfer_id`` / ``credit_payback_for_id``, so
+        # the sibling builder's template makes a payback the database refuses.
+        # A fixture the app could not produce would grade an unreachable case.
+        payback = Transaction(
+            account_id=seed_user["account"].id,
+            template_id=None,
+            pay_period_id=seed_user["bootstrap_period"].id,
+            scenario_id=seed_user["scenario"].id,
+            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            name="CC Payback: Groceries",
+            category_id=seed_user["categories"]["Groceries"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            # DRIFTED off the sum of its card entries, which is what an owner
+            # correcting a projected payback to their card statement produces.
+            estimated_amount=Decimal("60.00"),
+            credit_payback_for_id=envelope.id,
+        )
+        _db.session.add(payback)
+        _db.session.flush()
+        return envelope, debit, payback
+
+    def test_the_stale_sibling_is_REFUSED_rather_than_booked(
+        self, app, db, seed_user,
+    ):
+        """The whole finding, as one pass."""
+        with app.app_context():
+            statement = an_import(seed_user)
+            day = seed_user["bootstrap_period"].start_date
+            _, debit, payback = self._drifted_payback(db, seed_user)
+            debit_line = a_bank_line(
+                seed_user, statement, amount="-25.00", posted_on=day,
+            )
+            payback_line = a_bank_line(
+                seed_user, statement, amount="-60.00", posted_on=day,
+                sequence_in_group=1,
+            )
+
+            outcome = _batch(seed_user, matches=[
+                _match(seed_user, lines=[debit_line], entries=[debit]),
+                _match(
+                    seed_user, lines=[payback_line], transactions=[payback],
+                ),
+            ])
+            _db.session.flush()
+
+            assert outcome.applied_count == 1, (
+                "the purchase match must land -- otherwise the second act was "
+                "never offered the stale price and this grades nothing"
+            )
+            assert outcome.refused_count == 1
+            # The FIGURES, because that is what went wrong: the pass moved the
+            # payback to 50.00 and the bank line says 60.00.
+            assert "do not add up" in outcome.refused[0].reason
+            assert "-60.00" in outcome.refused[0].reason
+            assert "-50.00" in outcome.refused[0].reason
+            assert payback.settled_on is None, (
+                "a -60.00 bank line was explained by a row worth 50.00"
+            )
+
+
+class TestTheReceiptSaysWhatHappened:
+    """A pass that reports only "done" is a pass nobody can check."""
+
+    def test_it_counts_each_EFFECT_separately(self, app, db, seed_user):
+        """Settling, re-dating and recording are three different acts.
+
+        A single "3 items applied" would hide which: settling books money the
+        projection was holding forward, moving a day moves money already
+        booked, and recording adds a movement the app did not have.
+        """
+        with app.app_context():
+            statement = an_import(seed_user)
+            day = seed_user["bootstrap_period"].start_date
+            settle_line = a_bank_line(
+                seed_user, statement, amount="-180.00", posted_on=day,
+            )
+            projected = a_transaction(
+                seed_user, name="Electricity", amount="180.00",
+            )
+            correct_line = a_bank_line(
+                seed_user, statement, amount="-42.00", posted_on=day,
+                sequence_in_group=1,
+            )
+            settled = a_transaction(
+                seed_user, name="Water", amount="42.00",
+                status=StatusEnum.DONE, settled_on=day + timedelta(days=2),
+            )
+            swipe = a_bank_line(
+                seed_user, statement, amount="-9.99", posted_on=day,
+                sequence_in_group=2,
+            )
+
+            outcome = _batch(
+                seed_user,
+                matches=[
+                    _match(
+                        seed_user, lines=[settle_line],
+                        transactions=[projected],
+                    ),
+                    _match(
+                        seed_user, lines=[correct_line], transactions=[settled],
+                    ),
+                ],
+                creations=[_creation(
+                    seed_user, swipe,
+                    new_envelope=NewEnvelope(
+                        name="Amazon",
+                        category_id=seed_user["categories"]["Groceries"].id,
+                    ),
+                )],
+            )
+
+            assert outcome.applied_count == 3
+            assert outcome.settled_count == 1
+            assert outcome.corrected_count == 1
+            assert outcome.recorded_count == 1
+            assert outcome.envelopes_created == 1
+            assert outcome.moved_nothing is False
+
+    def test_a_pass_that_only_CONFIRMS_says_it_moved_nothing(
+        self, app, db, seed_user,
+    ):
+        """An applied item is not the same as a changed record.
+
+        A match on a row already carrying the bank's own day writes no column,
+        so a receipt counting applied items would claim work that did not
+        happen -- the distinction ``AcceptedMatch`` already draws for one act.
+        """
+        with app.app_context():
+            statement = an_import(seed_user)
+            day = seed_user["bootstrap_period"].start_date
+            line = a_bank_line(
+                seed_user, statement, amount="-180.00", posted_on=day,
+            )
+            row = a_transaction(
+                seed_user, name="Electricity", amount="180.00",
+                status=StatusEnum.DONE, settled_on=day,
+            )
+
+            outcome = _batch(seed_user, matches=[
+                _match(seed_user, lines=[line], transactions=[row]),
+            ])
+
+            assert outcome.applied_count == 1
+            assert outcome.moved_nothing is True
+
+    def test_an_EMPTY_pass_is_not_an_error(self, app, db, seed_user):
+        """Ticking nothing and pressing Apply is an ordinary thing to do."""
+        with app.app_context():
+            outcome = _batch(seed_user)
+
+            assert outcome.applied_count == 0
+            assert outcome.refused_count == 0
+            assert outcome.moved_nothing is True
+
+
+class TestWhatIsNOTCaughtPerItem:
+    """The other half of the isolation rule, and it has to be asserted.
+
+    A savepoint that swallowed everything would turn a broken ledger invariant
+    into one line of a receipt, on a screen whose whole job is to move money
+    correctly.  ``ValidationError`` is this project's DESIGNED refusal -- a
+    sentence written for the person who submitted the form -- and it is the
+    only thing the loop catches.
+    """
+
+    def test_a_PostingError_fails_the_whole_pass(
+        self, app, db, seed_user, monkeypatch,
+    ):
+        """A broken invariant is a fact about the account, not about an item."""
+        with app.app_context():
+            statement = an_import(seed_user)
+            day = seed_user["bootstrap_period"].start_date
+            line = a_bank_line(
+                seed_user, statement, amount="-180.00", posted_on=day,
+            )
+            row = a_transaction(
+                seed_user, name="Electricity", amount="180.00",
+            )
+
+            def _boom(*_args, **_kwargs):
+                raise PostingError("the ledger does not balance")
+
+            monkeypatch.setattr(
+                statement_match._batch, "accept_match", _boom,
+            )
+
+            with pytest.raises(PostingError):
+                _batch(seed_user, matches=[
+                    _match(seed_user, lines=[line], transactions=[row]),
+                ])
+
+    def test_a_ValidationError_is_the_ONLY_thing_reported_per_item(
+        self, app, db, seed_user, monkeypatch,
+    ):
+        """The control for the arm above: the designed refusal IS caught."""
+        with app.app_context():
+            statement = an_import(seed_user)
+            day = seed_user["bootstrap_period"].start_date
+            line = a_bank_line(
+                seed_user, statement, amount="-180.00", posted_on=day,
+            )
+            row = a_transaction(
+                seed_user, name="Electricity", amount="180.00",
+            )
+
+            def _refuse(*_args, **_kwargs):
+                raise ValidationError("a designed refusal")
+
+            monkeypatch.setattr(
+                statement_match._batch, "accept_match", _refuse,
+            )
+
+            outcome = _batch(seed_user, matches=[
+                _match(seed_user, lines=[line], transactions=[row]),
+            ])
+
+            assert outcome.refused_count == 1
+            assert outcome.refused[0].reason == "a designed refusal"
+
+
+class TestThePassIsOneUnitOfWorkForTheCALLER:
+    """The savepoints bound a REFUSAL; they do not commit anything.
+
+    ``apply_reviewed`` does not commit, so a caller that abandons the request
+    leaves no trace of a pass that had already "applied" 195 items -- which is
+    what makes the route's own "nothing was changed" true on a database error.
+    """
+
+    def test_nothing_survives_a_rollback_by_the_caller(
+        self, app, db, seed_user,
+    ):
+        """A released savepoint is still inside the outer transaction."""
+        with app.app_context():
+            statement = an_import(seed_user)
+            day = seed_user["bootstrap_period"].start_date
+            line = a_bank_line(
+                seed_user, statement, amount="-180.00", posted_on=day,
+            )
+            row = a_transaction(
+                seed_user, name="Electricity", amount="180.00",
+            )
+
+            outcome = _batch(seed_user, matches=[
+                _match(seed_user, lines=[line], transactions=[row]),
+            ])
+            assert outcome.applied_count == 1
+
+            _db.session.rollback()
+
+            assert db.session.query(StatementMatch).count() == 0
+
+
+class TestTheScopeIsDerivedONCE:
+    """The step's own measurement, asserted rather than described.
+
+    12.88 minutes of derivation became 5.80 s because the account is derived
+    once per PASS rather than once per ACT.  A later change that gave a door
+    its own scope again would restore the cost silently -- every test above
+    would still pass, and the only thing that would move is the wall clock.
+    """
+
+    def test_the_offer_set_is_built_once_however_many_items_run(
+        self, app, db, seed_user, monkeypatch,
+    ):
+        """The firing control for the whole step."""
+        with app.app_context():
+            statement = an_import(seed_user)
+            day = seed_user["bootstrap_period"].start_date
+            calls = []
+            real = statement_match._scope.candidates_for
+
+            def _counted(account_id, calendar):
+                calls.append(account_id)
+                return real(account_id, calendar)
+
+            monkeypatch.setattr(
+                statement_match._scope, "candidates_for", _counted,
+            )
+
+            items = []
+            for index in range(4):
+                line = a_bank_line(
+                    seed_user, statement, amount=f"-{100 + index}.00",
+                    posted_on=day, sequence_in_group=index,
+                )
+                row = a_transaction(
+                    seed_user, name=f"Bill {index}", amount=f"{100 + index}.00",
+                    status=StatusEnum.DONE, settled_on=day,
+                )
+                items.append(_match(
+                    seed_user, lines=[line], transactions=[row],
+                ))
+
+            outcome = _batch(seed_user, matches=items)
+
+            assert outcome.applied_count == 4
+            assert calls == [seed_user["account"].id], (
+                "the account was derived once per ACT again, which is the "
+                "12.88 minutes finding N-306 measures"
+            )
+
+
+def test_a_scope_serves_the_screen_and_the_doors_alike(app, db, seed_user):
+    """One derivation, two consumers, and they must agree about the account.
+
+    The route builds a scope, renders the screen from it and applies the pass
+    against it.  A reader and a writer disagreeing about what an account holds
+    is the class of defect this package's one-scope rule exists to remove.
+    """
+    with app.app_context():
+        statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(
+            seed_user, statement, amount="-180.00", posted_on=day,
+        )
+        a_transaction(
+            seed_user, name="Electricity", amount="180.00",
+            status=StatusEnum.DONE, settled_on=day + timedelta(days=3),
+        )
+        scope = a_scope(seed_user)
+
+        review = statement_match.review_set(scope)
+
+        assert len(review.proposals) == 1
+        proposal = review.proposals[0]
+        outcome = statement_match.apply_reviewed(ReviewedBatch(
+            matches=(MatchSubmission(
+                line_ids=frozenset(
+                    bank.line_id for bank in proposal.lines
+                ),
+                transaction_ids=frozenset(
+                    row.row_id for row in proposal.rows
+                ),
+                entry_ids=frozenset(),
+            ),),
+            creations=(),
+        ), scope)
+
+        assert outcome.applied_count == 1
+        assert outcome.corrected_count == 1
+        assert line.id in {
+            item.line_ids[0] for item in outcome.applied
+        }
+
+
+class TestABatchBooksWhatTheSameActsBookOneAtATime:
+    """**The firing control for the whole step**, and it was missing.
+
+    Everything else in this module grades COUNTS, refusal sentences and row
+    existence.  None of that can see the thing the step actually risks: one
+    derivation is shared across every act, and a candidate's price from that
+    derivation feeds exactly one consumer -- ``_accept._reject_unbalanced``,
+    which is a money gate.  A stale price admits a match a fresh derivation
+    would refuse, or refuses one it would admit, and the difference shows up in
+    a FIGURE rather than in a count.
+
+    So this applies the same acts twice, once as a batch against one shared
+    scope and once one at a time against a fresh scope each, and compares the
+    money to the cent.  Each run is bracketed by its own SAVEPOINT so the
+    second starts from the state the first did.
+
+    Found missing by adversarial test-quality review 2026-08-19, which put it
+    exactly right: *"That premise is graded by nothing."*
+    """
+
+    @staticmethod
+    def _money(app_db, seed_user, account):
+        """Return every figure the two runs must agree on.
+
+        Not just a balance: a balance can agree while the rows underneath it
+        disagree in offsetting ways, so the per-row settle facts travel with
+        it.
+
+        Args:
+            app_db: The test's ``db`` fixture.
+            seed_user: The seeded user bundle.
+            account: The account being reviewed.
+
+        Returns:
+            A comparable dict.
+        """
+        ctx = balance_at.BalanceContext.build(seed_user["user"].id)
+        period = seed_user["bootstrap_period"]
+        days = [
+            period.start_date,
+            period.start_date + timedelta(days=7),
+            period.end_date,
+            period.end_date + timedelta(days=30),
+        ]
+        # **No surrogate keys.**  A row this pass CREATES gets a sequence
+        # value, and a rolled-back sequence does not rewind -- so the two runs
+        # differ on ``id`` and on nothing else that matters.  An id is not
+        # money; what the two runs must agree on is what each row RECORDS.
+        rows = app_db.session.execute(_db.text(
+            "SELECT name, settled_on, settled_amount, settled_basis_id,"
+            "       status_id, estimated_amount"
+            "  FROM budget.transactions ORDER BY name, id"
+        )).all()
+        entries = app_db.session.execute(_db.text(
+            "SELECT t.name, e.description, e.amount, e.purchased_on,"
+            "       e.settled_on, e.is_credit"
+            "  FROM budget.transaction_entries e"
+            "  JOIN budget.transactions t ON t.id = e.transaction_id"
+            " ORDER BY t.name, e.description, e.amount"
+        )).all()
+        # The LEDGER, not just the projection.  A balance can agree while the
+        # postings underneath it differ, and the posting writer is what the
+        # settle verbs reach through -- so the ledger is where a re-dated
+        # settle leaving its old posting behind would show up.
+        #
+        # **Keyed by the chart row's NAME, never its id**, which is the lesson
+        # ``tests/manual/verify_statement_baseline.py`` states for itself: a
+        # chart row minted by a run has an id the other run never had, and it
+        # would diff as a moved line where the money did not move.
+        postings = app_db.session.execute(_db.text(
+            "SELECT l.name, e.entry_date, COALESCE(SUM(p.amount), 0)"
+            "  FROM budget.account_postings p"
+            "  JOIN budget.journal_entries e ON e.id = p.journal_entry_id"
+            "  JOIN budget.ledger_accounts l ON l.id = p.ledger_account_id"
+            " GROUP BY l.name, e.entry_date"
+            " ORDER BY l.name, e.entry_date"
+        )).all()
+        return {
+            "balances": {
+                day.isoformat(): str(
+                    balance_at.cash_balance_at(account, ctx, day),
+                )
+                for day in days
+            },
+            "transactions": [tuple(str(v) for v in row) for row in rows],
+            "entries": [tuple(str(v) for v in row) for row in entries],
+            "postings": [tuple(str(v) for v in row) for row in postings],
+        }
+
+    @staticmethod
+    def _acts(db, seed_user):
+        """Stage a pass that exercises all three effects, and return its items.
+
+        One proposal that SETTLES a projected row, one that CORRECTS a settled
+        row's day, one that re-dates a PURCHASE, and one line RECORDED into an
+        existing envelope -- so the comparison covers every write the door
+        performs rather than the cheapest one.
+        """
+        statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        matches, creations = [], []
+
+        projected = a_transaction(
+            seed_user, name="Electricity", amount="180.00",
+        )
+        settle_line = a_bank_line(
+            seed_user, statement, amount="-180.00", posted_on=day,
+        )
+        matches.append(_match(
+            seed_user, lines=[settle_line], transactions=[projected],
+        ))
+
+        settled = a_transaction(
+            seed_user, name="Water", amount="42.00", status=StatusEnum.DONE,
+            settled_on=day + timedelta(days=4),
+        )
+        correct_line = a_bank_line(
+            seed_user, statement, amount="-42.00", posted_on=day,
+            sequence_in_group=1,
+        )
+        matches.append(_match(
+            seed_user, lines=[correct_line], transactions=[settled],
+        ))
+
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="300.00", is_envelope=True,
+        )
+        # **Recorded LATER than the bank posted it**, which is the only shape
+        # ruling R-FW re-dates: the owner's own assertion that this line IS
+        # this purchase refutes a purchase day after the day it cleared.
+        late = a_purchase(
+            seed_user, envelope, amount="31.00", description="Aldi",
+            purchased_on=day + timedelta(days=5),
+        )
+        redate_line = a_bank_line(
+            seed_user, statement, amount="-31.00",
+            posted_on=day + timedelta(days=3),
+            transaction_on=day + timedelta(days=2), sequence_in_group=2,
+        )
+        matches.append(_match(
+            seed_user, lines=[redate_line], entries=[late],
+        ))
+
+        swipe = a_bank_line(
+            seed_user, statement, amount="-57.96", posted_on=day,
+            sequence_in_group=3,
+        )
+        creations.append(_creation(
+            seed_user, swipe, transaction_id=envelope.id,
+        ))
+        db.session.flush()
+        return tuple(matches), tuple(creations)
+
+    def test_the_two_agree_to_the_cent(self, app, db, seed_user):
+        """One shared derivation books what four fresh ones book."""
+        with app.app_context():
+            from app.models.account import Account  # pylint: disable=import-outside-toplevel
+
+            matches, creations = self._acts(db, seed_user)
+            account = db.session.get(Account, seed_user["account"].id)
+
+            batched = _db.session.begin_nested()
+            outcome = statement_match.apply_reviewed(
+                ReviewedBatch(matches=matches, creations=creations),
+                a_scope(seed_user),
+            )
+            _db.session.flush()
+            as_a_batch = self._money(db, seed_user, account)
+            batched.rollback()
+            # **EXPIRE, or the second run reads the first run's writes.**  A
+            # savepoint rollback restores the DATABASE, and SQLAlchemy returns
+            # the instance already in its identity map for a known primary key
+            # -- so without this the second run saw the purchase the first run
+            # had settled and reported "unchanged", booking nothing.  Two
+            # REQUESTS have two sessions; this is what models that, and a
+            # harness that does not is comparing a fresh run against a stale
+            # one.  Measured while writing this test: the two runs differed by
+            # exactly the `$31.00` purchase.
+            _db.session.expire_all()
+
+            one_at_a_time = _db.session.begin_nested()
+            singly_did = []
+            for submission in matches:
+                singly_did.append(statement_match.accept_match(
+                    submission, a_scope(seed_user),
+                ))
+                _db.session.flush()
+            for creation in creations:
+                singly_did.append(statement_match.create_purchase_from_line(
+                    creation, a_scope(seed_user),
+                ))
+                _db.session.flush()
+            singly = self._money(db, seed_user, account)
+            one_at_a_time.rollback()
+            _db.session.expire_all()
+
+            assert all(
+                getattr(did, "match_id", None) is not None
+                for did in singly_did
+            ), "an act in the one-at-a-time run did not record a match"
+
+            assert outcome.applied_count == 4, (
+                "the pass must APPLY its items, or the comparison is between "
+                "two states in which nothing happened"
+            )
+            # **TWO settles, and the second one is the point.**  The late
+            # purchase was never marked as having happened, so the match
+            # SETTLES it -- and it is re-dated in the same act, which is
+            # exactly why ``redated_count`` cuts across the settled/corrected
+            # partition rather than joining it.  A first draft of this fixture
+            # expected one settle and one correction and was wrong about the
+            # purchase; the counts are the code's, checked against the rows.
+            assert outcome.settled_count == 2
+            assert outcome.corrected_count == 1
+            assert outcome.redated_count == 1
+            assert outcome.recorded_count == 1
+
+            assert as_a_batch["balances"] == singly["balances"]
+            assert as_a_batch["transactions"] == singly["transactions"]
+            assert as_a_batch["entries"] == singly["entries"]
+            assert as_a_batch["postings"] == singly["postings"]
