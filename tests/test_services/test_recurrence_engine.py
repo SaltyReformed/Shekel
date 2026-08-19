@@ -1958,6 +1958,7 @@ class TestALegacyScheduleHole:
         db.session.refresh(template)
         return template
 
+
 class TestRegenerateForTemplate:
     """DB integration tests for regenerate_for_template()."""
 
@@ -2137,10 +2138,13 @@ class TestRegenerateForTemplate:
             by_period = {row.pay_period_id: row.id for row in created}
 
             # The definition narrows: the first paycheck of each month only.
-            template.recurrence_rule = make_cadence_rule(
-                seed_user["user"].id, MONTHLY_FIRST,
-            )
+            # The old cadence is DELETED before the new one is authored -- a
+            # rule carries its definition's FK since recurrence plan step
+            # **R-F6**, and one partial unique index per kind holds a template
+            # to one rule, so replacing means replacing.
+            db.session.delete(template.recurrence_rule)
             db.session.flush()
+            make_cadence_rule(template, MONTHLY_FIRST)
             db.session.refresh(template)
 
             recurrence_engine.regenerate_for_template(
