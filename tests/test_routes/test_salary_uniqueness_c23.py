@@ -107,7 +107,6 @@ def _create_profile(seed_user):
         name="Day Job",
         annual_salary=Decimal("75000.00"),
         state_code="NC",
-        pay_periods_per_year=26,
     )
     db.session.add(profile)
     db.session.commit()
@@ -230,7 +229,6 @@ class TestSalaryRaiseUniqueConstraint:
                 name="Side Gig",
                 annual_salary=Decimal("20000.00"),
                 state_code="NC",
-                pay_periods_per_year=26,
             )
             db.session.add(profile_b)
             db.session.commit()

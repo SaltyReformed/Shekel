@@ -48,7 +48,7 @@ from app.services.projection_inputs import (
     load_shadow_income_contributions_for_accounts,
 )
 from app.services.balance_at import BalanceContext
-from app.services.pay_calendar import DerivedPeriod, PeriodWindow
+from app.services.pay_calendar import DerivedPeriod, PayCadence, PeriodWindow
 from app.utils.money import round_money
 
 
@@ -138,7 +138,17 @@ class ProjectionBatch:
             (accounts with no params row are absent) -- one ``IN`` query
             replacing the pre-P2 per-account ``first()`` lookups.
         salary_gross_biweekly: The raise-aware engine gross-biweekly used
-            as the employer-match cap basis.
+            as the employer-match cap basis, and -- since plan step
+            **R-F16** -- the basis a percentage deduction takes its
+            percentage of.  It was already loaded here and was consulted
+            only when an account had NO deduction; an account WITH one
+            re-derived a raise-BLIND gross off the profile's own
+            ``annual_salary / pay_periods_per_year``, so its employer match
+            was sized on a figure every raise the owner had taken made wrong.
+        pay_cadence: How often the owner is paid.  A per-request owner fact
+            beside the gross, for the same reason: a deduction's calendar-year
+            cap is spread across the year's paychecks, and how many those are
+            is the owner's cadence rather than anything the deduction knows.
         balance_map: The model-from-anchor END-of-current-period balance
             keyed by account ID -- the DISPLAYED current balance (and the
             weight in the blended-return average
@@ -175,6 +185,7 @@ class ProjectionBatch:
     contributions: ShadowContributions
     params_by_account: dict[int, InvestmentParams]
     salary_gross_biweekly: Decimal
+    pay_cadence: PayCadence
     balance_map: dict[int, Decimal]
     seed_memo: (
         "dict["
@@ -222,13 +233,16 @@ def build_employer_salary_basis(
     planned_retirement_date: date | None,
     merit_horizon_years: int,
     as_of: date,
+    cadence: PayCadence,
 ) -> Callable | None:
     """Build the per-period employer-contribution gross basis (P1b / F3).
 
     Grows the employer-contribution base with the SAME P1a salary path the
     pension / income-target projection uses: for each projected year the
-    annual salary is divided by the primary profile's pay-periods-per-year
-    and quantized to cents (house money rules), and the returned resolver
+    annual salary is divided by the OWNER's paycheck count -- off their pay
+    cadence since plan step **R-F16**, where it was a second stored column on
+    the profile that nothing held to the cadence -- and quantized to cents
+    (house money rules), and the returned resolver
     maps a projection period to its year's gross biweekly.  Periods whose
     year falls outside the projected range (defensive only -- the axis runs
     from the pass's as_of to retirement, exactly the projected span) clamp to
@@ -256,6 +270,9 @@ def build_employer_salary_basis(
             projecting its salary path from year N while the lever card beside
             it projects from N+1, which is the two-cards-two-clocks shape plan
             step C2-f2d-1 measured at ``$4.18`` for the read pass itself.
+        cadence: How often the owner is paid.  Taken rather than resolved so
+            this shares the ONE cadence the render's ``GapInputs`` already
+            carries, and so a pure producer stays pure.
 
     Returns:
         A ``period -> Decimal gross_biweekly`` callable, or ``None``.
@@ -264,7 +281,6 @@ def build_employer_salary_basis(
         return None
 
     profile = salary_profiles[0]
-    pay_periods_per_year = profile.pay_periods_per_year or 26
     salary_by_year = pension_calculator.project_profile_salaries(
         profile, as_of.year, planned_retirement_date.year,
         merit_horizon_years,
@@ -273,7 +289,7 @@ def build_employer_salary_basis(
         return None
 
     gross_by_year = {
-        year: round_money(salary / pay_periods_per_year)
+        year: round_money(cadence.annual_to_per_paycheck(salary))
         for year, salary in salary_by_year
     }
     min_year = min(gross_by_year)
@@ -561,8 +577,9 @@ def load_projection_batch(
             params_by_account[params.account_id] = params
 
     # F-20 / MED-06 / F-032: raise-aware engine gross-biweekly (not the
-    # off-engine ``annual_salary / pay_periods_per_year`` recompute that
-    # dropped any applicable SalaryRaise); feeds the employer-match cap.
+    # off-engine ``annual_salary / <a stored paycheck count>`` recompute that
+    # dropped any applicable SalaryRaise); feeds the employer-match cap, and
+    # since plan step R-F16 every percentage deduction as well.
     # ``as_of`` is the PASS's (plan step C2-f2d-1, corrected by its
     # adversarial code review): this resolver defaults to ``date.today()`` and
     # resolves its own current period from it, so without the argument the
@@ -584,6 +601,9 @@ def load_projection_batch(
         contributions=contributions,
         params_by_account=params_by_account,
         salary_gross_biweekly=salary_gross_biweekly,
+        # Off the pass's own memoized calendar, which the gross above already
+        # derived -- one derivation answers both (plan step R-F16).
+        pay_cadence=ctx.balance_ctx.calendar().cadence,
         balance_map=balance_map,
     )
 
@@ -813,7 +833,7 @@ def _run_account_projection(  # pylint: disable=too-many-arguments,too-many-posi
         c for c in batch.contributions.records if c.account_id == acct.id
     ]
     adapted_deductions = adapt_deductions(
-        batch.deductions_by_account.get(acct.id, []),
+        batch.deductions_by_account.get(acct.id, []), batch.pay_cadence,
     )
     inputs = build_investment_projection_inputs(
         params, adapted_deductions, acct_contributions,

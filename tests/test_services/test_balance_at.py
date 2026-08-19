@@ -68,6 +68,7 @@ from app.services.account_projection import (
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.pay_calendar import DerivedPeriod, PayCalendarError, calendar_for
 from app.services.balance_at._asset_contributions import ContributionInputs
+from app.services.investment_projection import adapt_deductions
 from app.services.projection_inputs import (
     load_active_deductions_for_accounts,
     load_investment_params_for_accounts,
@@ -968,7 +969,13 @@ class TestBalanceMapInvestment:
             expected = net_worth_kernel.build_account_balance_map(
                 inv, bctx,
                 ContributionInputs(
-                    investment_params=params, deductions=deductions,
+                    investment_params=params,
+                    # ADAPTED, as the seam's own loader does since plan
+                    # step R-F16: the kernel below the seam takes the
+                    # namedtuple, not the ORM row.
+                    deductions=adapt_deductions(
+                        deductions, calendar_for(user_id).cadence,
+                    ),
                     salary_gross_biweekly=gross,
                 ),
             )
@@ -1005,7 +1012,13 @@ class TestBalanceMapInvestment:
             expected = net_worth_kernel.build_account_balance_map(
                 inv, bctx,
                 ContributionInputs(
-                    investment_params=params, deductions=deductions,
+                    investment_params=params,
+                    # ADAPTED, as the seam's own loader does since plan
+                    # step R-F16: the kernel below the seam takes the
+                    # namedtuple, not the ORM row.
+                    deductions=adapt_deductions(
+                        deductions, calendar_for(user_id).cadence,
+                    ),
                     salary_gross_biweekly=gross,
                 ),
             )
@@ -1311,7 +1324,10 @@ class TestBuildMaps:
                         investment_params=params.investment_params_map.get(
                             account.id,
                         ),
-                        deductions=deductions_by_account.get(account.id, []),
+                        deductions=adapt_deductions(
+                            deductions_by_account.get(account.id, []),
+                            calendar_for(user_id).cadence,
+                        ),
                         salary_gross_biweekly=salary_gross_biweekly,
                     ),
                 )
@@ -1824,7 +1840,13 @@ class TestInvestmentContributions:
             expected = net_worth_kernel.build_account_balance_map(
                 inv, bctx,
                 ContributionInputs(
-                    investment_params=params, deductions=deductions,
+                    investment_params=params,
+                    # ADAPTED, as the seam's own loader does since plan
+                    # step R-F16: the kernel below the seam takes the
+                    # namedtuple, not the ORM row.
+                    deductions=adapt_deductions(
+                        deductions, calendar_for(user_id).cadence,
+                    ),
                     salary_gross_biweekly=gross,
                 ),
             )
@@ -1890,7 +1912,13 @@ class TestInvestmentContributions:
             expected = net_worth_kernel.build_account_balance_map(
                 inv_match, bctx,
                 ContributionInputs(
-                    investment_params=params, deductions=deductions,
+                    investment_params=params,
+                    # ADAPTED, as the seam's own loader does since plan
+                    # step R-F16: the kernel below the seam takes the
+                    # namedtuple, not the ORM row.
+                    deductions=adapt_deductions(
+                        deductions, calendar_for(user_id).cadence,
+                    ),
                     salary_gross_biweekly=gross,
                 ),
             )
@@ -2742,12 +2770,15 @@ class TestTheContributionRowOnARealFeed:
           column    = employee 200.00 + employer 200.00 = 400.00
 
         **That gross is the DEDUCTION-derived one**, ``round_money(annual /
-        pay_periods_per_year)`` from
+        periods_per_year)`` from
         ``investment_projection._compute_deduction_per_period`` -- NOT the
         raise-aware ``salary_gross_biweekly``, which
         ``deduction_contribution_per_period`` uses only as the fallback when no
-        deduction supplies one, and this fixture has one.  The two agree here
-        ($104,000 / 26), which is why the fixture picks that salary; stating
+        deduction supplies one, and this fixture has one.  Its denominator is
+        the OWNER's cadence since plan step **R-F16** (it was a second stored
+        column); its numerator is still the deduction's own profile, and being
+        raise-blind is finding **D45**.  The two agree on this fixture
+        ($104,000 / 26, no raises), which is why it picks that salary; stating
         which one the arithmetic actually consumes keeps the pin on the rule.
 
         The employer half is what makes the row more than a restatement of the

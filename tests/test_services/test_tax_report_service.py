@@ -47,6 +47,7 @@ from app.services.tax_report_service import (
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     SPLIT_LOAN,
+    payroll_basis,
     create_loan_with_trueup,
     create_settled_transfer,
     freeze_today,
@@ -85,7 +86,6 @@ def _make_profile(
         scenario_id=seed_user["scenario"].id,
         name=name,
         annual_salary=Decimal(annual_salary),
-        pay_periods_per_year=26,
         filing_status_id=filing_status.id,
         state_code=state_code,
         is_active=True,
@@ -173,7 +173,7 @@ def _project_sum(user_id, profile, year, periods):
     """
     configs = load_tax_configs_for_year(user_id, profile, year)
     breakdowns = paycheck_calculator.project_salary(
-        profile, periods, configs, calibration=profile.calibration,
+        payroll_basis(profile), periods, configs, calibration=profile.calibration,
     )
     return {
         "gross": sum((b.earnings.gross_biweekly for b in breakdowns), ZERO),

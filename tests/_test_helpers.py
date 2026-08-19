@@ -5034,6 +5034,75 @@ def cadence_payload(
     return payload
 
 
+def payroll_basis(profile, cadence_days=14):
+    """Return the :class:`PayrollBasis` for *profile* at *cadence_days*.
+
+    **The ONE test-side door onto the paycheck engine's owner input**, added at
+    plan step **R-F16** when ``salary.salary_profiles.pay_periods_per_year``
+    was dropped and the count became a derivation off
+    ``budget.pay_schedule.cadence_days``.  One shared helper rather than a
+    ``for_test`` constructor on the production type or a defaulted ``cadence=``
+    argument on the engine, which is the ruling ledger row **P54** set for the
+    same question about ``BalanceContext``: a production API with only test
+    callers is the speculative shape ``CLAUDE.md`` rule 13 forbids, and a
+    defaulted cadence would let the engine assume biweekly for an owner who is
+    not.
+
+    The default matches the suite's fixtures and
+    ``BaseConfig.DEFAULT_PAY_CADENCE_DAYS``, so a test that does not care about
+    the rhythm says nothing and gets 26 paychecks a year.  A test that DOES
+    care states its cadence and gets the count that follows -- 7 gives 52, 15
+    gives 24, 365 gives 1.
+
+    Args:
+        profile: The ``SalaryProfile`` (or a duck-typed stand-in) to price.
+        cadence_days: Days between the owner's paydays, 1..365.
+
+    Returns:
+        The :class:`~app.services.payroll_basis.PayrollBasis`.
+
+    Raises:
+        PayCalendarError: *cadence_days* falls outside 1..365, which is what
+            ``ck_pay_schedule_cadence_range`` refuses in the database.
+    """
+    from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+        PayCadence,
+    )
+    from app.services.payroll_basis import (  # pylint: disable=import-outside-toplevel
+        PayrollBasis,
+    )
+
+    return PayrollBasis(profile, PayCadence(cadence_days=cadence_days))
+
+
+def derived_calendar(paydays, cadence_days=14, user_id=1):
+    """Return a :class:`PayCalendar` over *paydays*, derived rather than built.
+
+    The calendar-shaped sibling of :func:`derived_window`, for a producer that
+    takes the whole calendar rather than a slice of it -- which
+    ``recurrence_engine._amounts._get_transaction_amount`` does since plan step
+    **R-F16**, because it needs the owner's paycheck COUNT as well as their
+    periods and both must come off one derivation.
+
+    Args:
+        paydays: The paydays opening each period, in any order.
+        cadence_days: Days between paydays, 1..365.
+        user_id: The owner the calendar belongs to.
+
+    Returns:
+        The :class:`~app.services.pay_calendar.PayCalendar`.
+    """
+    from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+        PayCalendar,
+    )
+
+    return PayCalendar.from_paydays(
+        [(index + 1, payday) for index, payday in enumerate(sorted(paydays))],
+        cadence_days,
+        user_id=user_id,
+    )
+
+
 def derived_window(paydays, cadence_days):
     """Return a :class:`PeriodWindow` over *paydays*, derived rather than built.
 

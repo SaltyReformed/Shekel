@@ -544,13 +544,6 @@ that has none. Whatever this step rules, it states the value honestly at both si
       `resolve` hardcodes `NONE`; 46 of 46 live rules carry `none`. Finding **F-4** (the PAY
       SCHEDULE's own holiday shift) is a different question and stays separate.
 
-- [x] **R9 -- the closed pattern set's last artefacts die.** `800671a7`, ruling **R-R27**.
-      `ref.recurrence_patterns` is DROPPED (`b2e9a47c3f18`) with `RecurrencePatternEnum`,
-      `ref_cache.recurrence_pattern_id` and the seed entry behind them, in ONE release rather than
-      the two R-R11 had reserved; the test suite's cadence vocabulary moved with them onto the two
-      axes. The rollback measurement, the production census and the clone rehearsal are in
-      `historical/recurrence_r9_as_built_2026-08-17.md`.
-
 ### R10 -- the regeneration's own defect
 
 Found while X-f3b measured the ledger. Its two leaves are below.
@@ -624,6 +617,22 @@ OLD image cannot resolve refuses the re-pin; an unchanged stamp after a containe
 still re-pins; and an unreadable `alembic_version` is treated as unsafe. Each arm shown FIRING,
 which is the standard the arc's own verification file sets. Closes **D41**.
 
+**Ruling R-R28 (2026-08-19): semi-monthly pay keeps the NOMINAL 15-day walk.** No fixed
+`cadence_days` expresses the 1st and the 15th, `round(365.2425 / 15)` gives the right COUNT and
+drifting paydays, and a monthly cadence already carries exactly that limitation; a day-of-month
+schedule KIND is scheduled as **R13** rather than blocking R-F16 on it. Chosen from four options.
+**What does NOT transfer from the monthly case is the excuse**: a biweekly owner's 27-paycheck year
+is real, so `round(365.2425 / 14)`'s 0.34% approximates a real phenomenon, where a genuinely
+semi-monthly owner is paid exactly 24 times every year with zero variance -- so the 1.46% a 15-day
+walk carries (`24.3495 / 24`) is an artifact the model manufactures, about `$1,334` a year of
+over-modelled gross on a `$91,675` salary, on top of paydays drifting ~20 days off the 1st and the
+15th. R13 is what removes it.
+
+**`R-D33` and `R9` left this index on 2026-08-19** with their `steps.md` rows, archived as one
+completed span to `historical/recurrence_completed_findings_span_as_built_2026-08-19.md` (rule 5)
+when `R-F16` needed the room. Each closed a finding on its own commit and blocked nothing; that
+record names both hashes and says why `R7c-c`, `R7c`, `R7a-2a` and `R-F1` stayed.
+
 ### Carried steps -- scheduled here so they are not merely remembered
 
 Section 5's ledger carries findings that no numbered step closes: some this arc surfaced elsewhere
@@ -637,10 +646,6 @@ is unreviewable.
 completed span to `historical/recurrence_findings_span_as_built_2026-08-17.md` (rule 5) when
 `bank_import:X-f6a-2` needed the room. Each closed one `F-` finding on its own commit and blocked
 nothing; that record names all three hashes, and says why `R-F1` stayed.
-
-- [x] **R-D33 -- a date bound answers from occurrences.** `dd2a5a34`. Both closing bounds answer
-      from whether the rule still OWES one, so two spellings of one schedule cannot leave the
-      obligations total on different days. Closed **D33**.
 
 - [x] **R-F1 -- the lagging `ref` identity sequences are in step.** `44b25ad3`, migration
       `c7f3a9d1e864`. Closed **F-1**. Account archived to
@@ -674,36 +679,48 @@ carries. **DELIVERED by the pay-calendar arc's C2**, now DECOMPOSED into `C2-a`.
 the leaf that retires `PeriodCalendar` and `SchedulePeriod` into it, and the arc's 430-shape
 baseline must stay byte-identical across it. **Tick this box with C2's LAST leaf.**
 
-- [ ] **R-F16 -- ONE producer for "how often am I paid"** (finding F-16).
+- [x] **R-F16 -- ONE producer for "how often am I paid".** `4258ce28`, migration `f2b7c40d918e`.
+      `salary_profiles.pay_periods_per_year` dropped; the engine takes a `PayrollBasis` binding a
+      profile to its owner's cadence, so a mismatched pair is unrepresentable. Cross-validating the
+      two columns was measured impossible: 5 of 365 legal cadences have a dropdown value that can
+      agree. The investment path's employer-match basis stopped being raise-BLIND. Closed **F-16**;
+      opened **D43**, **D44**.
 
-**Starts with a RULING, not a keystroke.** `salary.salary_profiles.pay_periods_per_year` is a
-12/24/26/52 dropdown (`app/templates/salary/form.html:52-57`) and is the DIVISOR the paycheck engine
-turns an annual salary into a paycheck with -- `paycheck_calculator:225`, plus `:898`, `:945`,
-`retirement_projection:230`, `investment_projection:88/113/147`, `retirement_dashboard_service:752`
-and `routes/salary/profiles.py:322`, every one of them `or 26`. `budget.pay_schedule.cadence_days`
-is the rhythm R7a-2a's conversions multiply that paycheck back up by.
-**No door validates one against the other**, and while both read 26 the two errors cancelled
-exactly.
+- [ ] **R13 -- a DAY-OF-MONTH pay schedule** (ruling **R-R28**).
 
-Measured on the developer's `$91,675` salary, true monthly gross `$7,639.58`:
+`budget.pay_schedule` holds one fact, `cadence_days`, and every payday is a fixed-length walk from
+the anchor. Semi-monthly pay is not: it is the 1st and the 15th (or the 15th and the last day), and
+`round(365.2425 / 15) = 24` gives an owner the right COUNT with paydays that drift through the month
+-- Jan 1, Jan 16, Jan 31, Feb 15. **Monthly already carries the identical limitation** (a 30-day
+walk is not "the 1st"), and pay-calendar finding **F-4** records that `pay_periods` stores NOMINAL
+paydays generally, so this is one shape rather than a semi-monthly special case.
 
-```text
-profile 26 / cadence 14d  (production)          before 7,639.58   after 7,639.58   correct
-profile 52 / cadence  7d  (consistent weekly)   before 3,819.79   after 7,639.58   FIXED by R7a-2a
-profile 12 / cadence 30d  (consistent monthly)  before 16,552.43  after 7,639.58   FIXED by R7a-2a
-profile 26 / cadence  7d  (MISMATCHED)          before 7,639.58   after 15,279.17  now visibly wrong
-profile 26 / cadence 30d  (MISMATCHED)          before 7,639.58   after 3,525.96   now visibly wrong
-```
+The step gives the schedule a cadence KIND -- fixed-days, or one/two days of the month -- and
+branches THREE producers on it: `pay_period_write.record_paydays` (which spaces a batch),
+`pay_calendar._derive.derive_periods` (whose last period's end is cadence-projected), and
+`PayCadence.periods_per_year` (which must answer 24 without dividing). It is ranked last in this arc
+deliberately: it edits the pay-calendar package's core, which `pay_calendar:C2`'s remaining leaves
+are still moving, and nothing in either arc depends on it.
 
-The remedy is that the engine divides by `PayCadence.periods_per_year` too and the column goes.
-**The ruling owed first: what does SEMI-MONTHLY mean here?** 24 is the 1st and the 15th, which no
-fixed `cadence_days` can express -- `round(365.2425 / 15) = 24` gives the right COUNT and the wrong
-paydays, and the pay-calendar arc's whole model is a fixed-cadence walk (finding F-4 is its sibling:
-`pay_periods` stores NOMINAL paydays). Three options, and the step opens by putting them to the
-developer: derive the count and accept nominal paydays; keep the column but REFUSE a pair that
-disagrees at both write doors; or give the pay calendar a second cadence KIND.
+- [ ] **R14 -- what a payroll deduction's gross is priced from** (finding **D45**).
 
-Destructive if the column is dropped, so it carries the `Review:` line and a refusing downgrade.
+`investment_projection._compute_deduction_per_period` divides a profile's stored `annual_salary` by
+the paycheck count, where every sibling surface routes through
+`income_service.get_current_gross_biweekly`. It is the recompute F-20 / MED-06 / F-032 replaced
+everywhere else, and it sets both the employee contribution and the employer-match basis: measured
+at `$137.51` a year understated on the developer's own 5% employer contribution.
+
+**R-F16 fixed this and reverted it, and the revert is the specification.** Swapping in the
+owner-level raise-aware gross made every percentage deduction price off ONE profile, chosen by
+`get_current_gross_biweekly`'s unordered `.first()` -- a measured 39% swing on a two-job owner that
+flips between renders with no data change -- and off a figure that is ZERO whenever no period covers
+today, which deleted the whole contribution plan at onboarding and after a horizon lapse. So the
+step must answer three questions together rather than one: WHOSE salary (the deduction's own
+profile, which the per-row basis gets right), WHICH period's gross (the engine already computes one
+per period, and a contribution TIMELINE wants that rather than one current-period scalar), and
+against WHICH clock -- ledger row **P56**'s question, since a scalar resolved at `date.today()`
+makes a historical modelled balance move when a raise lands.
+
 **MOVES MONEY** and needs its own review pass.
 
 - [ ] **R-F17 -- the two period-INDEX horizon windows** (finding F-17).

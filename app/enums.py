@@ -123,7 +123,7 @@ class RaiseTypeEnum(enum.Enum):
     raises apply only through the merit-horizon cutoff and then stop
     (their earned effect persists in the base).  The 2-year paycheck
     pipeline never consults this discrimination -- it applies every raise
-    uniformly via ``paycheck_calculator.apply_raises``.  Values match
+    uniformly via ``salary_raises.apply_raises``.  Values match
     ``ref.raise_types.name``; resolved to IDs via
     ``ref_cache.raise_type_id`` and compared by ID, never by name.
     """

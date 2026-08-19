@@ -6,7 +6,7 @@ quantity that every income-derived dashboard surface needs.  Wraps
 :func:`paycheck_calculator.calculate_paycheck` so the engine's
 :attr:`~app.services.paycheck_calculator.Earnings.gross_biweekly`
 (``breakdown.earnings.gross_biweekly``) is the canonical value -- never the off-engine
-``Decimal(str(profile.annual_salary)) / pay_periods_per_year``
+``Decimal(str(profile.annual_salary)) / <a paycheck count>``
 recompute that silently dropped any applicable
 :class:`~app.models.salary_raise.SalaryRaise` row pre-Commit-17.
 
@@ -40,9 +40,9 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.services import paycheck_calculator
+from app.services.payroll_basis import PayrollBasis
 from app.services.pay_calendar import (
     PayCalendar,
-    PeriodWindow,
     calendar_for,
 )
 from app.services.tax_config_service import (
@@ -73,8 +73,8 @@ def get_current_gross_biweekly(
     ``as_of`` (default: today), and invokes
     :func:`paycheck_calculator.calculate_paycheck` so any applicable
     :class:`~app.models.salary_raise.SalaryRaise` row is folded into
-    the post-raise annual salary -- which the engine then divides by
-    ``pay_periods_per_year`` and reconciles per
+    the post-raise annual salary -- which the engine then divides by the
+    owner's paycheck count (``PayrollBasis.periods_per_year``) and reconciles per
     :func:`paycheck_calculator._gross_biweekly_for_period`.
 
     Returning a single Decimal (rather than the full
@@ -158,7 +158,8 @@ def get_current_gross_biweekly(
         user_id, profile, current_period.start_date.year,
     )
     breakdown = paycheck_calculator.calculate_paycheck(
-        profile, current_period, all_periods, tax_configs,
+        PayrollBasis(profile, calendar.cadence),
+        current_period, all_periods, tax_configs,
     )
     return breakdown.earnings.gross_biweekly
 
@@ -215,7 +216,11 @@ class SalaryPricing:
         self._user_id = user_id
         self._scenario_id = scenario_id
         self._profiles: "dict[int, SalaryProfile] | None" = None
-        self._periods: PeriodWindow | None = None
+        # The CALENDAR rather than its saved window, since plan step R-F16:
+        # the projection needs the owner's paycheck COUNT as well as their
+        # periods, and both come off one derivation.  Memoized together so a
+        # pass cannot hold periods from one read and a cadence from another.
+        self._calendar: PayCalendar | None = None
         self._net_by_profile: "dict[int, dict[int, Decimal]]" = {}
 
     def net_for(
@@ -291,7 +296,7 @@ class SalaryPricing:
             ``{pay_period_id: net pay}`` for every period the projection covers.
         """
         if profile.id not in self._net_by_profile:
-            if self._periods is None:
+            if self._calendar is None:
                 # The owner's saved schedule off the DERIVED calendar
                 # (pay-calendar plan step C2-f2d-3), so the periods this
                 # projection reconciles against carry the ends the whole payday
@@ -304,12 +309,14 @@ class SalaryPricing:
                 # is ``balance:X-au-c2b``'s object and ``X-i1``'s input tier.
                 # It is LAZY, so a pass that prices no paycheck pays nothing;
                 # ledger row **P63** carries the rest.
-                self._periods = calendar_for(self._user_id).saved()
+                self._calendar = calendar_for(self._user_id)
+            periods = self._calendar.saved()
             configs_by_year = load_tax_configs_for_periods(
-                self._user_id, profile, self._periods,
+                self._user_id, profile, periods,
             )
             breakdowns = paycheck_calculator.project_salary(
-                profile, self._periods, configs_by_year=configs_by_year,
+                PayrollBasis(profile, self._calendar.cadence), periods,
+                configs_by_year=configs_by_year,
                 calibration=profile.calibration,
             )
             self._net_by_profile[profile.id] = {

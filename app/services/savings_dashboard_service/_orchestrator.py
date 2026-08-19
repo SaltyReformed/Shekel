@@ -266,7 +266,7 @@ def compute_debt_summary(balance_ctx: BalanceContext) -> DebtSummary | None:
     account_data = _compute_account_projections(debt_accounts, ctx)
 
     current_breakdown = _get_current_paycheck_breakdown(
-        core.balance_ctx.user_id, core.balance_ctx.reported_periods(),
+        core.balance_ctx, core.balance_ctx.reported_periods(),
         core.current_period,
     )
     return _debt_summary_with_dti(
@@ -332,7 +332,7 @@ def compute_goal_progress(balance_ctx: BalanceContext) -> list[GoalProgress]:
     account_data = _compute_account_projections(goal_accounts, ctx)
 
     current_breakdown = _get_current_paycheck_breakdown(
-        core.balance_ctx.user_id, core.balance_ctx.reported_periods(),
+        core.balance_ctx, core.balance_ctx.reported_periods(),
         core.current_period,
     )
     net_biweekly_pay = (
@@ -759,7 +759,7 @@ def compute_dashboard_data(balance_ctx: BalanceContext):
     # a 3% recurring raise saw a DTI denominator ~$260/mo too low (audit
     # worked example: $8,666.67 vs $8,926.67, 27.7% vs 26.9%).
     current_breakdown = _get_current_paycheck_breakdown(
-        core.balance_ctx.user_id, core.balance_ctx.reported_periods(),
+        core.balance_ctx, core.balance_ctx.reported_periods(),
         core.current_period,
     )
     net_biweekly_pay = (

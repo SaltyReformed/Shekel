@@ -471,13 +471,22 @@ def _load_projection_context(
     projection_start = _projection_start(balance_ctx)
     active_profile = _load_active_salary_profile(user_id)
     # F-20 / MED-06 / F-032: raise-aware paycheck-engine value, not the
-    # off-engine ``annual_salary / pay_periods_per_year`` recompute that
+    # off-engine ``annual_salary / <a stored paycheck count>`` recompute that
     # silently dropped any applicable ``SalaryRaise`` row pre-Commit-17.
     salary_gross_biweekly = income_service.get_current_gross_biweekly(
         user_id, balance_ctx.calendar(),
     )
     deductions = load_active_deductions_for_account(user_id, account.id)
-    adapted_deductions = adapt_deductions(deductions)
+    # The cadence is asked for only when there is a deduction to stamp it on
+    # (plan step R-F16).  ``PayCalendar.cadence`` REFUSES an owner who has
+    # never stated one, and this is a GET route -- so an unconditional read
+    # would 500 a page that rendered before the step.  Such an owner has no
+    # payday at all, hence no per-period contribution to model either way.
+    adapted_deductions = (
+        adapt_deductions(deductions, balance_ctx.calendar().cadence)
+        if deductions and balance_ctx.calendar().cadence_days is not None
+        else []
+    )
     acct_contributions = load_shadow_income_contributions_for_account(
         balance_ctx.amounts(),
         account.id, [period.period_id for period in periods],

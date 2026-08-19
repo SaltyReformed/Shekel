@@ -41,7 +41,6 @@ from app.services.account_projection import (
     classify_account,
 )
 from app.services.investment_projection import (
-    adapt_deductions,
     deduction_contribution_per_period,
     employer_contribution_params,
 )
@@ -79,10 +78,16 @@ class ContributionInputs:
             when it is not a parameterized investment account.  It also carries
             the assumed return the ACCRUAL tier reads, which is why the replay
             takes this bundle rather than the deduction feed alone.
-        deductions: The account's active paycheck deductions (adapted here).
-        salary_gross_biweekly: The raise-aware engine gross per pay period -- the
-            employer-match cap basis, and the fallback gross when no deduction
-            supplies one.
+        deductions: The account's active paycheck deductions, already
+            :func:`~app.services.investment_projection.adapt_deductions`-adapted
+            by the loader (plan step R-F16): the adapter needs the owner's
+            pay cadence, which is a fact only a caller holding the read pass
+            can supply, so the ORM boundary and the adaptation are one step.
+        salary_gross_biweekly: The raise-aware engine gross per pay period --
+            the employer-match cap basis, and, since plan step R-F16, the
+            basis a PERCENTAGE deduction takes its percentage of.  It was
+            only a fallback for the no-deduction case until then, while an
+            account with a deduction re-derived a raise-BLIND gross.
     """
 
     investment_params: InvestmentParams | None = None
@@ -215,7 +220,7 @@ def _plan_for(
         The :class:`_ContributionPlan`, or ``None``.
     """
     per_period, gross_biweekly = deduction_contribution_per_period(
-        adapt_deductions(inputs.deductions), inputs.salary_gross_biweekly,
+        inputs.deductions, inputs.salary_gross_biweekly,
     )
     employer_params = employer_contribution_params(
         inputs.investment_params, gross_biweekly,
