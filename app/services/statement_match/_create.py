@@ -51,11 +51,9 @@ from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.category import Category
 from app.models.statement_import import BankStatementLine
-from app.models.statement_match import StatementMatchMember
 from app.models.transaction import Transaction
 from app.services import (
     entry_service,
-    pay_calendar,
     posting_service,
     transaction_service,
 )
@@ -66,9 +64,15 @@ from app.utils.log_events import (
     log_event,
 )
 
-from ._accept import accept_match
-from ._offers import MatchSubmission, PurchaseCreation, merchant_of
-from ._reads import destinations_for
+from ._accept import load_lines, record_match
+from ._candidates import (
+    MatchedSubjects,
+    matched_subjects,
+    purchase_candidate,
+    unmatched_destinations,
+)
+from ._offers import PurchaseCreation, merchant_of
+from ._scope import ReviewScope
 
 _logger = logging.getLogger(__name__)
 
@@ -122,26 +126,38 @@ class CreatedPurchase:  # pylint: disable=too-many-instance-attributes
     made_on: date
 
 
-def _load_line(creation: PurchaseCreation) -> BankStatementLine:
+def _load_line(
+    creation: PurchaseCreation,
+    matched: MatchedSubjects,
+    scope: ReviewScope,
+) -> BankStatementLine:
     """Return the submitted line, refusing one this door may not record.
 
-    Three refusals, and each is about the LINE rather than about where it would
-    go:
+    **The account scope and the already-matched refusal are
+    :func:`~._accept.load_lines`', not restated here** (plan step
+    ``bank_import:X-f6a-3c-2``).  This door records a match like every other,
+    so *is this line on this account, and has something already claimed it* has
+    to be ONE answer; it carried a second copy of both while that function was
+    private, which is two places for a refusal to stop firing.  The
+    already-matched half matters here for the same reason it does there:
+    ``uq_statement_match_members_line`` refuses the second act anyway, but it
+    arrives as an ``IntegrityError`` after a purchase has been created, which
+    reaches the user as "Something went wrong" and logs a traceback for an
+    ordinary stale page.
 
-    * it must be a recorded line on this account -- the same scope
-      :func:`~._accept._load_lines` applies;
-    * it must not already be matched.  ``uq_statement_match_members_line``
-      refuses the second act anyway, but it arrives as an ``IntegrityError``
-      after a purchase has been created, which reaches the user as "Something
-      went wrong" and logs a traceback for an ordinary stale page;
-    * it must be money LEAVING.  A purchase is an expense
-      (``ck_transaction_entries_positive_amount``), so a deposit or a refund
-      cannot become one -- and 16 of the developer's own unexplained lines are
-      inflows, including three card refunds, so this is the ordinary shape
-      rather than a crafted request.
+    The third refusal IS this door's own, because it is about what a purchase
+    can be rather than about matching: the line must be money LEAVING.  A
+    purchase is an expense (``ck_transaction_entries_positive_amount``), so a
+    deposit or a refund cannot become one -- and 16 of the developer's own
+    unexplained lines are inflows, including three card refunds, so this is the
+    ordinary shape rather than a crafted request.
 
     Args:
         creation: What the owner submitted.
+        matched: What this account's matches have already claimed, as of this
+            act.
+        scope: The pass, which is the ONE statement of which account's lines
+            may be reached.
 
     Returns:
         The line.
@@ -149,32 +165,9 @@ def _load_line(creation: PurchaseCreation) -> BankStatementLine:
     Raises:
         ValidationError: On any of the three.
     """
-    line = (
-        db.session.query(BankStatementLine)
-        .filter(
-            BankStatementLine.id == creation.line_id,
-            BankStatementLine.account_id == creation.account_id,
-        )
-        .one_or_none()
-    )
-    if line is None:
-        raise ValidationError(
-            "That statement line is no longer on this account.  Reload the "
-            "page and try again -- nothing was changed."
-        )
-    already = (
-        db.session.query(StatementMatchMember.id)
-        .filter(
-            StatementMatchMember.account_id == creation.account_id,
-            StatementMatchMember.bank_statement_line_id == line.id,
-        )
-        .first()
-    )
-    if already is not None:
-        raise ValidationError(
-            "That statement line is already matched to something else.  Undo "
-            "that match first if it is wrong.  Nothing was changed."
-        )
+    line = load_lines(
+        scope.account_id, frozenset({creation.line_id}), matched,
+    )[0]
     if line.amount >= 0:
         raise ValidationError(
             "Only money LEAVING the account can be recorded as a purchase, "
@@ -202,7 +195,7 @@ def _made_on(line: BankStatementLine) -> date:
     return line.transaction_on or line.posted_on
 
 
-def _period_holding(owner_id: int, day: date) -> int:
+def _period_holding(calendar, day: date) -> int:
     """Return the id of the pay period covering *day*, refusing if none does.
 
     **The day it was MADE decides, not the day it posted**, and the difference
@@ -215,7 +208,13 @@ def _period_holding(owner_id: int, day: date) -> int:
     on a row this door had just built.
 
     Args:
-        owner_id: The user whose calendar to read.
+        calendar: The PASS's own
+            :class:`~app.services.pay_calendar.PayCalendar`, taken rather than
+            loaded.  It asked ``calendar_for`` for itself until plan step
+            ``bank_import:X-f6a-3c-2``, which is a second read of a fact the
+            screen that offered this line had already resolved -- and under
+            READ COMMITTED the two can differ, so a line could be OFFERED
+            against one calendar and PLACED against another.
         day: The day the purchase was made.
 
     Returns:
@@ -227,7 +226,7 @@ def _period_holding(owner_id: int, day: date) -> int:
             of the developer's own 361 lines are the first case, which
             :class:`~._reads.ReviewBounds` already reports rather than offering.
     """
-    period = pay_calendar.calendar_for(owner_id).period_containing(day)
+    period = calendar.period_containing(day)
     if period is None:
         raise ValidationError(
             f"No pay period covers {day.isoformat()}, so there is no budget "
@@ -263,18 +262,71 @@ def _reject_ambiguous_destination(creation: PurchaseCreation) -> None:
         )
 
 
+def _reject_incomplete_new_envelope(creation: PurchaseCreation) -> None:
+    """Refuse a NEW envelope stated by halves.
+
+    A budget line needs a name AND a category: ``transactions.category_id`` is
+    what every spending report groups by, and a row created without one would
+    be invisible to the very analysis the purchase exists to feed.  The name is
+    ``transactions.name``, which is NOT NULL.
+
+    **It is the DOOR's refusal since plan step X-f6a-3c-2, not the schema's.**
+    It was a ``@validates_schema`` rule on ``StatementPurchaseSchema``, which
+    was right while one POST was one act: a nested schema error refuses the
+    WHOLE payload, and once a POST carries a whole reviewed pass that means an
+    owner who picked "a new envelope" on one line and left its category on the
+    form's own default lost every other act they had ticked -- 124 proposals
+    and 90 creations on the developer's own statement.  The ruled failure
+    policy is that a refused item costs only itself, and a rule that can only
+    refuse the whole submission cannot honour it.  Found by adversarial
+    financial review 2026-08-19.
+
+    It fires BEFORE :func:`_owned_category`, which would otherwise answer a
+    missing category with "that category is not one of yours" -- a true
+    sentence about the wrong problem.
+
+    Args:
+        creation: What the owner submitted.
+
+    Raises:
+        ValidationError: When the new-envelope arm is named without both of
+            its own fields.
+    """
+    new = creation.new_envelope
+    if new is None:
+        return
+    if new.name is None or new.category_id is None:
+        raise ValidationError(
+            "A new envelope needs both a name and a category.  Nothing was "
+            "changed."
+        )
+
+
 def _existing_envelope(
-    creation: PurchaseCreation, pay_period_id: int,
+    creation: PurchaseCreation,
+    pay_period_id: int,
+    scope: ReviewScope,
+    matched: MatchedSubjects,
 ) -> Transaction:
     """Return the chosen envelope, refusing one the screen could not offer.
 
-    **Re-derived through :func:`~._reads.destinations_for` rather than queried
+    **Resolved against the pass's own destination set rather than queried
     directly**, so the set this door may write into is exactly the set the
     screen may offer -- the same one-scope-for-reader-and-writer property
-    :func:`~._accept._load_rows` rests on.  An envelope belonging to another
+    :func:`~._accept.resolve_rows` rests on.  An envelope belonging to another
     user, another account, a cancelled or archived row, a settled row whose
     figure is a stored number, or one already matched to a bank line is not a
     destination and cannot be reached by crafting a request.
+
+    **The already-matched half is asked of the claims THIS ACT read, not of the
+    scope** (plan step ``bank_import:X-f6a-3c-2``), and on the developer's own
+    data that is 15 lines rather than a hypothetical: 4 envelopes are both
+    named by a proposal and offered as a destination, so a pass that accepts
+    the proposals first leaves 15 creatable lines aimed at an envelope a match
+    now claims.  Asking here is what gives those 15 the sentence about the
+    envelope being gone rather than one about counting money twice from a tier
+    deeper -- and, in the other order, what keeps a purchase out of an envelope
+    whose own figure a match has already fixed.
 
     **The PERIOD is part of that set and a first version left it out**, so the
     screen offered the line's own period and the door accepted any of them --
@@ -289,6 +341,9 @@ def _existing_envelope(
         creation: What the owner submitted.
         pay_period_id: The period holding the day the purchase was made, which
             is the only one whose envelopes the screen offers for this line.
+        scope: The pass's derived offer set (:class:`~._scope.ReviewScope`).
+        matched: What this account's matches have already claimed, as of this
+            act.
 
     Returns:
         The envelope.
@@ -299,8 +354,8 @@ def _existing_envelope(
     """
     offered = {
         destination.transaction_id
-        for destination in destinations_for(
-            creation.owner_id, creation.account_id,
+        for destination in unmatched_destinations(
+            scope.destinations, matched,
         )
         if destination.pay_period_id == pay_period_id
     }
@@ -315,7 +370,9 @@ def _existing_envelope(
     return db.session.get(Transaction, creation.transaction_id)
 
 
-def _owned_category(creation: PurchaseCreation) -> Category:
+def _owned_category(
+    creation: PurchaseCreation, scope: ReviewScope,
+) -> Category:
     """Return the category the new envelope will carry, refusing another's.
 
     The IDOR probe every create route in this project performs before a write:
@@ -324,6 +381,8 @@ def _owned_category(creation: PurchaseCreation) -> Category:
 
     Args:
         creation: What the owner submitted.
+        scope: The pass, which is the ONE statement of whose categories may be
+            reached.
 
     Returns:
         The category.
@@ -335,7 +394,7 @@ def _owned_category(creation: PurchaseCreation) -> Category:
         db.session.query(Category)
         .filter(
             Category.id == creation.new_envelope.category_id,
-            Category.user_id == creation.owner_id,
+            Category.user_id == scope.owner_id,
             # ARCHIVED categories are not selectable targets for a new row --
             # ``category_service.list_active_categories`` is what the picker
             # renders and it filters on this, so accepting one here would be
@@ -353,7 +412,10 @@ def _owned_category(creation: PurchaseCreation) -> Category:
 
 
 def _create_envelope(
-    creation: PurchaseCreation, category: Category, pay_period_id: int,
+    creation: PurchaseCreation,
+    category: Category,
+    pay_period_id: int,
+    scope: ReviewScope,
 ) -> Transaction:
     """Stage a new, empty envelope for this line's period.
 
@@ -375,15 +437,17 @@ def _create_envelope(
     and no transfer has no derivation to read.
 
     Args:
-        creation: What the owner submitted, for its owner and account.
+        creation: What the owner submitted, for the envelope's name.
         category: The category the owner picked, already proved theirs.
         pay_period_id: The period holding the day the purchase was made.
+        scope: The pass, which is the ONE statement of whose account this row
+            belongs to.
 
     Returns:
         The staged, flushed :class:`~app.models.transaction.Transaction`.
     """
     envelope = Transaction(
-        account_id=creation.account_id,
+        account_id=scope.account_id,
         pay_period_id=pay_period_id,
         # **The BASELINE scenario, unconditionally.**  A what-if scenario is a
         # hypothesis about money that has not moved, and a bank statement is
@@ -392,7 +456,7 @@ def _create_envelope(
         # to hold would file a real movement under a hypothesis the first time
         # the what-if work lands, which is exactly the class of silent
         # misplacement ``_candidates`` declines to guess at.
-        scenario_id=require_baseline_scenario(creation.owner_id).id,
+        scenario_id=require_baseline_scenario(scope.owner_id).id,
         status_id=ref_cache.status_id(StatusEnum.PROJECTED),
         name=creation.new_envelope.name,
         category_id=category.id,
@@ -405,26 +469,44 @@ def _create_envelope(
     return envelope
 
 
-def create_purchase_from_line(creation: PurchaseCreation) -> CreatedPurchase:
+def create_purchase_from_line(
+    creation: PurchaseCreation, scope: ReviewScope,
+) -> CreatedPurchase:
     """Record one bank line as a purchase, and match the line to it.
 
     The whole act, in the order its refusals have to happen: the line is
     checked, the destination is resolved against the set the screen may offer,
     and only then is anything staged.  The match itself goes through
-    :func:`~._accept.accept_match`, so the correspondence is recorded by the
-    same door that records every other one -- ruling **R-FT**'s table, ruling
+    :func:`~._accept.record_match`, so the correspondence is written by the same
+    function that writes every other one -- ruling **R-FT**'s table, ruling
     **R-FV**'s identity-only rule, and every guard those already carry.
+
+    **It records the row it just built rather than asking a door to find it**
+    (plan step ``bank_import:X-f6a-3c-2``).  It called ``accept_match`` with the
+    new purchase's id until this step, which re-derived all 827 of the account's
+    candidate rows to prove that id was in scope -- 3.593 s per line on the
+    developer's own clone, over 91 of them, and finding **N-309**'s third payer.
+    Worse, it made the act unshareable: a purchase created inside a pass cannot
+    be in an offer set derived before the pass, so running a whole statement
+    against one derivation refused **all 91** of these lines as "no longer
+    available to match".  A door that created a row does not need to prove that
+    row is offerable, so it states the candidate itself, through the same
+    :func:`~._candidates.purchase_candidate` the offer set is built from.
 
     **The purchase is BORN carrying both of its days** (ruling **R-FW**): the
     day the bank says it was made, and the day the bank took the money.
     Recording them in one ``create_entry`` call rather than creating and then
     updating is what keeps a purchase the bank has already taken from existing,
-    even briefly, as an outstanding one.
+    even briefly, as an outstanding one.  It is why the match this door records
+    moves no day: the row already carries the ones the bank stated.
 
-    Does NOT commit -- the route owns the session boundary.
+    Does NOT commit -- the caller owns the session boundary.
 
     Args:
         creation: What the owner submitted: one line, and one destination.
+        scope: The pass's derived offer set (:class:`~._scope.ReviewScope`).
+            **Required rather than defaulted**, for the reason
+            :func:`~._accept.accept_match`'s is.
 
     Returns:
         The :class:`CreatedPurchase`.
@@ -435,26 +517,33 @@ def create_purchase_from_line(creation: PurchaseCreation) -> CreatedPurchase:
             stale page.
     """
     _reject_ambiguous_destination(creation)
-    line = _load_line(creation)
+    _reject_incomplete_new_envelope(creation)
+    # ONE read of what this account's matches have claimed, for this act:
+    # the line refusal, the destination refusal and the double-count guard
+    # inside ``record_match`` all narrow with it, so they cannot disagree.
+    matched = matched_subjects(scope.account_id)
+    line = _load_line(creation, matched, scope)
     made_on = _made_on(line)
 
     # ONE period for both arms, resolved once: it is where the purchase is
     # BUDGETED, so it decides which envelopes may hold it and which period a
     # new one is created in.  Resolving it per arm is how the two came to
     # disagree.
-    pay_period_id = _period_holding(creation.owner_id, made_on)
+    pay_period_id = _period_holding(scope.calendar, made_on)
     if creation.transaction_id is not None:
-        envelope = _existing_envelope(creation, pay_period_id)
+        envelope = _existing_envelope(creation, pay_period_id, scope, matched)
         created = False
     else:
-        category = _owned_category(creation)
-        envelope = _create_envelope(creation, category, pay_period_id)
+        category = _owned_category(creation, scope)
+        envelope = _create_envelope(
+            creation, category, pay_period_id, scope,
+        )
         created = True
 
     amount = -Decimal(str(line.amount))
     entry = entry_service.create_entry(
         transaction_id=envelope.id,
-        user_id=creation.owner_id,
+        user_id=scope.owner_id,
         details=entry_service.EntryDetails(
             amount=amount,
             # What the BANK called the merchant, not the whole line
@@ -500,13 +589,13 @@ def create_purchase_from_line(creation: PurchaseCreation) -> CreatedPurchase:
             envelope, settled=envelope.status.is_settled,
         )
 
-    accepted = accept_match(MatchSubmission(
-        owner_id=creation.owner_id,
-        account_id=creation.account_id,
-        line_ids=frozenset({line.id}),
-        transaction_ids=frozenset(),
-        entry_ids=frozenset({entry.id}),
-    ))
+    accepted = record_match(
+        scope.owner_id,
+        scope.account_id,
+        [line],
+        [purchase_candidate(entry)],
+        matched,
+    )
 
     recorded = CreatedPurchase(
         entry_id=entry.id,
@@ -521,8 +610,8 @@ def create_purchase_from_line(creation: PurchaseCreation) -> CreatedPurchase:
     log_event(
         _logger, logging.INFO, EVT_STATEMENT_LINE_RECORDED, BUSINESS,
         "A bank statement line was recorded as a purchase.",
-        user_id=creation.owner_id,
-        account_id=creation.account_id,
+        user_id=scope.owner_id,
+        account_id=scope.account_id,
         line_id=line.id,
         entry_id=recorded.entry_id,
         transaction_id=recorded.transaction_id,

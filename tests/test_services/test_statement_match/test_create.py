@@ -35,6 +35,7 @@ from app.enums import SettlementBasisEnum, StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.category import Category
+from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import (
@@ -48,7 +49,13 @@ from app.services.balance_at import BalanceContext
 from app.services.statement_match import NewEnvelope, PurchaseCreation
 from tests._test_helpers import settlement_if_settling
 
-from ._builders import a_bank_line, a_purchase, a_transaction, an_import
+from ._builders import (
+    a_bank_line,
+    a_purchase,
+    a_scope,
+    a_transaction,
+    an_import,
+)
 
 
 def _closed_from_purchases(seed_user, *, name="Groceries", amount="500.00",
@@ -79,6 +86,63 @@ def _closed_from_purchases(seed_user, *, name="Groceries", amount="500.00",
     return envelope
 
 
+
+def _offerable(seed_user):
+    """Return the destinations the screen may offer RIGHT NOW.
+
+    Two producers rather than one since plan step **X-f6a-3c-2**, and the split
+    is the point:
+    :func:`~app.services.statement_match.destinations_for` answers what the
+    account COULD offer, which does not change while a review pass runs, and
+    :func:`~app.services.statement_match.matched_subjects` answers what a match
+    has already claimed, which is exactly what the pass changes.  A screen and
+    a write door both narrow the first by the second, each against the claims
+    it read for itself -- which is what stops a shared, once-derived offer set
+    handing a pass's fourth item an envelope its third has just matched.
+
+    Args:
+        seed_user: The seeded user bundle.
+
+    Returns:
+        The offerable :class:`~app.services.statement_match.PurchaseDestination`
+        values.
+    """
+    return statement_match.unmatched_destinations(
+        statement_match.destinations_for(
+            seed_user["user"].id, seed_user["account"].id,
+        ),
+        statement_match.matched_subjects(seed_user["account"].id),
+    )
+
+
+
+def _a_later_period(db, seed_user):
+    """Return a pay period AFTER the bootstrap one, on the owner's calendar.
+
+    Built through :mod:`app.services.pay_period_service`'s own model so the
+    calendar carries it -- a period the calendar does not know is not a period
+    the offer set can reach, which would make the case above pass for the
+    wrong reason.
+
+    Args:
+        db: The test's ``db`` fixture.
+        seed_user: The seeded user bundle.
+
+    Returns:
+        The staged :class:`~app.models.pay_period.PayPeriod`.
+    """
+    bootstrap = seed_user["bootstrap_period"]
+    period = PayPeriod(
+        user_id=seed_user["user"].id,
+        start_date=bootstrap.end_date + timedelta(days=1),
+        end_date=bootstrap.end_date + timedelta(days=14),
+        period_index=bootstrap.period_index + 1,
+    )
+    db.session.add(period)
+    db.session.flush()
+    return period
+
+
 def _balance_on(seed_user, day):
     """Return the checking account's balance as of *day*."""
     ctx = BalanceContext(
@@ -90,12 +154,14 @@ def _balance_on(seed_user, day):
 
 def _record(seed_user, line, **destination):
     """Record *line* as a purchase, into whichever destination is named."""
-    return statement_match.create_purchase_from_line(PurchaseCreation(
-        owner_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        line_id=line.id,
-        **destination,
-    ))
+    return statement_match.create_purchase_from_line(
+        PurchaseCreation(
+            line_id=line.id,
+            **destination,
+        ),
+        # DERIVED HERE, so every call sees the rows this test has staged.
+        a_scope(seed_user),
+    )
 
 
 class TestRecordingALineAddsTheMovement:
@@ -218,17 +284,13 @@ class TestRecordingALineAddsTheMovement:
             day = seed_user["bootstrap_period"].start_date + timedelta(days=5)
             line = a_bank_line(seed_user, statement, amount="-57.96",
                                posted_on=day)
-            before = statement_match.review_set(
-                seed_user["user"].id, seed_user["account"].id,
-            )
+            before = statement_match.review_set(a_scope(seed_user))
             assert line.id in {ln.line_id for ln in before.unmatched}
 
             recorded = _record(seed_user, line, transaction_id=envelope.id)
             db.session.flush()
 
-            after = statement_match.review_set(
-                seed_user["user"].id, seed_user["account"].id,
-            )
+            after = statement_match.review_set(a_scope(seed_user))
             assert line.id not in {ln.line_id for ln in after.unmatched}
             assert recorded.match_id in {
                 group.match_id for group in after.accepted
@@ -492,9 +554,7 @@ class TestWhatTheCreateDoorRefuses:
                 seed_user, statement, amount="-57.96",
                 posted_on=seed_user["bootstrap_period"].start_date,
             )
-            offered = statement_match.destinations_for(
-                seed_user["user"].id, seed_user["account"].id,
-            )
+            offered = _offerable(seed_user)
             assert fixed.id not in {d.transaction_id for d in offered}
 
             with pytest.raises(ValidationError, match="not one this purchase"):
@@ -627,6 +687,75 @@ class TestWhatTheCreateDoorRefuses:
                 ))
 
 
+class TestTheDestinationMustBeInTheLINEsOwnPeriod:
+    """The security guard X-f6a-3c-2 added, which had NO test at all.
+
+    Measured by adversarial test-quality review 2026-08-19: deleting
+    ``if destination.pay_period_id == pay_period_id`` from
+    ``_create._existing_envelope`` left the whole suite green.  A security fix
+    with no test is a security fix that gets refactored away.
+
+    What the clause stops, in its own docstring's words: a crafted request
+    filing a swipe into a Groceries envelope eighteen months forward, or
+    raising a closed past envelope's recorded cost in a period the line has
+    nothing to do with.  ``destinations_for`` deliberately returns budget lines
+    across EVERY period on the account -- the screen renders only the line's
+    own -- so this clause is the whole of what keeps the door's set the
+    screen's set.
+    """
+
+    def test_an_envelope_in_ANOTHER_period_is_refused(
+        self, app, db, seed_user,
+    ):
+        """The crafted request, refused, with nothing written."""
+        with app.app_context():
+            other = _a_later_period(db, seed_user)
+            elsewhere = a_transaction(
+                seed_user, name="Groceries", amount="500.00",
+                is_envelope=True, period=other,
+            )
+            statement = an_import(seed_user)
+            line = a_bank_line(
+                seed_user, statement, amount="-57.96",
+                posted_on=seed_user["bootstrap_period"].start_date,
+            )
+
+            # It IS offerable -- just not for THIS line.
+            assert elsewhere.id in {
+                d.transaction_id for d in _offerable(seed_user)
+            }
+
+            with pytest.raises(ValidationError, match="not one this purchase"):
+                _record(seed_user, line, transaction_id=elsewhere.id)
+
+            db.session.flush()
+            assert elsewhere.entries == []
+
+    def test_the_SAME_envelope_in_the_line_s_own_period_is_accepted(
+        self, app, db, seed_user,
+    ):
+        """The control, without which the case above could pass vacuously.
+
+        Same shape, same door, same figures -- only the period differs.  A
+        refusal that fired for any other reason would fail here too.
+        """
+        with app.app_context():
+            here = a_transaction(
+                seed_user, name="Groceries", amount="500.00", is_envelope=True,
+            )
+            statement = an_import(seed_user)
+            line = a_bank_line(
+                seed_user, statement, amount="-57.96",
+                posted_on=seed_user["bootstrap_period"].start_date,
+            )
+
+            recorded = _record(seed_user, line, transaction_id=here.id)
+
+            db.session.flush()
+            assert recorded.transaction_id == here.id
+            assert [e.amount for e in here.entries] == [Decimal("57.96")]
+
+
 class TestWhatTheScreenMayOFFER:
     """``destinations_for`` -- the set the door will accept, and nothing more.
 
@@ -641,9 +770,7 @@ class TestWhatTheScreenMayOFFER:
         """Return the ids the screen may offer for the seeded account."""
         return {
             destination.transaction_id
-            for destination in statement_match.destinations_for(
-                seed_user["user"].id, seed_user["account"].id,
-            )
+            for destination in _offerable(seed_user)
         }
 
     def test_a_PROJECTED_envelope_is_offered(self, app, db, seed_user):
@@ -749,13 +876,14 @@ class TestWhatTheScreenMayOFFER:
                 seed_user, statement, amount=str(worth),
                 posted_on=seed_user["bootstrap_period"].start_date,
             )
-            statement_match.accept_match(statement_match.MatchSubmission(
-                owner_id=seed_user["user"].id,
-                account_id=seed_user["account"].id,
-                line_ids=frozenset({line.id}),
-                transaction_ids=frozenset({envelope.id}),
-                entry_ids=frozenset(),
-            ))
+            statement_match.accept_match(
+                statement_match.MatchSubmission(
+                    line_ids=frozenset({line.id}),
+                    transaction_ids=frozenset({envelope.id}),
+                    entry_ids=frozenset(),
+                ),
+                a_scope(seed_user),
+            )
             db.session.flush()
 
             assert envelope.id not in self._offered(seed_user)

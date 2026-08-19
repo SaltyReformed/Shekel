@@ -1,21 +1,49 @@
 """
 Shekel Budget App -- The statement review screen and its two write doors
 
-"Which of my rows is this bank line?" -- the page that proposes matches, and
-the POSTs that accept and release one.  Plan step **bank_import:X-f6a-2**,
-rulings **R-FS**, **R-FP** and **R-FV**.
+"Which of my rows is this bank line?" -- the page that proposes matches, the
+POST that applies a whole reviewed pass, and the POST that releases one match.
+Plan steps **bank_import:X-f6a-2** and **X-f6a-3c-2**, rulings **R-FS**,
+**R-FP** and **R-FV**.
 
 **It MOVES MONEY, and it is the only screen in the app where the BANK gets the
 last word on a date.**  Accepting a match writes the bank's posted day onto
 every row the match names -- settling one still Projected and correcting one
-whose recorded day was wrong.  Measured on the developer's own 2026-08-16
-export against a production clone: 124 proposals over 231 in-schedule lines, of
-which 46 correct a day and 51 settle a row the app had never marked as having
-happened.
+whose recorded day was wrong.  Recording a line adds a movement the app did not
+have at all.  Measured on the developer's own 2026-08-16 export against a
+production clone: 124 proposals over 231 in-schedule lines, of which 46 correct
+a day and 51 settle a row the app had never marked as having happened, plus 91
+outflows no proposal can ever explain.
 
-**Nothing is applied that the owner did not accept** (ruling **R-FP**).  The
-GET proposes; the POST records exactly the ids the form submitted, and the
-service re-derives every figure from them rather than trusting the page.
+**ONE POST applies the whole reviewed pass, and that is plan step
+X-f6a-3c-2.**  There were two write routes taking one act each, so working a
+statement was 215 round trips at 3.67 s apiece -- **13.2 minutes**, which is
+finding **N-306** and is why the corrections do not get made.  (The 12.88
+minutes the service modules cite is the narrower figure: 215 derivations at
+3.593 s, without the write each round trip also paid for.)  Measured on a
+production clone through this route: the GET renders in **3.88 s** and the POST
+applies the whole statement in **13.37 s**, 650 form fields, 11% of gunicorn's
+120 s request timeout.  The account is derived TWICE in that request
+(:class:`~app.services.statement_match.ReviewScope` -- once for the pass and
+once for the answer, which must show the state the pass left) rather than
+215 times.
+
+**Nothing is applied that the owner did not accept** (ruling **R-FP**).  A
+proposal is applied only if its checkbox was ticked; a bank line is recorded
+only if its destination select names somewhere for it to go, and that select's
+default is "leave this line alone".  The POST records exactly the ids the form
+submitted, and the service re-derives every figure from them rather than
+trusting the page.
+
+**The POST answers with the SCREEN, through htmx, rather than a redirect.**
+The ruled failure policy is that a refused item leaves nothing behind and the
+rest still land, each refusal quoted with its own sentence -- and flash
+messages ride in the signed session cookie, where the longest sentence a batch
+item can carry measures **497 bytes** (``entry_service._doors``' settled-parent
+refusal) against the 4 KB a browser will store.  **Nine of those overflow it**,
+and an overflowed cookie is dropped, which logs the owner out.  The outcome is
+therefore part of the re-rendered surface, which also keeps a refresh from
+re-posting the pass.
 
 **Why it is its own module beside ``statements``.**  That one owns what the
 BANK SAID -- recording a file, idempotently, moving no figure.  This owns what
@@ -24,16 +52,18 @@ kinds.  The boundary is the one ``reconcile`` and ``anchor`` cut along: a read
 of an outside record against the door that acts on it.
 
 Services boundary: this module owns the HTTP-shaped concerns -- ownership, form
-parsing, flashes and redirects -- and delegates every read and write to
-:mod:`app.services.statement_match`.
+parsing, fragment rendering, flashes and redirects -- and delegates every read
+and write to :mod:`app.services.statement_match`.
 """
 
 import logging
 
 from flask import flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.exceptions import ValidationError
+from app.extensions import db
 from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts._statement_doors import (
     StatementDoorContext,
@@ -41,64 +71,149 @@ from app.routes.accounts._statement_doors import (
 )
 from app.routes.accounts._cash_page import load_cash_account_or_404
 from app.schemas.validation import form_payload
-from app.services.category_service import list_active_categories
 from app.schemas.validation.statements import (
+    NEW_ENVELOPE,
+    StatementBatchSchema,
     StatementMatchReleaseSchema,
-    StatementMatchSchema,
-    StatementPurchaseSchema,
+    batch_payload,
 )
+from app.services.category_service import list_active_categories
 from app.services.statement_match import (
     MatchSubmission,
     NewEnvelope,
     PurchaseCreation,
-    accept_match,
-    create_purchase_from_line,
+    ReviewedBatch,
+    ReviewScope,
+    apply_reviewed,
     release_match,
     review_set,
 )
 from app.utils.auth_helpers import require_owner
+from app.utils.error_fragments import designed_error
+from app.utils.log_events import (
+    BUSINESS,
+    EVT_STATEMENT_BATCH_APPLIED,
+    log_event,
+)
 
 _logger = logging.getLogger(__name__)
 
 #: One schema instance each, constructed at import like every sibling's.
-_match_schema = StatementMatchSchema()
+_batch_schema = StatementBatchSchema()
 _release_schema = StatementMatchReleaseSchema()
-_purchase_schema = StatementPurchaseSchema()
+
+#: The partial both the page and the batch POST render.  Extracted at plan step
+#: X-f6a-3c-2 so the answer to "apply this pass" is the SCREEN carrying its own
+#: receipt: ONE template, so what a batch swaps in cannot drift from what a
+#: reload shows.
+_BODY = "accounts/_statement_review_body.html"
+
+#: What a database failure tells the owner.  It names no table -- the traceback
+#: goes to the log -- and it ends the way every refusal in this package does,
+#: which is true here because the route owns the unit of work: a pass that
+#: could not commit has written nothing.
+_DB_ERROR_MESSAGE = (
+    "Something went wrong applying that, and nothing was changed.  Here is "
+    "where you were."
+)
 
 
-def _messages(errors):
-    """Yield every message in a Marshmallow error structure, however nested.
+def _messages(errors, path=()):
+    """Yield every message in a Marshmallow error structure, WITH its path.
 
     **A LIST field's errors are keyed by INDEX, not flat**, so
-    ``{"transaction_ids": {0: ["Not a valid integer."]}}`` is the ordinary
-    shape here rather than an exotic one -- and a flattener assuming
+    ``{"matches": {0: {"line_ids": {0: ["Not a valid id."]}}}}`` is the
+    ordinary shape here rather than an exotic one -- and a flattener assuming
     ``{field: [str]}`` raises ``TypeError`` inside the handler that exists to
-    render a refusal.  Reached by submitting one bad id, which is what a stale
-    page does; caught by the route test that submits ``'007'``.
+    render a refusal.  It is also why ``error_fragments.flatten_schema_errors``
+    is not used: that helper's own contract is the flat shape, and one reviewed
+    pass nests three levels deep.
+
+    **The PATH travels with the message, and dropping it was a real cost at
+    this volume.**  Marshmallow reports one entry per bad value, so a stale
+    page with forty unparseable ids rendered ``Not a valid id.; Not a valid
+    id.; ...`` forty times -- no item named, no remedy, and nothing the owner
+    could act on.  Named by adversarial design review 2026-08-19.
 
     Args:
         errors: A Marshmallow error value -- a mapping, a list, or a message.
+        path: The keys walked to reach it, innermost last.
 
     Yields:
-        Each leaf message, in the order marshmallow reports them.
+        ``(path, message)`` for each leaf, in the order marshmallow reports
+        them.
     """
     if isinstance(errors, dict):
-        for value in errors.values():
-            yield from _messages(value)
+        for key, value in errors.items():
+            yield from _messages(value, path + (key,))
     elif isinstance(errors, (list, tuple)):
         for value in errors:
-            yield from _messages(value)
+            yield from _messages(value, path)
     else:
-        yield str(errors)
+        yield path, str(errors)
 
 
-def _flash_errors(errors) -> None:
-    """Flash a schema's messages as one warning.
+def _refusal_sentence(errors) -> str:
+    """Return one sentence naming what a schema refused, and where.
+
+    **De-duplicated on the MESSAGE and counted**, because forty copies of one
+    sentence is not forty facts.  Each distinct message names the items it came
+    from, so an owner is told which ticked thing to untick rather than that
+    something, somewhere, is invalid.
 
     Args:
-        errors: Marshmallow's error structure, at any nesting.
+        errors: Marshmallow's ``validate()`` structure.
+
+    Returns:
+        The banner text.
     """
-    flash("; ".join(_messages(errors)), "warning")
+    by_message: "dict[str, list[str]]" = {}
+    for path, message in _messages(errors):
+        where = ".".join(str(part) for part in path)
+        by_message.setdefault(message, [])
+        if where and where not in by_message[message]:
+            by_message[message].append(where)
+    parts = []
+    for message, places in by_message.items():
+        parts.append(f"{message} ({', '.join(places)})" if places else message)
+    return "; ".join(parts)
+
+
+def _review_context(account, scope, outcome=None, error=None) -> dict:
+    """Assemble what the review body renders, for the page and for the POST.
+
+    ONE builder, because the POST's answer IS the screen: a second assembly
+    would let the surface a batch swaps in disagree with the surface a reload
+    shows.
+
+    Args:
+        account: The owned, attached account.
+        scope: The pass to render FROM
+            (:class:`~app.services.statement_match.ReviewScope`).  **The caller
+            supplies it, and a caller that has just WRITTEN must supply a fresh
+            one**: a scope holds the rows and prices as they stood before the
+            pass, which is exactly what must not be shown after it.
+        outcome: The :class:`~app.services.statement_match.BatchOutcome` to
+            report, or ``None`` on a plain render.
+        error: A sentence explaining why nothing was applied at all, or
+            ``None``.  Distinct from a refused ITEM: this one means the
+            submission never reached the door.
+
+    Returns:
+        The template context.
+    """
+    return {
+        "account": account,
+        "review": review_set(scope),
+        # The picker the NEW-ENVELOPE arm needs (plan step X-f6a-3b).  Loaded
+        # here rather than inside the review set because it is not a fact about
+        # the statement: it is what any create form on this account offers, and
+        # ``list_active_categories`` is the ordering every category picker in
+        # the app already shares.
+        "categories": list_active_categories(current_user.id),
+        "outcome": outcome,
+        "error": error,
+    }
 
 
 @accounts_bp.route("/accounts/<int:account_id>/statements/review")
@@ -118,14 +233,58 @@ def review_statements(account_id):
     account = load_cash_account_or_404(account_id)
     return render_template(
         "accounts/statement_review.html",
-        account=account,
-        review=review_set(current_user.id, account_id),
-        # The picker the NEW-ENVELOPE arm needs (plan step X-f6a-3b).  Loaded
-        # here rather than inside the review set because it is not a fact about
-        # the statement: it is what any create form on this account offers, and
-        # ``list_active_categories`` is the ordering every category picker in
-        # the app already shares.
-        categories=list_active_categories(current_user.id),
+        **_review_context(
+            account, ReviewScope.build(current_user.id, account_id),
+        ),
+    )
+
+
+def _submitted_batch(submitted) -> ReviewedBatch:
+    """Return the loaded payload as the batch the service applies.
+
+    **The DESTINATION is one field naming one of two arms**, so nothing here
+    infers an arm from an absence -- which is the defect that made the
+    existing-envelope arm unreachable from a browser at plan step X-f6a-3b: the
+    name box is always rendered and always prefilled, so keying on "no
+    ``transaction_id``" named BOTH destinations on every submission.
+
+    **Nothing here names an owner or an account.**  Whose pass this is, is the
+    scope's -- one statement, made where the route proved it -- so no item can
+    be priced against one account and written against another.
+
+    Args:
+        submitted: What :class:`~app.schemas.validation.statements
+            .StatementBatchSchema` loaded.
+
+    Returns:
+        The :class:`~app.services.statement_match.ReviewedBatch`.
+    """
+    return ReviewedBatch(
+        matches=tuple(
+            MatchSubmission(
+                line_ids=frozenset(item["line_ids"]),
+                transaction_ids=frozenset(item["transaction_ids"]),
+                entry_ids=frozenset(item["entry_ids"]),
+            )
+            for item in submitted["matches"]
+        ),
+        creations=tuple(
+            PurchaseCreation(
+                line_id=item["line_id"],
+                transaction_id=(
+                    None if item["destination"] == NEW_ENVELOPE
+                    else item["destination"]
+                ),
+                new_envelope=(
+                    NewEnvelope(
+                        name=item["envelope_name"],
+                        category_id=item["category_id"],
+                    )
+                    if item["destination"] == NEW_ENVELOPE else None
+                ),
+            )
+            for item in submitted["creations"]
+        ),
     )
 
 
@@ -134,97 +293,139 @@ def review_statements(account_id):
 )
 @login_required
 @require_owner
-def accept_statement_match(account_id):
-    """Record that the submitted bank lines ARE the submitted rows.
+def apply_statement_review(account_id):
+    """Apply everything the owner ticked, and answer with the screen.
 
-    The unit of work is the request: the service stages and flushes, this
-    commits, and any refusal rolls the whole thing back -- which is what makes
-    "nothing was changed", the phrase every refusal message ends with, true
-    rather than reassuring.
+    The unit of work is the REQUEST: each item runs inside its own SAVEPOINT so
+    a refused one leaves nothing behind while the rest still land, and this
+    route commits once -- so a failure outside a designed refusal writes
+    nothing at all, which is what makes "nothing was changed" true rather than
+    reassuring.
 
     Args:
         account_id: The account being reviewed.
 
     Returns:
-        A redirect back to the review page, with a flash saying what moved.
+        The re-rendered review body carrying the outcome, at 200; or the same
+        body carrying one refusal sentence at 400, marked as a designed
+        fragment so htmx swaps it (:mod:`app.utils.error_fragments`).
     """
     account = load_cash_account_or_404(account_id)
-    target = url_for("accounts.review_statements", account_id=account_id)
 
-    # THROUGH ``form_payload``, not the raw ``MultiDict``: a repeated form key
-    # is what a GROUP match posts, and ``request.form["transaction_ids"]``
-    # returns only the first of them.  The helper's own docstring carries why
-    # the expansion is the schema's business rather than this route's.
-    payload = form_payload(request.form, _match_schema)
-    errors = _match_schema.validate(payload)
+    # THROUGH ``batch_payload``, not the raw ``MultiDict``: one submission
+    # carries many acts, each keyed by its rendered position or by its own bank
+    # line, and ``request.form["line_ids"]`` would collapse every one of them
+    # into the first value of one key.  The regrouping is the schema module's
+    # business rather than this route's, for the reason ``form_payload``'s own
+    # docstring gives about a route that lists field names itself.
+    # ONE derivation, built HERE.  Only a route builds a read pass -- the same
+    # rule ``BalanceContext`` is held to -- and this one serves three purposes:
+    # the door applies against it, and either failure arm renders from it.
+    scope = ReviewScope.build(current_user.id, account_id)
+
+    payload = batch_payload(request.form)
+    errors = _batch_schema.validate(payload)
     if errors:
-        _flash_errors(errors)
-        return redirect(target)
-    submitted = _match_schema.load(payload)
+        return _refused(account, scope, _refusal_sentence(errors))
+    submitted = _batch_schema.load(payload)
 
-    return run_statement_door(
-        StatementDoorContext(
-            logger=_logger,
-            refusal=ValidationError,
-            log_message="user_id=%d failed to accept a match on account %d",
-            log_args=(current_user.id, account_id),
-            flash_message=(
-                "Something went wrong recording that match.  Nothing was "
-                "changed."
-            ),
-            target=target,
+    try:
+        outcome = apply_reviewed(_submitted_batch(submitted), scope)
+        db.session.commit()
+    except ValidationError as exc:
+        # **Nothing inside this ``try`` raises one today, and the arm stands
+        # anyway.**  Every per-item refusal is caught by ``_batch._run`` and
+        # reported on the outcome, which is the whole point of the savepoints;
+        # ``_submitted_batch`` builds frozen values and cannot refuse; and the
+        # commit raises ``SQLAlchemyError``.  Two earlier versions of this
+        # comment each named a path that does not exist, which is worse than
+        # naming none.
+        #
+        # What justifies keeping it is the SURFACE rather than a known caller:
+        # a designed refusal escaping an htmx POST is answered by the app-wide
+        # handler with a page htmx will not swap (no marker header), so the
+        # owner presses Apply and sees nothing at all.  This arm is the only
+        # thing that can answer with the screen.  It has a firing control --
+        # ``test_a_refusal_raised_OUTSIDE_an_item_still_answers_with_the_screen``
+        # -- so it is a guard something can observe rather than one nothing can.
+        db.session.rollback()
+        return _refused(account, scope, str(exc))
+    except SQLAlchemyError:
+        db.session.rollback()
+        _logger.exception(
+            "user_id=%d failed to apply a statement review on account %d",
+            current_user.id, account_id,
+        )
+        return _refused(account, scope, _DB_ERROR_MESSAGE)
+
+    # AFTER the commit, so an event asserting a pass landed cannot sit in the
+    # log for a transaction that failed -- the discipline ``statements``' own
+    # import event states for itself.  It is the pass-level event beside the
+    # per-act ones, and the only place a REFUSED item is counted at all.
+    log_event(
+        _logger, logging.INFO, EVT_STATEMENT_BATCH_APPLIED, BUSINESS,
+        "A reviewed statement pass was applied.",
+        user_id=current_user.id,
+        account_id=account_id,
+        item_count=len(submitted["matches"]) + len(submitted["creations"]),
+        applied_count=outcome.applied_count,
+        refused_count=outcome.refused_count,
+        settled_count=outcome.settled_count,
+        corrected_count=outcome.corrected_count,
+        redated_count=outcome.redated_count,
+        recorded_count=outcome.recorded_count,
+        envelopes_created=outcome.envelopes_created,
+    )
+
+    # A FRESH scope for the ANSWER, and only on the path that WROTE.  The pass
+    # has just settled rows, moved days and created purchases, so the one it
+    # was applied against describes a state that no longer exists -- and this
+    # screen is where the owner checks what happened.  Two derivations for a
+    # whole pass, against the 215 the single-act doors took.
+    return render_template(
+        _BODY,
+        **_review_context(
+            account, ReviewScope.build(current_user.id, account_id),
+            outcome=outcome,
         ),
-        lambda: accept_match(MatchSubmission(
-            owner_id=current_user.id,
-            account_id=account.id,
-            line_ids=frozenset(submitted["line_ids"]),
-            transaction_ids=frozenset(submitted["transaction_ids"]),
-            entry_ids=frozenset(submitted["entry_ids"]),
-        )),
-        lambda accepted: (_accepted_message(accepted), "success"),
     )
 
 
-def _accepted_message(accepted) -> str:
-    """Return the sentence describing what an accepted match did.
+def _refused(account, scope, message: str):
+    """Re-render the review body carrying *message*, as a designed 400.
 
-    **It names the three effects separately**, because they are different acts
-    with different consequences: settling a row books money the projection was
-    still holding forward, correcting a settle day moves money already booked
-    from one day to another, and correcting a PURCHASE day moves no money at
-    all but rewrites when the owner says they bought something.  A single
-    "2 rows updated" would hide which happened -- and the third was folded into
-    the first until adversarial review 2026-08-18 measured that the step's own
-    motivating case (an unsettled purchase, re-dated by up to 59 days) reported
-    only "marked 1 row(s) as having happened".
+    **The re-render happens AFTER the rollback**, so the surface describes the
+    state that survives rather than one about to be discarded -- the discipline
+    ``reconcile._refusal`` states for the same shape.  It carries the
+    designed-fragment marker because htmx leaves a 4xx non-swapping, and a
+    refusal that renders NOTHING reads as a broken button, which is worse than
+    the error it reports.
+
+    **It reuses the request's OWN scope rather than deriving a second one**,
+    and that is a correctness fix rather than a saving.  A refused pass wrote
+    nothing, so the scope it was applied against still describes the state that
+    survives -- and re-deriving would run the very read whose failure this arm
+    is handling: on the ``SQLAlchemyError`` path, the connection or timeout
+    that produced the first error very likely produces a second, which escapes
+    as an unhandled 500.  htmx does not swap a 500 (it carries no marker
+    header), so the owner would see nothing at all.  Found by adversarial
+    security review 2026-08-19.
 
     Args:
-        accepted: The :class:`~app.services.statement_match.AcceptedMatch`.
+        account: The owned, attached account.
+        scope: The request's derived offer set, still valid because nothing
+            was written.
+        message: The user-facing reason, one sentence.
 
     Returns:
-        The flash text.
+        The designed-fragment ``(body, 400, headers)`` triple.
     """
-    did = []
-    if accepted.settled_count:
-        did.append(
-            f"marked {accepted.settled_count} row(s) as having happened"
-        )
-    if accepted.corrected_count:
-        did.append(
-            f"moved {accepted.corrected_count} row(s) onto the bank's day"
-        )
-    # THE THIRD EFFECT, and it is named separately for the same reason the
-    # first two are.  A purchase that was still Projected is counted as
-    # SETTLED, so a purchase-day correction on one would otherwise appear
-    # nowhere in the receipt -- and that is the step's own motivating case.
-    if accepted.redated_count:
-        did.append(
-            f"corrected the purchase date on {accepted.redated_count} row(s)"
-        )
-    what = " and ".join(did) if did else "confirmed what you already had"
-    return (
-        f"Matched {accepted.line_count} statement line(s) worth "
-        f"{accepted.amount:+,.2f} on {accepted.posts_on}: {what}."
+    return designed_error(
+        render_template(
+            _BODY,
+            **_review_context(account, scope, error=message),
+        ),
+        400,
     )
 
 
@@ -241,6 +442,11 @@ def release_statement_match(account_id):
     reverting a correction in order to tidy a relation would throw away the
     fact and keep the bookkeeping.  What comes back is the QUESTION.
 
+    **It stays a plain POST-redirect-GET** where its sibling became an htmx
+    swap, and the difference is the subject rather than an inconsistency: this
+    names ONE act and either does it or refuses it, so a flash carries the
+    whole answer.  Its sibling reports per-item outcomes no flash can hold.
+
     Args:
         account_id: The account being reviewed.
 
@@ -253,7 +459,7 @@ def release_statement_match(account_id):
     payload = form_payload(request.form, _release_schema)
     errors = _release_schema.validate(payload)
     if errors:
-        _flash_errors(errors)
+        flash(_refusal_sentence(errors), "warning")
         return redirect(target)
 
     match_id = _release_schema.load(payload)["match_id"]
@@ -275,119 +481,4 @@ def release_statement_match(account_id):
             "days they corrected are unchanged.",
             "info",
         ),
-    )
-
-
-@accounts_bp.route(
-    "/accounts/<int:account_id>/statements/review/purchase", methods=["POST"],
-)
-@login_required
-@require_owner
-def record_statement_purchase(account_id):
-    """Record one bank line the app has no row for as a purchase.
-
-    Ruling **R-FS**'s third shape (plan step ``bank_import:X-f6a-3b``).  **It
-    MOVES MONEY, and differently from its sibling**: accepting a match re-dates
-    a movement the app already held, where this one adds a movement the app did
-    not have at all -- measured on the developer's own statement, 91 unmatched
-    outflows, 74 of them card swipes worth `$3,383.49`, that no proposal can
-    ever explain.
-
-    The unit of work is the request, exactly as the accept door's is.
-
-    Args:
-        account_id: The account being reviewed.
-
-    Returns:
-        A redirect back to the review page, with a flash saying what was
-        recorded.
-    """
-    account = load_cash_account_or_404(account_id)
-    target = url_for("accounts.review_statements", account_id=account_id)
-
-    payload = form_payload(request.form, _purchase_schema)
-    errors = _purchase_schema.validate(payload)
-    if errors:
-        _flash_errors(errors)
-        return redirect(target)
-    submitted = _purchase_schema.load(payload)
-
-    # **THE SELECT IS THE ARM**, and reading the name box instead was a defect
-    # that made the whole existing-envelope arm unreachable from a browser.
-    # Every control in the form is submitted on every POST -- the name box is
-    # always rendered and always prefilled from the merchant -- so keying on
-    # ``envelope_name is not None`` named BOTH destinations every time and the
-    # service refused all 66 of the developer's lines that have one.  The
-    # name and the category are PARAMETERS OF ONE OPTION of the select, not a
-    # destination of their own.  Found by three independent adversarial reviews
-    # 2026-08-19; the route test that should have caught it posted a payload no
-    # browser sends.
-    new_envelope = None
-    if submitted["transaction_id"] is None:
-        new_envelope = NewEnvelope(
-            name=submitted["envelope_name"],
-            category_id=submitted["category_id"],
-        )
-
-    return run_statement_door(
-        StatementDoorContext(
-            logger=_logger,
-            refusal=ValidationError,
-            log_message=(
-                "user_id=%d failed to record a statement line as a purchase "
-                "on account %d"
-            ),
-            log_args=(current_user.id, account_id),
-            flash_message=(
-                "Something went wrong recording that purchase.  Nothing was "
-                "changed."
-            ),
-            target=target,
-        ),
-        lambda: create_purchase_from_line(PurchaseCreation(
-            owner_id=current_user.id,
-            account_id=account.id,
-            line_id=submitted["line_id"],
-            transaction_id=submitted["transaction_id"],
-            new_envelope=new_envelope,
-        )),
-        lambda recorded: (_recorded_message(recorded), "success"),
-    )
-
-
-def _recorded_message(recorded) -> str:
-    """Return the sentence describing what recording one line did.
-
-    **It names the container and whether it was created**, because those are
-    different acts: filing a purchase under an envelope the owner already
-    budgeted changes what that envelope RECORDS as its cost, while creating one
-    adds a budget line to a period that did not have it.  A single "purchase
-    recorded" would hide which.
-
-    **It names both days only when they differ.**  A purchase carries the day
-    it was MADE beside the day the bank TOOK it (ruling **R-FW**), and on 179 of
-    the developer's 361 lines the source states no separate made-day at all --
-    so printing "made on" unconditionally would report the clearing day as a
-    swipe day on half of every statement, which is the exact substitution R-FW
-    rejected.
-
-    Args:
-        recorded: The
-            :class:`~app.services.statement_match.CreatedPurchase`.
-
-    Returns:
-        The flash text.
-    """
-    where = (
-        f"a new envelope, {recorded.envelope_label}"
-        if recorded.envelope_created
-        else recorded.envelope_label
-    )
-    made = (
-        f", made {recorded.made_on}" if recorded.made_on != recorded.posts_on
-        else ""
-    )
-    return (
-        f"Recorded ${recorded.amount:,.2f} your bank took on "
-        f"{recorded.posts_on}{made} as a purchase in {where}."
     )

@@ -46,6 +46,7 @@ Services-boundary discipline: plain data in, frozen dataclasses out.
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 from itertools import combinations
@@ -62,8 +63,8 @@ DAY_WINDOW: int = 14
 
 #: The largest number of candidate rows a single recorded DAY may hold and
 #: still be searched for groups.  Beyond it ``n choose k`` produces more
-#: coincidences than explanations, and the day is reported by
-#: :func:`skipped_group_days` rather than silently passed over.
+#: coincidences than explanations, and the day is reported on
+#: :attr:`ProposedMatches.crowded_days` rather than silently passed over.
 #:
 #: **Re-measured at plan step X-f6a-3c-1, against the bucketing that replaced
 #: the undated POOL.**  A day's bucket is now the rows settled on it PLUS the
@@ -80,7 +81,7 @@ DAY_WINDOW: int = 14
 #: of the developer's account renders its proposals in about 70 ms against the
 #: 3.6-4.6 s ``candidates_for`` above it takes for the same rows.  It is set at
 #: the measurement rather than far above it because a day OVER it is REPORTED
-#: (:func:`skipped_group_days`) rather than silently passed over, so the cap
+#: (:attr:`ProposedMatches.crowded_days`) rather than silently passed over, so the cap
 #: binding is visible work rather than a hidden loss -- and because every extra
 #: row multiplies the subsets that can hit a given cent by coincidence, which
 #: is a proposal the owner has to refute.
@@ -92,6 +93,34 @@ MAX_GROUP_DAY_ROWS: int = 32
 #: and each step up multiplies the subsets considered, so a wider bound would
 #: buy proposals nobody asked for at a cost that grows like ``n choose k``.
 MAX_GROUP_ROWS: int = 4
+
+
+@dataclass(frozen=True)
+class ProposedMatches:
+    """What one proposing pass offered, and what it declined to search.
+
+    **The two travel together because a bound that does not say what it dropped
+    reads as a clean sweep**, and until plan step ``bank_import:X-f6a-3c-2``
+    they did not: :func:`propose` returned the offers alone and the review
+    screen recomputed the skipped days by calling
+    ``skipped_group_days`` over EVERY candidate, while the search itself only
+    ever saw the rows no one-to-one proposal had claimed.  Two populations, one
+    cap, and the reported set was a strict SUPERSET -- so the screen could name
+    a day too crowded to search that had in fact been searched, on the one
+    screen whose docstrings say four times that a bound must never be silent.
+    That was finding **N-322**, and the remedy is this type: the search reports
+    its own bound rather than a reader re-deriving it from a different set.
+
+    Attributes:
+        proposals: What the app believes goes with what, best first.
+        crowded_days: The days :func:`_groups` did not search, ascending,
+            because their bucket held more than :data:`MAX_GROUP_DAY_ROWS`
+            candidate rows.  Empty on the developer's own data, where the
+            busiest bucket carries 31 against a cap of 32.
+    """
+
+    proposals: "tuple[MatchProposal, ...]"
+    crowded_days: "tuple[date, ...]"
 
 
 def _day_distance(row: CandidateRow, posted_on: date) -> "int | None":
@@ -452,11 +481,14 @@ def _day_buckets(
 ) -> "tuple[dict[date, list[CandidateRow]], list[date]]":
     """Return the days a GROUP may be searched on, and the days too crowded to.
 
-    **One bucketing, two consumers**, because :func:`_day_sums` and
-    :func:`skipped_group_days` have to agree about what a day holds: they were
-    two implementations of that rule, each re-deriving the undated pool's
-    membership test, and the reporting one then blamed "crowded days" for a
-    bound that was really the pool's.
+    **One bucketing, ONE consumer**, and getting there took two steps.  It was
+    two implementations of what a day holds -- one searching, one reporting --
+    each re-deriving the undated pool's membership test, and the reporting one
+    then blamed "crowded days" for a bound that was really the pool's; that
+    was collapsed to one bucketing with two callers at plan step X-f6a-3c-1,
+    and the two callers still bucketed different POPULATIONS (finding
+    **N-322**).  Since X-f6a-3c-2 :func:`_day_sums` is the only caller and it
+    returns what it skipped, so the reported bound IS the applied one.
 
     **A day's bucket is the rows the app believes could have moved on it**:
     the rows it recorded as settling that day, plus every unsettled row whose
@@ -506,15 +538,14 @@ def _day_buckets(
         The cap and the membership rule are each stated ONCE here, which is
         what the two implementations before it could not manage.
 
-        **The two callers still bucket different POPULATIONS, and the
-        difference is one-sided.**  :func:`_groups` is handed only the rows no
-        one-to-one proposal claimed, while ``_reads`` reports over every
-        candidate -- so the reported set is a SUPERSET and a day can be named
-        crowded that was in fact searched.  It cannot go the other way, so no
-        group is silently lost; what it costs is a caption that overstates.
-        Recorded as a finding rather than fixed here: making them agree means
-        publishing the days the search actually skipped, which is a change to
-        :func:`propose`'s return.
+        **There is now exactly ONE caller and it reports what it skipped**
+        (plan step ``bank_import:X-f6a-3c-2``, finding **N-322**).  A second
+        caller bucketed a different POPULATION until then -- ``_reads`` asked
+        over every candidate while :func:`_groups` searches only the rows no
+        one-to-one proposal claimed -- so the reported set was a SUPERSET and a
+        day could be named too crowded to search that had been searched.  The
+        skipped days ride out on :class:`ProposedMatches` instead, which is the
+        search's own answer rather than a reader's re-derivation.
     """
     buckets: "dict[date, list[CandidateRow]]" = {}
     for row in rows:
@@ -547,16 +578,21 @@ def _day_buckets(
 
 def _day_sums(
     rows: "list[CandidateRow]",
-) -> "dict[date, dict[Decimal, list[tuple[CandidateRow, ...]]]]":
+) -> "tuple[dict[date, dict[Decimal, list[tuple[CandidateRow, ...]]]], list[date]]":
     """Return, per recorded day, every small row set and what it sums to.
 
     Computed ONCE over the account rather than re-searched per bank line, which
     is what keeps grouping linear in the statement's length: the sums for a day
     do not depend on which line is asking.  A day holding more rows than
-    :data:`MAX_GROUP_DAY_ROWS` is skipped whole and named by
-    :func:`skipped_group_days`, because ``n choose k`` over a large day
-    produces more coincidences than explanations -- and a bound that is silent
-    about what it dropped reads as "nothing to group here".
+    :data:`MAX_GROUP_DAY_ROWS` is skipped whole and RETURNED beside the sums,
+    because ``n choose k`` over a large day produces more coincidences than
+    explanations -- and a bound that is silent about what it dropped reads as
+    "nothing to group here".
+
+    **The skipped days come back from HERE rather than from a second bucketing
+    a reader performs** (plan step ``bank_import:X-f6a-3c-2``, finding
+    **N-322**): they are a fact about the search that ran, and this is the
+    function that runs it.
 
     **Which rows a day holds is :func:`_day_buckets`'**, including the
     unsettled ones: ruling **R-FV**'s third arm has to reach the group path,
@@ -567,11 +603,13 @@ def _day_sums(
         rows: The candidate rows.
 
     Returns:
-        ``{day: {signed sum: [row sets]}}`` over sets of 2 to
-        :data:`MAX_GROUP_ROWS` rows.
+        ``({day: {signed sum: [row sets]}}, skipped days)`` -- the sums over
+        sets of 2 to :data:`MAX_GROUP_ROWS` rows, and the days this pass did
+        not search, ascending.
     """
+    searchable, skipped = _day_buckets(rows)
     sums: "dict[date, dict[Decimal, list[tuple[CandidateRow, ...]]]]" = {}
-    for day, day_rows in _day_buckets(rows)[0].items():
+    for day, day_rows in searchable.items():
         day_sums: "dict[Decimal, list[tuple[CandidateRow, ...]]]" = defaultdict(list)
         for size in range(2, min(len(day_rows), MAX_GROUP_ROWS) + 1):
             for combo in combinations(day_rows, size):
@@ -581,26 +619,7 @@ def _day_sums(
                 day_sums[total].append(combo)
         if day_sums:
             sums[day] = day_sums
-    return sums
-
-
-def skipped_group_days(rows: "list[CandidateRow]") -> "list[date]":
-    """Return the days :func:`propose` refused to search for GROUPS.
-
-    **A bound that does not say what it dropped reads as a clean sweep.**  A
-    day whose bucket holds more than :data:`MAX_GROUP_DAY_ROWS` candidate rows
-    is not grouped, so a line a group on that day would have explained is
-    listed as unmatched -- and the owner has to be told that is a limit rather
-    than an absence, on the screen, so they can build the group by hand.
-
-    Args:
-        rows: The candidate rows the proposals were built from.
-
-    Returns:
-        The days that were skipped, ascending.  Empty on the developer's own
-        data, where the busiest bucket carries 31 against a cap of 32.
-    """
-    return _day_buckets(rows)[1]
+    return sums, skipped
 
 
 def _holds_a_parent_and_its_child(
@@ -632,7 +651,7 @@ def _holds_a_parent_and_its_child(
 
 def _groups(
     lines: "list[BankLine]", rows: "list[CandidateRow]",
-) -> "list[MatchProposal]":
+) -> "tuple[list[MatchProposal], list[date]]":
     """Return the proposals where several app rows sum to one bank line.
 
     R-FS's second shape, in the direction the app can propose without guessing.
@@ -656,11 +675,14 @@ def _groups(
         rows: The candidate rows still unused by one.
 
     Returns:
-        One proposal per line that exactly one same-day row set sums to.  A
-        line that several distinct sets could explain gets none: an ambiguous
-        proposal is a question dressed as an answer.
+        ``(proposals, crowded days)`` -- one proposal per line that exactly one
+        same-day row set sums to, and the days this search declined to look at.
+        A line that several distinct sets could explain gets none: an ambiguous
+        proposal is a question dressed as an answer.  **The crowded days are
+        THIS search's**, over the population it was actually handed, which is
+        finding **N-322**'s fix.
     """
-    sums = _day_sums(rows)
+    sums, crowded = _day_sums(rows)
     proposals = []
     for line in lines:
         # **Keyed by the ROW SET, not by (day, set), and that is a bug fix.**
@@ -710,12 +732,12 @@ def _groups(
                 else None
             ),
         ))
-    return proposals
+    return proposals, crowded
 
 
 def propose(
     lines: "list[BankLine]", rows: "list[CandidateRow]",
-) -> "list[MatchProposal]":
+) -> ProposedMatches:
     """Return what the app believes goes with what, best first.
 
     Two passes, and the order between them is the rule: a line explained
@@ -731,10 +753,13 @@ def propose(
             (:func:`~._candidates.candidates_for`).
 
     Returns:
-        The proposals, ordered by how far the app's own day sits from the
-        bank's and then by the bank's day -- so the ones that merely CONFIRM
-        what the app already holds come first and the corrections follow, each
-        block in statement order.
+        A :class:`ProposedMatches`.  Its proposals are ordered by how far the
+        app's own day sits from the bank's and then by the bank's day -- so the
+        ones that merely CONFIRM what the app already holds come first and the
+        corrections follow, each block in statement order -- and its crowded
+        days are the ones the GROUP pass declined to search, published here
+        rather than re-derived by a reader over a different population
+        (finding **N-322**).
     """
     one_to_one = _one_to_one(lines, rows)
     spoken_for_lines = {
@@ -744,7 +769,7 @@ def propose(
         (row.kind, row.row_id)
         for proposal in one_to_one for row in proposal.rows
     }
-    grouped = _groups(
+    grouped, crowded = _groups(
         [line for line in lines if line.line_id not in spoken_for_lines],
         [row for row in rows if (row.kind, row.row_id) not in spoken_for_rows],
     )
@@ -755,11 +780,14 @@ def propose(
     # proposals order by how far the app is out; the undated ones -- which
     # SETTLE a row rather than re-date one -- follow, because confirming and
     # correcting are what a reviewer scans a statement for.
-    return sorted(
-        one_to_one + grouped,
-        key=lambda proposal: (
-            proposal.day_gap is None,
-            proposal.day_gap if proposal.day_gap is not None else 0,
-            proposal.posts_on,
-        ),
+    return ProposedMatches(
+        proposals=tuple(sorted(
+            one_to_one + grouped,
+            key=lambda proposal: (
+                proposal.day_gap is None,
+                proposal.day_gap if proposal.day_gap is not None else 0,
+                proposal.posts_on,
+            ),
+        )),
+        crowded_days=tuple(crowded),
     )

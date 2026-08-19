@@ -23,6 +23,7 @@ from app.models.statement_import import BankStatementLine, StatementImport
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
+from app.services.statement_match import ReviewScope
 
 
 def a_transaction(
@@ -195,3 +196,26 @@ def a_bank_line(
     db.session.add(line)
     db.session.flush()
     return line
+
+
+def a_scope(seed_user, account=None):
+    """Return the derived pass these doors act inside.
+
+    **Built at the point of USE, never once per test**, and that is the
+    property under test as much as a convenience:
+    :class:`~app.services.statement_match.ReviewScope` holds the account's rows
+    and their prices as they stood when it was derived, so a case that stages a
+    row and then re-uses an older scope is asserting against a state the app
+    would never have.  Every call here therefore re-derives.
+
+    Args:
+        seed_user: The seeded user bundle.
+        account: The account being reviewed; the seeded checking one by
+            default.
+
+    Returns:
+        The :class:`~app.services.statement_match.ReviewScope`.
+    """
+    return ReviewScope.build(
+        seed_user["user"].id, (account or seed_user["account"]).id,
+    )
