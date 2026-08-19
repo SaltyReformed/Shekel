@@ -69,7 +69,7 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.ytd_tax_checkpoint import YtdTaxCheckpoint
 from app.services import paycheck_calculator
-from app.services.paycheck_calculator import PayrollBasis
+from app.services.payroll_basis import PayrollBasis
 from app.services.tax_config_service import load_tax_configs_for_year
 
 ZERO = Decimal("0")
@@ -227,7 +227,7 @@ def save_checkpoint(
 
 
 def compute_withholding_to_date(
-    user_id: int, basis: PayrollBasis, year: int, periods: list,
+    user_id: int, profile, year: int, periods: list, cadence,
 ) -> WithholdingToDate:
     """Compute withholding-to-date = measured checkpoint + modeled remainder.
 
@@ -249,13 +249,20 @@ def compute_withholding_to_date(
 
     Args:
         user_id: The owning user's id (tax configs are per-user).
-        basis: The :class:`~app.services.paycheck_calculator.PayrollBasis` --
-            the :class:`~app.models.salary_profile.SalaryProfile` (with its
-            ``raises``, ``deductions``, and ``calibration`` relationships
-            available, read by ``project_salary``) bound to the owner's pay
-            cadence.  The cadence is the paycheck count the engine divides the
-            annual salary by, and it was a second stored column on the profile
-            until plan step **R-F16**.
+        profile: The :class:`~app.models.salary_profile.SalaryProfile`, with
+            its ``raises``, ``deductions``, and ``calibration`` relationships
+            available (read by ``project_salary``).
+        cadence: The owner's :class:`~app.services.pay_calendar.PayCadence` --
+            the paycheck count the engine divides the annual salary by, which
+            was a second stored column on the profile until plan step
+            **R-F16**.  **Taken beside the profile rather than already bound
+            to it**, so this function can decide whether a projection is
+            needed BEFORE anything asks for the cadence: an owner who has
+            never stated one has no paydays either, so they reach the
+            all-zero remainder below and ``None`` is a legal argument for
+            them.  Where a period IS projected the pair is bound into a
+            :class:`~app.services.paycheck_calculator.PayrollBasis`, which is
+            what makes a mismatched pair unrepresentable downstream.
         year: The tax year; every period in *periods* is expected to fall
             in it (the caller loads the year's periods).
         periods: The tax year's :class:`~app.services.pay_calendar.DerivedPeriod`
@@ -266,9 +273,17 @@ def compute_withholding_to_date(
         The populated :class:`WithholdingToDate` (totals + measured /
         projected split + the source checkpoint).
     """
-    checkpoint = latest_checkpoint(basis.profile.id, year)
+    checkpoint = latest_checkpoint(profile.id, year)
     measured = _measured_components(checkpoint)
-    projected = _project_remainder(user_id, basis, year, periods, checkpoint)
+    remainder_ids = _remainder_period_ids(periods, checkpoint)
+    projected = (
+        _project_remainder(
+            user_id, PayrollBasis(profile, cadence), year, periods,
+            remainder_ids,
+        )
+        if remainder_ids
+        else _ZERO_COMPONENTS
+    )
 
     total = WithholdingComponents(
         gross=measured.gross + projected.gross,
@@ -313,12 +328,40 @@ def _measured_components(
     )
 
 
+def _remainder_period_ids(
+    periods: list, checkpoint: YtdTaxCheckpoint | None,
+) -> set:
+    """Return the ids of the periods a checkpoint does NOT cover.
+
+    The module's partition rule, and its own function since plan step
+    **R-F16**: a period is MODELLED when its payday ``start_date`` is STRICTLY
+    after the checkpoint date, and every period is modelled when there is no
+    checkpoint.  Split out of :func:`_project_remainder` so the caller can ask
+    "is there anything to project?" BEFORE it binds a
+    :class:`~app.services.paycheck_calculator.PayrollBasis` -- an owner who has
+    never stated a pay cadence has no paydays either, so this answers empty for
+    them and no cadence is ever required.
+
+    Args:
+        periods: The tax year's pay periods (may be empty).
+        checkpoint: The measured checkpoint, or ``None``.
+
+    Returns:
+        The set of ``period_id`` values to model.  Empty when the checkpoint
+        covers the whole list, and when the list itself is empty.
+    """
+    return {
+        p.period_id for p in periods
+        if checkpoint is None or p.start_date > checkpoint.as_of_date
+    }
+
+
 def _project_remainder(
     user_id: int,
     basis,
     year: int,
     periods: list,
-    checkpoint: YtdTaxCheckpoint | None,
+    remainder_ids: set,
 ) -> WithholdingComponents:
     """Project the year with full context and sum the remainder's withholding.
 
@@ -338,9 +381,12 @@ def _project_remainder(
     breakdown-to-period pairing is the engine's own contract rather than
     positional zip order.
 
-    An empty remainder short-circuits to all zeros before any projection
-    (nothing to model, and ``project_salary`` is not free on a 26-period
-    year).
+    **The caller decides whether to call this at all**, on
+    :func:`_remainder_period_ids`: an empty remainder means nothing to model,
+    and ``project_salary`` is not free on a 26-period year.  Since plan step
+    R-F16 that ordering is load-bearing rather than an optimisation -- it is
+    what lets an owner with no pay cadence reach an all-zero remainder without
+    one being resolved.
 
     Args:
         user_id: The owning user's id (per-user tax configs).
@@ -348,19 +394,13 @@ def _project_remainder(
             project -- the salary profile bound to its owner's pay cadence,
             calibration-aware via ``basis.profile.calibration``.
         year: The tax year whose configs to load.
-        periods: The tax year's FULL pay-period list (may be empty).
-        checkpoint: The measured checkpoint, or ``None`` (fully modeled).
+        periods: The tax year's FULL pay-period list.
+        remainder_ids: The non-empty set of period ids to sum, from
+            :func:`_remainder_period_ids`.
 
     Returns:
         The summed modeled remainder as a :class:`WithholdingComponents`.
     """
-    remainder_ids = {
-        p.period_id for p in periods
-        if checkpoint is None or p.start_date > checkpoint.as_of_date
-    }
-    if not remainder_ids:
-        return _ZERO_COMPONENTS
-
     tax_configs = load_tax_configs_for_year(user_id, basis.profile, year)
     breakdowns = paycheck_calculator.project_salary(
         basis, periods, tax_configs,

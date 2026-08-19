@@ -83,12 +83,9 @@ def _emp_type_id(member):
     return ref_cache.employer_contribution_type_id(member)
 
 
-#: The owner's raise-aware engine gross per pay period, as the caller supplies
-#: it since plan step **R-F16**.  It is ``$100,000 / 26`` -- exactly what the
-#: deleted per-row ``annual_salary / pay_periods_per_year`` recompute produced
-#: for the profile these tests used to carry, so every expected figure below is
-#: unchanged by the move and the tests still pin the arithmetic rather than the
-#: provenance.
+#: ``$100,000 / 26``: the per-period gross :class:`FakeDeduction`'s default
+#: salary derives at the default cadence, and the fallback the no-deduction
+#: cases hand :func:`calculate_investment_inputs`.
 _GROSS_BIWEEKLY = Decimal("3846.15")
 
 
@@ -96,16 +93,18 @@ _GROSS_BIWEEKLY = Decimal("3846.15")
 class FakeDeduction:
     """An adapted deduction, as ``adapt_deductions`` now produces one.
 
-    **It carries neither the parent profile's salary nor a paycheck count of
-    its own**, and has not since plan step R-F16.  The gross a percentage
-    deduction applies to is the caller's raise-aware engine gross, passed in
-    beside the deductions; the count is the OWNER's cadence, stamped on every
-    row of one ``adapt_deductions`` call.  The pair used to be re-divided here
-    into a raise-BLIND gross that then sized the employer match.
+    **The COUNT is the owner's cadence since plan step R-F16; the SALARY is
+    still this deduction's own profile.**  ``pay_periods_per_year`` was a
+    second stored answer to "how often am I paid" and is derived now.  The
+    salary stays per row because an owner may hold several active profiles and
+    each prices its own percentage: collapsing them to one owner-level gross
+    was measured at a 39% swing on a two-job owner, and a nondeterministic one.
+    The gross derived here is raise-BLIND -- finding **D45**.
     """
 
     amount: Decimal
     calc_method_id: int
+    annual_salary: Decimal = Decimal("100000")
     periods_per_year: Decimal = Decimal("26")
     # Calendar-year ceiling (PaycheckDeduction.annual_cap); None = uncapped.
     annual_cap: Decimal | None = None
@@ -192,7 +191,6 @@ class TestCalculateInvestmentInputs:
         result = calculate_investment_inputs(
             investment_params=params, deductions=deductions,
             all_contributions=[], current_period=current_period,
-            salary_gross_biweekly=_GROSS_BIWEEKLY,
         )
         # 7% of ($100,000 / 26) = 7% of $3846.15 = $269.2305 -> $269.23.
         # Hand-computed literal (not a re-quantize of the code's own
@@ -220,15 +218,14 @@ class TestCalculateInvestmentInputs:
             annual_contribution_limit=Decimal("23500"),
             employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.NONE),
         )
-        deductions = [FakeDeduction(amount=Decimal("0.05"), calc_method_id=_pct_id())]
+        deductions = [FakeDeduction(
+            amount=Decimal("0.05"), calc_method_id=_pct_id(),
+            annual_salary=Decimal("26013"),
+        )]
         current_period = _periods(date(2026, 3, 5))[0]
         result = calculate_investment_inputs(
             investment_params=params, deductions=deductions,
             all_contributions=[], current_period=current_period,
-            # ``$26,013 / 26 = $1,000.50`` exactly -- the gross the engine
-            # reports for that salary, now supplied by the caller rather than
-            # re-divided per deduction (plan step R-F16).
-            salary_gross_biweekly=Decimal("1000.50"),
         )
         # gross = round_money(26013 / 26) = round_money(1000.50) = 1000.50;
         # 5% -> round_money(1000.50 * 0.05) = round_money(50.0250) = 50.03
@@ -270,7 +267,6 @@ class TestCalculateInvestmentInputs:
         result = calculate_investment_inputs(
             investment_params=params, deductions=deductions,
             all_contributions=[], current_period=current_period,
-            salary_gross_biweekly=_GROSS_BIWEEKLY,
         )
         assert result.employer_params is not None
         assert result.employer_params["type_id"] == _emp_type_id(
@@ -411,36 +407,41 @@ class TestCalculateInvestmentInputs:
         assert result.employer_params["gross_biweekly"] == Decimal("3846.15")
         assert result.periodic_contribution == Decimal("0")
 
-    def test_the_callers_gross_survives_a_deduction(self):
-        """A deduction does not displace the employer-match basis (R-F16).
+    def test_each_deduction_prices_from_its_OWN_profile(self):
+        """Two profiles, two salaries, two percentages -- summed separately.
 
-        Input: an account with a flat deduction and a 5% employer flat
-        contribution, given the caller's raise-aware engine gross.
-        Expected: the employer match is sized on THAT gross.
+        Input: two 6% deductions into one account, one on a ``$91,675``
+        profile and one on a ``$40,000`` profile.
+        Expected: ``6% of 3,525.96 + 6% of 1,538.46 = 211.56 + 92.31 =
+        $303.87``.
 
-        **This replaces ``test_deduction_gross_overrides_salary_gross``, which
-        asserted the opposite and was the defect written down.**  Each adapted
-        deduction used to carry its parent profile's ``annual_salary`` and
-        ``pay_periods_per_year``, and the module re-divided them into a gross
-        that OVERWROTE the caller's -- so the caller's raise-aware figure was
-        consulted only when the account had no deduction at all.  The two
-        differ by every raise the owner has taken: measured on the developer's
-        own profile at plan step R-F16, ``$3,525.96`` against a true
-        ``$3,631.74``, understating a 5% employer contribution by ``$137.51``
-        a year and compounding it through the retirement projection.  Three
-        sibling call sites already carried the comment naming that exact
-        recompute as the thing F-20 / MED-06 / F-032 replaced.
+        **This is why the salary stays on the ROW.**  Plan step R-F16's first
+        draft collapsed the basis to ONE owner-level gross -- the raise-aware
+        engine figure -- which is more correct for a single-job owner and
+        wrong for this one: its adversarial review measured the same two
+        deductions at ``$423.12`` or ``$184.62`` depending on which profile
+        ``income_service.get_current_gross_biweekly``'s unordered ``.first()``
+        happened to return, a 39% swing that flips between renders with no
+        data change. Multiple active profiles are a supported shape --
+        ``tax_report_service`` iterates them as one filer with several jobs.
+        The raise-blindness of the per-row gross is real and is finding
+        **D45**; it is not fixed by deleting the per-profile basis.
         """
         params = FakeInvestmentParams(
             assumed_annual_return=Decimal("0.07"),
             annual_contribution_limit=Decimal("23500"),
-            employer_contribution_type_id=_emp_type_id(EmployerContributionTypeEnum.FLAT_PERCENTAGE),
-            employer_flat_percentage=Decimal("0.05"),
+            employer_contribution_type_id=_emp_type_id(
+                EmployerContributionTypeEnum.NONE,
+            ),
         )
         deductions = [
             FakeDeduction(
-                amount=Decimal("500.00"),
-                calc_method_id=_flat_id(),
+                amount=Decimal("0.06"), calc_method_id=_pct_id(),
+                annual_salary=Decimal("91675"),
+            ),
+            FakeDeduction(
+                amount=Decimal("0.06"), calc_method_id=_pct_id(),
+                annual_salary=Decimal("40000"),
             ),
         ]
         current_period = _periods(date(2026, 3, 5))[0]
@@ -450,13 +451,77 @@ class TestCalculateInvestmentInputs:
             deductions=deductions,
             all_contributions=[],
             current_period=current_period,
-            salary_gross_biweekly=Decimal("3631.74"),
         )
 
-        assert result.employer_params["gross_biweekly"] == Decimal("3631.74")
-        # And the employee side is untouched by the change: a flat deduction
-        # is its own amount whatever the gross.
-        assert result.periodic_contribution == Decimal("500.00")
+        # 91,675 / 26 = 3,525.96 -> 6% = 211.5576 -> 211.56
+        # 40,000 / 26 = 1,538.46 -> 6% =  92.3076 ->  92.31
+        assert result.periodic_contribution == Decimal("303.87")
+
+    def test_a_weekly_owners_deduction_prices_over_52_paychecks(self):
+        """THE CADENCE AXIS: the stamped count drives the per-period gross.
+
+        Input: one ``$91,675`` profile, 6%, adapted at a 7-day cadence.
+        Expected: ``6% of (91,675 / 52) = 6% of 1,762.98 = $105.78``, half
+        the biweekly figure.
+        Why: every other case in this module runs at 26, where the derived
+        count and the deleted ``pay_periods_per_year`` column agree, so none
+        of them can see a count that is not the owner's. This is the case that
+        fails if ``periods_per_year`` stops coming from the cadence.
+        """
+        params = FakeInvestmentParams(
+            assumed_annual_return=Decimal("0.07"),
+            annual_contribution_limit=Decimal("23500"),
+            employer_contribution_type_id=_emp_type_id(
+                EmployerContributionTypeEnum.NONE,
+            ),
+        )
+        deductions = [FakeDeduction(
+            amount=Decimal("0.06"), calc_method_id=_pct_id(),
+            annual_salary=Decimal("91675"),
+            periods_per_year=Decimal("52"),
+        )]
+        current_period = _periods(date(2026, 3, 5))[0]
+
+        result = calculate_investment_inputs(
+            investment_params=params, deductions=deductions,
+            all_contributions=[], current_period=current_period,
+        )
+
+        # 91,675 / 52 = 1,762.98 (half-up) -> 6% = 105.7788 -> 105.78
+        assert result.periodic_contribution == Decimal("105.78")
+
+    def test_a_capped_deduction_spreads_over_the_OWNERS_paychecks(self):
+        """A calendar-year cap is spread across 52, not 26, for a weekly owner.
+
+        Input: a ``$600``/period deduction under a ``$1,000`` annual cap, at a
+        7-day cadence.
+        Expected: ``min(600 x 52, 1000) / 52 = $19.23``.
+        Why: this is the F-16 shape one table over. The sibling test above
+        runs the same cap at 26 and gets ``$38.46``; with a hardcoded 26 a
+        weekly owner's cap spreads over half the paychecks they receive and
+        the modelled contribution is exactly DOUBLE -- compounded forward by
+        the growth engine for the whole projection horizon.
+        """
+        params = FakeInvestmentParams(
+            assumed_annual_return=Decimal("0.07"),
+            annual_contribution_limit=Decimal("23500"),
+            employer_contribution_type_id=_emp_type_id(
+                EmployerContributionTypeEnum.NONE,
+            ),
+        )
+        deductions = [FakeDeduction(
+            amount=Decimal("600.00"), calc_method_id=_flat_id(),
+            periods_per_year=Decimal("52"),
+            annual_cap=Decimal("1000.00"),
+        )]
+        current_period = _periods(date(2026, 3, 5))[0]
+
+        result = calculate_investment_inputs(
+            investment_params=params, deductions=deductions,
+            all_contributions=[], current_period=current_period,
+        )
+
+        assert result.periodic_contribution == Decimal("19.23")
 
     def test_no_employer_when_type_none(self):
         """Employer type 'none' produces employer_params=None."""
@@ -650,8 +715,7 @@ class TestBuildContributionTimeline:
         )
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[],
-            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
-            as_of=_AS_OF,
+            periods=periods, as_of=_AS_OF,
         )
         assert len(result) == 3
         for r in result:
@@ -667,8 +731,7 @@ class TestBuildContributionTimeline:
         ]
         result = build_contribution_timeline(
             deductions=[], contribution_transactions=txns,
-            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
-            as_of=_AS_OF,
+            periods=periods, as_of=_AS_OF,
         )
         assert len(result) == 2
         assert result[0].amount == Decimal("200")
@@ -687,8 +750,7 @@ class TestBuildContributionTimeline:
         txns = [_priced(Decimal("200"), periods[0].start_date, is_confirmed=True)]
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=txns,
-            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
-            as_of=_AS_OF,
+            periods=periods, as_of=_AS_OF,
         )
         # One record from deduction, one from transfer, same date.
         assert len(result) == 2
@@ -703,8 +765,7 @@ class TestBuildContributionTimeline:
         periods = _periods(date(2020, 1, 2))
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[],
-            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
-            as_of=_AS_OF,
+            periods=periods, as_of=_AS_OF,
         )
         assert result[0].amount == Decimal("269.23")
 
@@ -719,8 +780,7 @@ class TestBuildContributionTimeline:
         periods = _periods(date(2020, 1, 2))
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[],
-            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
-            as_of=_AS_OF,
+            periods=periods, as_of=_AS_OF,
         )
         # 7% of ($100,000 / 26) = 7% of $3846.15 = $269.2305 -> $269.23
         # (per the docstring); hand-computed literal, not a code mirror.
@@ -735,8 +795,7 @@ class TestBuildContributionTimeline:
         periods = _periods(date(2020, 1, 2))
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[],
-            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
-            as_of=_AS_OF,
+            periods=periods, as_of=_AS_OF,
         )
         assert result[0].is_confirmed is True
 
@@ -749,8 +808,7 @@ class TestBuildContributionTimeline:
         periods = _periods(date(2099, 1, 2))
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[],
-            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
-            as_of=_AS_OF,
+            periods=periods, as_of=_AS_OF,
         )
         assert result[0].is_confirmed is False
 
@@ -760,8 +818,7 @@ class TestBuildContributionTimeline:
         txns = [_priced(Decimal("200"), periods[0].start_date, is_confirmed=True)]
         result = build_contribution_timeline(
             deductions=[], contribution_transactions=txns,
-            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
-            as_of=_AS_OF,
+            periods=periods, as_of=_AS_OF,
         )
         assert result[0].is_confirmed is True
 
@@ -771,8 +828,7 @@ class TestBuildContributionTimeline:
         txns = [_priced(Decimal("200"), periods[0].start_date, is_confirmed=False)]
         result = build_contribution_timeline(
             deductions=[], contribution_transactions=txns,
-            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
-            as_of=_AS_OF,
+            periods=periods, as_of=_AS_OF,
         )
         assert result[0].is_confirmed is False
 
@@ -791,8 +847,7 @@ class TestBuildContributionTimeline:
         txns = [_priced(Decimal("200"), periods[0].start_date, is_confirmed=False)]
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=txns,
-            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
-            as_of=_AS_OF,
+            periods=periods, as_of=_AS_OF,
         )
         assert len(result) == 2
         confirmed_flags = {r.is_confirmed for r in result}
@@ -804,8 +859,7 @@ class TestBuildContributionTimeline:
         periods = _periods(date(2020, 1, 2))
         result = build_contribution_timeline(
             deductions=[], contribution_transactions=[],
-            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
-            as_of=_AS_OF,
+            periods=periods, as_of=_AS_OF,
         )
         assert result == []
 
@@ -818,8 +872,7 @@ class TestBuildContributionTimeline:
         ]
         result = build_contribution_timeline(
             deductions=[], contribution_transactions=txns,
-            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
-            as_of=_AS_OF,
+            periods=periods, as_of=_AS_OF,
         )
         dates = [r.contribution_date for r in result]
         assert dates == sorted(dates)
@@ -838,8 +891,7 @@ class TestBuildContributionTimeline:
         txns = [_priced(Decimal("999.99"), periods[0].start_date, is_confirmed=True)]
         result = build_contribution_timeline(
             deductions=[], contribution_transactions=txns,
-            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
-            as_of=_AS_OF,
+            periods=periods, as_of=_AS_OF,
         )
         assert result[0].amount == Decimal("999.99")
 
@@ -859,8 +911,7 @@ class TestBuildContributionTimeline:
         periods = _periods(date(2020, 1, 2))
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[],
-            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
-            as_of=_AS_OF,
+            periods=periods, as_of=_AS_OF,
         )
         # $500 flat + 5% of $3846.15 = $500.00 + $192.3075 -> $500.00 +
         # $192.31 = $692.31 (per the docstring); hand-computed literal.
@@ -886,8 +937,7 @@ class TestBuildContributionTimeline:
         txns = [_priced(Decimal("200"), date(2020, 3, 5), is_confirmed=True)]
         result = build_contribution_timeline(
             deductions=[], contribution_transactions=txns,
-            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
-            as_of=_AS_OF,
+            periods=periods, as_of=_AS_OF,
         )
         assert result == []
 
@@ -912,8 +962,7 @@ class TestBuildContributionTimelineAnnualCap:
         )
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[],
-            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
-            as_of=_AS_OF,
+            periods=periods, as_of=_AS_OF,
         )
         # A record for every period (the $0 ones override the periodic fallback).
         assert [r.amount for r in result] == [
@@ -932,8 +981,7 @@ class TestBuildContributionTimelineAnnualCap:
         )
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[],
-            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
-            as_of=_AS_OF,
+            periods=periods, as_of=_AS_OF,
         )
         # 2026 caps at 600+400; 2027 resets -> full 600 again.
         assert [r.amount for r in result] == [
@@ -949,8 +997,7 @@ class TestBuildContributionTimelineAnnualCap:
         periods = _periods(date(2026, 1, 2), date(2026, 1, 16))
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[],
-            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
-            as_of=_AS_OF,
+            periods=periods, as_of=_AS_OF,
         )
         assert [r.amount for r in result] == [
             Decimal("600.00"), Decimal("600.00"),
@@ -973,8 +1020,7 @@ class TestBuildContributionTimelineAnnualCap:
         )
         result = build_contribution_timeline(
             deductions=deductions, contribution_transactions=[],
-            periods=periods, gross_biweekly=_GROSS_BIWEEKLY,
-            as_of=_AS_OF,
+            periods=periods, as_of=_AS_OF,
         )
         # Capped leg: 600, 400, 0.  Uncapped leg: 100 each.  Sum: 700, 500, 100.
         assert [r.amount for r in result] == [

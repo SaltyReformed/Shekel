@@ -27,8 +27,10 @@ Upgrade:
 Downgrade re-adds the column (NOT NULL, server default 26) and backfills it
 from each owner's cadence -- ``round(365.2425 / cadence_days)``, the same
 derivation :attr:`app.services.pay_calendar.PayCadence.periods_per_year`
-applies -- falling back to the default for an owner with no
-``budget.pay_schedule`` row and no pay period to infer one from.
+applies -- resolving that cadence the way
+:func:`app.services.pay_schedule_service.resolve_cadence` does, persisted row
+first and the last period's stored length second, and falling back to the
+column default only for an owner with neither.
 
 **The documented asymmetry**: for an owner whose stored value AGREED with
 their cadence the restore is exact, which is every row on production.  For a
@@ -73,15 +75,33 @@ logger = logging.getLogger("alembic.runtime.migration")
 #: standing rule for every literal a migration derives a stored value from.
 _DAYS_PER_YEAR = "365.2425"
 
-#: The cadence an owner with no resolvable one falls back to on downgrade --
-#: the column's own historical server default, and ``DEFAULT_PAY_CADENCE_DAYS``.
+#: The paycheck COUNT a profile falls back to on downgrade when its owner has
+#: no resolvable cadence at all: the column's own historical server default.
+#: (It is not a cadence; ``DEFAULT_PAY_CADENCE_DAYS`` is 14, which derives it.)
 _DEFAULT_PERIODS = 26
+
+#: The owner's cadence, resolved exactly as
+#: :func:`app.services.pay_schedule_service.resolve_cadence` does: the persisted
+#: ``budget.pay_schedule`` value, else INFERRED from the last period's stored
+#: length.  Mirroring the fallback matters in both directions -- a legacy owner
+#: with pay periods and no schedule row has a real cadence the application uses,
+#: so joining ``pay_schedule`` alone would report nothing about them and
+#: downgrade them to the default rather than to what they were being priced on.
+_RESOLVED_CADENCE = """COALESCE(
+    (SELECT ps.cadence_days FROM budget.pay_schedule ps
+      WHERE ps.user_id = sp.user_id),
+    (SELECT (pp.end_date - pp.start_date) + 1 FROM budget.pay_periods pp
+      WHERE pp.user_id = sp.user_id
+      ORDER BY pp.period_index DESC LIMIT 1)
+)"""
 
 #: The one derivation, as SQL: ``round(365.2425 / cadence_days)``.  ``numeric``
 #: rounding is half-away-from-zero, which is the ``ROUND_HALF_UP`` PayCadence
 #: states; no cadence in 1..365 produces an exact half, so the two agree on
-#: every reachable input either way.
-_DERIVED_COUNT = f"round({_DAYS_PER_YEAR}::numeric / ps.cadence_days)"
+#: every reachable input either way -- verified over all 365 at R-F16.
+_DERIVED_COUNT = (
+    f"round({_DAYS_PER_YEAR}::numeric / ({_RESOLVED_CADENCE}))"
+)
 
 
 def upgrade():
@@ -90,10 +110,11 @@ def upgrade():
 
     disagreeing = bind.execute(sa.text(
         "SELECT sp.id, sp.user_id, sp.pay_periods_per_year, "
-        f"       ps.cadence_days, {_DERIVED_COUNT} AS derived "
+        f"       ({_RESOLVED_CADENCE}) AS cadence_days, "
+        f"       {_DERIVED_COUNT} AS derived "
         "FROM salary.salary_profiles sp "
-        "JOIN budget.pay_schedule ps ON ps.user_id = sp.user_id "
-        f"WHERE sp.pay_periods_per_year <> {_DERIVED_COUNT} "
+        f"WHERE {_DERIVED_COUNT} IS NOT NULL "
+        f"  AND sp.pay_periods_per_year <> {_DERIVED_COUNT} "
         "ORDER BY sp.id"
     )).fetchall()
     for row in disagreeing:
@@ -135,8 +156,7 @@ def downgrade():
     op.execute(
         "UPDATE salary.salary_profiles sp "
         f"SET pay_periods_per_year = {_DERIVED_COUNT} "
-        "FROM budget.pay_schedule ps "
-        "WHERE ps.user_id = sp.user_id "
+        f"WHERE {_DERIVED_COUNT} IS NOT NULL "
         f"  AND {_DERIVED_COUNT} > 0"
     )
     op.create_check_constraint(

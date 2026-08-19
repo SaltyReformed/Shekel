@@ -33,10 +33,11 @@ from app.services import (
     recurrence_engine,
     template_amount_service,
 )
-from app.services.pay_calendar import cadence_for, calendar_for
+from app.services import pay_schedule_service
+from app.services.pay_calendar import PayCadence, cadence_for, calendar_for
 from app.services.recurrence import RecurrenceSpec, author_rule
 from app.services.generation_schedule import GenerationSchedule
-from app.services.paycheck_calculator import PayrollBasis
+from app.services.payroll_basis import PayrollBasis
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.routes._commit_helpers import (
@@ -71,19 +72,26 @@ def _paychecks_per_year() -> "int | None":
 
     ``None`` for an owner with no resolvable cadence, which the template
     renders as a pointer to generate a schedule.  Answered rather than raised:
-    :func:`~app.services.pay_calendar.calendar_for` never refuses, and the
-    cadence is asked for only once the calendar says it has one -- so a form
-    page cannot 500 on a state the form itself is the fix for.  Such an owner
-    cannot create a profile either way (``_paycheck_template`` needs a payday
-    to seat the recurrence on).
+    a form page must not 500 on the state the form itself is the fix for, and
+    such an owner cannot create a profile either way (``_paycheck_template``
+    needs a payday to seat the recurrence on).
+
+    **Through ``resolve_cadence`` rather than ``cadence_for`` or a whole
+    calendar**, and the two doors beside it are why each is wrong here.
+    :func:`~app.services.pay_calendar.cadence_for` REFUSES the unresolvable
+    owner, which is right for a producer of money and wrong for a form.
+    :func:`~app.services.pay_calendar.calendar_for` answers without refusing
+    but derives the owner's whole payday set to do it -- 61 rows on
+    production, on two pages that load a calendar for nothing else.  This is
+    the one fact both of those read, asked directly.
 
     Returns:
         The paycheck count as an ``int``, or ``None``.
     """
-    calendar = calendar_for(current_user.id)
-    if calendar.cadence_days is None:
+    cadence_days = pay_schedule_service.resolve_cadence(current_user.id)
+    if cadence_days is None:
         return None
-    return int(calendar.cadence.periods_per_year)
+    return int(PayCadence(cadence_days=cadence_days).periods_per_year)
 
 
 @salary_bp.route("/salary/new")

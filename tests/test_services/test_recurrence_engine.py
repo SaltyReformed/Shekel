@@ -3613,7 +3613,7 @@ class TestPaycheckAmountFallback:
         with pytest.raises(AttributeError, match="raises"):
             _get_transaction_amount(
                 FakeTemplate(), FakeProfile(), FakePeriod(),
-            derived_calendar([date(2026, 1, 2)]),
+                derived_calendar([date(2026, 1, 2)]),
             )
 
     def test_returns_default_amount_when_no_salary_profile(self, app, db):

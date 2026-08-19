@@ -42,13 +42,13 @@ side: both were unblocked and they shared no file.
 pairing two inside one arc, check that neither names a module the other deletes. A row marked
 **MOVES MONEY** takes its own PR either way, so it is never the second lane.
 
-**The rank is a DECISION, not a derivation.** 50 of these steps are legal to start right now, so the
+**The rank is a DECISION, not a derivation.** 51 of these steps are legal to start right now, so the
 dependency graph alone cannot say which comes next; the sequence below follows each arc's own stated
 sequencing -- the balance README's ten blocks, and each plan's section 0.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**145 steps, 109 open.** The dependency graph holds 93 edges over 61 rows.
+**146 steps, 110 open.** The dependency graph holds 93 edges over 61 rows.
 
 ## The order
 
@@ -146,6 +146,7 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | recurrence | R11 | -- | Rule and then add the LEAD placement -- funding an occurrence from a paycheck EARLIER than the one containing it -- which is what survived **D20** when measurement showed `CONTAINING_DATE` already funds on or before every occurrence. **MOVES MONEY.** Closes **D40**. | #89 | -- | NOW |
 | recurrence | R12 | -- | Give `deploy/shekel-deploy.sh` an executable test for the two predicates a destructive release now rests on, `preflight_migrations` and `repin_is_safe`, deciding first where a shell harness runs in a repository whose gates scope to `app/`, `scripts/` and `tools/`. Closes **D41**. | #90 | -- | NOW |
 | recurrence | R13 | -- | Give `budget.pay_schedule` a cadence KIND so a semi-monthly or monthly owner's paydays land on the days of the month they are actually paid, rather than on a fixed-length walk that drifts through it, branching the batch writer, the derivation and the paycheck count on the kind. Ruling **R-R28**. | #91 | -- | NOW |
+| recurrence | R14 | -- | Rule, then apply, what a payroll deduction's gross is priced from -- whose salary, which period's figure, and against which clock -- so the employee contribution and the employer-match basis stop being blind to every raise the owner has taken without collapsing a multi-profile owner onto one arbitrary gross. **MOVES MONEY.** Closes **D45**. | #92 | -- | NOW |
 
 ## Containers
 

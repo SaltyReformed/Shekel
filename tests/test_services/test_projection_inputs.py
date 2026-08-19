@@ -53,15 +53,16 @@ def _flat_id():
 class _FakeDeduction:
     """An adapted deduction, as ``adapt_deductions`` produces one since R-F16.
 
-    It carries no salary and no paycheck count: the gross a percentage
-    deduction applies to is the caller's raise-aware engine gross, and the
-    count is the owner's cadence, stamped once per ``adapt_deductions`` call.
+    ``periods_per_year`` is the OWNER's cadence, stamped once per
+    ``adapt_deductions`` call; it replaced a ``pay_periods_per_year`` read off
+    the parent profile, which was a second stored answer to "how often am I
+    paid" (finding **F-16**).  The salary stays per row.
     """
 
     amount: Decimal
     calc_method_id: int
+    annual_salary: Decimal = Decimal("100000")
     periods_per_year: Decimal = Decimal("26")
-    annual_cap: Decimal | None = None
 
 
 @dataclass
@@ -787,8 +788,7 @@ class TestShadowContributionBoundary:
             )
             timeline = build_contribution_timeline(
                 deductions=[], contribution_transactions=records,
-                periods=[period], gross_biweekly=Decimal("0"),
-                as_of=period.start_date,
+                periods=[period], as_of=period.start_date,
             )
 
             assert inputs.periodic_contribution == Decimal("400")

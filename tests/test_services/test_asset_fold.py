@@ -59,6 +59,8 @@ from app.services.balance_at import (
     _cash_periods,
 )
 from app.services.balance_at._asset_contributions import ContributionInputs
+from app.services.investment_projection import adapt_deductions
+from app.services.pay_calendar import calendar_for
 from app.services.balance_at._context import BalanceContext
 from app.services.cash_ledger import ReconciledThrough
 from app.services.pay_calendar import DerivedPeriod, PeriodWindow
@@ -131,10 +133,21 @@ def _growth(account, ctx, as_of, *, params=None, deductions=(), gross=_ZERO):
 
 
 def _deductions_for(seed_user, account):
-    """Return the account's active deductions through the shared loader."""
-    return load_active_deductions_for_accounts(
-        seed_user["user"].id, [account.id],
-    ).get(account.id, [])
+    """Return the account's active deductions, ADAPTED as the seam's loader does.
+
+    ``ContributionInputs.deductions`` holds the namedtuple rather than the ORM
+    row since plan step **R-F16**, which moved the adaptation to the ORM
+    boundary in ``balance_at._inputs`` -- the adapter needs the owner's pay
+    cadence, and only a caller holding the read pass has one.  Handing the raw
+    rows to the pure tier below the seam is a shape production cannot produce.
+    """
+    user_id = seed_user["user"].id
+    return adapt_deductions(
+        load_active_deductions_for_accounts(
+            user_id, [account.id],
+        ).get(account.id, []),
+        calendar_for(user_id).cadence,
+    )
 
 
 def _params_for(account):

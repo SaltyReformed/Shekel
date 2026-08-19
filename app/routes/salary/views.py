@@ -17,7 +17,7 @@ from flask_login import current_user, login_required
 from app.utils.auth_helpers import get_or_404, require_owner
 from app.models.salary_profile import SalaryProfile
 from app.services import paycheck_calculator, salary_cockpit_service
-from app.services.paycheck_calculator import PayrollBasis
+from app.services.payroll_basis import PayrollBasis
 from app.services.pay_calendar import calendar_for
 from app.services.tax_config_service import load_tax_configs_for_periods
 from app.routes.salary._bp import salary_bp

@@ -180,6 +180,45 @@ class TestTheDowngradeRestoresWhatTheApplicationUses:
             assert _column_present(db.session)
             assert _stored_count(db, profile.id) == expected
 
+    def test_an_owner_with_periods_but_no_schedule_row_is_reached(
+        self, app, db, seed_user, restore_dropped_column,
+    ):
+        """The backfill INFERS a cadence from the last period, as the app does.
+
+        Input: a legacy owner with 7-day pay periods and no
+        ``budget.pay_schedule`` row -- the state
+        :func:`app.services.pay_schedule_service.resolve_cadence` handles by
+        reading the last period's stored length.
+        Expected: 52, not the column default.
+        Why: joining ``budget.pay_schedule`` alone would silently give this
+        owner 26 while the pre-migration application was pricing them on 52 --
+        a downgrade that HALVES their modelled paycheck, which is the exact
+        failure the restore exists to prevent. R-F16's adversarial review
+        caught the join.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            profile = _profile(db, seed_user, name="Legacy weekly")
+            db.session.query(PaySchedule).filter_by(user_id=user_id).delete()
+            # A 7-day period: its stored end is start + (cadence - 1).
+            db.session.execute(
+                text("DELETE FROM budget.pay_periods WHERE user_id = :uid"),
+                {"uid": user_id},
+            )
+            db.session.execute(
+                text(
+                    "INSERT INTO budget.pay_periods "
+                    "(user_id, start_date, end_date, period_index) "
+                    "VALUES (:uid, DATE '2026-01-02', DATE '2026-01-08', 0)"
+                ),
+                {"uid": user_id},
+            )
+            db.session.commit()
+
+            _run(_M_RF16.downgrade, db.session)
+
+            assert _stored_count(db, profile.id) == 52
+
     def test_an_owner_with_no_cadence_keeps_the_default(
         self, app, db, seed_user, restore_dropped_column,
     ):

@@ -189,14 +189,31 @@ def _contribution_inputs_for_accounts(
     # (plan step R-F16).  The adapter needs the owner's paycheck count -- a
     # calendar-year deduction cap is spread across the year's paychecks -- and
     # this loader is where a pass with a memoized calendar is in scope; the
-    # consumer below the seam is pure.  Scoped to accounts that actually HAVE
-    # a deduction so an owner with no resolvable cadence is refused only when
-    # a figure would genuinely depend on one, which is the same rule
-    # :attr:`app.services.pay_calendar.PayCalendar.cadence` states.
+    # consumer below the seam is pure.
+    #
+    # **Asked only when it can be ANSWERED, and that is not a nicety.**
+    # ``PayCalendar.cadence`` REFUSES an owner who has never stated one, and
+    # this loader is on the SEAM -- the grid, /savings and /investments all
+    # reach it -- so resolving it unconditionally would turn a rendering page
+    # into a 500 for that owner.  It costs no figure to skip: an owner with no
+    # resolvable cadence has no ``budget.pay_schedule`` row AND no pay period
+    # (:func:`app.services.pay_schedule_service.resolve_cadence` infers one
+    # from the last period otherwise), so there is no period for a per-period
+    # contribution to be modelled over and the fold reads nothing here either
+    # way.  Measured at R-F16: the unconditional form raised
+    # ``PayCalendarError`` for exactly this owner where the pre-step code
+    # returned a balance.
+    #
+    # The comprehension iterates every key rather than filtering on a truthy
+    # row list, because ``load_active_deductions_for_accounts`` builds its map
+    # with ``setdefault(...).append(...)`` -- no key is ever empty, so a
+    # ``if rows`` clause here would be a guard that cannot fire.  The empty
+    # case is the ``{}`` above it, which is reached when the owner has no
+    # investment account (the deduction query is scoped to that map's keys).
     adapted_by_account = {
         acct_id: adapt_deductions(rows, ctx.calendar().cadence)
-        for acct_id, rows in deductions_by_account.items() if rows
-    }
+        for acct_id, rows in deductions_by_account.items()
+    } if ctx.calendar().cadence_days is not None else {}
     return {
         account.id: ContributionInputs(
             investment_params=investment_params_map.get(account.id),

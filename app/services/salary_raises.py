@@ -25,8 +25,8 @@ def apply_raises(base_salary, raises, as_of):
     """Return the effective annual salary as of a date, after applying raises.
 
     The shared raise-application rule used by both the paycheck pipeline
-    (:func:`calculate_paycheck` / :func:`project_salary`) and the pension
-    salary projection
+    (:func:`app.services.paycheck_calculator.calculate_paycheck` /
+    ``project_salary``) and the pension salary projection
     (:func:`app.services.pension_calculator.project_salaries_by_year`).
     Promoted from the former private ``_apply_raises(profile, period)`` to
     plain inputs so the pension projector no longer reaches into a private
@@ -122,9 +122,10 @@ def _apply_single_raise(salary, raise_obj):
 def get_raise_event(profile, period):
     """Return a description of any raise event occurring in this period.
 
-    Public because two consumers now need a period's raise event: this
-    module (when building each :class:`PeriodInfo`) and the salary cockpit
-    route, which compares the focused period's event against its
+    Public because two consumers now need a period's raise event: the paycheck
+    engine (:func:`app.services.paycheck_calculator.calculate_paycheck`, when
+    it builds each ``PeriodInfo``) and the salary cockpit route, which compares
+    the focused period's event against its
     predecessor's to collapse the raise banner to one paycheck per run
     (P-SA1) without projecting every period.  Pure over ``profile.raises``
     and ``period.start_date`` -- no breakdown, no DB, no ``float``.

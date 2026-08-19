@@ -25,7 +25,7 @@ from app.services import (
     obligations_aggregator,
     paycheck_calculator,
 )
-from app.services.paycheck_calculator import PayrollBasis
+from app.services.payroll_basis import PayrollBasis
 from app.services.savings_dashboard_service._debt_line import (
     LoanPayoffOutlook,
     debt_without_payoff_model,

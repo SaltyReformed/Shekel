@@ -2,10 +2,13 @@
 
 Plan step **R-F16** (``docs/plans/implementation_plan_recurrence_redesign.md``,
 "Carried steps").  Its own module rather than a type inside
-:mod:`app.services.paycheck_calculator` for two reasons: the engine module sits
-at the 1000-line ceiling, and ten modules outside it construct this value while
-only one computes a paycheck -- so the input has more consumers than the
-producer does.
+:mod:`app.services.paycheck_calculator`, which sits at the 1000-line ceiling
+this step's own additions pushed it past -- and because nine modules outside
+that one CONSTRUCT this value while only it computes a paycheck, so the input
+has more consumers than the producer does.  Every one of the nine imports it
+from HERE; an earlier draft of this sentence made the consumer argument while
+all nine still reached the type through the engine, which is a claim its own
+import graph refuted.
 
 Pure: no Flask, no ORM import, no clock, no database.  The profile is typed
 loosely on purpose (see the class).

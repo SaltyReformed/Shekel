@@ -28,7 +28,7 @@ salary, a profile reading 26 beside a 7-day cadence gave ``$15,279.20`` of
 monthly gross against a true ``$7,639.60``, and the year's paychecks summed to
 200% of salary.  R-F16 dropped the column; the engine takes a
 :class:`PayCadence` (bound to its profile as
-:class:`app.services.paycheck_calculator.PayrollBasis`) and divides by the
+:class:`app.services.payroll_basis.PayrollBasis`) and divides by the
 count derived here.  A salary profile's paycheck recurs every pay period by
 definition, so there was never a second count to hold.
 

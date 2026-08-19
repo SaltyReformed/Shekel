@@ -179,7 +179,7 @@ class TestThePicturesPublishedSurface:
 _AS_OF = date(2026, 3, 20)
 
 
-def _gap_inputs(profile, pay):
+def _gap_inputs(profile, pay, cadence_days=14):
     """Wrap a profile and a pay snapshot in the bundle the producer takes.
 
     ``compute_gap_net_biweekly`` reads the owner's salary profiles and the
@@ -187,13 +187,19 @@ def _gap_inputs(profile, pay):
     :class:`~app.services.retirement_dashboard_service.GapInputs` since
     pay-calendar plan step C2-f2e, so the pure-unit cases build the bundle the
     one production caller builds rather than handing the two values in loose.
-    The other four fields are inert: the producer reads neither the settings,
-    the pensions, the bundle's STORED merit horizon (the argument carries the
-    plan point's), nor the pay cadence.
+    Three fields are inert: the producer reads neither the settings, the
+    pensions, nor the bundle's STORED merit horizon (the argument carries the
+    plan point's).  **The pay cadence is NOT one of them since plan step
+    R-F16**, which is what divides the projected final-year salary into a
+    paycheck -- it read a ``pay_periods_per_year`` column off the profile
+    until then, and this docstring said the field was inert.
 
     Args:
         profile: The owner's primary :class:`SalaryProfile`.
         pay: The ``_CurrentPay`` snapshot.
+        cadence_days: Days between the owner's paydays.  Stated rather than
+            fixed so a case can vary the one axis a 14-day fixture cannot
+            see: at 26 the derived count equals the constant it replaced.
 
     Returns:
         The :class:`GapInputs` bundle.
@@ -204,7 +210,7 @@ def _gap_inputs(profile, pay):
         salary_profiles=[profile],
         pay=pay,
         merit_horizon_years=5,
-        pay_cadence=PayCadence(cadence_days=14),
+        pay_cadence=PayCadence(cadence_days=cadence_days),
     )
 
 
@@ -406,6 +412,36 @@ class TestTheRenderDayOpensTheSalaryPath:
         )
         assert after == Decimal("2000.00")
 
+    def test_a_weekly_owners_gap_divides_by_52(self):
+        """THE CADENCE AXIS: the projected paycheck follows the owner's rhythm.
+
+        Input: the same $100,000 profile and 0.80 take-home rate, on a 7-day
+        cadence.
+        Expected: ``($100,000 / 52) x 0.80 = $1,923.08 x 0.80 = $1,538.46``,
+        half the biweekly answer above.
+        Why: every other case here is biweekly, where the derived count and
+        the ``pay_periods_per_year`` column plan step R-F16 deleted both read
+        26 -- so none of them can tell the two apart. This is the case that
+        fails if the divisor stops being the owner's cadence.
+        """
+        pay = retirement_dashboard_service._CurrentPay(
+            net_biweekly=Decimal("2000.00"),
+            current_breakdown=paycheck_calculator.PaycheckBreakdown(
+                period=paycheck_calculator.PeriodInfo(period_id=1),
+                earnings=paycheck_calculator.Earnings(
+                    annual_salary=Decimal("100000.00"),
+                    gross_biweekly=Decimal("2500.00"),
+                ),
+            ),
+        )
+        gap = _gap_inputs(self._profile(), pay, cadence_days=7)
+
+        # $100,000 / 52 = $1,923.0769 -> $1,923.08; x 0.80 -> $1,538.464 ->
+        # $1,538.46.
+        assert retirement_dashboard_service.compute_gap_net_biweekly(
+            gap, date(2030, 6, 30), None, 5, date(2027, 3, 20),
+        ) == Decimal("1538.46")
+
     def test_the_employer_basis_opens_at_the_pass_year(self):
         """``build_employer_salary_basis`` projects from the pass's year.
 
@@ -424,6 +460,38 @@ class TestTheRenderDayOpensTheSalaryPath:
         assert retirement_projection.build_employer_salary_basis(
             [profile], date(2030, 6, 30), 5, date(2032, 3, 20), cadence,
         ) is None
+
+    def test_the_employer_basis_divides_by_the_OWNERS_paychecks(self):
+        """THE CADENCE AXIS for the employer-contribution base.
+
+        Input: the same raise-free $100,000 profile, resolved at 14 days and
+        again at 7.
+        Expected: $3,846.15 and $1,923.08 -- the same salary over 26 and over
+        52 paychecks.
+        Why: the resolver feeds ``growth_engine``'s percentage-of-gross
+        employer match for the WHOLE projection horizon, so a count that is
+        not the owner's compounds. It read a ``pay_periods_per_year`` column
+        until plan step R-F16 and its only test was biweekly, where that
+        column and the derived count agree.
+        """
+        profile = self._profile()
+
+        class _Period:  # the one attribute the resolver reads
+            start_date = date(2027, 3, 20)
+
+        period = _Period()
+
+        biweekly = retirement_projection.build_employer_salary_basis(
+            [profile], date(2030, 6, 30), 5, date(2027, 3, 20),
+            PayCadence(cadence_days=14),
+        )
+        weekly = retirement_projection.build_employer_salary_basis(
+            [profile], date(2030, 6, 30), 5, date(2027, 3, 20),
+            PayCadence(cadence_days=7),
+        )
+
+        assert biweekly(period) == Decimal("3846.15")
+        assert weekly(period) == Decimal("1923.08")
 
 
     def test_the_RENDER_threads_its_own_day_into_the_salary_path(

@@ -14,7 +14,7 @@ from app.models.salary_raise import SalaryRaise
 from app.models.paycheck_deduction import PaycheckDeduction
 from app.models.tax_config import FicaConfig, StateTaxConfig
 from app.models.calibration_override import CalibrationOverride
-from app.models.pay_schedule import PaySchedule
+from app.services import pay_period_write
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
@@ -219,6 +219,28 @@ class TestProfileList:
             assert b"New Salary Profile" in response.data
 
 
+def _respace_paydays(db, user_id, cadence_days):
+    """Re-generate the owner's schedule AT *cadence_days*, committed.
+
+    Both the persisted cadence and the paydays move, through the one write
+    door, so the fixture is a state the application can actually produce -- a
+    schedule row saying 7 beside 14-day paydays is not.
+
+    Args:
+        db: The test session wrapper.
+        user_id: The owner to respace.
+        cadence_days: The new days between paydays.
+    """
+    pay_period_write.record_paydays(
+        user_id=user_id,
+        first_payday=date(2026, 1, 2),
+        num_periods=10,
+        cadence_days=cadence_days,
+        retiring=db.session.query(PayPeriod).filter_by(user_id=user_id).all(),
+    )
+    db.session.commit()
+
+
 class TestProfileCreate:
     """Tests for POST /salary."""
 
@@ -296,13 +318,11 @@ class TestProfileCreate:
             filing_status = db.session.query(FilingStatus).filter_by(
                 name="single",
             ).one()
-            schedule = (
-                db.session.query(PaySchedule)
-                .filter_by(user_id=seed_user["user"].id)
-                .one()
-            )
-            schedule.cadence_days = 7
-            db.session.commit()
+            # A COHERENT weekly owner: the paydays are respaced with the
+            # cadence, not just relabelled.  A 7-day cadence beside 14-day
+            # paydays is a state no door in the application can produce, and
+            # asserting a figure for one pins nothing about a real owner.
+            _respace_paydays(db, seed_user["user"].id, cadence_days=7)
 
             auth_client.post("/salary", data={
                 "name": "Weekly Check",
@@ -340,14 +360,8 @@ class TestProfileCreate:
         would fail if one came back.
         """
         with app.app_context():
-            schedule = (
-                db.session.query(PaySchedule)
-                .filter_by(user_id=seed_user["user"].id)
-                .one()
-            )
             for cadence_days, shown in ((7, ">52<"), (14, ">26<")):
-                schedule.cadence_days = cadence_days
-                db.session.commit()
+                _respace_paydays(db, seed_user["user"].id, cadence_days)
 
                 response = auth_client.get("/salary/new")
 

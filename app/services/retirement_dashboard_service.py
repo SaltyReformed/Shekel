@@ -32,7 +32,7 @@ from app.services import (
     pension_calculator,
 )
 from app.services.pay_calendar import PayCadence
-from app.services.paycheck_calculator import PayrollBasis
+from app.services.payroll_basis import PayrollBasis
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.utils.dates import add_months
 from app.utils.money import round_money

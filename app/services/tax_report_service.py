@@ -75,7 +75,7 @@ from app.services import (
     tax_calculator,
 )
 from app.services.pay_calendar import PayCadence, PayCalendar
-from app.services.paycheck_calculator import PayrollBasis
+from app.services.payroll_basis import PayrollBasis
 from app.services.projection_inputs import (
     load_active_accounts_with_types,
     load_active_salary_profiles,
@@ -385,7 +385,14 @@ def compute_tax_report(user_id: int, year: int, today: date) -> TaxReport | None
     # year's periods are a filter of it, and its cadence is the paycheck count
     # every projection below divides by (plan step R-F16).
     calendar = balance_ctx.calendar()
-    cadence = calendar.cadence
+    # **Asked only when it can be ANSWERED.**  ``PayCalendar.cadence`` REFUSES
+    # an owner who has never stated one, and such an owner has no paydays at
+    # all -- so they also have no periods to project, which is the all-modelled
+    # zero report this function's own contract promises "no crash" for.
+    # Resolving it unconditionally would 500 that page for exactly the state it
+    # documents surviving; the ``None`` never reaches a `PayrollBasis`, because
+    # the only arm that builds one runs when a period must be projected.
+    cadence = calendar.cadence if calendar.cadence_days is not None else None
     periods = _load_year_periods(calendar, year)
     configs = load_tax_configs_for_year(user_id, primary, year)
 
@@ -479,7 +486,9 @@ def _aggregate_withholding(
         profiles: The active salary profiles.
         periods: The year's pay periods (passed to each profile's hybrid).
         cadence: The owner's pay cadence -- the paycheck count each profile's
-            projection divides its annual salary by (plan step R-F16).
+            projection divides its annual salary by (plan step R-F16) --
+            or ``None`` for an owner who has never stated one, who therefore
+            has no period for a projection to price.
 
     Returns:
         The summed :class:`WithholdingSummary`.
@@ -492,7 +501,7 @@ def _aggregate_withholding(
 
     for profile in profiles:
         wtd = compute_withholding_to_date(
-            user_id, PayrollBasis(profile, cadence), year, periods,
+            user_id, profile, year, periods, cadence,
         )
         totals.append(wtd.total)
         measures.append(wtd.measured)
@@ -530,7 +539,9 @@ def _aggregate_modeled_pretax(
         profiles: The active salary profiles.
         periods: The year's pay periods.
         cadence: The owner's pay cadence -- the paycheck count the projection
-            divides each annual salary by (plan step R-F16).
+            divides each annual salary by (plan step R-F16).  Never ``None``
+            here: the guard above returns before this loop when there are no
+            periods, and an owner with a period always resolves a cadence.
 
     Returns:
         The summed modeled annual pre-tax (``ZERO`` when there are no

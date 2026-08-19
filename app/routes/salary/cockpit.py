@@ -27,7 +27,7 @@ from app.extensions import db
 from app.models.salary_profile import SalaryProfile
 from app.services import paycheck_calculator
 from app.services import salary_cockpit_service
-from app.services.paycheck_calculator import PayrollBasis
+from app.services.payroll_basis import PayrollBasis
 from app.services.salary_raises import get_raise_event
 from app.services.pay_calendar import calendar_for
 from app.services.tax_config_service import (

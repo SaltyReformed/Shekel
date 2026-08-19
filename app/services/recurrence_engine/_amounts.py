@@ -18,6 +18,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import NamedTuple
 
+from app.services.payroll_basis import PayrollBasis
 from app.services.recurrence_engine._plan import compute_due_date
 
 logger = logging.getLogger(__name__)
@@ -268,7 +269,7 @@ def _get_transaction_amount(template, salary_profile, period, calendar):
         calibration = getattr(salary_profile, "calibration", None)
 
         breakdown = paycheck_calculator.calculate_paycheck(
-            paycheck_calculator.PayrollBasis(salary_profile, calendar.cadence),
+            PayrollBasis(salary_profile, calendar.cadence),
             period, calendar.saved(), tax_configs,
             calibration=calibration,
         )

@@ -628,6 +628,12 @@ which is the standard the arc's own verification file sets. Closes **D41**.
 `cadence_days` expresses the 1st and the 15th, `round(365.2425 / 15)` gives the right COUNT and
 drifting paydays, and a monthly cadence already carries exactly that limitation; a day-of-month
 schedule KIND is scheduled as **R13** rather than blocking R-F16 on it. Chosen from four options.
+**What does NOT transfer from the monthly case is the excuse**: a biweekly owner's 27-paycheck year
+is real, so `round(365.2425 / 14)`'s 0.34% approximates a real phenomenon, where a genuinely
+semi-monthly owner is paid exactly 24 times every year with zero variance -- so the 1.46% a 15-day
+walk carries (`24.3495 / 24`) is an artifact the model manufactures, about `$1,334` a year of
+over-modelled gross on a `$91,675` salary, on top of paydays drifting ~20 days off the 1st and the
+15th. R13 is what removes it.
 
 ### Carried steps -- scheduled here so they are not merely remembered
 
@@ -701,6 +707,27 @@ branches THREE producers on it: `pay_period_write.record_paydays` (which spaces 
 `PayCadence.periods_per_year` (which must answer 24 without dividing). It is ranked last in this arc
 deliberately: it edits the pay-calendar package's core, which `pay_calendar:C2`'s remaining leaves
 are still moving, and nothing in either arc depends on it.
+
+- [ ] **R14 -- what a payroll deduction's gross is priced from** (finding **D45**).
+
+`investment_projection._compute_deduction_per_period` divides a profile's stored `annual_salary` by
+the paycheck count, where every sibling surface routes through
+`income_service.get_current_gross_biweekly`. It is the recompute F-20 / MED-06 / F-032 replaced
+everywhere else, and it sets both the employee contribution and the employer-match basis: measured
+at `$137.51` a year understated on the developer's own 5% employer contribution.
+
+**R-F16 fixed this and reverted it, and the revert is the specification.** Swapping in the
+owner-level raise-aware gross made every percentage deduction price off ONE profile, chosen by
+`get_current_gross_biweekly`'s unordered `.first()` -- a measured 39% swing on a two-job owner that
+flips between renders with no data change -- and off a figure that is ZERO whenever no period covers
+today, which deleted the whole contribution plan at onboarding and after a horizon lapse. So the
+step must answer three questions together rather than one: WHOSE salary (the deduction's own
+profile, which the per-row basis gets right), WHICH period's gross (the engine already computes one
+per period, and a contribution TIMELINE wants that rather than one current-period scalar), and
+against WHICH clock -- ledger row **P56**'s question, since a scalar resolved at `date.today()`
+makes a historical modelled balance move when a raise lands.
+
+**MOVES MONEY** and needs its own review pass.
 
 - [ ] **R-F17 -- the two period-INDEX horizon windows** (finding F-17).
 

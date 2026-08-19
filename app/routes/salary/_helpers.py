@@ -36,7 +36,7 @@ from app.services import (
     template_amount_service,
 )
 from app.services.generation_schedule import GenerationSchedule
-from app.services.paycheck_calculator import PayrollBasis
+from app.services.payroll_basis import PayrollBasis
 from app.services.pay_calendar import calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs_for_year
