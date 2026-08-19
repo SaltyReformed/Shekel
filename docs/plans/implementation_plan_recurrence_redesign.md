@@ -56,6 +56,8 @@ Taken 2026-08-05 (developer):
 | **Whether the closed set's TABLE and its ENUM may go in ONE release** | **YES, and R-R11's hazard does not generalise to a dropped TABLE at all -- which an adversarial review of R9 established after the step had argued the opposite. R-R11 held the `Once` ROW because `ref_cache.init` raises for an enum member with no row in a table that EXISTS; `_load_rows` CATCHES the `ProgrammingError` a missing table raises, and `init` records it unavailable and completes, pinned by `test_ref_cache.py::test_init_records_unavailable_table_and_keeps_others_usable`. Three independent reasons the auto-rollback image is safe, in the order they fire: it never reaches `ref_cache`, because `entrypoint.sh` step 3 runs `init_database.py` with `init_ref_cache=False` and its Alembic tree cannot resolve the new revision, so `set -eEuo pipefail` aborts (finding F-8); `shekel-deploy:repin_is_safe` refuses the re-pin for the same reason, leaving the pre-deploy dump as recovery; and booted anyway it would degrade rather than die. Precedent measured the same day: R7c-a, R7c-b and R7c-c all reached production in ONE release (PR #102, `41e09dad`), and R7c-c dropped a column the previous image's ORM mapped. R-R27, ruled 2026-08-17; shipped as R9** |
 | **What a forward window named in MONTHS resolves to** | **The LAST WHOLE PAYCHECK that ARRIVES within the span, counted against the CADENCE itself: `floor(months x DAYS_PER_YEAR / (MONTHS_PER_YEAR x cadence_days))`. So the LABEL is the fixed thing and the pay-period count derives from the owner's stated rhythm. Flooring rather than rounding was measured: over all 365 legal cadences crossed with the 3 / 6 / 12 / 24-month spans the two disagree on 388 of 1,460 cases, and by mean absolute distance between the resolved period's END and the day the label names the floored answer is closer in 387 and equal in the last. Deriving it through the ROUNDED `periods_per_year` instead was the first implementation and an adversarial review measured it wrong -- double rounding disagrees with the arrival test on 384 cases, always overshooting, and in 74 of them OFFERS a horizon the owner has no paycheck inside at all. A span no paycheck reaches resolves to ZERO and is NOT OFFERED; a surface that must render something anyway (the Plan tab, the pulse chart) shows the paycheck the owner is in, which is a POLICY and not an invariant. R-R31, ruled 2026-08-19; shipped as R-F17** |
 | **What a REGENERATION does to the rows it already generated** | **It MAINTAINS them; it does not destroy and rebuild them. A row the rule still names is UPDATED in place, a period the rule names with no row gets one, and a row the rule no longer names is removed only when it carries nothing of the owner's. A row holding the owner's own records -- purchases, a note, a hand-entered actual -- is RETAINED and reported, in two shapes: the rule stopped naming its period, or the template's ACCOUNT moved, which drags every purchase onto the new account and invalidates the statement link that cleared it. The delete-and-recreate this replaces was safe only while a generated row was a pure projection of `(template, period)`; `transaction_entries` CASCADE from their parent, so it destroyed `$499.82` of recorded purchases on live data. R-R19, ruled 2026-08-15; shipped as R10-a (`5fc13cdb`), closing row N-292** |
+| **Where a loan payment's DERIVED validity window lives** | **SPLIT BY KIND: only the CLOSING bound stops being stored. `starts_on` is the cadence ANCHOR since R-R16 -- `_resolution.cadence_day_of_month` is its one reader and the cycle phase derives from it -- so a MONTH-unit loan payment without it has no day to fire on, and it stays written. `end_date` goes NULL for a loan payment and `ck_recurrence_rules_valid_window` lands on that. D35 half closes: a derived `starts_on` still shares a column with authored ones. R-R29, ruled 2026-08-19; owned by R7d** |
+| **What generation does for an owner with no baseline scenario** | **REFUSES -- `BaselineMissingError` to the single application-level handler (R-BW), as every other producer needing a scenario does. The early return it replaces left the last-written bound standing, and with nothing stored there is nothing to stand. The create path and `period_population` already behave this way, so what it decides is the FORM READ path. R-R30, ruled 2026-08-19; owned by R7d** |
 | **How a definition's ACCOUNT change reaches the transfers it already generated** | **IN PLACE, through the one write door, which learns to move a transfer's endpoints.** A generated transfer derives SIX columns from its template and `transfer_service.update_transfer` could write FOUR, so the two account columns reached their rows only by the sweep DELETING and re-creating every one of them -- measured on a production clone at 51 of 62 rows re-pointed as a side effect of a rebuild -- while a NON-repeating template's identical edit was REFUSED outright, because nothing could carry it. That is a limit of the door, not a rule about transfers, so the door moves the parent and both shadow rows now, re-deriving each leg's display name and reconciling the ledger on both sides; `NON_REPEATING_ACCOUNTS_ARE_FIXED` is DELETED and one edit stops meaning two things. A row holding the owner's own records is still RETAINED rather than moved, which is R-R19 unchanged: its settled figure is what moved between the OLD accounts and its statement link is scoped BY account. R-R32, ruled 2026-08-20 (developer); shipped as R10-b** |
 
 ---
@@ -428,12 +430,13 @@ accounted for in `historical/recurrence_as_built_2026-08-14.md` and the last two
       deletes `compute_due_date`, and the WEEK unit `R8-b` frees is where that migration's SQL and
       its Python twin part. Account: `historical/recurrence_r7cc_as_built_2026-08-16.md`.
 
-- [ ] **R7d -- a loan payment's validity window stops being a stored column.**
+- [ ] **R7d -- a loan payment's CLOSING bound stops being a stored column.**
 
-`loan_recurrence_sync` becomes a RESOLVER --
-`loan_payment_window(account) -> (starts_on, ends_on | EMPTY)` -- and generation applies that window
-ON TOP of the rule's own bound, instead of ten chokepoints writing it into `budget.recurrence_rules`
-and hoping no reader gets there first.
+`loan_recurrence_sync` becomes a RESOLVER -- `loan_payment_window(account, balance_ctx)` answering
+`ClosesOn`, `Indefinite` or `EMPTY` -- and generation applies that bound ON TOP of the rule's own,
+instead of nine chokepoints writing it into `budget.recurrence_rules` and hoping no reader gets
+there first. **Ruling R-R29 narrowed this to the CLOSING bound alone**; `starts_on` stays a stored
+column. **Two traps below cost this step a design each; read them before building.**
 
 **The root cause is a CATEGORY ERROR in the table, and R7c-b is where it became visible.** Those two
 columns hold two different KINDS of fact: what a USER AUTHORS about a repeating definition, where a
@@ -451,14 +454,80 @@ projected payment whose cash still debits while the fold books the whole amount 
 the template from inside a sync is a destructive side effect on a path that runs on every settle,
 and a corrected true-up would not undo it.
 
-**What the resolver deletes**, and the reason the step pays for itself: the ten
-`sync_recurring_payment_bounds` call sites, the read-path/write-path ordering hazard the module's
-own docstring records, the "idempotent WITHIN a day" caveat on `recurrence_end_date`, the double
-sync in `create_payment_transfer` (once to bound generation, once to record what the generated plan
-implies), and `owns_validity_window`'s documented gap -- it is `sync`'s opening-bound precondition
-exactly and its closing-bound one only approximately, so an owner with no baseline scenario sees a
-locked "Ends" control for a payoff nothing writes. The CHECK lands in the same migration,
-unconditionally true because every remaining row is user-authored. Closes **D35**.
+**RULED 2026-08-19 (R-R29): the two bounds SPLIT BY KIND, and only the closing one stops being
+stored.** Ruling R-R16 made `starts_on` the cadence ANCHOR -- `_resolution.cadence_day_of_month` is
+its ONE reader and returns `starts_on.day`, and `_derive_offset_periods` reads the cycle phase off
+it -- so a MONTH-unit loan payment without it has no day to fire on. It stays, and stays WRITTEN.
+The CHECK lands because `end_date` goes NULL for a loan payment, not because the column pair becomes
+wholly authored: **D35 therefore only HALF closes here**, and the surviving half is a derived
+`starts_on` sharing a column with authored ones. Re-point the row rather than ticking it.
+
+**RULED 2026-08-19 (R-R30): an owner with no baseline scenario REFUSES**, `BaselineMissingError` to
+the single handler (ruling R-BW). Note what this does and does not change: the create path already
+raises (`_transfer_creation_helpers.py:371`) and `period_population` already returns 0 before
+generating, so what R-R30 actually decides is the FORM READ path, where a locked "Ends" control must
+render something for an owner the resolver cannot answer for.
+
+**TRAP 1 -- DO NOT "fix" the ESTIMATED tier's future-only rule. It is finding B-9's FIX.**
+`balance_at/_plan.py::_estimated_from_contract` skips any contractual installment whose
+`payment_date < as_of`, so an overdue slot with no record pays nothing. That reads like an oversight
+and is the opposite: the retired forward walk amortized an installment per month whether or not a
+payment was recorded, and step C6b deleted it for exactly that -- measured at `-$15,755.38` per
+period. B-9's record survives only in
+`docs/audits/balance_architecture/archive/loan_arc_as_built_2026-07-26.md`, which governs nothing;
+the LIVE statement is the comment on the line itself. Measured 2026-08-19 -- deleting a loan's
+projected rows for already-due slots moves its payoff LATER by one month per row (Mortgage
+`2048-12-01` -> `2049-12-01` at twelve; Van `2029-02-22` -> `2030-02-22`) -- which is the fold
+correctly reporting a loan that many payments behind. This step's first design read that as the root
+cause and proposed filling every uncovered slot, which is B-9 re-introduced under a new name. The
+state is not reachable either: every billable month inside the pay-period window carries a row on
+live data (Mortgage 29, Van 28, window `2026-03-26`-`2028-08-09`).
+
+**TRAP 2 -- the resolve can UNDER-generate, and "it only ever over-generates" is MEASURED FALSE.**
+This step's second design argued a bound resolved before the rows exist is always LATER than the
+true one, so it could only write a few rows too many. The ESTIMATED tier fills an uncovered slot
+with the full contractual P&I while the PLANNED tier folds the ROW's own cash, so where a row
+UNDERPAYS, removing it makes the plan pay the loan down FASTER. Measured 2026-08-19 on the clone,
+rolled back: with the Van Loan's 24 slots written at `$300.00` the true payoff is `2030-02-22` and a
+resolve-before-write answers `2029-02-22` --
+**twelve months EARLY, dropping twelve payments the owner owes**; on the Mortgage at `$1,000.00` the
+truth is `None` (never pays off) against a finite `2048-12-01`. Reachable now, not hypothetically:
+`_resolve_transfer_amount` returns a typed amount verbatim with no floor at P&I, and BOTH live loan
+payment templates already carry `is_override` rows (`budget.transfers` 53 / 55 on the Mortgage, 322
+on the Van). **This is R7d's open problem**, and the mitigation the second design named does not
+exist: a loan payment is a TRANSFER, `transfer_recurrence` still hard-deletes and recreates, and the
+maintain pass that would retire an over-generated row is `R10-b`, still OPEN. Resolve the bound
+where the rows are already written, or make the resolver read the template's own amount rather than
+the contract's.
+
+**What the resolver deletes.** Nine of the ten `sync_recurring_payment_bounds` call sites go whole
+-- `params.py:330` / `:448`, `escrow_rates.py:170`, `payment_transfer.py:251` / `:277` / `:344` /
+`:418`, `_loan_posting.py:287` / `:345` -- and with them the double sync at create, the "idempotent
+WITHIN a day" caveat on `recurrence_end_date` (a retired loan's bound is `as_of`, so a mutation on a
+new day rewrites the column and logs), and the stale cached bound D35 measures.
+**The census is of the CLOSING bound only**: all ten also call `_sync_loan_cadence` ahead of the
+scenario guard, and that write is the repair path for three shapes a `payment_day` edit does not
+cover -- `create_params` writes both columns and calls no sync at all, a PAY-SCHEDULE change moves a
+`PERIOD`-unit rule's resolved bound (row **D39**'s shape), and a cadence-unit edit moves
+`nominal_day`. After R7d the opening bound has THREE writers, not one: `params.py:190` plus
+`bind_rule_to_loan` at `payment_transfer.py:250` and `transfers/_instances.py:222`. Decide what
+repairs the other three shapes before deleting their repair path.
+
+**`owns_validity_window` SPLITS; it is not deleted.** It is one predicate because
+`_recurrence_form_refusals` states ONE writer owns both bounds -- a premise R-R29 makes false. It
+drives the render lock and the refusal, so after R7d the "Ends" control either unlocks (a change to
+a money-adjacent form) or stays locked for a value nothing stores, which is the defect the predicate
+exists to close. This step decides which, and any control change owes
+`tests/manual/verify_recurrence_form.py` a browser pass.
+
+**The read pass is this step's own work, and no current step provides it.** The resolve needs a
+`BalanceContext` where generation runs, and the developer's ruling of 2026-08-16 forbids a producer
+below the route building one -- it TAKES the pass. The path is routes -> `pay_period_admin` ->
+`period_population` -> the two engines, and NEITHER service holds or builds one today.
+**`pay_calendar:C11` does NOT cover this**: its scope is the five modules that call
+`BalanceContext.build`, and neither of those two is among them. R7d REMOVES one of C11's five sites
+rather than doing its job, and it settles C11's unruled fork -- "the rule carves it out or takes it
+from its caller" -- so whichever ships first decides for both.
 
 - [ ] **R7e -- the recurrence form's three-state fields become ONE typed submission.**
 
