@@ -61,7 +61,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from app.exceptions import ShekelError
-from app.utils.dates import pay_period_label
+from app.utils.dates import pay_period_label, pay_period_range_label
 
 #: The cadence bounds, mirroring ``ck_pay_schedule_cadence_range`` on
 #: ``budget.pay_schedule.cadence_days``.  Named here rather than inlined
@@ -184,6 +184,27 @@ class DerivedPeriod:
             straddles one.
         """
         return pay_period_label(self.start_date, self.end_date)
+
+    @property
+    def range_label(self) -> str:
+        """Return this period's WIDE label (``"Feb 21 - Mar 06, 2026"``).
+
+        :attr:`label`'s sibling register, for a surface with room for month
+        names -- today the Income Statement's window ``<select>``, whose
+        ``<option>`` sits on screen beside the report heading the same rule
+        produces (``ledger_report_service`` labels that heading by calling
+        :func:`~app.utils.dates.pay_period_range_label` directly, exactly as
+        :attr:`label` and ``PayPeriod.label`` both call the narrow one).
+
+        It is a PROPERTY rather than a Jinja global for :attr:`label`'s reason:
+        the format belongs to ``app.utils.dates``, and a template that called a
+        two-argument formatter would be the place a fourth spelling of this
+        register next appeared (ledger row **P47**).  Plan step C2-f3a.
+
+        Returns:
+            The label, carrying the END date's four-digit year.
+        """
+        return pay_period_range_label(self.start_date, self.end_date)
 
 
 def derive_periods(

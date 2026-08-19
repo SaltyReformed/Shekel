@@ -121,9 +121,11 @@ def classify_period_lock(period, as_of: date | None = None) -> PeriodLockReason 
     Args:
         period: The :class:`~app.models.pay_period.PayPeriod` to classify.
         as_of: Reference date for the historical test (defaults to
-            today), matching ``pay_period_service.get_current_period``:
-            the period containing ``as_of`` and every later one is not
-            historical.
+            today), matching :meth:`~app.services.pay_calendar.PayCalendar
+            .period_containing`: the period containing ``as_of`` and every
+            later one is not historical.  *This named
+            ``pay_period_service.get_current_period`` until plan step C2-f3a
+            deleted it; the derivation is what answers that question now.*
 
     Returns:
         The first applicable :class:`PeriodLockReason`, or ``None``.

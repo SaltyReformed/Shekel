@@ -58,8 +58,10 @@ def containing_index(
     about how a window's ordinals relate to the calendar's, true today and
     unenforced, where this is the same bisect the containment answer already
     ran.  The scan it replaced was the last HAND-ROLLED member of row P6's
-    census; ``pay_period_service.get_current_period`` is still live at every
-    surface outside the read passes, and plan step **C2-f3** retires it.
+    census, and the last survivor of ANY kind --
+    ``pay_period_service.get_current_period``, which was SQL rather than a scan
+    -- was DELETED at plan step **C2-f3a**, which empties row **P6**'s census
+    (the ROW is the ``C2`` container's and ticks with it).
 
     Args:
         periods: Periods in ``start_date`` ascending order.

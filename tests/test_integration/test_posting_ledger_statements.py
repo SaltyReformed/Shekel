@@ -78,6 +78,7 @@ from app.services import (
     posting_service,
 )
 from app.services.ledger_report_service import StatementWindow
+from app.services.pay_calendar import calendar_for
 import pytest
 
 from tests._test_helpers import (
@@ -567,7 +568,7 @@ class TestRichFixtureStatements:
 
             # --- Income statement (year 2099), hand-computed line by line.
             income = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("year", year=_Y),
+                user_id, calendar_for(user_id), StatementWindow("year", year=_Y),
             )
             assert income.window_label == "2099"
             assert _labels(income.income.lines) == ["Income: Salary"]
@@ -697,7 +698,7 @@ class TestLoanInterestEscrowInStatements:
 
             # --- Income statement: interest + escrow present, cash absent.
             income = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("year", year=_Y),
+                user_id, calendar_for(user_id), StatementWindow("year", year=_Y),
             )
             assert _labels(income.income.lines) == ["Income: Salary"]
             assert income.income.total == Decimal("2000.00")
@@ -892,7 +893,7 @@ class TestArticulation:
             start_sheet = _reader_bs(user_id, date(_Y - 1, 12, 31))
             end_sheet = _reader_bs(user_id, date(_Y, 12, 31))
             income = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("year", year=_Y),
+                user_id, calendar_for(user_id), StatementWindow("year", year=_Y),
             )
 
             equity_delta = end_sheet.equity.total - start_sheet.equity.total
@@ -959,10 +960,10 @@ class TestPeriodVsCalendarAgreement:
             db.session.commit()
 
             by_period = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("pay_period", period_id=period.id),
+                user_id, calendar_for(user_id), StatementWindow("pay_period", period_id=period.id),
             )
             by_month = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("month", month=3, year=_Y),
+                user_id, calendar_for(user_id), StatementWindow("month", month=3, year=_Y),
             )
 
             assert _labels(by_period.income.lines) == _labels(
@@ -1014,7 +1015,7 @@ class TestRevertAndResidueDropped:
             db.session.commit()
             # Sanity: it was present before the revert.
             before = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("year", year=_Y),
+                user_id, calendar_for(user_id), StatementWindow("year", year=_Y),
             )
             assert before.expense.total == Decimal("400.00")
 
@@ -1022,7 +1023,7 @@ class TestRevertAndResidueDropped:
             db.session.commit()
 
             after = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("year", year=_Y),
+                user_id, calendar_for(user_id), StatementWindow("year", year=_Y),
             )
             assert not after.expense.lines
             assert after.net_income == Decimal("0.00")
@@ -1072,7 +1073,7 @@ class TestRevertAndResidueDropped:
 
             for year in (2098, 2099):
                 statement = ledger_report_service.compute_income_statement(
-                    user_id, StatementWindow("year", year=year),
+                    user_id, calendar_for(user_id), StatementWindow("year", year=year),
                 )
                 assert not statement.expense.lines, year
                 assert statement.net_income == Decimal("0.00"), year
@@ -1188,11 +1189,11 @@ class TestAttributionEdgeCases:
             db.session.commit()
 
             in_2098 = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("year", year=2098),
+                user_id, calendar_for(user_id), StatementWindow("year", year=2098),
             )
             assert in_2098.expense.total == Decimal("500.00")
             in_2099 = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("year", year=2099),
+                user_id, calendar_for(user_id), StatementWindow("year", year=2099),
             )
             assert not in_2099.expense.lines
 
@@ -1240,11 +1241,11 @@ class TestAttributionEdgeCases:
             db.session.commit()
 
             august = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("month", month=8, year=_Y),
+                user_id, calendar_for(user_id), StatementWindow("month", month=8, year=_Y),
             )
             assert august.expense.total == Decimal("150.00")
             july = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("month", month=7, year=_Y),
+                user_id, calendar_for(user_id), StatementWindow("month", month=7, year=_Y),
             )
             assert not july.expense.lines
 
@@ -1288,18 +1289,18 @@ class TestAttributionEdgeCases:
 
             # Calendar 2099 (the paid year) sees it; the pay period lives in 2100.
             paid_year = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("year", year=2099),
+                user_id, calendar_for(user_id), StatementWindow("year", year=2099),
             )
             assert paid_year.expense.total == Decimal("250.00")
             # The pay-period window (its period start is 2100) still sees it,
             # because a pay-period window keys on the entry's period, not a date.
             by_period = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("pay_period", period_id=future_period.id),
+                user_id, calendar_for(user_id), StatementWindow("pay_period", period_id=future_period.id),
             )
             assert by_period.expense.total == Decimal("250.00")
             # The 2100 calendar window does NOT (the paid date is 2099).
             future_year = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("year", year=2100),
+                user_id, calendar_for(user_id), StatementWindow("year", year=2100),
             )
             assert not future_year.expense.lines
             _assert_ledger_self_consistent()
@@ -1347,7 +1348,7 @@ class TestDisplayLabels:
             db.session.commit()
 
             income = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("month", month=3, year=_Y),
+                user_id, calendar_for(user_id), StatementWindow("month", month=3, year=_Y),
             )
             assert _labels(income.expense.lines) == ["Family: Snacks"]
 
@@ -1387,7 +1388,7 @@ class TestDisplayLabels:
             db.session.commit()
 
             income = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("month", month=3, year=_Y),
+                user_id, calendar_for(user_id), StatementWindow("month", month=3, year=_Y),
             )
             assert _labels(income.expense.lines) == ["Family: Groceries"]
             assert income.expense.total == Decimal("100.00")
@@ -1429,7 +1430,7 @@ class TestScenarioAndOwnerIsolation:
             db.session.commit()
 
             income = ledger_report_service.compute_income_statement(
-                user_id, StatementWindow("year", year=_Y),
+                user_id, calendar_for(user_id), StatementWindow("year", year=_Y),
             )
             assert not income.expense.lines
             sheet = _reader_bs(user_id)
@@ -1480,10 +1481,10 @@ class TestScenarioAndOwnerIsolation:
             ).amount == Decimal("1920.00")
 
             income1 = ledger_report_service.compute_income_statement(
-                user1, StatementWindow("year", year=_Y),
+                user1, calendar_for(user1), StatementWindow("year", year=_Y),
             )
             income2 = ledger_report_service.compute_income_statement(
-                user2, StatementWindow("year", year=_Y),
+                user2, calendar_for(user2), StatementWindow("year", year=_Y),
             )
             assert income1.expense.total == Decimal("60.00")
             assert income2.expense.total == Decimal("80.00")

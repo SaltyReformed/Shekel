@@ -151,11 +151,17 @@ class PeriodWindow:
         **Its consumer is the /investment growth chart** (plan step C2-f2c).
         That module scanned the window period by period for the one holding the
         planned retirement date, which is this predicate written a second time
-        and the last HAND-ROLLED member of ledger row **P6**'s census -- the
-        census names one other survivor, ``pay_period_service.get_current_period``,
-        which is SQL rather than a scan and which plan step **C2-f3** retires.
-        The scan and this agree over a tiling window, so retiring it removed a
-        duplicate rather than a divergence.
+        and the last HAND-ROLLED member of ledger row **P6**'s census.  The
+        scan and this agree over a tiling window, so retiring it removed a
+        duplicate rather than a divergence.  **The census's LAST survivor of
+        any kind, ``pay_period_service.get_current_period``, is DELETED at plan
+        step C2-f3a** -- it was SQL rather than a scan, and its ``.first()``
+        carried no ``ORDER BY`` (ledger row **P19**), so over two periods
+        covering one day it answered whichever row the planner reached first.
+        Row **P6**'s CENSUS is empty -- every "which pay period contains this
+        date" in ``app/`` is now one of the searches in :mod:`._searches` --
+        though the ROW is open until the ``C2`` container it is owned by
+        ticks.
 
         **Not derived from ``period_index``.**  A window is a slice of a tiling
         calendar, so ``found.period_index - self[0].period_index`` gives the

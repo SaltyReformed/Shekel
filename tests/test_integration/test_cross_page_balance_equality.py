@@ -75,7 +75,6 @@ from app.services import (
     dashboard_service,
     home_equity_service,
     investment_dashboard_service,
-    pay_period_service,
     savings_dashboard_service,
 )
 from app.services.balance_at import _kernel as net_worth_kernel
@@ -83,7 +82,10 @@ from app.services.balance_at import BalanceContext
 from app.services.balance_at._resolution import resolved_loan
 from app.services.savings_dashboard_service._display import LIABILITY_KEY
 from app.services.savings_dashboard_service._net_worth import _ASSET_BANDS
-from tests._test_helpers import freeze_today
+from tests._test_helpers import (
+    current_pay_period,
+    freeze_today,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -311,7 +313,7 @@ def _grid_current_period_value(ctx):
     view = balance_at.grid_balance_view(
         ctx["account"], _bctx(ctx),
     )
-    current = pay_period_service.get_current_period(ctx["user_id"])
+    current = current_pay_period(ctx["user_id"])
     return view.columns[current.id].balance
 
 
@@ -1400,7 +1402,7 @@ def _modelled_current_balance(ctx) -> Decimal:
     every surface reaches ONE figure, by three different paths.
     """
     balance_ctx = BalanceContext.build(ctx["user_id"])
-    current = pay_period_service.get_current_period(ctx["user_id"])
+    current = current_pay_period(ctx["user_id"])
     return balance_at.balance_map(
         ctx["account"], balance_ctx,
     )[current.id]

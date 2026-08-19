@@ -749,9 +749,11 @@ def _regenerate_keep_through_period(
     is locked is kept; the first NOT-YET-STARTED AND unlocked period is where
     the rebuildable tail begins, so this returns the period BEFORE it.  "Not
     yet started" is ``start_date > today`` STRICTLY: a period whose
-    ``start_date == today`` is the current in-progress period
-    (``get_current_period`` matches ``start_date <= today <= end_date``), so on
-    a payday it is kept, not rebuilt.  When there is no rebuildable future tail
+    ``start_date == today`` is the current in-progress period -- the same
+    inclusive bound :meth:`~app.services.pay_calendar.PayCalendar
+    .period_containing` applies, and which ``get_current_period`` applied in
+    SQL until plan step C2-f3a deleted it -- so on a payday it is kept, not
+    rebuilt.  When there is no rebuildable future tail
     (every period has started or is locked), it returns the LAST period -- the
     truncate is then a no-op and regenerate degrades to an append from
     ``new_start_date``.

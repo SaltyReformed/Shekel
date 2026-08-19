@@ -45,7 +45,11 @@ from app.services import (
     retirement_projection,
 )
 from app.services.retirement_plan import load_retirement_inputs, picture_at
-from tests._test_helpers import make_investment_account, mark_purchase_settled
+from tests._test_helpers import (
+    current_pay_period,
+    make_investment_account,
+    mark_purchase_settled,
+)
 
 
 def _picture(user_id, as_of=None):
@@ -718,7 +722,7 @@ class TestRetirementProjectionEntryAware:
         with app.app_context():
             user = seed_user["user"]
             scenario = seed_user["scenario"]
-            current_period = pay_period_service.get_current_period(user.id)
+            current_period = current_pay_period(user.id)
             assert current_period is not None
 
             # Active salary profile so the gap path is reachable.
@@ -872,7 +876,7 @@ class TestRetirementAnchorInPastModeledHeadlineDatedSeed:
             )
 
             all_periods = pay_period_service.get_all_periods(user.id)
-            current_period = pay_period_service.get_current_period(user.id)
+            current_period = current_pay_period(user.id)
             assert current_period is not None
             assert past_anchor.period_index < current_period.period_index, (
                 "fixture regressed: the anchor must be strictly before today"

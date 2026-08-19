@@ -55,6 +55,7 @@ from app.services.balance_at import BalanceContext, cash_balance_at
 from app.utils.dates import display_today
 from tests._test_helpers import (
     create_settled_cash_transaction,
+    current_pay_period,
     freeze_today,
     insert_origination_rate,
 )
@@ -187,7 +188,7 @@ class TestApplyAnchorTrueUpCommitted:
             )
             db.session.commit()
 
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             # An unrelated past-dated checking debit -- must stay
@@ -273,7 +274,7 @@ class TestApplyAnchorTrueUpCommitted:
         """
         with app.app_context():
             account = db.session.get(Account, seed_user["account"].id)
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             entry = _make_projected_expense_with_past_dated_entry(

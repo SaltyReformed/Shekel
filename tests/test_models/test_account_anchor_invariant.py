@@ -88,7 +88,10 @@ from app.models.user import User, UserSettings
 from app.services import cash_ledger
 from app.services.auth_service import hash_password
 from app.utils.dates import display_today
-from tests._test_helpers import registration_spec
+from tests._test_helpers import (
+    current_pay_period,
+    registration_spec,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -277,19 +280,17 @@ class TestCreationPathsWriteAnchor:
         AccountAnchorHistory row.
 
         Arithmetic: ``seed_periods_today`` places today in period 4
-        of the seed_user's period set.  The route resolves the
-        current period via ``pay_period_service.get_current_period``
-        and uses it as the anchor.  The submitted anchor_balance is
+        of the seed_user's period set.  The route resolves the period
+        CONTAINING the owner's day and uses it as the anchor.  The submitted anchor_balance is
         ``$1500.00`` and must appear verbatim on both the column
         and the history row.
         """
-        from app.services import pay_period_service
 
         with app.app_context():
             savings_type = (
                 db.session.query(AccountType).filter_by(name="Savings").one()
             )
-            current_period = pay_period_service.get_current_period(
+            current_period = current_pay_period(
                 seed_user["user"].id
             )
             assert current_period is not None

@@ -97,8 +97,8 @@ class TestRegenerateHappyPath:
         """A period starting exactly on today (payday) is the in-progress
         period and must NOT be rebuilt.
 
-        Regression for the boundary off-by-one: ``get_current_period``
-        matches ``start_date <= today <= end_date``, so the period that
+        Regression for the boundary off-by-one: containment is inclusive at
+        both ends (``start_date <= today <= end_date``), so the period that
         starts on today is current; regenerate must keep it, not pull it
         into the rebuildable tail.
         """

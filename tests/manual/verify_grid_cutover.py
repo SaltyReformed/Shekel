@@ -142,9 +142,11 @@ from app.services.account_resolver import resolve_grid_account
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import calendar_for
 
+
 #: Which side of the cutover this file is running on, keyed on the reader plan
-#: step C2-f2b DELETES.  ``get_current_period`` and ``get_all_periods`` survive
-#: this leaf (``C2-f3`` takes them), so neither can mark the boundary;
+#: step C2-f2b DELETES.  ``get_current_period`` and ``get_all_periods`` survived
+#: this leaf (``C2-f3`` took the first at ``C2-f3a``), so neither could mark the
+#: boundary;
 #: ``get_periods_in_range`` had all three of its ``app/`` call sites in the grid
 #: route and goes with it, which makes its absence the exact marker.
 _IS_HEAD = hasattr(pay_period_service, "get_periods_in_range")
@@ -209,9 +211,15 @@ def _window(periods):
 
 
 def _current_period(user_id, calendar, ctx):
-    """Return the paycheck the grid opens on, per this side's reader."""
-    if _IS_HEAD:
-        return pay_period_service.get_current_period(user_id)
+    """Return the paycheck the grid opens on, per this side's reader.
+
+    **The HEAD arm is GONE and its reader with it** (plan step C2-f3a deleted
+    ``pay_period_service.get_current_period``), so this is no longer a branch.
+    The parameter list keeps ``user_id`` because every ``_probe`` here takes
+    the same three, and a signature that varied per probe is what the shared
+    driver below exists to avoid.
+    """
+    del user_id  # noqa: F841 -- see the docstring; the HEAD arm is deleted
     return calendar.period_containing(ctx.as_of)
 
 

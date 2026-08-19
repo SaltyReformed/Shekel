@@ -27,8 +27,9 @@ whose order its year-to-date accumulation depends on.  **The second went at
 ``C2-f2a``** (ledger row **P37**): the contribution tier takes the read pass's
 own calendar, so no module under ``balance_at`` IMPORTS ``pay_period_service``
 and the ordering rule is the derivation rather than a sort at that door.
-``C2-e`` (the projection axis) has since shipped; ``C2-f``'s remaining leaves
-(``pay_period_service``'s readers at every surface outside this seam) have not.
+``C2-e`` (the projection axis) has since shipped; of ``C2-f``'s remaining
+leaves, ``C2-f3a`` deleted ``pay_period_service.get_current_period`` and
+``get_all_periods`` survives for ``C2-f3b`` / ``C2-f3c``.
 
 Why the value exists at all: an AST census on 2026-08-10 found **SIX**
 implementations of "which pay period contains this date" in ``app/`` -- ledger
@@ -37,8 +38,9 @@ this step found a **SEVENTH** the same day (``savings_dashboard_service``'s
 ``_period_id_at``), which the census structurally could not see because it keyed
 on the containment PREDICATE.  They disagree at exactly the edges that matter.
 Two bisect and answer ``None`` outside the schedule; one scans linearly and
-falls back past the end of it; one scans SYNTHETIC periods; two are SQL, and one
-of those (``get_current_period``) has no ``ORDER BY`` at all (row **P19**).
+falls back past the end of it; one scans SYNTHETIC periods; two were SQL, and
+one of those (``get_current_period``) had no ``ORDER BY`` at all (row **P19**).
+**All seven are gone**, the last at ``C2-f3a``.
 Seven answers to one question is the defect; the number of CONTAINMENT
 questions is three, and they are named here so a caller has to choose:
 
@@ -411,9 +413,6 @@ class PayCalendar:
         Args:
             day: The calendar day to place.
 
-        Args:
-            day: The calendar day to place.
-
         Returns:
             The covering :class:`~._derive.DerivedPeriod` -- MATERIALISED when
             the schedule reaches *day* (:meth:`period_containing` answers that
@@ -662,13 +661,14 @@ class PayCalendar:
 
         The one question here that is not about a DATE.
 
-        **It has FIVE live ``app/`` callers, and this paragraph claimed ZERO
-        until 2026-08-16.**  Plan step R7b-4's note -- "nothing in the
-        application asks this" -- was already false then (``grid/partials.py``,
-        ``companion_service.py``), and pay-calendar plan step C2-f2d-3 added the
+        **It has SEVEN live ``app/`` callers, and this paragraph claimed ZERO
+        until 2026-08-16 and FIVE until C2-f3a.**  Plan step R7b-4's note --
+        "nothing in the application asks this" -- was already false then
+        (``grid/partials.py``, ``companion_service.py``); C2-f2d-3 added the
         salary cockpit's period selector, its anatomy fragment and the
-        recurrence engine's pricing lookup.  **A sentence about the tree goes
-        stale exactly like one about the code**; this method is load-bearing.
+        recurrence engine's pricing lookup, and C2-f3a added both window
+        labels.  **A sentence about the tree goes stale exactly like one about
+        the code**, and this one has now gone stale twice.
 
         Never answers a projected period, which has no id.
 
