@@ -624,6 +624,11 @@ OLD image cannot resolve refuses the re-pin; an unchanged stamp after a containe
 still re-pins; and an unreadable `alembic_version` is treated as unsafe. Each arm shown FIRING,
 which is the standard the arc's own verification file sets. Closes **D41**.
 
+**Ruling R-R28 (2026-08-19): semi-monthly pay keeps the NOMINAL 15-day walk.** No fixed
+`cadence_days` expresses the 1st and the 15th, `round(365.2425 / 15)` gives the right COUNT and
+drifting paydays, and a monthly cadence already carries exactly that limitation; a day-of-month
+schedule KIND is scheduled as **R13** rather than blocking R-F16 on it. Chosen from four options.
+
 ### Carried steps -- scheduled here so they are not merely remembered
 
 Section 5's ledger carries findings that no numbered step closes: some this arc surfaced elsewhere
@@ -674,37 +679,28 @@ carries. **DELIVERED by the pay-calendar arc's C2**, now DECOMPOSED into `C2-a`.
 the leaf that retires `PeriodCalendar` and `SchedulePeriod` into it, and the arc's 430-shape
 baseline must stay byte-identical across it. **Tick this box with C2's LAST leaf.**
 
-- [ ] **R-F16 -- ONE producer for "how often am I paid"** (finding F-16).
+- [x] **R-F16 -- ONE producer for "how often am I paid".** `4258ce28`, migration `f2b7c40d918e`.
+      `salary_profiles.pay_periods_per_year` dropped; the engine takes a `PayrollBasis` binding a
+      profile to its owner's cadence, so a mismatched pair is unrepresentable. Cross-validating the
+      two columns was measured impossible: 5 of 365 legal cadences have a dropdown value that can
+      agree. The investment path's employer-match basis stopped being raise-BLIND. Closed **F-16**;
+      opened **D43**, **D44**.
 
-**Starts with a RULING, not a keystroke.** `salary.salary_profiles.pay_periods_per_year` is a
-12/24/26/52 dropdown (`app/templates/salary/form.html:52-57`) and is the DIVISOR the paycheck engine
-turns an annual salary into a paycheck with -- `paycheck_calculator:225`, plus `:898`, `:945`,
-`retirement_projection:230`, `investment_projection:88/113/147`, `retirement_dashboard_service:752`
-and `routes/salary/profiles.py:322`, every one of them `or 26`. `budget.pay_schedule.cadence_days`
-is the rhythm R7a-2a's conversions multiply that paycheck back up by.
-**No door validates one against the other**, and while both read 26 the two errors cancelled
-exactly.
+- [ ] **R13 -- a DAY-OF-MONTH pay schedule** (ruling **R-R28**).
 
-Measured on the developer's `$91,675` salary, true monthly gross `$7,639.58`:
+`budget.pay_schedule` holds one fact, `cadence_days`, and every payday is a fixed-length walk from
+the anchor. Semi-monthly pay is not: it is the 1st and the 15th (or the 15th and the last day), and
+`round(365.2425 / 15) = 24` gives an owner the right COUNT with paydays that drift through the month
+-- Jan 1, Jan 16, Jan 31, Feb 15. **Monthly already carries the identical limitation** (a 30-day
+walk is not "the 1st"), and pay-calendar finding **F-4** records that `pay_periods` stores NOMINAL
+paydays generally, so this is one shape rather than a semi-monthly special case.
 
-```text
-profile 26 / cadence 14d  (production)          before 7,639.58   after 7,639.58   correct
-profile 52 / cadence  7d  (consistent weekly)   before 3,819.79   after 7,639.58   FIXED by R7a-2a
-profile 12 / cadence 30d  (consistent monthly)  before 16,552.43  after 7,639.58   FIXED by R7a-2a
-profile 26 / cadence  7d  (MISMATCHED)          before 7,639.58   after 15,279.17  now visibly wrong
-profile 26 / cadence 30d  (MISMATCHED)          before 7,639.58   after 3,525.96   now visibly wrong
-```
-
-The remedy is that the engine divides by `PayCadence.periods_per_year` too and the column goes.
-**The ruling owed first: what does SEMI-MONTHLY mean here?** 24 is the 1st and the 15th, which no
-fixed `cadence_days` can express -- `round(365.2425 / 15) = 24` gives the right COUNT and the wrong
-paydays, and the pay-calendar arc's whole model is a fixed-cadence walk (finding F-4 is its sibling:
-`pay_periods` stores NOMINAL paydays). Three options, and the step opens by putting them to the
-developer: derive the count and accept nominal paydays; keep the column but REFUSE a pair that
-disagrees at both write doors; or give the pay calendar a second cadence KIND.
-
-Destructive if the column is dropped, so it carries the `Review:` line and a refusing downgrade.
-**MOVES MONEY** and needs its own review pass.
+The step gives the schedule a cadence KIND -- fixed-days, or one/two days of the month -- and
+branches THREE producers on it: `pay_period_write.record_paydays` (which spaces a batch),
+`pay_calendar._derive.derive_periods` (whose last period's end is cadence-projected), and
+`PayCadence.periods_per_year` (which must answer 24 without dividing). It is ranked last in this arc
+deliberately: it edits the pay-calendar package's core, which `pay_calendar:C2`'s remaining leaves
+are still moving, and nothing in either arc depends on it.
 
 - [ ] **R-F17 -- the two period-INDEX horizon windows** (finding F-17).
 
