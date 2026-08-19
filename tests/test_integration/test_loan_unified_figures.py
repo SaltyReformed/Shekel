@@ -621,14 +621,10 @@ def _add_recurring_payment_with_extra(seed_user, loan_account, extra):
     # Authored through the write door (plan step R7c-b): the day a rule fires
     # on is its first occurrence's own day, so "the 1st" is a DATE the fixture
     # schedule reaches rather than a separate column.
-    rule = make_cadence_rule(
-        user.id, MONTHLY, fires_on_day=1,
-    )
     template = TransferTemplate(
         user_id=user.id,
         from_account_id=seed_user["account"].id,
         to_account_id=loan_account.id,
-        recurrence_rule_id=rule.id,
         name="Mortgage Payment",
         default_amount=Decimal("1.00"),
     )
@@ -637,6 +633,10 @@ def _add_recurring_payment_with_extra(seed_user, loan_account, extra):
     )
     db.session.add(template)
     db.session.commit()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_cadence_rule(
+        template, MONTHLY, fires_on_day=1,
+    )
 
 
 def test_standing_extra_payoff_consistent_across_surfaces(

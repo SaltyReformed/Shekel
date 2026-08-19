@@ -61,7 +61,8 @@ from app.routes._recurrence_conflict_chooser import (
 )
 from app.routes._recurrence_form_helpers import (
     RecurrenceFormContext,
-    build_recurrence_rule_for_create,
+    author_recurrence_for_create,
+    recurrence_spec_for_create,
     resolve_recurrence_rule_for_update,
 )
 from app.routes._recurrence_form_render import recurrence_form_state
@@ -189,7 +190,8 @@ def _settle_create_references(data, start_period_id):
        message-per-FK detail rides on the label.
     2. **The pay period a NON-REPEATING transfer lands in** is the owner's too.
        Owner-checked at the route since plan step R7b-4: the check used to live
-       inside ``build_recurrence_rule_from_form``, because the same ``<select>``
+       inside the recurrence-form helper (``recurrence_spec_from_form``
+       since plan step R-F6), because the same ``<select>``
        was ALSO the recurrence's "First paycheck" and a cross-user period would
        have shifted this owner's generation timing.  The recurrence takes a
        DATE now, so the field has one job and one owner.  Guarded on presence
@@ -278,7 +280,7 @@ def create_transfer_template():
     # ``allow_none``, so any POST omitting or emptying it reached
     # ``AttributeError: 'NoneType' object has no attribute 'id'`` -- a 500
     # (defect **D13**), measured on both the absent and the empty spelling.
-    rule = build_recurrence_rule_for_create(
+    spec = recurrence_spec_for_create(
         data,
         user_id=current_user.id,
         redirect=RedirectTarget("transfers.new_transfer_template"),
@@ -287,7 +289,6 @@ def create_transfer_template():
 
     template = TransferTemplate(
         user_id=current_user.id,
-        recurrence_rule_id=rule.id if rule is not None else None,
         **data,
     )
     db.session.add(template)
@@ -298,6 +299,15 @@ def create_transfer_template():
     )
     if namedup_redirect is not None:
         return namedup_redirect
+
+    # **The definition comes FIRST and the rule is authored onto it** (plan
+    # step R-F6): a recurrence rule carries its owner's FK now, so it cannot be
+    # written before there is an owner.  AFTER the name-collision flush
+    # specifically -- the helper flushes, and a flush before
+    # ``flush_template_or_namedup_redirect``'s ``try`` would surface
+    # ``uq_transfer_templates_user_name`` as an unhandled ``IntegrityError``
+    # where the user gets a "name already exists" redirect today.
+    rule = author_recurrence_for_create(spec, template)
 
     # Open the amount's dated series at today (plan step X-au-a).  The
     # constructor above also carries the figure because the column is NOT NULL;
@@ -456,7 +466,7 @@ def update_transfer_template(template_id):
     # rule-less (defect D16).
     before = PreEditTemplateState(
         amount=template.default_amount,
-        had_recurrence_rule=template.recurrence_rule_id is not None,
+        had_recurrence_rule=template.recurrence_rule is not None,
     )
 
     # Re-point, rebuild, or clear the recurrence rule from the update payload
@@ -957,7 +967,7 @@ def _regenerate_and_commit_template(
     # An edit that ended the recurrence deleted this template's upcoming
     # projected transfers (and their shadow pairs); "updated." alone would
     # report a destructive change as a routine one.
-    if before.had_recurrence_rule and template.recurrence_rule_id is None:
+    if before.had_recurrence_rule and template.recurrence_rule is None:
         flash(
             f"'{template.name}' no longer repeats. Its upcoming projected "
             "transfers were removed; settled and hand-edited ones were kept.",

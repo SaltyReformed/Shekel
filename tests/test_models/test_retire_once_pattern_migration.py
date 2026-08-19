@@ -109,33 +109,18 @@ class TestNoOnceRuleSurvives:
             f"foreign key it ever had"
         )
 
-    def test_no_template_of_either_kind_names_a_retired_rule(self, app):
-        """Both FK NULL-outs are asserted, not just the rule deletion.
-
-        The FKs are ``ON DELETE SET NULL``, so the DELETE alone would null
-        them -- which is exactly why this is worth asserting separately: it
-        holds whether the migration's explicit UPDATEs ran or the database
-        cascaded them, and it would fail if a future edit dropped both.
-        """
-        with app.app_context():
-            dangling = db.session.execute(text("""
-                SELECT count(*) FROM (
-                    SELECT t.id FROM budget.transaction_templates t
-                     WHERE t.recurrence_rule_id IS NOT NULL
-                       AND NOT EXISTS (
-                           SELECT 1 FROM budget.recurrence_rules r
-                            WHERE r.id = t.recurrence_rule_id)
-                    UNION ALL
-                    SELECT t.id FROM budget.transfer_templates t
-                     WHERE t.recurrence_rule_id IS NOT NULL
-                       AND NOT EXISTS (
-                           SELECT 1 FROM budget.recurrence_rules r
-                            WHERE r.id = t.recurrence_rule_id)
-                ) AS both_kinds
-            """)).scalar_one()
-
-        assert dangling == 0
-
+    # **A case was DELETED here at plan step R-F6, and the deletion is the
+    # point.**  ``test_no_template_of_either_kind_names_a_retired_rule``
+    # counted definitions naming a rule that no longer existed -- a state the
+    # FK already made unrepresentable, so it could only ever pass.  R-F6
+    # turned that FK around, and porting the query to the surviving direction
+    # would have carried the tautology to a third spelling in a file about a
+    # different migration.  The referential arc it would have asserted is
+    # graded where it belongs, on the constraint itself:
+    # ``test_recurrence_rule_ownership.TestTheStorageTierIsWhatHoldsTheArc``,
+    # which fires when the CASCADE is weakened.  What THIS file grades is what
+    # migration ``44b25ad3`` did: the retired rules are gone and the table
+    # behind them is dropped, both asserted above.
 
 class TestDowngradeRefuses:
     """``downgrade`` raises rather than guessing at unrecoverable data.

@@ -44,13 +44,10 @@ def _create_salary_profile(seed_user, db_session):
         db_session.add(cat)
         db_session.flush()
 
-    rule = make_every_period_rule(db_session, seed_user["user"].id)
-
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=cat.id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=income_type.id,
         name="Main Job",
         default_amount=Decimal("80000.00") / 26,
@@ -58,6 +55,8 @@ def _create_salary_profile(seed_user, db_session):
     )
     db_session.add(template)
     db_session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db_session, template)
 
     profile = SalaryProfile(
         user_id=seed_user["user"].id,

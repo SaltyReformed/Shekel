@@ -68,12 +68,10 @@ class TestBillRowSingleBase:
         # pylint: disable=import-outside-toplevel
         from app.models.recurrence_rule import RecurrenceRule
         from app.models.transaction_template import TransactionTemplate
-        rule = make_every_period_rule(db.session, seed_user["user"].id)
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]["Groceries"].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
             name="Envelope bill",
             default_amount=Decimal(str(estimated)),
@@ -81,6 +79,8 @@ class TestBillRowSingleBase:
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_every_period_rule(db.session, template)
         _settle_day = default_settle_day(
             period, ref_cache.status_id(status_enum),
         )

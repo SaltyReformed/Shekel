@@ -3406,21 +3406,21 @@ class TestTransferPrompt:
         acct = _create_mortgage(seed_user, db.session)
 
         # Create an active recurring transfer template targeting this account.
-        rule = make_cadence_rule(
-            seed_user["user"].id, MONTHLY,
-            fires_on_day=1,
-        )
         tpl = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
             to_account_id=acct.id,
-            recurrence_rule_id=rule.id,
             name="Existing Mortgage Payment",
             default_amount=Decimal("1500.00"),
             is_active=True,
         )
         db.session.add(tpl)
         db.session.commit()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            tpl, MONTHLY,
+            fires_on_day=1,
+        )
 
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
@@ -3440,21 +3440,21 @@ class TestTransferPrompt:
 
         acct = _create_mortgage(seed_user, db.session)
 
-        rule = make_cadence_rule(
-            seed_user["user"].id, MONTHLY,
-            fires_on_day=1,
-        )
         tpl = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
             to_account_id=acct.id,
-            recurrence_rule_id=rule.id,
             name="Old Mortgage Payment",
             default_amount=Decimal("1500.00"),
             is_active=False,  # Deactivated
         )
         db.session.add(tpl)
         db.session.commit()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            tpl, MONTHLY,
+            fires_on_day=1,
+        )
 
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
@@ -3490,7 +3490,7 @@ class TestTransferPrompt:
         assert tpl is not None
         assert tpl.is_active is True
         assert tpl.from_account_id == checking.id
-        assert tpl.recurrence_rule_id is not None
+        assert tpl.recurrence_rule is not None
         assert tpl.default_amount > 0
         # No "amount" override was posted, so the route defaults to the
         # full monthly payment and opts into live derivation: the loan-only
@@ -3500,8 +3500,10 @@ class TestTransferPrompt:
         assert tpl.settings is not None
         assert tpl.settings.derive_from_loan is True
 
-        rule = db.session.get(RecurrenceRule, tpl.recurrence_rule_id)
-        assert rule is not None
+        # Reached through the OWNING relationship (plan step R-F6): the
+        # rule names this template back, which is the arc the schema holds.
+        assert tpl.recurrence_rule is not None
+        assert tpl.recurrence_rule.transfer_template_id == tpl.id
 
     def test_create_transfer_redirect_hides_prompt(
         self, auth_client, seed_user, db, seed_periods,
@@ -3854,21 +3856,21 @@ class TestPaymentDrift:
         from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
         from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
 
-        rule = make_cadence_rule(
-            seed_user["user"].id, MONTHLY,
-            fires_on_day=1,
-        )
         tpl = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
             to_account_id=acct.id,
-            recurrence_rule_id=rule.id,
             name="Legacy Mortgage Payment",
             default_amount=amount,
             is_active=True,
         )
         db_session.add(tpl)
         db_session.commit()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            tpl, MONTHLY,
+            fires_on_day=1,
+        )
         return tpl
 
     def test_dashboard_warns_when_manual_payment_short(
@@ -5696,7 +5698,7 @@ class TestDashboardChartComposer:
         assert resp.status_code == 302
         db.session.expire_all()
         rule = db.session.query(RecurrenceRule).filter_by(
-            id=template.recurrence_rule_id,
+            id=template.recurrence_rule.id,
         ).one()
         assert rule.end_date == first_end_date
         audit_after = db.session.execute(audit_count_sql).scalar()
@@ -5787,22 +5789,21 @@ def _create_transfer_template(seed_user, db_session, loan_account,
     if name is None:
         name = f"Loan Payment {loan_account.id}"
 
-    rule = make_cadence_rule(
-        seed_user["user"].id, MONTHLY,
-        fires_on_day=1, end_date=end_date,
-    )
-
     tpl = TransferTemplate(
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
         to_account_id=loan_account.id,
-        recurrence_rule_id=rule.id,
         name=name,
         default_amount=amount,
         is_active=True,
     )
     db_session.add(tpl)
     db_session.commit()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_cadence_rule(
+        tpl, MONTHLY,
+        fires_on_day=1, end_date=end_date,
+    )
     return tpl, rule
 
 
@@ -6022,21 +6023,21 @@ class TestRecurrenceEndDateUpdate:
         db.session.flush()
 
         # Create a template even though no LoanParams exist.
-        rule = make_cadence_rule(
-            seed_user["user"].id, MONTHLY,
-            fires_on_day=1,
-        )
         tpl = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
             to_account_id=account.id,
-            recurrence_rule_id=rule.id,
             name="Premature Payment",
             default_amount=Decimal("500.00"),
             is_active=True,
         )
         db.session.add(tpl)
         db.session.commit()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            tpl, MONTHLY,
+            fires_on_day=1,
+        )
 
         resp = auth_client.get(f"/accounts/{account.id}/loan")
         assert resp.status_code == 200
@@ -6060,21 +6061,21 @@ class TestRecurrenceEndDateUpdate:
         other_loan = _create_other_loan(second_user, db.session, AcctTypeEnum.MORTGAGE)
 
         # Create a transfer template for the other user's loan.
-        rule = make_cadence_rule(
-            second_user["user"].id, MONTHLY,
-            fires_on_day=1,
-        )
         tpl = TransferTemplate(
             user_id=second_user["user"].id,
             from_account_id=second_user["account"].id,
             to_account_id=other_loan.id,
-            recurrence_rule_id=rule.id,
             name="Other User Payment",
             default_amount=Decimal("1000.00"),
             is_active=True,
         )
         db.session.add(tpl)
         db.session.commit()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            tpl, MONTHLY,
+            fires_on_day=1,
+        )
 
         # Access other user's loan as the primary user.
         resp = auth_client.get(f"/accounts/{other_loan.id}/loan")

@@ -147,23 +147,19 @@ def _make_template_with_cadence(
     Returns:
         The created TransactionTemplate.
     """
-    rule = None
-    if cadence is not None:
-        rule = make_cadence_rule(
-            seed_user["user"].id, cadence, interval_n=interval_n,
-        )
-
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=list(seed_user["categories"].values())[0].id,
-        recurrence_rule_id=rule.id if rule is not None else None,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         name="Template",
         default_amount=Decimal("100.00"),
     )
     db_session.add(template)
     db_session.flush()
+    if cadence is not None:
+        # The definition first, then the cadence onto it (plan step R-F6).
+        make_cadence_rule(template, cadence, interval_n=interval_n)
     return template
 
 
@@ -811,7 +807,7 @@ class TestIsInfrequent:
             template = _make_template_with_cadence(
                 db.session, seed_user, None,
             )
-            assert template.recurrence_rule_id is None
+            assert template.recurrence_rule is None
             txn = _add_transaction(
                 db.session, seed_user, seed_periods[0], "One-time",
                 "200.00", template=template, due_date=date(2026, 1, 5),

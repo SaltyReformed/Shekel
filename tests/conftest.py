@@ -2438,19 +2438,18 @@ def _build_full_user_data(db, seed_user, periods):
     )
 
     # a) Recurrence rule + transaction template + transaction.
-    rule = make_every_period_rule(db.session, user.id)
-
     template = TransactionTemplate(
         user_id=user.id,
         account_id=account.id,
         category_id=seed_user["categories"]["Rent"].id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=expense_type.id,
         name="Rent Payment",
         default_amount=Decimal("1200.00"),
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
 
     txn = Transaction(
         template_id=template.id,
@@ -2589,19 +2588,18 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
     )
 
     # a) Recurrence rule + transaction template + transaction.
-    rule = make_every_period_rule(db.session, user.id)
-
     template = TransactionTemplate(
         user_id=user.id,
         account_id=account.id,
         category_id=seed_second_user["categories"]["Rent"].id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=expense_type.id,
         name="Second User Rent",
         default_amount=Decimal("900.00"),
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
 
     txn = Transaction(
         template_id=template.id,
@@ -2692,15 +2690,12 @@ def seed_entry_template(app, db, seed_user, seed_periods):
         db.session.query(Status).filter_by(name="Projected").one()
     )
 
-    rule = make_every_period_rule(db.session, seed_user["user"].id)
-
     category = seed_user["categories"]["Groceries"]
 
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=category.id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=expense_type.id,
         name="Weekly Groceries",
         default_amount=Decimal("500.00"),
@@ -2708,6 +2703,8 @@ def seed_entry_template(app, db, seed_user, seed_periods):
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
 
     txn = Transaction(
         template_id=template.id,

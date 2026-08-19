@@ -788,13 +788,6 @@ class TestGoalTrajectoryDashboard:
             db.session.add(savings)
             db.session.flush()
 
-            # Authored through the write door (plan step R7c-b): the
-            # two-axis columns are NOT NULL, so a rule naming only a pattern
-            # cannot be stored.
-            rule = make_cadence_rule(
-                seed_user["user"].id, MONTHLY,
-            )
-
             from app.models.transfer_template import TransferTemplate
             template = TransferTemplate(
                 user_id=seed_user["user"].id,
@@ -802,10 +795,15 @@ class TestGoalTrajectoryDashboard:
                 to_account_id=savings.id,
                 name="Monthly Savings",
                 default_amount=Decimal("500.00"),
-                recurrence_rule_id=rule.id,
                 is_active=True,
             )
             db.session.add(template)
+            db.session.flush()
+            # Authored through the write door (plan step R7c-b): the
+            # two-axis columns are NOT NULL, so a rule naming only a pattern
+            # cannot be stored.  Onto the definition, which plan step R-F6
+            # made the order: the rule carries its owner's FK.
+            make_cadence_rule(template, MONTHLY)
 
             goal = SavingsGoal(
                 user_id=seed_user["user"].id,

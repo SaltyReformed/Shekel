@@ -383,13 +383,13 @@ class TestOwnsValidityWindow:
                 user_id=seed_user["user"].id,
                 from_account_id=seed_user["account"].id,
                 to_account_id=loan.id,
-                recurrence_rule_id=make_every_period_rule(
-                    db.session, seed_user["user"].id,
-                ).id,
                 name="Second Payment Into One Loan",
                 default_amount=Decimal("50.00"),
             )
             db.session.add(second)
+            db.session.flush()
+            # The definition first, then the cadence onto it (plan step R-F6).
+            make_every_period_rule(db.session, second)
             db.session.flush()
 
             owned = [
@@ -413,7 +413,7 @@ class TestOwnsValidityWindow:
         with app.app_context():
             loan = create_loan_account(seed_user, db.session)
             template = make_transfer_template(db.session, seed_user, loan)
-            template.recurrence_rule_id = None
+            template.recurrence_rule = None
             db.session.flush()
 
             assert loan_recurrence_sync.owns_validity_window(template) is False

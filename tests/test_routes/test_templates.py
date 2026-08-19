@@ -94,24 +94,24 @@ def _create_template(seed_user, name="Rent", amount="1200.00",
     txn_type_obj = db.session.query(TransactionType).filter_by(name=txn_type).one()
     category = seed_user["categories"]["Rent"]
 
-    rule = None
-    if cadence:
-        # Authored through the write door, which is what plan step R7c-b made
-        # the only way to make a rule: ``unit_id``, ``placement_id``,
-        # ``shift_id`` and ``starts_on`` are ``NOT NULL``, so naming a pattern
-        # and nothing else no longer produces a row.
-        rule = make_cadence_rule(seed_user["user"].id, cadence)
-
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=category.id,
         transaction_type_id=txn_type_obj.id,
-        recurrence_rule_id=rule.id if rule else None,
         name=name,
         default_amount=Decimal(amount),
     )
     db.session.add(template)
+    db.session.flush()
+    if cadence:
+        # Authored through the write door, which is what plan step R7c-b made
+        # the only way to make a rule: ``unit_id``, ``placement_id``,
+        # ``shift_id`` and ``starts_on`` are ``NOT NULL``, so naming a pattern
+        # and nothing else no longer produces a row.  ONTO the template, which
+        # plan step R-F6 made the order: the rule carries its owner's FK, so
+        # the definition has to exist first.
+        make_cadence_rule(template, cadence)
     db.session.commit()
     return template
 
@@ -317,7 +317,7 @@ class TestTemplateCreate:
                 .filter_by(name="Browser Shaped No Recurrence")
                 .one()
             )
-            assert template.recurrence_rule_id is None
+            assert template.recurrence_rule is None
 
     def test_create_with_a_starts_on_date_bounds_the_rule(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -378,7 +378,7 @@ class TestTemplateCreate:
                 name="Internet Bill"
             ).one()
             assert template.default_amount == Decimal("79.99")
-            assert template.recurrence_rule_id is None
+            assert template.recurrence_rule is None
 
     def test_create_template_with_recurrence(self, app, auth_client, seed_user, seed_periods_today):
         """POST /templates creates a template with recurrence and generates transactions."""
@@ -3192,20 +3192,20 @@ def _template_with_starts_on(seed_user, txn_type, starts_on):
     Returns:
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`.
     """
-    rule = make_cadence_rule(
-        seed_user["user"].id, EVERY_PERIOD, starts_on=starts_on,
-    )
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Rent"].id,
         transaction_type_id=txn_type.id,
-        recurrence_rule_id=rule.id,
         name="Bounded Expense",
         default_amount=Decimal("42.00"),
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_cadence_rule(
+        template, EVERY_PERIOD, starts_on=starts_on,
+    )
     return template
 
 
@@ -3225,15 +3225,10 @@ def _loan_payment_template(seed_user):
         The flushed :class:`~app.models.transfer_template.TransferTemplate`.
     """
     loan_account = create_loan_account(seed_user, db.session)
-    rule = make_cadence_rule(
-        seed_user["user"].id, MONTHLY,
-        fires_on_day=1, end_date=date(2030, 1, 1),
-    )
     template = TransferTemplate(
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
         to_account_id=loan_account.id,
-        recurrence_rule_id=rule.id,
         name="Loan Payment",
         default_amount=Decimal("500.00"),
         is_active=True,
@@ -3241,6 +3236,11 @@ def _loan_payment_template(seed_user):
     template.settings = LoanPaymentSettings(derive_from_loan=False)
     db.session.add(template)
     db.session.commit()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_cadence_rule(
+        template, MONTHLY,
+        fires_on_day=1, end_date=date(2030, 1, 1),
+    )
     return template
 
 
@@ -3600,7 +3600,7 @@ class TestALoanPaymentCannotBeMadeOneTime:
         """The arm that already worked, kept so the union cannot lose it."""
         with app.app_context():
             template = _loan_payment_template(seed_user)
-            rule_id = template.recurrence_rule_id
+            rule_id = template.recurrence_rule.id
 
             resp = auth_client.post(
                 f"/transfers/{template.id}",
@@ -3621,7 +3621,7 @@ class TestALoanPaymentCannotBeMadeOneTime:
             db.session.expire_all()
             assert db.session.get(
                 TransferTemplate, template.id,
-            ).recurrence_rule_id == rule_id
+            ).recurrence_rule.id == rule_id
 
     def test_a_loan_payment_with_NO_settings_row_is_refused_too(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -3638,7 +3638,7 @@ class TestALoanPaymentCannotBeMadeOneTime:
             template = make_transfer_template(db.session, seed_user, loan)
             db.session.flush()
             assert template.settings is None, "fixture must have no settings row"
-            rule_id = template.recurrence_rule_id
+            rule_id = template.recurrence_rule.id
 
             resp = auth_client.post(
                 f"/transfers/{template.id}",
@@ -3659,7 +3659,7 @@ class TestALoanPaymentCannotBeMadeOneTime:
             db.session.expire_all()
             assert db.session.get(
                 TransferTemplate, template.id,
-            ).recurrence_rule_id == rule_id
+            ).recurrence_rule.id == rule_id
 
     def test_an_ordinary_transfer_can_still_be_made_one_time(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -3694,7 +3694,7 @@ class TestALoanPaymentCannotBeMadeOneTime:
             db.session.expire_all()
             assert db.session.get(
                 TransferTemplate, template.id,
-            ).recurrence_rule_id is None
+            ).recurrence_rule is None
 
 
 class TestAnEditStatesTheOpeningBoundOrSaysNothing:
