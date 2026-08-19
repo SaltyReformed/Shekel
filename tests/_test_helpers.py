@@ -2810,13 +2810,11 @@ def create_envelope_txn(seed_user, db_session, period, name, estimated):
     from app.models.transaction import Transaction
     from app.models.transaction_template import TransactionTemplate
 
-    rule = make_every_period_rule(db_session, seed_user["user"].id)
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Groceries"].id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=expense_type_id,
         name=name,
         default_amount=estimated,
@@ -2824,6 +2822,8 @@ def create_envelope_txn(seed_user, db_session, period, name, estimated):
     )
     db_session.add(template)
     db_session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db_session, template)
     txn = Transaction(
         account_id=seed_user["account"].id,
         pay_period_id=period.id,
@@ -3856,11 +3856,111 @@ def assert_pay_period_invariants(db_session, user_id):
     )
 
 
-def make_every_period_rule(db_session, user_id):  # pylint: disable=unused-argument
-    """Create and flush an every-paycheck recurrence rule for the user.
+def bare_expense_template(db_session, seed_user, name="Cadence Under Test"):
+    """Create and flush an expense template carrying NO cadence.
+
+    The definition a test authors a rule onto when the rule is the subject and
+    the template is only there to own it -- which plan step R-F6 made
+    necessary: ``ck_recurrence_rules_one_owner`` refuses a rule belonging to
+    nothing, so ``author_rule`` takes an owner and there is no such thing as a
+    free-standing rule any more.
+
+    Distinct from :func:`make_expense_template`, which already gives its
+    template an every-paycheck rule -- authoring a second onto that one is
+    refused by ``uq_recurrence_rules_transaction_template_id``, and refused
+    correctly: a definition has one cadence.
+
+    Args:
+        db_session: The test session.
+        seed_user: The seed user fixture dict.
+        name: Display name; distinct per call when a test needs two.
+
+    Returns:
+        The flushed :class:`~app.models.transaction_template.TransactionTemplate`,
+        with ``recurrence_rule`` still ``None``.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app import ref_cache
+    from app.enums import TxnTypeEnum
+    from app.models.transaction_template import TransactionTemplate
+
+    template = TransactionTemplate(
+        user_id=seed_user["user"].id,
+        account_id=seed_user["account"].id,
+        category_id=seed_user["categories"]["Rent"].id,
+        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+        name=name,
+        default_amount=Decimal("100.00"),
+    )
+    db_session.add(template)
+    db_session.flush()
+    return template
+
+
+def sole_rule_owned_by(user_id):
+    """Return the ONE recurrence rule *user_id* owns, through its definition.
+
+    ``budget.recurrence_rules`` carries no ``user_id`` column since plan step
+    R-F6 -- the owner is the definition holding the rule, and
+    :attr:`~app.models.recurrence_rule.RecurrenceRule.user_id` reads through to
+    it -- so a Python property cannot be a SQL filter and
+    ``filter_by(user_id=...)`` no longer names a column.  This is the join that
+    replaces it, over both arms of the owning arc.
+
+    It is a TEST helper rather than an application one deliberately: no
+    production reader asks "which rules does this user own", and adding a query
+    nothing calls is the speculative surface coding-standards rule 13 refuses.
+
+    Args:
+        user_id: The owner.
+
+    Returns:
+        The single :class:`~app.models.recurrence_rule.RecurrenceRule`.
+
+    Raises:
+        AssertionError: The owner has no rule, or more than one -- the same
+            two failures ``Query.one()`` reports, named.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.extensions import db
+    from app.models.recurrence_rule import RecurrenceRule
+    from app.models.transaction_template import TransactionTemplate
+    from app.models.transfer_template import TransferTemplate
+
+    rules = []
+    for template, arm in (
+        (TransactionTemplate, RecurrenceRule.transaction_template_id),
+        (TransferTemplate, RecurrenceRule.transfer_template_id),
+    ):
+        rules.extend(
+            db.session.query(RecurrenceRule)
+            .join(template, arm == template.id)
+            .filter(template.user_id == user_id)
+            .all()
+        )
+    assert len(rules) == 1, (
+        f"expected user {user_id} to own exactly one recurrence rule, "
+        f"found {len(rules)}: {[rule.id for rule in rules]}"
+    )
+    return rules[0]
+
+
+def make_every_period_rule(db_session, owner):  # pylint: disable=unused-argument
+    """Author an every-paycheck recurrence ONTO *owner*, and flush it.
 
     The shared rule builder for every fixture that needs a template to repeat,
     so no test re-derives it.
+
+    **It takes the OWNING DEFINITION rather than a user id, since plan step
+    R-F6**, because that is what a rule now needs to exist at all: the owning
+    FK is on ``budget.recurrence_rules`` under
+    ``ck_recurrence_rules_one_owner``, so a rule with no template is not a row
+    the database accepts.  A fixture therefore builds its template first and
+    makes it repeat second, which is the order production runs in.
 
     **Authored through the WRITE DOOR since plan step R7c-b**, and the change is
     a real improvement rather than plumbing.  It used to construct a
@@ -3879,7 +3979,8 @@ def make_every_period_rule(db_session, user_id):  # pylint: disable=unused-argum
             through ``app.extensions.db``; kept because every caller passes it
             and a signature change would touch two dozen call sites for no
             behaviour.
-        user_id: The owner.
+        owner: The ``TransactionTemplate`` or ``TransferTemplate`` the
+            recurrence belongs to.  Mutated: its ``recurrence_rule`` is set.
 
     Returns:
         The flushed :class:`~app.models.recurrence_rule.RecurrenceRule`.
@@ -3891,14 +3992,15 @@ def make_every_period_rule(db_session, user_id):  # pylint: disable=unused-argum
     from app.services.pay_calendar import calendar_for
     from app.services.recurrence import RecurrenceSpec, author_rule
 
-    calendar = calendar_for(user_id)
+    calendar = calendar_for(owner.user_id)
     return author_rule(
         RecurrenceSpec(
-            user_id=user_id,
+            user_id=owner.user_id,
             unit=RecurrenceUnitEnum.PERIOD,
             starts_on=calendar.opening_bound(),
         ),
         calendar,
+        owner,
     )
 
 
@@ -4018,20 +4120,44 @@ def transient_cadence_rule(user_id, cadence, **kwargs):
     one field is a shape production cannot produce, and a helper reading it
     would resolve something the application never stores.
 
+    **It writes through ``build_transient_rule`` DIRECTLY since plan step
+    R-F6**, rather than through its sibling under a private ``_flush=False``
+    flag.  The two stopped being one function with a switch: an authored rule
+    takes the definition that owns it and an unsaved one has none, so the flag
+    would have had to mean "and also skip the owner", which is two functions
+    wearing one name.  What they still share -- the cadence-to-spec
+    translation -- is :func:`_cadence_spec`, which both call.
+
     Args:
-        user_id: The owner.
+        user_id: Whose pay calendar the cadence resolves against, and whose
+            UNSAVED definition the rule is built on.  Stated rather than taken
+            as an owner object because the caller does not want a definition;
+            it wants a rule it can hand to a pure producer.
         cadence: A :class:`~tests.oracles.recurrence_baseline.ShapeCadence`.
-        **kwargs: Every other argument :func:`make_cadence_rule` takes.
+        **kwargs: Every other argument :func:`_cadence_spec` takes.
 
     Returns:
         The unsaved :class:`~app.models.recurrence_rule.RecurrenceRule`.
     """
-    return make_cadence_rule(user_id, cadence, _flush=False, **kwargs)
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services.pay_calendar import calendar_for
+    from app.services.recurrence import build_transient_rule
+
+    calendar = calendar_for(user_id)
+    # The door builds the unsaved owner itself from the spec's ``user_id``
+    # (plan step R-F6), so ``rule.user_id`` has an answer and nothing reaches
+    # the session.
+    return build_transient_rule(
+        _cadence_spec(user_id, cadence, calendar, **kwargs), calendar,
+    )
 
 
-def make_cadence_rule(
+def _cadence_spec(
     user_id,
     cadence,
+    calendar,
     *,
     starts_on=None,
     fires_on_day=None,
@@ -4040,9 +4166,90 @@ def make_cadence_rule(
     nominal_day=None,
     due_day_of_month=None,
     end_date=None,
-    _flush=True,
 ):
-    """Author one rule of a stated CADENCE, through the write door.
+    """Translate a stated CADENCE into the spec the write door takes.
+
+    The shared half of :func:`make_cadence_rule` and
+    :func:`transient_cadence_rule`, which differ only in whether the resulting
+    rule is written onto a definition or left unsaved.  Split out at plan step
+    R-F6, when the authored path grew an owner argument the transient one
+    cannot have.
+
+    Args:
+        user_id: Whose calendar the cadence resolves against.
+        cadence: The :class:`~tests.oracles.recurrence_baseline.ShapeCadence`
+            to author.
+        calendar: That owner's :class:`~app.services.pay_calendar.PayCalendar`,
+            passed in because both callers already hold one.
+        starts_on: See :func:`make_cadence_rule`.
+        fires_on_day: See :func:`make_cadence_rule`.
+        fires_in_month: See :func:`make_cadence_rule`.
+        interval_n: See :func:`make_cadence_rule`.
+        nominal_day: See :func:`make_cadence_rule`.
+        due_day_of_month: See :func:`make_cadence_rule`.
+        end_date: See :func:`make_cadence_rule`.
+
+    Returns:
+        The :class:`~app.services.recurrence.RecurrenceSpec`.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services.recurrence import (
+        NEVER_ENDS,
+        EndsOnDate,
+        RecurrenceSpec,
+    )
+    from tests.oracles.recurrence_baseline import ShapeCadence
+
+    if starts_on is not None and fires_on_day is not None:
+        raise ValueError(
+            "make_cadence_rule takes starts_on OR fires_on_day, not both: "
+            "they are two statements of the same fact and only one can be "
+            f"authored (got {starts_on!r} and day {fires_on_day!r})",
+        )
+    # The TYPE is checked at the door because every other read of *cadence*
+    # below is an attribute access, so a caller still passing plan step R9's
+    # retired shorthand -- the string "Monthly", or a member of the deleted
+    # ``RecurrencePatternEnum`` -- would otherwise surface as an
+    # ``AttributeError`` from three frames down naming ``interval_n``.
+    if not isinstance(cadence, ShapeCadence):
+        raise TypeError(
+            f"make_cadence_rule takes a ShapeCadence, not {cadence!r}.  Plan "
+            f"step R9 retired the closed pattern set's display names with the "
+            f"table they came from; state the two axes instead, as one of "
+            f"tests.oracles.recurrence_baseline's cadence constants.",
+        )
+    resolved_interval = (
+        interval_n if cadence.interval_n is None else cadence.interval_n
+    )
+    if starts_on is None and fires_on_day is not None:
+        starts_on = first_occurrence_on_day(
+            user_id, fires_on_day, fires_in_month,
+        )
+    if starts_on is None:
+        starts_on = _default_first_occurrence(
+            user_id, calendar, cadence.unit, cadence.placement,
+        )
+    return RecurrenceSpec(
+        user_id=user_id,
+        unit=cadence.unit,
+        placement=cadence.placement,
+        interval_n=resolved_interval,
+        starts_on=(
+            starts_on if starts_on is not None
+            else calendar.opening_bound()
+        ),
+        nominal_day=nominal_day,
+        due_day_of_month=due_day_of_month,
+        end_bound=(
+            NEVER_ENDS if end_date is None else EndsOnDate(end_date)
+        ),
+    )
+
+
+def make_cadence_rule(owner, cadence, **kwargs):
+    """Author one rule of a stated CADENCE ONTO *owner*, through the write door.
 
     :func:`make_every_period_rule`'s general sibling, for the tests that need a
     cadence other than every-paycheck.  Both exist because a rule may not be
@@ -4061,8 +4268,16 @@ def make_cadence_rule(
     captured shape labelled ``quarterly`` still cannot come to mean different
     things, and a mistyped one is a ``NameError`` at import.
 
+    **It takes the OWNING DEFINITION rather than a user id, since plan step
+    R-F6**: the owning FK is on ``budget.recurrence_rules`` under
+    ``ck_recurrence_rules_one_owner``, so a rule with no template is not a row
+    the database accepts.  A fixture builds its template first and makes it
+    repeat second, which is the order production runs in.
+
     Args:
-        user_id: The owner.
+        owner: The ``TransactionTemplate`` or ``TransferTemplate`` the
+            recurrence belongs to.  Mutated: its ``recurrence_rule`` is set.
+            Its ``user_id`` is whose calendar the cadence resolves against.
         cadence: The :class:`~tests.oracles.recurrence_baseline.ShapeCadence`
             to author -- one of that module's seven constants, or any other
             ``(interval_n, unit, placement)`` a test needs.
@@ -4090,9 +4305,6 @@ def make_cadence_rule(
         due_day_of_month: Real bill due day, when it differs from the
             scheduling day.
         end_date: The rule's closing bound.  ``None`` never ends.
-        _flush: Private.  ``False`` builds the rule WITHOUT adding it to
-            the session; call :func:`transient_cadence_rule` rather than
-            passing it, which is why the name is underscored.
 
     Returns:
         The flushed :class:`~app.models.recurrence_rule.RecurrenceRule`.
@@ -4101,63 +4313,13 @@ def make_cadence_rule(
     # symbols at top level (its collection-time-safety convention).
     # pylint: disable=import-outside-toplevel
     from app.services.pay_calendar import calendar_for
-    from app.services.recurrence import (
-        NEVER_ENDS,
-        EndsOnDate,
-        RecurrenceSpec,
-        author_rule,
-        build_transient_rule,
-    )
-    from tests.oracles.recurrence_baseline import ShapeCadence
+    from app.services.recurrence import author_rule
 
-    if starts_on is not None and fires_on_day is not None:
-        raise ValueError(
-            "make_cadence_rule takes starts_on OR fires_on_day, not both: "
-            "they are two statements of the same fact and only one can be "
-            f"authored (got {starts_on!r} and day {fires_on_day!r})",
-        )
-    # The TYPE is checked at the door because every other read of *cadence*
-    # below is an attribute access, so a caller still passing plan step R9's
-    # retired shorthand -- the string "Monthly", or a member of the deleted
-    # ``RecurrencePatternEnum`` -- would otherwise surface as an
-    # ``AttributeError`` from three frames down naming ``interval_n``.
-    if not isinstance(cadence, ShapeCadence):
-        raise TypeError(
-            f"make_cadence_rule takes a ShapeCadence, not {cadence!r}.  Plan "
-            f"step R9 retired the closed pattern set's display names with the "
-            f"table they came from; state the two axes instead, as one of "
-            f"tests.oracles.recurrence_baseline's cadence constants.",
-        )
-    resolved_interval = (
-        interval_n if cadence.interval_n is None else cadence.interval_n
-    )
-    calendar = calendar_for(user_id)
-    if starts_on is None and fires_on_day is not None:
-        starts_on = first_occurrence_on_day(
-            user_id, fires_on_day, fires_in_month,
-        )
-    if starts_on is None:
-        starts_on = _default_first_occurrence(
-            user_id, calendar, cadence.unit, cadence.placement,
-        )
-    write = author_rule if _flush else build_transient_rule
-    return write(
-        RecurrenceSpec(
-            user_id=user_id,
-            unit=cadence.unit,
-            placement=cadence.placement,
-            interval_n=resolved_interval,
-            starts_on=(
-                starts_on if starts_on is not None
-                else calendar.opening_bound()
-            ),
-            nominal_day=nominal_day,
-            due_day_of_month=due_day_of_month,
-            end_bound=(
-                NEVER_ENDS if end_date is None else EndsOnDate(end_date)
-            ),
-        ),
+    calendar = calendar_for(owner.user_id)
+    return author_rule(
+        _cadence_spec(owner.user_id, cadence, calendar, **kwargs),
         calendar,
+        owner,
     )
 
 
@@ -4174,7 +4336,6 @@ def make_expense_template(db_session, seed_user, amount="1200.00", is_active=Tru
     from app.models.ref import TransactionType
     from app.models.transaction_template import TransactionTemplate
 
-    rule = make_every_period_rule(db_session, seed_user["user"].id)
     expense_type = (
         db_session.query(TransactionType).filter_by(name="Expense").one()
     )
@@ -4182,7 +4343,6 @@ def make_expense_template(db_session, seed_user, amount="1200.00", is_active=Tru
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Rent"].id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=expense_type.id,
         name="Rent",
         default_amount=Decimal(amount),
@@ -4190,6 +4350,8 @@ def make_expense_template(db_session, seed_user, amount="1200.00", is_active=Tru
     )
     db_session.add(template)
     db_session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    make_every_period_rule(db_session, template)
     return template
 
 
@@ -4205,17 +4367,17 @@ def make_transfer_template(db_session, seed_user, to_account, amount="200.00"):
     # pylint: disable=import-outside-toplevel
     from app.models.transfer_template import TransferTemplate
 
-    rule = make_every_period_rule(db_session, seed_user["user"].id)
     template = TransferTemplate(
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
         to_account_id=to_account.id,
-        recurrence_rule_id=rule.id,
         name="To Savings",
         default_amount=Decimal(amount),
     )
     db_session.add(template)
     db_session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    make_every_period_rule(db_session, template)
     return template
 
 
@@ -4882,7 +5044,7 @@ def validated_cadence(
 
     The post-``load()`` shape: enum members, a real ``int`` and a real
     ``date``, which is what
-    :func:`app.routes._recurrence_form_helpers.build_recurrence_rule_from_form`
+    :func:`app.routes._recurrence_form_helpers.recurrence_spec_from_form`
     and its siblings read.
 
     **``starts_on`` rides WITH the cadence since plan step R7c-b**, and it is

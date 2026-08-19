@@ -98,8 +98,10 @@ def template_rule(template: RecurringTemplate):
     The one accessor for "does this definition repeat", beside the
     ``RecurringTemplate`` type both readers duck-type over.  ``getattr`` rather
     than attribute access because the test fixtures build templates as
-    ``types.SimpleNamespace``; "does not repeat" is ``recurrence_rule_id IS
-    NULL`` on both ORM kinds since plan step R2e-3.
+    ``types.SimpleNamespace``; "does not repeat" is the ABSENCE of a
+    ``budget.recurrence_rules`` row naming the definition, on both ORM kinds
+    since plan step R2e-3 (which read as ``recurrence_rule_id IS NULL`` until
+    plan step R-F6 moved the owning FK onto the rule).
 
     Lives here rather than in ``recurring_view`` because this module owns the
     shared filter's step 1 and was already performing the same read inline --

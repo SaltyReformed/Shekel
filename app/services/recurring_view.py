@@ -133,8 +133,8 @@ class RecurringRow:
             both ``None`` for a non-recurring definition.
         recurrence: How the definition repeats, in display terms
             (:class:`~app.services.recurrence.RecurrenceDescription`), or
-            ``None`` when it does not repeat -- which is
-            ``recurrence_rule_id IS NULL`` since plan step R2e-3.  Produced
+            ``None`` when it does not repeat -- which is the absence of a
+            rule naming the definition, since plan step R2e-3.  Produced
             here rather than in the template (plan step R7a): the phrase is a
             function of what the recurrence MEANS against the owner's
             schedule, and a template holds neither.

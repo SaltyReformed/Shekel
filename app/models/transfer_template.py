@@ -65,9 +65,6 @@ class TransferTemplate(
         db.Integer, db.ForeignKey("budget.accounts.id", ondelete="RESTRICT"),
         nullable=False,
     )
-    recurrence_rule_id = db.Column(
-        db.Integer, db.ForeignKey("budget.recurrence_rules.id", ondelete="SET NULL"),
-    )
     name = db.Column(db.String(200), nullable=False)
     default_amount = db.Column(db.Numeric(12, 2), nullable=False)
     # is_active + sort_order: from IsActiveMixin / SortOrderMixin.
@@ -87,7 +84,15 @@ class TransferTemplate(
     to_account = db.relationship(
         "Account", foreign_keys=[to_account_id], lazy="joined"
     )
-    recurrence_rule = db.relationship("RecurrenceRule", lazy="joined")
+    # 0-or-1 cadence, and the FK is on the RULE (plan step R-F6).  See the
+    # transaction template's twin for the whole of why; the two are the same
+    # relationship onto the same satellite, and this arm is the one a loan
+    # payment and an investment contribution ride on.
+    recurrence_rule = db.relationship(
+        "RecurrenceRule", uselist=False, lazy="joined",
+        cascade="all, delete-orphan",
+        back_populates="transfer_template",
+    )
     category = db.relationship("Category", lazy="joined")
     transfers = db.relationship(
         "Transfer", back_populates="template", lazy="select"

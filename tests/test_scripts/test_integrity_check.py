@@ -202,18 +202,34 @@ class TestOrphanDetection:
         is tested in dedicated methods below.
         """
         results = check_orphaned_records(db.session)
-        assert len(results) == 6
+        # 5: OR-02 retired at plan step R-F6, when the owning FK moved onto
+        # ``budget.recurrence_rules`` and made a rule with no definition a row
+        # the database refuses rather than one a scan finds.
+        assert len(results) == 5
         # All should return CheckResult objects regardless of pass/fail.
         assert all(isinstance(r, CheckResult) for r in results)
 
-    def test_or02_detects_unused_recurrence_rule(self, app, db, seed_user):
-        """OR-02 detects a recurrence rule not referenced by any template."""
-        rule = make_every_period_rule(db.session, seed_user["user"].id)
+    def test_or02_is_retired_because_its_state_is_inexpressible(self, app, db):
+        """OR-02 is GONE, and the schema is what replaced it (plan step R-F6).
 
-        results = check_orphaned_records(db.session)
-        or02 = next(r for r in results if r.check_id == "OR-02")
-        assert not or02.passed
-        assert or02.detail_count == 1  # 1 orphaned recurrence rule
+        It scanned for recurrence rules no template referenced -- finding
+        **F-6**, three rows on production -- and that state stopped being one
+        the database will hold when the owning FK moved onto
+        ``budget.recurrence_rules``: ``ck_recurrence_rules_one_owner`` refuses
+        a rule with no definition, and ``ON DELETE CASCADE`` takes the rule
+        when the definition goes.  A checker for a state the schema forbids
+        reports on the constraint's behalf and can only ever say zero.
+
+        Asserted as an ABSENCE rather than deleted silently: this is the arm
+        that fails if a later edit reinstates the check, and the id is left
+        retired rather than reused so an old report's OR-02 still means what
+        it meant.
+        """
+        ids = {r.check_id for r in check_orphaned_records(db.session)}
+        assert "OR-02" not in ids, (
+            "OR-02 is retired -- its state is refused by "
+            "ck_recurrence_rules_one_owner, so a check for it can only pass"
+        )
 
     def test_or03_detects_unused_category(self, app, db, seed_user):
         """OR-03 detects a category not used by any template or transaction."""
@@ -239,10 +255,12 @@ class TestOrphanDetection:
             transaction_type_id=txn_type.id,
             name="Orphaned Template",
             default_amount=Decimal("50.00"),
-            recurrence_rule_id=None,
         )
         db.session.add(orphan_template)
         db.session.flush()
+        # NO cadence and no transactions, which is the state OR-01 reports --
+        # expressed as the ABSENCE of a rule row since plan step R-F6, where
+        # it used to be a NULL ``recurrence_rule_id`` on this template.
 
         results = check_orphaned_records(db.session)
         or01 = next(r for r in results if r.check_id == "OR-01")
@@ -991,5 +1009,7 @@ class TestRunAllChecks:
         # BA-06 was added 2026-08-11 beside the deletion of pay_calendar
         # C3-b's coverage rule, which is what made its state reachable, and
         # BA-07 beside pay_calendar C2-b2, which took away the
-        # generation-time report of a pay-period date gap.
-        assert len(results) == 32
+        # generation-time report of a pay-period date gap.  It fell to 31 at
+        # plan step R-F6, which retired OR-02: the orphaned-rule state it
+        # scanned for is refused by ``ck_recurrence_rules_one_owner``.
+        assert len(results) == 31

@@ -112,24 +112,24 @@ def _make_template(seed_user, cadence, **rule_kwargs):
         The flushed :class:`~app.models.transaction_template.TransactionTemplate`.
     """
     rule_kwargs.pop("offset_periods", None)
-    rule = make_cadence_rule(
-        seed_user["user"].id, cadence,
-        interval_n=rule_kwargs.pop("interval_n", 1),
-        fires_on_day=rule_kwargs.pop("day_of_month", None),
-        fires_in_month=rule_kwargs.pop("month_of_year", None),
-        **rule_kwargs,
-    )
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Car Payment"].id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         name="Phone Allowance",
         default_amount=Decimal("39.54"),
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_cadence_rule(
+        template, cadence,
+        interval_n=rule_kwargs.pop("interval_n", 1),
+        fires_on_day=rule_kwargs.pop("day_of_month", None),
+        fires_in_month=rule_kwargs.pop("month_of_year", None),
+        **rule_kwargs,
+    )
     return template
 
 
@@ -505,20 +505,20 @@ class TestThePaycheckSeesTheWholeSchedule:
         Returns:
             ``(template, profile)``, both flushed.
         """
-        rule = make_cadence_rule(
-            seed_user["user"].id, EVERY_PERIOD,
-        )
         template = TransactionTemplate(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             category_id=seed_user["categories"]["Car Payment"].id,
-            recurrence_rule_id=rule.id,
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.INCOME),
             name="Day Job",
             default_amount=Decimal("0.00"),
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(
+            template, EVERY_PERIOD,
+        )
 
         profile = SalaryProfile(
             user_id=seed_user["user"].id,
@@ -952,17 +952,17 @@ class TestTheTransferEngineTakesTheSameSchedule:
         savings = create_savings_account(
             seed_user, db.session, "Savings", Decimal("0.00"),
         )
-        rule = make_cadence_rule(seed_user["user"].id, cadence)
         template = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,
             to_account_id=savings.id,
-            recurrence_rule_id=rule.id,
             name="Savings Sweep",
             default_amount=Decimal("50.00"),
         )
         db.session.add(template)
         db.session.flush()
+        # The definition first, then the cadence onto it (plan step R-F6).
+        rule = make_cadence_rule(template, cadence)
         return template
 
     def test_an_extend_does_not_duplicate_a_monthly_first_transfer(

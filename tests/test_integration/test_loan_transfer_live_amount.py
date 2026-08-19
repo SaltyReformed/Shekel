@@ -103,14 +103,10 @@ def _build_derived_loan_transfer(seed_user, escrow_annual):
     # Authored through the write door (plan step R7c-b): the day a rule fires
     # on is its first occurrence's own day, so "the 1st" is a DATE the fixture
     # schedule reaches rather than a separate column.
-    rule = make_cadence_rule(
-        user.id, MONTHLY, fires_on_day=1,
-    )
     template = TransferTemplate(
         user_id=user.id,
         from_account_id=checking.id,
         to_account_id=loan.id,
-        recurrence_rule_id=rule.id,
         name="Live Mortgage Payment",
         # Deliberately stale stored amount -- the live override must win.
         default_amount=Decimal("1.00"),
@@ -120,6 +116,10 @@ def _build_derived_loan_transfer(seed_user, escrow_annual):
     template.settings = LoanPaymentSettings(derive_from_loan=True)
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_cadence_rule(
+        template, MONTHLY, fires_on_day=1,
+    )
 
     periods = seed_user["periods"] if "periods" in seed_user else None
     return loan, escrow, scenario_id, template, rule, periods

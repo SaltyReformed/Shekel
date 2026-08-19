@@ -182,22 +182,11 @@ def create_payment_transfer(account_id):
     cadence_start = loan_recurrence_sync.loan_cadence_start(
         RecurrenceUnitEnum.MONTH, params,
     )
-    rule = author_rule(
-        RecurrenceSpec(
-            user_id=current_user.id,
-            unit=RecurrenceUnitEnum.MONTH,
-            starts_on=cadence_start.starts_on,
-            nominal_day=cadence_start.nominal_day,
-        ),
-        calendar_for(current_user.id),
-    )
-
     # Create transfer template via the shared builder.
     template_name = f"{source_account.name} -> {account.name} Payment"
     template = build_recurring_transfer_template(
         source_account=source_account,
         dest_account=account,
-        rule=rule,
         name=template_name,
         default_amount=transfer_amount,
     )
@@ -227,6 +216,22 @@ def create_payment_transfer(account_id):
     )
     if namedup_redirect is not None:
         return namedup_redirect
+
+    # **The cadence is authored ONTO the template** (plan step R-F6): the rule
+    # carries its owner's FK, so the definition has to exist first.  After the
+    # name-collision flush rather than before it, because ``author_rule``
+    # flushes and an earlier one would surface a duplicate name as an unhandled
+    # ``IntegrityError`` instead of that helper's redirect.
+    rule = author_rule(
+        RecurrenceSpec(
+            user_id=current_user.id,
+            unit=RecurrenceUnitEnum.MONTH,
+            starts_on=cadence_start.starts_on,
+            nominal_day=cadence_start.nominal_day,
+        ),
+        calendar_for(current_user.id),
+        template,
+    )
 
     # Bound the new recurrence at BOTH ends BEFORE generating, so no shadow
     # transaction is ever generated outside the loan's life: past the projected

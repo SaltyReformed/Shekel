@@ -508,7 +508,7 @@ class TestTheTripleMustBeStorable:
         absent", which conflates two different submissions: "neither axis" is
         an amount-only edit and must be skipped, while "a unit and no
         placement" is half a cadence -- and both write doors pop the placement
-        with no default (``build_recurrence_rule_from_form``,
+        with no default (``recurrence_spec_from_form``,
         ``update_recurrence_rule_from_form``), so it reached the flush as an
         unhandled ``KeyError``.
 

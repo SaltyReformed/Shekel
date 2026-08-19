@@ -90,25 +90,22 @@ def _biweekly_calendar(user_id: int = 1) -> PayCalendar:
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _create_rule(seed_user, cadence, *, interval_n=1, end_date=None):
-    """Create and flush a RecurrenceRule for the seed user."""
-    return make_cadence_rule(
-        seed_user["user"].id, cadence,
-        interval_n=interval_n, end_date=end_date,
-    )
+def _create_expense(seed_user, cadence, amount, *, name="Expense",
+                    interval_n=1, end_date=None):
+    """Create and flush an expense TransactionTemplate with its cadence.
 
-
-def _create_expense(seed_user, rule, amount, *, name="Expense"):
-    """Create and flush an expense TransactionTemplate.
-
-    ``rule`` may be ``None`` -- that is how a definition says "does not
+    ``cadence`` may be ``None`` -- that is how a definition says "does not
     repeat" since plan step R2e-3.
+
+    **It authors the cadence itself, since plan step R-F6**: a rule carries
+    its owning template's FK, so it cannot be built before the template and a
+    separate ``_create_rule`` helper had nothing to hand back.  A caller that
+    needs the rule reads ``tmpl.recurrence_rule``.
     """
     tmpl = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"]["Rent"].id,
-        recurrence_rule_id=rule.id if rule is not None else None,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
         name=name,
         default_amount=amount,
@@ -116,6 +113,10 @@ def _create_expense(seed_user, rule, amount, *, name="Expense"):
     )
     db.session.add(tmpl)
     db.session.flush()
+    if cadence is not None:
+        make_cadence_rule(
+            tmpl, cadence, interval_n=interval_n, end_date=end_date,
+        )
     return tmpl
 
 
@@ -140,13 +141,9 @@ class TestObligationsAggregator:
         as_of = date(2026, 5, 20)
         expired_end = as_of - timedelta(days=1)
         with app.app_context():
-            rule = _create_rule(
-                seed_user, EVERY_PERIOD,
-                end_date=expired_end,
-            )
             tmpl = _create_expense(
-                seed_user, rule, Decimal("100.00"),
-                name="Expired Biweekly",
+                seed_user, EVERY_PERIOD, Decimal("100.00"),
+                name="Expired Biweekly", end_date=expired_end,
             )
             db.session.commit()
 
@@ -169,11 +166,8 @@ class TestObligationsAggregator:
         """
         as_of = date(2026, 5, 20)
         with app.app_context():
-            rule = _create_rule(
-                seed_user, EVERY_PERIOD,
-            )
             tmpl = _create_expense(
-                seed_user, rule, Decimal("100.00"),
+                seed_user, EVERY_PERIOD, Decimal("100.00"),
                 name="Active Biweekly",
             )
             db.session.commit()
@@ -208,11 +202,8 @@ class TestObligationsAggregator:
                 seed_user, None, Decimal("5000.00"),
                 name="One-Time",
             )
-            recurring_rule = _create_rule(
-                seed_user, EVERY_PERIOD,
-            )
             recurring_tmpl = _create_expense(
-                seed_user, recurring_rule, Decimal("100.00"),
+                seed_user, EVERY_PERIOD, Decimal("100.00"),
                 name="Recurring",
             )
             db.session.commit()
@@ -247,18 +238,12 @@ class TestObligationsAggregator:
         aggregator, so they cannot diverge.
         """
         with app.app_context():
-            biweekly_rule = _create_rule(
-                seed_user, EVERY_PERIOD,
-            )
-            monthly_rule = _create_rule(
-                seed_user, MONTHLY,
-            )
             _create_expense(
-                seed_user, biweekly_rule, Decimal("100.00"),
+                seed_user, EVERY_PERIOD, Decimal("100.00"),
                 name="Biweekly Bill",
             )
             _create_expense(
-                seed_user, monthly_rule, Decimal("500.00"),
+                seed_user, MONTHLY, Decimal("500.00"),
                 name="Monthly Bill",
             )
             db.session.commit()
@@ -503,13 +488,10 @@ class TestObligationsAggregator:
         $3,250 inflated value should appear.
         """
         with app.app_context():
-            rule = _create_rule(
-                seed_user, EVERY_PERIOD,
-                end_date=date.today() - timedelta(days=1),
-            )
             _create_expense(
-                seed_user, rule, Decimal("1500.00"),
+                seed_user, EVERY_PERIOD, Decimal("1500.00"),
                 name="Expired Bill",
+                end_date=date.today() - timedelta(days=1),
             )
             db.session.commit()
 
@@ -555,14 +537,15 @@ class TestASpentCountLeavesTheObligationsTotal:
         Returns:
             The flushed template.
         """
-        rule = _create_rule(
-            seed_user, EVERY_PERIOD,
+        tmpl = _create_expense(
+            seed_user, EVERY_PERIOD, Decimal("100.00"), name=f"After {count}",
         )
-        rule.max_occurrences = count
+        # Reached through the OWNING template (plan step R-F6): the rule
+        # cannot be built before it, so a count bound is set on the row the
+        # template now holds.
+        tmpl.recurrence_rule.max_occurrences = count
         db.session.flush()
-        return _create_expense(
-            seed_user, rule, Decimal("100.00"), name=f"After {count}",
-        )
+        return tmpl
 
     def test_a_spent_count_contributes_nothing(
         self, app, seed_user, seed_periods,
@@ -667,12 +650,9 @@ class TestASpentCountLeavesTheObligationsTotal:
         with app.app_context():
             calendar = calendar_for(seed_user["user"].id)
             payday = calendar.periods[1].start_date
-            rule = _create_rule(
-                seed_user, EVERY_PERIOD,
-                end_date=payday,
-            )
             template = _create_expense(
-                seed_user, rule, Decimal("100.00"), name="Ends On A Payday",
+                seed_user, EVERY_PERIOD, Decimal("100.00"),
+                name="Ends On A Payday", end_date=payday,
             )
             db.session.commit()
 
@@ -698,12 +678,10 @@ class TestASpentCountLeavesTheObligationsTotal:
             calendar = calendar_for(seed_user["user"].id)
             last_fired = calendar.periods[1].start_date
             next_payday = calendar.periods[2].start_date
-            rule = _create_rule(
-                seed_user, EVERY_PERIOD,
-                end_date=next_payday - timedelta(days=1),
-            )
             template = _create_expense(
-                seed_user, rule, Decimal("100.00"), name="Ends Mid-Cycle",
+                seed_user, EVERY_PERIOD, Decimal("100.00"),
+                name="Ends Mid-Cycle",
+                end_date=next_payday - timedelta(days=1),
             )
             db.session.commit()
 

@@ -70,12 +70,10 @@ def _make_envelope_template(
     expense_type = (
         db.session.query(TransactionType).filter_by(name="Expense").one()
     )
-    rule = make_every_period_rule(db.session, seed_user["user"].id)
     template = TransactionTemplate(
         user_id=seed_user["user"].id,
         account_id=seed_user["account"].id,
         category_id=seed_user["categories"][category_key].id,
-        recurrence_rule_id=rule.id,
         transaction_type_id=expense_type.id,
         name=name,
         default_amount=Decimal(default_amount),
@@ -83,6 +81,8 @@ def _make_envelope_template(
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
     return template
 
 

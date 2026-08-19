@@ -88,17 +88,17 @@ def _transfer_template(seed_user, savings_acct, amount="250.00"):
     """Create a recurring transfer template with an Every-Period rule."""
     # Authored through the write door (plan step R7c-b): the two-axis columns
     # are NOT NULL, so a rule naming only a pattern cannot be stored.
-    rule = make_every_period_rule(db.session, seed_user["user"].id)
     template = TransferTemplate(
         user_id=seed_user["user"].id,
         from_account_id=seed_user["account"].id,
         to_account_id=savings_acct.id,
-        recurrence_rule_id=rule.id,
         name="Money Market Contribution",
         default_amount=Decimal(amount),
     )
     db.session.add(template)
     db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    rule = make_every_period_rule(db.session, template)
     tas.set_amount(template, Decimal(amount), effective_on=date(2020, 4, 9))
     db.session.commit()
     return template

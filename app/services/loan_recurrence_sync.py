@@ -399,7 +399,7 @@ def owns_validity_window(template: "object") -> bool:
         ``end_date``, so its form must render both read-only.
     """
     account_id = getattr(template, "to_account_id", None)
-    if account_id is None or template.recurrence_rule_id is None:
+    if account_id is None or template.recurrence_rule is None:
         return False
     if loan_loaders.load_loan_params(account_id) is None:
         return False

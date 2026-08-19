@@ -183,7 +183,7 @@ def validate_authorable_cadence(data):
     independent adversarial reviews of plan step R7b-2 found the same 500 in
     the version that skipped it.  The two axes are halves of one value, not two
     optional refinements: both write doors pop the placement with no default,
-    so half a cadence reached ``build_recurrence_rule_from_form`` as an
+    so half a cadence reached ``recurrence_spec_from_form`` as an
     unhandled ``KeyError``.  Its EMPTY spelling was worse -- the field is
     ``allow_none``, so :func:`_normalize_empty_inputs` keeps the key with a
     present ``None``, marshmallow never deserializes it, and the route built a

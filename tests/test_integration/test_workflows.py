@@ -56,8 +56,6 @@ class TestSalaryToGrid:
             income_type = db.session.query(TransactionType).filter_by(name="Income").one()
 
             # Create recurrence rule and template (mimics salary profile creation).
-            rule = make_every_period_rule(db.session, seed_user["user"].id)
-
             template = TransactionTemplate(
                 user_id=seed_user["user"].id,
                 account_id=seed_user["account"].id,
@@ -65,10 +63,11 @@ class TestSalaryToGrid:
                 transaction_type_id=income_type.id,
                 name="Paycheck",
                 default_amount=Decimal("2884.62"),
-                recurrence_rule_id=rule.id,
             )
             db.session.add(template)
             db.session.flush()
+            # The definition first, then the cadence onto it (plan step R-F6).
+            rule = make_every_period_rule(db.session, template)
 
             # Generate income transactions across all 10 periods.
             txns = recurrence_engine.generate_for_template(
@@ -94,12 +93,6 @@ class TestTemplateRecurrenceToGrid:
             # Authored through the write door (plan step R7c-b): "monthly on
             # the 15th" is stated as the first occurrence that description
             # produces, which is what ``first_occurrence_on_day`` translates.
-            rule = make_cadence_rule(
-                seed_user["user"].id,
-                MONTHLY,
-                fires_on_day=15,
-            )
-
             template = TransactionTemplate(
                 user_id=seed_user["user"].id,
                 account_id=seed_user["account"].id,
@@ -107,10 +100,15 @@ class TestTemplateRecurrenceToGrid:
                 transaction_type_id=expense_type.id,
                 name="Rent",
                 default_amount=Decimal("1200.00"),
-                recurrence_rule_id=rule.id,
             )
             db.session.add(template)
             db.session.flush()
+            # The definition first, then the cadence onto it (plan step R-F6).
+            rule = make_cadence_rule(
+                template,
+                MONTHLY,
+                fires_on_day=15,
+            )
 
             txns = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_periods(template.user_id, seed_periods), seed_user["scenario"].id,

@@ -421,15 +421,6 @@ EVT_RECURRENCE_CONFLICTS_RESOLVED = _register(
     "recurrence_conflicts_resolved", BUSINESS,
     "User resolved override/delete conflicts after a regeneration.",
 )
-EVT_RECURRENCE_RULE_NOT_EXCLUSIVE = _register(
-    "recurrence_rule_not_exclusive", BUSINESS,
-    "A template cleared its recurrence, but the rule row was not exclusively "
-    "its own (a foreign owner, or a second template referencing it), so the "
-    "rule was detached and KEPT rather than deleted.  Both template FKs are "
-    "ON DELETE SET NULL, so deleting it would have stripped the other "
-    "template's cadence silently.  1:1 is the invariant every writer upholds "
-    "and no constraint enforces; finding F-6 owns which side should.",
-)
 EVT_RESOLVE_CONFLICTS_SHADOW_REFUSED = _register(
     "resolve_conflicts_shadow_refused", BUSINESS,
     "recurrence_engine.resolve_conflicts refused to mutate a transfer "
