@@ -2,21 +2,21 @@
 
 ## Where this stands
 
-**Built:** **C1**, **C2-a**-**C2-e**, **C2-f1**, **C2-f2**, **C2-f3a** and **C3** -- section 4
-carries each one's commit, and what reached `main` is a MEASUREMENT
+**Built:** **C1**, **C2-a**-**C2-e**, **C2-f1**, **C2-f2**, **C2-f3a**, **C2-f3b** and **C3** --
+section 4 carries each one's commit, and what reached `main` is a MEASUREMENT
 (`git log --oneline origin/main..dev`).
 
-**Every RENDERING surface answers "which paycheck" from the derivation**, `C2-f3a` having deleted
-`pay_period_service.get_current_period` -- SQL with no `ORDER BY`, on the process clock. What
-survives of that module is `get_all_periods`, at SIX call sites: the four destructive schedule doors
-and the settings period list (`C2-f3b`), and the generation seam (`C2-f3c`, which deletes it).
+**Every RENDERING surface and every DESTRUCTIVE door answers "which paycheck" from the derivation**,
+`C2-f3a` having deleted `pay_period_service.get_current_period` and `C2-f3b` having taken the four
+schedule doors and the settings period list. `get_all_periods` survives at ONE call site, the
+generation seam, and `C2-f3c` deletes it.
 
 **`C2-f3` is a container of FIVE leaves, and `C10`-`C12` came OUT of it**: the salary package's
 clock (**P49**, which `C2-f3a` wrongly closed), the layer predicate (**P56**) and the
 current-paycheck merge (**P62** / **P63**) -- the last two promoted out 2026-08-19 for gating **C4**
-on work it does not depend on. The 1000-line ceiling **P64** BINDS on both files it names.
-**A cold session starts at section 4**; the shared registries are `ledger.md`, `steps.md`,
-`conventions.md` and `verification.md`.
+on work it does not depend on. **P64**'s calendar half closed at `C2-f3b`; its ENGINE half, with
+zero headroom and no step shrinking it, is **C12**'s. **A cold session starts at section 4**; the
+shared registries are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
 
 ## Rulings
 
@@ -48,6 +48,7 @@ on work it does not depend on. The 1000-line ceiling **P64** BINDS on both files
 | **`retirement_projection`'s two period parameters** | **DELETED; it reads both off the pass it already takes. Ruled 2026-08-16 (developer).** Both callers filled them from that same pass, so the pair could express only a mismatch -- the shape the "How the seam learns WHICH periods to report" ruling removed at `C2-c`. 6 arguments to 4, which retires the `too-many-arguments` / `too-many-positional-arguments` suppression at its root rather than by raising a threshold, and left `_CurrentPay`'s two period fields with ZERO readers, so they went too. Rejected: converting at the `/savings` boundary (a second pay-period read), and keeping the parameters with a new type (the pass and the arguments can still disagree, and the suppression stays) |
 | **`project_balance_horizons`'s two callers** | **Take `accounts/detail.py` onto the pass EARLY, out of `C2-f2e`. Ruled 2026-08-16 (developer).** That helper reads a period's ordinal and its id, and a `PayPeriod` spells the id `.id` where a `DerivedPeriod` spells it `.period_id` -- so its two callers could not hold two types between them for even one commit. Rejected: one module briefly holding both spellings (`accounts/detail.py` would carry a derived `current_period` for this call and an ORM one for its other fifteen reads), and splitting the rule from the lookup so each caller resolves index -> period -> balance itself (the loop written twice) |
 | **What `/` renders for an owner with no PROJECTABLE account** | **The setup card AND the position tracks, and the card names the KIND that is missing. Ruled 2026-08-18 (developer)**, ledger row **P65**. `has_account` is `resolve_grid_account`, which refuses an amortizing account by design (ruling D4) because this page renders a cash-flow balance -- so an owner who had entered a mortgage and nothing else was told to "set up an account" while `compute_tracks_section` computed a `$200,000.00` `DebtSummary` the template discarded. The tracks tier reads no grid account and no pay period, which is what lets it render beside the card rather than instead of it. Measured on both sides of `C2-f2e`, so it was this page's defect rather than that step's. Rejected: changing only the copy (the owner still cannot see a position they have entered), and leaving it (rule 8 -- a `$0.00` finding is a defect waiting for the data to change) |
+| **The day the destructive doors decide on** | **The OWNER's civil day (`utils.dates.display_today`), and the lock classifier's `as_of` becomes REQUIRED. Ruled 2026-08-19 (developer)** at `C2-f3b`, on finding `balance:N-191` -- which named `classify_periods_bulk` and `top_up_rolling_window` as the two sites deciding something against the user's CALENDAR on the PROCESS clock, and said each owed its own ruling. "Has this paycheck ended" and "has it started yet" are questions about the owner's schedule, so the owner's day is what answers them; `date.today()` is the container's, and both compose files pin `TZ: America/New_York` so the two agree THERE and nowhere else -- CI, a script and a bare `flask run` are where a truncate refusal turns on the deployment. The REQUIRED half is the same ruling one level down: `regenerate_pay_periods` read the clock THREE times for one decision, benign only because a period cannot become historical between two statements of one transaction, which is an argument from timing rather than from construction. Rejected: keeping `date.today()` (it leaves a destructive door's refusal resting on a deployment setting, which is N-191's own sentence), and resolving the day in the ROUTE and threading it (the same value, at the cost of a parameter on three public service doors, one of which is already at `max-args`) |
 | **What holds a `tests/manual/` harness to the code it measures** | **The lint gate, at `E,F` only. Ruled 2026-08-18 (developer)**, ledger row **P66**. These are the proof instruments every cutover here is verified with, and nothing checked them: pytest does not collect the directory, CI linted only `app/`, and each probe's `_guard` records a raise AS DATA -- so a signature change makes a harness dump `{"RAISED": ...}` where a figure belongs, and a before/after diff of two such runs reads BYTE-IDENTICAL over a region never measured. FOUR sites were already dead when this was found, one since `C2-f2d-3`. `E,F` and NOT the 10.00/10 floor the other three trees hold: these scripts legitimately duplicate one another and branch wide, and what is gated is the class that rotted them. A both-sides harness naming a HEAD-only API carries a scoped disable with a `Pylint:` rationale. Rejected: a pytest smoke test that runs each harness (stronger, but it needs a seeded owner rich enough to reach every probe and the both-sides files would need skips), and leaving it recorded |
 
 ---
@@ -270,17 +271,12 @@ each one's proof. **Must not be undone**: `_PeriodSpans`, `generate_projection_p
       12) and `TestTheWindowIsAnsweredByTheDerivation`, whose two regression cases were RUN against
       the merge base and FAIL there.
 
-- [ ] **C2-f3b -- the destructive doors decide in DERIVED periods.** `pay_period_admin` reads
-      `calendar_for` and works in `DerivedPeriod` values; `classify_periods_bulk` retypes to take
-      them, so the HISTORICAL test stops reading the `end_date` column **C4** drops; and
-      `record_paydays` / `retire_paydays` take retiring IDS, keeping the one ORM read they already
-      issue (`_owner_periods`) -- which is what "the write-path reads move into that writer" means
-      once the admin has no use for a row. The settings period list goes with them.
-      **Its `as_of` becomes REQUIRED**: regenerate reads the clock THREE times for one decision
-      today, benign only because a period cannot become historical between them.
-      **It also owes P64's calendar half**: `_calendar.py` hit 1002/1000 at C2-f3a and only a
-      duplicated `Args:` block made room, so the four VIEW methods move to a `_views.py`, as the
-      searches left at C2-c.
+- [x] **C2-f3b -- the destructive doors decide in DERIVED periods.** `91e7f5bf`. No decision in
+      `pay_period_admin` or the settings period list reads a column **C4** drops; the lock
+      classifier takes a `PayCalendar`, so an unmaterialised period is unconstructible rather than
+      refused; both writer doors take retiring IDS; each door reads the OWNER's day once. Closed
+      **P64**'s calendar half; opened **P70**, **P71**. Proof: `verify_pay_period_doors_cutover.py`
+      (62 periods, 0 disagreements, firing control 1).
 
 - [ ] **C2-f3c -- the generation seam holds ONE read.** `GenerationSchedule` becomes
       `(calendar, write_period_ids)`: no ORM `PayPeriod` enters the seam, `PlannedOccurrence.period`
@@ -375,9 +371,14 @@ joined the blast radius after C2-c widened it to every balance page:
   producer's `None` used to give them the "No pay period covers today" CTA. That page's ZERO-ACCOUNT
   render is deliberately still safe: the account guard runs before the derivation, which is the
   opposite of `/grid`'s order and is stated at the site.
+- **`C2-f3b`** -- extend, truncate, regenerate and the settings section derive it too, and a bad
+  stored cadence stops being the `ValidationError` those routes flash.
+  **RESET does NOT derive one**: it reads its ids through `pay_period_write.owner_period_ids`, so
+  the door that rebuilds from a SUBMITTED cadence still repairs this owner -- it SUCCEEDED at the
+  merge base, and that regression stood until the step's review measured it.
 
-Zero affected owners on either database -- registration has written the schedule row since
-`balance:X-ad-a` -- so this is a state the fallback can still produce rather than one it does.
+Zero affected owners on either database (re-measured 2026-08-19: one owner, a schedule row, a widest
+period of 14 days), so this is a state the fallback can produce rather than one it does.
 
 - [ ] **C5 -- the gap machinery goes, and a paycheck may owe one template twice.**
 
