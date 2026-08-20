@@ -46,6 +46,7 @@ from app.services.statement_match import (
 
 from ._builders import (
     a_bank_line,
+    a_later_period,
     a_purchase,
     a_scope,
     a_transaction,
@@ -82,6 +83,31 @@ def _match(seed_user, lines=(), transactions=(), entries=()):
         line_ids=frozenset(line.id for line in lines),
         transaction_ids=frozenset(txn.id for txn in transactions),
         entry_ids=frozenset(entry.id for entry in entries),
+    )
+
+
+def _balance(seed_user, day):
+    """Return the checking account's balance as of *day*.
+
+    Args:
+        seed_user: The seeded user bundle.
+        day: The day to value the account on.
+
+    Returns:
+        The balance.
+    """
+    return balance_at.balance_at(
+        seed_user["account"],
+        # Built with the day it is asked for, exactly as ``test_create``'s own
+        # money cases do.  ``BalanceContext.build`` resolves an ``as_of`` from
+        # the CLOCK, so two reads a few statements apart share one -- which
+        # answers the same figure whatever the postings did.
+        balance_at.BalanceContext(
+            user_id=seed_user["user"].id,
+            scenario=seed_user["scenario"],
+            as_of=day,
+        ),
+        day,
     )
 
 
@@ -1065,8 +1091,16 @@ class TestABatchBooksWhatTheSameActsBookOneAtATime:
                 ))
                 _db.session.flush()
             for creation in creations:
+                # Its OWN registry per call, because acting one at a time is
+                # several REQUESTS: the batch converges same-answer creations
+                # onto one envelope per pay period (finding **N-327**) and
+                # separate requests cannot.  That the two still agree TO THE
+                # CENT is the measurement that convergence moves no money --
+                # each purchase carries its own posting day and is its own
+                # cash movement, so an envelope's own leg is `0.00` either way.
                 singly_did.append(statement_match.create_purchase_from_line(
                     creation, a_scope(seed_user),
+                    statement_match.MintedEnvelopes.none_yet(),
                 ))
                 _db.session.flush()
             singly = self._money(db, seed_user, account)
@@ -1098,3 +1132,210 @@ class TestABatchBooksWhatTheSameActsBookOneAtATime:
             assert as_a_batch["transactions"] == singly["transactions"]
             assert as_a_batch["entries"] == singly["entries"]
             assert as_a_batch["postings"] == singly["postings"]
+
+
+class TestOnePressMintsOneEnvelopePerAnswerPerPeriod:
+    """Finding **N-327**, developer ruling 2026-08-20 (plan step X-f6a-4).
+
+    A ``new envelope called X`` answer minted one PER LINE, so a sweep
+    fragmented the budget line the policy names.  Measured on the developer's
+    own statement: a ``Lowe's`` answer places 4 lines over 3 pay periods, so
+    ONE press made 4 envelopes -- two of them in the SAME period -- and the
+    next statement made more beside them.
+
+    **The convergence is scoped to one REQUEST**, which is what
+    :class:`~app.services.statement_match.MintedEnvelopes` is: the
+    cross-statement half is answered by the SUGGESTION, which degrades to a
+    ``RECORD_IN`` against an envelope of that name already in the period and is
+    printed where the owner can override it.
+
+    **It moves NO money**, which the batch-vs-one-at-a-time control above now
+    measures: each purchase carries its own posting day and is its own cash
+    movement, so an envelope's own leg is `0.00` whether one envelope holds
+    four purchases or four hold one each.
+    """
+
+    def test_two_lines_in_ONE_period_share_one_envelope(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL: this is the same-press duplication itself."""
+        statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        first = a_bank_line(
+            seed_user, statement, amount="-30.00", posted_on=day,
+            description="LOWES ONE",
+        )
+        second = a_bank_line(
+            seed_user, statement, amount="-45.00", posted_on=day,
+            description="LOWES TWO", sequence_in_group=0,
+        )
+        category = seed_user["categories"]["Groceries"]
+        answer = NewEnvelope(name="Home Improvement", category_id=category.id)
+
+        outcome = _batch(seed_user, creations=[
+            _creation(seed_user, first, new_envelope=answer),
+            _creation(seed_user, second, new_envelope=answer),
+        ])
+        db.session.flush()
+
+        assert outcome.applied_count == 2
+        assert outcome.recorded_count == 2
+        assert outcome.envelopes_created == 1
+        envelopes = db.session.query(Transaction).filter_by(
+            name="Home Improvement",
+        ).all()
+        assert len(envelopes) == 1
+        assert sorted(entry.amount for entry in envelopes[0].entries) == [
+            Decimal("30.00"), Decimal("45.00"),
+        ]
+
+    def test_the_shared_envelope_moves_NO_cash_leg_of_its_own(
+        self, app, db, seed_user,
+    ):
+        """MONEY: the second purchase carries its own posting day.
+
+        An envelope's own cash leg is what its purchases have NOT already
+        taken (ruling **R-FM**), and every purchase this door writes carries
+        the day the bank took it -- so the envelope contributes nothing itself
+        whether it holds one purchase or four.  Asserted directly, because
+        "the budget stopped fragmenting" would be worth nothing if the money
+        moved with it.
+        """
+        statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date + timedelta(days=5)
+        lines = [
+            a_bank_line(
+                seed_user, statement, amount=amount, posted_on=day,
+                description=f"LOWES {amount}",
+            )
+            for amount in ("-30.00", "-45.00")
+        ]
+        category = seed_user["categories"]["Groceries"]
+        answer = NewEnvelope(name="Home Improvement", category_id=category.id)
+        # Valued AFTER the posting day, never on the anchor's own: an anchor
+        # RESETS the ledger for its day, so a balance read there answers the
+        # assertion whatever the postings say.
+        measured_on = day + timedelta(days=2)
+        before = _balance(seed_user, measured_on)
+
+        _batch(seed_user, creations=[
+            _creation(seed_user, line, new_envelope=answer) for line in lines
+        ])
+        db.session.flush()
+
+        assert _balance(seed_user, measured_on) == before - Decimal("75.00")
+
+    def test_lines_in_TWO_periods_get_one_envelope_EACH(
+        self, app, db, seed_user,
+    ):
+        """The key carries the period, because an envelope belongs to one.
+
+        FIRING CONTROL against the over-correction: converging on the NAME
+        alone would file a March swipe into an April budget line, which is the
+        one thing a pay-period app may never do.
+        """
+        statement = an_import(seed_user)
+        first_day = seed_user["bootstrap_period"].start_date
+        later = a_later_period(seed_user).start_date
+        one = a_bank_line(
+            seed_user, statement, amount="-30.00", posted_on=first_day,
+            description="LOWES EARLY",
+        )
+        two = a_bank_line(
+            seed_user, statement, amount="-45.00", posted_on=later,
+            description="LOWES LATE",
+        )
+        category = seed_user["categories"]["Groceries"]
+        answer = NewEnvelope(name="Home Improvement", category_id=category.id)
+
+        outcome = _batch(seed_user, creations=[
+            _creation(seed_user, one, new_envelope=answer),
+            _creation(seed_user, two, new_envelope=answer),
+        ])
+        db.session.flush()
+
+        assert outcome.applied_count == 2
+        assert outcome.envelopes_created == 2
+        envelopes = db.session.query(Transaction).filter_by(
+            name="Home Improvement",
+        ).all()
+        assert len({row.pay_period_id for row in envelopes}) == 2
+
+    def test_one_NAME_under_TWO_categories_stays_two_envelopes(
+        self, app, db, seed_user,
+    ):
+        """The key carries the category, and that is not decoration.
+
+        Two answers naming one word under two categories are two budget lines,
+        and merging them would file spending under a category the owner did not
+        pick -- which is what every spending report groups by.
+        """
+        statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        one = a_bank_line(
+            seed_user, statement, amount="-30.00", posted_on=day,
+            description="ONE",
+        )
+        two = a_bank_line(
+            seed_user, statement, amount="-45.00", posted_on=day,
+            description="TWO",
+        )
+        groceries = seed_user["categories"]["Groceries"]
+        other = next(
+            category for name, category in seed_user["categories"].items()
+            if name != "Groceries"
+        )
+
+        outcome = _batch(seed_user, creations=[
+            _creation(seed_user, one, new_envelope=NewEnvelope(
+                name="Shared Name", category_id=groceries.id,
+            )),
+            _creation(seed_user, two, new_envelope=NewEnvelope(
+                name="Shared Name", category_id=other.id,
+            )),
+        ])
+        db.session.flush()
+
+        assert outcome.envelopes_created == 2
+        assert db.session.query(Transaction).filter_by(
+            name="Shared Name",
+        ).count() == 2
+
+    def test_a_REFUSED_creation_leaves_no_envelope_for_the_next_line(
+        self, app, db, seed_user,
+    ):
+        """Ruling **R-FZ**: a refused item leaves nothing behind.
+
+        A creation rolled back inside its own SAVEPOINT must not leave a later
+        line pointing at a row that no longer exists -- so the registry is
+        written only once the act has returned.  The second line therefore
+        mints the envelope the first one failed to.
+        """
+        statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        made_later = a_bank_line(
+            seed_user, statement, amount="-30.00", posted_on=day,
+            transaction_on=day + timedelta(days=3), description="REFUSED",
+        )
+        ordinary = a_bank_line(
+            seed_user, statement, amount="-45.00", posted_on=day,
+            description="LANDS",
+        )
+        category = seed_user["categories"]["Groceries"]
+        answer = NewEnvelope(name="Home Improvement", category_id=category.id)
+
+        outcome = _batch(seed_user, creations=[
+            _creation(seed_user, made_later, new_envelope=answer),
+            _creation(seed_user, ordinary, new_envelope=answer),
+        ])
+        db.session.flush()
+
+        assert outcome.refused_count == 1
+        assert outcome.applied_count == 1
+        assert outcome.envelopes_created == 1
+        envelope = db.session.query(Transaction).filter_by(
+            name="Home Improvement",
+        ).one()
+        assert [entry.amount for entry in envelope.entries] == [
+            Decimal("45.00"),
+        ]

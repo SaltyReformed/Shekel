@@ -8,7 +8,7 @@ than through the services the accept door calls, so a broken settle verb cannot
 also break the fixture that would have caught it.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from app import ref_cache
@@ -23,6 +23,7 @@ from app.models.merchant_destination import MerchantDestination
 from app.models.statement_import import BankStatementLine, StatementImport
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.models.pay_period import PayPeriod
 from app.models.transaction_template import TransactionTemplate
 from app.services.statement_match import ReviewScope
 
@@ -249,6 +250,31 @@ def a_policy(
     db.session.add(row)
     db.session.flush()
     return row
+
+
+def a_later_period(seed_user):
+    """Stage and return the pay period AFTER the bootstrap one.
+
+    On the owner's own calendar, because a period the calendar does not know is
+    not a period the offer set can reach -- a case built on one would pass for
+    the wrong reason.
+
+    Args:
+        seed_user: The seeded user bundle.
+
+    Returns:
+        The staged :class:`~app.models.pay_period.PayPeriod`.
+    """
+    bootstrap = seed_user["bootstrap_period"]
+    period = PayPeriod(
+        user_id=seed_user["user"].id,
+        start_date=bootstrap.end_date + timedelta(days=1),
+        end_date=bootstrap.end_date + timedelta(days=14),
+        period_index=bootstrap.period_index + 1,
+    )
+    db.session.add(period)
+    db.session.flush()
+    return period
 
 
 def a_scope(seed_user, account=None):

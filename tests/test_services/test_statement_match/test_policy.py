@@ -54,6 +54,7 @@ from app.services.statement_match._policy import (  # pylint: disable=protected-
 
 from ._builders import (
     a_bank_line,
+    a_later_period,
     a_policy,
     a_scope,
     a_transaction,
@@ -89,6 +90,7 @@ def _destination(txn, *, is_settled=False):
     """Return *txn* as the offer value a placement resolves against."""
     return PurchaseDestination(
         transaction_id=txn.id,
+        name=txn.name,
         label=f"{txn.name} (a period)",
         pay_period_id=txn.pay_period_id,
         is_settled=is_settled,
@@ -1388,3 +1390,223 @@ class TestAMerchantSectionOverMixedLines:
         assert [row.merchant for row in review.merchants.merchants] == [
             "Amazon", "amazon",
         ]
+
+
+class TestANewEnvelopeAnswerReusesOneOfThatNameHere:
+    """Finding **N-327**, developer ruling 2026-08-20 (plan step X-f6a-4).
+
+    A ``new envelope called X`` answer used to mint unconditionally, so a
+    policy fragmented its own budget line: measured on the developer's own
+    statement, a ``Lowe's`` answer places 4 lines over 3 pay periods, so ONE
+    press made 4 envelopes -- two of them in the same period -- and the next
+    statement made more beside them, because an ad-hoc row carries no identity
+    across periods for anything to converge on.
+
+    **The suggestion is what changed, never the tick.**  The placement prints
+    beside the line's own destination select, which still opens on *leave this
+    line alone* (ruling **R-FZ**), so the owner sees the envelope it would
+    reuse and may pick another -- including "a new envelope" again.
+    """
+
+    def test_an_envelope_of_that_name_HERE_is_recorded_into(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL: this is the cross-STATEMENT half of the convergence.
+
+        The envelope a previous statement created is offered to this line, so
+        the answer resolves to it instead of minting a second one beside it.
+        """
+        category = seed_user["categories"]["Groceries"]
+        existing = a_transaction(
+            seed_user, name="Home Improvement", is_envelope=True,
+        )
+        policy = MerchantPolicy(
+            merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
+            envelope_name="Home Improvement", category_id=category.id,
+        )
+
+        placement = placements_for(
+            "Lowe's", _view(policy, categories={category.id}), [_destination(existing)],
+        )
+
+        assert placement.kind is PlacementKind.RECORD_IN
+        assert placement.destination.transaction_id == existing.id
+        assert placement.select_value == str(existing.id)
+
+    def test_a_period_holding_NONE_of_that_name_still_creates(
+        self, app, db, seed_user,
+    ):
+        """The arm the answer exists for, unchanged.
+
+        Several of the developer's merchants -- a hardware store, a parks fee,
+        two subscriptions -- have no envelope in ANY period, which is why
+        ruling R-FX made creating one an answer at all.
+        """
+        category = seed_user["categories"]["Groceries"]
+        other = a_transaction(seed_user, name="Groceries", is_envelope=True)
+        policy = MerchantPolicy(
+            merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
+            envelope_name="Home Improvement", category_id=category.id,
+        )
+
+        placement = placements_for(
+            "Lowe's", _view(policy, categories={category.id}), [_destination(other)],
+        )
+
+        assert placement.kind is PlacementKind.CREATE_NEW
+        assert placement.new_envelope.name == "Home Improvement"
+        assert placement.select_value == "new"
+
+    def test_TWO_of_that_name_here_is_reported_rather_than_guessed(
+        self, app, db, seed_user,
+    ):
+        """The same rule, and the same sentence shape, a template answer takes.
+
+        Reachable on data the defect itself produced -- two same-named
+        envelopes in one period is exactly what one press used to make -- which
+        is why it may not be papered over by picking the first.
+        """
+        category = seed_user["categories"]["Groceries"]
+        one = a_transaction(
+            seed_user, name="Home Improvement", is_envelope=True,
+        )
+        two = a_transaction(
+            seed_user, name="Home Improvement", amount="1.00",
+            is_envelope=True,
+        )
+        two.name = "Home Improvement"
+        db.session.flush()
+        policy = MerchantPolicy(
+            merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
+            envelope_name="Home Improvement", category_id=category.id,
+        )
+
+        placement = placements_for(
+            "Lowe's", _view(policy, categories={category.id}),
+            [_destination(one), _destination(two)],
+        )
+
+        assert placement.kind is PlacementKind.UNRESOLVED
+        assert "already holds 2 of them" in placement.unresolved_reason
+        assert placement.select_value is None
+
+    def test_it_matches_the_NAME_and_not_the_label(
+        self, app, db, seed_user,
+    ):
+        """The label appends the pay-period span for a reader.
+
+        A rule comparing against the label would be comparing against the span
+        too, so it would never match -- and the convergence would silently do
+        nothing while every test above still passed if they compared labels.
+        """
+        category = seed_user["categories"]["Groceries"]
+        existing = a_transaction(
+            seed_user, name="Home Improvement", is_envelope=True,
+        )
+        offered = _destination(existing)
+        assert offered.label != offered.name
+
+        placement = placements_for(
+            "Lowe's",
+            _view(
+                MerchantPolicy(
+                    merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
+                    envelope_name="Home Improvement",
+                    category_id=category.id,
+                ),
+                categories={category.id},
+            ),
+            [offered],
+        )
+
+        assert placement.kind is PlacementKind.RECORD_IN
+
+    def test_an_ARCHIVED_category_still_refuses_before_any_of_this(
+        self, app, db, seed_user,
+    ):
+        """The order of the refusals: an unusable answer resolves to nothing.
+
+        Reusing an envelope of that name would look like a repair, and it would
+        be applying an answer the owner can no longer restate.
+        """
+        category = seed_user["categories"]["Groceries"]
+        existing = a_transaction(
+            seed_user, name="Home Improvement", is_envelope=True,
+        )
+        policy = MerchantPolicy(
+            merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
+            envelope_name="Home Improvement", category_id=category.id,
+        )
+
+        placement = placements_for(
+            "Lowe's", _view(policy, categories=frozenset()),
+            [_destination(existing)],
+        )
+
+        assert placement.kind is PlacementKind.UNRESOLVED
+        assert "archived" in placement.unresolved_reason
+
+
+class TestTheScreenSaysWhichLineCREATESTheEnvelope:
+    """Finding **N-327**: one press mints one envelope per answer per period.
+
+    ``placements_for`` resolves ONE line against its own period and cannot know
+    what another line in the same pass will do, so the flag that says *an
+    earlier line here already creates this* is set by the reader -- the only
+    thing that sees more than one line at a time.
+
+    **It is about the SENTENCE, not the act.**  Both lines still carry the same
+    select value (``new``), because the write converges; what this buys is that
+    the screen says so BEFORE the press rather than the receipt saying it after.
+    """
+
+    def test_the_SECOND_line_of_one_answer_says_it_joins(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL: without it both lines read as making their own."""
+        statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        category = seed_user["categories"]["Groceries"]
+        for amount in ("-30.00", "-45.00"):
+            a_bank_line(
+                seed_user, statement, amount=amount, posted_on=day,
+                description=f"LOWES {amount}", merchant="Lowe's",
+            )
+        a_policy(
+            seed_user, "Lowe's", envelope_name="Home Improvement",
+            category_id=category.id,
+        )
+
+        review = review_set(a_scope(seed_user))
+
+        joining = [
+            line.placement.joins_new for line in review.creatable
+            if line.placement is not None and line.placement.creates
+        ]
+        assert joining == [False, True]
+
+    def test_lines_in_DIFFERENT_periods_each_create_their_own(
+        self, app, db, seed_user,
+    ):
+        """The key carries the period, so neither joins the other."""
+        statement = an_import(seed_user)
+        category = seed_user["categories"]["Groceries"]
+        first_day = seed_user["bootstrap_period"].start_date
+        later_day = a_later_period(seed_user).start_date
+        for amount, day in (("-30.00", first_day), ("-45.00", later_day)):
+            a_bank_line(
+                seed_user, statement, amount=amount, posted_on=day,
+                description=f"LOWES {day}", merchant="Lowe's",
+            )
+        a_policy(
+            seed_user, "Lowe's", envelope_name="Home Improvement",
+            category_id=category.id,
+        )
+
+        review = review_set(a_scope(seed_user))
+
+        joining = [
+            line.placement.joins_new for line in review.creatable
+            if line.placement is not None and line.placement.creates
+        ]
+        assert joining == [False, False]

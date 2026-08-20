@@ -626,6 +626,13 @@ class PurchaseDestination:
 
     Attributes:
         transaction_id: The budget line.
+        name: The row's OWN name, unlabelled.  Carried beside :attr:`label`
+            rather than parsed back out of it, because a rule that MATCHES on a
+            name must not match on the pay-period span the label appends --
+            plan step ``bank_import:X-f6a-4`` compares this against a merchant
+            policy's stated envelope name, so that a second statement files
+            into the envelope the first one created instead of minting another
+            beside it (finding **N-327**).
         label: What to call it, with its pay period's span, because the same
             envelope name recurs every period and a reviewer picking a
             destination for a May swipe has to see which May it is.
@@ -650,6 +657,7 @@ class PurchaseDestination:
     """
 
     transaction_id: int
+    name: str
     label: str
     pay_period_id: int
     is_settled: bool

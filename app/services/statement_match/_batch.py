@@ -69,7 +69,7 @@ from app.exceptions import NotFoundError, ValidationError
 from app.extensions import db
 
 from ._accept import accept_match
-from ._create import create_purchase_from_line
+from ._create import MintedEnvelopes, create_purchase_from_line
 from ._offers import MatchSubmission, PurchaseCreation
 from ._scope import ReviewScope
 
@@ -383,6 +383,12 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
             refusal.
     """
     tally = _Tally(applied=[], refused=[])
+    # **One registry per REQUEST**, which is what makes a sweep mint one
+    # envelope per answer per pay period rather than one per line (finding
+    # **N-327**).  Built HERE rather than inside the create door for the reason
+    # the scope is built by the route: a door that made its own would be a door
+    # that converges with nothing, one line at a time, which is the defect.
+    minted = MintedEnvelopes.none_yet()
 
     for submission in batch.matches:
         line_ids = tuple(sorted(submission.line_ids))
@@ -402,10 +408,18 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
         line_ids = (creation.line_id,)
         recorded = _run(
             tally, line_ids,
-            lambda c=creation: create_purchase_from_line(c, scope),
+            lambda c=creation: create_purchase_from_line(
+                c, scope, minted,
+            ),
         )
         if recorded is None:
             continue
+        # **AFTER the act returned**, never inside the door that creates: an
+        # item refused by ``create_entry`` rolls its whole SAVEPOINT back, and
+        # a registry written one line above that refusal hands the NEXT line an
+        # id the rollback has already taken.  Measured -- the sweep died on
+        # ``NoneType`` -- which is why the remembering lives out here.
+        minted.remember(recorded)
         tally.recorded += 1
         tally.envelopes += 1 if recorded.envelope_created else 0
         tally.applied.append(AppliedItem(

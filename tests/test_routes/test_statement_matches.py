@@ -1363,6 +1363,44 @@ class TestTheCreateArm:
         assert db.session.query(StatementMatch).count() == 0
 
 
+def _an_envelope(seed_user, name="Groceries"):
+    """Return a Projected envelope a purchase may join.
+
+    Args:
+        seed_user: The seeded user bundle.
+        name: The envelope's name.
+
+    Returns:
+        The staged :class:`~app.models.transaction.Transaction`.
+    """
+    return a_transaction(
+        seed_user, name=name, amount="500.00", is_envelope=True,
+    )
+
+
+def _a_line(seed_user, merchant="Amazon", amount="-57.96", sequence=0):
+    """Record one unexplained outflow from *merchant*.
+
+    Args:
+        seed_user: The seeded user bundle.
+        merchant: What the bank names the merchant, which is the policy key.
+        amount: Signed, negative OUT of the account.
+        sequence: The ordinal completing the line's identity.
+
+    Returns:
+        The staged
+        :class:`~app.models.statement_import.BankStatementLine`.
+    """
+    statement = an_import(seed_user)
+    return a_bank_line(
+        seed_user, statement, amount=amount,
+        posted_on=seed_user["bootstrap_period"].start_date,
+        description=f"POINT OF SALE DEBIT L340 THING ({merchant})",
+        merchant=merchant, sequence_in_group=sequence,
+    )
+
+
+
 class TestTheMerchantPolicySection:
     """Where your merchants go: the control, its door, and what it may not do.
 
@@ -1370,24 +1408,6 @@ class TestTheMerchantPolicySection:
     the form payload, and -- the one that matters most -- that a stated policy
     reaches the SCREEN as a suggestion and never as a selected control.
     """
-
-    @staticmethod
-    def _an_envelope(seed_user, name="Groceries"):
-        """Return a Projected envelope a purchase may join."""
-        return a_transaction(
-            seed_user, name=name, amount="500.00", is_envelope=True,
-        )
-
-    @staticmethod
-    def _a_line(seed_user, merchant="Amazon", amount="-57.96", sequence=0):
-        """Record one unexplained outflow from *merchant*."""
-        statement = an_import(seed_user)
-        return a_bank_line(
-            seed_user, statement, amount=amount,
-            posted_on=seed_user["bootstrap_period"].start_date,
-            description=f"POINT OF SALE DEBIT L340 THING ({merchant})",
-            merchant=merchant, sequence_in_group=sequence,
-        )
 
     def test_the_page_offers_a_policy_row_per_merchant(
         self, auth_client, db, seed_user,
@@ -1398,8 +1418,8 @@ class TestTheMerchantPolicySection:
         lines still ask 91 questions -- which is the same defect the hand-build
         form was added to fix two leaves earlier.
         """
-        self._an_envelope(seed_user)
-        self._a_line(seed_user)
+        _an_envelope(seed_user)
+        _a_line(seed_user)
         db.session.commit()
 
         response = auth_client.get(_review_url(seed_user["account"].id))
@@ -1427,8 +1447,8 @@ class TestTheMerchantPolicySection:
         arrived already pointing somewhere would be the app answering on the
         owner's behalf.
         """
-        self._an_envelope(seed_user)
-        self._a_line(seed_user)
+        _an_envelope(seed_user)
+        _a_line(seed_user)
         db.session.commit()
 
         response = auth_client.get(_review_url(seed_user["account"].id))
@@ -1447,8 +1467,8 @@ class TestTheMerchantPolicySection:
         self, auth_client, db, seed_user,
     ):
         """The POST answers with the screen, carrying its own receipt."""
-        envelope = self._an_envelope(seed_user)
-        self._a_line(seed_user)
+        envelope = _an_envelope(seed_user)
+        _a_line(seed_user)
         db.session.commit()
 
         response = auth_client.post(
@@ -1476,8 +1496,8 @@ class TestTheMerchantPolicySection:
         So the policy is rendered BESIDE the control and the control still
         opens on the do-nothing arm.  Delete that separation and this fails.
         """
-        envelope = self._an_envelope(seed_user)
-        line = self._a_line(seed_user)
+        envelope = _an_envelope(seed_user)
+        line = _a_line(seed_user)
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
@@ -1507,8 +1527,8 @@ class TestTheMerchantPolicySection:
         every control -- which is what pressing Apply without touching anything
         does -- must write no purchase.
         """
-        envelope = self._an_envelope(seed_user)
-        line = self._a_line(seed_user)
+        envelope = _an_envelope(seed_user)
+        line = _a_line(seed_user)
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
@@ -1543,8 +1563,8 @@ class TestTheMerchantPolicySection:
         which is what a browser sends after one press -- must record the
         purchase, or the control promises something the door refuses.
         """
-        envelope = self._an_envelope(seed_user)
-        line = self._a_line(seed_user)
+        envelope = _an_envelope(seed_user)
+        line = _a_line(seed_user)
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
@@ -1576,8 +1596,8 @@ class TestTheMerchantPolicySection:
         screen asking again -- and must place nothing, so the sweep passes over
         it.
         """
-        self._an_envelope(seed_user)
-        self._a_line(seed_user, merchant="Capital One Credit Card")
+        _an_envelope(seed_user)
+        _a_line(seed_user, merchant="Capital One Credit Card")
         db.session.commit()
 
         auth_client.post(
@@ -1606,7 +1626,7 @@ class TestTheMerchantPolicySection:
         a bound that is counted and never SAID reads as a clean sweep, which is
         the failure ``ReviewBounds`` exists against.
         """
-        self._an_envelope(seed_user)
+        _an_envelope(seed_user)
         statement = an_import(seed_user)
         day = seed_user["bootstrap_period"].start_date
         a_bank_line(
@@ -1631,9 +1651,9 @@ class TestTheMerchantPolicySection:
         is no-ops; "1 recorded" with nothing beside it reads as though the
         other twenty failed.
         """
-        envelope = self._an_envelope(seed_user)
-        self._a_line(seed_user, merchant="Alpha")
-        self._a_line(seed_user, merchant="Beta", sequence=1)
+        envelope = _an_envelope(seed_user)
+        _a_line(seed_user, merchant="Alpha")
+        _a_line(seed_user, merchant="Beta", sequence=1)
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
@@ -1657,8 +1677,8 @@ class TestTheMerchantPolicySection:
     ):
         """The third placement sentence; the other three were graded."""
         category = seed_user["categories"]["Groceries"]
-        self._an_envelope(seed_user)
-        self._a_line(seed_user, merchant="Lowe's")
+        _an_envelope(seed_user)
+        _a_line(seed_user, merchant="Lowe's")
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
@@ -1673,9 +1693,12 @@ class TestTheMerchantPolicySection:
         assert "You give Lowe&#39;s a new envelope called" in body
         assert "Yard &amp; Garden" in body
         # ...and it says what the arm actually DOES, which is one envelope per
-        # LINE (finding N-327).  A sentence promising one per period would be
-        # the screen describing a behaviour the door does not have.
-        assert "One is created per line" in body
+        # PAY PERIOD since the developer's ruling of 2026-08-20 closed finding
+        # N-327.  It used to be one per LINE, and this assertion said so; a
+        # sentence describing a behaviour the door no longer has is worse than
+        # no sentence, because the owner reads it before pressing.
+        assert "One is created per pay period" in body
+        assert "One is created per line" not in body
 
     def test_a_FOREIGN_template_is_refused_on_screen(
         self, auth_client, db, seed_user, seed_second_user,
@@ -1686,8 +1709,8 @@ class TestTheMerchantPolicySection:
         is what makes the refusal a sentence rather than a 500 with a logged
         traceback.
         """
-        self._an_envelope(seed_user)
-        self._a_line(seed_user)
+        _an_envelope(seed_user)
+        _a_line(seed_user)
         foreign = a_transaction(
             seed_second_user, name="Theirs", is_envelope=True,
         )
@@ -1714,8 +1737,8 @@ class TestTheMerchantPolicySection:
         name, so a statement about another is a crafted request -- and the
         table would otherwise take a policy for any string at all.
         """
-        self._an_envelope(seed_user)
-        self._a_line(seed_user)
+        _an_envelope(seed_user)
+        _a_line(seed_user)
         db.session.commit()
 
         response = auth_client.post(
@@ -1735,8 +1758,8 @@ class TestTheMerchantPolicySection:
         envelope one card down: a second, laxer reading of a row id on a screen
         that decides where money is filed is what plan step X-ae removed.
         """
-        self._an_envelope(seed_user)
-        self._a_line(seed_user)
+        _an_envelope(seed_user)
+        _a_line(seed_user)
         db.session.commit()
 
         response = auth_client.post(
@@ -1774,8 +1797,8 @@ class TestTheMerchantPolicySection:
         has no scripting at all.
         """
         category = seed_user["categories"]["Groceries"]
-        self._an_envelope(seed_user)
-        self._a_line(seed_user, merchant="Lowe's")
+        _an_envelope(seed_user)
+        _a_line(seed_user, merchant="Lowe's")
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
@@ -1818,8 +1841,8 @@ class TestTheMerchantPolicySection:
             MerchantDestination,
         )
 
-        envelope = self._an_envelope(seed_user)
-        self._a_line(seed_user)
+        envelope = _an_envelope(seed_user)
+        _a_line(seed_user)
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
@@ -1853,9 +1876,9 @@ class TestTheMerchantPolicySection:
         the round trip is a NO-OP: nothing recorded, nothing refused, and every
         answered merchant counted as unchanged.
         """
-        envelope = self._an_envelope(seed_user)
-        self._a_line(seed_user)
-        self._a_line(seed_user, merchant="Walmart", sequence=1)
+        envelope = _an_envelope(seed_user)
+        _a_line(seed_user)
+        _a_line(seed_user, merchant="Walmart", sequence=1)
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
@@ -1891,7 +1914,7 @@ class TestTheMerchantPolicySection:
         an attribute break-out.  Autoescaping is Flask's default; this is the
         control that says so for THIS surface rather than trusting it.
         """
-        self._an_envelope(seed_user)
+        _an_envelope(seed_user)
         statement = an_import(seed_user)
         hostile = '" onmouseover="alert(1)'
         a_bank_line(
@@ -1930,7 +1953,7 @@ class TestTheMerchantPolicySection:
             status=StatusEnum.DONE,
             settled_on=seed_user["bootstrap_period"].start_date,
         )
-        self._a_line(seed_user)
+        _a_line(seed_user)
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
@@ -1958,10 +1981,10 @@ class TestTheMerchantPolicySection:
         Adversarial test-quality review 2026-08-19 measured that each arm
         could lose it with the suite still green.
         """
-        envelope = self._an_envelope(seed_user)
+        envelope = _an_envelope(seed_user)
         category = seed_user["categories"]["Groceries"]
         for index, merchant in enumerate(("Alpha", "Beta", "Gamma")):
-            self._a_line(seed_user, merchant=merchant, sequence=index)
+            _a_line(seed_user, merchant=merchant, sequence=index)
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
@@ -2003,8 +2026,8 @@ class TestTheMerchantPolicySection:
             MerchantDestination,
         )
 
-        envelope = self._an_envelope(seed_user)
-        self._a_line(seed_user)
+        envelope = _an_envelope(seed_user)
+        _a_line(seed_user)
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
@@ -2041,9 +2064,9 @@ class TestTheMerchantPolicySection:
         The whole control could be deleted with the suite green before this.
         """
         category = seed_user["categories"]["Groceries"]
-        self._an_envelope(seed_user, name="Open Envelope")
-        self._a_line(seed_user, merchant="Alpha")
-        self._a_line(seed_user, merchant="Beta", sequence=1)
+        _an_envelope(seed_user, name="Open Envelope")
+        _a_line(seed_user, merchant="Alpha")
+        _a_line(seed_user, merchant="Beta", sequence=1)
         db.session.commit()
         template_id = db.session.query(Transaction).filter(
             Transaction.name == "Open Envelope",
@@ -2067,3 +2090,36 @@ class TestTheMerchantPolicySection:
         assert "record 1 line(s) into a NEW envelope this would create" in body
         # The class that is not present is not offered a control.
         assert 'data-tick-placed="into_closed"' not in body
+
+
+class TestTheScreenSaysWhichLineWouldCREATE:
+    """Finding **N-327**, developer ruling 2026-08-20 (plan step X-f6a-4).
+
+    A press mints ONE envelope per answer per pay period, so the second and
+    later lines of a new-envelope answer JOIN the first one's rather than
+    making more beside it.  **The screen has to say that before the press**,
+    which is a route-tier fact: the flag is set by the reader that sees the
+    whole pass, and only a rendered page can say the two sentences differ.
+    """
+
+    def test_the_second_line_of_one_answer_says_it_JOINS(
+        self, auth_client, db, seed_user,
+    ):
+        """Two lines, two different sentences, one press."""
+        category = seed_user["categories"]["Groceries"]
+        _an_envelope(seed_user)
+        _a_line(seed_user, merchant="Lowe's", amount="-30.00")
+        _a_line(seed_user, merchant="Lowe's", amount="-45.00")
+        db.session.commit()
+        auth_client.post(
+            _merchants_url(seed_user["account"].id),
+            data=_policy(0, "Lowe's", answer="new", name="Yard & Garden",
+                         category_id=category.id),
+        )
+
+        body = " ".join(auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode().split())
+
+        assert "One is created per pay period" in body
+        assert "an earlier line here already creates it" in body

@@ -720,6 +720,7 @@ def destinations_for(
     offered = [
         PurchaseDestination(
             transaction_id=txn.id,
+            name=txn.name,
             label=(
                 f"{txn.name} "
                 f"({txn.pay_period.start_date} - {txn.pay_period.end_date})"
