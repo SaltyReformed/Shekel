@@ -293,8 +293,8 @@ each one's proof. **Must not be undone**: `_PeriodSpans`, `generate_projection_p
       ONE `PayCalendar.window` slice, `_shift_window` is DELETED with `app/`'s last ORDINAL search,
       and neither settled-expense query hydrates `Transaction.pay_period`. Closed **P45**, whose
       count was wrong (**23** statements a render, or 12 where the chosen window's rows masked the
-      pk loads; now **1**); opened **P72**. Proof: 102 windows byte-identical on production, a
-      PLANTED ordinal swap moves 112 figures on HEAD and none here, five guards RUN.
+      pk loads; now **1**); opened **P72** and **P74**. Proof: 102 windows byte-identical on
+      production, a PLANTED ordinal swap moves 112 figures on HEAD and none here, five guards RUN.
 
 - [ ] **C2-f3e -- the grid's create fragments take the ID.** The two create partials take a whole
       ORM `PayPeriod` for the one integer they use, where their sibling `_transaction_empty_cell`
