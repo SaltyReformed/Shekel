@@ -23,7 +23,7 @@ out, no Flask import.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
 
@@ -37,7 +37,13 @@ from ._candidates import (
     unmatched_destinations,
     unmatched_rows,
 )
-from ._offers import BankLine, CandidateRow, MatchProposal, PurchaseDestination
+from ._offers import (
+    BankLine,
+    CandidateRow,
+    MatchProposal,
+    PurchaseDestination,
+    envelope_answer_key,
+)
 from ._placement import Placement, placements_for
 from ._policy import PolicyView
 from ._propose import propose
@@ -447,10 +453,59 @@ def _creatable_lines(
         (line, _period_id_for(calendar, line.happened_on))
         for line in offerable
     ]
-    return tuple(
+    return _marked_joining([
         _one_creatable(line, period_id, by_period, view)
         for line, period_id in placed
-    ), len(impossible)
+    ]), len(impossible)
+
+
+def _marked_joining(
+    creatable: "list[CreatableLine]",
+) -> "tuple[CreatableLine, ...]":
+    """Flag each line that would JOIN an envelope an earlier line creates.
+
+    **A press mints ONE envelope per answer per pay period**
+    (:class:`~._create.MintedEnvelopes`, finding **N-327**), so the second and
+    later lines of one new-envelope answer file into the first one's envelope
+    rather than making more beside it.  The screen has to say that BEFORE the
+    press, and this is the only reader that sees more than one line at a time
+    -- ``placements_for`` resolves one line against its own period and cannot
+    know what another line in the same pass will do.
+
+    Walked in the order the lines are given, which is the order the sweep
+    applies them, so under the SWEEP -- which ticks a whole class -- the line
+    left unflagged is the one that creates.
+
+    **It reads what is OFFERED, not what the owner will tick**, and the
+    distinction is real: every select opens on *leave this line alone*, so if
+    they hand-pick a flagged line and leave the unflagged one alone, the line
+    told "an earlier line here already creates it" is the line that creates.
+    The outcome is still one envelope per answer per period, so no money turns
+    on it; what the sentence can be wrong about is WHICH line does the
+    creating.  Named by two adversarial reviews 2026-08-20.
+
+    Args:
+        creatable: The pass's offerable outflows, in order.
+
+    Returns:
+        The same lines, with :attr:`~._placement.Placement.joins_new` set on
+        every one after the first for its answer and period.
+    """
+    creating: "set[tuple[str, int, int]]" = set()
+    marked = []
+    for line in creatable:
+        placement = line.placement
+        if placement is not None and placement.creates:
+            key = envelope_answer_key(
+                placement.new_envelope, line.pay_period_id,
+            )
+            if key in creating:
+                line = replace(
+                    line, placement=replace(placement, joins_new=True),
+                )
+            creating.add(key)
+        marked.append(line)
+    return tuple(marked)
 
 
 def _one_creatable(

@@ -35,7 +35,6 @@ from app.enums import SettlementBasisEnum, StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import (
@@ -49,8 +48,15 @@ from app.services.balance_at import BalanceContext
 from app.services.statement_match import NewEnvelope, PurchaseCreation
 from tests._test_helpers import settlement_if_settling
 
+# Pylint: protected-access -- MintedEnvelopes is an internal collaboration
+# between two PRIVATE modules of this package and has no importer outside
+# it, so exporting it would be the surface rule 13 forbids; a test for a
+# module reaches into it, which is the allowance every sibling here takes.
+from app.services.statement_match import _create  # pylint: disable=protected-access
+
 from ._builders import (
     a_bank_line,
+    a_later_period,
     a_purchase,
     a_scope,
     a_transaction,
@@ -116,33 +122,6 @@ def _offerable(seed_user):
 
 
 
-def _a_later_period(db, seed_user):
-    """Return a pay period AFTER the bootstrap one, on the owner's calendar.
-
-    Built through :mod:`app.services.pay_period_service`'s own model so the
-    calendar carries it -- a period the calendar does not know is not a period
-    the offer set can reach, which would make the case above pass for the
-    wrong reason.
-
-    Args:
-        db: The test's ``db`` fixture.
-        seed_user: The seeded user bundle.
-
-    Returns:
-        The staged :class:`~app.models.pay_period.PayPeriod`.
-    """
-    bootstrap = seed_user["bootstrap_period"]
-    period = PayPeriod(
-        user_id=seed_user["user"].id,
-        start_date=bootstrap.end_date + timedelta(days=1),
-        end_date=bootstrap.end_date + timedelta(days=14),
-        period_index=bootstrap.period_index + 1,
-    )
-    db.session.add(period)
-    db.session.flush()
-    return period
-
-
 def _balance_on(seed_user, day):
     """Return the checking account's balance as of *day*."""
     ctx = BalanceContext(
@@ -152,8 +131,22 @@ def _balance_on(seed_user, day):
     return balance_at.balance_at(seed_user["account"], ctx, day)
 
 
-def _record(seed_user, line, **destination):
-    """Record *line* as a purchase, into whichever destination is named."""
+def _record(seed_user, line, minted=None, **destination):
+    """Record *line* as a purchase, into whichever destination is named.
+
+    Args:
+        seed_user: The seeded user bundle.
+        line: The recorded bank line to record.
+        minted: What this REQUEST has already created.  ``None`` gives each
+            call its OWN empty registry, which is the HAND path -- one line,
+            one request -- and is what every case here means unless it says
+            otherwise.  A case about a SWEEP passes one registry to several
+            calls, because that is what one press is.
+        **destination: The ``PurchaseCreation`` destination fields.
+
+    Returns:
+        The :class:`~app.services.statement_match.CreatedPurchase`.
+    """
     return statement_match.create_purchase_from_line(
         PurchaseCreation(
             line_id=line.id,
@@ -161,6 +154,7 @@ def _record(seed_user, line, **destination):
         ),
         # DERIVED HERE, so every call sees the rows this test has staged.
         a_scope(seed_user),
+        minted if minted is not None else _create.MintedEnvelopes.none_yet(),
     )
 
 
@@ -719,7 +713,7 @@ class TestTheDestinationMustBeInTheLINEsOwnPeriod:
     ):
         """The crafted request, refused, with nothing written."""
         with app.app_context():
-            other = _a_later_period(db, seed_user)
+            other = a_later_period(seed_user)
             elsewhere = a_transaction(
                 seed_user, name="Groceries", amount="500.00",
                 is_envelope=True, period=other,

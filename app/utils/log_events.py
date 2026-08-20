@@ -471,6 +471,27 @@ EVT_STATEMENT_MATCH_RELEASED = _register(
     "An owner undid a match; the bank lines it explained are unexplained again.",
 )
 
+EVT_STATEMENT_MATCH_LINELESS = _register(
+    "statement_match_lineless", ERROR,
+    "An accepted match names NO bank line, which the schema forbids: it "
+    "asserts nothing about a bank, so the review screen cannot render it, "
+    "while its app rows stay claimed and unmatchable.  Reaching this needs a "
+    "code defect -- one writer refuses an empty side, a foreign key refuses to "
+    "remove a line a match names, and a migration deleted the acts that "
+    "already held none -- so it is logged rather than rendered, and the row "
+    "named here is freed by deleting it.",
+)
+
+EVT_STATEMENT_IMPORT_DELETED = _register(
+    "statement_import_deleted", BUSINESS,
+    "An owner deleted a recorded import: the lines it FIRST recorded are gone, "
+    "every match naming one of them was released, and the source-account "
+    "pairing went with it if that was the account's last import from that "
+    "source.  It moves NO money -- a settle day an accepted match wrote is the "
+    "app's own record and stays -- but it destroys what the BANK said, which "
+    "is the fact this whole arc exists to hold.",
+)
+
 EVT_STATEMENT_LINE_RECORDED = _register(
     "statement_line_recorded", BUSINESS,
     "A bank line the app had no row for became a purchase against a budget "

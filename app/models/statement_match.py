@@ -148,15 +148,35 @@ class StatementMatchMember(db.Model):
     question the database answers: without them a second review pass could
     explain one bank line twice, and the two acts would each look complete.
 
-    **Every subject key CASCADES, and the consequence is stated rather than
-    hidden.**  Deleting a purchase, or destroying a pay period and the
+    **The APP-ROW subject keys CASCADE, and the consequence is stated rather
+    than hidden.**  Deleting a purchase, or destroying a pay period and the
     transactions under it, removes that member and leaves the act smaller --
-    so a group can stop balancing without anything raising.  The alternative,
-    ``RESTRICT``, refuses an ordinary delete because of a record the user
-    cannot see from the row they are deleting, which is the dead end finding
-    **N-302** records one table over.  A group that no longer balances is
-    reported by :class:`~app.services.statement_match.AcceptedGroup`'s
-    ``agrees`` flag, on the screen where it can be re-reviewed.
+    so a group can stop balancing without anything raising.  Refusing instead
+    would refuse an ordinary delete because of a record the user cannot see
+    from the row they are deleting, which is the dead end finding **N-302**
+    records one table over.  A group that no longer balances is reported by
+    :class:`~app.services.statement_match.AcceptedGroup`'s ``agrees`` flag, on
+    the screen where it can be re-reviewed -- and a group that has lost every
+    app row is caught by the same flag, because ``_still_holds`` asks whether
+    any row is left before it asks anything else.
+
+    **The BANK-LINE key does NOT cascade, and the asymmetry is the whole
+    point** (plan step ``bank_import:X-f6a-4``).  Losing app rows is VISIBLE;
+    losing bank lines was not.  A match with no line left asserts nothing about
+    a bank, so :func:`~app.services.statement_match._accepted_view
+    .accepted_groups` could not render it and no release button could ever
+    exist for it -- while ``matched_subjects`` reads the members directly and
+    went on reporting its transactions as already matched, so those rows could
+    never be offered or matched again.  MEASURED on a production clone
+    2026-08-20: deleting one import took 361 lines and left the act standing
+    with 0 line members and 1 transaction member.  Nothing reached that state
+    before, because nothing deleted a line; X-f6a-4's repair door is what would
+    have made it reachable, so the door RELEASES a match before it removes the
+    lines and the database refuses to orphan one either way.  A whole-account
+    delete is unaffected: its cascade removes the members with the match inside
+    the same statement, which a ``NO ACTION`` check tolerates and ``RESTRICT``
+    would not -- verified against a production clone before the constraint was
+    changed.
     """
 
     __tablename__ = "statement_match_members"
@@ -181,12 +201,20 @@ class StatementMatchMember(db.Model):
         # ``MATCH SIMPLE`` (PostgreSQL's default) is what lets these three sit
         # beside one another: a member whose ``bank_statement_line_id`` is NULL
         # satisfies the line key whatever ``account_id`` says.
+        # **No ``ondelete`` -- the default NO ACTION, deliberately.**  The
+        # database refuses to remove a bank line while a match names it, so a
+        # match that has lost its lines (invisible on the review screen and
+        # permanently blocking its app rows) is unrepresentable rather than
+        # merely unproduced.  NO ACTION rather than RESTRICT because the check
+        # is then deferred to the end of the statement, which is what lets a
+        # whole-account delete cascade the members away and the lines with them
+        # in one go; RESTRICT is checked per row and would refuse it.  See the
+        # class docstring for the measurement.
         db.ForeignKeyConstraint(
             ["bank_statement_line_id", "account_id"],
             ["budget.bank_statement_lines.id",
              "budget.bank_statement_lines.account_id"],
             name="fk_statement_match_members_line_account",
-            ondelete="CASCADE",
         ),
         db.ForeignKeyConstraint(
             ["transaction_id", "account_id"],

@@ -656,13 +656,27 @@
                       <strong>{{ item.placement.destination.label }}</strong>{% if item.placement.destination.is_settled %} -- closed{% endif %}.
                     </span>
                     {% elif item.placement.creates %}
+                    {# CREATE_NEW has TWO sentences and one select value: a
+                       press mints ONE envelope per answer per pay period
+                       (MintedEnvelopes, finding N-327), so the second and
+                       later lines of an answer JOIN the first one's rather
+                       than making more beside it. The screen says which this
+                       line is BEFORE the press; `joins_new` is set by the one
+                       reader that sees more than a single line at a time. #}
                     <span class="text-body-secondary">
                       <i class="bi bi-signpost"></i>
+                      {% if item.placement.joins_new %}
+                      You give {{ item.placement.merchant }} an envelope called
+                      <strong>{{ item.placement.new_envelope.name }}</strong>, and an
+                      earlier line here already creates it for this pay period --
+                      this one goes in beside it. Pick a different destination if
+                      you would rather it did not.
+                      {% else %}
                       You give {{ item.placement.merchant }} a new envelope
                       called <strong>{{ item.placement.new_envelope.name }}</strong>.
-                      One is created per line, so two lines in one pay period
-                      make two -- pick an envelope for the second if you would
-                      rather they shared.
+                      One is created per pay period, so this merchant's other
+                      lines in the same period go in beside this one.
+                      {% endif %}
                     </span>
                     {% elif item.placement.is_not_a_purchase %}
                     <span class="text-body-secondary">

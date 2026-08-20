@@ -26,10 +26,14 @@ from app import ref_cache
 from app.enums import StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
+from app.models.journal_entry import JournalEntry, Posting
+from app.models.ledger_account import LedgerAccount
 from app.models.statement_match import StatementMatch, StatementMatchMember
 from app.services import balance_at, entry_service, statement_match
 from app.services.balance_at import BalanceContext
 from app.services.statement_match import MatchSubmission
+
+from tests._test_helpers import create_settled_cash_transaction
 
 from ._builders import (
     a_bank_line,
@@ -38,6 +42,64 @@ from ._builders import (
     a_transaction,
     an_import,
 )
+
+
+def _balance_on(seed_user, day):
+    """Return the checking account's balance as of *day*.
+
+    Args:
+        seed_user: The seeded user bundle.
+        day: The day to value the account on.
+
+    Returns:
+        The balance.
+    """
+    return balance_at.balance_at(
+        seed_user["account"],
+        BalanceContext(
+            user_id=seed_user["user"].id,
+            scenario=seed_user["scenario"], as_of=day,
+        ),
+        day,
+    )
+
+
+def _posted_cash_by_day(db, txn, account):
+    """Return what *txn* posts to *account*'s cash leg, netted per civil day.
+
+    **NETTED, not listed, because this ledger is APPEND-ONLY.**  A correction
+    does not move a journal entry: measured 2024-01-06 -> 2024-01-10 on a real
+    settle, it writes a REVERSAL at the old day and a fresh posting at the new
+    one, so three entries stand over two days.  A test asserting *which days
+    carry an entry* would call that a leftover posting and be wrong; what says
+    the money moved is that the old day's postings SUM to zero.
+
+    Args:
+        db: The session fixture.
+        txn: The transaction whose postings to read.
+        account: The account whose cash leg to read.
+
+    Returns:
+        ``{entry_date: net}`` over the days this row posts on, days netting to
+        zero omitted -- so the answer is the days the row actually MOVES cash.
+    """
+    rows = (
+        db.session.query(
+            JournalEntry.entry_date, db.func.sum(Posting.amount),
+        )
+        .join(Posting, Posting.journal_entry_id == JournalEntry.id)
+        .join(
+            LedgerAccount,
+            LedgerAccount.id == Posting.ledger_account_id,
+        )
+        .filter(
+            JournalEntry.transaction_id == txn.id,
+            LedgerAccount.account_id == account.id,
+        )
+        .group_by(JournalEntry.entry_date)
+        .all()
+    )
+    return {row[0]: row[1] for row in rows if row[1] != 0}
 
 
 def _submit(seed_user, lines=(), transactions=(), entries=()):
@@ -1445,3 +1507,117 @@ class TestARowCarryingTheBanksDayIsStillWrittenIfItsPurchaseDayMoves:
         assert accepted.corrected_count == 1
         assert accepted.settled_count == 0
         assert accepted.redated_count == 1
+
+
+class TestARedatedSettleLeavesNoPostingBehind:
+    """Finding **N-324**: every day assertion here had no posting to MOVE.
+
+    ``_builders.a_transaction`` writes ``status_id``, ``settled_on``,
+    ``settled_amount`` and ``settled_basis_id`` straight through the ORM, and
+    that route is DELIBERATE -- a broken settle verb must not also break the
+    fixture that would have caught it (the builders' own module docstring).
+    **What nobody stated was the consequence.**  Those rows carry no ledger
+    postings, so ``_apply_day`` reaches ``apply_requested_status``, which
+    reconciles and re-posts at the new day -- and a defect that left the OLD
+    day's posting behind, the classic double-count on a re-dated settle, was
+    invisible to every case in this file.  X-f6a-3c-2's batch-versus-per-act
+    control compares postings between the two paths and so could not see an
+    error common to both.
+
+    **The remedy is a fixture built through the REAL settle door**
+    (``tests._test_helpers.create_settled_cash_transaction``, which drives
+    ``status_seam.apply_status_change`` and
+    ``posting_service.sync_transaction_postings`` in the order the mark-done
+    route does), and an assertion about the OLD day rather than only the new
+    one.  It sits beside the ORM-built cases rather than replacing them,
+    because the two grade different things.
+
+    **ONLY THE LEDGER CASE BELOW CATCHES A LEFTOVER POSTING, and that is worth
+    stating because it is the opposite of what one would assume.**  Planting
+    the defect ruling **R-FA** exists to prevent -- a matcher that stamps
+    ``settled_on`` itself instead of going through the status door, so the old
+    day's posting stands and no new one is written -- fails
+    ``test_the_rows_cash_NETS_to_the_banks_day_alone`` and leaves
+    ``test_the_OLD_days_balance_stops_carrying_the_row`` GREEN.  The balance
+    producer reads a row's ``settled_on``, not the journal, so a stale posting
+    moves no balance and no balance assertion can see one.  A class that
+    grades this defect with a balance alone grades nothing.
+    """
+
+    def test_the_OLD_days_balance_stops_carrying_the_row(
+        self, app, db, seed_user,
+    ):
+        """MONEY: the figure the app PUBLISHES moves to the bank's day.
+
+        The row settles on the day the app guessed.  The bank says it moved
+        four days later, so the earlier day must stop carrying it and the later
+        day must carry it exactly once -- the account would otherwise be short
+        by this amount on every day between the two.
+
+        **This is the PRODUCER's half and it cannot see a stale posting** (see
+        the class docstring): ``balance_at`` reads ``settled_on``, so the
+        sibling case below is what grades the ledger.  Both are here because a
+        defect can move one without the other.
+        """
+        period = seed_user["bootstrap_period"]
+        guessed = period.start_date + timedelta(days=1)
+        bank_day = guessed + timedelta(days=4)
+        txn = create_settled_cash_transaction(
+            seed_user, db.session, period, Decimal("180.00"),
+            settled_on=guessed, name="Electricity",
+        )
+        db.session.flush()
+        before_at_guessed = _balance_on(seed_user, guessed)
+        before_at_bank_day = _balance_on(seed_user, bank_day)
+
+        statement = an_import(seed_user)
+        line = a_bank_line(
+            seed_user, statement, amount="-180.00", posted_on=bank_day,
+        )
+        _submit(seed_user, lines=[line], transactions=[txn])
+        db.session.flush()
+
+        db.session.refresh(txn)
+        assert txn.settled_on == bank_day
+        # The old day RELEASES it...
+        assert _balance_on(seed_user, guessed) == (
+            before_at_guessed + Decimal("180.00")
+        )
+        # ...and the bank's day still carries it, exactly once.
+        assert _balance_on(seed_user, bank_day) == before_at_bank_day
+
+    def test_the_rows_cash_NETS_to_the_banks_day_alone(
+        self, app, db, seed_user,
+    ):
+        """The same fact read from the LEDGER rather than from a balance.
+
+        A balance is one sum over everything, so a leftover posting here and a
+        missing one there can cancel inside it; the journal, read per day and
+        per account, cannot hide either.  **The ledger is append-only**, so
+        what says the money moved is that the old day nets to zero -- measured,
+        a correction writes a reversal at the old day and a posting at the new,
+        three entries over two days.
+        """
+        period = seed_user["bootstrap_period"]
+        guessed = period.start_date + timedelta(days=1)
+        bank_day = guessed + timedelta(days=4)
+        txn = create_settled_cash_transaction(
+            seed_user, db.session, period, Decimal("180.00"),
+            settled_on=guessed, name="Electricity",
+        )
+        db.session.flush()
+        account = seed_user["account"]
+        assert _posted_cash_by_day(db, txn, account) == {
+            guessed: Decimal("-180.00"),
+        }
+
+        statement = an_import(seed_user)
+        line = a_bank_line(
+            seed_user, statement, amount="-180.00", posted_on=bank_day,
+        )
+        _submit(seed_user, lines=[line], transactions=[txn])
+        db.session.flush()
+
+        assert _posted_cash_by_day(db, txn, account) == {
+            bank_day: Decimal("-180.00"),
+        }

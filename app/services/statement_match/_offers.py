@@ -615,7 +615,7 @@ class MatchProposal:
 
 
 @dataclass(frozen=True)
-class PurchaseDestination:
+class PurchaseDestination:  # pylint: disable=too-many-instance-attributes
     """One budget line a bank line could BECOME a purchase against.
 
     Plan step ``bank_import:X-f6a-3b``.  The offered set is
@@ -624,11 +624,31 @@ class PurchaseDestination:
     so the screen cannot render a destination whose submission is refused,
     which is the failure this arc has now fixed three times.
 
+    Pylint: too-many-instance-attributes -- **eight because a destination
+    genuinely states eight things** (8/7), and three of them are what a merchant
+    policy has to MATCH on rather than display: the name, the category, and
+    whether a recurring definition owns the row.  ``StatementLine``,
+    ``CandidateRow`` and ``CreatedPurchase`` carry the same disable for the same
+    reason.
+
     Attributes:
         transaction_id: The budget line.
-        label: What to call it, with its pay period's span, because the same
-            envelope name recurs every period and a reviewer picking a
-            destination for a May swipe has to see which May it is.
+        name: The row's OWN name, unlabelled -- what a merchant policy's stated
+            envelope name is compared against (plan step
+            ``bank_import:X-f6a-4``, finding **N-327**), so that a second
+            statement files into the envelope the first one created instead of
+            minting another beside it.
+        category_id: The category it files under.  **A policy's answer is a
+            NAME AND a category and both are part of what it names**: two
+            answers spelling one word under two categories are two budget
+            lines, and reusing one for the other would file spending under a
+            category the owner did not pick.  The within-press registry
+            (:class:`~._create.MintedEnvelopes`) keys on it, and a first draft
+            of the cross-statement half compared the name alone -- so the two
+            halves of one rule disagreed, which is what this column being here
+            makes impossible.
+        period_start / period_end: Its pay period's span, from which
+            :attr:`label` is derived.
         pay_period_id: The period it is budgeted under, so a caller can offer
             the line's OWN period first without re-reading the calendar.
         is_settled: Whether it has already closed.  Adding to a closed row
@@ -650,10 +670,56 @@ class PurchaseDestination:
     """
 
     transaction_id: int
-    label: str
+    name: str
+    category_id: int
+    period_start: date
+    period_end: date
     pay_period_id: int
     is_settled: bool
     template_id: "int | None" = None
+
+    @property
+    def label(self) -> str:
+        """Return what to call this destination on screen.
+
+        The same envelope name recurs every period, so a reviewer picking a
+        destination for a May swipe has to see which May it is.
+
+        **DERIVED rather than stored beside its source**, which is the rule
+        :attr:`~._offers.MatchProposal.posts_on` states one class over: a
+        second spelling could let the screen print one row's name while a
+        policy matched another's.
+        """
+        return f"{self.name} ({self.period_start} - {self.period_end})"
+
+
+def envelope_answer_key(
+    new_envelope: NewEnvelope, pay_period_id: int,
+) -> "tuple[str, int, int]":
+    """Return what identifies ONE new-envelope answer in ONE pay period.
+
+    **The one spelling of "the same envelope this answer means"**, and it lives
+    here beside :class:`NewEnvelope` because the two callers are in different
+    packages' modules: :class:`~._create.MintedEnvelopes` writes it as a press
+    mints envelopes, and :func:`~._reads._marked_joining` reads it to say which
+    line CREATES and which JOINS.  A first version spelled the tuple twice, in
+    those two modules, which is exactly the silent drift a key stated once
+    prevents -- a mismatch converges nothing and raises nothing.
+
+    All three terms are load-bearing.  The NAME and the CATEGORY are what the
+    owner's answer states, and two answers spelling one word under two
+    categories are two budget lines.  The PERIOD is what an envelope belongs
+    to, so converging on the name alone would file a March swipe into an April
+    budget line.
+
+    Args:
+        new_envelope: The answer the owner stated.
+        pay_period_id: The period the purchase is budgeted in.
+
+    Returns:
+        ``(name, category_id, pay_period_id)``.
+    """
+    return (new_envelope.name, new_envelope.category_id, pay_period_id)
 
 
 #: What the destination select submits for the create-a-new-envelope arm, and

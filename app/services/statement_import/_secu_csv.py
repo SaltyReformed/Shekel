@@ -20,7 +20,7 @@ else: no database, no clock, no request, no matching.
   ticked, a per-line RUNNING BALANCE.  The OFX carries neither.
 * The OFX's one advantage is ``FITID``.  It buys nothing measurable: the
   positional identity key reproduced the ``FITID`` key exactly across two
-  exports twelve days apart (:func:`~._line.assign_sequences`).
+  exports twelve days apart (:func:`~._line.group_key`).
 
 **Columns are bound by HEADER NAME, never by position, and that is a measured
 requirement rather than defensive style.**  SECU offers two balance options and
@@ -571,7 +571,7 @@ def parse(payload: bytes) -> "tuple[str, list[StatementLine]]":
         (its name and SECU's masked number) and its lines in CHRONOLOGICAL
         order, oldest first.  The file itself is newest-first; the reversal
         here is what lets :func:`~._integrity.verify_running_balance` and
-        :func:`~._line.assign_sequences` both take one stated order, and the
+        :func:`~._line.group_indexes` both take one stated order, and the
         result is CHECKED rather than assumed.
 
     Raises:

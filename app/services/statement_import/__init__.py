@@ -19,12 +19,23 @@ The public surface, and what each piece is for:
 * :class:`StatementLine` -- the ONE normalized line shape every adapter
   produces, so everything downstream of a parser is source-independent.
 * :func:`supported_sources` / :func:`parse_statement` -- the adapter registry.
-* :func:`assign_sequences` / :func:`line_identity` -- the identity rule, which
-  is positional and therefore serves a source carrying no id of its own.
+* :func:`group_key` / :func:`pair_by_statement` / :func:`fresh_ordinals` -- the
+  identity rule, which needs no id of the source's own.  A line's STORED key is
+  ``(account, posted_on, amount, ordinal)``; the ordinal is a SURROGATE this app
+  mints, and what decides whether an incoming line is one the app already holds
+  is the WORDING the bank stated, reconciled a group at a time (plan step
+  ``bank_import:X-f6a-4``).
 * :func:`verify_running_balance` -- the self-check a source with a running
   balance affords, and the reason the CSV was chosen over the OFX.
 * :func:`record_statement` -- the one write door, returning
   :class:`ImportOutcome`.
+* :func:`delete_import` -- the one UNDO door, returning
+  :class:`ImportRemoval`, and the only thing in this package that destroys.
+  It is what finding **N-302** says a refusal owes (plan step
+  ``bank_import:X-f6a-4``): a restated line, or a first import that named the
+  wrong Shekel account, used to end that account's ability to import for good.
+  It is BALANCE-NEUTRAL -- it removes what the BANK said, and a settle day an
+  accepted match wrote is the app's own record and stays.
 
 **What the recorded lines are FOR is the steps after this one**, named here
 because the schema was designed for all four rather than for the first: the
@@ -41,8 +52,17 @@ from ._integrity import (
     opening_balance,
     verify_running_balance,
 )
-from ._line import KeyedLine, StatementLine, assign_sequences, line_identity
+from ._line import (
+    GroupPairing,
+    KeyedLine,
+    StatementLine,
+    fresh_ordinals,
+    group_indexes,
+    group_key,
+    pair_by_statement,
+)
 from ._reads import (
+    ImportRecord,
     RecordedSpan,
     SourceOption,
     available_sources,
@@ -51,20 +71,27 @@ from ._reads import (
     recorded_span,
 )
 from ._record import ImportOutcome, record_statement
+from ._undo import ImportRemoval, delete_import
 
 __all__ = [
+    "GroupPairing",
     "ImportOutcome",
+    "ImportRecord",
+    "ImportRemoval",
     "KeyedLine",
     "RecordedSpan",
     "SourceOption",
     "StatementLine",
-    "assign_sequences",
     "available_sources",
     "carries_running_balance",
     "closing_balance",
+    "delete_import",
+    "fresh_ordinals",
+    "group_indexes",
+    "group_key",
     "import_history",
-    "line_identity",
     "opening_balance",
+    "pair_by_statement",
     "parse_statement",
     "recent_lines",
     "record_statement",

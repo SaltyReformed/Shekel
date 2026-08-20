@@ -294,13 +294,29 @@ class BankStatementLine(db.Model):
                         import VERIFY itself (see
                         ``statement_import.verify_running_balance``).
 
-    **A line's IDENTITY is ``(account_id, posted_on, amount,
+    **A line's stored IDENTITY is ``(account_id, posted_on, amount,
     sequence_in_group)``**, and the ordinal is what makes that key total.  Two
     genuinely distinct charges can share a day and an amount -- the same coffee
     twice -- and a key without the ordinal would reject the second as a
     duplicate, which is silent money loss on exactly the shape a duplicate
-    detector is supposed to protect.  The ordinal is assigned in the source's
-    own order within its group.
+    detector is supposed to protect.
+
+    **The ordinal is a SURROGATE this app mints, and no re-import compares
+    against it** (plan step ``bank_import:X-f6a-4``).  Three of the key's four
+    terms are facts the bank stated; this one is not, and the write door used
+    to compare an incoming line against whatever sat at its ordinal -- treating
+    an app-assigned number as though the bank had supplied it, which is a
+    derived value stored beside its source with nothing reconciling the two.
+    Measured against the shipped code 2026-08-20, that refused a whole file on
+    two events that were not restatements at all: two same-day same-amount
+    lines re-ordered between exports, and a genuinely NEW line the bank
+    INSERTED ahead of a recorded one.  A re-import now reconciles a
+    ``(posted_on, amount)`` GROUP as a set, pairing on the wording the bank
+    wrote (:func:`app.services.statement_import.pair_by_statement`), and mints
+    an ordinal only for a line it has decided is new
+    (:func:`app.services.statement_import.fresh_ordinals`).  What this key
+    still guarantees is that every recorded line has a distinct, stable
+    address, which is the whole of what a surrogate owes.
 
     **``external_id`` is corroboration rather than identity, and that is
     measured.**  Across two SECU exports twelve days apart the positional key
@@ -372,8 +388,13 @@ class BankStatementLine(db.Model):
         # This line's account IS its import's, guaranteed rather than
         # maintained -- the same construction
         # ``fk_transaction_entries_parent_account`` uses.  CASCADE so that
-        # deleting an account takes its imports and their lines with it; there
-        # is no door in ``app/`` that deletes an import on its own.
+        # deleting an account takes its imports and their lines with it -- and
+        # since plan step ``bank_import:X-f6a-4`` so that DELETING AN IMPORT
+        # takes the lines it first recorded, which is the mechanism its repair
+        # door rests on (``statement_import.delete_import``).  The comment here
+        # used to justify the cascade by "there is no door in ``app/`` that
+        # deletes an import on its own", which that step made false while
+        # leaving the cascade exactly as right.
         db.ForeignKeyConstraint(
             ["import_id", "account_id"],
             ["budget.statement_imports.id",

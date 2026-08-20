@@ -1,11 +1,19 @@
 """The ONE door that records what a statement said.
 
-Everything it can refuse, it refuses BEFORE it writes a row: the file is parsed,
-its running-balance chain verified, its account identity reconciled and its
-lines compared against what is already recorded, and only then is anything
-staged.  So a refused import leaves the database exactly as it was without
-depending on the rollback -- and the rollback is there anyway, because the route
-owns the commit.
+Everything it can refuse, it refuses BEFORE it INSERTS a row: the file is
+parsed, its running-balance chain verified, its account identity reconciled and
+its lines compared against what is already recorded, and only then is anything
+staged.  So a refused import writes no new line without depending on the
+rollback.
+
+**The claim is about INSERTS and not about the session, and a wider version of
+it was left standing here once.**  The reconciliation walks group by group and
+:func:`_absorb_gained_facts` fills a recorded row's NULLs as it goes, so a
+refusal raised on group *k* leaves groups 1..*k*-1 dirty in the session and it
+is the route's rollback that discards them.  Nothing is lost by that -- those
+writes only ever ADD a fact the file states -- but "leaves the database exactly
+as it was without depending on the rollback" was true of the old per-line loop
+and is not true of this one.  Found by adversarial financial review 2026-08-20.
 
 **Nothing here moves a figure.**  Recording what a bank said is separable from
 deciding which of the app's own rows it explains, and that separation is the
@@ -23,31 +31,28 @@ frozen dataclass out, no ``flask`` / ``request`` / ``session`` /
 from __future__ import annotations
 
 import hashlib
-import logging
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
 from app.enums import StatementSourceEnum
-from app.exceptions import StatementAccountMismatch, StatementLineConflict
+from app.exceptions import StatementLineConflict
 from app.extensions import db
-from app.models.statement_import import (
-    AccountExternalIdentity,
-    BankStatementLine,
-    StatementImport,
-)
-from app.utils.log_events import (
-    BUSINESS,
-    EVT_STATEMENT_IDENTITY_RECORDED,
-    log_event,
-)
+from app.models.statement_import import BankStatementLine, StatementImport
 
 from ._adapters import parse_statement
+from ._identity import record_identity, verify_identity
 from ._integrity import closing_balance, opening_balance, verify_running_balance
-from ._line import KeyedLine, assign_sequences
-
-_logger = logging.getLogger(__name__)
+from ._line import (
+    KeyedLine,
+    StatementLine,
+    fresh_ordinals,
+    group_indexes,
+    group_key,
+    pair_by_statement,
+)
 
 
 @dataclass(frozen=True)
@@ -87,108 +92,9 @@ class ImportOutcome:
         return self.line_count - self.recorded_count
 
 
-def _verify_identity(
-    account_id: int, user_id: int, source_id: int, external_account_id: str,
-) -> bool:
-    """Check *account_id*'s identity at *source_id* against the file's.
-
-    Ruling **R-FP**: the source-account mapping is a FACT, not a guess.  The
-    user states which account a file is for; the FILE states which account it
-    is for; and this is where the two are held together.
-
-    **It reads and raises; it writes nothing.**  Recording is
-    :func:`_record_identity`, and the split is not tidiness: the door's whole
-    claim is that it refuses BEFORE it stages anything, and an ``add`` here
-    would be autoflushed by the very next query -- ahead of the last refusal
-    the door can still raise.  A claim that a refusal "leaves the database
-    exactly as it was without depending on the rollback" has to be true of the
-    ordering, not just of the outcome.
-
-    **It checks in BOTH directions**, and the second one is the arm that
-    matters.  Comparing only against this account's own recorded identity would
-    let a file already claimed by ANOTHER of the owner's accounts be imported
-    here as a first import -- so one bank statement would be recorded twice,
-    under two accounts, and the second account's balance would later be
-    reconciled against the wrong bank.
-
-    **Both lookups are scoped to the OWNER.**  A global search would make one
-    user's masked account number ("******3820", a 10,000-value space) collide
-    with another user's, permanently locking the loser out of importing their
-    own statements -- and the refusal would disclose that some other account in
-    the system held that number, which is the existence oracle the project's
-    404-for-both rule exists to prevent.
-
-    Args:
-        account_id: The account the user chose.
-        user_id: Its owner.
-        source_id: The ``ref.statement_sources`` row the file was read by.
-        external_account_id: What the file calls its account.
-
-    Returns:
-        True when the mapping still has to be RECORDED (a first import), False
-        when it already exists and agrees.
-
-    Raises:
-        StatementAccountMismatch: When the file names a different account than
-            this one has been imported from, or one another of the owner's
-            accounts already claims.
-    """
-    recorded = (
-        db.session.query(AccountExternalIdentity)
-        .filter(
-            AccountExternalIdentity.account_id == account_id,
-            AccountExternalIdentity.source_id == source_id,
-        )
-        .one_or_none()
-    )
-    if recorded is not None:
-        if recorded.external_account_id != external_account_id:
-            raise StatementAccountMismatch(
-                recorded.external_account_id, external_account_id,
-            )
-        return False
-
-    claimed_elsewhere = (
-        db.session.query(AccountExternalIdentity)
-        .filter(
-            AccountExternalIdentity.user_id == user_id,
-            AccountExternalIdentity.source_id == source_id,
-            AccountExternalIdentity.external_account_id
-            == external_account_id,
-        )
-        .one_or_none()
-    )
-    if claimed_elsewhere is not None:
-        raise StatementAccountMismatch(
-            "another of your own accounts, which has already imported it",
-            external_account_id,
-        )
-    return True
-
-
-def _record_identity(
-    account_id: int, user_id: int, source_id: int, external_account_id: str,
-) -> None:
-    """Record what *source_id* calls *account_id*, on a first import.
-
-    Args:
-        account_id: The account the user chose.
-        user_id: Its owner, held equal to the account's by
-            ``fk_account_external_identities_owner``.
-        source_id: The adapter the file was read by.
-        external_account_id: What the file calls its account.
-    """
-    db.session.add(AccountExternalIdentity(
-        account_id=account_id,
-        user_id=user_id,
-        source_id=source_id,
-        external_account_id=external_account_id,
-    ))
-
-
-def _recorded_lines(
+def _recorded_groups(
     account_id: int, period_start: date, period_end: date,
-) -> "dict[tuple[date, Decimal, int], BankStatementLine]":
+) -> "dict[tuple[date, Decimal], list[BankStatementLine]]":
     """Return this account's already-recorded lines over the file's span.
 
     Loaded as ONE query over the day range rather than one per line: a full
@@ -196,13 +102,21 @@ def _recorded_lines(
     round trips to answer a question one indexed range scan answers.
     ``idx_bank_statement_lines_account_day`` is the index it uses.
 
+    **Grouped by ``(posted_on, amount)`` rather than keyed by the full
+    identity**, which is what makes the reconciliation set-wise: the recorded
+    ordinal is a surrogate this app assigned, so a group is looked up by what
+    the BANK stated and the members inside it are then paired on their wording
+    (:func:`~._line.pair_by_statement`).
+
     Args:
         account_id: The account being imported into.
         period_start: The earliest day the file covers.
         period_end: The latest.
 
     Returns:
-        The recorded lines keyed by their account-relative identity.
+        The recorded lines grouped by the day and amount they share, each
+        group ordered by its own ordinal so the pairing walks a stable
+        sequence.
     """
     rows = (
         db.session.query(BankStatementLine)
@@ -211,20 +125,33 @@ def _recorded_lines(
             BankStatementLine.posted_on >= period_start,
             BankStatementLine.posted_on <= period_end,
         )
+        .order_by(BankStatementLine.sequence_in_group)
         .all()
     )
-    return {
-        (row.posted_on, Decimal(str(row.amount)), row.sequence_in_group): row
-        for row in rows
-    }
+    groups: "dict[tuple[date, Decimal], list[BankStatementLine]]" = defaultdict(
+        list,
+    )
+    for row in rows:
+        groups[group_key(row.posted_on, row.amount)].append(row)
+    return dict(groups)
 
 
-def _refuse_restatement(keyed: KeyedLine, recorded: BankStatementLine) -> None:
+def _refuse_restatement(
+    line: StatementLine, recorded: BankStatementLine,
+) -> None:
     """Refuse when a recorded line's own DESCRIPTION is restated.
 
     A statement line is an OBSERVATION, and an observation quietly rewritten is
     what ruling **R-FL** exists to prevent -- so the fact the source states
     ABOUT THE LINE must agree with what is already recorded.
+
+    **What reaches this is a group whose incoming and recorded halves BOTH have
+    a member the other cannot account for** (:attr:`~._line.GroupPairing
+    .restates`), which is the only shape that is a contradiction rather than a
+    change in what the export covers.  It used to be reached by a positional
+    compare, and that fired on two events the bank had not restated at all: a
+    re-ordered pair of same-day same-amount lines, and a genuinely new line the
+    bank inserted ahead of a recorded one.
 
     **The running balance is deliberately NOT compared, and that is a measured
     correction rather than a relaxation.**  A running balance is not a fact
@@ -241,22 +168,34 @@ def _refuse_restatement(keyed: KeyedLine, recorded: BankStatementLine) -> None:
     once recorded it is provenance, and :func:`_absorb_gained_facts` keeps it
     current.
 
+    **The two lines it names are EXAMPLES, not a pairing.**
+    :func:`~._line.pair_by_statement` declined to pair them -- that is what
+    makes them leftovers -- so with three unaccounted-for incoming lines and
+    two unclaimed recorded ones there is no correspondence to state, and a
+    message asserting one would be a true sentence about the wrong problem.
+    The wording therefore says what the code knows: the file states this, the
+    app holds that, at this day and amount.  A first version read "was already
+    recorded as X and this file states Y", which asserts a pairing; found by
+    adversarial design review 2026-08-20.
+
     Args:
-        keyed: The incoming line and its ordinal.
-        recorded: The line already held at that identity.
+        line: One incoming line the file states and the app cannot account for.
+        recorded: One recorded line in the same group the file no longer
+            states.
 
     Raises:
-        StatementLineConflict: When the descriptions disagree.
+        StatementLineConflict: Always.  The caller has already established that
+            this group restates something, so a guard here would be a second
+            copy of that decision.
     """
-    if recorded.description != keyed.line.description:
-        raise StatementLineConflict(
-            keyed.line.posted_on, keyed.line.amount,
-            recorded.description, keyed.line.description,
-        )
+    raise StatementLineConflict(
+        line.posted_on, line.amount,
+        recorded.description, line.description,
+    )
 
 
 def _absorb_gained_facts(
-    keyed: KeyedLine, recorded: BankStatementLine,
+    line: StatementLine, recorded: BankStatementLine,
 ) -> None:
     """Fill in what a later export states and the recorded row does not.
 
@@ -277,15 +216,15 @@ def _absorb_gained_facts(
     correction to apply.
 
     Args:
-        keyed: The incoming line and its ordinal.
-        recorded: The line already held at that identity.
+        line: The incoming line the file states.
+        recorded: The line already held, paired to it by wording.
     """
-    if recorded.running_balance is None and keyed.line.running_balance is not None:
-        recorded.running_balance = keyed.line.running_balance
-    if recorded.source_category is None and keyed.line.source_category:
-        recorded.source_category = keyed.line.source_category
-    if recorded.external_id is None and keyed.line.external_id:
-        recorded.external_id = keyed.line.external_id
+    if recorded.running_balance is None and line.running_balance is not None:
+        recorded.running_balance = line.running_balance
+    if recorded.source_category is None and line.source_category:
+        recorded.source_category = line.source_category
+    if recorded.external_id is None and line.external_id:
+        recorded.external_id = line.external_id
     # **The transaction day joins the same rule at plan step X-f6a-3a**, and
     # it is the one that MOVES A DATE rather than adding provenance: a match
     # writes this day onto a matched purchase's ``purchased_on`` (ruling
@@ -295,8 +234,8 @@ def _absorb_gained_facts(
     # for, on a column that feeds a date write instead of a display.  Found by
     # adversarial financial review 2026-08-18, which measured the re-import
     # leaving the column untouched.
-    if recorded.transaction_on is None and keyed.line.transaction_on is not None:
-        recorded.transaction_on = keyed.line.transaction_on
+    if recorded.transaction_on is None and line.transaction_on is not None:
+        recorded.transaction_on = line.transaction_on
     # **The merchant joins the same rule at plan step X-f6a-3d**, and it is the
     # one a RULE matches on: a line whose merchant is NULL joins no destination
     # policy, so a row recorded by an adapter that could not name a merchant
@@ -304,41 +243,69 @@ def _absorb_gained_facts(
     # that DOES name one had been imported over it.  The direction is the same
     # as every arm above -- ``NULL`` is filled, a disagreement is left alone --
     # and a disagreement cannot arrive here anyway: this merchant is read from
-    # the same cell as ``description``, which :func:`_refuse_restatement`
-    # compares first.
-    if recorded.merchant is None and keyed.line.merchant:
-        recorded.merchant = keyed.line.merchant
+    # the same cell as ``description``, which the pairing that produced this
+    # pair matched on.
+    if recorded.merchant is None and line.merchant:
+        recorded.merchant = line.merchant
 
 
 def _fresh_lines(
-    keyed_lines: "list[KeyedLine]",
-    already: "dict[tuple[date, Decimal, int], BankStatementLine]",
+    lines: "list[StatementLine]",
+    already: "dict[tuple[date, Decimal], list[BankStatementLine]]",
 ) -> "list[KeyedLine]":
     """Return the lines not already recorded, refusing any restatement.
 
-    The partition is total: every incoming line is either new or is one the app
-    already holds, and the second arm is checked rather than assumed
-    (:func:`_refuse_restatement`).
+    **The partition is total and it is decided per GROUP**, not per line.  Every
+    incoming line either pairs with one the app already holds -- by the wording
+    the bank stated, which is the only thing about a line the bank authored --
+    or it is new; and a group where BOTH halves have an unaccounted-for member
+    is the restatement ruling **R-FL** refuses.  The ordinal takes no part in
+    that decision (:func:`~._line.pair_by_statement`); it is minted for the
+    fresh lines afterwards (:func:`~._line.fresh_ordinals`).
 
     Args:
-        keyed_lines: The file's lines with their ordinals.
-        already: What is recorded over the same span, by identity.
+        lines: The file's lines, in the file's own order.
+        already: What is recorded over the same span, grouped by day and
+            amount.
 
     Returns:
-        The lines to write, in the file's own order.
+        The lines to write, with their ordinals, in the file's own order.
 
     Raises:
         StatementLineConflict: When a recorded line is restated differently.
     """
-    fresh = []
-    for keyed in keyed_lines:
-        recorded = already.get(keyed.identity)
-        if recorded is None:
-            fresh.append(keyed)
-        else:
-            _refuse_restatement(keyed, recorded)
-            _absorb_gained_facts(keyed, recorded)
-    return fresh
+    fresh: "list[tuple[int, KeyedLine]]" = []
+    for key, indexes in group_indexes(lines).items():
+        recorded = already.get(key, [])
+        pairing = pair_by_statement(
+            [lines[index].description for index in indexes],
+            [row.description for row in recorded],
+        )
+        if pairing.restates:
+            _refuse_restatement(
+                lines[indexes[pairing.fresh[0]]],
+                recorded[pairing.unclaimed[0]],
+            )
+        for incoming_index, recorded_index in pairing.held:
+            _absorb_gained_facts(
+                lines[indexes[incoming_index]], recorded[recorded_index],
+            )
+        ordinals = fresh_ordinals(
+            (row.sequence_in_group for row in recorded), len(pairing.fresh),
+        )
+        for ordinal, incoming_index in zip(ordinals, pairing.fresh):
+            fresh.append((
+                indexes[incoming_index],
+                KeyedLine(
+                    line=lines[indexes[incoming_index]],
+                    sequence_in_group=ordinal,
+                ),
+            ))
+    # Back into the file's own order.  The groups are walked in first-sighting
+    # order and their members in file order, so the concatenation is already
+    # close -- but "already close" is not an order, and the staged rows' ids
+    # are what ``recent_lines`` breaks ties on.
+    return [keyed for _, keyed in sorted(fresh, key=lambda pair: pair[0])]
 
 
 def _stage_lines(
@@ -411,7 +378,7 @@ def record_statement(
     verify_running_balance(lines)
 
     source_id = ref_cache.statement_source_id(source)
-    identity_is_new = _verify_identity(
+    identity_is_new = verify_identity(
         account_id, user_id, source_id, external_account_id,
     )
 
@@ -423,19 +390,13 @@ def record_statement(
     # ``ck_statement_imports_period_ordered`` and surfaces as a database error.
     period_start = min(line.posted_on for line in lines)
     period_end = max(line.posted_on for line in lines)
-    keyed_lines = assign_sequences(lines)
-    already = _recorded_lines(account_id, period_start, period_end)
+    already = _recorded_groups(account_id, period_start, period_end)
 
-    fresh = _fresh_lines(keyed_lines, already)
+    fresh = _fresh_lines(lines, already)
 
     # Every refusal is now behind us, so this is the first write.
     if identity_is_new:
-        _record_identity(account_id, user_id, source_id, external_account_id)
-        log_event(
-            _logger, logging.INFO, EVT_STATEMENT_IDENTITY_RECORDED, BUSINESS,
-            "Recorded which account a statement source calls this account.",
-            account_id=account_id, source=source.value,
-        )
+        record_identity(account_id, user_id, source_id, external_account_id)
 
     statement_import = StatementImport(
         account_id=account_id,

@@ -45,6 +45,7 @@ from app.models.statement_match import StatementMatch, StatementMatchMember
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services import account_service
+from app.services.statement_match import matched_subjects
 from tests._test_helpers import load_migration_module
 
 _MIGRATION = load_migration_module("c1e7d4b3a850_a_bank_line_is_this_row.py")
@@ -139,6 +140,30 @@ def _a_match(db, seed_user, account=None):
     db.session.add(match)
     db.session.flush()
     return match
+
+
+def _rows(db, table, row_id, column="id", value=None):
+    """Return how many rows the DATABASE holds, bypassing the identity map.
+
+    A raw ``DELETE`` leaves the ORM session's identity map untouched, so
+    ``session.get`` answers from memory and a delete assertion written that way
+    passes whether the row went or not -- the shape
+    ``tests/test_services/test_statement_match`` has already paid for once.
+
+    Args:
+        db: The session fixture.
+        table: The schema-qualified table name.
+        row_id: The id to look for, when *column* is the default.
+        column: The column to filter on.
+        value: The value for a non-default *column*.
+
+    Returns:
+        The row count.
+    """
+    return db.session.execute(
+        db.text(f"SELECT count(*) FROM {table} WHERE {column} = :value"),
+        {"value": row_id if value is None else value},
+    ).scalar()
 
 
 def _a_member(db, match, **overrides):
@@ -420,3 +445,192 @@ class TestAnActsOwnerIsItsAccountsOwner:
             db.session.flush()
 
         assert "fk_statement_matches_owner" in str(caught.value)
+
+
+class TestAMatchMayNotLoseItsBankLines:
+    """Plan step **bank_import:X-f6a-4**: the asymmetry is the whole point.
+
+    Losing APP ROWS is visible -- ``AcceptedGroup.agrees`` asks whether any row
+    is left before it asks anything else -- so those keys still CASCADE, and
+    refusing there would refuse an ordinary delete because of a record the user
+    cannot see from the row they are deleting.
+
+    Losing BANK LINES was not visible.  A match with no line asserts nothing
+    about a bank, so ``accepted_groups`` cannot render it and no release button
+    ever exists for it, while ``matched_subjects`` reads the member rows
+    directly and goes on reporting its transactions as already matched -- which
+    takes those rows out of every future proposal, permanently and invisibly.
+    MEASURED on a production clone 2026-08-20, before the constraint changed:
+    deleting one import took 361 lines and left the act standing with 0 line
+    members and 1 transaction member.
+    """
+
+    def test_deleting_a_line_a_match_names_is_refused(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL for the ``NO ACTION`` key.
+
+        The undo door releases the match first, so nothing in ordinary use
+        reaches this -- which is exactly why it is asserted at the database
+        tier, the only place that can see a future writer skipping that door.
+        """
+        line = _a_line(db, seed_user)
+        match = _a_match(db, seed_user)
+        _a_member(db, match, bank_statement_line_id=line.id)
+
+        with pytest.raises(sqlalchemy.exc.IntegrityError) as caught:
+            db.session.execute(db.text(
+                "DELETE FROM budget.bank_statement_lines WHERE id = :id"
+            ), {"id": line.id})
+            db.session.flush()
+
+        assert "fk_statement_match_members_line_account" in str(caught.value)
+
+    def test_deleting_the_IMPORT_of_a_matched_line_is_refused(
+        self, app, db, seed_user,
+    ):
+        """The cascade from the import reaches the same refusal.
+
+        This is the path the repair door takes, and the one the measurement
+        above walked: without the constraint the import delete succeeded and
+        shredded the membership.
+        """
+        line = _a_line(db, seed_user)
+        match = _a_match(db, seed_user)
+        _a_member(db, match, bank_statement_line_id=line.id)
+
+        with pytest.raises(sqlalchemy.exc.IntegrityError):
+            db.session.execute(db.text(
+                "DELETE FROM budget.statement_imports WHERE id = :id"
+            ), {"id": line.import_id})
+            db.session.flush()
+
+    def test_an_UNMATCHED_line_still_deletes_freely(
+        self, app, db, seed_user,
+    ):
+        """The refusal is about the match, not about bank lines in general.
+
+        A guard that refused every line delete would make the repair door
+        impossible, which is the opposite of what X-f6a-4 is for.
+        """
+        line = _a_line(db, seed_user)
+
+        db.session.execute(db.text(
+            "DELETE FROM budget.bank_statement_lines WHERE id = :id"
+        ), {"id": line.id})
+        db.session.flush()
+
+        # Counted in the DATABASE, not read back through the session: the
+        # identity map still holds the object a raw DELETE removed, so
+        # ``session.get`` would answer from memory and pass whatever happened.
+        assert _rows(db, "budget.bank_statement_lines", line.id) == 0
+
+    def test_deleting_the_ACCOUNT_still_cascades_everything(
+        self, app, db, seed_user,
+    ):
+        """Why ``NO ACTION`` and not ``RESTRICT``, asserted rather than argued.
+
+        Both refuse the delete above; ``RESTRICT`` is checked per row as the
+        delete happens, where ``NO ACTION`` defers to the end of the statement.
+        A whole-account delete cascades to ``statement_matches`` (taking its
+        members) and to ``statement_imports`` (taking its lines) inside ONE
+        statement, and only the deferred check tolerates that ordering.
+        """
+        other = _another_account(db, seed_user, name="Doomed Checking")
+        line = _a_line(db, seed_user, account=other)
+        match = _a_match(db, seed_user, account=other)
+        _a_member(db, match, bank_statement_line_id=line.id)
+
+        db.session.execute(db.text(
+            "DELETE FROM budget.accounts WHERE id = :id"
+        ), {"id": other.id})
+        db.session.flush()
+
+        assert _rows(db, "budget.bank_statement_lines", line.id) == 0
+        assert _rows(db, "budget.statement_matches", match.id) == 0
+        assert _rows(db, "budget.statement_match_members", None,
+                     "account_id", other.id) == 0
+
+
+class TestTheMigrationRepairsWhatTheConstraintCannotSee:
+    """Plan step **bank_import:X-f6a-4**: a foreign key cannot see an absence.
+
+    ``ADD CONSTRAINT FOREIGN KEY`` validates dangling REFERENCES.  A match with
+    ZERO line members breaks no reference -- it is a missing row, not a wrong
+    one -- so the constraint stops the state being PRODUCED and says nothing
+    about databases that already carry it.  And the recipe was published: the
+    refusal message this arc shipped before the repair door told the owner the
+    situation "needs a human before anything overwrites it", and hand-run SQL
+    against ``statement_imports`` is exactly what makes one.
+
+    Migration ``e4a7c0f13b92`` therefore deletes such acts before it swaps the
+    key.  Measured on the 2026-08-20 production clone: **0** of them, because
+    production holds no imports at all -- so the statement is a no-op there and
+    exists for the databases that are not production.  Found by adversarial
+    financial review 2026-08-20.
+    """
+
+    #: The migration's own repair statement, read from the migration rather
+    #: than restated -- a second spelling here would let the two drift, and the
+    #: one that matters is the one that runs at deploy.
+    _REPAIR = load_migration_module(
+        "e4a7c0f13b92_a_match_may_not_lose_its_bank_lines.py",
+    )._REPAIR_LINELESS_ACTS
+
+    def test_it_deletes_an_act_that_holds_no_bank_line(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL: the state the constraint alone would leave standing."""
+        txn = _a_transaction(db, seed_user)
+        lineless = _a_match(db, seed_user)
+        _a_member(db, lineless, transaction_id=txn.id)
+        db.session.flush()
+
+        db.session.execute(db.text(self._REPAIR))
+        db.session.flush()
+
+        assert _rows(db, "budget.statement_matches", lineless.id) == 0
+        assert _rows(db, "budget.statement_match_members", None,
+                     "match_id", lineless.id) == 0
+
+    def test_it_leaves_an_act_that_HOLDS_one_alone(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL against over-deleting: a real match must survive."""
+        line = _a_line(db, seed_user)
+        txn = _a_transaction(db, seed_user)
+        held = _a_match(db, seed_user)
+        _a_member(db, held, bank_statement_line_id=line.id)
+        _a_member(db, held, transaction_id=txn.id)
+        db.session.flush()
+
+        db.session.execute(db.text(self._REPAIR))
+        db.session.flush()
+
+        assert _rows(db, "budget.statement_matches", held.id) == 1
+        assert _rows(db, "budget.statement_match_members", None,
+                     "match_id", held.id) == 2
+
+    def test_it_frees_the_rows_the_lineless_act_was_claiming(
+        self, app, db, seed_user,
+    ):
+        """MONEY-ADJACENT: this is what the deletion is FOR.
+
+        A lineless act is invisible on the review screen and yet still claims
+        its transactions through ``matched_subjects``, so those rows can never
+        be offered or matched again.  Freeing them is the point of removing it,
+        not a side effect.
+        """
+        txn = _a_transaction(db, seed_user)
+        lineless = _a_match(db, seed_user)
+        _a_member(db, lineless, transaction_id=txn.id)
+        db.session.flush()
+        assert txn.id in matched_subjects(seed_user["account"].id).transactions
+
+        db.session.execute(db.text(self._REPAIR))
+        db.session.flush()
+        db.session.expire_all()
+
+        assert txn.id not in matched_subjects(
+            seed_user["account"].id,
+        ).transactions

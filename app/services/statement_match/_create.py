@@ -71,7 +71,12 @@ from ._candidates import (
     purchase_candidate,
     unmatched_destinations,
 )
-from ._offers import PurchaseCreation, merchant_label
+from ._offers import (
+    NewEnvelope,
+    PurchaseCreation,
+    envelope_answer_key,
+    merchant_label,
+)
 from ._scope import ReviewScope
 
 _logger = logging.getLogger(__name__)
@@ -86,18 +91,101 @@ _logger = logging.getLogger(__name__)
 _NO_BUDGET = Decimal("0.00")
 
 
+@dataclass
+class MintedEnvelopes:
+    """The envelopes ONE request has already created, so a press mints one each.
+
+    Plan step ``bank_import:X-f6a-4``, finding **N-327**, developer ruling
+    2026-08-20.  A merchant policy answering *a new envelope called X* used to
+    mint one PER LINE: measured on the developer's own statement, a ``Lowe's``
+    answer places 4 lines over 3 pay periods, so one press made 4 envelopes,
+    two of them in the SAME period.  No figure was wrong -- each closes at its
+    own purchases -- and what fragmented was the budget.
+
+    **Scoped to ONE REQUEST, and that scope is the design rather than a
+    limitation.**  The cross-STATEMENT half is answered by the SUGGESTION
+    instead (:func:`~._placement._new_envelope_placement` degrades to a
+    ``RECORD_IN`` against a same-named envelope already in the period, which
+    the owner sees printed beside the line and may override).  Only the
+    within-one-press half needs a write-side rule at all, because at render
+    time the envelope this press is about to create does not yet exist for any
+    select to name.
+
+    Keying on the CATEGORY as well as the name and the period is deliberate:
+    two answers naming one word under two categories are two budget lines, and
+    merging them would file spending under a category the owner did not pick.
+
+    **A refused item leaves nothing here, and the CALLER is what makes that
+    true.**  :func:`~._batch.apply_reviewed` remembers an envelope only after
+    the act that made it has RETURNED, so a creation rolled back inside its own
+    SAVEPOINT (ruling **R-FZ**) leaves no entry pointing at a row that no
+    longer exists.  A first implementation remembered inside the create door,
+    one line above the refusal that kills the item -- and the very next line of
+    the sweep then looked up an id the rollback had taken, and died on
+    ``NoneType``.  The registry cannot be written where the write is not yet
+    known to have survived.
+
+    Attributes:
+        by_key: ``{(name, category_id, pay_period_id): transaction_id}`` for
+            what this request has minted.
+    """
+
+    by_key: "dict[tuple[str, int, int], int]"
+
+    @classmethod
+    def none_yet(cls) -> "MintedEnvelopes":
+        """Return the empty registry one request starts with."""
+        return cls(by_key={})
+
+    def envelope_for(
+        self, new_envelope: NewEnvelope, pay_period_id: int,
+    ) -> "int | None":
+        """Return the envelope this request already minted for that answer.
+
+        Args:
+            new_envelope: The answer the owner stated.
+            pay_period_id: The period the purchase is budgeted in.
+
+        Returns:
+            The transaction id, or ``None`` when this request has minted none.
+        """
+        return self.by_key.get(
+            envelope_answer_key(new_envelope, pay_period_id),
+        )
+
+    def remember(
+        self, new_envelope: NewEnvelope, created: "CreatedPurchase",
+    ) -> None:
+        """Record that this request minted an envelope for that answer.
+
+        **Called by the BATCH after the act RETURNED**, never by the door that
+        creates -- see the class docstring for what a first version cost.
+
+        Args:
+            new_envelope: The answer the caller submitted, which it still
+                holds.  Taken as an argument rather than carried out through
+                *created*, because a value threaded through a return only so
+                its own caller can read it back is a round trip.
+            created: What the act did, for the envelope and its period.
+        """
+        self.by_key[
+            envelope_answer_key(new_envelope, created.pay_period_id)
+        ] = created.transaction_id
+
+
 @dataclass(frozen=True)
 class CreatedPurchase:  # pylint: disable=too-many-instance-attributes
     """What recording one bank line as a purchase did.
 
-    Pylint: too-many-instance-attributes -- **eight because the act genuinely
-    produces eight facts**, with three separate consumers reading disjoint
+    Pylint: too-many-instance-attributes -- **nine because the act genuinely
+    produces nine facts**, with four separate consumers reading disjoint
     subsets: the structured log takes the three ids and both days, the flash
     takes the container's label and whether it was created plus the figure and
-    the posting day, and the tests take the ids.  ``CandidateRow`` beside it
-    carries the same disable for the same reason.  Splitting the container's
-    three fields into a nested value would be the speculative shape rule 13
-    forbids -- nothing asks for the container alone.
+    the posting day, the tests take the ids, and
+    :meth:`MintedEnvelopes.remember` takes the period.  ``CandidateRow`` beside
+    it carries the same disable for the same reason.  Splitting the container's
+    fields into a nested value would be the speculative shape rule 13 forbids
+    -- nothing asks for the container alone.
 
     Attributes:
         entry_id: The ``budget.transaction_entries`` row now holding the
@@ -114,6 +202,11 @@ class CreatedPurchase:  # pylint: disable=too-many-instance-attributes
         posts_on: The day the bank took it.
         made_on: The day the bank says it was made, which is the purchase's own
             budget clock and is the posting day where the source states none.
+        pay_period_id: The period the purchase is BUDGETED in, which is the
+            period holding :attr:`made_on`.  Carried out rather than re-derived
+            by a caller: it is resolved once here for both arms, and a second
+            derivation is how the two came to disagree once already.  It is
+            what :meth:`MintedEnvelopes.remember` keys the minted envelope by.
     """
 
     entry_id: int
@@ -124,6 +217,7 @@ class CreatedPurchase:  # pylint: disable=too-many-instance-attributes
     amount: Decimal
     posts_on: date
     made_on: date
+    pay_period_id: int
 
 
 def _load_line(
@@ -469,8 +563,103 @@ def _create_envelope(
     return envelope
 
 
+def _minted_or_new(
+    creation: PurchaseCreation,
+    category: Category,
+    pay_period_id: int,
+    scope: ReviewScope,
+    minted: MintedEnvelopes,
+) -> "tuple[Transaction, bool]":
+    """Return the envelope this purchase goes in, minting one only if needed.
+
+    **One press mints one envelope per answer per pay period** (finding
+    **N-327**).  A second line reaching the same answer in the same period
+    records into the one the first line made, rather than making another beside
+    it.
+
+    **Recording into it is the act that already ships**, not a new one: it is
+    exactly what :func:`_existing_envelope` does for an envelope the screen
+    offered, including a settled one -- ruling **R-FX** admits a new purchase
+    on a settled row when its recorded figure IS its purchases and the purchase
+    states the day the bank took it, and both hold for a row this door created.
+    Measured 2026-08-20 on a two-line sweep: the envelope's cash leg is
+    ``0.00`` before and after the second purchase, because each purchase
+    carries its own posting day and is its own cash movement.
+
+    **It does NOT re-settle the envelope, and that matches the shipped path.**
+    Recording into an already-settled envelope leaves its close day alone
+    today, and doing otherwise here would give one arm of this door a re-dating
+    rule the other arm does not have.
+
+    Args:
+        creation: What the owner submitted, for the envelope's name.
+        category: The category they picked, already proved theirs.
+        pay_period_id: The period holding the day the purchase was made.
+        scope: The pass, which is the ONE statement of whose account this is.
+        minted: What this REQUEST has already created.
+
+    Returns:
+        ``(envelope, created)`` -- the row, and whether this act made it.
+    """
+    already = minted.envelope_for(creation.new_envelope, pay_period_id)
+    if already is not None:
+        return db.session.get(Transaction, already), False
+    return _create_envelope(creation, category, pay_period_id, scope), True
+
+
+def _close_day(
+    creation: PurchaseCreation,
+    line: BankStatementLine,
+    envelope: Transaction,
+    created: bool,
+) -> "date | None":
+    """Return the day this envelope should CLOSE on, or ``None`` to leave it.
+
+    Three cases, and the middle one is the correction adversarial review found
+    2026-08-20.
+
+    * a container this act CREATED closes on the day the bank took the money it
+      holds;
+    * a container an EARLIER LINE OF THIS SAME PRESS created closes on the
+      LATEST of those days.  Measured before this arm existed: two lines in one
+      pay period submitted 01-05 then 01-09 left the envelope recording that it
+      closed on **2024-01-05 while holding `$45.00` the bank did not take until
+      01-09** -- and submitting them the other way round recorded 01-09, so the
+      close day was whichever line happened to be filed first.  No figure moved
+      (each purchase carries its own posting day, so the envelope's own cash leg
+      is `0.00` either way), but a row may not record closing before money it
+      holds.  **The LATEST is this arc's own rule for a group** -- a match's day
+      is ``max(posted_on)`` over its lines (``MatchDays.of``) -- applied to the
+      group a press files;
+    * a container that ALREADY EXISTED keeps its own close day.  That is the
+      shipped behaviour of the destination arm and it is deliberate: that row's
+      close is a record the OWNER made, and re-dating it would edit their
+      record rather than complete this press's own.
+
+    Args:
+        creation: What the owner submitted, which says which arm this is.
+        line: The bank line being recorded.
+        envelope: The container the purchase goes in.
+        created: Whether THIS act created it.
+
+    Returns:
+        The day to close on, or ``None`` when the close is not this act's to
+        write.
+    """
+    if created:
+        return line.posted_on
+    if creation.transaction_id is not None:
+        return None
+    # The new-envelope arm reusing what an earlier line of this press minted.
+    if envelope.settled_on is not None and line.posted_on <= envelope.settled_on:
+        return None
+    return line.posted_on
+
+
 def create_purchase_from_line(
-    creation: PurchaseCreation, scope: ReviewScope,
+    creation: PurchaseCreation,
+    scope: ReviewScope,
+    minted: MintedEnvelopes,
 ) -> CreatedPurchase:
     """Record one bank line as a purchase, and match the line to it.
 
@@ -507,6 +696,13 @@ def create_purchase_from_line(
         scope: The pass's derived offer set (:class:`~._scope.ReviewScope`).
             **Required rather than defaulted**, for the reason
             :func:`~._accept.accept_match`'s is.
+        minted: What this REQUEST has already created
+            (:class:`MintedEnvelopes`), so one press mints one envelope per
+            answer per pay period rather than one per line (finding
+            **N-327**).  **Required rather than defaulted for the same reason
+            *scope* is**: a default would silently mean *converge with
+            nothing*, and the caller that forgot it would mint the fragments
+            this parameter exists to stop.
 
     Returns:
         The :class:`CreatedPurchase`.
@@ -535,10 +731,9 @@ def create_purchase_from_line(
         created = False
     else:
         category = _owned_category(creation, scope)
-        envelope = _create_envelope(
-            creation, category, pay_period_id, scope,
+        envelope, created = _minted_or_new(
+            creation, category, pay_period_id, scope, minted,
         )
-        created = True
 
     amount = -Decimal(str(line.amount))
     entry = entry_service.create_entry(
@@ -562,7 +757,20 @@ def create_purchase_from_line(
             settled_on=line.posted_on,
         ),
     )
-    if created:
+    close_on = _close_day(creation, line, envelope, created)
+    if close_on is not None and not created:
+        # **A container an EARLIER LINE OF THIS PRESS made, closing again on a
+        # later day.**  ``settle_from_entries`` refuses an already-settled row
+        # by design -- "the seam owns the day, and a caller that genuinely
+        # means *this settled on a different day* corrects it on the row
+        # afterwards" (ruling **R-ED**) -- so the correction goes through the
+        # same identity transition ``_accept._apply_day`` uses for a settled
+        # row a match re-dates: the row's OWN status, a new day.  One verb for
+        # "a settled row's day moved", not a second one here.
+        transaction_service.apply_requested_status(
+            envelope, envelope.status_id, settled_on=close_on,
+        )
+    elif close_on is not None:
         # **A row created to hold something that has already happened says
         # so.**  A first version justified this by calling a Projected `$0.00`
         # row "carry-forward bait that would roll a NEGATIVE leftover", which is
@@ -577,7 +785,7 @@ def create_purchase_from_line(
         # this very verb anyway; doing it here dates the close on the day the
         # bank posted, where carry-forward would date it whenever it next ran.
         transaction_service.settle_from_entries(
-            envelope, settled_on=line.posted_on,
+            envelope, settled_on=close_on,
         )
         # **``settle_from_entries`` does NOT reconcile the ledger** -- it is the
         # envelope PRIMITIVE, and its docstring says carry-forward owes that
@@ -610,6 +818,7 @@ def create_purchase_from_line(
         amount=amount,
         posts_on=line.posted_on,
         made_on=made_on,
+        pay_period_id=pay_period_id,
     )
     log_event(
         _logger, logging.INFO, EVT_STATEMENT_LINE_RECORDED, BUSINESS,

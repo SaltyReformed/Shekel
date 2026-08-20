@@ -39,14 +39,18 @@ class PlacementKind(enum.Enum):
     say than one that says do nothing:
 
     * ``RECORD_IN`` -- an existing budget line in this line's own pay period;
-    * ``CREATE_NEW`` -- an envelope this line's recording would create.  **One
-      PER LINE, not per period** (finding **N-327**): the create door mints
-      unconditionally, so two lines of one merchant inside one pay period make
-      two envelopes, and nothing here degrades the second to a RECORD_IN
-      against the first.  Reported on the screen rather than substituted for,
-      which is this module's rule everywhere else -- silently filing into a
-      same-named row would be the app choosing a destination the owner did not
-      name;
+    * ``CREATE_NEW`` -- an envelope this line's recording would create, and
+      only where this period holds NONE of that name (finding **N-327**,
+      developer ruling 2026-08-20).  It used to mint unconditionally, so a
+      ``Lowe's -> a new "Home Improvement"`` answer applied to the developer's
+      own statement made **4 envelopes across 3 pay periods** in one press, two
+      of them in the SAME period, with the next statement adding more beside
+      them.  No figure was wrong -- each envelope closes at its own purchases
+      -- and what fragmented was the BUDGET.
+      **It is still a SUGGESTION and never a substitution**: the degraded
+      placement is PRINTED beside the line's own destination select, which
+      still opens on *leave this line alone*, so the owner sees which envelope
+      it would reuse and may pick another;
     * ``NOT_A_PURCHASE`` -- the owner said never;
     * ``UNRESOLVED`` -- a policy exists and does not reach this line, with the
       reason it does not.  **Reported rather than substituted for**: the
@@ -82,6 +86,14 @@ class Placement:
             cannot be handed a row the screen may not offer.
         new_envelope: The envelope to create, for
             :attr:`PlacementKind.CREATE_NEW`.
+        joins_new: Whether an EARLIER line in this same pass already creates
+            that envelope, so this one would join it rather than make a second
+            (finding **N-327**).  It stays a ``CREATE_NEW`` because the select
+            value is unchanged -- one press mints one envelope per answer per
+            period (:class:`~._create.MintedEnvelopes`) -- and what this flag
+            buys is that the SCREEN says so before the press rather than after
+            it.  Set by :func:`~._reads._creatable_lines`, which is the only
+            reader that sees more than one line at a time.
         unresolved_reason: One sentence saying why the policy does not reach
             this line, for :attr:`PlacementKind.UNRESOLVED`.
     """
@@ -90,6 +102,7 @@ class Placement:
     kind: PlacementKind
     destination: "PurchaseDestination | None" = None
     new_envelope: "NewEnvelope | None" = None
+    joins_new: bool = False
     unresolved_reason: "str | None" = None
 
     @property
@@ -219,6 +232,95 @@ def _template_placement(
     )
 
 
+def _new_envelope_placement(
+    policy: MerchantPolicy,
+    merchant: str,
+    offered: "list[PurchaseDestination]",
+    view: PolicyView,
+) -> Placement:
+    """Resolve the NEW-ENVELOPE answer against one line's own period.
+
+    **An answer naming an envelope by name is answered by an envelope of that
+    name where one is already here** (finding **N-327**, developer ruling
+    2026-08-20).  Creating unconditionally made a policy fragment its own
+    budget line: measured on the developer's own statement, a ``Lowe's`` answer
+    places 4 lines over 3 pay periods, so ONE press minted 4 envelopes -- and
+    the next statement minted more beside them, because an ad-hoc row carries
+    no identity across periods for anything to converge on.
+
+    **Reusing is not the substitution this module refuses elsewhere.**  The
+    substitution `_template_placement` declines is *falling back to a
+    DIFFERENT KIND of destination when the named one is missing*, which files
+    money somewhere the owner never named.  Here the owner named a name, and
+    this is the row that has it.  It is still only a suggestion: the placement
+    prints beside the line's own select, which opens on *leave this line
+    alone*.
+
+    **Two of them is a guess, so it is reported instead** -- the same rule, and
+    the same sentence shape, `_template_placement` applies to a template that
+    generated two rows in one period.  It is reachable on data this defect
+    already produced, which is exactly why it may not be papered over now.
+
+    Args:
+        policy: The stated answer, whose ``answer`` is ``NEW_ENVELOPE``.
+        merchant: The line's merchant.
+        offered: The destinations open to THIS line -- already narrowed to its
+            own pay period and to what no match has claimed.
+        view: What the owner has said and what it can resolve against.
+
+    Returns:
+        The :class:`Placement`.
+    """
+    if policy.category_id not in view.active_categories:
+        return Placement(
+            merchant=merchant, kind=PlacementKind.UNRESOLVED,
+            unresolved_reason=(
+                f"You give {merchant} a new envelope called "
+                f"{policy.envelope_name}, and the category you filed it "
+                f"under has been archived -- so nothing can be created for "
+                f"it until you answer for {merchant} again."
+            ),
+        )
+    # **The whole answer, never just its name.**  A policy's answer is a name
+    # AND a category, and the within-press registry keys on both -- so matching
+    # the name alone here made the two halves of one rule disagree, and would
+    # have filed spending into a same-named envelope under a category the owner
+    # did not pick.  The label is not compared either: it appends the
+    # pay-period span for a reader.
+    # **A TEMPLATE-generated row is excluded**, because naming a template is a
+    # DIFFERENT answer with its own resolution beside this one
+    # (:func:`_template_placement`, including its "this period holds two of
+    # them" report).  An owner who means the recurring envelope has that answer
+    # available and did not pick it; converging onto it here would make the two
+    # answers indistinguishable in effect.
+    named = [
+        destination for destination in offered
+        if destination.name == policy.envelope_name
+        and destination.category_id == policy.category_id
+        and destination.template_id is None
+    ]
+    if len(named) == 1:
+        return Placement(
+            merchant=merchant, kind=PlacementKind.RECORD_IN,
+            destination=named[0],
+        )
+    if len(named) > 1:
+        return Placement(
+            merchant=merchant, kind=PlacementKind.UNRESOLVED,
+            unresolved_reason=(
+                f"You give {merchant} an envelope called "
+                f"{policy.envelope_name}, and this pay period already holds "
+                f"{len(named)} of them -- pick the one you mean."
+            ),
+        )
+    return Placement(
+        merchant=merchant, kind=PlacementKind.CREATE_NEW,
+        new_envelope=NewEnvelope(
+            name=policy.envelope_name, category_id=policy.category_id,
+        ),
+    )
+
+
 def placements_for(
     merchant: "str | None",
     view: PolicyView,
@@ -251,20 +353,5 @@ def placements_for(
     if policy.answer is PolicyAnswer.NEVER:
         return Placement(merchant=merchant, kind=PlacementKind.NOT_A_PURCHASE)
     if policy.answer is PolicyAnswer.NEW_ENVELOPE:
-        if policy.category_id not in view.active_categories:
-            return Placement(
-                merchant=merchant, kind=PlacementKind.UNRESOLVED,
-                unresolved_reason=(
-                    f"You give {merchant} a new envelope called "
-                    f"{policy.envelope_name}, and the category you filed it "
-                    f"under has been archived -- so nothing can be created for "
-                    f"it until you answer for {merchant} again."
-                ),
-            )
-        return Placement(
-            merchant=merchant, kind=PlacementKind.CREATE_NEW,
-            new_envelope=NewEnvelope(
-                name=policy.envelope_name, category_id=policy.category_id,
-            ),
-        )
+        return _new_envelope_placement(policy, merchant, offered, view)
     return _template_placement(policy, merchant, offered, view.template_names)

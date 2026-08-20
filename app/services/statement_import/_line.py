@@ -6,17 +6,19 @@ module is that shape, and the identity rule that makes re-importing a span
 harmless.
 
 **Nothing here reads a database, a clock or a request.**  A parser produces
-:class:`StatementLine` values, this module orders and keys them, and
-:mod:`._record` is the only place that writes.  Services-boundary discipline
-(``CLAUDE.md`` Architecture): plain data in, frozen dataclasses out.
+:class:`StatementLine` values, this module decides which of them an account
+already holds, and :mod:`._record` is the only place that writes.
+Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in,
+frozen dataclasses out.
 """
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from typing import Iterable, Sequence
 
 
 @dataclass(frozen=True)
@@ -54,7 +56,10 @@ class StatementLine:  # pylint: disable=too-many-instance-attributes
         amount: Signed, positive INTO the account -- the same convention
             ``cash_ledger.settled_cash_leg`` uses, so a later match compares
             two figures that already agree about direction.
-        description: What the bank called it, verbatim.
+        description: What the bank called it, verbatim.  **This is the field a
+            re-import PAIRS on** (:func:`pair_by_statement`): it is what the
+            bank stated ABOUT the line, where the ordinal beside it is what
+            this app assigned.
         merchant: What the bank calls the MERCHANT, or ``None`` where the
             source names none.
             **The NULL is the source saying so**, exactly as
@@ -75,7 +80,7 @@ class StatementLine:  # pylint: disable=too-many-instance-attributes
             ``ref`` table governs.
         external_id: The source's own id for the line (an OFX ``FITID``), or
             ``None`` for a source that has none.  CORROBORATION, never
-            identity -- see :func:`line_identity`.
+            identity -- see :func:`pair_by_statement`.
         running_balance: The account balance after this line, or ``None`` for a
             source that does not carry one.  What makes an import able to check
             itself (:func:`~._integrity.verify_running_balance`).
@@ -97,8 +102,9 @@ class KeyedLine:
 
     Attributes:
         line: The line itself.
-        sequence_in_group: Its position among the lines sharing its
-            ``(posted_on, amount)``, counted from 0 in the source's own order.
+        sequence_in_group: Its ordinal among the lines sharing its
+            ``(posted_on, amount)`` -- a SURROGATE this app assigns when the
+            line is first recorded, never a fact the bank stated.
     """
 
     line: StatementLine
@@ -110,66 +116,207 @@ class KeyedLine:
         return (self.line.posted_on, self.line.amount, self.sequence_in_group)
 
 
-def assign_sequences(lines: "list[StatementLine]") -> "list[KeyedLine]":
-    """Return *lines* keyed, in the order given.
+def group_key(posted_on: date, amount: Decimal) -> "tuple[date, Decimal]":
+    """Return what a line shares with the lines it is reconciled against.
 
-    **A line's identity is ``(account, posted_on, amount, sequence)`` and the
-    sequence is what makes that key TOTAL.**  Two genuinely distinct charges
-    can share a day and an amount -- the same coffee twice -- and a key without
-    the ordinal would reject the second as a duplicate, which is silent money
-    loss on precisely the shape a duplicate guard is supposed to protect.
+    **The identity key minus its surrogate half.**  Two lines belong to one
+    GROUP when the bank posted them on the same day for the same amount, and a
+    group is the unit :func:`pair_by_statement` reconciles: everything the bank
+    itself stated about a line is compared inside it, and the ordinal that
+    tells two members of one group apart is assigned within it.
 
-    **Why not the source's own id.**  ``FITID`` is the obvious key and R-FP
-    names it, but only some sources have one: SECU's CSV carries the merchant,
-    the bank's category and a running balance and no id at all, while its OFX
-    carries the id and truncates every description to 32 characters.  Keying on
-    the id would make the identity rule depend on the format, which is one rule
-    per adapter -- and the measurement says it buys nothing.  Compared across
-    two SECU exports twelve days apart (2026-08-04 and 2026-08-16), this
-    positional key reproduced the ``FITID`` key EXACTLY over their 342 shared
-    lines: 0 keys present in only one export, 0 lines whose id disagreed.  In
-    fact 0 groups needed an ordinal at all -- ``(day, amount)`` alone was unique
-    across 361 lines -- so the ordinal is carried for totality rather than
-    because today's data needs it.
+    **It takes the two values rather than a line** because both sides of a
+    reconciliation are keyed by it -- an incoming :class:`StatementLine` and a
+    recorded ``BankStatementLine`` row -- and one spelling of the key is what
+    stops the two sides from grouping differently.
 
-    An external id is still stored, and
-    ``uq_bank_statement_lines_external_id`` still refuses a source that claims
-    one twice.  It corroborates; it does not decide.
-
-    Args:
-        lines: The source's lines, IN THE SOURCE'S OWN ORDER.  The order is
-            this function's only precondition and it is load-bearing: the
-            ordinal is positional, so shuffling the input assigns different
-            ordinals to the same statement.  Adapters return chronological
-            order (:func:`~._adapters.parse_statement`), which is also what
-            :func:`~._integrity.verify_running_balance` requires.
-
-    Returns:
-        One :class:`KeyedLine` per input line, in the same order.
-    """
-    seen: "Counter[tuple[date, Decimal]]" = Counter()
-    keyed = []
-    for line in lines:
-        group = (line.posted_on, line.amount)
-        keyed.append(KeyedLine(line=line, sequence_in_group=seen[group]))
-        seen[group] += 1
-    return keyed
-
-
-def line_identity(
-    account_id: int, keyed: KeyedLine,
-) -> "tuple[int, date, Decimal, int]":
-    """Return the full identity of one keyed line.
-
-    The ONE spelling of the key, so the door that looks a line up and the
-    ``uq_bank_statement_lines_identity`` constraint that refuses a duplicate
-    cannot come to disagree about what "the same line" means.
+    **It does NOT normalise the amount, and a first version did.**  That
+    version wrapped it in ``Decimal(str(...))`` to make "a value that is equal
+    but differently constructed land in the same bucket", which is a no-op:
+    Decimal's equality is numeric and its hash follows, so ``Decimal("-4.7500")``
+    and ``Decimal("-4.75")`` are already one dict key -- measured 2026-08-20.
+    What the wrapper would have done is launder a FLOAT into a plausible wrong
+    value (``Decimal(str(0.1 + 0.2))`` is ``Decimal("0.30000000000000004")``),
+    which is the opposite of this project's ``shekel-decimal-from-float``
+    posture.  Both sides are ``Decimal`` by construction -- the parser builds
+    one from the file's text, and psycopg hands one back for a ``Numeric``
+    column -- so a float arriving is a defect that should raise, not round.
+    Found by adversarial design review 2026-08-20.
 
     Args:
-        account_id: The account the line belongs to.
-        keyed: The line and its ordinal.
+        posted_on: The day the bank posted the line.
+        amount: Its signed amount, as a ``Decimal``.
 
     Returns:
-        ``(account_id, posted_on, amount, sequence_in_group)``.
+        ``(posted_on, amount)``.
     """
-    return (account_id,) + keyed.identity
+    return (posted_on, amount)
+
+
+def group_indexes(
+    lines: "Sequence[StatementLine]",
+) -> "dict[tuple[date, Decimal], list[int]]":
+    """Return the INDEXES of *lines*, grouped by :func:`group_key`.
+
+    Indexes rather than the lines themselves, so a caller reconciling a group
+    can still say which position in ITS OWN file a member came from -- which is
+    what lets fresh lines be written back in the file's order however the
+    groups are walked.
+
+    Args:
+        lines: The source's lines, in the source's own order.
+
+    Returns:
+        ``{(posted_on, amount): [index, ...]}``, each list in file order.
+    """
+    grouped: "dict[tuple[date, Decimal], list[int]]" = defaultdict(list)
+    for index, line in enumerate(lines):
+        grouped[group_key(line.posted_on, line.amount)].append(index)
+    return dict(grouped)
+
+
+@dataclass(frozen=True)
+class GroupPairing:
+    """Which lines of one incoming group an account already holds.
+
+    Attributes:
+        held: ``(incoming index, recorded index)`` for each incoming line the
+            app already holds, both indexes into the sequences given to
+            :func:`pair_by_statement`.
+        fresh: The incoming indexes with no recorded counterpart.
+        unclaimed: The recorded indexes no incoming line claims.
+    """
+
+    held: "tuple[tuple[int, int], ...]"
+    fresh: "tuple[int, ...]"
+    unclaimed: "tuple[int, ...]"
+
+    @property
+    def restates(self) -> bool:
+        """Return whether this group contains a genuine RESTATEMENT.
+
+        **A restatement is a line the app holds that the file no longer states,
+        standing beside a line the file states that the app does not hold.**
+        Either alone is an ordinary event and neither is a contradiction: a
+        recorded line the file omits is a shorter export, or a disappearance
+        that finding **N-301** owns and that nothing here can see; an incoming
+        line the app does not hold is simply new.  Together they are the one
+        event ruling **R-FL** refuses to absorb silently -- the bank has
+        re-worded a line the app recorded as an observation.
+        """
+        return bool(self.fresh) and bool(self.unclaimed)
+
+
+def pair_by_statement(
+    incoming: "Sequence[str]", recorded: "Sequence[str]",
+) -> GroupPairing:
+    """Pair one group's incoming lines against the recorded ones by WORDING.
+
+    **The pairing is on what the BANK stated, never on the ordinal this app
+    assigned**, and that is plan step ``bank_import:X-f6a-4``'s identity half.
+    ``sequence_in_group`` is derived from the order lines happened to appear in
+    a file; comparing against it treats an app-assigned number as though the
+    bank had supplied it, which is a derived value stored beside its source
+    with nothing reconciling the two -- the root cause three of this project's
+    arcs exist to remove, sitting inside the import key.
+
+    **Two measured consequences of comparing positionally, both reproduced
+    against the shipped code 2026-08-20.**  Given two same-day same-amount
+    lines recorded as ``[STARBUCKS, DUNKIN]``:
+
+    * a later export listing the SAME two the other way round refused the whole
+      file -- thirty days of genuinely new lines with it -- and told the owner
+      the bank had restated a line it had not;
+    * a genuinely NEW ``$4.75`` line that the bank INSERTED ahead of the
+      recorded one was refused with the same sentence, for a line that had
+      never been recorded.  The insertion behaviour is OBSERVED rather than
+      hypothetical: it is why :func:`~._record._refuse_restatement` stopped
+      comparing running balances.
+
+    Pairing on the wording answers both correctly and still refuses the event
+    the refusal was designed for (:attr:`GroupPairing.restates`).
+
+    **It is a MULTISET pairing, so identical wordings are matched by count.**
+    The same coffee twice at the same shop for the same price is two lines with
+    one description; recorded ``[COFFEE, COFFEE]`` against incoming
+    ``[COFFEE, COFFEE]`` pairs both, and against ``[COFFEE]`` pairs one and
+    leaves the other unclaimed.  Neither is a contradiction and neither is a
+    duplicate.
+
+    **``external_id`` is deliberately not consulted**, and today that decision
+    changes no outcome.  A source carrying one cannot claim it twice
+    (``uq_bank_statement_lines_external_id``), and the only adapter that exists
+    carries none -- so an id-aware pairing would be a rule for data this app
+    cannot yet receive.  A second adapter that HAS ids (``X-f6b``) is where
+    pairing on one becomes worth its own decision, and finding **N-303** is the
+    row that owns how the wording compare behaves across two adapters.
+
+    Args:
+        incoming: The file's descriptions for this group, in file order.
+        recorded: The already-recorded descriptions for the same group, in
+            whatever order the caller holds them -- the returned indexes are
+            into this sequence.
+
+    Returns:
+        The :class:`GroupPairing`.
+    """
+    available: "dict[str, list[int]]" = defaultdict(list)
+    for index, description in enumerate(recorded):
+        available[description].append(index)
+
+    held = []
+    fresh = []
+    for index, description in enumerate(incoming):
+        candidates = available.get(description)
+        if candidates:
+            held.append((index, candidates.pop(0)))
+        else:
+            fresh.append(index)
+    claimed = {recorded_index for _, recorded_index in held}
+    return GroupPairing(
+        held=tuple(held),
+        fresh=tuple(fresh),
+        unclaimed=tuple(
+            index for index in range(len(recorded)) if index not in claimed
+        ),
+    )
+
+
+def fresh_ordinals(taken: "Iterable[int]", count: int) -> "list[int]":
+    """Return *count* ordinals no line already in this group holds.
+
+    **The ordinal is a surrogate, and this is the only place one is minted.**
+    It exists because ``uq_bank_statement_lines_identity`` needs a TOTAL key
+    and two genuinely distinct charges can share a day and an amount -- the
+    same coffee twice.  What it must never do is collide with a recorded line's
+    ordinal, which is what makes it "above everything this group already holds"
+    rather than "this line's position in the file": a new line the bank listed
+    FIRST is still the group's next member, not its first.
+
+    **What it guarantees is exactly: an ordinal no SURVIVING member of the
+    group holds** -- which is all `uq_bank_statement_lines_identity` needs and
+    all a caller may rely on.  It counts above the maximum rather than filling
+    gaps, so an INTERIOR gap a delete left is not re-used; a gap at the TOP of
+    the range IS re-used, because the maximum moves down with it.
+
+    **A first version claimed it never re-used a freed ordinal at all, and that
+    was false for the ordinary shape** -- undoing the most recent import -- with
+    a test that happened to pin the interior case.  Measured 2026-08-20:
+    ``fresh_ordinals([0, 2], 2)`` is ``[3, 4]`` and ``fresh_ordinals([0], 1)``
+    is ``[1]``, the address a deleted line held.  The claim was withdrawn
+    rather than the code changed, because nothing depends on it: the ordinal is
+    a surrogate that addresses a row WITHIN its group, and what cites a row
+    outside the group -- ``system.audit_log.row_id``, every foreign key -- cites
+    the primary key, which a sequence never re-uses.  Found by adversarial
+    design review 2026-08-20.
+
+    Args:
+        taken: The ordinals this group's recorded lines already hold.  Empty on
+            a first import, which is what makes the first line ordinal ``0``.
+        count: How many ordinals are needed.
+
+    Returns:
+        *count* ordinals in ascending order, each unused.
+    """
+    highest = max(taken, default=-1)
+    return [highest + 1 + offset for offset in range(count)]

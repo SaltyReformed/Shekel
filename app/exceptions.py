@@ -504,46 +504,88 @@ class StatementAccountMismatch(StatementImportError):
     that check failing -- importing the card's export into Checking, or one
     person's export into another's account.
 
+    **The message names the repair, because the mapping itself can be the
+    thing that is wrong** (plan step ``bank_import:X-f6a-4``, finding
+    **N-302**).  It is learned from a FIRST import and was, until that step,
+    unremovable -- so an owner who chose the wrong Shekel account once could
+    never import that account's statements again.  Deleting every import an
+    account holds from a source now clears the mapping with the last of them,
+    and the next import learns it afresh.
+
     Attributes:
         recorded: What the source called this account when the mapping was
             first recorded.
         submitted: What the uploaded file calls its account.
     """
 
-    def __init__(self, recorded, submitted):
+    def __init__(self, recorded, submitted, *, claimed_elsewhere=False):
         self.recorded = recorded
         self.submitted = submitted
+        self.claimed_elsewhere = claimed_elsewhere
+        # **The repair is on whichever account HOLDS the pairing, and the two
+        # arms hold it in different places** -- so the sentence naming it is
+        # per arm rather than appended to both.  A first version appended one
+        # sentence pointing at "this account's statements page", which is right
+        # for the arm below and WRONG for the one that fires when another of
+        # the owner's accounts claims the file: there this account has no
+        # pairing at all, and deleting its imports clears nothing.  That is the
+        # arm the repair door exists for -- import into the wrong account, then
+        # try the right one -- so it was the arm the sentence had to serve.
+        # Found by adversarial security review 2026-08-20.
+        repair = (
+            "The pairing is on that other account, so that is where to clear "
+            "it: delete its imports on its own statements page and the last "
+            "one takes the pairing with it."
+            if claimed_elsewhere else
+            "If the recorded pairing is itself wrong, delete this account's "
+            "imports on its statements page: the last one takes the pairing "
+            "with it."
+        )
         super().__init__(
             f"This file is for account '{submitted}', but this Shekel account "
             f"has been imported from '{recorded}' before.  Nothing was "
             f"imported.  Choose the matching account, or check that you "
-            f"exported the right one."
+            f"exported the right one.  {repair}"
         )
 
 
 class StatementLineConflict(StatementImportError):
     """A line already recorded now states something DIFFERENT.
 
-    A line's identity is ``(account, posted_on, amount, sequence)``.  When a
-    later import produces that same identity carrying a different description
-    or a different running balance, the bank has restated a line the app has
-    already recorded as an observation -- and an observation quietly rewritten
-    is exactly what ruling **R-FL** exists to prevent.
+    The app holds a line the file no longer states, and the file states a line
+    at the same day and amount that the app cannot account for.  The bank has
+    RESTATED a line the app recorded as an observation -- and an observation
+    quietly rewritten is exactly what ruling **R-FL** exists to prevent.
+
+    **That is a claim about a GROUP, not about a slot** (plan step
+    ``bank_import:X-f6a-4``).  A line's stored identity ends in an ordinal this
+    app mints, and comparing an incoming line against whatever sits at its
+    ordinal fired on two events the bank had not restated at all: two same-day
+    same-amount lines listed in the other order, and a genuinely new line the
+    bank inserted ahead of a recorded one.  Both refused a whole file.  The
+    reconciliation now pairs on the wording the bank itself wrote
+    (:func:`app.services.statement_import.pair_by_statement`), so what reaches
+    here is a contradiction rather than a re-ordering.
 
     **It refuses rather than overwriting, and refuses rather than ignoring**,
     which is a deliberate choice between three bad options on an event that has
-    never been observed: comparing the developer's 2026-08-04 and 2026-08-16
-    exports over their 342 shared lines gave 0 restatements.  Overwriting would
-    destroy the original observation with no record; ignoring would leave the
-    app holding a line the bank no longer states.  Refusing puts a human in
-    front of the only case where those differ, at the cost of a manual step on
-    an event measured never to happen.
+    never been observed: across the developer's 2026-07-19, 2026-08-16 and
+    2026-08-18 exports -- 1,041 lines, 0 groups holding more than one member --
+    there were 0 restatements.  Overwriting would destroy the original
+    observation with no record; ignoring would leave the app holding a line the
+    bank no longer states.  Refusing puts a human in front of the only case
+    where those differ.
+
+    **The two wordings it carries are EXAMPLES rather than a pairing.**  The
+    reconciliation declined to pair them, so where several stand unaccounted
+    for on each side there is no correspondence to name, and a message
+    asserting one would be a true sentence about the wrong problem.
 
     Attributes:
-        posted_on: The day the conflicting line posted.
-        amount: Its signed amount.
-        recorded: What the app already holds.
-        submitted: What the file now says.
+        posted_on: The day the conflicting lines posted.
+        amount: Their signed amount.
+        recorded: One wording the app holds that the file does not state.
+        submitted: One the file states that the app does not hold.
     """
 
     def __init__(self, posted_on, amount, recorded, submitted):
@@ -552,8 +594,11 @@ class StatementLineConflict(StatementImportError):
         self.recorded = recorded
         self.submitted = submitted
         super().__init__(
-            f"The line on {posted_on} for {amount} was already recorded as "
-            f"'{recorded}' and this file states '{submitted}'.  Nothing was "
-            f"imported.  A statement line is a record of what your bank "
-            f"showed, so this needs a human before anything overwrites it."
+            f"On {posted_on} this file states '{submitted}' for {amount}, "
+            f"which this account does not hold -- while it holds '{recorded}' "
+            f"for that day and amount, which this file does not state.  "
+            f"Nothing was imported.  A statement line is a record of what your "
+            f"bank showed, so the app will not overwrite one.  If the recorded "
+            f"line is the wrong one, delete the import that recorded it on the "
+            f"statements page and import this file again."
         )
