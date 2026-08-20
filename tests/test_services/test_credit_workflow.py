@@ -16,7 +16,12 @@ from app.models.category import Category
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
-from app.services import carry_forward_service, credit_workflow, pay_period_write
+from app.services import (
+    carry_forward_service,
+    cash_ledger,
+    credit_workflow,
+    pay_period_write,
+)
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import settlement_columns
 
@@ -56,7 +61,17 @@ class TestCreditWorkflow:
 
             # Payback exists in the next period.
             assert payback.pay_period_id == seed_periods[1].id
-            assert payback.estimated_amount == Decimal("100.00")
+            # **The figure is DERIVED since plan step X-au-i**, so this asks the
+            # amount model rather than the column: a payback stores no
+            # ``estimated_amount`` and is worth the card spend of the row it
+            # repays -- here the whole single-spend source, ``$100.00``.
+            assert cash_ledger.resolve_transaction_amount(
+                payback,
+                cash_ledger.amount_basis(
+                    payback.account.user_id, payback.scenario_id,
+                ),
+            ) == Decimal("100.00")
+            assert payback.estimated_amount is None
             assert payback.name == "CC Payback: Test Expense"
             assert payback.credit_payback_for_id == txn.id
 

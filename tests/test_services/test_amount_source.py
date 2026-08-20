@@ -66,7 +66,8 @@ from app.services.cash_ledger import (
     resolve_transaction_amount,
     resolve_transfer_amount,
 )
-from app.services.cash_ledger._amount_source import _RELATION_RULES, _RULE_ANSWERS
+from app.services.cash_ledger._amount_rule import _RELATION_RULES
+from app.services.cash_ledger._amount_source import _RULE_ANSWERS
 from tests._test_helpers import (
     add_escrow_line,
     add_txn,

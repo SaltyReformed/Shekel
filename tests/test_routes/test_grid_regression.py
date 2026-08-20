@@ -41,7 +41,7 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.ref import Status, TransactionType
 from app.services import cash_ledger
 
-from tests._test_helpers import current_pay_period
+from tests._test_helpers import current_pay_period, resolved_amount
 
 
 class TestPaydayWorkflowRegression:
@@ -370,7 +370,7 @@ class TestPaydayWorkflowRegression:
             )
             assert payback.pay_period_id == seed_periods_today[1].id
             assert payback.status.name == "Projected"
-            assert payback.estimated_amount == Decimal("75.00")
+            assert resolved_amount(payback) == Decimal("75.00")
             assert payback.category.group_name == "Credit Card"
             assert payback.category.item_name == "Payback"
             assert payback.transaction_type.name == "Expense"
@@ -655,7 +655,7 @@ class TestPaydayWorkflowRegression:
                 .one()
             )
             assert payback.pay_period_id == future_period.id
-            assert payback.estimated_amount == Decimal("300.00")
+            assert resolved_amount(payback) == Decimal("300.00")
 
             # -- Verify balance via balance-row endpoint --
             resp = auth_client.get(

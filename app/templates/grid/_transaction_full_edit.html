@@ -135,14 +135,30 @@
        stale-form backstop.  The default keeps legacy render sites without
        the context permissive. #}
     {% set correctable = amount_correctable if amount_correctable is defined else true %}
+    {# **The ESTIMATE is withdrawn on a CC PAYBACK** (plan step X-au-i,
+       developer ruling 2026-08-20).  A payback is worth the card spend of the
+       row it repays, so a figure typed here is not a correction the app can
+       honour -- it used to be written and then silently overwritten by the next
+       purchase edit on the source (finding N-252, $58.40 live on payback 2590).
+       ``budget_correctable`` is ``not transaction_service.repays_card_spend``,
+       resolved in the route -- the template displays it, it does not compute
+       it.  The default keeps legacy render sites without the context
+       permissive, exactly as ``amount_correctable`` above does. #}
+    {% set budget_editable = budget_correctable if budget_correctable is defined else true %}
     <div class="row g-1 mb-2">
       <div class="col">
         <label class="form-label mb-0 small">Estimated</label>
+        {% if budget_editable %}
         <input type="number" step="0.01" inputmode="decimal" name="estimated_amount"
                value="{{ budgets[txn.id] }}"
                class="form-control form-control-sm"
                placeholder="Estimated amount"
                {{ 'disabled' if locked else '' }}>
+        {% else %}
+        <div class="form-control form-control-sm bg-body-secondary">{{ money(budgets[txn.id]) }}</div>
+        <div class="form-text small">This is what went on the card. Change the
+          purchases it repays, not this figure.</div>
+        {% endif %}
       </div>
       {# **The ACTUAL: what the bank really took** (developer ruling,
          2026-08-17).  The estimate beside it and this are two DIFFERENT facts

@@ -504,6 +504,11 @@ class AmountSourceEnum(enum.Enum):
         parent_transfer -- this row is a transfer SHADOW and is worth exactly
                            what its parent transfer is (``transfer_id``), which
                            is Transfer Invariant 3 read rather than maintained.
+        credit_source   -- this row is a CC PAYBACK and is worth the card spend
+                           of the transaction it repays
+                           (``credit_payback_for_id``), which
+                           ``ck_transactions_one_pricing_link`` already names as
+                           the third pricing link (plan step **X-au-i**).
 
     **These name the RELATION that prices the row, not the RULE that computes
     the figure, and the difference is a developer ruling (2026-08-12) amending
@@ -543,6 +548,22 @@ class AmountSourceEnum(enum.Enum):
     arc needed none: that row carries no pricing link at all and its producer is
     reached from the row's ACCOUNT, which is finding **N-264**.
 
+    **``credit_source`` is the third relation and it refines the same way** (plan
+    step X-au-i).  A payback repays the card spend of ONE source row, and what
+    that source's card spend IS depends on how the source holds its money: an
+    entry-capable row keeps it in individual purchases, so its card spend is the
+    ones marked ``is_credit``; a row that is a single spend goes on the card
+    whole, so its card spend is the row's own resolved amount.  That is
+    ``Transaction.tracks_purchases``, the app's one published answer to *does
+    this row hold its spend, or do its entries?* -- and the two kinds are
+    DISJOINT by a write-door refusal rather than by convention:
+    ``routes/transactions/mutations.py`` refuses Credit status on an
+    entry-capable row (*"credit handling is per-entry, not per-transaction"*) and
+    the grid renders no Credit control for one.  So the refinement is a fact
+    about the SOURCE read live, exactly as SALARY-vs-TEMPLATE is a fact about the
+    definition, and stamping it onto the payback would copy a source-level fact
+    onto the row that repays it.
+
     Application code resolves these via ``ref_cache.amount_source_id`` and
     compares against the integer ID -- never the string ``name`` -- matching the
     project-wide ``ref-table: IDs for logic, strings for display only``
@@ -555,6 +576,7 @@ class AmountSourceEnum(enum.Enum):
 
     TEMPLATE = "template"
     PARENT_TRANSFER = "parent_transfer"
+    CREDIT_SOURCE = "credit_source"
 
 
 class StatementSourceEnum(enum.Enum):

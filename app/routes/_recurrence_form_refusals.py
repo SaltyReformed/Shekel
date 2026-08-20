@@ -195,7 +195,7 @@ def is_loan_payment(template: Any) -> bool:
 
     **Not the only place the question is asked**, and an adversarial review
     corrected an earlier claim here that said so:
-    ``cash_ledger._amount_source._is_loan_payment`` answers the same
+    ``cash_ledger._amount_rule.is_loan_payment`` answers the same
     ``settings is not None`` question about a TRANSFER row.  Pre-existing, and
     a wider concern than this step -- what is fixed here is the claim.
 

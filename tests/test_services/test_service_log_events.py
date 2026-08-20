@@ -659,8 +659,12 @@ class TestEntryCreditWorkflowLogging:
                 )
             update_record = cap.find(EVT_ENTRY_PAYBACK_UPDATED)
             assert update_record is not None
-            assert update_record.new_amount == "35.00"
-            assert update_record.previous_amount == "25.00"
+            # **The receipt states what the payback DERIVES, not a before/after
+            # pair** (plan step X-au-i).  It stores no figure any more, so there
+            # is no previous value to report -- what the sync records is the
+            # card spend the payback is now worth.
+            assert update_record.derived_amount == "35.00"
+            assert not hasattr(update_record, "previous_amount")
 
             # DELETE: removing the credit entries deletes the payback.
             entry_service.delete_entry(

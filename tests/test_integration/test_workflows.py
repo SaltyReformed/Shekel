@@ -38,6 +38,7 @@ from app.services import balance_at
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
+    resolved_amount,
     make_every_period_rule,
     make_cadence_rule,
     override_anchor,
@@ -232,7 +233,7 @@ class TestCreditPaybackBalance:
 
             # Payback exists in next period with matching amount.
             assert payback.pay_period_id == seed_periods[1].id
-            assert payback.estimated_amount == Decimal("75.00")
+            assert resolved_amount(payback) == Decimal("75.00")
             assert payback.credit_payback_for_id == txn.id
 
             # Balance: the Credit txn contributes 0, the payback the full
@@ -714,7 +715,7 @@ class TestCreditWorkflowEdgeCases:
 
             # Payback transaction created in next period.
             assert payback.pay_period_id == seed_periods[1].id
-            assert payback.estimated_amount == Decimal("75.43")
+            assert resolved_amount(payback) == Decimal("75.43")
             assert payback.status.name == "Projected"
             assert payback.credit_payback_for_id == txn_id
             assert payback.name == "CC Payback: Grocery Run"
@@ -1034,7 +1035,9 @@ class TestFullBudgetWorkflow:
             assert len(period1_txns) == 2
 
             by_name_p1 = {t.name: t for t in period1_txns}
-            assert by_name_p1["CC Payback: Dining Out"].estimated_amount == Decimal("75.00")
+            assert resolved_amount(
+                by_name_p1["CC Payback: Dining Out"]
+            ) == Decimal("75.00")
             assert by_name_p1["CC Payback: Dining Out"].status.name == "Projected"
             assert by_name_p1["CC Payback: Dining Out"].credit_payback_for_id == txn2_id
 

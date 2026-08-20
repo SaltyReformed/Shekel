@@ -50,6 +50,8 @@ from app.models.transaction_template import TransactionTemplate
 from app.models.user import User, UserSettings
 from app.services import credit_workflow
 from app.services.auth_service import hash_password
+
+from tests._test_helpers import resolved_amount
 from app.services.entry_credit_workflow import sync_entry_payback
 from app.services import account_service
 from app.utils.dates import display_today
@@ -843,12 +845,12 @@ class TestSyncEntryPaybackTOCTOUPrevention:
         )
         assert len(active_paybacks) == 1, (
             f"Expected 1 active payback, got {len(active_paybacks)}: "
-            f"{[(p.id, p.estimated_amount) for p in active_paybacks]!r}"
+            f"{[(p.id, resolved_amount(p)) for p in active_paybacks]!r}"
         )
         # Both entries are flagged credit; the payback's amount must
         # equal their sum (50 + 75 = 125).
-        assert active_paybacks[0].estimated_amount == Decimal("125.00"), (
-            f"Payback amount {active_paybacks[0].estimated_amount} does "
+        assert resolved_amount(active_paybacks[0]) == Decimal("125.00"), (
+            f"Payback amount {resolved_amount(active_paybacks[0])} does "
             "not match sum of both credit entries (125.00)"
         )
         # And both entries must point at the single payback.

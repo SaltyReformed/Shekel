@@ -64,6 +64,7 @@ from app.services.transaction_service._door import (
 from app.services.transaction_service._settle import (
     fixed_settle_amount,
     reject_unsettleable,
+    repays_card_spend,
     retained_settle_amounts_by_id,
     settle_amount,
     settle_from_entries,
@@ -83,6 +84,7 @@ __all__ = [
     "offerable_status_ids",
     "reject_mismatched_settled_status",
     "reject_unsettleable",
+    "repays_card_spend",
     "retained_settle_amounts_by_id",
     "settle_amount",
     "settle_from_entries",

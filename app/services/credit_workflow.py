@@ -7,13 +7,12 @@ a payback expense is auto-generated in the next pay period.
 """
 
 import logging
-from decimal import Decimal
 
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.category import Category
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import AmountSourceEnum, StatusEnum, TxnTypeEnum
 from app.services import posting_service, status_seam
 from app.services.cash_ledger import (
     amount_basis,
@@ -363,24 +362,16 @@ def mark_as_credit(transaction_id, user_id):
             "No next pay period exists.  Generate more periods first."
         )
 
-    # Determine the payback amount (use actual if set, else the source row's
-    # RESOLVED amount).  That second term was ``txn.estimated_amount``, the
-    # COLUMN, until plan step X-au-c2b: this runs on a row that is still
-    # Projected -- ``is_projected`` is asserted twenty lines up -- so it is
-    # exactly the state a per-kind cutover declares derived, and the column
-    # would be ``None`` in a money path.  What the payback's own figure SHOULD
-    # be is a different question, and it is plan step X-au-i's (finding
-    # **N-243**): a payback is worth the credit entries it repays, and neither
-    # of this line's two terms is that.
-    payback_amount = resolve_transaction_amount(
-        txn, amount_basis(txn.account.user_id, txn.scenario_id),
-    )
-
     # Create the payback transaction via the shared factory (see
-    # entry_credit_workflow for the entry-level twin).
-    payback = create_cc_payback_transaction(
-        txn, next_period, category, payback_amount,
-    )
+    # entry_credit_workflow for the entry-level twin).  It takes NO figure:
+    # plan step X-au-i made a payback's amount a DERIVATION of the card spend
+    # it repays, so the row declares the ``credit_source`` relation and stores
+    # nothing.  What stood here was a ``resolve_transaction_amount`` of the
+    # SOURCE, copied onto the payback once and repaired never -- one half of
+    # finding **N-243**.  This source is not entry-capable (a write door above
+    # refuses Credit on one), so ``AmountRule.CC_PAYBACK_ROW`` now asks that
+    # same question at every read instead of trusting a copy taken here.
+    payback = create_cc_payback_transaction(txn, next_period, category)
 
     # Posting ledger reconcile (Build-Order Step 3): reconcile the SOURCE row to
     # its new status's settled sense as the final step (the transfer pattern:
@@ -399,7 +390,11 @@ def mark_as_credit(transaction_id, user_id):
         transaction_id=txn.id,
         payback_id=payback.id,
         next_period_id=next_period.period_id,
-        amount=str(payback_amount),
+        # The figure the payback DERIVES at this moment, logged as an
+        # observation rather than read back off the row -- the row stores none.
+        amount=str(resolve_transaction_amount(
+            payback, amount_basis(txn.account.user_id, txn.scenario_id),
+        )),
     )
     return payback
 
@@ -518,7 +513,6 @@ def create_cc_payback_transaction(
     source_txn: Transaction,
     next_period: DerivedPeriod,
     cc_category: Category,
-    amount: Decimal,
 ) -> Transaction:
     """Build, add, and flush the CC Payback expense for a credit transaction.
 
@@ -527,11 +521,26 @@ def create_cc_payback_transaction(
     :mod:`app.services.entry_credit_workflow`.  Both produce the
     identical payback shape -- a PROJECTED EXPENSE in the next pay
     period, categorised to the user's CC Payback category, linked back
-    to the source transaction via ``credit_payback_for_id`` -- and
-    differ only in the amount source (the entry-level path sums the
-    credit entries; the transaction-level path uses the actual-or-
-    estimated amount).  PROJECTED status and EXPENSE type are invariants
-    of a payback, so they are resolved here rather than passed in.
+    to the source transaction via ``credit_payback_for_id``.  PROJECTED
+    status and EXPENSE type are invariants of a payback, so they are
+    resolved here rather than passed in.
+
+    **It no longer takes a FIGURE, and the two paths no longer differ at
+    all** (plan step X-au-i).  They used to differ in exactly one thing
+    -- the entry-level path summed the source's credit entries, the
+    transaction-level path copied its actual-or-estimated amount -- and
+    that difference was the defect rather than the design: two writers
+    stating a derived value with no reconciler between them (finding
+    **N-243**).  Both are now the SAME question asked of the source, and
+    the amount model answers it: the row declares the ``credit_source``
+    relation and stores no figure, so
+    ``cash_ledger.resolve_transaction_amount`` derives it from the
+    source's card spend at read time -- the credit purchases for an
+    entry-capable source, the row itself for a single-spend one.
+
+    ``ck_transactions_amount_ownership`` pairs the two writes below, so
+    setting the source without clearing the figure (or the reverse) is an
+    ``IntegrityError`` at flush rather than a number nobody can date.
 
     **``next_period.period_id`` is an ``int`` by a PROPERTY of the search that
     produced it**, which is what makes the ``NOT NULL`` write below safe with
@@ -560,7 +569,9 @@ def create_cc_payback_transaction(
             :class:`~app.services.pay_calendar.DerivedPeriod`.
         cc_category: The user's "Credit Card: Payback" category (from
             :func:`get_or_create_cc_category`).
-        amount: The payback's ``estimated_amount`` (a Decimal).
+
+    Note:
+        There is deliberately no ``amount`` parameter; see above.
 
     Returns:
         The newly created payback :class:`Transaction`, flushed so its
@@ -575,7 +586,10 @@ def create_cc_payback_transaction(
         name=f"CC Payback: {source_txn.name}",
         category_id=cc_category.id,
         transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        estimated_amount=amount,
+        estimated_amount=None,
+        amount_source_id=ref_cache.amount_source_id(
+            AmountSourceEnum.CREDIT_SOURCE,
+        ),
         credit_payback_for_id=source_txn.id,
     )
     db.session.add(payback)

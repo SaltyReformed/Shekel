@@ -219,7 +219,7 @@ _REF_TABLE_SEEDS = (
     # freshly upgraded DB resolves the enum before this idempotent reseed runs
     # -- the same dual-seed pattern the posting and recurrence refs use.  Names
     # match the enum ``.value`` strings in ``app/enums.py`` exactly.
-    ("AmountSource", ["template", "parent_transfer"]),
+    ("AmountSource", ["template", "parent_transfer", "credit_source"]),
     # WHERE a recorded statement line came from (bank-import arc, plan step
     # X-f6a-1; ruling **R-FP**).  One row per source ADAPTER -- a FORMAT at an
     # institution, because one bank publishes one statement several ways and

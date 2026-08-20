@@ -3085,11 +3085,41 @@ def settlement_if_settling(txn, new_status_id, submitted=None):
     if settles_from_entries(txn):
         return Settlement(amount=None, basis=SettlementBasisEnum.PURCHASES)
     held = honoured_correction(txn)
-    booked = txn.estimated_amount if held is None else held
+    booked = resolved_amount(txn) if held is None else held
     correction = (
         submitted if submitted is not None and submitted != booked else None
     )
     return Settlement.from_settle(booked, correction, recorded_settlement(txn))
+
+
+def resolved_amount(txn):
+    """Return what *txn*'s amount IS, asked of the amount model.
+
+    **The fixture-side spelling of "what would this row book", and it replaced a
+    read of ``estimated_amount`` at plan step X-au-i.**  That column is the PLAN
+    and it is empty for any row whose amount is DERIVED -- a CC payback since
+    that step, and salary / template / transfer / loan-payment rows as the
+    remaining per-kind cutovers land.  A fixture reading the column answered
+    ``None`` for such a row and then built a settlement record the seam refuses,
+    which is the shape :func:`settlement_if_settling`'s own docstring warns
+    about one paragraph up: a fixture producing a record no door can write
+    grades the wrong branch in silence.
+
+    It dispatches the way ``statement_match._candidates._price`` does, because a
+    shadow's value is the transfer service's question and not the transaction
+    service's -- asking the wrong one raises rather than answering.
+
+    Args:
+        txn: The row to price.
+
+    Returns:
+        Its resolved amount as a ``Decimal``.
+    """
+    from app.services import transaction_service, transfer_service
+
+    if txn.transfer_id is not None:
+        return transfer_service.settle_amount(txn)
+    return transaction_service.settle_amount(txn)
 
 
 def settlement_basis_id(basis):

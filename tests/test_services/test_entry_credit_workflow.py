@@ -25,6 +25,26 @@ from app.exceptions import NotFoundError, ValidationError
 from app.services import credit_workflow, entry_service, transaction_service
 from app.services.row_valuation import settled_figure
 from app.services.entry_credit_workflow import sync_entry_payback
+from app.services import cash_ledger
+
+
+def worth(payback):
+    """Return what *payback* is WORTH, asked of the amount model.
+
+    **Plan step X-au-i moved the question, not the answer.**  These assertions
+    read ``payback.estimated_amount`` until that step, because the figure was a
+    column two writers kept re-stating; a payback now declares the
+    ``credit_source`` relation and stores nothing, so the same question is put
+    to the resolver that derives it from the card spend the payback repays.
+
+    Going through the resolver rather than re-summing the entries here is the
+    point: a helper that recomputed the sum itself would agree with a broken
+    derivation, and it is the derivation these cases exist to grade.
+    """
+    return cash_ledger.resolve_transaction_amount(
+        payback,
+        cash_ledger.amount_basis(payback.account.user_id, payback.scenario_id),
+    )
 
 
 class TestSyncEntryPayback:
@@ -83,7 +103,7 @@ class TestSyncEntryPayback:
             payback = sync_entry_payback(txn.id, user.id)
 
             assert payback is not None
-            assert payback.estimated_amount == Decimal("100.00")
+            assert worth(payback) == Decimal("100.00")
             assert payback.pay_period_id == seed_periods[1].id
             assert payback.credit_payback_for_id == txn.id
             assert payback.name == f"CC Payback: {txn.name}"
@@ -109,7 +129,7 @@ class TestSyncEntryPayback:
 
             # Same payback, updated amount: 100 + 50 = 150.
             assert payback.id == payback_id
-            assert payback.estimated_amount == Decimal("150.00")
+            assert worth(payback) == Decimal("150.00")
 
     def test_sync_deletes_payback_when_last_credit_removed(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -153,7 +173,7 @@ class TestSyncEntryPayback:
 
             payback = sync_entry_payback(txn.id, user.id)
 
-            assert payback.estimated_amount == Decimal("75.00")
+            assert worth(payback) == Decimal("75.00")
 
     def test_sync_handles_credit_toggle_debit_to_credit(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -177,7 +197,7 @@ class TestSyncEntryPayback:
             payback = sync_entry_payback(txn.id, user.id)
 
             assert payback is not None
-            assert payback.estimated_amount == Decimal("100.00")
+            assert worth(payback) == Decimal("100.00")
 
     def test_sync_handles_credit_toggle_credit_to_debit(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -221,7 +241,7 @@ class TestSyncEntryPayback:
             payback_again = sync_entry_payback(txn.id, user.id)
 
             assert payback_again.id == payback_id
-            assert payback_again.estimated_amount == Decimal("100.00")
+            assert worth(payback_again) == Decimal("100.00")
 
     def test_sync_no_next_period_raises(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -281,7 +301,7 @@ class TestSyncEntryPayback:
             assert e2.credit_payback_id == payback.id
             assert e3.credit_payback_id == payback.id
             # 50 + 30 + 20 = 100
-            assert payback.estimated_amount == Decimal("100.00")
+            assert worth(payback) == Decimal("100.00")
 
     def test_mixed_entries_only_credit_sum_in_payback(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -302,7 +322,7 @@ class TestSyncEntryPayback:
             payback = sync_entry_payback(txn.id, user.id)
 
             # Only credit entries count: 100 + 50 = 150.
-            assert payback.estimated_amount == Decimal("150.00")
+            assert worth(payback) == Decimal("150.00")
 
     def test_sync_ignores_soft_deleted_payback_and_creates_fresh(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -335,7 +355,7 @@ class TestSyncEntryPayback:
             assert second is not None
             assert second.id != first_id
             assert second.is_deleted is False
-            assert second.estimated_amount == Decimal("100.00")
+            assert worth(second) == Decimal("100.00")
 
             # The soft-deleted payback is left untouched for the audit trail.
             old = db.session.get(Transaction, first_id)
@@ -408,7 +428,7 @@ class TestPaybackCorrectness:
             assert payback.status_id == projected_id
             assert payback.name == f"CC Payback: {txn.name}"
             assert payback.transaction_type_id == expense_type_id
-            assert payback.estimated_amount == Decimal("100.00")
+            assert worth(payback) == Decimal("100.00")
             assert payback.credit_payback_for_id == txn.id
 
             # Category must be the CC Payback category for the owner.
@@ -520,8 +540,8 @@ class TestPaybackCorrectness:
             payback2 = sync_entry_payback(txn2.id, user.id)
 
             assert payback1.id != payback2.id
-            assert payback1.estimated_amount == Decimal("100.00")
-            assert payback2.estimated_amount == Decimal("200.00")
+            assert worth(payback1) == Decimal("100.00")
+            assert worth(payback2) == Decimal("200.00")
             assert payback1.credit_payback_for_id == txn1.id
             assert payback2.credit_payback_for_id == txn2.id
 
@@ -550,7 +570,7 @@ class TestPaybackCorrectness:
 
             payback = sync_entry_payback(txn.id, user.id)
 
-            assert payback.estimated_amount == Decimal("100.00")
+            assert worth(payback) == Decimal("100.00")
 
     def test_single_penny_entry(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -576,7 +596,7 @@ class TestPaybackCorrectness:
 
             payback = sync_entry_payback(txn.id, user.id)
 
-            assert payback.estimated_amount == Decimal("0.01")
+            assert worth(payback) == Decimal("0.01")
 
 
 class TestEntryLinkIntegrity:
@@ -763,7 +783,7 @@ class TestEntryLinkIntegrity:
             payback = sync_entry_payback(txn.id, user.id)
 
             # Payback updated to e2's amount only.
-            assert payback.estimated_amount == Decimal("50.00")
+            assert worth(payback) == Decimal("50.00")
             # e1's stale link was cleared.
             assert e1.credit_payback_id is None
             # e2 still linked.
@@ -810,25 +830,25 @@ class TestPaybackLifecycle:
             db.session.flush()
 
             payback = sync_entry_payback(txn.id, user.id)
-            assert payback.estimated_amount == Decimal("225.00")
+            assert worth(payback) == Decimal("225.00")
 
             # Update e1 from $100 to $120.
             e1.amount = Decimal("120.00")
             db.session.flush()
             payback = sync_entry_payback(txn.id, user.id)
-            assert payback.estimated_amount == Decimal("245.00")
+            assert worth(payback) == Decimal("245.00")
 
             # Delete e2 ($50).
             db.session.delete(e2)
             db.session.flush()
             payback = sync_entry_payback(txn.id, user.id)
-            assert payback.estimated_amount == Decimal("195.00")
+            assert worth(payback) == Decimal("195.00")
 
             # Toggle e3 to debit.
             e3.is_credit = False
             db.session.flush()
             payback = sync_entry_payback(txn.id, user.id)
-            assert payback.estimated_amount == Decimal("120.00")
+            assert worth(payback) == Decimal("120.00")
 
     def test_credit_then_toggle_to_debit_deletes_payback(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -942,7 +962,7 @@ class TestLegacyCreditGuard:
 
             assert payback is not None
             assert payback.name == "CC Payback: Non-Tracked Expense"
-            assert payback.estimated_amount == Decimal("100.00")
+            assert worth(payback) == Decimal("100.00")
 
     def test_legacy_unmark_credit_still_works(
         self, app, db, seed_user, seed_periods,
@@ -1015,7 +1035,7 @@ class TestEntryServiceHooks:
                 .first()
             )
             assert payback is not None
-            assert payback.estimated_amount == Decimal("100.00")
+            assert worth(payback) == Decimal("100.00")
 
     def test_create_debit_entry_no_payback(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -1070,7 +1090,7 @@ class TestEntryServiceHooks:
                 .first()
             )
             assert payback is not None
-            assert payback.estimated_amount == Decimal("100.00")
+            assert worth(payback) == Decimal("100.00")
 
     def test_update_entry_toggle_credit_deletes_payback(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -1146,12 +1166,12 @@ class TestEntryServiceHooks:
                 .filter_by(credit_payback_for_id=txn.id)
                 .first()
             )
-            assert payback.estimated_amount == Decimal("150.00")
+            assert worth(payback) == Decimal("150.00")
 
             entry_service.delete_entry(e1.id, user.id)
 
             db.session.expire(payback)
-            assert payback.estimated_amount == Decimal("50.00")
+            assert worth(payback) == Decimal("50.00")
 
     def test_delete_last_credit_entry_deletes_payback(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -1209,12 +1229,12 @@ class TestEntryServiceHooks:
                 .filter_by(credit_payback_for_id=txn.id)
                 .first()
             )
-            assert payback.estimated_amount == Decimal("100.00")
+            assert worth(payback) == Decimal("100.00")
 
             entry_service.update_entry(entry.id, user.id, amount=Decimal("75.00"))
 
             db.session.expire(payback)
-            assert payback.estimated_amount == Decimal("75.00")
+            assert worth(payback) == Decimal("75.00")
 
     def test_companion_credit_entry_creates_owner_payback(
         self, app, db, seed_user, seed_companion,
@@ -1246,7 +1266,7 @@ class TestEntryServiceHooks:
                 .first()
             )
             assert payback is not None
-            assert payback.estimated_amount == Decimal("100.00")
+            assert worth(payback) == Decimal("100.00")
 
             # Category belongs to the owner, not the companion.
             cat = db.session.get(Category, payback.category_id)
@@ -1286,7 +1306,7 @@ class TestSessionState:
                 .first()
             )
             assert payback is not None
-            assert payback.estimated_amount == Decimal("100.00")
+            assert worth(payback) == Decimal("100.00")
 
             # Entry should be linked by sync.
             db.session.refresh(entry)
@@ -1330,13 +1350,13 @@ class TestSessionState:
                 .filter_by(credit_payback_for_id=txn.id)
                 .first()
             )
-            assert payback.estimated_amount == Decimal("150.00")
+            assert worth(payback) == Decimal("150.00")
 
             # Delete first entry ($100) -- only second ($50) remains.
             entry_service.delete_entry(e1.id, user.id)
 
             db.session.expire(payback)
-            assert payback.estimated_amount == Decimal("50.00")
+            assert worth(payback) == Decimal("50.00")
 
 
 class TestASettledPaybackCannotBeReDerived:
@@ -1396,7 +1416,7 @@ class TestASettledPaybackCannotBeReDerived:
             db.session.rollback()
             reloaded = db.session.get(Transaction, payback_id)
             assert settled_figure(reloaded) == Decimal("100.00")
-            assert reloaded.estimated_amount == Decimal("100.00")
+            assert worth(reloaded) == Decimal("100.00")
 
     def test_a_sync_that_changes_NOTHING_is_still_allowed(
         self, app, db, seed_user, seed_periods, seed_entry_template,
@@ -1482,3 +1502,271 @@ class TestASettledPaybackCannotBeReDerived:
                 "left the account, erased with no refusal"
             )
             assert settled_figure(reloaded) == Decimal("100.00")
+
+
+class TestAPaybackIsWorthTheCardSpendItRepays:
+    """Plan step **X-au-i**: the figure is DERIVED, and by which of two arms.
+
+    A payback repays the card spend of ONE source row, and what that source's
+    card spend IS depends on how the source holds its money.  The dispatch is
+    ``Transaction.tracks_purchases`` -- the app's one published answer to *does
+    this row hold its spend, or do its entries?* -- and the two source kinds are
+    disjoint by a write-door refusal, not by convention: ``mutations`` refuses
+    Credit status on an entry-capable row.
+
+    **Both arms are graded because the step's own one-line specification named
+    only one of them.**  It said *"a payback's figure is the credit entries it
+    repays"*, and a census of the 2026-08-20 production clone measured 22 live
+    paybacks of which **12 have a source with no entries at all** -- their
+    source is a whole transaction marked Credit.  Applied literally that
+    sentence values those twelve at ``$0.00``.
+    """
+
+    def test_an_entry_capable_source_is_worth_its_CREDIT_purchases(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """Rule 6: the credit purchases, and not the debit ones beside them."""
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+
+            for amount, is_credit in (
+                (Decimal("40.00"), True),
+                (Decimal("35.00"), False),   # a DEBIT, which the card did not pay
+                (Decimal("10.00"), True),
+            ):
+                entry_service.create_entry(
+                    transaction_id=txn.id, user_id=user.id,
+                    details=entry_service.EntryDetails(
+                        amount=amount, description="Buy",
+                        purchased_on=date(2026, 1, 5), is_credit=is_credit,
+                    ),
+                )
+            payback = sync_entry_payback(txn.id, user.id)
+            db.session.flush()
+
+            assert worth(payback) == Decimal("50.00")
+            assert payback.estimated_amount is None, (
+                "a derived row stores no figure -- that pairing is "
+                "ck_transactions_amount_ownership"
+            )
+
+    def test_a_single_spend_source_is_worth_THE_WHOLE_ROW(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Rule 7, the arm the step's one-line specification would have zeroed.
+
+        The source carries no entries at all, so *the credit entries it repays*
+        sums to nothing.  What went on the card is the row.
+        """
+        with app.app_context():
+            user = seed_user["user"]
+            source = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Rowing Machine",
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                estimated_amount=Decimal("1958.87"),
+            )
+            db.session.add(source)
+            db.session.flush()
+            assert not source.entries
+
+            payback = credit_workflow.mark_as_credit(source.id, user.id)
+            db.session.flush()
+
+            assert worth(payback) == Decimal("1958.87")
+            assert payback.estimated_amount is None
+
+    def test_the_two_arms_are_chosen_by_the_SOURCE_and_not_by_the_payback(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The dispatch is a fact about the source, read live.
+
+        Stated as its own case because the refinement could have been STAMPED
+        onto the payback at creation, and that is precisely what
+        :class:`app.enums.AmountSourceEnum` rules against: a relation names the
+        row that prices this one, and how that row prices it is the related
+        row's own property.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+            entry_service.create_entry(
+                transaction_id=txn.id, user_id=user.id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("40.00"), description="Card",
+                    purchased_on=date(2026, 1, 5), is_credit=True,
+                ),
+            )
+            payback = sync_entry_payback(txn.id, user.id)
+            db.session.flush()
+
+            assert cash_ledger.amount_rule(payback) is (
+                cash_ledger.AmountRule.CC_PAYBACK_PURCHASES
+            )
+            # The payback itself is not entry-capable and never was; if the
+            # dispatch read ITS shape rather than its source's, every payback
+            # would take the single-spend arm.
+            assert not payback.tracks_purchases
+
+
+class TestAHandEditToAPaybackIsREFUSED:
+    """Developer ruling 2026-08-20, the ruling plan step X-au-i owed.
+
+    A payback is worth what went on the card, so you change it by changing the
+    purchases -- not by typing over the total.  Before this step the box
+    rendered, took a figure, and the next entry mutation on the source silently
+    overwrote it, which is finding **N-252**: production payback 2590 was
+    hand-edited to ``$123.18`` against credit entries summing to ``$181.58`` and
+    settled there, ``$58.40`` that no screen reported, because the
+    ``is_override`` flag that would have marked it is unreachable for a row
+    carrying neither a template nor a transfer link.
+    """
+
+    def test_the_PATCH_door_refuses_a_typed_estimate(
+        self, app, db, auth_client, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The crafted-request backstop behind the withdrawn input."""
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+            entry_service.create_entry(
+                transaction_id=txn.id, user_id=user.id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("40.00"), description="Card",
+                    purchased_on=date(2026, 1, 5), is_credit=True,
+                ),
+            )
+            payback = sync_entry_payback(txn.id, user.id)
+            db.session.commit()
+            payback_id = payback.id
+
+        response = auth_client.patch(
+            f"/transactions/{payback_id}",
+            data={"estimated_amount": "123.18"},
+        )
+
+        assert response.status_code == 400
+        assert b"repays what went on the card" in response.data
+
+        with app.app_context():
+            reloaded = db.session.get(Transaction, payback_id)
+            assert worth(reloaded) == Decimal("40.00"), (
+                "the refused figure must not have landed"
+            )
+            assert reloaded.amount_source_id is not None, (
+                "and the relation that prices it must still stand -- a typed "
+                "figure clears it, which is how the row would detach"
+            )
+
+
+class TestTheSettledRefusalAsksWhatTHISWriteMoves:
+    """Finding **N-323**: the guard was wider than the policy it enforces.
+
+    The policy is right and stays: money that has moved is a RECORD, and a
+    record is changed by reverting the row and settling it again, never by
+    re-deriving it underneath.  A settled payback whose source then takes
+    another card purchase has liability the projection is not booking, and that
+    is refused.
+
+    **What was wrong is the PREDICATE.**  It fired whenever the recorded figure
+    differed from the credit total AT ALL, so a settled payback carrying
+    pre-existing drift refused every later edit on its envelope -- including
+    edits that cannot move that total.  Measured on a production clone:
+    envelope 2275's payback recorded ``$50.80`` against ``$49.52`` of credit
+    entries and envelope 2276's recorded ``$123.18`` against ``$181.58``, and
+    **5 of the developer's own 124 statement proposals, worth ``$706.35``,
+    could not be accepted at all** -- because accepting one stamps a DEBIT
+    purchase's bank posting day, which changes no credit entry.
+
+    The question a write should be asked is whether IT moves the credit total,
+    which is what ``moves_credit_total`` carries.
+    """
+
+    @staticmethod
+    def _drifted_settled_payback(db, seed_user, txn, user):
+        """Return ``(payback, debit_entry)`` in production 2276's exact state.
+
+        The drift is reached through the app's own CORRECTION door -- a settle
+        that records what the statement said rather than what the row derived --
+        so this is a state the app can produce rather than one the fixture typed
+        past a guard.
+        """
+        entry_service.create_entry(
+            transaction_id=txn.id, user_id=user.id,
+            details=entry_service.EntryDetails(
+                amount=Decimal("181.58"), description="Card",
+                purchased_on=date(2026, 1, 5), is_credit=True,
+            ),
+        )
+        debit = entry_service.create_entry(
+            transaction_id=txn.id, user_id=user.id,
+            details=entry_service.EntryDetails(
+                amount=Decimal("25.00"), description="Aldi",
+                purchased_on=date(2026, 1, 5),
+            ),
+        )
+        payback = sync_entry_payback(txn.id, user.id)
+        db.session.flush()
+        assert worth(payback) == Decimal("181.58")
+
+        # The correction: the card statement said $123.18.
+        transaction_service.settle_transaction(
+            payback, submitted=Decimal("123.18"),
+        )
+        db.session.commit()
+        assert settled_figure(payback) == Decimal("123.18")
+        return payback, debit
+
+    def test_a_DEBIT_purchase_edit_is_ALLOWED_on_a_drifted_settled_payback(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The $706.35 case: stamping a posting day cannot move a credit total."""
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+            payback, debit = self._drifted_settled_payback(
+                db, seed_user, txn, user,
+            )
+
+            # This is exactly what accepting a statement proposal does.
+            entry_service.update_entry(
+                debit.id, user.id, settled_on=date(2026, 1, 7),
+            )
+            db.session.flush()
+
+            assert debit.settled_on == date(2026, 1, 7)
+            assert settled_figure(payback) == Decimal("123.18"), (
+                "the record is untouched -- the edit was about a debit"
+            )
+
+    def test_a_CREDIT_purchase_is_STILL_REFUSED_on_one(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The narrowing did not open the hole the guard exists to close.
+
+        Stated beside its sibling because a predicate loosened one case too far
+        looks identical to one loosened correctly until this case is asked.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+            payback, _ = self._drifted_settled_payback(db, seed_user, txn, user)
+            payback_id = payback.id
+
+            with pytest.raises(ValidationError, match="has settled at"):
+                entry_service.create_entry(
+                    transaction_id=txn.id, user_id=user.id,
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("50.00"), description="Later card buy",
+                        purchased_on=date(2026, 1, 9), is_credit=True,
+                    ),
+                )
+
+            db.session.rollback()
+            reloaded = db.session.get(Transaction, payback_id)
+            assert settled_figure(reloaded) == Decimal("123.18")

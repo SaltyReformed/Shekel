@@ -189,6 +189,15 @@ def get_full_edit(txn_id):
         # branch.  An envelope carrying purchases settles at ``sum(entries)``,
         # so an Actual box beside it would take a figure the settle discards.
         amount_correctable=not transaction_service.settles_from_entries(txn),
+        # **A CC payback's ESTIMATE is not its own to state** (plan step X-au-i,
+        # developer ruling 2026-08-20), which is the same sentence one box over:
+        # a payback is worth the card spend it repays, so you change it by
+        # changing what went on the card.  Before this step the box rendered,
+        # took a figure, and the next entry mutation on the source silently
+        # overwrote it -- finding **N-252**, ``$58.40`` on the developer's own
+        # payback 2590.  The PATCH handler refuses a submitted estimate on such
+        # a row as the crafted-request and stale-form backstop.
+        budget_correctable=not transaction_service.repays_card_spend(txn),
     )
 
 

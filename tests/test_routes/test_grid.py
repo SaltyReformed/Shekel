@@ -40,6 +40,7 @@ from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
+    resolved_amount,
     all_periods,
     settlement_if_settling,
     settlement_basis_id,
@@ -1019,7 +1020,7 @@ class TestTransactionCRUD:
             ).first()
             assert payback is not None, "Payback transaction was not created"
             assert payback.name == "CC Payback: Test Expense"
-            assert payback.estimated_amount == Decimal("123.45")
+            assert resolved_amount(payback) == Decimal("123.45")
             assert payback.status.name == "Projected"
             assert payback.pay_period_id == seed_periods_today[1].id
             assert payback.credit_payback_for_id == txn.id

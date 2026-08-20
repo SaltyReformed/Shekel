@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 def sync_entry_payback(
-    transaction_id: int, owner_id: int,
+    transaction_id: int, owner_id: int, *, moves_credit_total: bool = True,
 ) -> Transaction | None:
     """Synchronize the aggregated CC Payback for a transaction's credit entries.
 
@@ -63,6 +63,15 @@ def sync_entry_payback(
         transaction_id: The parent transaction's ID.
         owner_id: The resolved owner user ID (companion -> owner mapping
             already applied by the caller).
+        moves_credit_total: Whether the write that triggered this sync can
+            change what the source's credit entries sum to.  **The
+            settled-payback refusal is asked only when it can** (plan step
+            X-au-i, finding **N-323**).  It defaults to ``True``, the safe
+            direction: a caller that says nothing is treated as having moved
+            the total and meets the guard.  Only a door that KNOWS otherwise
+            passes ``False`` -- a debit purchase created, a debit purchase
+            deleted, or an update touching neither ``amount`` nor
+            ``is_credit``.
 
     Returns:
         The CC Payback Transaction if one exists after sync, else None.
@@ -126,34 +135,47 @@ def sync_entry_payback(
     if total_credit > 0:
         if existing_payback is None:
             return _create_payback(txn, owner_id, credit_entries, total_credit)
-        # **REFUSED when the payback has already SETTLED and the new total
-        # would change what it recorded** (plan step X-au-c3).  A settled row is
-        # worth what it RECORDED, not what its plan says, so the
-        # ``estimated_amount`` write below is inert for money once the payback
-        # closes -- and the liability the user just added would leave the
-        # projection with nothing booking it.  Measured before this guard: a
-        # payback settled at ``$100.00``, a later ``$50.00`` card purchase, and
-        # ``estimated_amount`` moved to ``$150.00`` while every balance went on
-        # reading ``$100.00``.
+        # **THE AMOUNT IS NO LONGER WRITTEN HERE** (plan step X-au-i).  A
+        # payback declares the ``credit_source`` relation and stores no figure,
+        # so what it is worth is derived from this very sum at read time
+        # (``AmountRule.CC_PAYBACK_PURCHASES``) rather than re-stated into a
+        # column on every entry mutation.  That unconditional re-statement was
+        # half of finding **N-243**.
         #
-        # It is the sibling of the rule the developer ruled for the SOURCE row
-        # (``entry_service._doors._reject_settled_parent``, 2026-08-17): money
-        # that has moved is a record, and a record is changed by reverting the
-        # row and settling it again, never by re-deriving it underneath.  The
-        # comparison is against what the payback RECORDED rather than against
-        # its plan, so a sync that changes nothing still passes.
+        # **The settled refusal below STAYS, and deriving the figure did not
+        # weaken its case.**  A first draft of X-au-i deleted it, reasoning that
+        # a guard over a plan write has nothing left to guard once the plan is
+        # derived.  That is wrong, and the test named for it is what showed it:
+        # the guard protects a STATE, not a write.  A payback settled at
+        # ``$100.00`` whose source then takes a second ``$50.00`` card purchase
+        # has ``$150.00`` of card liability and ``$100.00`` booked, because
+        # ``fixed_contribution`` values a settled row from its RECORD -- and
+        # that is true whether the ``$150.00`` came from a rewritten column or
+        # from a derivation.  The ``$50.00`` goes unbooked either way.
+        #
+        # **What X-au-i DOES change is its PREDICATE, which is finding N-323.**
+        # It used to fire whenever the recorded figure differed from
+        # ``total_credit`` AT ALL, so a settled payback carrying pre-existing
+        # drift refused every later edit on its envelope -- including edits that
+        # cannot move ``total_credit``, like stamping a DEBIT purchase's bank
+        # posting day.  Measured on a production clone: 5 of the developer's 124
+        # statement proposals, worth ``$706.35``, could not be accepted at all.
+        # The question a write should be asked is whether IT moves the credit
+        # total, which is what ``moves_credit_total`` carries: the three
+        # ``entry_service`` doors each know what they touched, and a write that
+        # cannot change the sum has nothing to say about this payback's figure.
+        # Drift that already exists is left alone rather than treated as a fresh
+        # offence -- it is reported by the amount model, not repaired here.
         recorded = settled_figure(existing_payback)
-        if recorded is not None and recorded != total_credit:
+        if moves_credit_total and recorded is not None and recorded != total_credit:
             raise ValidationError(
                 f"Payback {existing_payback.id} has settled at {recorded}, so "
-                f"it cannot be re-derived to {total_credit}: a settled row "
-                "records what MOVED. Set the payback back to Projected, then "
-                "record this purchase -- the figure it recorded is kept, and "
-                "marking it paid again books the new total.",
+                f"the card spend it repays cannot become {total_credit}: a "
+                "settled row records what MOVED. Set the payback back to "
+                "Projected, then record this purchase -- the figure it recorded "
+                "is kept, and marking it paid again books the new total.",
             )
-        # UPDATE: adjust the payback amount and link any new entries.
-        previous_amount = existing_payback.estimated_amount
-        existing_payback.estimated_amount = total_credit
+        # UPDATE: link any new entries.  There is no amount to adjust.
         for entry in credit_entries:
             if entry.credit_payback_id != existing_payback.id:
                 entry.credit_payback_id = existing_payback.id
@@ -165,24 +187,29 @@ def sync_entry_payback(
         db.session.flush()
         log_event(
             logger, logging.INFO, EVT_ENTRY_PAYBACK_UPDATED, BUSINESS,
-            "Entry-level payback amount updated",
+            "Entry-level payback links re-synchronised",
             user_id=owner_id,
             transaction_id=txn.id,
             payback_id=existing_payback.id,
-            previous_amount=str(previous_amount),
-            new_amount=str(total_credit),
+            # What the payback now DERIVES, logged as an observation: it stores
+            # no figure, so there is no previous-vs-new pair to record here.
+            derived_amount=str(total_credit),
             credit_entry_count=len(credit_entries),
         )
         return existing_payback
 
     # total_credit == 0
     if existing_payback is not None:
-        # **A SETTLED payback is not DELETED either, and this refusal is the
-        # other half of the one above** (plan step X-au-c3, second pass).  That
-        # guard refuses to RE-DERIVE a payback whose money has moved; without
-        # this one the same function went on to DESTROY such a payback outright
-        # the moment the last credit purchase was removed -- the larger harm
-        # performed in silence beside the smaller one refused.
+        # **A SETTLED payback is not DELETED, and since plan step X-au-i this
+        # is the ONLY refusal in this function** (X-au-c3, second pass).  Its
+        # sibling above refused to RE-DERIVE a payback whose money had moved;
+        # that one is gone because there is no longer a plan write to guard --
+        # the figure derives (``AmountRule.CC_PAYBACK_PURCHASES``) and a settled
+        # row is valued from its record regardless.  This one stays, and the
+        # asymmetry is the point: deriving a figure underneath a closed record
+        # is now impossible, but DESTROYING the record is still a write, and it
+        # is the larger harm -- it went on being performed in silence beside the
+        # smaller one while that guard stood alone.
         #
         # Measured: a source row Projected with one ``$100.00`` credit purchase,
         # its payback created and marked Paid (the money really left the
@@ -237,17 +264,18 @@ def _create_payback(
 ) -> Transaction:
     """Create a new CC Payback transaction in the next pay period.
 
-    Sets every field identically to credit_workflow.mark_as_credit:
-    account_id, template_id (None), pay_period_id (next period),
-    scenario_id, status_id (PROJECTED), name, category_id (CC Payback),
-    transaction_type_id (EXPENSE), estimated_amount, and
-    credit_payback_for_id.
+    Sets every field identically to credit_workflow.mark_as_credit --
+    they call the same factory -- and since plan step X-au-i that
+    includes the amount DECLARATION rather than a figure: the row names
+    the ``credit_source`` relation and stores no ``estimated_amount``.
 
     Args:
         txn: The parent transaction.
         owner_id: The resolved owner user ID.
         credit_entries: Credit entries to link to the new payback.
-        total_credit: Sum of credit entry amounts.
+        total_credit: Sum of credit entry amounts, logged as this call's
+            own observation.  It is NOT stored on the payback -- the row
+            derives that same sum at read time.
 
     Returns:
         The newly created payback Transaction (flushed, id available).
@@ -265,10 +293,12 @@ def _create_payback(
 
     cc_category = get_or_create_cc_category(owner_id)
 
-    # Shared factory; see credit_workflow for the transaction-level twin.
-    payback = create_cc_payback_transaction(
-        txn, next_period, cc_category, total_credit,
-    )
+    # Shared factory; see credit_workflow for the transaction-level twin.  It
+    # takes NO figure since plan step X-au-i: the payback declares the
+    # ``credit_source`` relation and its amount derives from the very entries
+    # linked below (``AmountRule.CC_PAYBACK_PURCHASES``), so ``total_credit``
+    # is this function's own observation rather than something it stores.
+    payback = create_cc_payback_transaction(txn, next_period, cc_category)
 
     # Link all credit entries to the new payback.
     for entry in credit_entries:

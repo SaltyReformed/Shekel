@@ -58,7 +58,7 @@ from decimal import Decimal
 
 from app.utils.balance_predicates import is_projected
 
-from ._amount_source import AmountBasis
+from ._amount_basis import AmountBasis
 from ._amounts import _expense_amount, income_amount
 
 

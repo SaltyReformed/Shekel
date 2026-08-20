@@ -412,6 +412,14 @@ _FENCED_MODULE_RULINGS = {
         "amount_rule",
         "resolve_transaction_amount",
         "resolve_transfer_amount",
+        # The id-to-member direction of ``ref.amount_sources``, public since the
+        # ``_amount_source`` split at plan step X-au-i gave it a second caller
+        # (``amount_rule`` dispatches on it; ``resolve_transfer_amount`` refuses
+        # on it).  A non-producer for a reason one tier below even its
+        # neighbours here: it reads no row at all.  Given an integer it returns
+        # which RELATION that integer names -- a ref-table lookup, with no
+        # transaction, no account, no date and no money anywhere in it.
+        "declared_relation",
         # The BATCH form of the same answer (plan step X-au-c2b), on the same
         # ground as ``contributions_by_id`` above: a dict keyed by ROW ID, one
         # entry per row the caller loaded, and nothing per account.  It differs

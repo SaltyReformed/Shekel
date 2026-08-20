@@ -123,317 +123,18 @@ rows in, ``Decimal`` out; no Flask import, no writes.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
-from enum import Enum
-from typing import TYPE_CHECKING
 
-from app import ref_cache
 from app.enums import AmountSourceEnum
 from app.exceptions import AmountUnresolvable
 from app.services import template_amount_service
 from app.services.row_valuation import own_figure, owned_amount
+from app.utils.entry_partition import partition_entries
 from app.utils.money import round_money
 
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    # Named for the annotations alone.  A runtime import of either would put the
-    # paycheck / loan-resolver stacks on this module's load path, which is the
-    # cycle every call site in this module defers to avoid (finding N-267).
-    from app.services.income_service import SalaryPricing
-    from app.services.loan_payment_service import LoanPricing
-
-
-class AmountRule(Enum):
-    """Which of ruling R-FI's five sources a row's amount comes from.
-
-    The dispatch key.  An explicit enum rather than a pair of link tests, because
-    the rules are not a partition over the links -- see this module's docstring
-    for the two subset relations that make the refinement order load-bearing.
-
-    **It is NOT what the ``amount_source_id`` column stores, and a first draft of
-    this docstring said it was.**  That column names the RELATION that prices a
-    row -- its definition, or its parent transfer
-    (:class:`app.enums.AmountSourceEnum`) -- and the refinement between SALARY
-    and TEMPLATE, or between LOAN_PAYMENT and TRANSFER, is a property of the
-    DEFINITION rather than of the row, resolved live here.  Storing the rule
-    would put a definition-level fact on every generated row, where two live
-    routes falsify it (ruling **R-FK**, plan step X-au-c1).
-
-    **The OWN member is the one that IS the column** (finding **N-262**, closed
-    at plan step X-au-c2): a row owns its amount exactly when it carries no
-    source, which is the same NULL-ness ``ck_transactions_amount_ownership``
-    pairs with carrying a figure.  Before that leaf this member was inferred from
-    ``is_override`` and from having left Projected -- states the CHECK cannot see
-    -- so the schema and this dispatch could disagree about the same row.  The
-    status gate now sits ABOVE the resolver rather than inside it: an excluded row
-    is worth ``$0.00`` whatever prices it, and asking a Projected-only producer
-    about a Cancelled row is how that used to become a refusal
-    (:func:`app.services.cash_ledger.contributed_amount`).
-    """
-
-    OWN = "own"
-    SALARY = "salary"
-    TEMPLATE = "template"
-    LOAN_PAYMENT = "loan_payment"
-    TRANSFER = "transfer"
-
-
-@dataclass(frozen=True)
-class AmountBasis:
-    """One read pass's live DERIVATIONS, pinned to an owner and a scenario.
-
-    Built by :func:`amount_basis` and consumed by
-    :func:`resolve_transaction_amount`.  The two derivations stay APART rather
-    than merged, and that is the whole reason this type exists: a merged map
-    makes "which rule applies" a question about map membership, which is the
-    link-derived discriminator ruling R-FI refuted, and it hides which producer
-    answered.  ``_amounts.live_amounts`` merges their ANSWERS for the callers
-    that want one map, and does it in one place.
-
-    **It holds the derivations rather than per-row answers, and that is plan
-    step X-au-c2b's restructure.**  It was
-    ``{priced_ids, {transaction_id: net}, {transaction_id: cash}}`` -- built
-    over ONE row set, because that is the shape both producers returned.  But
-    everything expensive behind those maps is scoped by the OWNER, the SCENARIO
-    and the LOAN, never by the caller's row set: the paycheck engine runs over
-    the owner's whole pay-period set, and a loan's P&I, payment day and escrow
-    history are the loan's.  Storing the lookup's output instead of the
-    derivation behind it is what made a pass row-set-shaped, and three defects
-    followed from that one mistake:
-
-      * a request that loaded two row sets paid every derivation twice --
-        findings **N-268** (the dashboard pulse re-pricing rows the cash fold
-        had priced) and **N-269** (the transfer settle door re-querying the
-        transfer it had just loaded), which are two filings of this one cause;
-      * ``live_loan_transfer_amounts`` and ``live_loan_payment_amount`` were two
-        implementations of ONE rule, the second's docstring stating that it
-        "mirrors" the first's candidate filter -- kept in step by hand;
-      * a row outside the set had no answer, so the basis had to carry
-        ``priced_ids`` as a membership guard: without it a MISS was
-        indistinguishable from a producer's deliberate omission, and an
-        adversarial review reproduced the consequence -- a manual loan payment
-        resolved outside its own basis answered ``$1,250.00`` against a correct
-        ``$1,400.00``, silently dropping a standing ``$150.00`` extra.
-
-    **That guard is DELETED rather than kept, because the failure it caught is
-    now unconstructible.**  Nothing is "absent" from a derivation: a manual
-    payment's cash is COMPUTED from its own config whenever it is asked, so
-    there is no membership question left to answer wrongly.  A guard against a
-    state the model cannot reach is a fence, and this arc's business is making
-    fences structurally unnecessary rather than adding them.
-
-    Both derivations are LAZY, so a pass that prices no paycheck and no loan
-    payment issues no query -- the "fast no-op when there are no candidates"
-    property the row-set producers had, kept rather than traded for the sharing.
-
-    Attributes:
-        user_id: The owner these derivations are pinned to.
-        scenario_id: The scenario they resolve under.
-        salary: The owner-and-scenario salary derivation
-            (:class:`app.services.income_service.SalaryPricing`): what each
-            active profile pays, per template and period.
-        loans: The scenario's loan-payment derivation
-            (:class:`app.services.loan_payment_service.LoanPricing`): which
-            transfers are loan payments, and each destination loan's P&I,
-            payment day and escrow history.
-    """
-
-    user_id: int
-    scenario_id: int
-    salary: "SalaryPricing" = field(compare=False, repr=False)
-    loans: "LoanPricing" = field(compare=False, repr=False)
-
-
-def amount_basis(user_id, scenario_id) -> AmountBasis:
-    """Return the read pass's :class:`AmountBasis` for an owner and scenario.
-
-    Resolves NOTHING -- both derivations behind it are lazy -- so building one
-    is free and a caller may build it before it knows whether any row will need
-    it.  What it costs to ask is paid once per pass however many row sets ask,
-    which is the point of plan step X-au-c2b's restructure.
-
-    Calling the derivations per row is finding **N-228**: the paycheck engine
-    runs ``paycheck_calculator.project_salary`` over the owner's whole
-    pay-period set, because the biweekly rounding residue only reconciles
-    against the complete annual figure.  One basis per read pass is what makes
-    the per-row rules cheap; a read pass holds its own through
-    :meth:`app.services.balance_at.BalanceContext.amounts`.
-
-    **It takes the OWNER's id rather than an ``Account``, and that is plan step
-    X-au-c2's re-keying.**  The only thing it ever read off the account was
-    ``account.user_id`` (the salary derivation scopes its profile lookup by
-    owner; the loan derivation scopes by scenario alone), so requiring the
-    object forced a CROSS-ACCOUNT reader -- the calendar, the spending report, a
-    dashboard -- to group its rows by account and pay for one basis per group.
-
-    **The loan derivation's clock is ``date.today()`` and DELIBERATELY not a
-    caller's as-of.**  Resolving a loan's rate-period P&I against the wall clock
-    is finding **N-40**, owned by plan step X-au-g, and handing this a read
-    pass's own ``as_of`` instead is plan step **X-i2**, which MOVES MONEY
-    (``$3,631.74`` today against ``$3,722.53`` at a 2027 read).  Taking it here
-    would ship that move inside a refactor whose gate is byte-identity, so the
-    read stays where it was and is disclosed rather than quietly relocated.
-
-    Args:
-        user_id: The owner whose rows are being priced; scopes the salary
-            derivation's profile lookup and its pay-period set.
-        scenario_id: The scenario the amounts resolve under.
-
-    Returns:
-        The unresolved :class:`AmountBasis` for that owner and scenario.
-    """
-    # Pylint: ``import-outside-toplevel`` -- imported locally to keep the
-    # income_service (paycheck/tax) and loan_payment_service (loan-resolver)
-    # stacks off this module's load path and out of any import cycle, exactly as
-    # ``_amounts`` has always done; the helpers are only needed at call time.
-    # pylint: disable=import-outside-toplevel
-    from app.services import income_service, loan_payment_service
-    return AmountBasis(
-        user_id=user_id,
-        scenario_id=scenario_id,
-        salary=income_service.salary_pricing(user_id, scenario_id),
-        loans=loan_payment_service.loan_pricing(scenario_id, date.today()),
-    )
-
-
-def amount_rule(txn) -> AmountRule:
-    """Return which of R-FI's five rules owns *txn*'s amount.
-
-    **One question to the COLUMN, then one to the DEFINITION.**  A row that
-    carries no ``amount_source_id`` owns its figure and is priced by rule 1; a
-    row that carries one names the RELATION that prices it, and the refinement
-    inside that relation -- SALARY within a definition, LOAN_PAYMENT within a
-    parent transfer -- is read live off the definition itself.  The refinement
-    order is the rule: SALARY is tested before TEMPLATE because a salary profile
-    names an ordinary transaction template, and LOAN_PAYMENT before TRANSFER
-    because a loan payment is a transfer.  Testing them the other way round would
-    place every paycheck as a template row and every loan payment as a plain
-    shadow.
-
-    **Nothing here reads ``is_override``, ``is_projected`` or ``is_deleted``, and
-    that is finding N-262's fix** (plan step X-au-c2).  Those three are facts
-    about whether a row COUNTS and about who last touched it, not about who owns
-    its figure, and inferring ownership from them let four live doors write a row
-    ``ck_transactions_amount_ownership`` admits and this dispatch refused -- the
-    module docstring names all four.  What replaced them is the one statement of
-    ownership the model has.  Two consequences worth stating because they used to
-    be arms:
-
-    * a row a human RE-PRICED owns its figure because the write door CLEARS its
-      source and stores the typed amount, not because ``is_override`` is set --
-      so the flag can go on carrying its other three facts (finding **N-238**,
-      plan step X-au-h) without touching pricing;
-    * a SETTLED row is priced by this dispatch like any other, because plan step
-      X-au-c3 writes NO plan column at a settle -- what moved is recorded beside
-      the plan, not into it.  No money reader asks this about a settled row:
-      ``row_valuation.fixed_contribution`` answers from the record first, and the
-      dispatch is reached only for a row whose money has not moved.
-
-    **Soft deletion does not change the answer, deliberately.**  Being deleted is
-    a statement about whether the row counts, and making it flip the rule would
-    force ``amount_source_id`` to be REWRITTEN on every delete and restore -- a
-    derived column beside a second writer, the shape this arc exists to remove.
-    A deleted derived row resolves like any other and contributes nothing either
-    way; the backfill's refusal to MINE a deleted row (migration
-    ``a9d3c15e7f42``) is a question about evidence, not about ownership.
-
-    Args:
-        txn: The :class:`~app.models.transaction.Transaction` to classify.  Its
-            ``template`` / ``transfer`` relationship is read only when it
-            DECLARES the matching relation, so an undeclared row costs no lazy
-            load at all.
-
-    Returns:
-        The :class:`AmountRule` that prices this row.
-
-    Raises:
-        KeyError: When the row names a relation this dispatch has no rule for.
-            Unreachable through the FK, which admits only the seeded
-            :class:`~app.enums.AmountSourceEnum` members; it is how a member
-            ADDED without a rule beside it fails loudly instead of falling
-            through to whichever branch happened to be last.
-    """
-    if txn.amount_source_id is None:
-        return AmountRule.OWN
-    return _RELATION_RULES[_declared_relation(txn.amount_source_id)](txn)
-
-
-def _declared_relation(source_id: int) -> AmountSourceEnum:
-    """Return the :class:`~app.enums.AmountSourceEnum` member *source_id* names.
-
-    The id-to-member direction ``ref_cache`` does not publish, because every
-    other consumer of a ref table compares a stored id against a cached one and
-    needs no reverse map.  This dispatch is the exception: it branches on WHICH
-    relation a row declared, so it must turn the stored id back into the member
-    the rules are written against.  Derived from ``ref_cache.amount_source_id``
-    rather than from a second query, so the two directions cannot disagree.
-
-    Args:
-        source_id: A row's stored ``amount_source_id`` (never ``None`` -- the
-            caller has already tested for the OWN state).
-
-    Returns:
-        The member that id names.
-
-    Raises:
-        KeyError: When no member maps to *source_id*.  The FK to
-            ``ref.amount_sources`` makes that unreachable for a seeded database.
-    """
-    return {
-        ref_cache.amount_source_id(member): member
-        for member in AmountSourceEnum
-    }[source_id]
-
-
-def _rule_within_definition(txn) -> AmountRule:
-    """Refine the TEMPLATE relation into rule 2 or rule 3.
-
-    A definition prices its rows either through a salary profile that names it
-    or through its own effective-dated series, and which of the two is a fact
-    about the DEFINITION read at this moment -- archiving the profile is what
-    moves a template from the first to the second.
-
-    ``template is None`` beside a declared relation is TEMPLATE, and that answer
-    REFUSES one tier down (:func:`_stated_amount`).  A row whose definition was
-    hard-deleted in this session still WAS generated by one, and asking the
-    salary predicate about ``None`` would raise ``AttributeError`` -- an
-    unhandled crash where every other unanswerable shape here raises the arc's
-    own refusal.  Found by an adversarial review at plan step X-au-b.
-
-    Args:
-        txn: A row declaring :attr:`~app.enums.AmountSourceEnum.TEMPLATE`.
-
-    Returns:
-        :attr:`AmountRule.SALARY` or :attr:`AmountRule.TEMPLATE`.
-    """
-    return (
-        AmountRule.SALARY
-        if txn.template is not None
-        and template_amount_service.is_salary_linked_template(txn.template)
-        else AmountRule.TEMPLATE
-    )
-
-
-def _rule_within_parent_transfer(txn) -> AmountRule:
-    """Refine the PARENT_TRANSFER relation into rule 4 or rule 5.
-
-    A shadow's parent is either a loan payment -- whose cash the loan derives --
-    or an ordinary transfer, and which of the two is a fact about the transfer's
-    TEMPLATE (:func:`_is_loan_payment`), read live so a template switched between
-    modes changes rule at that moment.
-
-    Args:
-        txn: A row declaring
-            :attr:`~app.enums.AmountSourceEnum.PARENT_TRANSFER`.
-
-    Returns:
-        :attr:`AmountRule.LOAN_PAYMENT` or :attr:`AmountRule.TRANSFER`.
-    """
-    return (
-        AmountRule.LOAN_PAYMENT if _is_loan_payment(txn.transfer)
-        else AmountRule.TRANSFER
-    )
+from ._amount_basis import AmountBasis
+from ._amount_rule import AmountRule, amount_rule, declared_relation
 
 
 def resolve_transaction_amount(txn, basis: AmountBasis) -> Decimal:
@@ -607,7 +308,7 @@ def resolve_transfer_amount(xfer) -> Decimal:
     """
     if xfer.amount_source_id is None:
         return own_figure(xfer.amount, "transfer", xfer.id)
-    relation = _declared_relation(xfer.amount_source_id)
+    relation = declared_relation(xfer.amount_source_id)
     if relation is not AmountSourceEnum.TEMPLATE:
         raise AmountUnresolvable(
             f"Transfer {xfer.id} declares amount source {relation.value!r}, "
@@ -619,30 +320,6 @@ def resolve_transfer_amount(xfer) -> Decimal:
     return _stated_amount(
         xfer.template, xfer.due_date, "transfer", xfer.id,
     )
-
-
-def _is_loan_payment(xfer) -> bool:
-    """Return whether *xfer* is a loan payment rather than a generic transfer.
-
-    The fact ``loan_payment_service`` keys its whole live-derive machinery on: a
-    :class:`~app.models.loan_payment_settings.LoanPaymentSettings` row hanging
-    off the transfer's template (decision B).  A transfer with no template, or a
-    template with no settings row, is an ordinary transfer -- an investment
-    contribution, a savings sweep -- and rule 5 prices it.
-
-    Read live off the relationship rather than remembered, so a template
-    switched between modes changes rule at that moment.
-
-    Args:
-        xfer: The parent :class:`~app.models.transfer.Transfer`, or ``None``
-            when the shadow's parent is gone.
-
-    Returns:
-        ``True`` when a loan payment's settings drive this transfer's cash.
-    """
-    if xfer is None or xfer.template is None:
-        return False
-    return xfer.template.settings is not None
 
 
 def _stated_amount(template, on_date: date | None, kind: str, row_id: int) -> Decimal:
@@ -941,6 +618,123 @@ def _transfer_answer(txn, _basis: AmountBasis) -> Decimal:
     return resolve_transfer_amount(txn.transfer)
 
 
+def _credit_source(txn):
+    """Return the row *txn* repays, refusing when it cannot be loaded.
+
+    Shared by both payback arms so the missing-source refusal is stated once.
+    A payback's whole figure is a property of its source, so a payback that
+    cannot reach one has no amount to derive rather than a smaller one --
+    answering zero would take a real card balance out of a projection silently.
+
+    Args:
+        txn: The payback row, which has declared the ``credit_source`` relation.
+
+    Returns:
+        The source transaction it repays.
+
+    Raises:
+        AmountUnresolvable: When the link is unset or the row behind it could
+            not be loaded.
+    """
+    source = txn.credit_payback_for
+    if source is None:
+        raise AmountUnresolvable(
+            f"Transaction {txn.id} is a CC payback whose source row "
+            f"{txn.credit_payback_for_id} could not be loaded, so there is no "
+            "card spend for it to repay. A payback names its source through "
+            "fk_transactions_credit_payback_for, which is NOT NULL for a row "
+            "declaring the credit_source relation, so this row was written "
+            "around that link."
+        )
+    return source
+
+
+def _cc_payback_purchases_answer(txn, _basis: AmountBasis) -> Decimal:
+    """Rule 6: a payback is worth the CREDIT PURCHASES of its source envelope.
+
+    The source holds its money in individual purchases, and the ones marked
+    ``is_credit`` are exactly the spend that went on the card -- which is what
+    ``TransactionEntry.settled_on``'s own column comment already states: *"a
+    credit purchase never touches checking (it flows through its CC Payback
+    sibling)"*.  So the payback repays their sum, and this rule READS what
+    ``entry_credit_workflow.sync_entry_payback`` used to WRITE on every entry
+    mutation (finding **N-243**).
+
+    **It reads the SOURCE's credit entries rather than the entries that name
+    this payback**, and the difference is which fact is underived.  Each credit
+    entry also carries ``credit_payback_id`` pointing back here, maintained by
+    the same function that maintained the figure -- a second copy with a second
+    maintainer, which is the shape ruling R-FI deletes.  The partition over
+    ``is_credit`` is the fact; the back-link is a pointer to it.
+
+    ``partition_entries`` is the project's one definition of the credit-vs-debit
+    split (DH-#75), shared with ``entry_service.compute_entry_sums``, so this
+    rule and the envelope's own progress bar cannot come to disagree about which
+    purchases are on the card.
+
+    Takes the basis it does not read: a purchase states its own amount, so no
+    live derivation is reached.
+
+    Args:
+        txn: The payback being priced.  Its ``credit_payback_for`` and that
+            row's ``entries`` are read.
+
+    Returns:
+        The sum of the source's credit purchases, ``0`` when it has none --
+        which is a real answer rather than a refusal, because an envelope whose
+        card purchases were all removed genuinely owes the card nothing.  The
+        payback is DELETED in that state by
+        ``entry_credit_workflow.sync_entry_payback``, so the zero is what a
+        reader sees between the removal and the sync within one unit of work.
+
+    Raises:
+        AmountUnresolvable: When the source row could not be loaded.
+    """
+    _, credit_entries = partition_entries(_credit_source(txn).entries)
+    return round_money(sum((e.amount for e in credit_entries), Decimal("0")))
+
+
+def _cc_payback_row_answer(txn, basis: AmountBasis) -> Decimal:
+    """Rule 7: a payback is worth the WHOLE source row that went on the card.
+
+    The source is not entry-capable, so it is a single spend and marking it
+    Credit put all of it on the card.  What that spend IS is the source's own
+    amount question, so this delegates to the resolver rather than restating it
+    -- the same shape as rule 5, where a shadow delegates to its parent transfer
+    instead of holding a copy.  It is what
+    ``credit_workflow.create_cc_payback_transaction`` used to COPY at the moment
+    of the mark and repair never (finding **N-243**).
+
+    **The delegation cannot cycle**, and it is stated rather than guarded: a
+    payback names a source that already existed when the payback was created, so
+    ``credit_payback_for_id`` runs strictly backwards in creation order and the
+    links form a DAG.  A chain longer than one link needs a payback to itself be
+    marked Credit, which the grid does offer (``data-can-credit`` is emitted for
+    any Projected, non-transfer, non-envelope expense), so depth is bounded by
+    how many times an owner does that and not by one.
+
+    **The source's STATUS is deliberately not consulted.**  A marked source is
+    ``Credit``, which ``row_valuation.fixed_contribution`` values at ``0``
+    because a Credit row contributes nothing to a balance -- but what this rule
+    needs is the source's BUDGET, not its contribution, and ``amounts_by_id``
+    states the same distinction for the same reason.  Asking for the
+    contribution here would price every row-backed payback at ``$0.00``.
+
+    Args:
+        txn: The payback being priced.
+        basis: The read pass's basis, passed through to the source's own rule --
+            the source may be template-priced, so it can need one.
+
+    Returns:
+        The source row's resolved amount.
+
+    Raises:
+        AmountUnresolvable: When the source could not be loaded, or when the
+            source's own rule cannot answer for it.
+    """
+    return resolve_transaction_amount(_credit_source(txn), basis)
+
+
 # The TOTAL dispatch: one answer per rule, keyed by the rule itself.  A mapping
 # rather than a chain of ``if``s so that adding a member to :class:`AmountRule`
 # without an answer for it raises at the lookup instead of falling through to
@@ -954,16 +748,6 @@ _RULE_ANSWERS = {
     AmountRule.TEMPLATE: _template_answer,
     AmountRule.LOAN_PAYMENT: _loan_payment_answer,
     AmountRule.TRANSFER: _transfer_answer,
-}
-
-# WHICH RULE a declared relation refines into, keyed by the relation itself.  The
-# same shape as ``_RULE_ANSWERS`` above and for the same reason: a member added
-# to :class:`~app.enums.AmountSourceEnum` -- ``credit_card:CC4c``'s finance
-# charge is the one already known to need one (finding **N-264**) -- raises at
-# this lookup instead of silently taking whichever branch an ``if`` chain happened
-# to end on.  ``tests/test_services/test_amount_source.py`` grades the table
-# against the enum, so the completeness is a predicate rather than a comment.
-_RELATION_RULES = {
-    AmountSourceEnum.TEMPLATE: _rule_within_definition,
-    AmountSourceEnum.PARENT_TRANSFER: _rule_within_parent_transfer,
+    AmountRule.CC_PAYBACK_PURCHASES: _cc_payback_purchases_answer,
+    AmountRule.CC_PAYBACK_ROW: _cc_payback_row_answer,
 }

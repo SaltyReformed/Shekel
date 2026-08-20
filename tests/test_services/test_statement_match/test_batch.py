@@ -30,7 +30,12 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
+from app.enums import (
+    AmountSourceEnum,
+    SettlementBasisEnum,
+    StatusEnum,
+    TxnTypeEnum,
+)
 from app.exceptions import ValidationError
 from app.extensions import db as _db
 from app.models.statement_match import StatementMatch
@@ -538,17 +543,40 @@ class TestASIBLINGWriteCannotBookAgainstAStalePrice:
     **Both acts are ordinary screen proposals in the same sweep class**, so one
     click of "tick all that mark a row as having happened" plus Apply submits
     them together.
+
+    **Plan step X-au-i closed the MECHANISM and this case now grades the
+    OUTCOME.**  A payback no longer stores ``estimated_amount`` at all -- it
+    declares the ``credit_source`` relation and is worth the card spend it
+    repays -- so ``sync_entry_payback`` has no column left to write down, and a
+    payback can no longer DRIFT from its card entries in the first place.  The
+    hand-built drifted fixture this case used is therefore a row the app can no
+    longer produce, and staging one would grade an unreachable state -- which is
+    the objection its own builder raised about the sibling template.
+
+    Censused before the rewrite, so the narrowing is measured rather than
+    assumed: **no act this batch can perform moves a payback's derived price.**
+    A matched PURCHASE stamps ``settled_on`` / ``purchased_on`` only
+    (``_accept._apply_row``), never ``amount`` or ``is_credit``; a RECORDED
+    purchase is created as a debit (``_create`` passes no ``is_credit``).  Both
+    are the inputs a payback's derivation reads, and neither door touches them.
+
+    What is unchanged, and what this case still asserts, is the MONEY: a
+    ``-$60.00`` bank line may not be explained by a row worth ``$50.00``.
+    ``repriced`` is what refuses it, and it is asked here through a payback
+    whose price the app derives rather than one a fixture typed.
     """
 
     @staticmethod
-    def _drifted_payback(db, seed_user):
-        """Stage an envelope, a card entry, its payback, and a debit purchase.
+    def _derived_payback(db, seed_user):
+        """Stage an envelope, a card purchase, its payback, and a debit purchase.
 
-        The payback's own figure is moved off the sum of its card entries --
-        which is what an owner does when they correct a projected CC Payback to
-        what their card statement says, through the ordinary transaction edit
-        door.  It is the state that arms the defect.
+        The payback is built by the APP's own door, so its figure is the one
+        the app derives -- ``$50.00``, the single card purchase -- rather than
+        one this fixture typed.  Since plan step X-au-i a payback that owns a
+        figure is a row no door produces, and staging one would grade a state
+        the app cannot reach.
         """
+        del db  # the session is reached through ``_db``, as the siblings do
         envelope = a_transaction(
             seed_user, name="Groceries", amount="300.00", is_envelope=True,
         )
@@ -561,11 +589,18 @@ class TestASIBLINGWriteCannotBookAgainstAStalePrice:
             seed_user, envelope, amount="25.00", description="Aldi",
             purchased_on=seed_user["bootstrap_period"].start_date,
         )
-        # **Built the way ``credit_workflow._create_payback`` builds one**, and
-        # it has to be: ``ck_transactions_one_pricing_link`` admits at most one
-        # of ``template_id`` / ``transfer_id`` / ``credit_payback_for_id``, so
-        # the sibling builder's template makes a payback the database refuses.
-        # A fixture the app could not produce would grade an unreachable case.
+        # **Built the way ``credit_workflow.create_cc_payback_transaction``
+        # builds one**, and it has to be: ``ck_transactions_one_pricing_link``
+        # admits at most one of ``template_id`` / ``transfer_id`` /
+        # ``credit_payback_for_id``, so the sibling builder's template makes a
+        # payback the database refuses.  A fixture the app could not produce
+        # would grade an unreachable case.
+        #
+        # It is seated in the BOOTSTRAP period rather than the next one -- which
+        # is where ``sync_entry_payback`` would put it -- because the bank lines
+        # below are dated there and a candidate carries the window its money
+        # moved in (plan step X-f6a-3c-1).  A payback a period away is not
+        # offered at all, and this case would grade nothing.
         payback = Transaction(
             account_id=seed_user["account"].id,
             template_id=None,
@@ -575,9 +610,15 @@ class TestASIBLINGWriteCannotBookAgainstAStalePrice:
             name="CC Payback: Groceries",
             category_id=seed_user["categories"]["Groceries"].id,
             transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-            # DRIFTED off the sum of its card entries, which is what an owner
-            # correcting a projected payback to their card statement produces.
-            estimated_amount=Decimal("60.00"),
+            # **The post-X-au-i shape**: the relation, and no figure.  The two
+            # are paired by ``ck_transactions_amount_ownership``, so this is the
+            # only amount state a payback can now be written in -- and it is
+            # what makes the row worth the ``$50.00`` card purchase above
+            # instead of whatever a fixture felt like typing.
+            estimated_amount=None,
+            amount_source_id=ref_cache.amount_source_id(
+                AmountSourceEnum.CREDIT_SOURCE,
+            ),
             credit_payback_for_id=envelope.id,
         )
         _db.session.add(payback)
@@ -591,7 +632,7 @@ class TestASIBLINGWriteCannotBookAgainstAStalePrice:
         with app.app_context():
             statement = an_import(seed_user)
             day = seed_user["bootstrap_period"].start_date
-            _, debit, payback = self._drifted_payback(db, seed_user)
+            _, debit, payback = self._derived_payback(db, seed_user)
             debit_line = a_bank_line(
                 seed_user, statement, amount="-25.00", posted_on=day,
             )

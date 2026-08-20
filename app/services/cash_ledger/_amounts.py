@@ -95,8 +95,8 @@ from app.services.row_valuation import (  # pylint: disable=unused-import
 )
 from app.utils.balance_predicates import is_projected
 
+from ._amount_basis import AmountBasis
 from ._amount_source import (
-    AmountBasis,
     amounts_by_id,
     resolve_transaction_amount,
 )

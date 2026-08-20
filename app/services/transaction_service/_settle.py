@@ -94,6 +94,41 @@ def settles_from_entries(txn: Transaction) -> bool:
     return bool(txn.tracks_purchases and txn.entries)
 
 
+def repays_card_spend(txn) -> bool:
+    """Return whether *txn* is a CC PAYBACK, whose figure is not its own to state.
+
+    **The sibling of :func:`settles_from_entries` one column over** (plan step
+    X-au-i, developer ruling 2026-08-20), and published for the same reason: two
+    surfaces ask it and neither is this module.  ``routes/transactions/forms``
+    decides whether to render the Estimated box on it, and
+    ``routes/transactions/mutations`` refuses a figure submitted for one anyway.
+
+    A payback repays the card spend of the row it names, so its amount is that
+    row's question and not this one's -- the credit purchases on an
+    entry-capable source, the source itself for a single-spend one
+    (:class:`app.services.cash_ledger.AmountRule`).  A figure typed against it
+    is therefore not a correction the app can honour: before this step it was
+    written, then silently overwritten by the next entry mutation on the source,
+    which is finding **N-252** and cost the developer's own payback 2590
+    ``$58.40`` that no screen reported.  You change what a payback is worth by
+    changing what went on the card.
+
+    It reads the LINK rather than the declared amount relation, and that is
+    deliberate: the link is what makes the row a payback, and it is populated on
+    every payback ever created -- including the ones a downgrade of migration
+    ``d5c31f8b7e04`` puts back to owning their figure, which must still refuse
+    the edit that would desynchronise them again.
+
+    Args:
+        txn: The row.  Reads ``credit_payback_for_id`` only -- no relationship
+            load, so a caller rendering a grid pays nothing for asking.
+
+    Returns:
+        True when the row is a CC payback.
+    """
+    return txn.credit_payback_for_id is not None
+
+
 def reject_unsettleable(txn: Transaction) -> None:
     """Refuse a row NO settle door may touch -- both rules, stated once.
 
