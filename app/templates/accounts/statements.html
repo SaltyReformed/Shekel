@@ -131,6 +131,7 @@
                 <th scope="col">Covers</th>
                 <th scope="col" class="text-end">New</th>
                 <th scope="col" class="text-end">In file</th>
+                <th scope="col"><span class="visually-hidden">Delete</span></th>
               </tr>
             </thead>
             <tbody>
@@ -141,11 +142,35 @@
                 <td class="text-nowrap font-mono small">{{ row.period_start }} .. {{ row.period_end }}</td>
                 <td class="text-end font-mono">{{ row.recorded_count }}</td>
                 <td class="text-end font-mono text-muted">{{ row.line_count }}</td>
+                {# What the confirmation states is what THIS import would remove
+                   counted NOW (row.lines_held), never what it recorded on the
+                   day it ran (row.recorded_count) -- see ImportRecord for why
+                   those are two facts. `data-confirm` is the project's own
+                   destructive-action pattern; base.html includes the modal. #}
+                <td class="text-end">
+                  <form method="post" class="d-inline"
+                        action="{{ url_for('accounts.delete_statement_import', account_id=account.id) }}"
+                        data-confirm="Delete the import of &quot;{{ row.file_name }}&quot;? This removes {{ row.lines_held }} bank line(s) the app has on record{% if row.matches_affected %}, and undoes {{ row.matches_affected }} accepted match(es) so their rows can be matched again{% endif %}. Settle dates a match already corrected are NOT changed. To get the lines back you would import the file again.">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="import_id" value="{{ row.import_id }}">
+                    <button type="submit" class="btn btn-sm btn-outline-danger"
+                            title="Delete this import and the bank lines it recorded">
+                      <i class="bi bi-trash"></i>
+                      <span class="visually-hidden">Delete the import of {{ row.file_name }}</span>
+                    </button>
+                  </form>
+                </td>
               </tr>
               {% endfor %}
             </tbody>
           </table>
         </div>
+        <p class="text-muted small mb-0 mt-2">
+          Deleting an import removes what the <em>bank</em> said, not what the
+          app decided. Settle dates an accepted match corrected stay as they
+          are -- the bank is still the best evidence of when that money moved.
+          Re-importing the file puts the lines back.
+        </p>
         {% endif %}
       </div>
     </div>

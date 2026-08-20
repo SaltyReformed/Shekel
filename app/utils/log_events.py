@@ -471,6 +471,16 @@ EVT_STATEMENT_MATCH_RELEASED = _register(
     "An owner undid a match; the bank lines it explained are unexplained again.",
 )
 
+EVT_STATEMENT_IMPORT_DELETED = _register(
+    "statement_import_deleted", BUSINESS,
+    "An owner deleted a recorded import: the lines it FIRST recorded are gone, "
+    "every match naming one of them was released, and the source-account "
+    "pairing went with it if that was the account's last import from that "
+    "source.  It moves NO money -- a settle day an accepted match wrote is the "
+    "app's own record and stays -- but it destroys what the BANK said, which "
+    "is the fact this whole arc exists to hold.",
+)
+
 EVT_STATEMENT_LINE_RECORDED = _register(
     "statement_line_recorded", BUSINESS,
     "A bank line the app had no row for became a purchase against a budget "

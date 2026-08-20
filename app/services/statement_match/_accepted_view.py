@@ -134,15 +134,21 @@ def accepted_groups(
 
     groups = []
     for match in matches:
+        # **Every act has at least one line, structurally** (plan step
+        # ``bank_import:X-f6a-4``).  ``record_match`` refuses a match with an
+        # empty side, and ``fk_statement_match_members_line_account`` no longer
+        # cascades, so the database refuses to delete a line a match names --
+        # the import undo releases the match first.  There USED to be a guard
+        # here skipping a lineless act, and skipping it was the defect: such an
+        # act is invisible on this screen and yet still claims its transactions
+        # in ``matched_subjects``, so those rows could never be matched again
+        # and no release button existed to free them.  A guard cannot fix that;
+        # only making the state unrepresentable can, which is what the
+        # constraint now does.
         match_lines = [
             lines[member.bank_statement_line_id] for member in match.members
             if member.bank_statement_line_id is not None
         ]
-        if not match_lines:
-            # Every line CASCADED away with its import or its account.  The act
-            # asserts nothing about a bank any more, so it is not listed --
-            # deleting it here would be a write inside a reader.
-            continue
         posts_on = max(line.posted_on for line in match_lines)
         rows = [
             _accepted_row(

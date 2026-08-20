@@ -23,7 +23,6 @@ frozen dataclass out, no ``flask`` / ``request`` / ``session`` /
 from __future__ import annotations
 
 import hashlib
-import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
@@ -31,20 +30,12 @@ from decimal import Decimal
 
 from app import ref_cache
 from app.enums import StatementSourceEnum
-from app.exceptions import StatementAccountMismatch, StatementLineConflict
+from app.exceptions import StatementLineConflict
 from app.extensions import db
-from app.models.statement_import import (
-    AccountExternalIdentity,
-    BankStatementLine,
-    StatementImport,
-)
-from app.utils.log_events import (
-    BUSINESS,
-    EVT_STATEMENT_IDENTITY_RECORDED,
-    log_event,
-)
+from app.models.statement_import import BankStatementLine, StatementImport
 
 from ._adapters import parse_statement
+from ._identity import record_identity, verify_identity
 from ._integrity import closing_balance, opening_balance, verify_running_balance
 from ._line import (
     KeyedLine,
@@ -54,8 +45,6 @@ from ._line import (
     group_key,
     pair_by_statement,
 )
-
-_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -93,105 +82,6 @@ class ImportOutcome:
         arithmetic itself is a caller that can do it backwards.
         """
         return self.line_count - self.recorded_count
-
-
-def _verify_identity(
-    account_id: int, user_id: int, source_id: int, external_account_id: str,
-) -> bool:
-    """Check *account_id*'s identity at *source_id* against the file's.
-
-    Ruling **R-FP**: the source-account mapping is a FACT, not a guess.  The
-    user states which account a file is for; the FILE states which account it
-    is for; and this is where the two are held together.
-
-    **It reads and raises; it writes nothing.**  Recording is
-    :func:`_record_identity`, and the split is not tidiness: the door's whole
-    claim is that it refuses BEFORE it stages anything, and an ``add`` here
-    would be autoflushed by the very next query -- ahead of the last refusal
-    the door can still raise.  A claim that a refusal "leaves the database
-    exactly as it was without depending on the rollback" has to be true of the
-    ordering, not just of the outcome.
-
-    **It checks in BOTH directions**, and the second one is the arm that
-    matters.  Comparing only against this account's own recorded identity would
-    let a file already claimed by ANOTHER of the owner's accounts be imported
-    here as a first import -- so one bank statement would be recorded twice,
-    under two accounts, and the second account's balance would later be
-    reconciled against the wrong bank.
-
-    **Both lookups are scoped to the OWNER.**  A global search would make one
-    user's masked account number ("******3820", a 10,000-value space) collide
-    with another user's, permanently locking the loser out of importing their
-    own statements -- and the refusal would disclose that some other account in
-    the system held that number, which is the existence oracle the project's
-    404-for-both rule exists to prevent.
-
-    Args:
-        account_id: The account the user chose.
-        user_id: Its owner.
-        source_id: The ``ref.statement_sources`` row the file was read by.
-        external_account_id: What the file calls its account.
-
-    Returns:
-        True when the mapping still has to be RECORDED (a first import), False
-        when it already exists and agrees.
-
-    Raises:
-        StatementAccountMismatch: When the file names a different account than
-            this one has been imported from, or one another of the owner's
-            accounts already claims.
-    """
-    recorded = (
-        db.session.query(AccountExternalIdentity)
-        .filter(
-            AccountExternalIdentity.account_id == account_id,
-            AccountExternalIdentity.source_id == source_id,
-        )
-        .one_or_none()
-    )
-    if recorded is not None:
-        if recorded.external_account_id != external_account_id:
-            raise StatementAccountMismatch(
-                recorded.external_account_id, external_account_id,
-            )
-        return False
-
-    claimed_elsewhere = (
-        db.session.query(AccountExternalIdentity)
-        .filter(
-            AccountExternalIdentity.user_id == user_id,
-            AccountExternalIdentity.source_id == source_id,
-            AccountExternalIdentity.external_account_id
-            == external_account_id,
-        )
-        .one_or_none()
-    )
-    if claimed_elsewhere is not None:
-        raise StatementAccountMismatch(
-            "another of your own accounts, which has already imported it",
-            external_account_id,
-        )
-    return True
-
-
-def _record_identity(
-    account_id: int, user_id: int, source_id: int, external_account_id: str,
-) -> None:
-    """Record what *source_id* calls *account_id*, on a first import.
-
-    Args:
-        account_id: The account the user chose.
-        user_id: Its owner, held equal to the account's by
-            ``fk_account_external_identities_owner``.
-        source_id: The adapter the file was read by.
-        external_account_id: What the file calls its account.
-    """
-    db.session.add(AccountExternalIdentity(
-        account_id=account_id,
-        user_id=user_id,
-        source_id=source_id,
-        external_account_id=external_account_id,
-    ))
 
 
 def _recorded_groups(
@@ -470,7 +360,7 @@ def record_statement(
     verify_running_balance(lines)
 
     source_id = ref_cache.statement_source_id(source)
-    identity_is_new = _verify_identity(
+    identity_is_new = verify_identity(
         account_id, user_id, source_id, external_account_id,
     )
 
@@ -488,12 +378,7 @@ def record_statement(
 
     # Every refusal is now behind us, so this is the first write.
     if identity_is_new:
-        _record_identity(account_id, user_id, source_id, external_account_id)
-        log_event(
-            _logger, logging.INFO, EVT_STATEMENT_IDENTITY_RECORDED, BUSINESS,
-            "Recorded which account a statement source calls this account.",
-            account_id=account_id, source=source.value,
-        )
+        record_identity(account_id, user_id, source_id, external_account_id)
 
     statement_import = StatementImport(
         account_id=account_id,

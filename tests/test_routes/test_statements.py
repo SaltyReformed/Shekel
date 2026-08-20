@@ -353,3 +353,176 @@ class TestTheAccountPageLinksHere:
             f"/accounts/{seed_user['account'].id}/statements".encode()
             in response.data
         )
+
+
+class TestTheDeletePost:
+    """The UNDO door, end to end through HTTP (plan step X-f6a-4).
+
+    The route's own subjects, none of which the service test can see: OWNERSHIP
+    on a DESTRUCTIVE act, the validated id, the unit of work, and the flash
+    that reports what was actually removed.
+    """
+
+    def _delete(self, client, account_id, import_id, **extra):
+        """POST the delete the way the form does."""
+        return client.post(
+            f"/accounts/{account_id}/statements/delete",
+            data={"import_id": str(import_id), **extra},
+            follow_redirects=True,
+        )
+
+    def test_it_deletes_the_import_and_reports_what_went(
+        self, auth_client, db, seed_user,
+    ):
+        """The happy path, with the counts in the flash."""
+        _upload(auth_client, seed_user["account"].id, _payload())
+        recorded = db.session.query(StatementImport).one()
+
+        response = self._delete(
+            auth_client, seed_user["account"].id, recorded.id,
+        )
+
+        assert response.status_code == 200
+        body = response.get_data(as_text=True)
+        assert "Deleted the import of" in body
+        assert "2 bank line(s)" in body
+        assert db.session.query(StatementImport).count() == 0
+        assert db.session.query(BankStatementLine).count() == 0
+
+    def test_the_page_offers_the_control_with_what_it_would_remove(
+        self, auth_client, db, seed_user,
+    ):
+        """The confirmation names a LIVE count, not the historical one.
+
+        ``recorded_count`` is what the act wrote on the day it ran and
+        ``lines_held`` is what it still owns; putting the first on a
+        destructive control would be a stored value standing in for a live one
+        -- on the one sentence the owner reads before pressing delete.
+        """
+        _upload(auth_client, seed_user["account"].id, _payload())
+
+        response = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements"
+        )
+
+        body = response.get_data(as_text=True)
+        assert "/statements/delete" in body
+        assert "This removes 2 bank line(s)" in body
+
+    def test_ANOTHER_users_import_answers_404(
+        self, auth_client, db, seed_user,
+    ):
+        """FIRING CONTROL against an IDOR on a destructive act.
+
+        The delete is decorated independently of the read and the import, so
+        neither of those being right proves anything about this one -- and
+        this is the door that DESTROYS.
+        """
+        stranger = User(
+            email="stranger2@shekel.local",
+            password_hash=auth_service.hash_password("otherpass"),
+            display_name="Stranger Two",
+        )
+        db.session.add(stranger)
+        db.session.flush()
+        db.session.add(UserSettings(user_id=stranger.id))
+        db.session.flush()
+        from app.models.account import Account
+
+        theirs = Account(
+            user_id=stranger.id,
+            account_type_id=seed_user["account"].account_type_id,
+            name="Stranger Checking Two",
+        )
+        db.session.add(theirs)
+        db.session.flush()
+        _upload(auth_client, seed_user["account"].id, _payload())
+        mine = db.session.query(StatementImport).one()
+
+        response = auth_client.post(
+            f"/accounts/{theirs.id}/statements/delete",
+            data={"import_id": str(mine.id)},
+        )
+
+        assert response.status_code == 404
+        assert db.session.query(BankStatementLine).count() == 2
+
+    def test_an_import_on_ANOTHER_of_the_owners_accounts_is_refused(
+        self, auth_client, db, seed_user,
+    ):
+        """Ownership of the ACCOUNT is not ownership of the IMPORT.
+
+        The decorator proves the caller owns the account in the URL; only the
+        service can say the import belongs to THAT account.  Without that arm a
+        single owner could delete one account's statements through another
+        account's door.
+        """
+        from app.models.ref import AccountType
+        from app.services import account_service
+        from decimal import Decimal
+
+        checking_type = (
+            db.session.query(AccountType).filter_by(name="Checking").one()
+        )
+        second = account_service.create_account(
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=checking_type.id,
+                name="Second Checking",
+                anchor_balance=Decimal("0.00"),
+                observed_on=seed_user["bootstrap_period"].start_date,
+            )
+        )
+        db.session.flush()
+        _upload(auth_client, seed_user["account"].id, _payload())
+        mine = db.session.query(StatementImport).one()
+
+        response = self._delete(auth_client, second.id, mine.id)
+
+        assert "no longer there" in response.get_data(as_text=True)
+        assert db.session.query(BankStatementLine).count() == 2
+
+    def test_a_missing_id_is_refused_by_the_schema(
+        self, auth_client, db, seed_user,
+    ):
+        """The validated-input discipline, not a bare ``request.form.get``."""
+        _upload(auth_client, seed_user["account"].id, _payload())
+
+        response = auth_client.post(
+            f"/accounts/{seed_user['account'].id}/statements/delete",
+            data={},
+            follow_redirects=True,
+        )
+
+        assert "Which import do you want to delete?" in response.get_data(
+            as_text=True,
+        )
+        assert db.session.query(BankStatementLine).count() == 2
+
+    def test_a_NON_ROW_id_is_refused_rather_than_coerced(
+        self, auth_client, db, seed_user,
+    ):
+        """``RowId``, not ``fields.Integer`` (finding N-141).
+
+        ``Integer`` reads ``' 12 '``, ``'+12'``, ``'007'`` and ``'0'`` as ids,
+        two of which name no row at all -- on a door that destroys.
+        """
+        _upload(auth_client, seed_user["account"].id, _payload())
+
+        response = self._delete(auth_client, seed_user["account"].id, " 1 ")
+
+        assert db.session.query(BankStatementLine).count() == 2
+        assert "Deleted the import of" not in response.get_data(as_text=True)
+
+    def test_a_refused_delete_leaves_the_pairing_alone(
+        self, auth_client, db, seed_user,
+    ):
+        """The unit of work is the request, asserted through a real one."""
+        from app.models.statement_import import AccountExternalIdentity
+
+        _upload(auth_client, seed_user["account"].id, _payload())
+
+        self._delete(auth_client, seed_user["account"].id, 999999)
+
+        assert db.session.query(AccountExternalIdentity).count() == 1
+        assert db.session.query(BankStatementLine).count() == 2

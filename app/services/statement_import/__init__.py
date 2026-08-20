@@ -29,6 +29,13 @@ The public surface, and what each piece is for:
   balance affords, and the reason the CSV was chosen over the OFX.
 * :func:`record_statement` -- the one write door, returning
   :class:`ImportOutcome`.
+* :func:`delete_import` -- the one UNDO door, returning
+  :class:`ImportRemoval`, and the only thing in this package that destroys.
+  It is what finding **N-302** says a refusal owes (plan step
+  ``bank_import:X-f6a-4``): a restated line, or a first import that named the
+  wrong Shekel account, used to end that account's ability to import for good.
+  It is BALANCE-NEUTRAL -- it removes what the BANK said, and a settle day an
+  accepted match wrote is the app's own record and stays.
 
 **What the recorded lines are FOR is the steps after this one**, named here
 because the schema was designed for all four rather than for the first: the
@@ -55,6 +62,7 @@ from ._line import (
     pair_by_statement,
 )
 from ._reads import (
+    ImportRecord,
     RecordedSpan,
     SourceOption,
     available_sources,
@@ -63,10 +71,13 @@ from ._reads import (
     recorded_span,
 )
 from ._record import ImportOutcome, record_statement
+from ._undo import ImportRemoval, delete_import
 
 __all__ = [
     "GroupPairing",
     "ImportOutcome",
+    "ImportRecord",
+    "ImportRemoval",
     "KeyedLine",
     "RecordedSpan",
     "SourceOption",
@@ -74,6 +85,7 @@ __all__ = [
     "available_sources",
     "carries_running_balance",
     "closing_balance",
+    "delete_import",
     "fresh_ordinals",
     "group_indexes",
     "group_key",

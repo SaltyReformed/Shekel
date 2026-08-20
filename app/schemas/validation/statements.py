@@ -232,6 +232,26 @@ class StatementMatchReleaseSchema(BaseSchema):
     )
 
 
+class StatementImportDeleteSchema(BaseSchema):
+    """Validate the id of the import being deleted (plan step X-f6a-4).
+
+    Its own schema for the reason :class:`StatementMatchReleaseSchema` is
+    separate from :class:`StatementMatchSchema`: these are different acts on
+    different objects, and one schema carrying both would have every field
+    optional and refuse nothing.
+
+    **The id is a :class:`~app.schemas.validation._helpers.RowId`, not
+    ``fields.Integer``** (plan step X-ae, finding **N-141**).  It names a ROW,
+    and ``Integer`` reads ``'١٢'``, ``' 12 '``, ``'+12'``, ``'1_0'``, ``'007'``,
+    ``'-5'`` and ``'0'`` as ids -- two of which name no row at all.
+    """
+
+    import_id = RowId(
+        required=True,
+        error_messages={"required": "Which import do you want to delete?"},
+    )
+
+
 class StatementPurchaseSchema(BaseSchema):
     """Validate ONE bank line becoming a purchase (plan step X-f6a-3b).
 
