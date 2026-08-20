@@ -56,6 +56,7 @@ Taken 2026-08-05 (developer):
 | **Whether the closed set's TABLE and its ENUM may go in ONE release** | **YES, and R-R11's hazard does not generalise to a dropped TABLE at all -- which an adversarial review of R9 established after the step had argued the opposite. R-R11 held the `Once` ROW because `ref_cache.init` raises for an enum member with no row in a table that EXISTS; `_load_rows` CATCHES the `ProgrammingError` a missing table raises, and `init` records it unavailable and completes, pinned by `test_ref_cache.py::test_init_records_unavailable_table_and_keeps_others_usable`. Three independent reasons the auto-rollback image is safe, in the order they fire: it never reaches `ref_cache`, because `entrypoint.sh` step 3 runs `init_database.py` with `init_ref_cache=False` and its Alembic tree cannot resolve the new revision, so `set -eEuo pipefail` aborts (finding F-8); `shekel-deploy:repin_is_safe` refuses the re-pin for the same reason, leaving the pre-deploy dump as recovery; and booted anyway it would degrade rather than die. Precedent measured the same day: R7c-a, R7c-b and R7c-c all reached production in ONE release (PR #102, `41e09dad`), and R7c-c dropped a column the previous image's ORM mapped. R-R27, ruled 2026-08-17; shipped as R9** |
 | **What a forward window named in MONTHS resolves to** | **The LAST WHOLE PAYCHECK that ARRIVES within the span, counted against the CADENCE itself: `floor(months x DAYS_PER_YEAR / (MONTHS_PER_YEAR x cadence_days))`. So the LABEL is the fixed thing and the pay-period count derives from the owner's stated rhythm. Flooring rather than rounding was measured: over all 365 legal cadences crossed with the 3 / 6 / 12 / 24-month spans the two disagree on 388 of 1,460 cases, and by mean absolute distance between the resolved period's END and the day the label names the floored answer is closer in 387 and equal in the last. Deriving it through the ROUNDED `periods_per_year` instead was the first implementation and an adversarial review measured it wrong -- double rounding disagrees with the arrival test on 384 cases, always overshooting, and in 74 of them OFFERS a horizon the owner has no paycheck inside at all. A span no paycheck reaches resolves to ZERO and is NOT OFFERED; a surface that must render something anyway (the Plan tab, the pulse chart) shows the paycheck the owner is in, which is a POLICY and not an invariant. R-R31, ruled 2026-08-19; shipped as R-F17** |
 | **What a REGENERATION does to the rows it already generated** | **It MAINTAINS them; it does not destroy and rebuild them. A row the rule still names is UPDATED in place, a period the rule names with no row gets one, and a row the rule no longer names is removed only when it carries nothing of the owner's. A row holding the owner's own records -- purchases, a note, a hand-entered actual -- is RETAINED and reported, in two shapes: the rule stopped naming its period, or the template's ACCOUNT moved, which drags every purchase onto the new account and invalidates the statement link that cleared it. The delete-and-recreate this replaces was safe only while a generated row was a pure projection of `(template, period)`; `transaction_entries` CASCADE from their parent, so it destroyed `$499.82` of recorded purchases on live data. R-R19, ruled 2026-08-15; shipped as R10-a (`5fc13cdb`), closing row N-292** |
+| **How a definition's ACCOUNT change reaches the transfers it already generated** | **IN PLACE, through the one write door, which learns to move a transfer's endpoints.** A generated transfer derives SIX columns from its template and `transfer_service.update_transfer` could write FOUR, so the two account columns reached their rows only by the sweep DELETING and re-creating every one of them -- measured on a production clone at 51 of 62 rows re-pointed as a side effect of a rebuild -- while a NON-repeating template's identical edit was REFUSED outright, because nothing could carry it. That is a limit of the door, not a rule about transfers, so the door moves the parent and both shadow rows now, re-deriving each leg's display name and reconciling the ledger on both sides; `NON_REPEATING_ACCOUNTS_ARE_FIXED` is DELETED and one edit stops meaning two things. A row holding the owner's own records is still RETAINED rather than moved, which is R-R19 unchanged: its settled figure is what moved between the OLD accounts and its statement link is scoped BY account. R-R32, ruled 2026-08-20 (developer); shipped as R10-b** |
 
 ---
 
@@ -558,21 +559,12 @@ Found while X-f3b measured the ledger. Its two leaves are below.
       it. And `recurrence_engine` is a PACKAGE from here, with `DerivedRowFields` the ONE statement
       of a generated row's derived columns -- a new one belongs there, not in a write path.
 
-- [ ] **R10-b -- the transfer engine onto the same shape.**
-
-`transfer_recurrence.regenerate_for_template` shares `partition_regeneration_rows` and still
-hard-deletes and recreates, taking each transfer's shadow pair with it via
-`transactions.transfer_id`'s CASCADE. No money RECORDS are at risk -- `entry_service.create_entry`
-refuses a transfer row, so a transfer holds no purchases -- which is why it was not in R10-a, and
-why it is not a ledger finding. What it shares is the identity churn and the divergence: two engines
-answering one question two ways is the drift `_recurrence_common` exists to prevent.
-
-The update door already exists and is the reason this leaf is small:
-`transfer_service.update_transfer` takes `amount`, `category_id`, `name`, `due_date`,
-`pay_period_id` and `is_override`, and propagates to both shadows atomically (Transfer Invariants
-3-5). The leaf is to give the transfer engine its own `DerivedRowFields` twin, route the maintain
-pass through that door, and lift whatever of R10-a's classifier is genuinely model-agnostic into
-`_recurrence_common` rather than copying it.
+- [x] **R10-b -- the transfer engine onto the same shape.** `ea776528`, rulings **R-R19** and
+      **R-R32**; both stated premises were measured false first, and the defect that opened is
+      closed by the same commit, which is its record. **Two things a later step must obey.**
+      `DerivedTransferFields` carries `amount`, so **X-au-f** must remove it when a generated
+      transfer's amount goes NULL (N-293); and the maintain DECISION is SHARED, so a new arm goes in
+      `_recurrence_common`.
 
 - [ ] **R11 -- the LEAD placement: fund an occurrence from an EARLIER paycheck.**
 

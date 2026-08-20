@@ -41,9 +41,12 @@ from app.exceptions import (
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transfer import Transfer
-from app.services import loan_recurrence_sync, transfer_service
+from app.services import (
+    loan_recurrence_sync, transfer_recurrence, transfer_service,
+)
 from app.services.scenario_resolver import require_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
+from app.routes._recurrence_conflict_chooser import flash_retained_notice
 from app.routes._transfer_creation_helpers import (
     generate_transfers_for_all_periods,
 )
@@ -54,14 +57,6 @@ ONE_TIME_TRANSFER_NEEDS_PERIOD: str = (
     "pay period it belongs to, or choose a pattern to repeat it."
 )
 """Refusal shown when a non-repeating transfer names no pay period."""
-
-
-NON_REPEATING_ACCOUNTS_ARE_FIXED: str = (
-    "This transfer does not repeat, so the transfer it created already "
-    "exists and cannot be moved between accounts. Delete it and create a "
-    "new one, or choose a pattern to make it repeat."
-)
-"""Refusal shown when an account change cannot reach the Transfer it names."""
 
 
 def _rollback_and_refuse(message):
@@ -238,7 +233,7 @@ def non_repeating_live_transfers(template):
     """Return the Transfers a NON-REPEATING template's definition still owns.
 
     Projected, not hand-edited, not soft-deleted -- the same three conditions
-    ``_recurrence_common.partition_regeneration_rows`` uses to decide which
+    ``_recurrence_common.classify_maintain_work`` uses to decide which
     rows a recurring template's regeneration may rewrite.  A settled transfer
     is immutable history and an overridden one is a deliberate per-instance
     change; neither follows the definition, here or there.
@@ -269,12 +264,14 @@ def propagate_to_non_repeating_transfers(template):
     """Push a NON-REPEATING template's edited definition onto its Transfers.
 
     The counterpart of regeneration for the one shape that does not
-    regenerate.  A recurring template's edit reaches its rows by deleting and
-    re-creating them from the rule; a template with no rule has nothing to
-    re-create from, so its already-materialised Transfer is updated IN PLACE
-    instead -- through ``transfer_service.update_transfer``, the single door
-    that keeps the two shadow transactions' amounts, statuses and periods
-    equal to their parent's (Transfer Invariants 3 and 4).
+    regenerate.  A recurring template's edit reaches its rows through the
+    maintain pass, which needs a RULE to say which periods it still names; a
+    template with no rule names none, so a regeneration would retire every row
+    it has (that is defect **D16**).  Its already-materialised Transfer is
+    therefore brought into line here instead -- through
+    ``transfer_service.update_transfer``, the single door that keeps the two
+    shadow transactions' amounts, statuses and periods equal to their parent's
+    (Transfer Invariants 3 and 4).
 
     **Without this the template and its Transfer diverge silently.**  Measured
     before it existed, on the transfer create form's DEFAULT selection: a
@@ -284,38 +281,52 @@ def propagate_to_non_repeating_transfers(template):
     flash.  The shape has existed since plan step R2e-1's clear branch; plan
     step R2e-3 is what made it reachable from the form, and so what owns it.
 
-    Only amount, name and category propagate: those are the definition fields
-    a Transfer carries, and they are exactly what the shadow-safe door
-    accepts.  The two account columns cannot follow and are refused at the
-    door instead (:func:`_reject_transfer_template_update`).
+    **Every definition field a Transfer carries propagates, including the two
+    ACCOUNTS** -- which is plan step R10-b, and which retires a refusal rather
+    than adding a field.  The two account columns used to be excluded here and
+    an account change was REFUSED at the route, for one reason: the shadow-safe
+    door could not express a move, because a shadow's ``account_id`` is derived
+    from the pair's endpoints when it is built and nothing re-derived it
+    afterwards.  That made the same edit mean two different things -- a
+    RECURRING template's account change was applied, by a regeneration that
+    destroyed and rebuilt every generated row to do it.  ``update_transfer``
+    moves a transfer and both legs between accounts now
+    (:mod:`app.services.transfer_service._endpoints`), so this door states the
+    whole definition and the refusal is gone.
+
+    **WHAT to write is the engine's decision, not this route's**, and an
+    adversarial review of R10-b is why it says so: this door applied the
+    definition unconditionally, so the moment the accounts became propagable a
+    non-repeating transfer holding a retained settlement record had its pair
+    moved in SILENCE -- while the identical edit on a recurring template was
+    retained and reported.  One rule, asked in one place
+    (``transfer_recurrence.propagate_to_unruled_template``); what stays here is
+    the FLASHING, which is a route's job.
 
     Args:
         template: The updated ``TransferTemplate``, its new field values
             already applied and flushed.
 
     Returns:
-        ``None`` on success; a redirect ``Response`` when the service refuses
-        an update (rolled back, so nothing is half-applied).
+        ``None`` on success -- flashing the retained notice when the pass left
+        a row alone; a redirect ``Response`` when the service refuses an update
+        (rolled back, so nothing is half-applied).
     """
-    for xfer in non_repeating_live_transfers(template):
-        try:
-            transfer_service.update_transfer(
-                xfer.id, template.user_id,
-                amount=template.default_amount,
-                name=template.name,
-                category_id=template.category_id,
-            )
-        except (NotFoundError, ShekelValidationError) as exc:
-            db.session.rollback()
-            flash(f"Could not update transfer: {exc}", "danger")
-            return redirect(url_for(
-                "transfers.edit_transfer_template", template_id=template.id,
-            ))
+    try:
+        retained = transfer_recurrence.propagate_to_unruled_template(
+            template, non_repeating_live_transfers(template),
+        )
+    except (NotFoundError, ShekelValidationError) as exc:
+        db.session.rollback()
+        flash(f"Could not update transfer: {exc}", "danger")
+        return redirect(url_for(
+            "transfers.edit_transfer_template", template_id=template.id,
+        ))
+    flash_retained_notice(retained)
     return None
 
 
 __all__ = [
-    "NON_REPEATING_ACCOUNTS_ARE_FIXED",
     "ONE_TIME_TRANSFER_NEEDS_PERIOD",
     "materialize_initial_transfers",
     "non_repeating_live_transfers",

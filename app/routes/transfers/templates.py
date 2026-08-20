@@ -76,9 +76,7 @@ from app.routes._transfer_creation_helpers import (
 )
 from app.routes.transfers._bp import transfers_bp
 from app.routes.transfers._instances import (
-    NON_REPEATING_ACCOUNTS_ARE_FIXED,
     materialize_initial_transfers,
-    non_repeating_live_transfers,
     propagate_to_non_repeating_transfers,
 )
 from app.routes.transfers._helpers import (
@@ -510,13 +508,24 @@ def update_transfer_template(template_id):
     if redirect_response is not None:
         return redirect_response
 
-    # Every reason this update may be refused, asked once and BEFORE the
-    # field loop below writes anything: route-boundary FK ownership (commit
-    # C-27 / F-043) and, for a template that does not repeat, an account
-    # change its already-created Transfer could not follow (plan step R2e-3).
-    refusal = _reject_transfer_template_update(template, data, before)
-    if refusal is not None:
-        flash(refusal, "danger")
+    # Route-boundary FK ownership (commit C-27 / F-043), asked BEFORE the field
+    # loop below writes anything.
+    #
+    # **A second refusal stood here until plan step R10-b**: a template that
+    # neither had nor has a recurrence rule could not change its source or
+    # destination ACCOUNT while the Transfer it created was still live, because
+    # the shadow-safe propagation door accepted amount, name and category and
+    # not the two account columns (plan step R2e-3).  That was a limit of the
+    # door rather than a rule about transfers -- a RECURRING template with the
+    # identical edit had it applied, by a sweep that destroyed and rebuilt every
+    # generated row -- so one edit meant two different things depending on
+    # whether the transfer repeated.  ``transfer_service.update_transfer`` moves
+    # a transfer between accounts now, carrying both shadows, so the refusal has
+    # no cause left and :func:`propagate_to_non_repeating_transfers` states the
+    # accounts with the rest of the definition.
+    unowned = _first_unowned_template_fk(data)
+    if unowned is not None:
+        flash(f"Invalid {unowned}.", "danger")
         return redirect(url_for(
             "transfers.edit_transfer_template", template_id=template_id,
         ))
@@ -833,61 +842,6 @@ def hard_delete_transfer_template(template_id):
 
 
 
-def _reject_transfer_template_update(template, data, before):
-    """Return why this update must be refused, or ``None`` to proceed.
-
-    Two rules, asked together so the route has ONE refusal branch rather than
-    one per rule (which would push it past pylint's ``too-many-returns``):
-
-    * every user-scoped FK in the payload is owned by this user
-      (:func:`_first_unowned_template_fk`);
-    * a template that neither has nor had a recurrence rule may not change
-      its source or destination ACCOUNT while the Transfer it already created
-      is still live.
-
-    **Why the second rule exists.**  A non-repeating template does not
-    regenerate -- that is what stops a rename from destroying its single
-    Transfer (defect D16) -- so an edit reaches that Transfer only through
-    :func:`propagate_to_non_repeating_transfers`, and the shadow-safe door
-    it uses (``transfer_service.update_transfer``) accepts amount, name and
-    category but NOT the two account columns: a shadow's ``account_id`` is
-    derived from them when the pair is created, and moving it is a different
-    operation from updating it.  Rather than let the template claim accounts
-    its own Transfer does not use, the change is refused and the user is told
-    what to do instead.  Scoped to a LIVE Transfer, because the rule is about
-    that row: a template with none (one whose recurrence was cleared, say)
-    has nothing to disagree with and is re-pointed freely.
-
-    Args:
-        template: The ``TransferTemplate`` being updated, still holding its
-            PRE-edit field values -- the caller's ``setattr`` loop runs after
-            this returns, which is what makes the comparison below meaningful.
-        data: The loaded update payload.
-        before: The template's pre-edit state
-            (:class:`~app.routes._recurrence_conflict_chooser.PreEditTemplateState`).
-
-    Returns:
-        The refusal message to flash, or ``None`` when the update may proceed.
-    """
-    unowned = _first_unowned_template_fk(data)
-    if unowned is not None:
-        return f"Invalid {unowned}."
-
-    if before.had_recurrence_rule or template.recurrence_rule is not None:
-        return None
-    moved = any(
-        field in data
-        and data[field] is not None
-        and data[field] != getattr(template, field)
-        for field in ("from_account_id", "to_account_id")
-    )
-    if moved and non_repeating_live_transfers(template):
-        return NON_REPEATING_ACCOUNTS_ARE_FIXED
-    return None
-
-
-
-
 def _first_unowned_template_fk(data):
     """Return the label of the first submitted FK the user does not own, else None.
 
@@ -985,13 +939,23 @@ def _regenerate_and_commit_template(
         db.session.rollback()
         flash("A recurring transfer with that name already exists.", "warning")
         return redirect(url_for("transfers.edit_transfer_template", template_id=template_id))
-    # An edit that ended the recurrence deleted this template's upcoming
+    # An edit that ended the recurrence removed this template's upcoming
     # projected transfers (and their shadow pairs); "updated." alone would
     # report a destructive change as a routine one.
+    #
+    # **"were removed" was unqualified until plan step R10-b**, and an
+    # adversarial review of that step caught it: the maintain pass RETAINS a
+    # projected transfer carrying the owner's own records, and flashes its own
+    # notice beside this one -- so the two sentences contradicted each other on
+    # a single save.  This one now says what it can promise, and the retained
+    # notice says which rows it did not reach.  (``routes/templates/crud.py``
+    # carries the same wording on the transaction side, stale since plan step
+    # R10-a; reported, not fixed here.)
     if before.had_recurrence_rule and template.recurrence_rule is None:
         flash(
             f"'{template.name}' no longer repeats. Its upcoming projected "
-            "transfers were removed; settled and hand-edited ones were kept.",
+            "transfers were removed, except any you have records against; "
+            "settled and hand-edited ones were kept.",
             "success",
         )
     else:
