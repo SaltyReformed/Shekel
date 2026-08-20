@@ -48,6 +48,12 @@ from app.services.balance_at import BalanceContext
 from app.services.statement_match import NewEnvelope, PurchaseCreation
 from tests._test_helpers import settlement_if_settling
 
+# Pylint: protected-access -- MintedEnvelopes is an internal collaboration
+# between two PRIVATE modules of this package and has no importer outside
+# it, so exporting it would be the surface rule 13 forbids; a test for a
+# module reaches into it, which is the allowance every sibling here takes.
+from app.services.statement_match import _create  # pylint: disable=protected-access
+
 from ._builders import (
     a_bank_line,
     a_later_period,
@@ -148,7 +154,7 @@ def _record(seed_user, line, minted=None, **destination):
         ),
         # DERIVED HERE, so every call sees the rows this test has staged.
         a_scope(seed_user),
-        minted if minted is not None else statement_match.MintedEnvelopes.none_yet(),
+        minted if minted is not None else _create.MintedEnvelopes.none_yet(),
     )
 
 

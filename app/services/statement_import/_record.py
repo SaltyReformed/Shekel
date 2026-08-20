@@ -1,11 +1,19 @@
 """The ONE door that records what a statement said.
 
-Everything it can refuse, it refuses BEFORE it writes a row: the file is parsed,
-its running-balance chain verified, its account identity reconciled and its
-lines compared against what is already recorded, and only then is anything
-staged.  So a refused import leaves the database exactly as it was without
-depending on the rollback -- and the rollback is there anyway, because the route
-owns the commit.
+Everything it can refuse, it refuses BEFORE it INSERTS a row: the file is
+parsed, its running-balance chain verified, its account identity reconciled and
+its lines compared against what is already recorded, and only then is anything
+staged.  So a refused import writes no new line without depending on the
+rollback.
+
+**The claim is about INSERTS and not about the session, and a wider version of
+it was left standing here once.**  The reconciliation walks group by group and
+:func:`_absorb_gained_facts` fills a recorded row's NULLs as it goes, so a
+refusal raised on group *k* leaves groups 1..*k*-1 dirty in the session and it
+is the route's rollback that discards them.  Nothing is lost by that -- those
+writes only ever ADD a fact the file states -- but "leaves the database exactly
+as it was without depending on the rollback" was true of the old per-line loop
+and is not true of this one.  Found by adversarial financial review 2026-08-20.
 
 **Nothing here moves a figure.**  Recording what a bank said is separable from
 deciding which of the app's own rows it explains, and that separation is the
@@ -160,9 +168,19 @@ def _refuse_restatement(
     once recorded it is provenance, and :func:`_absorb_gained_facts` keeps it
     current.
 
+    **The two lines it names are EXAMPLES, not a pairing.**
+    :func:`~._line.pair_by_statement` declined to pair them -- that is what
+    makes them leftovers -- so with three unaccounted-for incoming lines and
+    two unclaimed recorded ones there is no correspondence to state, and a
+    message asserting one would be a true sentence about the wrong problem.
+    The wording therefore says what the code knows: the file states this, the
+    app holds that, at this day and amount.  A first version read "was already
+    recorded as X and this file states Y", which asserts a pairing; found by
+    adversarial design review 2026-08-20.
+
     Args:
-        line: The incoming line the file states and the app cannot account for.
-        recorded: The recorded line in the same group that the file no longer
+        line: One incoming line the file states and the app cannot account for.
+        recorded: One recorded line in the same group the file no longer
             states.
 
     Raises:

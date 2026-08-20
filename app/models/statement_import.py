@@ -388,8 +388,13 @@ class BankStatementLine(db.Model):
         # This line's account IS its import's, guaranteed rather than
         # maintained -- the same construction
         # ``fk_transaction_entries_parent_account`` uses.  CASCADE so that
-        # deleting an account takes its imports and their lines with it; there
-        # is no door in ``app/`` that deletes an import on its own.
+        # deleting an account takes its imports and their lines with it -- and
+        # since plan step ``bank_import:X-f6a-4`` so that DELETING AN IMPORT
+        # takes the lines it first recorded, which is the mechanism its repair
+        # door rests on (``statement_import.delete_import``).  The comment here
+        # used to justify the cascade by "there is no door in ``app/`` that
+        # deletes an import on its own", which that step made false while
+        # leaving the cascade exactly as right.
         db.ForeignKeyConstraint(
             ["import_id", "account_id"],
             ["budget.statement_imports.id",

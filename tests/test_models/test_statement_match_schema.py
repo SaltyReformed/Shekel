@@ -45,6 +45,7 @@ from app.models.statement_match import StatementMatch, StatementMatchMember
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.services import account_service
+from app.services.statement_match import matched_subjects
 from tests._test_helpers import load_migration_module
 
 _MIGRATION = load_migration_module("c1e7d4b3a850_a_bank_line_is_this_row.py")
@@ -549,3 +550,87 @@ class TestAMatchMayNotLoseItsBankLines:
         assert _rows(db, "budget.statement_matches", match.id) == 0
         assert _rows(db, "budget.statement_match_members", None,
                      "account_id", other.id) == 0
+
+
+class TestTheMigrationRepairsWhatTheConstraintCannotSee:
+    """Plan step **bank_import:X-f6a-4**: a foreign key cannot see an absence.
+
+    ``ADD CONSTRAINT FOREIGN KEY`` validates dangling REFERENCES.  A match with
+    ZERO line members breaks no reference -- it is a missing row, not a wrong
+    one -- so the constraint stops the state being PRODUCED and says nothing
+    about databases that already carry it.  And the recipe was published: the
+    refusal message this arc shipped before the repair door told the owner the
+    situation "needs a human before anything overwrites it", and hand-run SQL
+    against ``statement_imports`` is exactly what makes one.
+
+    Migration ``e4a7c0f13b92`` therefore deletes such acts before it swaps the
+    key.  Measured on the 2026-08-20 production clone: **0** of them, because
+    production holds no imports at all -- so the statement is a no-op there and
+    exists for the databases that are not production.  Found by adversarial
+    financial review 2026-08-20.
+    """
+
+    #: The migration's own repair statement, read from the migration rather
+    #: than restated -- a second spelling here would let the two drift, and the
+    #: one that matters is the one that runs at deploy.
+    _REPAIR = load_migration_module(
+        "e4a7c0f13b92_a_match_may_not_lose_its_bank_lines.py",
+    )._REPAIR_LINELESS_ACTS
+
+    def test_it_deletes_an_act_that_holds_no_bank_line(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL: the state the constraint alone would leave standing."""
+        txn = _a_transaction(db, seed_user)
+        lineless = _a_match(db, seed_user)
+        _a_member(db, lineless, transaction_id=txn.id)
+        db.session.flush()
+
+        db.session.execute(db.text(self._REPAIR))
+        db.session.flush()
+
+        assert _rows(db, "budget.statement_matches", lineless.id) == 0
+        assert _rows(db, "budget.statement_match_members", None,
+                     "match_id", lineless.id) == 0
+
+    def test_it_leaves_an_act_that_HOLDS_one_alone(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL against over-deleting: a real match must survive."""
+        line = _a_line(db, seed_user)
+        txn = _a_transaction(db, seed_user)
+        held = _a_match(db, seed_user)
+        _a_member(db, held, bank_statement_line_id=line.id)
+        _a_member(db, held, transaction_id=txn.id)
+        db.session.flush()
+
+        db.session.execute(db.text(self._REPAIR))
+        db.session.flush()
+
+        assert _rows(db, "budget.statement_matches", held.id) == 1
+        assert _rows(db, "budget.statement_match_members", None,
+                     "match_id", held.id) == 2
+
+    def test_it_frees_the_rows_the_lineless_act_was_claiming(
+        self, app, db, seed_user,
+    ):
+        """MONEY-ADJACENT: this is what the deletion is FOR.
+
+        A lineless act is invisible on the review screen and yet still claims
+        its transactions through ``matched_subjects``, so those rows can never
+        be offered or matched again.  Freeing them is the point of removing it,
+        not a side effect.
+        """
+        txn = _a_transaction(db, seed_user)
+        lineless = _a_match(db, seed_user)
+        _a_member(db, lineless, transaction_id=txn.id)
+        db.session.flush()
+        assert txn.id in matched_subjects(seed_user["account"].id).transactions
+
+        db.session.execute(db.text(self._REPAIR))
+        db.session.flush()
+        db.session.expire_all()
+
+        assert txn.id not in matched_subjects(
+            seed_user["account"].id,
+        ).transactions

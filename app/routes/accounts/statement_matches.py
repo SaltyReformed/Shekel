@@ -67,6 +67,7 @@ from app.extensions import db
 from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts._statement_doors import (
     StatementDoorContext,
+    refusal_sentence,
     run_statement_door,
 )
 from app.routes.accounts._cash_page import load_cash_account_or_404
@@ -124,67 +125,6 @@ _DB_ERROR_MESSAGE = (
     "Something went wrong applying that, and nothing was changed.  Here is "
     "where you were."
 )
-
-
-def _messages(errors, path=()):
-    """Yield every message in a Marshmallow error structure, WITH its path.
-
-    **A LIST field's errors are keyed by INDEX, not flat**, so
-    ``{"matches": {0: {"line_ids": {0: ["Not a valid id."]}}}}`` is the
-    ordinary shape here rather than an exotic one -- and a flattener assuming
-    ``{field: [str]}`` raises ``TypeError`` inside the handler that exists to
-    render a refusal.  It is also why ``error_fragments.flatten_schema_errors``
-    is not used: that helper's own contract is the flat shape, and one reviewed
-    pass nests three levels deep.
-
-    **The PATH travels with the message, and dropping it was a real cost at
-    this volume.**  Marshmallow reports one entry per bad value, so a stale
-    page with forty unparseable ids rendered ``Not a valid id.; Not a valid
-    id.; ...`` forty times -- no item named, no remedy, and nothing the owner
-    could act on.  Named by adversarial design review 2026-08-19.
-
-    Args:
-        errors: A Marshmallow error value -- a mapping, a list, or a message.
-        path: The keys walked to reach it, innermost last.
-
-    Yields:
-        ``(path, message)`` for each leaf, in the order marshmallow reports
-        them.
-    """
-    if isinstance(errors, dict):
-        for key, value in errors.items():
-            yield from _messages(value, path + (key,))
-    elif isinstance(errors, (list, tuple)):
-        for value in errors:
-            yield from _messages(value, path)
-    else:
-        yield path, str(errors)
-
-
-def _refusal_sentence(errors) -> str:
-    """Return one sentence naming what a schema refused, and where.
-
-    **De-duplicated on the MESSAGE and counted**, because forty copies of one
-    sentence is not forty facts.  Each distinct message names the items it came
-    from, so an owner is told which ticked thing to untick rather than that
-    something, somewhere, is invalid.
-
-    Args:
-        errors: Marshmallow's ``validate()`` structure.
-
-    Returns:
-        The banner text.
-    """
-    by_message: "dict[str, list[str]]" = {}
-    for path, message in _messages(errors):
-        where = ".".join(str(part) for part in path)
-        by_message.setdefault(message, [])
-        if where and where not in by_message[message]:
-            by_message[message].append(where)
-    parts = []
-    for message, places in by_message.items():
-        parts.append(f"{message} ({', '.join(places)})" if places else message)
-    return "; ".join(parts)
 
 
 def _review_context(
@@ -343,7 +283,7 @@ def apply_statement_review(account_id):
     payload = batch_payload(request.form)
     errors = _batch_schema.validate(payload)
     if errors:
-        return _refused(account, scope, _refusal_sentence(errors))
+        return _refused(account, scope, refusal_sentence(errors))
     submitted = _batch_schema.load(payload)
 
     try:
@@ -505,7 +445,7 @@ def state_merchant_destinations(account_id):
     payload = policy_payload(request.form)
     errors = _policy_schema.validate(payload)
     if errors:
-        return _refused(account, scope, _refusal_sentence(errors))
+        return _refused(account, scope, refusal_sentence(errors))
     statements = _submitted_policies(_policy_schema.load(payload))
 
     try:
@@ -595,7 +535,7 @@ def release_statement_match(account_id):
     payload = form_payload(request.form, _release_schema)
     errors = _release_schema.validate(payload)
     if errors:
-        flash(_refusal_sentence(errors), "warning")
+        flash(refusal_sentence(errors), "warning")
         return redirect(target)
 
     match_id = _release_schema.load(payload)["match_id"]

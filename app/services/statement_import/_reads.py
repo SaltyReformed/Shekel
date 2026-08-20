@@ -17,9 +17,9 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.ref import StatementSource
 from app.models.statement_import import BankStatementLine, StatementImport
+from app.models.statement_match import StatementMatchMember
 
 from ._adapters import supported_sources
-from ._undo import RemovalPreview, removal_previews
 
 
 @dataclass(frozen=True)
@@ -110,27 +110,65 @@ def recorded_span(account_id: int) -> RecordedSpan:
     )
 
 
+def matches_by_import(account_id: int) -> "dict[int, list[int]]":
+    """Return which accepted matches name a line each of *account_id*'s imports owns.
+
+    **ONE statement, and ONE spelling of the question**, because two callers
+    ask it for different reasons and a confirmation that counted differently
+    from the act it confirms would be a confirmation that lies:
+    :func:`import_history` takes ``len()`` of each list to say what a delete
+    would release, and :func:`~._undo.delete_import` iterates the list to
+    release them.
+
+    Args:
+        account_id: The account whose imports to read.
+
+    Returns:
+        ``{import_id: [match_id, ...]}``, each list ascending, covering only
+        the imports that own a matched line.  An import with none is absent,
+        and both callers read that as the empty list -- which is the honest
+        answer rather than an absence to branch on.
+    """
+    rows = (
+        db.session.query(
+            BankStatementLine.import_id, StatementMatchMember.match_id,
+        )
+        .join(
+            StatementMatchMember,
+            StatementMatchMember.bank_statement_line_id == BankStatementLine.id,
+        )
+        .filter(BankStatementLine.account_id == account_id)
+        .distinct()
+        .order_by(BankStatementLine.import_id, StatementMatchMember.match_id)
+        .all()
+    )
+    by_import: "dict[int, list[int]]" = {}
+    for import_id, match_id in rows:
+        by_import.setdefault(import_id, []).append(match_id)
+    return by_import
+
+
 @dataclass(frozen=True)
 class ImportRecord:  # pylint: disable=too-many-instance-attributes
     """One import as the page shows it: what it DID, and what undoing it costs.
 
-    Pylint: too-many-instance-attributes -- **nine because the page's import row
-    shows nine things** (9/7), not because the value wants splitting.  The one
-    real seam here is history against live -- the last two fields are read when
-    the page renders, the rest are what the act recorded -- and nesting those
-    two behind a value still leaves eight, so the split would buy a level of
-    indirection in the template and no reduction at all.  ``StatementLine``,
-    ``CandidateRow`` and ``CreatedPurchase`` carry the same disable for the same
-    reason: a row that genuinely states N things is not improved by hiding
-    ``N - 7`` of them.
+    Pylint: too-many-instance-attributes -- **eight because the page's import
+    row shows eight things** (8/7), not because the value wants splitting.
+    ``StatementLine``, ``CandidateRow``, ``CreatedPurchase`` and
+    ``PurchaseDestination`` carry the same disable for the same reason: a row
+    that genuinely states N things is not improved by hiding ``N - 7`` of them.
 
-    **Two counts that look alike and are not the same fact**, which is why both
-    are here.  :attr:`recorded_count` is HISTORY -- what this act wrote, on the
-    day it ran -- and :attr:`lines_held` is what it still owns, which is what a
-    delete would take.  They are equal until something removes a line, and
-    putting the historical figure on a destructive control would be a stored
-    value standing in for a live one: the substitution this project's arcs
-    exist to remove, on the sentence an owner reads before pressing delete.
+    **The line count on the destructive control is `recorded_count`, and a
+    "live" count beside it was DELETED as a guard against an unreachable
+    state.**  A first version carried both, on the reasoning that a stored
+    figure must not stand in for a live one.  Adversarial review measured the
+    premise false: the only things that remove a ``bank_statement_lines`` row
+    are the import's own cascade and the account's, so for any import this page
+    can render the two are identically equal, always.  CLAUDE.md rule 13
+    forbids handling an impossible scenario, and a "live" number that can never
+    differ is a claim to freshness the schema does not support.
+    :attr:`matches_affected` is genuinely live -- a match can be released
+    independently -- and earns its query.
 
     Attributes:
         import_id: The act, so a delete control can name it.
@@ -142,7 +180,6 @@ class ImportRecord:  # pylint: disable=too-many-instance-attributes
         recorded_count: Lines this act wrote.  The difference from
             :attr:`line_count` is the overlap with what was already known, and
             showing it is what makes idempotency VISIBLE.
-        lines_held: Lines it still owns, counted NOW -- what a delete removes.
         matches_affected: Accepted matches naming at least one of those lines.
             Each would be RELEASED by a delete, so the control says so before
             it is pressed.
@@ -155,7 +192,6 @@ class ImportRecord:  # pylint: disable=too-many-instance-attributes
     period_end: date
     line_count: int
     recorded_count: int
-    lines_held: int
     matches_affected: int
 
 
@@ -166,8 +202,17 @@ def import_history(account_id: int, limit: int = 20) -> "list[ImportRecord]":
         account_id: The account whose imports to list.
         limit: How many to return.  Bounded rather than unbounded because this
             feeds a page section, and an account imported weekly for years
-            would otherwise render thousands of rows; the page says so rather
-            than truncating silently.
+            would otherwise render thousands of rows.
+            **The page SAYS SO, and until 2026-08-20 this docstring claimed it
+            did while the section heading was the bare word "Imports".**  That
+            became load-bearing when plan step ``bank_import:X-f6a-4`` put a
+            destructive control inside the truncated table and wrote two
+            refusal messages promising it is there: a line names the import
+            that FIRST recorded it, so the oldest import owns nearly every line
+            and is the first to fall off a newest-first list.  Finding
+            **N-330** owns raising or paging the bound; saying it is what stops
+            the truncation being silent meanwhile.  Found by adversarial
+            financial review 2026-08-20.
 
     Returns:
         One :class:`ImportRecord` per import, newest first.  **Values rather
@@ -186,8 +231,7 @@ def import_history(account_id: int, limit: int = 20) -> "list[ImportRecord]":
     )
     if not imports:
         return []
-    previews = removal_previews(account_id)
-    nothing = RemovalPreview(lines=0, matches=0)
+    by_import = matches_by_import(account_id)
     return [
         ImportRecord(
             import_id=row.id,
@@ -197,8 +241,7 @@ def import_history(account_id: int, limit: int = 20) -> "list[ImportRecord]":
             period_end=row.period_end,
             line_count=row.line_count,
             recorded_count=row.recorded_count,
-            lines_held=previews.get(row.id, nothing).lines,
-            matches_affected=previews.get(row.id, nothing).matches,
+            matches_affected=len(by_import.get(row.id, ())),
         )
         for row in imports
     ]

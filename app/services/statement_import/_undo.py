@@ -39,6 +39,16 @@ function to learn how a match is released, when *there is exactly one place a
 match is released* is what rulings **R-FT** and **R-FV** ask for.  So the
 undo owns the whole act and calls the one door that already exists.
 
+**It does not LOG the act either, and that is the same boundary.**  A business
+event asserting "an import was deleted, its lines are gone, N matches were
+released" must not sit in the log when the transaction that would have done it
+failed -- and this is the door where a false entry costs most, because the log
+is the forensic record of the only thing in this package that DESTROYS.  So the
+route emits it after its commit, exactly as ``record_statement``'s own event is
+emitted by its route rather than by the service.  A first version logged here,
+one call above a commit that can still roll back; found by adversarial
+financial review 2026-08-20.
+
 Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in, a
 frozen dataclass out, no ``flask`` / ``request`` / ``session`` /
 ``current_app`` import.  It MUTATES and does NOT commit -- the route owns the
@@ -47,24 +57,16 @@ unit of work, which is what makes a refusal here leave nothing behind.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from datetime import date
 
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.statement_import import BankStatementLine, StatementImport
-from app.models.statement_match import StatementMatchMember
 from app.services.statement_match import release_match
-from app.utils.log_events import (
-    BUSINESS,
-    EVT_STATEMENT_IMPORT_DELETED,
-    log_event,
-)
 
 from ._identity import forget_identity_if_last
-
-_logger = logging.getLogger(__name__)
+from ._reads import matches_by_import
 
 
 @dataclass(frozen=True)
@@ -138,110 +140,6 @@ def _owned_import(
     return statement_import
 
 
-@dataclass(frozen=True)
-class RemovalPreview:
-    """What deleting one import WOULD remove, as of now.
-
-    An ESTIMATE, and named as one: it is read when the page renders and the
-    act's own :class:`ImportRemoval` is read as the act runs, so a second
-    session working the same account between the two can legitimately move
-    either number.  What must never differ is the QUESTION the two ask, which
-    is why both start from :func:`_owned_lines`.
-
-    Attributes:
-        lines: Bank lines the import still owns.
-        matches: Accepted matches naming at least one of them.
-    """
-
-    lines: int
-    matches: int
-
-
-def _owned_lines(account_id: int):
-    """Return the query both line counts and the match join start from.
-
-    Stated once because a confirmation that counts differently from the act it
-    confirms is a confirmation that lies, and the drift would be invisible: two
-    correct-looking filters, one of them missing the account scope.
-
-    Args:
-        account_id: The account whose recorded lines to read.
-
-    Returns:
-        The unexecuted query over that account's :class:`BankStatementLine`
-        rows.
-    """
-    return db.session.query(BankStatementLine).filter(
-        BankStatementLine.account_id == account_id,
-    )
-
-
-def _matches_naming(import_id: int, account_id: int) -> "list[int]":
-    """Return the accepted matches that name a line *import_id* owns.
-
-    ONE statement over the join rather than a load of every line: the question
-    is which ACTS are affected, and an account with a year of history holds
-    hundreds of lines and a handful of matches.
-
-    Args:
-        import_id: The import whose lines to follow.
-        account_id: The account, so the read is scoped by the same fact the
-            door checked ownership with.
-
-    Returns:
-        The distinct match ids, ascending.
-    """
-    return [
-        row[0]
-        for row in _owned_lines(account_id)
-        .join(
-            StatementMatchMember,
-            StatementMatchMember.bank_statement_line_id == BankStatementLine.id,
-        )
-        .filter(BankStatementLine.import_id == import_id)
-        .with_entities(StatementMatchMember.match_id)
-        .distinct()
-        .order_by(StatementMatchMember.match_id)
-        .all()
-    ]
-
-
-def removal_previews(account_id: int) -> "dict[int, RemovalPreview]":
-    """Return what deleting each of *account_id*'s imports would remove.
-
-    ONE statement for the whole page rather than two per row.  The outer join
-    is what keeps an import with no matched line in the answer: it still owns
-    lines, and an import missing from this map would render a delete control
-    claiming to remove nothing.
-
-    Args:
-        account_id: The account whose imports the page is listing.
-
-    Returns:
-        ``{import_id: RemovalPreview}``, covering every import that still owns
-        at least one line.  An import owning none is absent, and the caller
-        supplies the empty preview -- which is the honest reading, because an
-        import that recorded nothing new removes nothing when it goes.
-    """
-    rows = (
-        _owned_lines(account_id)
-        .outerjoin(
-            StatementMatchMember,
-            StatementMatchMember.bank_statement_line_id == BankStatementLine.id,
-        )
-        .with_entities(
-            BankStatementLine.import_id,
-            db.func.count(db.distinct(BankStatementLine.id)),
-            db.func.count(db.distinct(StatementMatchMember.match_id)),
-        )
-        .group_by(BankStatementLine.import_id)
-        .all()
-    )
-    return {
-        row[0]: RemovalPreview(lines=row[1], matches=row[2]) for row in rows
-    }
-
-
 def delete_import(
     import_id: int, owner_id: int, account_id: int,
 ) -> ImportRemoval:
@@ -276,11 +174,16 @@ def delete_import(
     period_end = statement_import.period_end
 
     lines_removed = (
-        _owned_lines(account_id)
-        .filter(BankStatementLine.import_id == import_id)
-        .count()
+        db.session.query(db.func.count(BankStatementLine.id))
+        .filter(
+            BankStatementLine.import_id == import_id,
+            BankStatementLine.account_id == account_id,
+        )
+        .scalar()
     )
-    match_ids = _matches_naming(import_id, account_id)
+    # The SAME read the page previews with, so a confirmation cannot count
+    # differently from the act it confirms.
+    match_ids = matches_by_import(account_id).get(import_id, [])
     for match_id in match_ids:
         release_match(match_id, owner_id, account_id)
 
@@ -295,7 +198,7 @@ def delete_import(
     identity_forgotten = forget_identity_if_last(account_id, source_id)
     db.session.flush()
 
-    removal = ImportRemoval(
+    return ImportRemoval(
         import_id=import_id,
         file_name=file_name,
         period_start=period_start,
@@ -304,15 +207,3 @@ def delete_import(
         matches_released=len(match_ids),
         identity_forgotten=identity_forgotten,
     )
-    log_event(
-        _logger, logging.INFO, EVT_STATEMENT_IMPORT_DELETED, BUSINESS,
-        "A recorded statement import was deleted.",
-        user_id=owner_id, account_id=account_id, import_id=import_id,
-        file_name=file_name,
-        period_start=period_start.isoformat(),
-        period_end=period_end.isoformat(),
-        lines_removed=lines_removed,
-        matches_released=len(match_ids),
-        identity_forgotten=identity_forgotten,
-    )
-    return removal

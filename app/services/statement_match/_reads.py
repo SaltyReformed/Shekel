@@ -37,7 +37,13 @@ from ._candidates import (
     unmatched_destinations,
     unmatched_rows,
 )
-from ._offers import BankLine, CandidateRow, MatchProposal, PurchaseDestination
+from ._offers import (
+    BankLine,
+    CandidateRow,
+    MatchProposal,
+    PurchaseDestination,
+    envelope_answer_key,
+)
 from ._placement import Placement, placements_for
 from ._policy import PolicyView
 from ._propose import propose
@@ -467,8 +473,16 @@ def _marked_joining(
     know what another line in the same pass will do.
 
     Walked in the order the lines are given, which is the order the sweep
-    applies them, so the line flagged as the CREATOR is the one that will
-    actually create.
+    applies them, so under the SWEEP -- which ticks a whole class -- the line
+    left unflagged is the one that creates.
+
+    **It reads what is OFFERED, not what the owner will tick**, and the
+    distinction is real: every select opens on *leave this line alone*, so if
+    they hand-pick a flagged line and leave the unflagged one alone, the line
+    told "an earlier line here already creates it" is the line that creates.
+    The outcome is still one envelope per answer per period, so no money turns
+    on it; what the sentence can be wrong about is WHICH line does the
+    creating.  Named by two adversarial reviews 2026-08-20.
 
     Args:
         creatable: The pass's offerable outflows, in order.
@@ -482,10 +496,8 @@ def _marked_joining(
     for line in creatable:
         placement = line.placement
         if placement is not None and placement.creates:
-            key = (
-                placement.new_envelope.name,
-                placement.new_envelope.category_id,
-                line.pay_period_id,
+            key = envelope_answer_key(
+                placement.new_envelope, line.pay_period_id,
             )
             if key in creating:
                 line = replace(

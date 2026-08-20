@@ -1,6 +1,7 @@
 """One shape for every statement write door: act, commit, or say what stopped it.
 
-The three doors the statement pages own -- import a file, accept a match,
+The doors the statement pages own -- import a file, delete an import, accept a
+match, apply a whole reviewed pass,
 release one -- share their whole failure story and differ only in the act and
 in what to say when it worked.  Writing that story per door is what pylint's
 cross-file ``duplicate-code`` reported when the second one landed, and the
@@ -103,3 +104,72 @@ def run_statement_door(
     message, category = on_success(result)
     flash(message, category)
     return redirect(ctx.target)
+
+
+def _messages(errors, path=()):
+    """Yield every message in a Marshmallow error structure, WITH its path.
+
+    **A LIST field's errors are keyed by INDEX, not flat**, so
+    ``{"matches": {0: {"line_ids": {0: ["Not a valid id."]}}}}`` is the
+    ordinary shape here rather than an exotic one -- and a flattener assuming
+    ``{field: [str]}`` raises ``TypeError`` inside the handler that exists to
+    render a refusal.  It is also why ``error_fragments.flatten_schema_errors``
+    is not used: that helper's own contract is the flat shape, and one reviewed
+    pass nests three levels deep.
+
+    **The PATH travels with the message, and dropping it was a real cost at
+    this volume.**  Marshmallow reports one entry per bad value, so a stale
+    page with forty unparseable ids rendered ``Not a valid id.; Not a valid
+    id.; ...`` forty times -- no item named, no remedy, and nothing the owner
+    could act on.  Named by adversarial design review 2026-08-19.
+
+    Args:
+        errors: A Marshmallow error value -- a mapping, a list, or a message.
+        path: The keys walked to reach it, innermost last.
+
+    Yields:
+        ``(path, message)`` for each leaf, in the order marshmallow reports
+        them.
+    """
+    if isinstance(errors, dict):
+        for key, value in errors.items():
+            yield from _messages(value, path + (key,))
+    elif isinstance(errors, (list, tuple)):
+        for value in errors:
+            yield from _messages(value, path)
+    else:
+        yield path, str(errors)
+
+
+def refusal_sentence(errors) -> str:
+    """Return one sentence naming what a schema refused, and where.
+
+    **Stated once for every statement door**, because the import page had grown
+    its own spelling twice over -- a byte-identical ``"; ".join(...)`` across
+    the values, which loses which FIELD each message came from and repeats a
+    message a nested schema raised per item.  This is the review screen's
+    version, which its sibling delete door already used, moved to where all of
+    them can reach it; pylint's cross-file ``duplicate-code`` named the copy,
+    and the copy was the worse one.
+
+    **De-duplicated on the MESSAGE and counted**, because forty copies of one
+    sentence is not forty facts.  Each distinct message names the items it came
+    from, so an owner is told which ticked thing to untick rather than that
+    something, somewhere, is invalid.
+
+    Args:
+        errors: Marshmallow's ``validate()`` structure.
+
+    Returns:
+        The banner text.
+    """
+    by_message: "dict[str, list[str]]" = {}
+    for path, message in _messages(errors):
+        where = ".".join(str(part) for part in path)
+        by_message.setdefault(message, [])
+        if where and where not in by_message[message]:
+            by_message[message].append(where)
+    parts = []
+    for message, places in by_message.items():
+        parts.append(f"{message} ({', '.join(places)})" if places else message)
+    return "; ".join(parts)

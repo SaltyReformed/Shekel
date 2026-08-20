@@ -81,11 +81,7 @@ from ._candidates import (
     matched_subjects,
     unmatched_destinations,
 )
-from ._create import (
-    CreatedPurchase,
-    MintedEnvelopes,
-    create_purchase_from_line,
-)
+from ._create import CreatedPurchase, create_purchase_from_line
 from ._offers import (
     NEW_ENVELOPE,
     BankLine,
@@ -140,7 +136,6 @@ __all__ = [
     "MerchantSection",
     "MerchantSummary",
     "MatchProposal",
-    "MintedEnvelopes",
     "MatchSubmission",
     "NewEnvelope",
     "Placement",

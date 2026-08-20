@@ -721,10 +721,9 @@ def destinations_for(
         PurchaseDestination(
             transaction_id=txn.id,
             name=txn.name,
-            label=(
-                f"{txn.name} "
-                f"({txn.pay_period.start_date} - {txn.pay_period.end_date})"
-            ),
+            category_id=txn.category_id,
+            period_start=txn.pay_period.start_date,
+            period_end=txn.pay_period.end_date,
             pay_period_id=txn.pay_period_id,
             is_settled=txn.status.is_settled,
             # The row's identity ACROSS periods, which is what a merchant

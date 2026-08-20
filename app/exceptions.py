@@ -518,16 +518,34 @@ class StatementAccountMismatch(StatementImportError):
         submitted: What the uploaded file calls its account.
     """
 
-    def __init__(self, recorded, submitted):
+    def __init__(self, recorded, submitted, *, claimed_elsewhere=False):
         self.recorded = recorded
         self.submitted = submitted
+        self.claimed_elsewhere = claimed_elsewhere
+        # **The repair is on whichever account HOLDS the pairing, and the two
+        # arms hold it in different places** -- so the sentence naming it is
+        # per arm rather than appended to both.  A first version appended one
+        # sentence pointing at "this account's statements page", which is right
+        # for the arm below and WRONG for the one that fires when another of
+        # the owner's accounts claims the file: there this account has no
+        # pairing at all, and deleting its imports clears nothing.  That is the
+        # arm the repair door exists for -- import into the wrong account, then
+        # try the right one -- so it was the arm the sentence had to serve.
+        # Found by adversarial security review 2026-08-20.
+        repair = (
+            "The pairing is on that other account, so that is where to clear "
+            "it: delete its imports on its own statements page and the last "
+            "one takes the pairing with it."
+            if claimed_elsewhere else
+            "If the recorded pairing is itself wrong, delete this account's "
+            "imports on its statements page: the last one takes the pairing "
+            "with it."
+        )
         super().__init__(
             f"This file is for account '{submitted}', but this Shekel account "
             f"has been imported from '{recorded}' before.  Nothing was "
             f"imported.  Choose the matching account, or check that you "
-            f"exported the right one.  If the recorded pairing is itself "
-            f"wrong, delete that account's imports on its statements page: "
-            f"the last one takes the pairing with it."
+            f"exported the right one.  {repair}"
         )
 
 
@@ -558,11 +576,16 @@ class StatementLineConflict(StatementImportError):
     bank no longer states.  Refusing puts a human in front of the only case
     where those differ.
 
+    **The two wordings it carries are EXAMPLES rather than a pairing.**  The
+    reconciliation declined to pair them, so where several stand unaccounted
+    for on each side there is no correspondence to name, and a message
+    asserting one would be a true sentence about the wrong problem.
+
     Attributes:
-        posted_on: The day the conflicting line posted.
-        amount: Its signed amount.
-        recorded: What the app already holds.
-        submitted: What the file now says.
+        posted_on: The day the conflicting lines posted.
+        amount: Their signed amount.
+        recorded: One wording the app holds that the file does not state.
+        submitted: One the file states that the app does not hold.
     """
 
     def __init__(self, posted_on, amount, recorded, submitted):
@@ -571,10 +594,11 @@ class StatementLineConflict(StatementImportError):
         self.recorded = recorded
         self.submitted = submitted
         super().__init__(
-            f"The line on {posted_on} for {amount} was already recorded as "
-            f"'{recorded}' and this file states '{submitted}'.  Nothing was "
-            f"imported.  A statement line is a record of what your bank "
-            f"showed, so the app will not overwrite one.  If the recorded "
-            f"line is the wrong one, delete the import that recorded it on "
-            f"the statements page and import this file again."
+            f"On {posted_on} this file states '{submitted}' for {amount}, "
+            f"which this account does not hold -- while it holds '{recorded}' "
+            f"for that day and amount, which this file does not state.  "
+            f"Nothing was imported.  A statement line is a record of what your "
+            f"bank showed, so the app will not overwrite one.  If the recorded "
+            f"line is the wrong one, delete the import that recorded it on the "
+            f"statements page and import this file again."
         )

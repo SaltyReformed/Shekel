@@ -53,6 +53,7 @@ from app.exceptions import StatementImportError, ValidationError
 from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts._statement_doors import (
     StatementDoorContext,
+    refusal_sentence,
     run_statement_door,
 )
 from app.routes.accounts._cash_page import load_cash_account_or_404
@@ -70,7 +71,12 @@ from app.services.statement_import import (
     recorded_span,
 )
 from app.utils.auth_helpers import require_owner
-from app.utils.log_events import BUSINESS, EVT_STATEMENT_IMPORTED, log_event
+from app.utils.log_events import (
+    BUSINESS,
+    EVT_STATEMENT_IMPORT_DELETED,
+    EVT_STATEMENT_IMPORTED,
+    log_event,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -180,14 +186,7 @@ def import_statement(account_id):
 
     errors = _upload_schema.validate(request.form)
     if errors:
-        flash(
-            "; ".join(
-                message
-                for messages in errors.values()
-                for message in messages
-            ),
-            "warning",
-        )
+        flash(refusal_sentence(errors), "warning")
         return redirect(target)
     source = StatementSourceEnum(_upload_schema.load(request.form)["source"])
 
@@ -254,8 +253,8 @@ def import_statement(account_id):
     )
 
 
-def _removal_flash(removal):
-    """Return the flash text and category for a completed delete.
+def _removal_flash(account_id: int, removal) -> tuple:
+    """Log the business event and return the flash, AFTER the commit.
 
     **It reports what was actually removed rather than "done".**  A destructive
     act whose report is a single word leaves the owner unable to tell a no-op
@@ -264,12 +263,30 @@ def _removal_flash(removal):
     pairing.  Every figure here was counted as the act ran, because afterwards
     the rows are gone.
 
+    **The event is emitted HERE rather than in the service**, because a
+    business event asserting that an import was destroyed must not sit in the
+    log when the transaction that would have destroyed it failed.  This is the
+    ``_report`` shape ``import_statement`` uses, on the door where a false
+    entry costs most.
+
     Args:
+        account_id: The account the import belonged to.
         removal: The :class:`~app.services.statement_import.ImportRemoval`.
 
     Returns:
         ``(message, category)``.
     """
+    log_event(
+        _logger, logging.INFO, EVT_STATEMENT_IMPORT_DELETED, BUSINESS,
+        "A recorded statement import was deleted.",
+        user_id=current_user.id, account_id=account_id,
+        import_id=removal.import_id, file_name=removal.file_name,
+        period_start=removal.period_start.isoformat(),
+        period_end=removal.period_end.isoformat(),
+        lines_removed=removal.lines_removed,
+        matches_released=removal.matches_released,
+        identity_forgotten=removal.identity_forgotten,
+    )
     released = (
         f"  {removal.matches_released} accepted match(es) were undone, so "
         f"their rows can be matched again -- the days those matches corrected "
@@ -327,14 +344,7 @@ def delete_statement_import(account_id):
     payload = form_payload(request.form, _delete_schema)
     errors = _delete_schema.validate(payload)
     if errors:
-        flash(
-            "; ".join(
-                message
-                for messages in errors.values()
-                for message in messages
-            ),
-            "warning",
-        )
+        flash(refusal_sentence(errors), "warning")
         return redirect(target)
 
     import_id = _delete_schema.load(payload)["import_id"]
@@ -351,5 +361,5 @@ def delete_statement_import(account_id):
             target=target,
         ),
         lambda: delete_import(import_id, current_user.id, account.id),
-        _removal_flash,
+        lambda removal: _removal_flash(account.id, removal),
     )

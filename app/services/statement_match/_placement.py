@@ -281,11 +281,23 @@ def _new_envelope_placement(
                 f"it until you answer for {merchant} again."
             ),
         )
-    # The NAME, never the label: the label appends the pay-period span for a
-    # reader, and a rule matching on it would be matching on the span too.
+    # **The whole answer, never just its name.**  A policy's answer is a name
+    # AND a category, and the within-press registry keys on both -- so matching
+    # the name alone here made the two halves of one rule disagree, and would
+    # have filed spending into a same-named envelope under a category the owner
+    # did not pick.  The label is not compared either: it appends the
+    # pay-period span for a reader.
+    # **A TEMPLATE-generated row is excluded**, because naming a template is a
+    # DIFFERENT answer with its own resolution beside this one
+    # (:func:`_template_placement`, including its "this period holds two of
+    # them" report).  An owner who means the recurring envelope has that answer
+    # available and did not pick it; converging onto it here would make the two
+    # answers indistinguishable in effect.
     named = [
         destination for destination in offered
         if destination.name == policy.envelope_name
+        and destination.category_id == policy.category_id
+        and destination.template_id is None
     ]
     if len(named) == 1:
         return Placement(

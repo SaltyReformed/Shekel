@@ -91,7 +91,9 @@ def _destination(txn, *, is_settled=False):
     return PurchaseDestination(
         transaction_id=txn.id,
         name=txn.name,
-        label=f"{txn.name} (a period)",
+        category_id=txn.category_id,
+        period_start=txn.pay_period.start_date,
+        period_end=txn.pay_period.end_date,
         pay_period_id=txn.pay_period_id,
         is_settled=is_settled,
         template_id=txn.template_id,
@@ -1419,6 +1421,7 @@ class TestANewEnvelopeAnswerReusesOneOfThatNameHere:
         category = seed_user["categories"]["Groceries"]
         existing = a_transaction(
             seed_user, name="Home Improvement", is_envelope=True,
+            template=False,
         )
         policy = MerchantPolicy(
             merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
@@ -1443,7 +1446,9 @@ class TestANewEnvelopeAnswerReusesOneOfThatNameHere:
         ruling R-FX made creating one an answer at all.
         """
         category = seed_user["categories"]["Groceries"]
-        other = a_transaction(seed_user, name="Groceries", is_envelope=True)
+        other = a_transaction(
+            seed_user, name="Groceries", is_envelope=True, template=False,
+        )
         policy = MerchantPolicy(
             merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
             envelope_name="Home Improvement", category_id=category.id,
@@ -1469,13 +1474,12 @@ class TestANewEnvelopeAnswerReusesOneOfThatNameHere:
         category = seed_user["categories"]["Groceries"]
         one = a_transaction(
             seed_user, name="Home Improvement", is_envelope=True,
+            template=False,
         )
         two = a_transaction(
             seed_user, name="Home Improvement", amount="1.00",
-            is_envelope=True,
+            is_envelope=True, template=False,
         )
-        two.name = "Home Improvement"
-        db.session.flush()
         policy = MerchantPolicy(
             merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
             envelope_name="Home Improvement", category_id=category.id,
@@ -1490,6 +1494,69 @@ class TestANewEnvelopeAnswerReusesOneOfThatNameHere:
         assert "already holds 2 of them" in placement.unresolved_reason
         assert placement.select_value is None
 
+    def test_a_same_named_envelope_under_ANOTHER_category_is_NOT_reused(
+        self, app, db, seed_user,
+    ):
+        """MONEY-ADJACENT FIRING CONTROL: a policy names a name AND a category.
+
+        Reusing on the name alone would file this merchant's spending under a
+        category the owner did not pick -- which is what every spending report
+        groups by, and what the within-press registry already keys on.  A first
+        draft of this arm compared the name alone, so the two halves of one
+        rule disagreed; found by adversarial design review 2026-08-20.
+        """
+        answered = seed_user["categories"]["Groceries"]
+        other = next(
+            category for name, category in seed_user["categories"].items()
+            if name != "Groceries"
+        )
+        existing = a_transaction(
+            seed_user, name="Home Improvement", is_envelope=True,
+            template=False, category=other,
+        )
+        policy = MerchantPolicy(
+            merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
+            envelope_name="Home Improvement", category_id=answered.id,
+        )
+
+        placement = placements_for(
+            "Lowe's",
+            _view(policy, categories={answered.id, other.id}),
+            [_destination(existing)],
+        )
+
+        assert placement.kind is PlacementKind.CREATE_NEW
+        assert placement.new_envelope.category_id == answered.id
+
+    def test_a_same_named_TEMPLATE_row_is_NOT_reused(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL: naming a template is a DIFFERENT answer.
+
+        It has its own resolution beside this one, including the "this pay
+        period holds two of them, pick the one you mean" report that a
+        recurring definition needs.  An owner who means the recurring envelope
+        has that answer available and did not choose it, so converging onto it
+        here would make the two answers indistinguishable in effect -- and
+        would silently bypass the reporting.
+        """
+        category = seed_user["categories"]["Groceries"]
+        generated = a_transaction(
+            seed_user, name="Home Improvement", is_envelope=True,
+        )
+        assert generated.template_id is not None
+        policy = MerchantPolicy(
+            merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
+            envelope_name="Home Improvement", category_id=category.id,
+        )
+
+        placement = placements_for(
+            "Lowe's", _view(policy, categories={category.id}),
+            [_destination(generated)],
+        )
+
+        assert placement.kind is PlacementKind.CREATE_NEW
+
     def test_it_matches_the_NAME_and_not_the_label(
         self, app, db, seed_user,
     ):
@@ -1502,6 +1569,7 @@ class TestANewEnvelopeAnswerReusesOneOfThatNameHere:
         category = seed_user["categories"]["Groceries"]
         existing = a_transaction(
             seed_user, name="Home Improvement", is_envelope=True,
+            template=False,
         )
         offered = _destination(existing)
         assert offered.label != offered.name
@@ -1532,6 +1600,7 @@ class TestANewEnvelopeAnswerReusesOneOfThatNameHere:
         category = seed_user["categories"]["Groceries"]
         existing = a_transaction(
             seed_user, name="Home Improvement", is_envelope=True,
+            template=False,
         )
         policy = MerchantPolicy(
             merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,

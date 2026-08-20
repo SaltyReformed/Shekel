@@ -40,11 +40,29 @@ ordering.  Verified against a production clone with the constraint already
 changed: deleting the account left 0 accounts, 0 imports, 0 lines, 0 matches,
 0 members and 0 identities, with no error.
 
-**Reversible and data-lossless.**  The downgrade restores ``ON DELETE
-CASCADE``.  Neither direction reads or writes a row: this is a constraint
-definition, and no existing row can violate the stricter form -- every member
-naming a line names one that exists, which is what the foreign key already
-guaranteed under CASCADE.
+**It REPAIRS before it constrains, and that half was missing.**  A foreign key
+validates dangling REFERENCES; it cannot see a match with ZERO line members,
+because that is an absence rather than a violation.  So the constraint is
+forward-only: it stops the state being produced and says nothing about rows
+that already carry it -- and the recipe is printed in this docstring's own
+measurement above.  It is reachable on any database where someone ran the SQL
+the pre-repair ``StatementLineConflict`` message invited ("this needs a human
+before anything overwrites it").  The upgrade therefore deletes any act that
+holds no bank line, which is exactly what ``release_match`` would do to it and
+what frees the app rows ``matched_subjects`` is otherwise still claiming.
+
+Measured on the 2026-08-20 production clone before writing it: **0 such acts**
+(production holds 0 imports and 0 matches), so the statement is a no-op there
+and is here for the databases that are not production.  Found by adversarial
+financial review 2026-08-20, which planted the state and showed
+``accepted_groups`` raising ``ValueError`` -- taking down the whole review
+surface for that account, with the release button that would repair it
+rendered by the function that raises.
+
+**Reversible.**  The downgrade restores ``ON DELETE CASCADE``.  It does not
+restore the deleted acts, and could not: an act with no bank line asserts
+nothing about a bank, and its members are gone with it.  ``system.audit_log``
+holds what each removed row said.
 """
 from alembic import op
 
@@ -63,8 +81,24 @@ _LOCAL = ['bank_statement_line_id', 'account_id']
 _REMOTE = ['id', 'account_id']
 
 
+#: Acts that already hold no bank line, which the new constraint cannot see.
+#:
+#: An empty side is an ABSENCE, so no foreign key can reject it -- the check is
+#: `NOT EXISTS`, and it has to run before the constraint rather than being
+#: implied by it.  Deleting the act is what ``release_match`` does, and the
+#: member rows go with it through
+#: ``fk_statement_match_members_match_account``'s own cascade.
+_REPAIR_LINELESS_ACTS = """
+DELETE FROM budget.statement_matches m
+ WHERE NOT EXISTS (
+   SELECT 1 FROM budget.statement_match_members
+    WHERE match_id = m.id AND bank_statement_line_id IS NOT NULL)
+"""
+
+
 def upgrade():
-    """Stop a bank line's deletion from silently emptying a match."""
+    """Repair any act that already lost its lines, then stop it recurring."""
+    op.execute(_REPAIR_LINELESS_ACTS)
     op.drop_constraint(
         _CONSTRAINT, _TABLE, schema='budget', type_='foreignkey',
     )

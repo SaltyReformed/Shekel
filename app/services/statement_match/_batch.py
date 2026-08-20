@@ -419,7 +419,8 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
         # a registry written one line above that refusal hands the NEXT line an
         # id the rollback has already taken.  Measured -- the sweep died on
         # ``NoneType`` -- which is why the remembering lives out here.
-        minted.remember(recorded)
+        if recorded.envelope_created:
+            minted.remember(creation.new_envelope, recorded)
         tally.recorded += 1
         tally.envelopes += 1 if recorded.envelope_created else 0
         tally.applied.append(AppliedItem(

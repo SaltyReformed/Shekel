@@ -20,6 +20,7 @@ out, no Flask import.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -34,7 +35,14 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import cash_ledger
 from app.utils.balance_predicates import is_balance_contributing
+from app.utils.log_events import (
+    ERROR,
+    EVT_STATEMENT_MATCH_LINELESS,
+    log_event,
+)
 from app.utils.money import round_money
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -134,21 +142,42 @@ def accepted_groups(
 
     groups = []
     for match in matches:
-        # **Every act has at least one line, structurally** (plan step
-        # ``bank_import:X-f6a-4``).  ``record_match`` refuses a match with an
-        # empty side, and ``fk_statement_match_members_line_account`` no longer
-        # cascades, so the database refuses to delete a line a match names --
-        # the import undo releases the match first.  There USED to be a guard
-        # here skipping a lineless act, and skipping it was the defect: such an
-        # act is invisible on this screen and yet still claims its transactions
-        # in ``matched_subjects``, so those rows could never be matched again
-        # and no release button existed to free them.  A guard cannot fix that;
-        # only making the state unrepresentable can, which is what the
-        # constraint now does.
+        # **Every act has at least one line, and the guarantee is three parts
+        # rather than one** (plan step ``bank_import:X-f6a-4``): ``record_match``
+        # refuses an empty side at the ONE writer,
+        # ``fk_statement_match_members_line_account`` no longer cascades so the
+        # database refuses to remove a line a match names, and migration
+        # ``e4a7c0f13b92`` DELETED the acts that already held none -- a foreign
+        # key cannot see an absence, so the third part is not implied by the
+        # second.
+        #
+        # There USED to be a guard here skipping a lineless act, and skipping it
+        # was the defect: such an act is invisible on this screen and yet still
+        # claims its transactions in ``matched_subjects``, so those rows could
+        # never be matched again and no release button existed to free them.
+        # The skip is BACK and it is no longer a silence: the act is logged at
+        # ERROR naming the row to delete.  Two adversarial reviews 2026-08-20
+        # measured why each of the three alternatives is worse.  Skipping
+        # SILENTLY was the original defect.  RAISING takes the whole review
+        # surface down for the account -- including the release control that
+        # would repair it -- which is the rule ``_accepted_row`` below already
+        # states for its own degraded case, in as many words: a raise here "would
+        # make the screen permanently unreachable for the account, with no
+        # in-app repair, which is finding N-302's shape".  Rendering a husk
+        # would need a group with no day, no amount and no wording, which is
+        # not a group.  So the screen stays up, the operator is told, and the
+        # state itself is what the three guarantees above prevent.
         match_lines = [
             lines[member.bank_statement_line_id] for member in match.members
             if member.bank_statement_line_id is not None
         ]
+        if not match_lines:
+            log_event(
+                _logger, logging.ERROR, EVT_STATEMENT_MATCH_LINELESS, ERROR,
+                "An accepted match names no bank line.",
+                account_id=account_id, match_id=match.id,
+            )
+            continue
         posts_on = max(line.posted_on for line in match_lines)
         rows = [
             _accepted_row(

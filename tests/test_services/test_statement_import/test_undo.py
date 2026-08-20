@@ -81,6 +81,32 @@ def _undo(seed_user, import_id):
     )
 
 
+def _rows(db, table, column, value):
+    """Return how many rows the DATABASE holds, bypassing the identity map.
+
+    ``session.get`` answers from the identity map, so an object this test
+    staged can never read back as ``None`` however the database was changed --
+    and ``StatementImport.lines`` is ``passive_deletes=True``, so a DB-tier
+    cascade never expires those instances either.  An assertion written that
+    way passes whether the row went or not; found by adversarial test-quality
+    review 2026-08-20, which deleted EVERY line on the account and watched 13
+    of these 15 cases pass.
+
+    Args:
+        db: The session fixture.
+        table: The schema-qualified table name.
+        column: The column to filter on.
+        value: Its value.
+
+    Returns:
+        The row count.
+    """
+    return db.session.execute(
+        db.text(f"SELECT count(*) FROM {table} WHERE {column} = :value"),
+        {"value": value},
+    ).scalar()
+
+
 def _match(seed_user, line, txn):
     """Accept a real match between one line and one row, through the door."""
     return statement_match.accept_match(
@@ -104,7 +130,8 @@ class TestItRemovesWhatThatImportRecorded:
 
         assert removal.lines_removed == 2
         assert db.session.query(StatementImport).count() == 0
-        assert db.session.query(BankStatementLine).count() == 0
+        assert _rows(db, "budget.bank_statement_lines", "account_id",
+                     seed_user["account"].id) == 0
 
     def test_a_line_ANOTHER_import_recorded_stays(self, app, db, seed_user):
         """A line names the import that FIRST recorded it, and only that one.
@@ -245,7 +272,7 @@ class TestItReleasesRatherThanOrphans:
 
         assert removal.matches_released == 1
         assert db.session.query(StatementMatch).count() == 0
-        assert db.session.get(BankStatementLine, kept.id) is not None
+        assert _rows(db, "budget.bank_statement_lines", "id", kept.id) == 1
         assert matched_subjects(seed_user["account"].id).lines == frozenset()
 
 
@@ -315,6 +342,29 @@ class TestItRefusesWhatIsNotThisOwnersImport:
 
         assert db.session.query(StatementImport).count() == 1
         assert db.session.query(BankStatementLine).count() == 2
+
+    def test_ANOTHER_OWNERS_import_is_refused(
+        self, app, db, seed_user, seed_second_user,
+    ):
+        """FIRING CONTROL for the OWNER half of the scope.
+
+        The account filter already implies the owner today -- ``@require_owner``
+        blocks a companion at the route -- so this arm is defence in depth, and
+        a class named for grading the scope must actually grade both halves of
+        it.  Adversarial review measured that removing the owner filter left
+        192 tests green; this is the case that turns red.
+        """
+        outcome = _import(seed_user)
+        with pytest.raises(ValidationError):
+            delete_import(
+                outcome.import_id,
+                seed_second_user["user"].id,
+                seed_user["account"].id,
+            )
+
+        assert db.session.query(StatementImport).count() == 1
+        assert _rows(db, "budget.bank_statement_lines", "account_id",
+                     seed_user["account"].id) == 2
 
     def test_a_refusal_writes_nothing(self, app, db, seed_user):
         """It refuses BEFORE it stages anything, not by rolling back."""

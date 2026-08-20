@@ -121,7 +121,10 @@
         {% endif %}
 
         {% if imports %}
-        <h6 class="text-muted text-uppercase small mt-3">Imports</h6>
+        <h6 class="text-muted text-uppercase small mt-3">
+          Imports
+          <span class="text-body-secondary text-lowercase">-- 20 most recent, newest first</span>
+        </h6>
         <div class="table-responsive">
           <table class="table table-sm align-middle mb-0">
             <thead>
@@ -142,15 +145,17 @@
                 <td class="text-nowrap font-mono small">{{ row.period_start }} .. {{ row.period_end }}</td>
                 <td class="text-end font-mono">{{ row.recorded_count }}</td>
                 <td class="text-end font-mono text-muted">{{ row.line_count }}</td>
-                {# What the confirmation states is what THIS import would remove
-                   counted NOW (row.lines_held), never what it recorded on the
-                   day it ran (row.recorded_count) -- see ImportRecord for why
-                   those are two facts. `data-confirm` is the project's own
-                   destructive-action pattern; base.html includes the modal. #}
+                {# `data-confirm` is the project's own destructive-action
+                   pattern; base.html includes the modal, and app.js sets the
+                   body with textContent, so a hostile FILE NAME cannot inject.
+                   The line count is `recorded_count`: nothing removes a bank
+                   line except its import's cascade or its account's, so a
+                   "live" count beside it could never differ -- see
+                   ImportRecord. The MATCH count is genuinely live. #}
                 <td class="text-end">
                   <form method="post" class="d-inline"
                         action="{{ url_for('accounts.delete_statement_import', account_id=account.id) }}"
-                        data-confirm="Delete the import of &quot;{{ row.file_name }}&quot;? This removes {{ row.lines_held }} bank line(s) the app has on record{% if row.matches_affected %}, and undoes {{ row.matches_affected }} accepted match(es) so their rows can be matched again{% endif %}. Settle dates a match already corrected are NOT changed. To get the lines back you would import the file again.">
+                        data-confirm="Delete the import of &quot;{{ row.file_name }}&quot;? This removes {{ row.recorded_count }} bank line(s) the app has on record{% if row.matches_affected %}, and undoes {{ row.matches_affected }} accepted match(es) so their rows can be matched again{% endif %}. Settle dates a match already corrected are NOT changed. To get the lines back you would import the file again.">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <input type="hidden" name="import_id" value="{{ row.import_id }}">
                     <button type="submit" class="btn btn-sm btn-outline-danger"

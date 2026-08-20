@@ -20,10 +20,10 @@ from app.enums import (
 )
 from app.extensions import db
 from app.models.merchant_destination import MerchantDestination
+from app.models.pay_period import PayPeriod
 from app.models.statement_import import BankStatementLine, StatementImport
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.models.pay_period import PayPeriod
 from app.models.transaction_template import TransactionTemplate
 from app.services.statement_match import ReviewScope
 
@@ -38,6 +38,8 @@ def a_transaction(
     status=StatusEnum.PROJECTED,
     is_envelope=False,
     period=None,
+    category=None,
+    template=True,
 ):
     """Stage and return one transaction on the seeded checking account.
 
@@ -58,6 +60,12 @@ def a_transaction(
         status: Its status.
         is_envelope: Whether it tracks purchases.
         period: The pay period to file it under; the bootstrap one by default.
+        category: The category it files under; Groceries by default.
+        template: Whether a recurring definition owns it.  ``False`` builds an
+            AD-HOC row (``template_id`` NULL), which is what
+            ``_create._create_envelope`` produces and therefore the only shape
+            a NEW-ENVELOPE merchant answer converges onto -- naming a template
+            is a different answer with its own resolution.
 
     Returns:
         The staged :class:`~app.models.transaction.Transaction`.
@@ -65,25 +73,29 @@ def a_transaction(
     type_id = ref_cache.txn_type_id(
         TxnTypeEnum.INCOME if income else TxnTypeEnum.EXPENSE,
     )
-    template = TransactionTemplate(
-        user_id=seed_user["user"].id,
-        account_id=seed_user["account"].id,
-        category_id=seed_user["categories"]["Groceries"].id,
-        transaction_type_id=type_id,
-        name=name,
-        default_amount=Decimal(amount),
-        is_envelope=is_envelope,
-    )
-    db.session.add(template)
-    db.session.flush()
+    category_id = (category or seed_user["categories"]["Groceries"]).id
+    template_id = None
+    if template:
+        definition = TransactionTemplate(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            category_id=category_id,
+            transaction_type_id=type_id,
+            name=name,
+            default_amount=Decimal(amount),
+            is_envelope=is_envelope,
+        )
+        db.session.add(definition)
+        db.session.flush()
+        template_id = definition.id
     txn = Transaction(
-        template_id=template.id,
+        template_id=template_id,
         pay_period_id=(period or seed_user["bootstrap_period"]).id,
         scenario_id=seed_user["scenario"].id,
         account_id=seed_user["account"].id,
         status_id=ref_cache.status_id(status),
         name=name,
-        category_id=seed_user["categories"]["Groceries"].id,
+        category_id=category_id,
         transaction_type_id=type_id,
         estimated_amount=Decimal(amount),
         is_envelope=is_envelope,

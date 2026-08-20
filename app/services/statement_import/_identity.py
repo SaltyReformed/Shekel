@@ -35,7 +35,9 @@ from app.utils.log_events import (
 _logger = logging.getLogger(__name__)
 
 
-def _recorded_for(account_id: int, source_id: int):
+def _recorded_for(
+    account_id: int, source_id: int,
+) -> "AccountExternalIdentity | None":
     """Return *account_id*'s recorded pairing at *source_id*, or ``None``.
 
     The ONE spelling of "what does this source call this account", read by the
@@ -129,6 +131,7 @@ def verify_identity(
         raise StatementAccountMismatch(
             "another of your own accounts, which has already imported it",
             external_account_id,
+            claimed_elsewhere=True,
         )
     return True
 

@@ -128,18 +128,29 @@ def group_key(posted_on: date, amount: Decimal) -> "tuple[date, Decimal]":
     **It takes the two values rather than a line** because both sides of a
     reconciliation are keyed by it -- an incoming :class:`StatementLine` and a
     recorded ``BankStatementLine`` row -- and one spelling of the key is what
-    stops the two sides from grouping differently.  The ``Decimal(str(...))``
-    normalisation is part of that: a driver handing back a value that is equal
-    but differently constructed must land in the same bucket.
+    stops the two sides from grouping differently.
+
+    **It does NOT normalise the amount, and a first version did.**  That
+    version wrapped it in ``Decimal(str(...))`` to make "a value that is equal
+    but differently constructed land in the same bucket", which is a no-op:
+    Decimal's equality is numeric and its hash follows, so ``Decimal("-4.7500")``
+    and ``Decimal("-4.75")`` are already one dict key -- measured 2026-08-20.
+    What the wrapper would have done is launder a FLOAT into a plausible wrong
+    value (``Decimal(str(0.1 + 0.2))`` is ``Decimal("0.30000000000000004")``),
+    which is the opposite of this project's ``shekel-decimal-from-float``
+    posture.  Both sides are ``Decimal`` by construction -- the parser builds
+    one from the file's text, and psycopg hands one back for a ``Numeric``
+    column -- so a float arriving is a defect that should raise, not round.
+    Found by adversarial design review 2026-08-20.
 
     Args:
         posted_on: The day the bank posted the line.
-        amount: Its signed amount.
+        amount: Its signed amount, as a ``Decimal``.
 
     Returns:
         ``(posted_on, amount)``.
     """
-    return (posted_on, Decimal(str(amount)))
+    return (posted_on, amount)
 
 
 def group_indexes(
@@ -282,11 +293,22 @@ def fresh_ordinals(taken: "Iterable[int]", count: int) -> "list[int]":
     rather than "this line's position in the file": a new line the bank listed
     FIRST is still the group's next member, not its first.
 
-    Counting from the maximum rather than filling gaps is deliberate.  A gap
-    can exist -- plan step ``bank_import:X-f6a-4`` gives an import a delete
-    door, which takes its lines with it -- and re-using a freed ordinal would
-    hand a later, unrelated line the identity a deleted one had, which is the
-    one thing a surrogate must not do while an audit trail cites rows by it.
+    **What it guarantees is exactly: an ordinal no SURVIVING member of the
+    group holds** -- which is all `uq_bank_statement_lines_identity` needs and
+    all a caller may rely on.  It counts above the maximum rather than filling
+    gaps, so an INTERIOR gap a delete left is not re-used; a gap at the TOP of
+    the range IS re-used, because the maximum moves down with it.
+
+    **A first version claimed it never re-used a freed ordinal at all, and that
+    was false for the ordinary shape** -- undoing the most recent import -- with
+    a test that happened to pin the interior case.  Measured 2026-08-20:
+    ``fresh_ordinals([0, 2], 2)`` is ``[3, 4]`` and ``fresh_ordinals([0], 1)``
+    is ``[1]``, the address a deleted line held.  The claim was withdrawn
+    rather than the code changed, because nothing depends on it: the ordinal is
+    a surrogate that addresses a row WITHIN its group, and what cites a row
+    outside the group -- ``system.audit_log.row_id``, every foreign key -- cites
+    the primary key, which a sequence never re-uses.  Found by adversarial
+    design review 2026-08-20.
 
     Args:
         taken: The ordinals this group's recorded lines already hold.  Empty on

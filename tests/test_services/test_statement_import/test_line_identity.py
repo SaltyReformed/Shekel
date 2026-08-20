@@ -104,19 +104,27 @@ class TestTheGroupIsWhatTheBankStated:
         """Total over the empty input rather than raising on it."""
         assert group_indexes([]) == {}
 
-    def test_the_key_normalises_the_amount(self):
-        """Both sides of a reconciliation must land in the same bucket.
+    def test_two_equal_decimals_bucket_together_without_normalising(self):
+        """Both sides of a reconciliation land in the same bucket already.
 
         The incoming amount is a ``Decimal`` the parser built from the file's
         text; the recorded one comes back from a ``Numeric(12, 2)`` column.  A
         key that bucketed them separately would call every recorded line
-        unaccounted for and every incoming line new, which turns one re-import
-        into a duplicate of the whole span.
+        unaccounted for and every incoming line new, turning one re-import into
+        a duplicate of the whole span.
+
+        **It holds without a normalising wrapper, which is why there is not
+        one.**  Decimal's equality is numeric and its hash follows, so the two
+        spellings are one dict key -- and a first version wrapped the amount in
+        ``Decimal(str(...))`` to "make" that true, which changed nothing and
+        would have laundered a float into a plausible wrong value.  This case
+        asserts the property the code relies on rather than the wrapper it does
+        not have; it cannot fire on the wrapper's absence, and that is the
+        point.
         """
-        assert (
-            group_key(date(2026, 3, 2), Decimal("-4.7500"))
-            == group_key(date(2026, 3, 2), Decimal("-4.75"))
-        )
+        bucketed = {group_key(date(2026, 3, 2), Decimal("-4.7500")): "a"}
+
+        assert group_key(date(2026, 3, 2), Decimal("-4.75")) in bucketed
 
     def test_the_group_excludes_the_description(self):
         """A richer description of the SAME line must not re-group it.
@@ -286,15 +294,31 @@ class TestTheOrdinalIsMintedAndNeverReused:
         """A new line the bank listed FIRST is still the group's NEXT member."""
         assert fresh_ordinals([0, 1], 1) == [2]
 
-    def test_it_does_NOT_fill_a_gap_a_deleted_line_left(self):
-        """An ordinal is an address the audit trail cites by.
+    def test_it_does_NOT_fill_an_INTERIOR_gap_a_deleted_line_left(self):
+        """Counting above the maximum leaves a hole in the middle alone.
 
         Plan step X-f6a-4 gives an import a delete door, so a group can hold
-        ``[0, 2]`` with 1 freed.  Re-using 1 would hand an unrelated later line
-        the identity a deleted one had, and ``system.audit_log`` would show one
-        address carrying two different lines with nothing saying they differ.
+        ``[0, 2]`` with 1 freed.
         """
         assert fresh_ordinals([0, 2], 2) == [3, 4]
+
+    def test_it_DOES_reuse_a_gap_at_the_TOP_of_the_range(self):
+        """The honest bound: an ordinal free of every SURVIVING member.
+
+        **This pins what the code does, and a first version claimed the
+        opposite.**  The docstring said a freed ordinal is never re-used, with
+        only the interior case above to hold it -- and the top-of-range gap is
+        the ORDINARY shape, because it is what undoing the most recent import
+        leaves.  Measured 2026-08-20: ``[0]`` mints ``1``, the address the
+        deleted line held.
+
+        Nothing depends on the stronger claim, which is why the claim went
+        rather than the code: the ordinal addresses a row WITHIN its group, and
+        everything that cites a row from outside -- ``system.audit_log.row_id``,
+        every foreign key -- cites the primary key, which a sequence never
+        re-uses.  Found by adversarial design review 2026-08-20.
+        """
+        assert fresh_ordinals([0], 1) == [1]
 
     def test_it_mints_nothing_when_nothing_is_fresh(self):
         """A whole group already held mints no ordinal at all."""

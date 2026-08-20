@@ -30,12 +30,12 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db as _db
 from app.models.statement_match import StatementMatch
 from app.models.transaction import Transaction
-from app.services import balance_at, statement_match
+from app.services import balance_at, cash_ledger, statement_match
 from app.services.posting_reads import PostingError
 from app.services.statement_match import (
     MatchSubmission,
@@ -43,6 +43,12 @@ from app.services.statement_match import (
     PurchaseCreation,
     ReviewedBatch,
 )
+
+# Pylint: protected-access -- MintedEnvelopes is an internal collaboration
+# between two PRIVATE modules of this package and has no importer outside
+# it, so exporting it would be the surface rule 13 forbids; a test for a
+# module reaches into it, which is the allowance every sibling here takes.
+from app.services.statement_match import _create  # pylint: disable=protected-access
 
 from ._builders import (
     a_bank_line,
@@ -1092,15 +1098,20 @@ class TestABatchBooksWhatTheSameActsBookOneAtATime:
                 _db.session.flush()
             for creation in creations:
                 # Its OWN registry per call, because acting one at a time is
-                # several REQUESTS: the batch converges same-answer creations
-                # onto one envelope per pay period (finding **N-327**) and
-                # separate requests cannot.  That the two still agree TO THE
-                # CENT is the measurement that convergence moves no money --
-                # each purchase carries its own posting day and is its own
-                # cash movement, so an envelope's own leg is `0.00` either way.
+                # several REQUESTS and a request is the registry's scope.
+                # **This control does NOT measure convergence** and a comment
+                # here once claimed it did: its fixture holds a single creation
+                # naming an EXISTING envelope, so neither path consults the
+                # registry and both create zero envelopes.  Two adversarial
+                # reviews measured that independently 2026-08-20.  What does
+                # measure it is
+                # ``TestConvergingMovesTheSameMoneyAsNotConverging`` below,
+                # which needs its own fixture and its own comparison because
+                # the row-count comparison here is exactly what convergence is
+                # SUPPOSED to change.
                 singly_did.append(statement_match.create_purchase_from_line(
                     creation, a_scope(seed_user),
-                    statement_match.MintedEnvelopes.none_yet(),
+                    _create.MintedEnvelopes.none_yet(),
                 ))
                 _db.session.flush()
             singly = self._money(db, seed_user, account)
@@ -1339,3 +1350,228 @@ class TestOnePressMintsOneEnvelopePerAnswerPerPeriod:
         assert [entry.amount for entry in envelope.entries] == [
             Decimal("45.00"),
         ]
+
+
+class TestAConvergedEnvelopeClosesOnTheLatestDayItHolds:
+    """Finding from adversarial financial review 2026-08-20.
+
+    A press mints ONE envelope per answer per pay period, and the second line
+    to reach it used to leave the container recording the FIRST line's posting
+    day.  Measured before the fix: two lines in one period submitted 01-05 then
+    01-09 closed the envelope on **2024-01-05 while it held `$45.00` the bank
+    did not take until 01-09**, and submitting them the other way round
+    recorded 01-09 -- so the close day was whichever line happened to be filed
+    first.
+
+    **No figure moved either way** (each purchase carries its own posting day,
+    so the envelope's own cash leg is `0.00`), which is why no balance
+    assertion could see it.  What was wrong is that a row recorded closing
+    before money it holds.  The rule applied is this arc's own for a group:
+    a match's day is ``max(posted_on)`` over its lines.
+    """
+
+    def _sweep(self, seed_user, days, name="Home Improvement"):
+        """Record one line per day in *days*, in that order, under one answer."""
+        statement = an_import(seed_user)
+        category = seed_user["categories"]["Groceries"]
+        answer = NewEnvelope(name=name, category_id=category.id)
+        lines = [
+            a_bank_line(
+                seed_user, statement, amount=amount, posted_on=day,
+                description=f"LOWES {amount}",
+            )
+            for amount, day in days
+        ]
+        return _batch(seed_user, creations=[
+            _creation(seed_user, line, new_envelope=answer) for line in lines
+        ])
+
+    def test_it_closes_on_the_LATEST_day_whichever_order_they_arrive(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL, and the order-independence is the point.
+
+        The two submissions differ only in which line is filed first, and the
+        recorded close day must not.
+        """
+        first = seed_user["bootstrap_period"].start_date + timedelta(days=1)
+        later = first + timedelta(days=4)
+
+        self._sweep(seed_user, [("-30.00", first), ("-45.00", later)])
+        db.session.flush()
+        ascending = db.session.query(Transaction).filter_by(
+            name="Home Improvement",
+        ).one()
+
+        assert ascending.settled_on == later
+
+    def test_the_order_does_not_decide_the_close_day(
+        self, app, db, seed_user,
+    ):
+        """The same two lines, filed newest first."""
+        first = seed_user["bootstrap_period"].start_date + timedelta(days=1)
+        later = first + timedelta(days=4)
+
+        self._sweep(seed_user, [("-45.00", later), ("-30.00", first)])
+        db.session.flush()
+        descending = db.session.query(Transaction).filter_by(
+            name="Home Improvement",
+        ).one()
+
+        assert descending.settled_on == later
+
+    def test_re_closing_it_moves_NO_cash_leg_of_its_own(
+        self, app, db, seed_user,
+    ):
+        """MONEY: re-stamping the close day must not move a figure.
+
+        The envelope settles from its own entries and every purchase carries
+        the day the bank took it, so the container contributes nothing itself
+        -- before the re-close and after it.
+        """
+        first = seed_user["bootstrap_period"].start_date + timedelta(days=1)
+        later = first + timedelta(days=4)
+        before = _balance(seed_user, later + timedelta(days=2))
+
+        self._sweep(seed_user, [("-30.00", first), ("-45.00", later)])
+        db.session.flush()
+
+        envelope = db.session.query(Transaction).filter_by(
+            name="Home Improvement",
+        ).one()
+        assert cash_ledger.settled_cash_leg(envelope) == Decimal("0.00")
+        assert _balance(seed_user, later + timedelta(days=2)) == (
+            before - Decimal("75.00")
+        )
+
+    def test_an_EXISTING_envelope_keeps_its_own_close_day(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL against over-correcting.
+
+        A row the owner already closed is THEIR record.  Recording a purchase
+        into it is the shipped destination arm and it leaves that day alone; a
+        rule that re-dated it here would edit the owner's record rather than
+        complete this press's own.
+        """
+        closed_on = seed_user["bootstrap_period"].start_date + timedelta(days=1)
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="500.00", is_envelope=True,
+            settled_on=closed_on,
+        )
+        envelope.settled_basis_id = ref_cache.settlement_basis_id(
+            SettlementBasisEnum.PURCHASES,
+        )
+        envelope.settled_amount = None
+        envelope.status_id = ref_cache.status_id(StatusEnum.DONE)
+        db.session.flush()
+        statement = an_import(seed_user)
+        line = a_bank_line(
+            seed_user, statement, amount="-20.00",
+            posted_on=closed_on + timedelta(days=5), description="LATER",
+        )
+
+        _batch(seed_user, creations=[
+            _creation(seed_user, line, transaction_id=envelope.id),
+        ])
+        db.session.flush()
+
+        db.session.refresh(envelope)
+        assert envelope.settled_on == closed_on
+
+
+class TestConvergingMovesTheSameMoneyAsNotConverging:
+    """The money half of finding **N-327**, measured rather than asserted.
+
+    A press mints ONE envelope per answer per pay period.  The claim that the
+    convergence is money-neutral was stated in three docstrings and graded by
+    nothing until two adversarial reviews said so 2026-08-20 -- the
+    batch-versus-one-at-a-time control could not see it (its fixture creates no
+    envelope at all), and the direct balance case passes with convergence
+    disabled, because two envelopes holding one purchase each and one envelope
+    holding two both take the same cash.
+
+    **So this compares the two paths on what convergence must PRESERVE and
+    deliberately not on what it must CHANGE.**  Balances, ledger postings and
+    the purchases themselves must be identical; the number of budget rows is
+    the thing that differs, and comparing it would grade the fixture rather
+    than the money.
+    """
+
+    def _facts(self, db, seed_user, days):
+        """Return the money facts both paths must agree on."""
+        account = seed_user["account"]
+        ctx = balance_at.BalanceContext.build(seed_user["user"].id)
+        entries = _db.session.execute(_db.text(
+            "SELECT e.description, e.amount, e.purchased_on, e.settled_on"
+            "  FROM budget.transaction_entries e"
+            " ORDER BY e.amount, e.settled_on"
+        )).all()
+        postings = _db.session.execute(_db.text(
+            "SELECT l.name, e.entry_date, SUM(p.amount)"
+            "  FROM budget.account_postings p"
+            "  JOIN budget.journal_entries e ON e.id = p.journal_entry_id"
+            "  JOIN budget.ledger_accounts l ON l.id = p.ledger_account_id"
+            " GROUP BY l.name, e.entry_date"
+            " ORDER BY l.name, e.entry_date"
+        )).all()
+        return {
+            "balances": {
+                day.isoformat(): str(
+                    balance_at.cash_balance_at(account, ctx, day),
+                )
+                for day in days
+            },
+            "entries": [tuple(str(v) for v in row) for row in entries],
+            "postings": [tuple(str(v) for v in row) for row in postings],
+        }
+
+    def test_the_two_paths_book_the_same_money(self, app, db, seed_user):
+        """FIRING CONTROL for the money claim, on a fixture that converges."""
+        statement = an_import(seed_user)
+        category = seed_user["categories"]["Groceries"]
+        answer = NewEnvelope(name="Home Improvement", category_id=category.id)
+        day = seed_user["bootstrap_period"].start_date + timedelta(days=2)
+        later = day + timedelta(days=3)
+        lines = [
+            a_bank_line(
+                seed_user, statement, amount="-30.00", posted_on=day,
+                description="LOWES ONE",
+            ),
+            a_bank_line(
+                seed_user, statement, amount="-45.00", posted_on=later,
+                description="LOWES TWO",
+            ),
+        ]
+        creations = [
+            _creation(seed_user, line, new_envelope=answer) for line in lines
+        ]
+        days = [day, later, later + timedelta(days=7)]
+        _db.session.flush()
+
+        converged_run = _db.session.begin_nested()
+        outcome = _batch(seed_user, creations=creations)
+        _db.session.flush()
+        assert outcome.envelopes_created == 1, "the fixture did not converge"
+        converged = self._facts(db, seed_user, days)
+        converged_run.rollback()
+        _db.session.expire_all()
+
+        separate_run = _db.session.begin_nested()
+        for creation in creations:
+            statement_match.create_purchase_from_line(
+                creation, a_scope(seed_user),
+                _create.MintedEnvelopes.none_yet(),
+            )
+            _db.session.flush()
+        assert _db.session.execute(_db.text(
+            "SELECT count(*) FROM budget.transactions"
+            " WHERE name = 'Home Improvement'"
+        )).scalar() == 2, "the un-converged path did not make two envelopes"
+        separate = self._facts(db, seed_user, days)
+        separate_run.rollback()
+        _db.session.expire_all()
+
+        assert converged["balances"] == separate["balances"]
+        assert converged["entries"] == separate["entries"]
+        assert converged["postings"] == separate["postings"]
