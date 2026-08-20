@@ -19,8 +19,12 @@ The public surface, and what each piece is for:
 * :class:`StatementLine` -- the ONE normalized line shape every adapter
   produces, so everything downstream of a parser is source-independent.
 * :func:`supported_sources` / :func:`parse_statement` -- the adapter registry.
-* :func:`assign_sequences` / :func:`line_identity` -- the identity rule, which
-  is positional and therefore serves a source carrying no id of its own.
+* :func:`group_key` / :func:`pair_by_statement` / :func:`fresh_ordinals` -- the
+  identity rule, which needs no id of the source's own.  A line's STORED key is
+  ``(account, posted_on, amount, ordinal)``; the ordinal is a SURROGATE this app
+  mints, and what decides whether an incoming line is one the app already holds
+  is the WORDING the bank stated, reconciled a group at a time (plan step
+  ``bank_import:X-f6a-4``).
 * :func:`verify_running_balance` -- the self-check a source with a running
   balance affords, and the reason the CSV was chosen over the OFX.
 * :func:`record_statement` -- the one write door, returning
@@ -41,7 +45,15 @@ from ._integrity import (
     opening_balance,
     verify_running_balance,
 )
-from ._line import KeyedLine, StatementLine, assign_sequences, line_identity
+from ._line import (
+    GroupPairing,
+    KeyedLine,
+    StatementLine,
+    fresh_ordinals,
+    group_indexes,
+    group_key,
+    pair_by_statement,
+)
 from ._reads import (
     RecordedSpan,
     SourceOption,
@@ -53,18 +65,21 @@ from ._reads import (
 from ._record import ImportOutcome, record_statement
 
 __all__ = [
+    "GroupPairing",
     "ImportOutcome",
     "KeyedLine",
     "RecordedSpan",
     "SourceOption",
     "StatementLine",
-    "assign_sequences",
     "available_sources",
     "carries_running_balance",
     "closing_balance",
+    "fresh_ordinals",
+    "group_indexes",
+    "group_key",
     "import_history",
-    "line_identity",
     "opening_balance",
+    "pair_by_statement",
     "parse_statement",
     "recent_lines",
     "record_statement",

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -45,7 +46,14 @@ from app.utils.log_events import (
 
 from ._adapters import parse_statement
 from ._integrity import closing_balance, opening_balance, verify_running_balance
-from ._line import KeyedLine, assign_sequences
+from ._line import (
+    KeyedLine,
+    StatementLine,
+    fresh_ordinals,
+    group_indexes,
+    group_key,
+    pair_by_statement,
+)
 
 _logger = logging.getLogger(__name__)
 
@@ -186,9 +194,9 @@ def _record_identity(
     ))
 
 
-def _recorded_lines(
+def _recorded_groups(
     account_id: int, period_start: date, period_end: date,
-) -> "dict[tuple[date, Decimal, int], BankStatementLine]":
+) -> "dict[tuple[date, Decimal], list[BankStatementLine]]":
     """Return this account's already-recorded lines over the file's span.
 
     Loaded as ONE query over the day range rather than one per line: a full
@@ -196,13 +204,21 @@ def _recorded_lines(
     round trips to answer a question one indexed range scan answers.
     ``idx_bank_statement_lines_account_day`` is the index it uses.
 
+    **Grouped by ``(posted_on, amount)`` rather than keyed by the full
+    identity**, which is what makes the reconciliation set-wise: the recorded
+    ordinal is a surrogate this app assigned, so a group is looked up by what
+    the BANK stated and the members inside it are then paired on their wording
+    (:func:`~._line.pair_by_statement`).
+
     Args:
         account_id: The account being imported into.
         period_start: The earliest day the file covers.
         period_end: The latest.
 
     Returns:
-        The recorded lines keyed by their account-relative identity.
+        The recorded lines grouped by the day and amount they share, each
+        group ordered by its own ordinal so the pairing walks a stable
+        sequence.
     """
     rows = (
         db.session.query(BankStatementLine)
@@ -211,20 +227,33 @@ def _recorded_lines(
             BankStatementLine.posted_on >= period_start,
             BankStatementLine.posted_on <= period_end,
         )
+        .order_by(BankStatementLine.sequence_in_group)
         .all()
     )
-    return {
-        (row.posted_on, Decimal(str(row.amount)), row.sequence_in_group): row
-        for row in rows
-    }
+    groups: "dict[tuple[date, Decimal], list[BankStatementLine]]" = defaultdict(
+        list,
+    )
+    for row in rows:
+        groups[group_key(row.posted_on, row.amount)].append(row)
+    return dict(groups)
 
 
-def _refuse_restatement(keyed: KeyedLine, recorded: BankStatementLine) -> None:
+def _refuse_restatement(
+    line: StatementLine, recorded: BankStatementLine,
+) -> None:
     """Refuse when a recorded line's own DESCRIPTION is restated.
 
     A statement line is an OBSERVATION, and an observation quietly rewritten is
     what ruling **R-FL** exists to prevent -- so the fact the source states
     ABOUT THE LINE must agree with what is already recorded.
+
+    **What reaches this is a group whose incoming and recorded halves BOTH have
+    a member the other cannot account for** (:attr:`~._line.GroupPairing
+    .restates`), which is the only shape that is a contradiction rather than a
+    change in what the export covers.  It used to be reached by a positional
+    compare, and that fired on two events the bank had not restated at all: a
+    re-ordered pair of same-day same-amount lines, and a genuinely new line the
+    bank inserted ahead of a recorded one.
 
     **The running balance is deliberately NOT compared, and that is a measured
     correction rather than a relaxation.**  A running balance is not a fact
@@ -242,21 +271,23 @@ def _refuse_restatement(keyed: KeyedLine, recorded: BankStatementLine) -> None:
     current.
 
     Args:
-        keyed: The incoming line and its ordinal.
-        recorded: The line already held at that identity.
+        line: The incoming line the file states and the app cannot account for.
+        recorded: The recorded line in the same group that the file no longer
+            states.
 
     Raises:
-        StatementLineConflict: When the descriptions disagree.
+        StatementLineConflict: Always.  The caller has already established that
+            this group restates something, so a guard here would be a second
+            copy of that decision.
     """
-    if recorded.description != keyed.line.description:
-        raise StatementLineConflict(
-            keyed.line.posted_on, keyed.line.amount,
-            recorded.description, keyed.line.description,
-        )
+    raise StatementLineConflict(
+        line.posted_on, line.amount,
+        recorded.description, line.description,
+    )
 
 
 def _absorb_gained_facts(
-    keyed: KeyedLine, recorded: BankStatementLine,
+    line: StatementLine, recorded: BankStatementLine,
 ) -> None:
     """Fill in what a later export states and the recorded row does not.
 
@@ -277,15 +308,15 @@ def _absorb_gained_facts(
     correction to apply.
 
     Args:
-        keyed: The incoming line and its ordinal.
-        recorded: The line already held at that identity.
+        line: The incoming line the file states.
+        recorded: The line already held, paired to it by wording.
     """
-    if recorded.running_balance is None and keyed.line.running_balance is not None:
-        recorded.running_balance = keyed.line.running_balance
-    if recorded.source_category is None and keyed.line.source_category:
-        recorded.source_category = keyed.line.source_category
-    if recorded.external_id is None and keyed.line.external_id:
-        recorded.external_id = keyed.line.external_id
+    if recorded.running_balance is None and line.running_balance is not None:
+        recorded.running_balance = line.running_balance
+    if recorded.source_category is None and line.source_category:
+        recorded.source_category = line.source_category
+    if recorded.external_id is None and line.external_id:
+        recorded.external_id = line.external_id
     # **The transaction day joins the same rule at plan step X-f6a-3a**, and
     # it is the one that MOVES A DATE rather than adding provenance: a match
     # writes this day onto a matched purchase's ``purchased_on`` (ruling
@@ -295,8 +326,8 @@ def _absorb_gained_facts(
     # for, on a column that feeds a date write instead of a display.  Found by
     # adversarial financial review 2026-08-18, which measured the re-import
     # leaving the column untouched.
-    if recorded.transaction_on is None and keyed.line.transaction_on is not None:
-        recorded.transaction_on = keyed.line.transaction_on
+    if recorded.transaction_on is None and line.transaction_on is not None:
+        recorded.transaction_on = line.transaction_on
     # **The merchant joins the same rule at plan step X-f6a-3d**, and it is the
     # one a RULE matches on: a line whose merchant is NULL joins no destination
     # policy, so a row recorded by an adapter that could not name a merchant
@@ -304,41 +335,69 @@ def _absorb_gained_facts(
     # that DOES name one had been imported over it.  The direction is the same
     # as every arm above -- ``NULL`` is filled, a disagreement is left alone --
     # and a disagreement cannot arrive here anyway: this merchant is read from
-    # the same cell as ``description``, which :func:`_refuse_restatement`
-    # compares first.
-    if recorded.merchant is None and keyed.line.merchant:
-        recorded.merchant = keyed.line.merchant
+    # the same cell as ``description``, which the pairing that produced this
+    # pair matched on.
+    if recorded.merchant is None and line.merchant:
+        recorded.merchant = line.merchant
 
 
 def _fresh_lines(
-    keyed_lines: "list[KeyedLine]",
-    already: "dict[tuple[date, Decimal, int], BankStatementLine]",
+    lines: "list[StatementLine]",
+    already: "dict[tuple[date, Decimal], list[BankStatementLine]]",
 ) -> "list[KeyedLine]":
     """Return the lines not already recorded, refusing any restatement.
 
-    The partition is total: every incoming line is either new or is one the app
-    already holds, and the second arm is checked rather than assumed
-    (:func:`_refuse_restatement`).
+    **The partition is total and it is decided per GROUP**, not per line.  Every
+    incoming line either pairs with one the app already holds -- by the wording
+    the bank stated, which is the only thing about a line the bank authored --
+    or it is new; and a group where BOTH halves have an unaccounted-for member
+    is the restatement ruling **R-FL** refuses.  The ordinal takes no part in
+    that decision (:func:`~._line.pair_by_statement`); it is minted for the
+    fresh lines afterwards (:func:`~._line.fresh_ordinals`).
 
     Args:
-        keyed_lines: The file's lines with their ordinals.
-        already: What is recorded over the same span, by identity.
+        lines: The file's lines, in the file's own order.
+        already: What is recorded over the same span, grouped by day and
+            amount.
 
     Returns:
-        The lines to write, in the file's own order.
+        The lines to write, with their ordinals, in the file's own order.
 
     Raises:
         StatementLineConflict: When a recorded line is restated differently.
     """
-    fresh = []
-    for keyed in keyed_lines:
-        recorded = already.get(keyed.identity)
-        if recorded is None:
-            fresh.append(keyed)
-        else:
-            _refuse_restatement(keyed, recorded)
-            _absorb_gained_facts(keyed, recorded)
-    return fresh
+    fresh: "list[tuple[int, KeyedLine]]" = []
+    for key, indexes in group_indexes(lines).items():
+        recorded = already.get(key, [])
+        pairing = pair_by_statement(
+            [lines[index].description for index in indexes],
+            [row.description for row in recorded],
+        )
+        if pairing.restates:
+            _refuse_restatement(
+                lines[indexes[pairing.fresh[0]]],
+                recorded[pairing.unclaimed[0]],
+            )
+        for incoming_index, recorded_index in pairing.held:
+            _absorb_gained_facts(
+                lines[indexes[incoming_index]], recorded[recorded_index],
+            )
+        ordinals = fresh_ordinals(
+            (row.sequence_in_group for row in recorded), len(pairing.fresh),
+        )
+        for ordinal, incoming_index in zip(ordinals, pairing.fresh):
+            fresh.append((
+                indexes[incoming_index],
+                KeyedLine(
+                    line=lines[indexes[incoming_index]],
+                    sequence_in_group=ordinal,
+                ),
+            ))
+    # Back into the file's own order.  The groups are walked in first-sighting
+    # order and their members in file order, so the concatenation is already
+    # close -- but "already close" is not an order, and the staged rows' ids
+    # are what ``recent_lines`` breaks ties on.
+    return [keyed for _, keyed in sorted(fresh, key=lambda pair: pair[0])]
 
 
 def _stage_lines(
@@ -423,10 +482,9 @@ def record_statement(
     # ``ck_statement_imports_period_ordered`` and surfaces as a database error.
     period_start = min(line.posted_on for line in lines)
     period_end = max(line.posted_on for line in lines)
-    keyed_lines = assign_sequences(lines)
-    already = _recorded_lines(account_id, period_start, period_end)
+    already = _recorded_groups(account_id, period_start, period_end)
 
-    fresh = _fresh_lines(keyed_lines, already)
+    fresh = _fresh_lines(lines, already)
 
     # Every refusal is now behind us, so this is the first write.
     if identity_is_new:

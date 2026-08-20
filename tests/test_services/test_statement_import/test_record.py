@@ -712,3 +712,158 @@ class TestARecordedLineMayNotBeQuietlyRestated:
         second = _record(seed_user, _file(), file_name="again.csv")
 
         assert second.recorded_count == 0
+
+
+#: Two same-day same-amount lines: the shape whose ordinal was the only term of
+#: the identity key the bank never stated.  Measured across the developer's
+#: 2026-07-19, 2026-08-16 and 2026-08-18 exports, 0 of 1,041 real lines shared a
+#: ``(day, amount)`` with another -- so every case below is PLANTED, and each is
+#: a firing control for a refusal that used to fire on a file the bank had not
+#: restated at all.
+_TWINS = [
+    (date(2026, 3, 2), "-4.75",
+     "POINT OF SALE DEBIT L340 STARBUCKS #123 (Starbucks)"),
+    (date(2026, 3, 2), "-4.75",
+     "POINT OF SALE DEBIT L340 DUNKIN #456 (Dunkin)"),
+]
+
+#: A line on a LATER day, so a refusal over the twins costs it too.  This is
+#: what makes the cost of a false refusal visible: the whole file is refused,
+#: not the disputed line.
+_LATER = (date(2026, 3, 5), "-99.00",
+          "POINT OF SALE DEBIT L340 ACE HARDWARE (Ace Hardware)")
+
+
+class TestAGroupIsReconciledAsASet:
+    """Plan step X-f6a-4: the ordinal is a surrogate, not a comparison term."""
+
+    def test_the_same_two_lines_in_the_OTHER_order_record_nothing(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL: the bank re-orders one day's two equal debits.
+
+        Measured against the positional code 2026-08-20, this refused the whole
+        file and told the owner the bank had restated a line it had not.  Both
+        lines are present in both files; only the ordinal this app assigned
+        moved.
+        """
+        _record(seed_user, _file(_TWINS))
+
+        second = _record(
+            seed_user, _file(list(reversed(_TWINS))), file_name="swapped.csv",
+        )
+
+        assert second.recorded_count == 0
+        assert db.session.query(BankStatementLine).count() == 2
+
+    def test_a_reorder_does_not_cost_the_file_its_GENUINELY_new_lines(
+        self, app, db, seed_user,
+    ):
+        """MONEY: what a false refusal actually costs is the rest of the export.
+
+        The re-ordered pair is two lines; the file also carries a line the app
+        has never seen.  Refusing the file loses that line -- and every other
+        line after it -- until someone repairs the account by hand.
+        """
+        _record(seed_user, _file(_TWINS))
+
+        second = _record(
+            seed_user,
+            _file(list(reversed(_TWINS)) + [_LATER]),
+            file_name="swapped_plus_new.csv",
+        )
+
+        assert second.recorded_count == 1
+        assert db.session.query(BankStatementLine).filter_by(
+            posted_on=date(2026, 3, 5),
+        ).one().amount == Decimal("-99.00")
+
+    def test_a_NEW_line_the_bank_lists_FIRST_is_recorded_as_the_new_one(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL: a swipe finalizes onto an already-recorded day.
+
+        SECU INSERTS such a line into that day's block rather than appending it
+        -- the behaviour that made ``_refuse_restatement`` stop comparing
+        running balances -- so the file lists the NEW line FIRST and the
+        recorded one after it.  Under the positional rule that compared the new
+        line against the recorded one's wording and refused the whole file.
+        Exactly one line is new, and the recorded one keeps its own address.
+        """
+        _record(seed_user, _file([_TWINS[0]]))
+
+        second = _record(
+            seed_user,
+            _file([_TWINS[1], _TWINS[0]]),
+            file_name="inserted.csv",
+        )
+
+        assert second.recorded_count == 1
+        rows = {
+            row.description: row.sequence_in_group
+            for row in db.session.query(BankStatementLine).all()
+        }
+        assert rows == {_TWINS[0][2]: 0, _TWINS[1][2]: 1}
+
+    def test_a_second_IDENTICAL_charge_is_recorded_rather_than_dropped(
+        self, app, db, seed_user,
+    ):
+        """MONEY: the same coffee twice at the same shop is two movements.
+
+        This is what the ordinal exists for, asked of the set-wise
+        reconciliation: pairing by wording must be by COUNT, or the second
+        charge is read as a duplicate of the first and never recorded.
+        """
+        same = (date(2026, 3, 2), "-4.75", "POINT OF SALE DEBIT L340 COFFEE")
+        _record(seed_user, _file([same]))
+
+        second = _record(seed_user, _file([same, same]), file_name="twice.csv")
+
+        assert second.recorded_count == 1
+        assert db.session.query(BankStatementLine).count() == 2
+        assert sorted(
+            row.sequence_in_group
+            for row in db.session.query(BankStatementLine).all()
+        ) == [0, 1]
+
+    def test_a_RESTATED_line_in_a_shared_group_is_still_refused(
+        self, app, db, seed_user,
+    ):
+        """The refusal the policy is FOR survives the reconciliation change.
+
+        One of the two lines keeps its wording and pairs; the other's wording
+        is gone from the file and an unaccounted-for line stands in its place.
+        That is the bank re-wording an observation, and ruling R-FL refuses it.
+        """
+        _record(seed_user, _file(_TWINS))
+
+        restated = [
+            _TWINS[0],
+            (date(2026, 3, 2), "-4.75", "SOMETHING ELSE ENTIRELY"),
+        ]
+
+        with pytest.raises(StatementLineConflict) as caught:
+            _record(seed_user, _file(restated), file_name="restated.csv")
+
+        assert caught.value.recorded == _TWINS[1][2]
+        assert caught.value.submitted == "SOMETHING ELSE ENTIRELY"
+        assert db.session.query(BankStatementLine).count() == 2
+
+    def test_a_SHORTER_export_over_a_shared_group_refuses_nothing(
+        self, app, db, seed_user,
+    ):
+        """A file covering less than the app holds contradicts nothing.
+
+        The app holds both twins and the file states one.  Under the positional
+        rule the surviving line landed at ordinal 0 and was compared against
+        the OTHER twin's wording, which refused.  It is now what it is: a
+        shorter export, recording nothing and refusing nothing.
+        """
+        _record(seed_user, _file(_TWINS))
+
+        second = _record(
+            seed_user, _file([_TWINS[1]]), file_name="shorter.csv",
+        )
+
+        assert second.recorded_count == 0
+        assert db.session.query(BankStatementLine).count() == 2
