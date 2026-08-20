@@ -417,17 +417,12 @@ hides.
   **997 of 997 rows on a production clone agree with what the app publishes, 0 refusals, `$0.00`
   drift.** **What a LATER leaf must obey**: a derived row's answer must be INVARIANT under a change
   to its own amount column -- agreement alone cannot see this resolver. Opened **N-252**, **N-253**.
-* [ ] **X-au-i** `refactor(cards): a payback is worth the purchases it repays` -- the CC PAYBACK
-  cutover, closing **N-243** and **N-252**. The kind ruling R-FI names that carries NEITHER link, so
-  no link-derived discriminator can reach it and X-au-b's dispatch places it as OWN: 21 rows on the
-  production clone, 20 of them settled. Two writers state the same figure and neither reconciles it
-  -- `credit_workflow.create_cc_payback_transaction` copies the source row's amount at the moment it
-  is marked Credit and repairs it never, and `entry_credit_workflow.sync_entry_payback` re-states it
-  as the sum of the source's credit entries on every entry mutation, unconditionally. **It must RULE
-  what a hand edit means first**: `routes/transactions/mutations.py:252` sets `is_override` only for
-  a template-linked row, so on a payback that flag is unreachable and the next sync silently reverts
-  a typed figure -- production payback 2590 is one, hand-edited to `$123.18` on 2026-06-02 against
-  credit entries summing to `$181.58`, and settled at the edited figure.
+* [x] **X-au-i** `11b32051` a payback is worth the CARD SPEND it repays -- the FIRST per-kind
+  cutover, closing **N-252** and **N-323**. **Its one-line spec was measured FALSE**: 12 of the 22
+  live paybacks have a source with NO entries, so "the credit entries it repays" zeroes them. The
+  `credit_source` relation REFINES on `tracks_purchases`, disjoint by `mutations.py`'s write-door
+  refusal. **What a LATER leaf must obey**: read the refinement off the SOURCE live, never stamp it;
+  and a hand edit to a derived-by-someone-else figure is REFUSED (developer, 2026-08-20).
 * [ ] **X-au-c** the amount model's SEAM -- the DECOMPOSED parent of three leaves (developer,
   2026-08-12), because the census this step's own specification demanded as its first act came back
   at ~25 code reads across 15 modules and it is not one session's work. The split puts the schema
