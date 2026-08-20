@@ -480,14 +480,12 @@ hides.
   while `loan_payment_service._manual_shadow_amount:660` reads `shadow.estimated_amount` under a
   docstring asserting that column is "NOT NULL, always the generated base" -- manual-mode loan
   payments would be broken for the whole interval between the two leaves.
-* [ ] **X-au-j** `perf(reconcile): the panel holds ONE amount basis for the pass` -- closing
-  **N-295**. `reconcile_service` prices each offered row through `transaction_service.settle_amount`
-  / `transfer_service.settle_amount`, and each builds its own `amount_basis`; a settle builds three.
-  X-au-c2b made a basis SHAREABLE within one call and closed N-268 / N-269 there, and this is the
-  same shape one tier up -- the PANEL is the caller that can hold one. It waited for X-au-c3 because
-  that step rebuilt the settle doors, and threading a basis into a signature about to change is work
-  done twice. `$0.00`: every basis answers the same figure, so what it costs is K profile lookups
-  and, once a loan payment derives, K loan resolves per panel render.
+* [x] **X-au-j** `340c2675` the review pass holds ONE amount basis -- closing **N-295** and
+  **N-309**.  It threads a basis exactly as it already threads the calendar, and both
+  ``settle_amount`` twins take an OPTIONAL one so a single-row door is unchanged.
+  **What a LATER leaf must obey**: the basis is built for the BASELINE scenario on
+  ``_candidates``' own argument for not filtering on ``scenario_id``, so when what-if scenarios
+  land every arm must thread an operating one -- a foreign row is REFUSED, not mispriced.
 
 * [ ] **X-au-h** `refactor(transactions): is_override says one thing` -- closes **N-238**. The flag
   carries FOUR facts, not the two the first draft named, and an adversarial review found the other
