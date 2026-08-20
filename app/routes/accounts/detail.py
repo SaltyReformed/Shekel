@@ -82,35 +82,25 @@ from app.utils.account_validation import (
     _interest_params_schema,
 )
 from app.utils.auth_helpers import get_or_404, require_owner
-from app.utils.period_projections import project_balance_horizons
+from app.utils.period_projections import (
+    ONE_YEAR_MONTHS,
+    horizon_offsets,
+    project_balance_horizons,
+)
 
 if TYPE_CHECKING:
     # Typing-only imports for the per-page helper signatures (lazy strings
     # via ``from __future__ import annotations``; no runtime cost).
     from app.services.cash_ledger import AnchorPoint
-    from app.services.pay_calendar import DerivedPeriod, PeriodWindow
+    from app.services.pay_calendar import (
+        DerivedPeriod,
+        PayCadence,
+        PayCalendar,
+        PeriodWindow,
+    )
 
 logger = logging.getLogger(__name__)
 
-# The number of pay periods that make up one year -- the window width for the
-# "Interest, next 12 months" health chip.  Matches the ``("1 year", 26)``
-# horizon offset in :mod:`app.utils.period_projections`.
-#
-# **It is a hardcoded 26 and it should be the OWNER's paycheck count**, which
-# :attr:`app.services.pay_calendar.PayCadence.periods_per_year` now derives
-# from ``budget.pay_schedule.cadence_days``.  At a weekly cadence this window
-# spans six months and the chip still says "next 12 months"; at a monthly one
-# it spans two years.  Left as-is by plan step R7a-2a (``CLAUDE.md`` rule 6:
-# report out of scope, do not fix), together with the sibling offsets in
-# ``period_projections`` -- both are period-INDEX arithmetic rather than the
-# money constant that step replaced, and converting them means deciding what a
-# fractional period offset means.  **It IS a ledger row -- ``recurrence:F-17``,
-# born with its owner ``recurrence:R-F17`` at R7a-2a's design review 2026-08-11
-# -- and this comment claimed the opposite until plan step pay_calendar:C2-f1,
-# whose own adversarial review re-reported the row because the comment said it
-# did not exist.  A sentence about the registry goes stale exactly like a
-# sentence about the code.
-_ONE_YEAR_PERIODS = 26
 
 # Chart.js x-axis label format for the balance-projection trend: month
 # abbreviation plus un-padded day (e.g. "Jun 5").  The SAME convention as
@@ -176,19 +166,49 @@ def _build_horizons(
     current_period: DerivedPeriod | None,
     all_periods: PeriodWindow,
     balances: dict[int, Decimal],
+    calendar: PayCalendar,
 ) -> list[dict]:
-    """Build the 3 / 6 / 12-month horizon chip rows for the template.
+    """Build the forward horizon chip rows for the template.
 
     One row per horizon that has a projected balance, in the shared
-    :data:`~app.utils.period_projections.HORIZON_OFFSETS` order.  Each row
+    :data:`~app.utils.period_projections.HORIZON_MONTHS` order.  Each row
     carries the horizon ``label`` ("3 months" / "6 months" / "1 year"),
     its projected ``value``, and the ``delta`` from the current balance
     (``value - current_balance``), all ``Decimal``.  Returns an empty list
     when there is no current balance to project or delta from.
+
+    **It takes the CALENDAR rather than a resolved cadence, and that is what
+    makes the cadence read safe** (plan step **R-F17**).  How many pay periods
+    a horizon named in months reaches is a function of the owner's cadence, and
+    :attr:`~app.services.pay_calendar.PayCalendar.cadence` REFUSES a calendar
+    holding no paydays -- a state this page reaches and answers with no chips
+    rather than a 500.  A current period is the proof there are paydays:
+    :func:`~app.services.pay_calendar.derive_periods` refuses a payday beside
+    an absent cadence at construction, so a non-empty calendar always carries
+    one.  Reading it here, past this function's own ``None`` return, makes the
+    refusal unreachable by construction instead of by a caller's precondition.
+
+    Args:
+        current_balance: The page hero's figure, which every ``delta`` is
+            measured from.  ``None`` yields no rows.
+        current_period: The pay period covering the read pass's clock, or
+            ``None`` -- which also yields no rows, since no horizon is
+            measurable from nowhere.
+        all_periods: The pass's reporting window, searched by ``period_index``.
+        balances: The seam's ``{period_id: balance}`` map for this account.
+        calendar: The read pass's own
+            :class:`~app.services.pay_calendar.PayCalendar`, read for the
+            owner's cadence alone.
+
+    Returns:
+        The chip rows, in horizon order.
     """
-    if current_balance is None:
+    if current_balance is None or current_period is None:
         return []
-    projected = project_balance_horizons(current_period, all_periods, balances)
+    projected = project_balance_horizons(
+        current_period, all_periods, balances,
+        horizon_offsets(calendar.cadence),
+    )
     return [
         {"label": label, "value": value, "delta": value - current_balance}
         for label, value in projected.items()
@@ -199,19 +219,39 @@ def _interest_next_year(
     interest_by_period: dict[int, Decimal],
     current_period: DerivedPeriod,
     all_periods: PeriodWindow,
+    cadence: PayCadence,
 ) -> Decimal:
-    """Sum the interest earned over the next year (26 biweekly periods).
+    """Sum the interest earned over the owner's next year of paychecks.
 
     The health-chip figure: the ``Decimal`` sum of ``interest_by_period``
     for every period whose ``period_index`` falls in
-    ``[current + 1, current + 26]`` (the next full year of biweekly
-    periods after the current one).  ``Decimal("0.00")`` is a legitimate
-    result (a zero-APY account, or a horizon with no projected interest),
-    NOT a "missing" sentinel; the caller only invokes this for an
-    interest-bearing account with a current period.
+    ``[current + 1, current + paychecks_within(12)]`` -- the next full year
+    of the owner's OWN paychecks after the current one.  ``Decimal("0.00")``
+    is a legitimate result (a zero-APY account, or a horizon with no
+    projected interest), NOT a "missing" sentinel; the caller only invokes
+    this for an interest-bearing account with a current period.
+
+    **The window width was a hardcoded ``_ONE_YEAR_PERIODS = 26``** whose own
+    comment said it matched the "1 year" balance chip beside it -- an agreement
+    held by a sentence, and wrong for both chips at any cadence but biweekly
+    (ledger row **F-17**).  Both now resolve
+    ``paychecks_within(ONE_YEAR_MONTHS)``, so the interest chip covers exactly
+    the span the balance chip beside it reaches, by construction.  The count is
+    :attr:`~app.services.pay_calendar.PayCadence.periods_per_year` for a
+    twelve-month span, so it is at least 1 and the window is never empty.
+
+    Args:
+        interest_by_period: The seam's per-period earned interest for this
+            account.
+        current_period: The pay period covering the read pass's clock.
+        all_periods: The pass's reporting window.
+        cadence: The owner's :class:`~app.services.pay_calendar.PayCadence`.
+
+    Returns:
+        The summed interest, a ``Decimal``.
     """
     lo = current_period.period_index + 1
-    hi = current_period.period_index + _ONE_YEAR_PERIODS
+    hi = current_period.period_index + cadence.paychecks_within(ONE_YEAR_MONTHS)
     total = Decimal("0.00")
     for period in all_periods:
         if lo <= period.period_index <= hi:
@@ -348,8 +388,9 @@ def _cash_detail_context(account: Account, ctx: BalanceContext) -> dict:
     # defaulting to its own ``date.today()`` rather than the pass's ``as_of``,
     # so a render begun before midnight and reaching this line after it placed
     # the hero in one paycheck and the seam's columns in another.
+    calendar = ctx.calendar()
     all_periods = ctx.reported_periods()
-    current_period = ctx.calendar().period_containing(ctx.as_of)
+    current_period = calendar.period_containing(ctx.as_of)
 
     # Preserve the pre-merge ``interest_detail`` behaviour: the params row is
     # auto-created before any projection so the parameters card always
@@ -387,13 +428,22 @@ def _cash_detail_context(account: Account, ctx: BalanceContext) -> dict:
         # the day is already the user's.
         "anchor_as_of": anchor.observed_on if anchor is not None else None,
         "horizons": _build_horizons(
-            current_balance, current_period, all_periods, balances,
+            current_balance, current_period, all_periods, balances, calendar,
         ),
         # The next-year interest chip is interest-only; a plain account
         # carries ``None`` (the template omits the chip).  ``Decimal("0.00")``
         # is a legitimate value for a zero-APY interest account.
+        #
+        # ``calendar.cadence`` sits INSIDE the true branch deliberately (plan
+        # step R-F17): a conditional expression evaluates it only when the
+        # guard holds, and that guard -- a current period exists -- is what
+        # proves the calendar has paydays and therefore a cadence to read.
+        # See :func:`_build_horizons` for the full argument.
         "interest_next_year": (
-            _interest_next_year(interest_by_period, current_period, all_periods)
+            _interest_next_year(
+                interest_by_period, current_period, all_periods,
+                calendar.cadence,
+            )
             if is_interest and current_period is not None else None
         ),
         "params": params,

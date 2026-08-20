@@ -156,11 +156,26 @@ class _ProjectionContext:
             horizons and the trend all place "today" in one paycheck.
         params: The batch-loaded :class:`_AccountParams`.
         balance_ctx: The render's read pass.
+        horizon_offsets: The owner's forward balance horizons as
+            ``(label, pay-period offset)`` pairs, from
+            :func:`app.utils.period_projections.horizon_offsets`.  **A
+            loop invariant, which is why it is here** (plan step **R-F17**):
+            the offsets are a function of the owner's cadence alone, so
+            deriving them inside the per-account branch would re-answer one
+            question once per tile.  **Empty when :attr:`current_period` is
+            ``None``**, and that pairing is what keeps the cadence read safe:
+            a calendar with no paydays carries no cadence and REFUSES, and a
+            current period is the proof it has some -- so the resolution
+            happens exactly where that is already known
+            (:func:`.._orchestrator._build_projection_context`) and nowhere
+            else.  An empty tuple is a total answer, so no consumer needs a
+            second nullable field to interpret.
     """
 
     current_period: DerivedPeriod | None
     params: _AccountParams
     balance_ctx: BalanceContext
+    horizon_offsets: tuple[tuple[str, int], ...]
 
 
 @dataclass(frozen=True)
@@ -320,10 +335,11 @@ class AccountProjection:  # pylint: disable=too-many-instance-attributes
             the resolution is memoized on the read pass, so adding the loans
             costs the two narrow producers a measured ``0.19-0.59 ms`` and ZERO
             SQL per loan (best of five, both databases).
-        projected: The 3 / 6 / 12-month horizon balances by label, from
+        projected: The forward horizon balances by label, from
             :func:`app.utils.period_projections.project_balance_horizons`.
             Empty for a loan (a loan tile renders no horizons) and for an
-            account with no current period.
+            account with no current period; a horizon the owner's cadence does
+            not reach is absent rather than zeroed (plan step **R-F17**).
 
             **STORED although it is three samples of** :attr:`balances`, and
             that IS a second copy of facts this record already holds -- the
@@ -332,12 +348,13 @@ class AccountProjection:  # pylint: disable=too-many-instance-attributes
             that the argument below is about the SIGNATURE and not about the
             duplication).
 
-            What is bought for it: deriving these three needs the current period
-            and the pay-period calendar, which this record does not carry, so a
-            derived form is a METHOD taking two arguments -- and a method here
-            would put the horizon-label rule on a value object instead of in
-            :mod:`app.utils.period_projections`, where the grid reads the same
-            rule.  The copy cannot go stale within a render (both are written
+            What is bought for it: deriving these needs the current period, the
+            pay-period calendar and the owner's resolved horizon offsets, none
+            of which this record carries, so a derived form is a METHOD taking
+            three arguments -- and a method here would put the horizon-label
+            rule on a value object instead of in
+            :mod:`app.utils.period_projections`, where the account detail page
+            reads the same rule.  The copy cannot go stale within a render (both are written
             once, from the same map, by the same builder), which is what makes
             this a normalization smell rather than the two-containers defect
             finding N-114 records.  The step that gives this record its periods

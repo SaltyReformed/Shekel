@@ -37,9 +37,15 @@ from app.services.cash_ledger import (
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services.grid_view_service import RowKey
 from app.services.transaction_service import retained_settle_amounts_by_id
-from app.services.pay_calendar import DerivedPeriod, PeriodWindow
+from app.services.pay_calendar import DerivedPeriod, PayCadence, PeriodWindow
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
+from app.utils.period_projections import (
+    ONE_YEAR_MONTHS,
+    SIX_MONTHS,
+    TWO_YEARS_MONTHS,
+    offered_spans,
+)
 
 from app.routes.grid._bp import grid_bp
 from app.routes.grid._shared import (
@@ -52,13 +58,83 @@ from app.routes.grid._shared import (
 logger = logging.getLogger(__name__)
 
 
-# Forward-looking window for the mobile "Plan" tab.  13 biweekly pay
-# periods ~= 6 months, matching the desktop selector's `6M` option
-# (`grid/grid.html:34`).  Fixed for phase 1; configurability is a
-# follow-up.  Decoupled from the URL's `periods` / `offset` so Plan
-# always answers "what does the next half-year look like from today?"
-# regardless of how the user is navigating in This Period.
-PLAN_WINDOW_PERIODS = 13
+# The span the mobile "Plan" tab looks forward over, in MONTHS.
+#
+# Plan answers "what does the next half-year look like from today?", decoupled
+# from the URL's `periods` / `offset` so the This Period arrow nav cannot
+# starve it of forward visibility.  It is `period_projections.SIX_MONTHS`
+# rather than a literal 6, and that is the point: it is deliberately the same
+# span as the desktop selector's `6M` button, and naming the number once is
+# what makes the two agree STRUCTURALLY.  A first draft wrote two literal
+# sixes and asserted in a comment that they "cannot come to disagree", which
+# is the agreement-by-sentence ledger row **F-17** is about.
+#
+# **It was `PLAN_WINDOW_PERIODS = 13` -- a pay-period COUNT -- until plan step
+# R-F17.** 13 periods is six months only at a biweekly cadence; at a weekly one
+# the tab covered three months and at a monthly one it covered thirteen.
+PLAN_WINDOW_MONTHS = SIX_MONTHS
+
+# The grid's date-range quick-select buttons that name a SPAN OF TIME, as
+# `(span in months, button label, tooltip)`.
+#
+# **Resolved into a count of the owner's paychecks** by
+# `period_projections.offered_spans` (ruling **R-R31**).  The template held
+# these as a literal pairing each label with a hardcoded biweekly period count
+# until plan step R-F17 -- 6M with thirteen periods, 1Y with twenty-six -- so a
+# weekly-paid owner pressing `1Y` got six months of columns and a monthly-paid
+# one got two years, each under a button naming a year.  Ledger row **F-17**.
+_RANGE_MONTHS: tuple[tuple[int, str, str], ...] = (
+    (SIX_MONTHS, "6M", "6 months"),
+    (ONE_YEAR_MONTHS, "1Y", "1 year"),
+    (TWO_YEARS_MONTHS, "2Y", "2 years"),
+)
+
+# The same selector's buttons that name a COUNT OF PAYCHECKS, which is a
+# different question and needs no derivation: "3 pay periods" means three
+# columns for every owner.  They are listed separately rather than folded in
+# with a sentinel, so nothing has to test which kind a row is.
+_RANGE_PAYCHECKS: tuple[tuple[str, int, str], ...] = (
+    ("3P", 3, "3 pay periods"),
+    ("6P", 6, "6 pay periods"),
+)
+
+
+def _range_options(cadence: PayCadence) -> list[tuple[str, int, str]]:
+    """Build the date-range quick-select buttons for one owner's cadence.
+
+    The paycheck-count buttons first (they are absolute), then each time-span
+    button resolved into however many of THIS owner's paychecks fall inside it.
+
+    **Each distinct window is offered ONCE**, and that is a defect this step
+    created and its adversarial review caught.  The deleted literal was
+    `3 / 6 / 13 / 26 / 52`, which can never collide; deriving the span buttons
+    makes one land on the fixed 3 or 6 of a paycheck button at **64 of the 365
+    legal cadences, the shortest being 28 days** -- so a monthly-paid owner got
+    `6P` and `6M` both linking to `?periods=6`, and since the template marks a
+    button active with `num_periods == count`, BOTH lit up.  The paycheck
+    labels are exact and cadence-independent, so the DERIVED label is the one
+    that yields.
+
+    **A span no paycheck reaches is not offered at all** (ruling **R-R31**),
+    which here is also what keeps the control working rather than merely
+    honest: an owner paid every 300 days has no paycheck inside six months, and
+    a `6M` button linking to `?periods=0` renders the empty-schedule page for a
+    user whose schedule is not empty.
+
+    Args:
+        cadence: The owner's :class:`~app.services.pay_calendar.PayCadence`.
+
+    Returns:
+        The `(label, column count, tooltip)` rows, in display order, one per
+        distinct window.
+    """
+    options = list(_RANGE_PAYCHECKS)
+    offered = {count for _, count, _ in options}
+    for count, label, tooltip in offered_spans(cadence, _RANGE_MONTHS):
+        if count not in offered:
+            options.append((label, count, tooltip))
+            offered.add(count)
+    return options
 
 
 class _GridContext(NamedTuple):
@@ -342,8 +418,8 @@ def _build_plan_view(ctx, all_transactions, grid_view, all_categories, budgets):
     year look like from today?" regardless of how the user is
     navigating in This Period (which can leave the URL at
     ``?periods=1&offset=N``).  This helper computes a parallel data
-    slice anchored at ``current_period`` and walking forward
-    :data:`PLAN_WINDOW_PERIODS` periods.
+    slice anchored at ``current_period`` and walking forward far enough to
+    cover :data:`PLAN_WINDOW_MONTHS` months of the OWNER's paychecks.
 
     No entry sums or entry lists are computed -- Plan renders future
     periods read-only and envelope entries are by design a current /
@@ -381,10 +457,10 @@ def _build_plan_view(ctx, all_transactions, grid_view, all_categories, budgets):
         ``render_template`` kwargs of :func:`index`:
 
           - ``plan_periods``: a
-            :class:`~app.services.pay_calendar.PeriodWindow`, up to
-            :data:`PLAN_WINDOW_PERIODS` long starting at
-            ``current_period``.  May be shorter when the user has
-            fewer remaining generated periods.
+            :class:`~app.services.pay_calendar.PeriodWindow` starting at
+            ``current_period`` and holding as many of the owner's paychecks as
+            fall inside :data:`PLAN_WINDOW_MONTHS` months.  May be shorter when
+            the user has fewer remaining generated periods.
           - ``plan_income_row_keys`` / ``plan_expense_row_keys``:
             row-key lists scoped to the plan window.
           - ``plan_matched_by_row_period``: same shape as the
@@ -399,8 +475,25 @@ def _build_plan_view(ctx, all_transactions, grid_view, all_categories, budgets):
             visible one -- the Plan tab reaches periods the grid may not
             show).
     """
-    plan_periods = ctx.balance_ctx.calendar().window(
-        ctx.current_period.period_index, PLAN_WINDOW_PERIODS,
+    calendar = ctx.balance_ctx.calendar()
+    # How many of THIS owner's paychecks land inside the plan span (plan step
+    # R-F17), where a hardcoded 13 stood for "six months, biweekly".
+    #
+    # **The floor of one is a POLICY, and saying so is the correction an
+    # adversarial review of this step forced.** The comment here argued it was
+    # an invariant -- "the paycheck the owner is currently IN already spans the
+    # whole of it" -- and that is false for every phase but the period's first
+    # day: at a 244-day cadence with today on day 240, the current period ends
+    # in four days and this renders four forward days under a tab meaning the
+    # next half-year.  The honest statement is the policy: a TAB must render
+    # something, so it renders the paycheck the owner is in.  The desktop
+    # selector OMITS such a button instead (ruling R-R31), because a button is
+    # optional where a tab is not.
+    plan_window = max(
+        calendar.cadence.paychecks_within(PLAN_WINDOW_MONTHS), 1,
+    )
+    plan_periods = calendar.window(
+        ctx.current_period.period_index, plan_window,
     )
 
     row_data = _build_grid_row_data(
@@ -555,6 +648,12 @@ def index():
         statuses=db.session.query(Status).all(),
         transaction_types=db.session.query(TransactionType).all(),
         num_periods=ctx.num_periods,
+        # The date-range quick-select buttons, resolved from the OWNER's
+        # cadence (plan step R-F17, ruling R-R31).  They were a Jinja literal
+        # pairing each month label with a hardcoded biweekly period count, so
+        # the labels told the truth for one cadence; a template cannot ask a
+        # value object a question, so the resolution belongs here.
+        range_options=_range_options(ctx.balance_ctx.calendar().cadence),
         start_offset=ctx.start_offset,
         show_all=show_all,
         col_size=(

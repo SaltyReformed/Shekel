@@ -33,10 +33,13 @@
       <i class="bi bi-chevron-left"></i>
     </a>
 
-    {# Quick-select buttons #}
-    {% set range_options = [
-      ("3P", 3, "3 pay periods"), ("6P", 6, "6 pay periods"), ("6M", 13, "6 months"), ("1Y", 26, "1 year"), ("2Y", 52, "2 years")
-    ] %}
+    {# Quick-select buttons.  `range_options` is built by the ROUTE
+       (`grid.page._range_options`) from the owner's own pay cadence: the
+       time-span buttons (6M / 1Y / 2Y) name a number of MONTHS and are
+       resolved into however many of this owner's paychecks fall inside it,
+       where this template paired each of them with a hardcoded period count
+       that was only ever true biweekly -- 6M with thirteen periods, 1Y with
+       twenty-six (recurrence plan step R-F17, ledger row F-17). #}
     <div class="btn-group period-btn-group">
     {% for label, count, tooltip in range_options %}
     <a href="{{ url_for('grid.index', periods=count, offset=0) }}"

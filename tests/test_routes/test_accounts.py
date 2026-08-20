@@ -37,6 +37,8 @@ from tests._test_helpers import (
     settlement_if_settling,
 )
 from app.models.interest_params import InterestParams
+from app.models.pay_period import PayPeriod
+from app.models.pay_schedule import PaySchedule
 from app.models.investment_params import InvestmentParams
 from app.models.user import User, UserSettings
 from app.models.ref import AccountType, Status, TransactionType
@@ -6052,7 +6054,7 @@ class TestCashDetailContext:
     so the assertions are template-presentation independent.
     """
 
-    def _checking_with_income(self, seed_user, num_periods=27):
+    def _checking_with_income(self, seed_user, num_periods=27, cadence_days=14):
         """Create a checking account with +$500/period net income.
 
         Anchor $5,000 at ``periods[0]`` (today), then a $2,000 income and a
@@ -6060,11 +6062,17 @@ class TestCashDetailContext:
         ``test_checking_detail_projection_values_are_correct`` so the
         balances are the hand-computed 5000 + n*500.  Returns
         ``(account, periods)``.
+
+        ``cadence_days`` defaults to the biweekly rhythm every case here used
+        before recurrence plan step **R-F17**; the horizon cases pass another
+        one, because at 14 days the derived offsets and the hardcoded 6 / 13 /
+        26 they replaced are the same numbers and no case could tell them
+        apart.
         """
         periods = pay_period_write.record_paydays(
             user_id=seed_user["user"].id,
             first_payday=display_today(),
-            num_periods=num_periods, cadence_days=14,
+            num_periods=num_periods, cadence_days=cadence_days,
         )
         checking_type = db.session.query(AccountType).filter_by(
             name="Checking",
@@ -6129,6 +6137,169 @@ class TestCashDetailContext:
                 ("6 months", Decimal("11500.00"), Decimal("6500.00")),
                 ("1 year", Decimal("18000.00"), Decimal("13000.00")),
             ]
+
+    def test_the_horizons_follow_the_owners_cadence(
+        self, app, auth_client, seed_user,
+    ):
+        """A WEEKLY owner reads 13 / 26 / 52 periods out, not 6 / 13 / 26.
+
+        Recurrence plan step **R-F17**, ledger row **F-17**.  Identical
+        account shape to ``test_horizons_carry_decimal_deltas`` above --
+        $5,000 anchored at the current period, +$500 net per period after it
+        -- so the two cases differ in the owner's cadence and in nothing else,
+        and the dollars are the same arithmetic:
+
+          3 months  -> period 13: 5000 + 13*500 = 11500.00, delta  6500.00
+          6 months  -> period 26: 5000 + 26*500 = 18000.00, delta 13000.00
+          1 year    -> period 52: 5000 + 52*500 = 31000.00, delta 26000.00
+
+        Before the derivation this owner's "1 year" chip read period 26 --
+        $18,000.00, their SIX-month balance, under a label saying a year.
+        """
+        with app.app_context():
+            acct, _periods = self._checking_with_income(
+                seed_user, num_periods=53, cadence_days=7,
+            )
+            context = _capture_cash_detail_context(app, auth_client, acct.id)
+
+            assert context["current_balance"] == Decimal("5000.00")
+            assert [
+                (h["label"], h["value"], h["delta"])
+                for h in context["horizons"]
+            ] == [
+                ("3 months", Decimal("11500.00"), Decimal("6500.00")),
+                ("6 months", Decimal("18000.00"), Decimal("13000.00")),
+                ("1 year", Decimal("31000.00"), Decimal("26000.00")),
+            ]
+
+    def test_a_horizon_no_paycheck_reaches_is_not_shown_at_all(
+        self, app, auth_client, seed_user,
+    ):
+        """An owner paid every 300 days is shown "1 year" and nothing shorter.
+
+        Ruling **R-R31**: no paycheck arrives inside three months, and the pay
+        period is the finest forward resolution this page has -- so there is
+        no column to value and the chip is absent rather than repeating the
+        hero's own figure under a label naming a shorter span.  The "1 year"
+        chip survives, one period out: $5,000 + $500 = $5,500.
+        """
+        with app.app_context():
+            acct, _periods = self._checking_with_income(
+                seed_user, num_periods=3, cadence_days=300,
+            )
+            context = _capture_cash_detail_context(app, auth_client, acct.id)
+
+            assert [
+                (h["label"], h["value"], h["delta"])
+                for h in context["horizons"]
+            ] == [("1 year", Decimal("5500.00"), Decimal("500.00"))]
+
+    def test_an_owner_with_no_paydays_gets_the_page_and_no_chips(
+        self, app, auth_client, seed_user, db,
+    ):
+        """No paydays at all: 200 with empty chips, not a 500.
+
+        **The state that makes the cadence read's ORDERING load-bearing**, and
+        it is measured rather than assumed: an account no longer carries an
+        anchor PERIOD (rulings R-EH / R-EO deleted both columns), so an owner
+        can hold accounts and no pay periods -- and with no
+        ``budget.pay_schedule`` row either,
+        :attr:`app.services.pay_calendar.PayCalendar.cadence` REFUSES, because
+        nothing has said how often they are paid.
+
+        Recurrence plan step **R-F17** made both forward figures on this page
+        functions of that cadence, so reading it before the no-current-period
+        return would turn this 200 into a 500.  ``_build_horizons`` reads it
+        past its own ``None`` return and the interest chip reads it inside its
+        conditional expression, which is what keeps this case answering.
+
+        **The two conjuncts of the interest chip's guard are covered by
+        SEPARATE cases, and a first draft covered only one.**  That draft
+        asserted both on the seeded Checking account, where ``is_interest and
+        current_period is not None`` short-circuits on the FIRST conjunct -- so
+        ``interest_next_year is None`` was satisfied by the account kind alone
+        and the second conjunct was never exercised.  An adversarial review
+        proved it by deleting that conjunct: all 268 cases in this file still
+        passed.  This case is the CADENCE half (a paydayless owner, where
+        reading the cadence at all would raise); the lapsed-schedule case below
+        is the CURRENT-PERIOD half.
+        """
+        with app.app_context():
+            uid = seed_user["user"].id
+            assert db.session.query(PaySchedule).filter_by(
+                user_id=uid,
+            ).count() == 0, (
+                "this case needs an owner with no stored cadence; the fixture "
+                "now writes one, so the refusal it exercises has moved"
+            )
+            db.session.query(PayPeriod).filter_by(user_id=uid).delete()
+            db.session.commit()
+
+            context = _capture_cash_detail_context(
+                app, auth_client, seed_user["account"].id,
+            )
+
+            assert context["current_period"] is None
+            assert context["horizons"] == []
+            assert context["interest_next_year"] is None
+
+    def test_an_interest_account_on_a_lapsed_schedule_still_renders(
+        self, app, auth_client, seed_user, db,
+    ):
+        """No paycheck covers TODAY, on an account that DOES show the chip.
+
+        The other half of the interest chip's guard, and the ordinary one: the
+        owner has paydays -- so their cadence is perfectly readable -- but the
+        schedule has lapsed and none of them covers the read pass's day.
+        ``_interest_next_year`` dereferences ``current_period.period_index``,
+        so without the ``current_period is not None`` conjunct this is an
+        ``AttributeError`` and a 500 on an interest-bearing account whose owner
+        simply has not extended their calendar.
+
+        ``seed_user``'s only period is its 2024 bootstrap, and the HYSA is
+        anchored INTO it -- ``AccountSpec.observed_on`` takes a past day by
+        design, which is what lets an account exist on a schedule that no
+        longer reaches today.
+        """
+        with app.app_context():
+            uid = seed_user["user"].id
+            bootstrap = (
+                db.session.query(PayPeriod).filter_by(user_id=uid)
+                .order_by(PayPeriod.period_index).first()
+            )
+            assert bootstrap.start_date < display_today(), (
+                "this case needs a schedule that no longer reaches today"
+            )
+            hysa_type = db.session.query(AccountType).filter_by(
+                name="HYSA",
+            ).one()
+            hysa = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=uid,
+                    account_type_id=hysa_type.id,
+                    name="Lapsed HYSA",
+                    anchor_balance=Decimal("2500.00"),
+                    observed_on=bootstrap.start_date,
+                ),
+            )
+            db.session.add(hysa)
+            db.session.flush()
+            db.session.add(InterestParams(
+                account_id=hysa.id, apy=Decimal("0.04000"),
+                compounding_frequency_id=ref_cache.compounding_frequency_id(
+                    CompoundingFrequencyEnum.DAILY,
+                ),
+            ))
+            db.session.commit()
+
+            context = _capture_cash_detail_context(app, auth_client, hysa.id)
+
+            # is_interest is TRUE, so the guard's first conjunct passes and the
+            # SECOND is what keeps the page at 200.
+            assert context["is_interest"] is True
+            assert context["current_period"] is None
+            assert context["interest_next_year"] is None
+            assert context["horizons"] == []
 
     def test_chart_json_structure_and_current_index(
         self, app, auth_client, seed_user,
@@ -6333,6 +6504,81 @@ class TestCashDetailContext:
             # Non-vacuity: periods beyond the window accrue interest that the
             # route must NOT include, so the window sum is strictly smaller.
             assert window_total < grand_total
+
+    def test_interest_window_is_the_owners_year_not_twenty_six_periods(
+        self, app, auth_client, seed_user, db,
+    ):
+        """A WEEKLY owner's "next 12 mo" chip sums 52 periods, not 26.
+
+        Recurrence plan step **R-F17**, ledger row **F-17**.  The window was a
+        hardcoded ``_ONE_YEAR_PERIODS = 26`` whose own comment asserted it
+        matched the "1 year" balance chip beside it; at this cadence 26
+        periods is SIX months, so the chip summed half the interest it named
+        and the two chips disagreed about what a year is.
+
+        Sixty periods are generated so the tail beyond the window still
+        accrues -- the route's figure must equal the independently summed
+        ``[current + 1, current + 52]`` and be STRICTLY LESS than the sum over
+        every period, which is what proves the window bites rather than
+        happening to cover everything.
+        """
+        # Pylint: import-outside-toplevel -- deferred import is the file-wide
+        # test convention.
+        from app.services.balance_at import _kernel as net_worth_kernel  # pylint: disable=import-outside-toplevel
+        from app.services.balance_at import BalanceContext  # pylint: disable=import-outside-toplevel
+        with app.app_context():
+            periods = pay_period_write.record_paydays(
+                user_id=seed_user["user"].id,
+                first_payday=display_today(),
+                num_periods=60, cadence_days=7,
+            )
+            hysa_type = db.session.query(AccountType).filter_by(name="HYSA").one()
+            acct = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=hysa_type.id,
+                    name="Weekly HYSA",
+                    anchor_balance=Decimal("10000.00"),
+                ),
+            )
+            db.session.add(acct)
+            db.session.flush()
+            db.session.add(InterestParams(
+                account_id=acct.id, apy=Decimal("0.05000"),
+                compounding_frequency_id=ref_cache.compounding_frequency_id(
+                    CompoundingFrequencyEnum.DAILY,
+                ),
+            ))
+            db.session.commit()
+
+            current = current_pay_period(seed_user["user"].id)
+            ibp = net_worth_kernel.interest_by_period_for_account(
+                acct, BalanceContext.build(seed_user["user"].id),
+            )
+            lo = current.period_index + 1
+            hi = current.period_index + 52  # 52 WEEKLY periods = 1 year.
+            window_total = sum(
+                (ibp.get(p.id, Decimal("0.00")) for p in periods
+                 if lo <= p.period_index <= hi),
+                Decimal("0.00"),
+            )
+            grand_total = sum(
+                (ibp.get(p.id, Decimal("0.00")) for p in periods),
+                Decimal("0.00"),
+            )
+            half_year_total = sum(
+                (ibp.get(p.id, Decimal("0.00")) for p in periods
+                 if lo <= p.period_index <= current.period_index + 26),
+                Decimal("0.00"),
+            )
+
+            context = _capture_cash_detail_context(app, auth_client, acct.id)
+
+            assert context["interest_next_year"] == window_total
+            assert window_total < grand_total
+            # The number the hardcoded 26 would have produced, shown to be a
+            # DIFFERENT figure rather than merely a different expression.
+            assert half_year_total < window_total
 
     def test_plain_account_interest_next_year_is_none(
         self, app, auth_client, seed_user,

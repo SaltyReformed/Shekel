@@ -11,20 +11,134 @@ Both of the two things read off a period here -- its ordinal and its id -- are
 answered by the derived value, and the ordinal is one of the two columns plan
 step **C4** drops, so a helper keyed on the stored one would have had to move
 anyway.
+
+**The horizons are named in MONTHS and resolved in PAY PERIODS, and until
+recurrence plan step R-F17 the second half of that sentence was hardcoded.**
+``HORIZON_OFFSETS`` was ``(("3 months", 6), ("6 months", 13), ("1 year", 26))``
+-- ``months x 26 / 12``, which is the truth for an owner paid every fourteen
+days and for nobody else.  The counts are derived per owner now, from the
+cadence they stated, by :meth:`app.services.pay_calendar.PayCadence.paychecks_within`
+(ruling **R-R31**; ledger row **F-17**).  At ``cadence_days = 14`` that
+derivation returns the same 6 / 13 / 26, so no displayed figure moved when it
+landed.
+
+The ``PayCadence`` dependency is a TYPE_CHECKING import alone: this module
+calls a method on a value its caller supplies and constructs nothing, so
+``app.utils`` gains no runtime edge to ``app.services``.
 """
 
-# The 3 / 6 / 12-month balance horizons expressed as biweekly pay-period
-# offsets from the current period (6 / 13 / 26 periods approximate
-# 3 / 6 / 12 months at 26 pay periods per year).
-HORIZON_OFFSETS: tuple[tuple[str, int], ...] = (
-    ("3 months", 6),
-    ("6 months", 13),
-    ("1 year", 26),
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.services.pay_calendar import PayCadence
+
+#: The forward spans this application offers, in MONTHS, each named ONCE.
+#:
+#: Four surfaces render a subset of these -- the account pages' balance chips
+#: (3 / 6 / 12), the grid's date-range buttons (6 / 12 / 24), the mobile Plan
+#: tab (6) and the dashboard pulse chart (6) -- and each names its own labels,
+#: because a chip says "6 months" where a button says "6M" with that as its
+#: tooltip.  What they may
+#: NOT do is name their own NUMBER: two literal sixes in two modules is the
+#: agreement-by-sentence that ledger row **F-17** is, one level up from the
+#: period counts it was about.  ``accounts/detail.py`` held a separate
+#: ``_ONE_YEAR_PERIODS = 26`` whose comment asserted it matched the "1 year"
+#: chip beside it, and that is the shape these constants exist to refuse.
+THREE_MONTHS = 3
+SIX_MONTHS = 6
+ONE_YEAR_MONTHS = 12
+TWO_YEARS_MONTHS = 24
+
+#: The forward balance horizons, as ``(span in months, display label)`` pairs.
+#:
+#: The MONTHS are the fixed thing and the pay-period offset is derived from
+#: them -- the direction ruling **R-R31** settled.  The other direction (fix
+#: the offsets, derive the label) was rejected: it makes the chips read "1.4
+#: months" for a weekly owner, and the labels stop being comparable between
+#: two people on different cadences.
+HORIZON_MONTHS: tuple[tuple[int, str], ...] = (
+    (THREE_MONTHS, "3 months"),
+    (SIX_MONTHS, "6 months"),
+    (ONE_YEAR_MONTHS, "1 year"),
 )
 
 
-def project_balance_horizons(current_period, all_periods, balance_map):
-    """Pick the projected balance at each 3 / 6 / 12-month horizon.
+def offered_spans(cadence: PayCadence, spans):
+    """Resolve each labelled span into a paycheck count, dropping the unreachable.
+
+    **The ONE implementation of ruling R-R31's second half.**  Every surface
+    that offers a set of month-named windows asks the same two questions of
+    each -- how many of this owner's paychecks does it reach, and is that zero
+    -- and the account chips and the grid range buttons each answered them with
+    their own copy of this loop until an adversarial design review of plan step
+    **R-F17** pointed out that pylint's ``duplicate-code`` cannot see the
+    duplication, because the two carry different label shapes.  That is the
+    R0801-invisible semantic duplication ``docs/audits/pylint-cleanup/
+    deep-quality-hunt.md`` row 35 already caught once on this very module.
+
+    **A horizon no paycheck reaches is dropped rather than clamped**: the pay
+    period is this application's finest forward resolution, so a window
+    resolving to zero has no column to show, and the alternatives -- the
+    current period's own end balance, or a fabricated ``$0.00`` -- are both
+    figures the app did not compute.
+
+    Args:
+        cadence: The owner's :class:`~app.services.pay_calendar.PayCadence`.
+            **Resolve it only where a current pay period exists**: a calendar
+            with no paydays carries no cadence and refuses, and a current
+            period is what proves it has some.
+        spans: ``(months, *label_fields)`` tuples.  The label fields are
+            CARRIED, never read, so each surface passes whatever shape it
+            renders -- one label for a chip, a button label plus a tooltip for
+            the grid.
+
+    Returns:
+        ``(count, *label_fields)`` tuples in input order, omitting every span
+        this owner's cadence reaches no paycheck inside.
+    """
+    resolved = []
+    for months, *label_fields in spans:
+        count = cadence.paychecks_within(months)
+        if count:
+            resolved.append((count, *label_fields))
+    return resolved
+
+
+def horizon_offsets(cadence: PayCadence) -> tuple[tuple[str, int], ...]:
+    """Return the ``(label, pay-period offset)`` pairs for one owner's cadence.
+
+    Resolve it ONCE per read pass and thread it: ``/savings`` projects every
+    account through :func:`project_balance_horizons` in a loop, and deriving
+    the same three offsets per account would be the redundant-producer shape
+    this package's :class:`~app.services.savings_dashboard_service._types._ProjectionContext`
+    exists to prevent.
+
+    The offset is read as the LAST PAYCHECK WITHIN the span -- period
+    ``current + offset`` -- where the grid reads the same number as a COUNT of
+    columns starting at the current period.  The two differ by one pay period;
+    see :meth:`~app.services.pay_calendar.PayCadence.paychecks_within`.
+
+    Args:
+        cadence: The owner's :class:`~app.services.pay_calendar.PayCadence`,
+            resolved only where a current pay period proves it is readable.
+
+    Returns:
+        The reachable horizons in :data:`HORIZON_MONTHS` order, each paired
+        with how many pay periods ahead of the current one it lands.  A horizon
+        the owner's cadence reaches no paycheck inside is absent (ruling
+        **R-R31**); the twelve-month one is never absent, so the tuple is never
+        empty for a real cadence.
+    """
+    return tuple(
+        (label, offset)
+        for offset, label in offered_spans(cadence, HORIZON_MONTHS)
+    )
+
+
+def project_balance_horizons(current_period, all_periods, balance_map, offsets):
+    """Pick the projected balance at each of the owner's forward horizons.
 
     For each horizon offset, finds the pay period whose ``period_index``
     is ``current_period.period_index + offset`` and, when a balance
@@ -48,6 +162,10 @@ def project_balance_horizons(current_period, all_periods, balance_map):
             :mod:`app.services.balance_at` seam, which reports over the same
             pass's ``reported_periods()``, so a period taken from that
             window and this map name one calendar.
+        offsets: The owner's ``(label, offset)`` pairs from
+            :func:`horizon_offsets`.  Passed in rather than derived here so a
+            per-account loop resolves them once; an empty tuple is the honest
+            answer for an owner with no current period and yields no rows.
 
     Returns:
         Dict of horizon label ("3 months" / "6 months" / "1 year") to
@@ -57,7 +175,7 @@ def project_balance_horizons(current_period, all_periods, balance_map):
     projected = {}
     if current_period is None:
         return projected
-    for label, offset in HORIZON_OFFSETS:
+    for label, offset in offsets:
         target_idx = current_period.period_index + offset
         for period in all_periods:
             if (period.period_index == target_idx

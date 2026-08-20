@@ -73,6 +73,7 @@ from app.services.savings_dashboard_service._types import (
     _ProjectionContext,
 )
 from app.utils.money import round_money
+from app.utils.period_projections import horizon_offsets
 
 if TYPE_CHECKING:
     from app.services.pay_calendar import PayCalendar
@@ -112,6 +113,29 @@ def _build_projection_context(
         current_period=core.current_period,
         params=params,
         balance_ctx=core.balance_ctx,
+        # The forward horizons resolve ONCE for the whole loop (plan step
+        # R-F17), and behind the current period rather than beside it.
+        # ``PayCalendar.cadence`` REFUSES a calendar holding no paydays, and a
+        # current period is the proof it holds some -- ``derive_periods``
+        # refuses a payday beside an absent cadence at construction.
+        #
+        # **The state is reachable and was measured, not assumed**: an account
+        # carries no anchor PERIOD since rulings R-EH / R-EO dropped both
+        # columns, so an owner can hold accounts and no pay periods, and with
+        # no ``budget.pay_schedule`` row their cadence is genuinely unstated.
+        # What the guard protects is the THREE NARROW producers that share this
+        # builder -- ``compute_debt_summary``, ``compute_goal_progress`` and
+        # ``compute_account_balance_cell`` -- none of which publishes a
+        # horizon; the full dashboard reads ``calendar.cadence`` for its
+        # emergency-fund coverage regardless and refuses for that owner either
+        # way.  Resolving here unguarded would refuse for a figure the
+        # fragment never shows, which is the shape the ``gross_monthly``
+        # comment in :func:`_debt_summary_with_dti` records this package
+        # already paying for once.
+        horizon_offsets=(
+            horizon_offsets(core.balance_ctx.calendar().cadence)
+            if core.current_period is not None else ()
+        ),
     )
 
 
