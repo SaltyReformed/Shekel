@@ -297,6 +297,17 @@ def _absorb_gained_facts(
     # leaving the column untouched.
     if recorded.transaction_on is None and keyed.line.transaction_on is not None:
         recorded.transaction_on = keyed.line.transaction_on
+    # **The merchant joins the same rule at plan step X-f6a-3d**, and it is the
+    # one a RULE matches on: a line whose merchant is NULL joins no destination
+    # policy, so a row recorded by an adapter that could not name a merchant
+    # would go on being offered a bare chooser forever, even after an export
+    # that DOES name one had been imported over it.  The direction is the same
+    # as every arm above -- ``NULL`` is filled, a disagreement is left alone --
+    # and a disagreement cannot arrive here anyway: this merchant is read from
+    # the same cell as ``description``, which :func:`_refuse_restatement`
+    # compares first.
+    if recorded.merchant is None and keyed.line.merchant:
+        recorded.merchant = keyed.line.merchant
 
 
 def _fresh_lines(
@@ -349,6 +360,7 @@ def _stage_lines(
             transaction_on=line.transaction_on,
             amount=line.amount,
             description=line.description,
+            merchant=line.merchant,
             source_category=line.source_category,
             external_id=line.external_id,
             sequence_in_group=keyed.sequence_in_group,

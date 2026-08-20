@@ -14,7 +14,6 @@ no Flask import, no query, no clock read.
 from __future__ import annotations
 
 import enum
-import re
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -202,66 +201,42 @@ class Candidates:
     unpriceable_ids: "tuple[int, ...]"
 
 
-#: The merchant SECU puts in PARENTHESES at the end of a description cell.
-#: A delimited trailing token, exactly like the ``DATE MM-DD`` field
-#: ``_secu_csv._stated_transaction_day`` reads, and better covered: it is
-#: present on **361 of 361** of the developer's recorded lines where the stated
-#: day is on 182, and 0 of those lines carry the ``Description | Memo`` join at
-#: all, so the token is the source's own field rather than a user's free text.
-_MERCHANT = re.compile(r"\(([^()]{1,100})\)\s*$")
+def merchant_label(line) -> str:
+    """Return what to CALL this line's merchant, always non-empty.
 
-#: What the SECU CSV reader puts between a line's description and the user's own
-#: memo (``_secu_csv``).  Its presence is what makes a trailing parenthesis
-#: ambiguous, so :func:`merchant_of` declines rather than guessing whose it is.
-_MEMO_JOIN = " | "
+    The bank's own merchant where the source names one
+    (``bank_statement_lines.merchant``), else the whole description.  **Two
+    consumers, and both need a string rather than an answer**: the new-envelope
+    name box on the review screen, and the description
+    :func:`~._create.create_purchase_from_line` gives the purchase it writes.
+    ``transactions.name`` and ``transaction_entries.description`` are both NOT
+    NULL, and neither door goes through a schema that would supply a default,
+    so the fallback is what makes those writes total.
 
+    **It is a LABEL and never a key**, which is the whole distinction plan step
+    ``bank_import:X-f6a-3d`` drew: a merchant destination policy is keyed by
+    the COLUMN, which is ``None`` for a source that names no merchant, so a
+    policy fires on nothing there.  This falls back to the description instead,
+    because a name box cannot show ``None`` -- and if the two were one
+    function, that fallback would become a key and a whole truncated OFX
+    statement would share it.  The predecessor
+    (``merchant_of(description)``) WAS one function, parsing the description at
+    render time; what replaced it is the adapter recording the fact and this
+    reader choosing how to display it.
 
-def merchant_of(description: str) -> str:
-    """Return what the bank called the merchant, else the whole description.
-
-    **A DISPLAY default and never logic**, which is the distinction that makes
-    reading a token out of a text column legitimate here.  Nothing branches on
-    this: it prefills the name box on the new-envelope arm and names the
-    purchase :mod:`._create` writes, both of which the owner can edit
-    afterwards, and the bank's full description stays on the statement line
-    forever with the match relation tying the two together.  A wrong parse
-    costs a badly-named row, never a figure.
-
-    **It is TOTAL, which is what lets a second adapter reach it.**  A source
-    whose descriptions carry no such token -- SECU's own OFX truncates 326 of
-    361 to 32 characters and would have no room for one -- falls back to the
-    description itself, which is the honest answer rather than an empty name a
-    NOT NULL column would then refuse.
+    **Structurally typed** over :class:`BankLine` and
+    :class:`~app.models.statement_import.BankStatementLine` alike -- each
+    exposes ``merchant`` and ``description`` -- which is
+    :meth:`MatchDays.of`'s idiom: one rule, stated once, over whichever of the
+    two shapes the caller already holds.
 
     Args:
-        description: The recorded line's description, verbatim.
+        line: A recorded line, in either shape.
 
     Returns:
-        The bank's merchant where this description states exactly one
-        unambiguously -- a single parenthesised trailing token, no memo, not
-        blank -- else *description* unchanged.
+        The label.
     """
-    if _MEMO_JOIN in description:
-        # A MEMO is the user's own free text, appended by the adapter after
-        # ``|``.  Its parentheses are indistinguishable from the bank's, so a
-        # memo ending "(anything)" would become the merchant and the envelope
-        # name.  ``_secu_csv._stated_transaction_day`` makes the same bound
-        # STRUCTURAL by reading the Description CELL; this reader only has the
-        # joined column, so it declines instead.  0 of the developer's 361
-        # lines carry a memo, which is a fact about today's data and not the
-        # bound.  Found by adversarial financial review 2026-08-19.
-        return description
-    found = _MERCHANT.findall(description)
-    # EXACTLY one, for the reason ``_stated_transaction_day`` gives for its own
-    # token: with two, which one is "the" merchant is a guess.  A first version
-    # used ``search`` and silently took the LAST.
-    if len(found) != 1:
-        return description
-    merchant = found[0].strip()
-    # An all-whitespace token is not a name.  ``transaction_entries.description``
-    # is NOT NULL and this door calls ``create_entry`` directly, so no schema
-    # length rule stands behind it.
-    return merchant or description
+    return line.merchant or line.description
 
 
 @dataclass(frozen=True)
@@ -280,6 +255,12 @@ class BankLine:
             is carried here rather than re-read at the write door: the
             proposer has to know it too, because whether that write can
             succeed is what decides whether the pairing may be OFFERED.
+        merchant: What the bank NAMES the merchant, or ``None`` where the
+            source names none.  **Carried from the column rather than parsed
+            from :attr:`description`** (plan step ``bank_import:X-f6a-3d``):
+            it is the key a destination policy is stated against, and a reader
+            that derived it would have to be total, which on a source with no
+            merchant field means every line keying one policy.
     """
 
     line_id: int
@@ -287,11 +268,45 @@ class BankLine:
     amount: Decimal
     description: str
     transaction_on: "date | None" = None
+    merchant: "str | None" = None
 
     @property
-    def merchant(self) -> str:
-        """Return what the bank called the merchant (:func:`merchant_of`)."""
-        return merchant_of(self.description)
+    def merchant_label(self) -> str:
+        """Return what to call this line's merchant (:func:`merchant_label`)."""
+        return merchant_label(self)
+
+    @property
+    def states_impossible_days(self) -> bool:
+        """Return whether the bank dates this line MADE after it POSTED.
+
+        Two of a source's own facts contradicting each other, which the schema
+        deliberately admits: ``bank_statement_lines`` imposes no
+        ``transaction_on <= posted_on`` CHECK because 2 of 361 lines in the
+        developer's own OFX carry an ``DTUSER`` one day after their
+        ``DTPOSTED``, and a constraint a real statement violates would make the
+        truth unimportable.
+
+        **So the guard is a reader's, and it is stated HERE because two readers
+        ask it** (finding **N-325**).  :func:`~._propose._within_window` asks it
+        to decide whether a purchase recorded after the line posted may still
+        be paired -- it may, because the bank's own stated day is later too --
+        and :func:`~._reads._creatable_lines` asks it to decline OFFERING such a
+        line as a purchase at all, because ``entry_service.create_entry``
+        refuses a purchase whose money left before it was spent and the screen
+        would be rendering a chooser whose submission can never succeed.  Two
+        spellings of one predicate on a money screen is this arc's own root
+        cause 1 -- and this sentence was FALSE when first written: the proposer
+        went on spelling it inline, so the claim described an intention rather
+        than the tree.  Both adversarial reviews of 2026-08-19 caught it.
+
+        0 of the developer's 361 recorded lines are this shape; the OFX
+        adapter's own measurement found 2 of 361, so a second source makes it
+        live.
+        """
+        return (
+            self.transaction_on is not None
+            and self.transaction_on > self.posted_on
+        )
 
     @property
     def happened_on(self) -> date:
@@ -620,12 +635,39 @@ class PurchaseDestination:
             raises what that row RECORDS as its cost, which is a bigger thing
             to do than filling in an open budget, so the screen says which it
             is rather than leaving the reviewer to know.
+        template_id: The recurring definition this row was generated from, or
+            ``None`` for an ad-hoc one.  **It is the row's identity ACROSS pay
+            periods, and that is what a merchant destination policy is keyed
+            on** (plan step ``bank_import:X-f6a-3d``): a policy cannot name
+            ``transaction_id`` -- an envelope belongs to one period, and the 24
+            unexplained Amazon lines on the developer's own statement fall in
+            ten of them -- and it cannot name the NAME either, because template
+            22 generated a row called ``Kayla`` in one period and ``Kayla's
+            Spending Money`` in the other 60.  ``None`` is a real answer and it
+            means this row can hold a purchase but can never be a POLICY's
+            destination, because there is nothing period-independent to
+            remember about it.
     """
 
     transaction_id: int
     label: str
     pay_period_id: int
     is_settled: bool
+    template_id: "int | None" = None
+
+
+#: What the destination select submits for the create-a-new-envelope arm, and
+#: the ONE definition of it.
+#:
+#: **It lives in the service because the service PRODUCES it**:
+#: :attr:`~._policy.Placement.select_value` answers what a line's control would
+#: be set to, so the value is part of what this package says rather than only
+#: something a schema reads.  ``app.schemas.validation.statements`` imports it
+#: -- the direction that module already takes for
+#: ``statement_import.supported_sources`` -- rather than declaring a second
+#: literal, because two spellings of one wire value is a rule stated twice and
+#: this package's own root cause 1.
+NEW_ENVELOPE: str = "new"
 
 
 @dataclass(frozen=True)

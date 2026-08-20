@@ -36,6 +36,19 @@ class TransactionTemplate(
 
     __tablename__ = "transaction_templates"
     __table_args__ = (
+        # The SUPERKEY ``fk_merchant_destinations_template_account`` targets, so
+        # a merchant destination policy's template is provably on the policy's
+        # own ACCOUNT (plan step ``bank_import:X-f6a-3d``).  It constrains
+        # nothing -- ``id`` is already the primary key -- and exists only
+        # because PostgreSQL requires a UNIQUE over exactly the referenced
+        # columns before a composite foreign key may target them.  The same
+        # construction, for the same reason, as ``uq_accounts_id_user``.
+        # **Declared HERE as well as in the migration**: a constraint the
+        # migration creates and the model does not know about is one the next
+        # ``flask db migrate`` emits a DROP for.
+        db.UniqueConstraint(
+            "id", "account_id", name="uq_transaction_templates_id_account",
+        ),
         db.Index("idx_templates_user_type", "user_id", "transaction_type_id"),
         db.CheckConstraint("default_amount >= 0", name="ck_transaction_templates_nonneg_amount"),
         db.CheckConstraint(

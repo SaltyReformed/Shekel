@@ -100,6 +100,16 @@ _DATE_FORMAT = "%m/%d/%Y"
 #: is what :func:`_stated_transaction_day` exists to resolve.
 _STATED_DAY = re.compile(r"\bDATE (\d{2})-(\d{2})\b")
 
+#: The merchant SECU appends in PARENTHESES at the end of a description cell,
+#: as a delimited trailing token exactly like the ``DATE MM-DD`` field above
+#: and better covered: it is present on **361 of 361** of the developer's lines
+#: where the stated day is on 182.  Anchored at the end of the cell, so an
+#: earlier ``(...)`` inside the bank's own wording is not a candidate and there
+#: is never more than one.  The 100 matches
+#: ``bank_statement_lines.merchant``'s own width; the longest the developer's
+#: export carries is 28 (``Department of motor vehicles``).
+_MERCHANT = re.compile(r"\(([^()]{1,100})\)\s*$")
+
 #: The largest file this adapter will read, in lines.  The developer's own
 #: full year-to-date export is 361; a decade of weekly activity is under 6,000.
 #: It exists because one import writes one row per line AND one audit row per
@@ -436,6 +446,54 @@ def _stated_transaction_day(
     return None
 
 
+def _stated_merchant(description: str) -> "str | None":
+    """Return the merchant SECU names for this line, or ``None``.
+
+    **The bank names it, this does not infer it** -- the same distinction
+    :func:`_stated_transaction_day` rests on, and better covered: SECU appends
+    its own normalized merchant in PARENTHESES at the end of the description
+    cell on **361 of 361** of the developer's lines, where the stated day is on
+    182.  ``... BJS FUEL #9151 25GARNER     NC (BJ's Fuel)`` names ``BJ's
+    Fuel``.
+
+    **What it is FOR** (plan step ``bank_import:X-f6a-3d``): it is the KEY a
+    merchant DESTINATION POLICY is stated against -- *lines from this merchant
+    go in this budget line* -- so it is a fact the adapter records rather than
+    a token a reader parses.  It was a reader
+    (``statement_match._offers.merchant_of``), which was right while the only
+    consumer was a form's name box: a wrong parse cost a badly-named row.  A
+    rule that MATCHES on it is a stronger claim, and the reader could not make
+    it -- being TOTAL, it fell back to the whole description, and SECU's own
+    OFX truncates 326 of 361 descriptions to the same 32 characters, so a
+    policy keyed that way would fire on every merchant at once.
+
+    **Read from the DESCRIPTION cell, never the ``Description | Memo`` text the
+    row stores**, which is the bound :func:`_stated_transaction_day` learned to
+    make structural on 2026-08-18: a memo is the user's own free text and its
+    parentheses are indistinguishable from the bank's, so a memo ending
+    "(anything)" would become the merchant -- and, now, the key a policy fires
+    on.  Reading the cell makes that unreachable rather than guarded against.
+
+    Args:
+        description: The bank's DESCRIPTION cell, verbatim and untruncated.
+
+    Returns:
+        The merchant, trimmed, or ``None`` when this line names none.  The
+        pattern is anchored at the end of the cell, so there is exactly one
+        candidate token or none at all -- an earlier ``(...)`` inside the
+        bank's own wording is part of the description and is not a candidate.
+    """
+    found = _MERCHANT.search(description)
+    if found is None:
+        return None
+    # An all-whitespace token is not a name, and here that matters more than it
+    # did for a display default: this string is a policy's KEY, and a blank one
+    # would be a rule the owner could neither read nor restate.
+    # ``ck_bank_statement_lines_merchant_not_blank`` says the same thing in the
+    # database, so the two cannot drift.
+    return found.group(1).strip() or None
+
+
 def _account_identity(row: "list[str]", columns: "dict[str, int]") -> str:
     """Return what this file calls its account: the NAME and the number.
 
@@ -602,6 +660,11 @@ def parse(payload: bytes) -> "tuple[str, list[StatementLine]]":
             transaction_on=_stated_transaction_day(description, posted_on),
             amount=_row_amount(row, columns),
             description=joined,
+            # **The merchant the bank NAMES, read from the same cell and for
+            # the same reason** (plan step X-f6a-3d): it is the key a
+            # destination policy is stated against, so a memo's own
+            # parentheses must not be able to reach it.
+            merchant=_stated_merchant(description),
             source_category=_cell(row, columns, "Category")[:100] or None,
             external_id=None,
             running_balance=(

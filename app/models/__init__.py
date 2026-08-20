@@ -61,6 +61,7 @@ from app.models.loan_features import RateHistory
 from app.models.escrow_line import EscrowLine, EscrowComponentVersion
 from app.models.investment_params import InvestmentParams
 from app.models.asset_appreciation_params import AssetAppreciationParams
+from app.models.merchant_destination import MerchantDestination
 from app.models.statement_import import (
     AccountExternalIdentity,
     BankStatementLine,
@@ -146,6 +147,7 @@ __all__ = [
     "EscrowComponentVersion",
     "InvestmentParams",
     "AssetAppreciationParams",
+    "MerchantDestination",
     "AccountExternalIdentity",
     "BankStatementLine",
     "StatementImport",

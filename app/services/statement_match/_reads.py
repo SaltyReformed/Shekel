@@ -27,80 +27,21 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy.orm import selectinload
-
-from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app.models.statement_import import BankStatementLine
-from app.models.statement_match import StatementMatch, StatementMatchMember
-from app.models.transaction import Transaction
-from app.models.transaction_entry import TransactionEntry
-from app.services import cash_ledger
-from app.utils.balance_predicates import is_balance_contributing
-from app.utils.money import round_money
+from app.models.statement_match import StatementMatchMember
 
+from ._accepted_view import AcceptedGroup, accepted_groups
 from ._candidates import (
     matched_subjects,
     unmatched_destinations,
     unmatched_rows,
 )
 from ._offers import BankLine, CandidateRow, MatchProposal, PurchaseDestination
+from ._placement import Placement, placements_for
+from ._policy import PolicyView
 from ._propose import propose
 from ._scope import ReviewScope
-
-
-@dataclass(frozen=True)
-class AcceptedRow:
-    """One member of an accepted match, as the screen lists it.
-
-    Attributes:
-        label: What to call the app row.
-        settled_on: The day it currently records, which is the bank's own day
-            for a match still in agreement.
-        cash_amount: Its signed cash effect NOW, or ``None`` when the amount
-            model can no longer price it.  Carried because
-            :func:`_still_holds` re-asks the balance the accept door checked,
-            and a member that has since been soft-deleted contributes zero --
-            which no test over days could see.
-        agrees: Whether that day is still the one the match asserted.
-    """
-
-    label: str
-    settled_on: "date | None"
-    cash_amount: "Decimal | None"
-    agrees: bool
-
-
-@dataclass(frozen=True)
-class AcceptedGroup:
-    """One accepted match, as the screen lists it.
-
-    Attributes:
-        match_id: The act, so the screen can offer to release it.
-        posts_on: The day the match asserted -- the latest of its bank days,
-            derived here rather than stored (see
-            :mod:`app.models.statement_match`).
-        amount: The signed total its bank lines state.
-        descriptions: What the bank called each line.
-        rows: Its app rows.
-        agrees: Whether the match still HOLDS -- which is three questions, not
-            one, and a first draft asked only the first.  Every row still
-            carries ``posts_on``; the act still names at least one row; and the
-            rows still SUM to what the bank stated.  The second and third are
-            what a CASCADE breaks: deleting a purchase or destroying a pay
-            period removes that member silently, and a day-only test then
-            reports a group that explains less than it claims -- or, when every
-            row goes, nothing at all -- as still agreeing with the bank.  False
-            is not a corruption; it means the match wants re-reviewing, and the
-            screen offers it for exactly that.
-    """
-
-    match_id: int
-    posts_on: date
-    amount: Decimal
-    descriptions: "tuple[str, ...]"
-    rows: "tuple[AcceptedRow, ...]"
-    agrees: bool
 
 
 @dataclass(frozen=True)
@@ -126,6 +67,20 @@ class ReviewBounds:
         unpriceable_count: How many of the account's rows the amount model
             could not price, so they could not be offered
             (:class:`~._offers.Candidates`).
+        impossible_day_count: How many unexplained OUTFLOWS the bank dates as
+            MADE after it POSTED them, so no day exists that a purchase could
+            be made on (finding **N-325**, developer ruling 2026-08-19).
+            ``entry_service.create_entry`` refuses a purchase whose money left
+            before it was spent, correctly, so offering these a destination
+            chooser renders a control whose submission can never succeed --
+            the *chooser whose submission always fails* shape this package has
+            now named four times.  **Reported rather than repaired**: the
+            other remedy was to clamp the purchase day to the earlier of the
+            two, which decides which day the app believes when the bank
+            contradicts itself, and ruling **R-FW** refused exactly that
+            substitution one clock over.  0 of the developer's own 361
+            recorded lines are this shape; the OFX adapter's own measurement
+            found 2 of 361, so a second source makes it live.
     """
 
     calendar_opens: "date | None"
@@ -133,19 +88,21 @@ class ReviewBounds:
     before_calendar_last_day: "date | None"
     crowded_days: "tuple[date, ...]"
     unpriceable_count: int
+    impossible_day_count: int = 0
 
     @property
     def any_limit(self) -> bool:
         """Return whether this pass left anything unexamined.
 
-        The one question the template asks, answered here rather than as three
-        ``or``-ed truth tests in a Jinja condition -- where a fourth limit
+        The one question the template asks, answered here rather than as four
+        ``or``-ed truth tests in a Jinja condition -- where a fifth limit
         added later would silently not appear.
         """
         return bool(
             self.before_calendar_count
             or self.crowded_days
             or self.unpriceable_count
+            or self.impossible_day_count
         )
 
 
@@ -176,11 +133,92 @@ class CreatableLine:
             all three closed at a fixed figure, so 8 lines worth `$662.13` have
             no existing destination and a NEW envelope is the only arm open to
             them.
+        placement: What the owner's stated MERCHANT POLICY comes to for this
+            line (:class:`~._policy.Placement`), or ``None`` when they have not
+            said where this merchant goes -- which is a different answer from
+            "they said never" and the screen says it differently.  Plan step
+            ``bank_import:X-f6a-3d``.
+            **It is a SUGGESTION and never a tick**: the destination select
+            still opens on *leave this line alone*, and what turns a placement
+            into an act is the owner pressing the sweep.  A remembered
+            destination that arrived already selected would be a default
+            pointing at money, which is what ruling **R-FZ** removed.
     """
 
     line: BankLine
     pay_period_id: "int | None"
     destinations: "tuple[PurchaseDestination, ...]"
+    placement: Placement | None = None
+
+
+@dataclass(frozen=True)
+class MerchantSummary:
+    """One merchant the policy section asks the owner about.
+
+    Attributes:
+        merchant: The bank's own merchant string, which is the policy key.
+        policy: What the owner has said, or ``None`` for *not said yet*.
+        line_count: How many of THIS pass's unexplained outflows it names.
+            Zero for a merchant whose lines are all explained today and whose
+            policy the owner may still want to see or withdraw.
+        stale_template_label: What to call the recurring definition this
+            merchant's stored answer names, when that definition is no longer
+            offerable -- else ``None``.  The screen renders it as an option of
+            its own, because a select with no selected option submits its
+            FIRST, which here means *I have not said*: without it the screen
+            reported such a policy as unanswered and the next Save silently
+            withdrew it (:attr:`~._policy.PolicyView.stale_templates`).
+        total: What those lines come to, signed.  **The section is where a
+            decision is made about several lines at once, so it has to say how
+            much money it is a decision about**: on the developer's own
+            statement one row of it covers `-$7,412.94`.
+    """
+
+    merchant: str
+    policy: "MerchantPolicy | None"
+    line_count: int
+    total: Decimal
+    stale_template_label: "str | None" = None
+
+
+@dataclass(frozen=True)
+class MerchantSection:
+    """The policy control: where this account's merchants go.
+
+    Plan step ``bank_import:X-f6a-3d``.  **It is the screen's shape matching
+    the model's.**  The leftover list asks 91 questions on the developer's own
+    statement and the real question is asked 21 times, so a screen with 91
+    selects and no per-merchant control is rendering a decision the owner does
+    not actually make one line at a time.
+
+    **Stating a policy here MOVES NO MONEY**, which is why it is a separate
+    control posting to a separate door: the placements it produces are
+    suggestions, and the destination select on each line still opens on *leave
+    this line alone* (ruling **R-FZ**).
+
+    Attributes:
+        merchants: One row per merchant this pass has an unexplained outflow
+            for, PLUS every merchant the owner has already answered for --
+            ascending.  The second half is what makes a policy visible and
+            withdrawable once its lines are all explained; without it an answer
+            could only be changed while there was work outstanding.  It is
+            NARROWER than what a statement may legitimately name
+            (:func:`~._policy.merchants_on`, every merchant the account has
+            ever recorded), and deliberately: a merchant with neither pending
+            work nor an answer is not a question anyone is asking today.
+        templates: The recurring definitions a policy on this account may name
+            (:func:`~._policy.offerable_templates`), as ``(id, name)``
+            ascending by name.  The option list, and the same set
+            :func:`~._policy.state_policies` checks a submission against.
+    """
+
+    merchants: "tuple[MerchantSummary, ...]"
+    templates: "tuple[tuple[int, str], ...]"
+
+    @property
+    def answered_count(self) -> int:
+        """Return how many of these merchants the owner has answered for."""
+        return sum(1 for row in self.merchants if row.policy is not None)
 
 
 @dataclass(frozen=True)
@@ -209,6 +247,8 @@ class ReviewSet:
             knows which it is.  Inflows are absent -- a purchase is an expense
             (``ck_transaction_entries_positive_amount``), so a deposit or a
             card refund can only ever be matched to a row.
+        merchants: The policy control (:class:`MerchantSection`) -- where this
+            account's merchants go, and what the owner has already said.
         bounds: What this pass did NOT look at (:class:`ReviewBounds`).
     """
 
@@ -217,7 +257,36 @@ class ReviewSet:
     unmatched_rows: "tuple[CandidateRow, ...]"
     accepted: "tuple[AcceptedGroup, ...]"
     creatable: "tuple[CreatableLine, ...]"
+    merchants: MerchantSection
     bounds: ReviewBounds
+
+    @property
+    def placed_by_class(self) -> "dict[str, int]":
+        """Return how many creatable lines each sweep CLASS would tick.
+
+        **Counted where the sweep's own rule is**
+        (:attr:`~._policy.Placement.sweep_class`) rather than as a Jinja
+        expression, so a caption cannot promise a number the control does not
+        deliver.  A placement that is not an act -- *never a purchase*, or a
+        policy that does not reach this line -- has no class and is not
+        counted.
+
+        The three partition, for the reason
+        :attr:`~._offers.MatchProposal.review_class`'s three do: filing into an
+        open budget line, raising what a closed one records, and minting one
+        the account did not have are different acts with different
+        consequences, and ruling **R-FZ(c)** is that the riskiest may not ride
+        the same click as the safest.
+        """
+        counts: "dict[str, int]" = {}
+        for item in self.creatable:
+            group = (
+                item.placement.sweep_class
+                if item.placement is not None else None
+            )
+            if group is not None:
+                counts[group] = counts.get(group, 0) + 1
+        return counts
 
 
 def _covered_span(account_id: int) -> "tuple[date, date] | None":
@@ -315,216 +384,28 @@ def _as_bank_line(row: BankStatementLine) -> BankLine:
         amount=Decimal(str(row.amount)),
         description=row.description,
         transaction_on=row.transaction_on,
+        merchant=row.merchant,
     )
-
-
-def _accepted_groups(
-    owner_id: int, account_id: int,
-) -> "list[AcceptedGroup]":
-    """Return this account's accepted matches, newest first.
-
-    Args:
-        owner_id: The user whose matches to list.
-        account_id: The account.
-
-    Returns:
-        One :class:`AcceptedGroup` per act.  A group whose rows no longer carry
-        the day it asserted is flagged rather than hidden: it is the shape a
-        later hand edit produces, and the screen is where it can be re-reviewed.
-    """
-    matches = (
-        db.session.query(StatementMatch)
-        .options(selectinload(StatementMatch.members))
-        .filter(
-            StatementMatch.account_id == account_id,
-            StatementMatch.user_id == owner_id,
-        )
-        .order_by(StatementMatch.created_at.desc(), StatementMatch.id.desc())
-        .all()
-    )
-    if not matches:
-        return []
-
-    member_rows = [member for match in matches for member in match.members]
-    lines = _by_id(BankStatementLine, {
-        member.bank_statement_line_id for member in member_rows
-        if member.bank_statement_line_id is not None
-    })
-    transactions = _by_id(Transaction, {
-        member.transaction_id for member in member_rows
-        if member.transaction_id is not None
-    })
-    entries = _by_id(TransactionEntry, {
-        member.transaction_entry_id for member in member_rows
-        if member.transaction_entry_id is not None
-    })
-
-    groups = []
-    for match in matches:
-        match_lines = [
-            lines[member.bank_statement_line_id] for member in match.members
-            if member.bank_statement_line_id is not None
-        ]
-        if not match_lines:
-            # Every line CASCADED away with its import or its account.  The act
-            # asserts nothing about a bank any more, so it is not listed --
-            # deleting it here would be a write inside a reader.
-            continue
-        posts_on = max(line.posted_on for line in match_lines)
-        rows = [
-            _accepted_row(
-                transactions[member.transaction_id]
-                if member.transaction_id is not None
-                else entries[member.transaction_entry_id],
-                posts_on,
-            )
-            for member in match.members
-            if member.transaction_id is not None
-            or member.transaction_entry_id is not None
-        ]
-        groups.append(AcceptedGroup(
-            match_id=match.id,
-            posts_on=posts_on,
-            amount=sum(
-                (Decimal(str(line.amount)) for line in match_lines),
-                Decimal("0.00"),
-            ),
-            descriptions=tuple(line.description for line in match_lines),
-            rows=tuple(rows),
-            agrees=_still_holds(rows, match_lines, posts_on),
-        ))
-    return groups
-
-
-def _accepted_row(row, posts_on: date) -> AcceptedRow:
-    """Return one member of an accepted match, valued as it stands NOW.
-
-    **The valuation is the cash ledger's, and it is what makes a soft-deleted
-    member visible.**  ``settled_cash_leg`` answers ``0.00`` for a row that
-    contributes nothing -- soft-deleted, Credit or Cancelled -- so a member
-    that has quietly left the balance shows up in :func:`_still_holds`'s sum
-    even though its recorded day is untouched.  A purchase takes the same gate
-    through its PARENT, which is ruling **R-FM**: a non-contributing row's
-    purchases post nothing either.
-
-    Args:
-        row: The :class:`~app.models.transaction.Transaction` or
-            :class:`~app.models.transaction_entry.TransactionEntry` the member
-            names.
-        posts_on: The day the match asserted.
-
-    Returns:
-        Its :class:`AcceptedRow`.
-    """
-    if isinstance(row, Transaction):
-        try:
-            amount = cash_ledger.settled_cash_leg(row)
-        except AmountUnresolvable:
-            # **A member the amount model cannot price stops the match holding
-            # rather than stopping the page.**  This row is already a match
-            # MEMBER, so it is read on every load and the owner cannot
-            # un-select it -- a raise here would make the screen permanently
-            # unreachable for the account, with no in-app repair, which is
-            # finding N-302's shape.  ``None`` propagates into
-            # :func:`_still_holds` as a sum that cannot be taken, so the group
-            # is offered for re-review, which is the honest answer.
-            amount = None
-        return AcceptedRow(
-            label=row.name, settled_on=row.settled_on,
-            cash_amount=amount,
-            agrees=row.settled_on == posts_on,
-        )
-    # **A CARD purchase moves no cash through THIS account at all** -- it
-    # leaves later through its own CC Payback sibling, which is why
-    # ``credit_entry_sum`` removes it from its parent's leg and the posted
-    # walk filters it out.  ``update_entry`` supports that flip, and the
-    # purchase keeps its ``settled_on`` through it, so a valuation reading the
-    # magnitude alone reported a match as still explaining money that had
-    # stopped being on this statement.  Found by adversarial financial review
-    # 2026-08-17.
-    explains_cash = (
-        is_balance_contributing(row.transaction) and not row.is_credit
-    )
-    return AcceptedRow(
-        label=row.description, settled_on=row.settled_on,
-        cash_amount=(
-            -Decimal(str(row.amount)) if explains_cash else Decimal("0.00")
-        ),
-        agrees=row.settled_on == posts_on,
-    )
-
-
-def _still_holds(
-    rows: "list[AcceptedRow]",
-    lines: "list[BankStatementLine]",
-    posts_on: date,
-) -> bool:
-    """Return whether an accepted match still says what it said when accepted.
-
-    Three questions, because a CASCADE can falsify a match without touching a
-    single day:
-
-    * it still names at least one app row (``all([])`` is True, so a match that
-      lost every row would otherwise report agreement while explaining nothing,
-      and its bank line would stay off the unexplained list permanently);
-    * every row still carries the day the match asserted;
-    * the rows still SUM to what the bank stated -- the invariant
-      :func:`~._accept.accept_match` checks before it writes, asked again of
-      what survives.
-
-    Args:
-        rows: The act's app-row members as the screen holds them.
-        lines: Its bank lines.
-        posts_on: The day it asserted.
-
-    Returns:
-        Whether the match still holds.  A soft-deleted member is caught by the
-        SUM rather than by the day: it keeps its ``settled_on`` and contributes
-        nothing to any balance, so only the total can see it has gone.
-    """
-    if not rows:
-        return False
-    if any(row.cash_amount is None for row in rows):
-        return False
-    if any(row.settled_on != posts_on for row in rows):
-        return False
-    # ``round_money`` on BOTH sides, because the accept door rounds before it
-    # compares (``_accept._reject_unbalanced``) and two spellings of one
-    # invariant is a match the door accepted that this reader calls broken
-    # forever.
-    bank = round_money(
-        sum((Decimal(str(line.amount)) for line in lines), Decimal("0.00")),
-    )
-    app_side = round_money(
-        sum((row.cash_amount for row in rows), Decimal("0.00")),
-    )
-    return bank == app_side
-
-
-def _by_id(model, ids: "set[int]") -> dict:
-    """Return ``{id: row}`` for *ids*, in one statement or none at all.
-
-    Args:
-        model: The mapped class to load.
-        ids: The primary keys wanted.  Empty issues no query -- ``IN ()`` is a
-            statement with no rows to find.
-
-    Returns:
-        The rows by id.
-    """
-    if not ids:
-        return {}
-    return {
-        row.id: row
-        for row in db.session.query(model).filter(model.id.in_(ids)).all()
-    }
 
 
 def _creatable_lines(
     calendar, unmatched: "list[BankLine]",
     destinations: "list[PurchaseDestination]",
+    view: PolicyView,
 ) -> "tuple[CreatableLine, ...]":
     """Return the unmatched OUTFLOWS with the destinations open to each.
+
+    **A line the bank dates MADE after it POSTED is not one of them** (finding
+    **N-325**, developer ruling 2026-08-19).  ``entry_service.create_entry``
+    refuses a purchase whose money left before it was spent, so such a line's
+    destination chooser is a control whose submission can never succeed; it is
+    counted on :class:`ReviewBounds` instead, beside every other thing this
+    pass did not look at.  The rejected remedy was clamping the purchase day to
+    the earlier of the two, which decides which day the app believes when the
+    bank contradicts itself -- the substitution ruling **R-FW** refused one
+    clock over.  The predicate is
+    :attr:`~._offers.BankLine.states_impossible_days`, stated once because
+    :func:`~._propose._within_window` asks it too.
 
     Args:
         calendar: The owner's
@@ -538,16 +419,22 @@ def _creatable_lines(
             whole pass and grouped here rather than
             re-queried per line -- a redundant producer call inside one request
             is this project's DRY violation rather than a cost.
+        view: What the owner has said and what it can resolve against
+            (:class:`~._policy.PolicyView`).
 
     Returns:
-        One :class:`CreatableLine` per outflow, in the order the lines were
-        given.  The per-period destination tuple is SHARED by every line in
-        that period, so a statement with 91 outflows over 11 periods builds 11
-        tuples rather than 91.
+        ``(lines, impossible_day_count)`` -- one :class:`CreatableLine` per
+        offerable outflow in the order the lines were given, and how many were
+        declined for dating their own purchase after their own posting.  The
+        per-period destination tuple is SHARED by every line in that period, so
+        a statement with 91 outflows over 11 periods builds 11 tuples rather
+        than 91.
     """
     outflows = [line for line in unmatched if line.amount < 0]
-    if not outflows:
-        return ()
+    impossible = [line for line in outflows if line.states_impossible_days]
+    offerable = [line for line in outflows if not line.states_impossible_days]
+    if not offerable:
+        return (), len(impossible)
     # ONE pass over the destinations, and ONE placement per line.  Both were
     # asked twice: the grouping rescanned every destination once per period,
     # and each line placed itself once for its id and again for its lookup --
@@ -558,15 +445,118 @@ def _creatable_lines(
         by_period.setdefault(destination.pay_period_id, []).append(destination)
     placed = [
         (line, _period_id_for(calendar, line.happened_on))
-        for line in outflows
+        for line in offerable
     ]
     return tuple(
-        CreatableLine(
-            line=line,
-            pay_period_id=period_id,
-            destinations=tuple(by_period.get(period_id, ())),
-        )
+        _one_creatable(line, period_id, by_period, view)
         for line, period_id in placed
+    ), len(impossible)
+
+
+def _one_creatable(
+    line: BankLine,
+    period_id: "int | None",
+    by_period: "dict[int, list[PurchaseDestination]]",
+    view: PolicyView,
+) -> CreatableLine:
+    """Return one offerable outflow with its destinations and its placement.
+
+    Args:
+        line: The bank line.
+        period_id: The pay period covering the day it was MADE, or ``None``.
+        by_period: The offerable destinations, grouped by period.
+        view: What the owner has said and what it can resolve against.
+
+    Returns:
+        Its :class:`CreatableLine`.  A line no saved period covers gets NO
+        placement, because a policy resolves into a destination and there is no
+        period here for one to be in -- the create door refuses such a line by
+        name (``_create._period_holding``), so suggesting anything for it would
+        be the chooser-that-cannot-succeed shape again.
+    """
+    offered = by_period.get(period_id, [])
+    return CreatableLine(
+        line=line,
+        pay_period_id=period_id,
+        destinations=tuple(offered),
+        placement=(
+            None if period_id is None
+            else placements_for(line.merchant, view, offered)
+        ),
+    )
+
+
+def _merchant_summary(
+    merchant: str, view: PolicyView, line_count: int, total: Decimal,
+) -> MerchantSummary:
+    """Return one row of the policy control.
+
+    Args:
+        merchant: The bank's own merchant string.
+        view: What the owner has said and what it can resolve against.
+        line_count: How many of this pass's unexplained outflows it names.
+        total: What those lines come to, signed.
+
+    Returns:
+        Its :class:`MerchantSummary`, carrying a label for a stored template
+        that has stopped being offerable so the control can show the answer it
+        holds.
+    """
+    policy = view.policies.get(merchant)
+    stale = (
+        policy is not None
+        and policy.template_id is not None
+        and policy.template_id in view.stale_templates
+    )
+    return MerchantSummary(
+        merchant=merchant,
+        policy=policy,
+        line_count=line_count,
+        total=total,
+        stale_template_label=(
+            view.stale_templates[policy.template_id] if stale else None
+        ),
+    )
+
+
+def _merchant_section(
+    creatable: "tuple[CreatableLine, ...]", view: PolicyView,
+) -> MerchantSection:
+    """Return the policy control's rows and its option list.
+
+    Args:
+        creatable: This pass's offerable unexplained outflows, which is what
+            each row counts and totals.
+        view: What the owner has said and what it can resolve against.
+
+    Returns:
+        The :class:`MerchantSection`.  Every merchant with pending work, plus
+        every merchant already answered for, ascending -- so an answer stays
+        visible and withdrawable after the lines that prompted it are gone.
+    """
+    counts: "dict[str, int]" = {}
+    totals: "dict[str, Decimal]" = {}
+    for item in creatable:
+        merchant = item.line.merchant
+        if merchant is None:
+            # A source naming no merchant keys no policy, so there is nothing
+            # to ask about it -- the same NULL that makes a placement
+            # impossible makes a row here meaningless.
+            continue
+        counts[merchant] = counts.get(merchant, 0) + 1
+        totals[merchant] = totals.get(merchant, Decimal("0.00")) + item.line.amount
+    return MerchantSection(
+        merchants=tuple(
+            _merchant_summary(
+                merchant, view,
+                counts.get(merchant, 0),
+                totals.get(merchant, Decimal("0.00")),
+            )
+            for merchant in sorted(set(counts) | set(view.policies))
+        ),
+        templates=tuple(
+            sorted(view.template_names.items(), key=lambda pair: pair[1]),
+        ),
     )
 
 
@@ -655,6 +645,81 @@ def _rows_the_bank_never_showed(
     )
 
 
+@dataclass(frozen=True)
+class _Leftovers:
+    """What this pass could not explain, placed against the owner's policy.
+
+    Three facts one derivation produces that travel together, which is the
+    argument :class:`~._offers.Candidates` and
+    :class:`~._propose.ProposedMatches` already make in this package: a caller
+    holding the offerable lines without the count of the ones declined would
+    render a list that reads as complete.
+
+    Private, because what leaves this module is :class:`ReviewSet`.
+
+    Attributes:
+        creatable: The offerable unexplained outflows, each with its placement.
+        merchants: The policy control's rows and option list.
+        impossible_day_count: How many outflows were declined for being dated
+            MADE after they POSTED (finding **N-325**).
+    """
+
+    creatable: "tuple[CreatableLine, ...]"
+    merchants: MerchantSection
+    impossible_day_count: int
+
+
+def _leftovers(
+    scope: ReviewScope,
+    unmatched: "list[BankLine]",
+    destinations: "list[PurchaseDestination]",
+) -> _Leftovers:
+    """Return the unexplained outflows placed against the owner's policy.
+
+    **What the owner has SAID is read HERE, not carried on the scope**, for the
+    same reason the claims are (plan step ``bank_import:X-f6a-3d``): a pass can
+    restate a policy, and this screen is re-rendered after the door that does,
+    so a reader taking it off the scope would show the answers the pass had
+    just replaced.
+
+    Args:
+        scope: The pass's derived offer set.
+        unmatched: The bank lines inside the calendar no proposal explains.
+        destinations: The budget lines still open to a new purchase.
+
+    Returns:
+        The :class:`_Leftovers`.
+    """
+    view = PolicyView.build(scope.owner_id, scope.account_id)
+    creatable, impossible_days = _creatable_lines(
+        scope.calendar, unmatched, destinations, view,
+    )
+    return _Leftovers(
+        creatable=creatable,
+        merchants=_merchant_section(creatable, view),
+        impossible_day_count=impossible_days,
+    )
+
+
+def _unexplained(
+    bank_lines: "list[BankLine]", proposals: "tuple[MatchProposal, ...]",
+) -> "list[BankLine]":
+    """Return the lines no proposal in this pass accounts for.
+
+    Args:
+        bank_lines: Every line inside the calendar that no accepted match
+            already explains.
+        proposals: What this pass proposes.
+
+    Returns:
+        The leftovers, in the order given.
+    """
+    explained = {
+        line.line_id for proposal in proposals for line in proposal.lines
+    }
+    return [line for line in bank_lines if line.line_id not in explained]
+
+
 def review_set(scope: ReviewScope) -> ReviewSet:
     """Return everything the review screen shows for one account.
 
@@ -692,23 +757,20 @@ def review_set(scope: ReviewScope) -> ReviewSet:
     bank_lines = [_as_bank_line(line) for line in inside]
     proposed = propose(bank_lines, offerable)
     proposals = proposed.proposals
-    explained = {
-        line.line_id for proposal in proposals for line in proposal.lines
-    }
-    unmatched = [
-        line for line in bank_lines if line.line_id not in explained
-    ]
+    unmatched = _unexplained(bank_lines, proposals)
+    leftovers = _leftovers(
+        scope, unmatched,
+        unmatched_destinations(scope.destinations, matched),
+    )
     return ReviewSet(
         proposals=proposals,
         unmatched=tuple(unmatched),
         unmatched_rows=_rows_the_bank_never_showed(
             offerable, proposals, account_id,
         ),
-        accepted=tuple(_accepted_groups(scope.owner_id, account_id)),
-        creatable=_creatable_lines(
-            calendar, unmatched,
-            unmatched_destinations(scope.destinations, matched),
-        ),
+        accepted=tuple(accepted_groups(scope.owner_id, account_id)),
+        creatable=leftovers.creatable,
+        merchants=leftovers.merchants,
         bounds=ReviewBounds(
             calendar_opens=opens,
             before_calendar_count=len(before),
@@ -722,5 +784,6 @@ def review_set(scope: ReviewScope) -> ReviewSet:
             # could name a day too crowded to search that had been searched.
             crowded_days=proposed.crowded_days,
             unpriceable_count=len(candidates.unpriceable_ids),
+            impossible_day_count=leftovers.impossible_day_count,
         ),
     )

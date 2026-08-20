@@ -83,6 +83,7 @@ from ._candidates import (
 )
 from ._create import CreatedPurchase, create_purchase_from_line
 from ._offers import (
+    NEW_ENVELOPE,
     BankLine,
     CandidateRow,
     Candidates,
@@ -94,13 +95,24 @@ from ._offers import (
     PurchaseDestination,
     RowKind,
     corrected_purchase_day,
-    merchant_of,
+    merchant_label,
 )
 from ._propose import DAY_WINDOW, ProposedMatches, propose
+from ._accepted_view import AcceptedGroup, AcceptedRow
+from ._placement import Placement, PlacementKind
+from ._policy import (
+    MerchantPolicy,
+    PolicyAnswer,
+    PolicyStatement,
+    PolicyView,
+    StatedPolicies,
+    statable_merchants,
+    state_policies,
+)
 from ._reads import (
-    AcceptedGroup,
-    AcceptedRow,
     CreatableLine,
+    MerchantSection,
+    MerchantSummary,
     ReviewBounds,
     ReviewSet,
     review_set,
@@ -108,6 +120,7 @@ from ._reads import (
 from ._scope import ReviewScope
 
 __all__ = [
+    "NEW_ENVELOPE",
     "AcceptedGroup",
     "AcceptedMatch",
     "AcceptedRow",
@@ -119,9 +132,17 @@ __all__ = [
     "CreatedPurchase",
     "DAY_WINDOW",
     "MatchDays",
+    "MerchantPolicy",
+    "MerchantSection",
+    "MerchantSummary",
     "MatchProposal",
     "MatchSubmission",
     "NewEnvelope",
+    "Placement",
+    "PlacementKind",
+    "PolicyAnswer",
+    "PolicyStatement",
+    "PolicyView",
     "ProposedMatches",
     "PurchaseCreation",
     "PurchaseDestination",
@@ -130,6 +151,7 @@ __all__ = [
     "ReviewSet",
     "ReviewedBatch",
     "RowKind",
+    "StatedPolicies",
     "accept_match",
     "apply_reviewed",
     "candidates_for",
@@ -137,9 +159,11 @@ __all__ = [
     "create_purchase_from_line",
     "destinations_for",
     "matched_subjects",
-    "merchant_of",
+    "merchant_label",
     "propose",
     "release_match",
     "review_set",
+    "statable_merchants",
+    "state_policies",
     "unmatched_destinations",
 ]

@@ -20,8 +20,19 @@ from decimal import Decimal
 
 
 @dataclass(frozen=True)
-class StatementLine:
+class StatementLine:  # pylint: disable=too-many-instance-attributes
     """One line as a source stated it, normalized.
+
+    Pylint: too-many-instance-attributes -- **eight because a statement line
+    genuinely states eight things** (8/7), not because the value wants
+    splitting.  Ruling **R-FP** makes this THE normalized shape every adapter
+    produces and every consumer reads, so the field set is the union of what a
+    source can say: two days, a figure, two names, two provenance ids and a
+    running balance.  Splitting it would put half a line's facts behind a
+    nested value nothing asks for alone, which is rule 13's speculative shape,
+    and would make each new adapter fill two objects instead of one.
+    ``CandidateRow`` and ``CreatedPurchase`` carry the same disable for the
+    same reason.
 
     Attributes:
         posted_on: The civil day the bank POSTED the line.  This is the fact
@@ -44,6 +55,20 @@ class StatementLine:
             ``cash_ledger.settled_cash_leg`` uses, so a later match compares
             two figures that already agree about direction.
         description: What the bank called it, verbatim.
+        merchant: What the bank calls the MERCHANT, or ``None`` where the
+            source names none.
+            **The NULL is the source saying so**, exactly as
+            :attr:`transaction_on`'s is, and for a sharper reason: plan step
+            ``bank_import:X-f6a-3d`` makes this string the KEY a merchant
+            destination policy is stated against, so a source that cannot name
+            a merchant must key NOTHING rather than key something wrong.
+            Measured on the developer's own 2026-08-16 exports: SECU's CSV
+            names one on **361 of 361** lines, and its OFX truncates 326 of
+            those same 361 descriptions to exactly 32 characters -- so dozens
+            of distinct merchants arrive as the identical string
+            ``POINT OF SALE DEBIT L340 DATE 12``.  A reader that fell back to
+            the description would key a policy on that and fire it on every
+            one of them; ``None`` fires on nothing.
         source_category: The bank's own category string, or ``None``.
             Provenance only: it is the bank's opinion about a merchant, and
             reading it as a Shekel category would be a reference value no
@@ -60,6 +85,7 @@ class StatementLine:
     transaction_on: "date | None"
     amount: Decimal
     description: str
+    merchant: "str | None" = None
     source_category: "str | None" = None
     external_id: "str | None" = None
     running_balance: "Decimal | None" = None

@@ -205,11 +205,19 @@ def _within_window(row: CandidateRow, line: BankLine) -> bool:
     Returns:
         Whether to consider the pairing at all.
     """
+    # **The second clause is :attr:`~._offers.BankLine.states_impossible_days`,
+    # asked rather than respelled** (plan step ``bank_import:X-f6a-3d``): the
+    # same fact -- the bank dates this line MADE after it POSTED -- decides two
+    # different things, and it was written out here and again in the reader
+    # that declines to OFFER such a line as a purchase.  Two spellings of one
+    # predicate on a money screen is this arc's own root cause 1, and a
+    # docstring one module over claimed they were already one.  Found by two
+    # adversarial reviews 2026-08-19.
     if (
         row.kind is RowKind.PURCHASE
         and row.expected_on is not None
         and line.posted_on < row.expected_on
-        and line.posted_on < line.happened_on
+        and line.states_impossible_days
     ):
         return False
     window = row.expected_window
