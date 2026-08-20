@@ -282,8 +282,16 @@ _NON_INTEGER_FIELD_FACTORIES = frozenset({"_auth_email_field"})
 #: two lists of them (plan step ``bank_import:X-f6a-3c-2``), and the ids inside
 #: each item are graded where they are declared -- so nothing is waved through
 #: by listing the container.
+#: **``PolicyAnswerField`` is here on exactly ``PurchaseDestination``'s terms**
+#: (plan step ``bank_import:X-f6a-3d``): the merchant policy control submits
+#: one of four things -- I have not said, a recurring definition's id, a new
+#: envelope, never a purchase -- so it cannot derive from ``RowId`` either, and
+#: :meth:`TestNoIdFieldWasMissed
+#: ::test_the_policy_answer_field_is_strict_about_the_id_it_carries` asserts
+#: the strictness directly rather than granting it by listing.
 _NON_INTEGER_FIELD_SPELLINGS = frozenset({
-    "Boolean", "Date", "Decimal", "Nested", "PurchaseDestination", "String",
+    "Boolean", "Date", "Decimal", "Nested", "PolicyAnswerField",
+    "PurchaseDestination", "String",
 })
 
 #: Every field-class spelling in the validation package that is STRICT about
@@ -580,6 +588,47 @@ class TestNoIdFieldWasMissed:
                 field.deserialize(lax)
         # ...and the two things it DOES accept.
         assert field.deserialize("12") == 12
+        assert field.deserialize(NEW_ENVELOPE) == NEW_ENVELOPE
+
+    def test_the_policy_answer_field_is_strict_about_the_id_it_carries(self):
+        """``PolicyAnswerField`` names a TEMPLATE and is graded like a row id.
+
+        :meth:`test_the_destination_field_is_strict_about_the_id_it_carries`'s
+        twin, on the control one card up the same screen.  It is listed as a
+        non-integer spelling because it returns one of four things, so it
+        cannot derive from :class:`RowId` without lying about its return type;
+        that listing is the standing permission
+        :data:`_NON_INTEGER_FIELD_SPELLINGS`' docstring refuses, so the
+        guarantee is asserted here instead.
+
+        It matters because the id it carries decides where a merchant's
+        spending is SUGGESTED to go on every later statement, and a laxer
+        reading would let ``'007'`` name template 7 -- a real recurring
+        envelope the owner never picked, whose rows are then offered for every
+        line that merchant ever posts.
+        """
+        from app.schemas.validation.statements import (  # pylint: disable=import-outside-toplevel
+            NEVER,
+            NEW_ENVELOPE,
+            NOT_SAID,
+            PolicyAnswerField,
+        )
+
+        field = PolicyAnswerField()
+        for lax in ("\u0661\u0662", " 12 ", "+12", "1_0", "007", "-5", "0"):
+            with pytest.raises(ValidationError):
+                field.deserialize(f"t:{lax}")
+        # A bare id with no arm prefix names nothing either: the prefix is what
+        # says WHICH of the four answers this is, and reading a bare number as
+        # a template would make the arm inferable from a shape rather than
+        # stated -- the defect that made the existing-envelope arm unreachable
+        # from a browser one leaf earlier.
+        with pytest.raises(ValidationError):
+            field.deserialize("12")
+        # ...and the four things it DOES accept.
+        assert field.deserialize("t:12") == 12
+        assert field.deserialize(NOT_SAID) == NOT_SAID
+        assert field.deserialize(NEVER) == NEVER
         assert field.deserialize(NEW_ENVELOPE) == NEW_ENVELOPE
 
     def test_the_non_integer_spellings_are_all_declared(self):

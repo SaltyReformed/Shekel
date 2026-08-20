@@ -19,6 +19,7 @@ from app.enums import (
     TxnTypeEnum,
 )
 from app.extensions import db
+from app.models.merchant_destination import MerchantDestination
 from app.models.statement_import import BankStatementLine, StatementImport
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
@@ -209,6 +210,45 @@ def a_bank_line(
     db.session.add(line)
     db.session.flush()
     return line
+
+
+def a_policy(
+    seed_user, merchant, *, template_id=None, envelope_name=None,
+    category_id=None, account=None,
+):
+    """Stage and return one stated merchant destination.
+
+    Built through the ORM like everything else here, so a broken
+    ``state_policies`` cannot also break the fixture a reader test would have
+    caught it with.
+
+    Args:
+        seed_user: The seeded user bundle.
+        merchant: The bank's own merchant string, which is the key.
+        template_id: The recurring definition to file into, for the TEMPLATE
+            answer.
+        envelope_name: What to call the envelope to create, for the
+            NEW ENVELOPE answer.
+        category_id: The category to create it under, likewise.
+        account: The account it governs; the seeded checking one by default.
+
+    Returns:
+        The staged
+        :class:`~app.models.merchant_destination.MerchantDestination`.  With no
+        arm given it is the NEVER answer, which is a row with all three columns
+        NULL rather than the absence of a row.
+    """
+    row = MerchantDestination(
+        user_id=seed_user["user"].id,
+        account_id=(account or seed_user["account"]).id,
+        merchant=merchant,
+        template_id=template_id,
+        envelope_name=envelope_name,
+        category_id=category_id,
+    )
+    db.session.add(row)
+    db.session.flush()
+    return row
 
 
 def a_scope(seed_user, account=None):

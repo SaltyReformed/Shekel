@@ -26,11 +26,16 @@ import pytest
 from marshmallow import ValidationError
 from werkzeug.datastructures import MultiDict
 
-from app.schemas.validation.statements import (
+from app.schemas.validation.statements import (  # pylint: disable=protected-access
+    _MAX_POLICY_ITEMS,
     LEAVE_ALONE,
+    NEVER,
     NEW_ENVELOPE,
+    NOT_SAID,
+    MerchantPolicyBatchSchema,
     StatementBatchSchema,
     batch_payload,
+    policy_payload,
 )
 
 
@@ -376,3 +381,171 @@ class TestTheBatchSchemaRefusesWhatItDoesNotDeclare:
         ])))
 
         assert loaded == {"matches": [], "creations": []}
+
+
+class TestThePolicySectionOnTheWire:
+    """Where your merchants go, as a form submits it -- plan step X-f6a-3d.
+
+    The same two facts this module was written for, on the section this leaf
+    adds: a browser submits every control it renders, and which answer was
+    chosen is a fact the form STATES rather than one a reader infers.  The
+    consequence is sharper here than one card down, because the section
+    submits every merchant on the account on every pass -- so *untouched* is
+    the ordinary case rather than the edge, and a reader that could not
+    recognise it would rewrite twenty answers to say what they already said.
+    """
+
+    @staticmethod
+    def _row(index, merchant, answer, name="", category=""):
+        """Return the fields ONE merchant row submits, as a browser sends them."""
+        return [
+            (f"policy-{index}", answer),
+            (f"policy_merchant-{index}", merchant),
+            (f"policy_name-{index}", name),
+            (f"policy_category-{index}", category),
+        ]
+
+    def test_every_rendered_row_submits_including_the_untouched_ones(self):
+        """The premise the door's "unchanged" arm exists for.
+
+        There is no way to tell an untouched control from a deliberately
+        repeated answer on the wire, and inventing one -- a hidden "what it
+        was" field -- would be a value the submitter could forge into a write
+        nobody asked for.  So every row arrives and the SERVICE compares.
+        """
+        payload = policy_payload(_form(
+            self._row(0, "Amazon", "t:38")
+            + self._row(1, "Walmart", NOT_SAID)
+            + self._row(2, "Capital One", NEVER),
+        ))
+
+        assert [item["merchant"] for item in payload["policies"]] == [
+            "Amazon", "Walmart", "Capital One",
+        ]
+
+    def test_NOT_SAID_is_carried_rather_than_dropped(self):
+        """It is how a policy is WITHDRAWN, so it cannot be an absence.
+
+        The destination select one card down drops its do-nothing value,
+        because there the default means "do not record this line" and there is
+        nothing to undo.  Here it means "forget what I said", which is an act
+        -- and dropping it would make a stated policy permanent.
+        """
+        payload = policy_payload(_form(self._row(0, "Amazon", NOT_SAID)))
+
+        assert payload["policies"] == [{
+            "merchant": "Amazon", "answer": NOT_SAID,
+            "envelope_name": "", "category_id": "",
+        }]
+
+    def test_a_TEMPLATE_answer_carries_its_arm_with_its_id(self):
+        """The arm is STATED, never inferred from the value's shape.
+
+        A bare number would have to be read as "a template" by convention,
+        which is the inference that made the existing-envelope destination
+        unreachable from a browser one leaf earlier.
+        """
+        loaded = MerchantPolicyBatchSchema().load(
+            policy_payload(_form(self._row(0, "Amazon", "t:38"))),
+        )
+
+        assert loaded["policies"][0]["answer"] == 38
+
+    def test_the_four_answers_all_load(self):
+        """The closed set, so none of them is refused by the grader."""
+        loaded = MerchantPolicyBatchSchema().load(policy_payload(_form(
+            self._row(0, "Amazon", "t:38")
+            + self._row(1, "Walmart", NOT_SAID)
+            + self._row(2, "Capital One", NEVER)
+            + self._row(3, "Lowe's", NEW_ENVELOPE, name="Lowe's", category="4"),
+        )))
+
+        assert [item["answer"] for item in loaded["policies"]] == [
+            38, NOT_SAID, NEVER, NEW_ENVELOPE,
+        ]
+        assert loaded["policies"][3]["envelope_name"] == "Lowe's"
+        assert loaded["policies"][3]["category_id"] == 4
+
+    def test_an_answer_with_no_merchant_beside_it_names_nothing(self):
+        """Unreachable from this screen -- the two fields render together.
+
+        Dropped rather than refused, because a crafted body naming an answer
+        for nobody has asked for nothing, and refusing would give a caller a
+        way to fail a whole legitimate pass by appending one key.
+        """
+        payload = policy_payload(_form([("policy-9", NEVER)]))
+
+        assert payload["policies"] == []
+
+    def test_a_merchant_key_that_str_isdigit_ACCEPTS_does_not_raise(self):
+        """The same trap the tick keys carry, on this section's keys.
+
+        ``apply=%C2%B2`` was a 500 on the money door until plan step
+        X-f6a-3c-2, because ``str.isdigit`` is true for 888 characters and
+        ``int()`` refuses 128 of them.  These keys are sorted through the same
+        ``_sort_key``, so the fix covers them -- and this is what says so.
+        """
+        payload = policy_payload(_form(
+            [("policy-\N{SUPERSCRIPT TWO}", NEVER),
+             ("policy_merchant-\N{SUPERSCRIPT TWO}", "Amazon")],
+        ))
+
+        assert [item["merchant"] for item in payload["policies"]] == ["Amazon"]
+
+    def test_a_respelled_template_id_is_refused(self):
+        """``t:007`` names no template, exactly as ``007`` names no envelope.
+
+        A second, laxer reading of a row id on a screen that decides where
+        money is filed is what plan step X-ae removed.
+        """
+        with pytest.raises(ValidationError):
+            MerchantPolicyBatchSchema().load(
+                policy_payload(_form(self._row(0, "Amazon", "t:007"))),
+            )
+
+    def test_an_undeclared_key_is_refused(self):
+        """``unknown = RAISE``: nothing is swallowed on this payload either."""
+        with pytest.raises(ValidationError):
+            MerchantPolicyBatchSchema().load(
+                {"policies": [], "sneaky": 1},
+            )
+
+    def test_a_submission_over_the_CEILING_is_refused_and_says_so(self):
+        """The policy ceiling had no test at either tier.
+
+        Its sibling ``_MAX_BATCH_ITEMS`` is graded twice; this one could be
+        raised to a billion with the suite green.  It is a SEPARATE bound on
+        purpose -- that one paces money acts, each running a settle door, and
+        this one paces small writes over a set the account's own lines bound --
+        so it needs its own control rather than inheriting that one's.
+        """
+        rows = []
+        for index in range(_MAX_POLICY_ITEMS + 1):
+            rows.extend(self._row(index, f"Merchant {index}", NEVER))
+
+        with pytest.raises(ValidationError) as caught:
+            MerchantPolicyBatchSchema().load(policy_payload(_form(rows)))
+
+        assert "at most" in str(caught.value)
+
+    def test_a_submission_AT_the_ceiling_still_loads(self):
+        """The bound pinned from the other side, so it is not off by one."""
+        rows = []
+        for index in range(_MAX_POLICY_ITEMS):
+            rows.extend(self._row(index, f"Merchant {index}", NEVER))
+
+        loaded = MerchantPolicyBatchSchema().load(policy_payload(_form(rows)))
+
+        assert len(loaded["policies"]) == _MAX_POLICY_ITEMS
+
+    def test_a_merchant_longer_than_the_COLUMN_is_refused(self):
+        """The key may not be stored truncated, so it may not be submitted long.
+
+        ``bank_statement_lines.merchant`` is 100 characters and the adapter
+        reads no longer token; a policy keyed on a truncated string would be a
+        DIFFERENT key from the one the bank named, silently.
+        """
+        with pytest.raises(ValidationError):
+            MerchantPolicyBatchSchema().load(
+                policy_payload(_form(self._row(0, "X" * 101, NEVER))),
+            )

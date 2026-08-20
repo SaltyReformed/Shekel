@@ -295,7 +295,9 @@ class BankLine:
         refuses a purchase whose money left before it was spent and the screen
         would be rendering a chooser whose submission can never succeed.  Two
         spellings of one predicate on a money screen is this arc's own root
-        cause 1.
+        cause 1 -- and this sentence was FALSE when first written: the proposer
+        went on spelling it inline, so the claim described an intention rather
+        than the tree.  Both adversarial reviews of 2026-08-19 caught it.
 
         0 of the developer's 361 recorded lines are this shape; the OFX
         adapter's own measurement found 2 of 361, so a second source makes it
@@ -633,12 +635,39 @@ class PurchaseDestination:
             raises what that row RECORDS as its cost, which is a bigger thing
             to do than filling in an open budget, so the screen says which it
             is rather than leaving the reviewer to know.
+        template_id: The recurring definition this row was generated from, or
+            ``None`` for an ad-hoc one.  **It is the row's identity ACROSS pay
+            periods, and that is what a merchant destination policy is keyed
+            on** (plan step ``bank_import:X-f6a-3d``): a policy cannot name
+            ``transaction_id`` -- an envelope belongs to one period, and the 24
+            unexplained Amazon lines on the developer's own statement fall in
+            ten of them -- and it cannot name the NAME either, because template
+            22 generated a row called ``Kayla`` in one period and ``Kayla's
+            Spending Money`` in the other 60.  ``None`` is a real answer and it
+            means this row can hold a purchase but can never be a POLICY's
+            destination, because there is nothing period-independent to
+            remember about it.
     """
 
     transaction_id: int
     label: str
     pay_period_id: int
     is_settled: bool
+    template_id: "int | None" = None
+
+
+#: What the destination select submits for the create-a-new-envelope arm, and
+#: the ONE definition of it.
+#:
+#: **It lives in the service because the service PRODUCES it**:
+#: :attr:`~._policy.Placement.select_value` answers what a line's control would
+#: be set to, so the value is part of what this package says rather than only
+#: something a schema reads.  ``app.schemas.validation.statements`` imports it
+#: -- the direction that module already takes for
+#: ``statement_import.supported_sources`` -- rather than declaring a second
+#: literal, because two spellings of one wire value is a rule stated twice and
+#: this package's own root cause 1.
+NEW_ENVELOPE: str = "new"
 
 
 @dataclass(frozen=True)
