@@ -1368,6 +1368,70 @@ def seed_periods_today(app, db, seed_user):
 
 
 @pytest.fixture()
+def seed_schedule_at_cadence(app, db, seed_user):
+    """Return a factory that seeds the owner a schedule at a CHOSEN cadence.
+
+    The parameterised sibling of :func:`seed_periods_today`, which is fixed at
+    14 days.  Every other periods fixture in this file is biweekly, so until
+    recurrence plan step **R-F17** no test could tell a derivation from the
+    hardcoded 26 that stood for "a year" -- which is exactly why ledger row
+    **F-17** shipped uncovered.  A test that asserts on a cadence-derived
+    window uses this; one that only needs "today is in a paycheck" keeps the
+    cheaper fixture.
+
+    Like :func:`seed_periods_today` it drops the ``seed_user`` bootstrap, so
+    ``period_index`` still runs from 0, and it places today in period
+    *periods_before* -- **for a cadence of 7 days or more**.  The first payday
+    is aligned back to the most recent Monday first, so at a shorter cadence
+    that up-to-six-day alignment is itself worth a period or more and today
+    lands later than *periods_before*.  No caller passes below 7; the bound is
+    stated rather than left as a claim that happens to hold.
+
+    Args:
+        app: The Flask app fixture (for the application context the writer
+            needs).
+        db: The SQLAlchemy ``db`` fixture.
+        seed_user: The owner these periods belong to.
+
+    Returns:
+        ``_seed(cadence_days, num_periods=40, periods_before=4)`` -> the
+        owner's periods, ordered by ``period_index``.  40 is wide enough that a
+        full year of paychecks fits at cadences of 14 days or longer; a weekly
+        case asks for more.
+
+        **``periods_before`` exists because the writer is forward-only.**
+        ``pay_period_write._reject_backward_payday`` refuses a first payday
+        earlier than one full cycle after the owner's latest recorded one, and
+        ``seed_user``'s bootstrap payday is fixed -- so four periods of history
+        at a 300-day cadence starts three years before it and is refused.  A
+        long-cadence case passes a smaller number; the default matches
+        :func:`seed_periods_today`.
+    """
+    def _seed(cadence_days, num_periods=40, periods_before=4):
+        today = display_today()
+        first_payday = today - timedelta(
+            days=today.weekday() + periods_before * cadence_days,
+        )
+        periods = pay_period_write.record_paydays(
+            user_id=seed_user["user"].id,
+            first_payday=first_payday,
+            num_periods=num_periods,
+            cadence_days=cadence_days,
+        )
+        db.session.flush()
+        _drop_seed_user_bootstrap(
+            db, seed_user, seed_user["account"], periods[0],
+        )
+        return (
+            db.session.query(PayPeriod)
+            .filter_by(user_id=seed_user["user"].id)
+            .order_by(PayPeriod.period_index)
+            .all()
+        )
+    return _seed
+
+
+@pytest.fixture()
 def auth_client(app, db, client, seed_user):
     """Provide an authenticated test client.
 

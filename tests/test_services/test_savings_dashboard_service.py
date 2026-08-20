@@ -6467,3 +6467,128 @@ class TestTheDebtFreeDateIsOneDerivation:
             # And every other key still agrees, which is the promise itself.
             assert narrow == full
 
+
+
+class TestTheTileHorizonsFollowTheOwnersCadence:
+    """``/savings`` tiles resolve their horizons per owner, not at 6 / 13 / 26.
+
+    Recurrence plan step **R-F17**, ledger row **F-17**.  This surface reads
+    the SAME producer the account detail pages do
+    (:func:`app.utils.period_projections.project_balance_horizons`), and until
+    the offsets were derived it read them at a fixed biweekly table -- so a
+    weekly owner's tile put its six-month balance under a "1 year" chip.
+
+    **Written weekly on purpose.**  Every other case in this file is biweekly,
+    where the derivation and the constant it replaced answer the same three
+    numbers -- so a hardcoded table planted in ``_build_projection_context``
+    survives the whole rest of this suite.  Measured: it did, until this class.
+
+    **The no-CURRENT-PERIOD case that stood here was DELETED as duplicate
+    coverage** (adversarial test review of this step): it exercised the same
+    ``project_balance_horizons`` guard the pure, database-free
+    ``TestProjectBalanceHorizons::test_no_current_period_returns_empty``
+    already pins, and it survived every mutation it was written for.  The
+    no-PAYDAY case below is different and stays -- that one is about the
+    cadence READ, not the guard.
+    """
+
+    def test_the_one_year_tile_reads_the_owners_own_year(
+        self, app, db, seed_user, seed_schedule_at_cadence,
+    ):
+        """A weekly owner's chips read 13 / 26 / 52 periods out, not 6 / 13 / 26.
+
+        The account is anchored at $1,000.00 and given ONE expense in each of
+        the three windows the two rules disagree over -- at offsets +10, +20
+        and +40 -- so every horizon holds a DIFFERENT figure under the derived
+        offsets than under the biweekly table they replaced:
+
+          offset  balance      derived reads it as   the old table read it as
+          +6      $1,000.00    --                    3 months
+          +13       $900.00    3 months              6 months
+          +26       $700.00    6 months              1 year
+          +52       $400.00    1 year                --
+
+        A first draft of this case asserted the equality alone on a flat
+        $1,000.00 account, and a planted biweekly table SURVIVED it: three
+        chips agreeing because every column held the same dollar.  The three
+        expenses are what make the assertion bite, which is why the balances
+        are spelled out above rather than left to the map.
+        """
+        with app.app_context():
+            periods = seed_schedule_at_cadence(cadence_days=7, num_periods=120)
+            current = current_pay_period(seed_user["user"].id)
+            by_index = {p.period_index: p for p in periods}
+            for offset, amount in ((10, "100.00"), (20, "200.00"), (40, "300.00")):
+                _make_projected_envelope_expense(
+                    db.session, seed_user=seed_user,
+                    pay_period=by_index[current.period_index + offset],
+                    estimated=Decimal(amount), name=f"Bill +{offset}",
+                )
+            db.session.commit()
+
+            result = savings_dashboard_service.compute_dashboard_data(
+                BalanceContext.build(seed_user["user"].id),
+            )
+            checking = next(
+                projection for projection in result["account_data"]
+                if projection.account.id == seed_user["account"].id
+            )
+
+            assert checking.projected == {
+                "3 months": Decimal("900.00"),
+                "6 months": Decimal("700.00"),
+                "1 year": Decimal("400.00"),
+            }
+
+    def test_an_owner_with_no_paydays_is_answered_rather_than_refused(
+        self, app, db, seed_user,
+    ):
+        """No paydays at all: the narrow per-account producer still answers.
+
+        **The state that makes ``_build_projection_context``'s guard
+        load-bearing**, measured rather than assumed.  An account carries no
+        anchor PERIOD any more (rulings R-EH / R-EO deleted both columns), so
+        an owner can hold accounts and no pay periods -- and with no
+        ``budget.pay_schedule`` row either,
+        :attr:`app.services.pay_calendar.PayCalendar.cadence` REFUSES, because
+        nothing has stated how often they are paid.
+
+        ``compute_account_balance_cell`` publishes no horizon for such an
+        owner, so resolving the offsets unconditionally would refuse for a
+        figure the fragment never shows -- byte for byte the defect
+        ``_debt_summary_with_dti``'s own comment records this package paying
+        for once already.  (The FULL dashboard reads ``calendar.cadence``
+        unconditionally for its emergency-fund coverage and refuses for this
+        owner regardless; the narrow producers are what this protects, which
+        is why the case is written against one of them.)
+        """
+        # Pylint: import-outside-toplevel -- deferred import is the file-wide
+        # test convention.
+        from app.models.pay_period import PayPeriod  # pylint: disable=import-outside-toplevel
+        from app.models.pay_schedule import PaySchedule  # pylint: disable=import-outside-toplevel
+        from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+            PayCalendarError,
+            calendar_for,
+        )
+        with app.app_context():
+            user_id = seed_user["user"].id
+            assert db.session.query(PaySchedule).filter_by(
+                user_id=user_id,
+            ).count() == 0, (
+                "this case needs an owner with no stored cadence; the fixture "
+                "now writes one, so the refusal it exercises has moved"
+            )
+            db.session.query(PayPeriod).filter_by(user_id=user_id).delete()
+            db.session.commit()
+
+            # The refusal is real: shown firing on the value the producer
+            # would otherwise read, so this case cannot pass vacuously if
+            # ``cadence`` ever stops raising.
+            with pytest.raises(PayCalendarError):
+                _ = calendar_for(user_id).cadence
+
+            cell = savings_dashboard_service.compute_account_balance_cell(
+                BalanceContext.build(user_id), seed_user["account"].id,
+            )
+
+            assert cell.projected == {}

@@ -163,10 +163,18 @@ _OFFSETS = (-99, -2, 0, 2)
 #: the single column the mobile This Period tab navigates with.
 _COUNTS = (6, 52, 1)
 
-#: The Plan tab's fixed forward window.  Copied rather than imported because
-#: the constant lives in ``routes.grid`` on one side of this diff and
-#: ``routes.grid.page`` on the other, and a harness that cannot import on both
-#: sides grades nothing.
+#: The Plan tab's forward window AT A BIWEEKLY CADENCE.  Copied rather than
+#: imported because the constant lived in ``routes.grid`` on one side of the
+#: diff this harness graded and ``routes.grid.page`` on the other, and a
+#: harness that cannot import on both sides grades nothing.
+#:
+#: **It is no longer a constant in production.**  Recurrence plan step R-F17
+#: replaced ``PLAN_WINDOW_PERIODS`` with ``PLAN_WINDOW_MONTHS``, resolved
+#: through ``PayCadence.paychecks_within`` -- so this 13 is the answer for the
+#: developer's own 14-day cadence and for no other.  The harness is a
+#: before/after instrument for a shipped cutover, run against that owner, so
+#: the literal still grades what it was written to grade; a harness pointed at
+#: any other cadence must derive it instead.
 _PLAN_WINDOW_PERIODS = 13
 
 

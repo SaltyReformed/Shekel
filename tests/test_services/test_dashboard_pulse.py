@@ -38,6 +38,7 @@ from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
 from app.services import account_service, cash_ledger, dashboard_service, pay_period_write
 from app.services.dashboard_service import _pulse
+from app.services.pay_calendar import PayCadence
 from app.services import transfer_service
 from app.services import balance_at, savings_dashboard_service
 from app.services.balance_at import BalanceContext
@@ -293,6 +294,15 @@ class TestPulseHero:
 # ── Chart: 13-point shape, degradation, threshold ──────────────────
 
 
+#: The developer's own cadence, threaded into every ``_chart`` unit case.
+#:
+#: ``_chart`` took no cadence until plan step **R-F17** -- its window was the
+#: hardcoded ``_CHART_HORIZON_PERIODS = 13``.  Passing the real value object
+#: rather than a stand-in keeps these cases on the production derivation, and
+#: at 14 days it answers the same 13 points they were written against.
+_BIWEEKLY = PayCadence(cadence_days=14)
+
+
 class TestPulseChart:
     """The projected end-balance chart series and threshold passthrough."""
 
@@ -311,11 +321,80 @@ class TestPulseChart:
         }
         return derived, end_balances
 
-    def test_chart_caps_at_13_points(self, app, seed_user, db):
-        """The chart slices to at most 13 points even with more periods.
+    def test_the_chart_window_follows_the_owners_cadence(
+        self, app, seed_user, db,
+    ):
+        """A WEEKLY owner gets 26 points, not 13 -- the same SIX MONTHS.
 
-        Generate 20 forward periods and assert the chart returns exactly
-        13 points (the current period plus the next 12).
+        Plan step **R-F17**, ledger row **F-17**.  The window was
+        ``_CHART_HORIZON_PERIODS = 13`` while ``dashboard/_pulse.html``'s
+        canvas announced "the next six months" to every screen reader beside
+        it: at this cadence 13 periods is 91 days, so the chart plotted three
+        months under a label saying six.  Both adversarial reviews of this step
+        found it by re-grepping the ledger row's own predicate rather than the
+        diff -- the row could not honestly close while it stood.
+
+        26 weekly periods is 182 days, the same span the biweekly owner's 13
+        cover, which is the whole point.
+        """
+        with app.app_context():
+            periods = pay_period_write.record_paydays(
+                user_id=seed_user["user"].id,
+                first_payday=date(2026, 1, 2),
+                num_periods=40,
+                cadence_days=7,
+            )
+            db.session.commit()
+            forward, balances = self._periods_and_balances(periods)
+
+            chart = _pulse._chart(
+                forward, balances, None, PayCadence(cadence_days=7),
+            )
+
+            assert len(chart["points"]) == 26
+            # 26 x 7 == 182 == 13 x 14: one span, two cadences.
+            span = (
+                chart["points"][-1]["end_date"] - periods[0].start_date
+            ).days + 1
+            assert span == 182
+
+    def test_a_paycheck_longer_than_the_span_still_draws_one_point(
+        self, app, seed_user, db,
+    ):
+        """A 300-day cadence reaches no paycheck inside six months: draw one.
+
+        The same POLICY the mobile Plan tab keeps and the grid's range buttons
+        do NOT: a chart on the dashboard must draw something, where a button
+        may simply not be offered (ruling **R-R31**).
+        """
+        with app.app_context():
+            periods = pay_period_write.record_paydays(
+                user_id=seed_user["user"].id,
+                first_payday=date(2026, 1, 2),
+                num_periods=4,
+                cadence_days=300,
+            )
+            db.session.commit()
+            forward, balances = self._periods_and_balances(periods)
+
+            assert PayCadence(cadence_days=300).paychecks_within(6) == 0
+            chart = _pulse._chart(
+                forward, balances, None, PayCadence(cadence_days=300),
+            )
+
+            assert len(chart["points"]) == 1
+
+    def test_chart_caps_at_the_owners_paychecks_in_the_span(
+        self, app, seed_user, db,
+    ):
+        """13 points at a BIWEEKLY cadence, even with more periods available.
+
+        Generate 20 forward periods and assert the chart returns exactly 13 --
+        which is how many paychecks fall inside
+        :data:`~app.services.dashboard_service._pulse._CHART_HORIZON_MONTHS`
+        for this owner, and exactly the ``_CHART_HORIZON_PERIODS = 13`` literal
+        that stood here until plan step **R-F17**.  13 x 14 = 182 days, so the
+        canvas's "next six months" aria-label is true for them.
         """
         with app.app_context():
             periods = pay_period_write.record_paydays(
@@ -327,7 +406,7 @@ class TestPulseChart:
             db.session.commit()
             forward, balances = self._periods_and_balances(periods)
 
-            chart = _pulse._chart(forward, balances, None)
+            chart = _pulse._chart(forward, balances, None, _BIWEEKLY)
             assert len(chart["points"]) == 13
             # The points are the first 13 periods, in order.
             assert [pt["end_date"] for pt in chart["points"]] == [
@@ -346,7 +425,7 @@ class TestPulseChart:
             assert len(forward) == 5
             balances = {p.period_id: Decimal("250.00") for p in forward}
 
-            chart = _pulse._chart(forward, balances, None)
+            chart = _pulse._chart(forward, balances, None, _BIWEEKLY)
             assert len(chart["points"]) == 5
             assert all(
                 pt["balance"] == Decimal("250.00") for pt in chart["points"]
@@ -365,8 +444,8 @@ class TestPulseChart:
             settings = seed_user["settings"]
 
             chart = _pulse._chart(
-                forward, balances, settings,
-            )
+                forward, balances, settings, _BIWEEKLY,
+)
             assert chart["low_balance_threshold"] == Decimal("500")
 
     def test_chart_threshold_tracks_configured_value(
@@ -386,8 +465,8 @@ class TestPulseChart:
             db.session.commit()
 
             chart = _pulse._chart(
-                forward, balances, settings,
-            )
+                forward, balances, settings, _BIWEEKLY,
+)
             assert chart["low_balance_threshold"] == Decimal("800")
 
     def test_chart_threshold_none_without_settings(
@@ -398,7 +477,7 @@ class TestPulseChart:
             forward = list(period_window(seed_periods[_CURRENT_IDX:]))
             balances = {p.period_id: Decimal("100.00") for p in forward}
 
-            chart = _pulse._chart(forward, balances, None)
+            chart = _pulse._chart(forward, balances, None, _BIWEEKLY)
             assert chart["low_balance_threshold"] is None
 
 
@@ -458,7 +537,7 @@ class TestPulseTrough:
             balances[dip_period.period_id] = Decimal("-250.00")
 
             # The chart sees only the first 13 -- all positive.
-            chart = _pulse._chart(forward, balances, None)
+            chart = _pulse._chart(forward, balances, None, _BIWEEKLY)
             assert len(chart["points"]) == 13
             assert all(pt["balance"] > Decimal("0") for pt in chart["points"])
 
@@ -585,7 +664,7 @@ class TestPulsePeak:
             balances[rise_period.period_id] = Decimal("1250.00")
 
             # The chart sees only the first 13 -- all 500.00, none the peak.
-            chart = _pulse._chart(forward, balances, None)
+            chart = _pulse._chart(forward, balances, None, _BIWEEKLY)
             assert len(chart["points"]) == 13
             assert all(
                 pt["balance"] == Decimal("500.00") for pt in chart["points"]
