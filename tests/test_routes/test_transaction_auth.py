@@ -23,13 +23,15 @@ from app.models.ref import AccountType, Status, TransactionType
 from app.services.auth_service import hash_password
 from app.services import pay_period_write
 from app.services import account_service
+from tests._test_helpers import pay_periods_hydrated
 
 
 def _create_other_user_with_txn(seed_user, seed_periods_today):
     """Create a second user with their own period and transaction.
 
     Returns:
-        dict with keys: user, period, transaction.
+        dict with keys: user, period, transaction, scenario, category,
+        account.
     """
     other_user = User(
         email="other@shekel.local",
@@ -101,6 +103,9 @@ def _create_other_user_with_txn(seed_user, seed_periods_today):
         "transaction": txn,
         "scenario": scenario,
         "category": category,
+        # The account is the fourth user-scoped id the cell fragments read and
+        # the one no ownership test named until plan step C2-f3e.
+        "account": account,
     }
 
 
@@ -639,6 +644,179 @@ class TestFormRenderingOwnership:
                 "account_id": seed_user["account"].id,
             })
             assert resp.status_code == 200
+
+
+class TestCellFragmentsResolveOwnershipStructurally:
+    """The three empty-cell fragments prove ownership without loading a row.
+
+    Plan step **C2-f3e**, closing ledger row **P51**'s second half.  All
+    three answered a submitted ``period_id`` by fetching
+    ``budget.pay_periods`` by primary key and comparing ``row.user_id``
+    against the requester -- correct, but a guard a later edit can drop with
+    no test able to see the difference.  They ask the owner's derived pay
+    calendar now: it holds ONE owner's whole schedule and nothing else, so
+    another user's id is simply ABSENT and there is no comparison left to
+    forget.  Same shape as ``grid.partials.mobile_this_period_summary``
+    (C2-f2b) and ``transactions._resolve_carry_forward_context`` (C2-f3c).
+
+    ``TestFormRenderingOwnership`` above still owns the three foreign-period
+    refusals themselves; what is asserted here is the axes it left open -- an
+    absent id, the identity of the three refusals' responses, and the account
+    probe none of them covered -- plus the ONE structural property that says
+    the check is the calendar: no ORM row is loaded.
+
+    **"Derives the calendar exactly once" is asserted in the architecture
+    gate, not here**, and a first draft of this class had its own copy.
+    ``tests/_test_helpers.counting_calls`` is by its own docstring "the ONE
+    instrument" for that question and
+    ``test_one_read_pass_per_render.TestOneCalendarDerivationPerRender`` is
+    where every other render is graded; the copy counted raw SQL text instead,
+    which an adversarial review measured would break the moment plan step
+    ``balance:X-x3`` -- ready NOW -- rewrites a neighbouring query to mention
+    ``start_date``.
+
+    **The property below is TRUE of an owner holding a ``budget.pay_schedule``
+    row, which is every owner a live door has created since plan step
+    X-ad-a.** A legacy owner without one (plan finding **P8**) makes
+    ``pay_schedule_service.resolve_cadence`` fall back to
+    ``db.session.query(PayPeriod)...first()``, a full entity load -- so these
+    fragments hydrate one for such an owner, measured, and that read is C4's
+    to delete with the column it orders by.  Stated because the guard would
+    otherwise read as unconditional.
+    """
+
+    ENDPOINTS = (
+        "/transactions/new/quick",
+        "/transactions/new/full",
+        "/transactions/empty-cell",
+    )
+
+    @staticmethod
+    def _own_cell(seed_user, seed_periods_today):
+        """Return the query string naming a real cell of the owner's grid."""
+        expense_type = db.session.query(TransactionType).filter_by(
+            name="Expense",
+        ).one()
+        return {
+            "category_id": seed_user["categories"]["Groceries"].id,
+            "period_id": seed_periods_today[0].id,
+            "transaction_type_id": expense_type.id,
+            "account_id": seed_user["account"].id,
+        }
+
+    @pytest.mark.parametrize("endpoint", ENDPOINTS)
+    def test_rejects_other_users_account(
+        self, app, auth_client, seed_user, seed_periods_today, endpoint,
+    ):
+        """A foreign account_id returns 404 on every cell fragment.
+
+        The account is the axis the original H1 tests never probed on these
+        three routes -- they covered the category and the period.  It is a
+        real read: the account id rides into the create form's hidden fields
+        and decides which account the row is booked against.
+        """
+        with app.app_context():
+            other = _create_other_user_with_txn(seed_user, seed_periods_today)
+            args = self._own_cell(seed_user, seed_periods_today)
+            args["account_id"] = other["account"].id
+            resp = auth_client.get(endpoint, query_string=args)
+            assert resp.status_code == 404
+
+    @pytest.mark.parametrize("endpoint", ENDPOINTS)
+    def test_rejects_absent_period_id(
+        self, app, auth_client, seed_user, seed_periods_today, endpoint,
+    ):
+        """An omitted period_id returns 404 rather than rendering a blank cell.
+
+        These routes read their ids straight off the query string, so ``None``
+        is reachable in a way it is not on the schema-validated create POSTs.
+        ``PayCalendar.period_by_id`` answers ``None`` for ``None`` by
+        contract, which is the refusal -- and the reason this case is asserted
+        rather than assumed is that the alternative renders a form whose
+        ``pay_period_id`` is the empty string.
+        """
+        with app.app_context():
+            args = self._own_cell(seed_user, seed_periods_today)
+            del args["period_id"]
+            resp = auth_client.get(endpoint, query_string=args)
+            assert resp.status_code == 404
+
+    @pytest.mark.parametrize("endpoint", ENDPOINTS)
+    def test_the_three_period_refusals_are_indistinguishable(
+        self, app, auth_client, seed_user, seed_periods_today, endpoint,
+    ):
+        """A foreign, an unknown and an absent period_id answer IDENTICALLY.
+
+        **The security response rule is about the RESPONSE, and every other
+        test here checks only the status code.**  "404 for both not found and
+        not yours" is a statement that an attacker cannot tell the two apart,
+        which a matching status with a differing body does not deliver -- and
+        the three ids travel three different code paths to get here (a
+        calendar miss on a real row, a calendar miss on no row, and the
+        ``None``-in-``None``-out contract), so their agreement is a property
+        rather than a tautology.
+
+        A first draft of this case asserted only that an unknown id 404s.  An
+        adversarial test-quality review measured that no single-line mutation
+        could make it fail on its own -- under the calendar design "belongs to
+        nobody" and "belongs to someone else" are the SAME branch -- so it was
+        replaced with the assertion that branch is actually there to make.
+        """
+        with app.app_context():
+            other = _create_other_user_with_txn(seed_user, seed_periods_today)
+            base = self._own_cell(seed_user, seed_periods_today)
+
+            foreign = dict(base, period_id=other["period"].id)
+            unknown = dict(base, period_id=999999)
+            absent = {k: v for k, v in base.items() if k != "period_id"}
+
+            answers = [
+                auth_client.get(endpoint, query_string=args)
+                for args in (foreign, unknown, absent)
+            ]
+            statuses = {r.status_code for r in answers}
+            bodies = {r.get_data() for r in answers}
+            assert statuses == {404}, statuses
+            assert len(bodies) == 1, bodies
+
+    @pytest.mark.parametrize("endpoint", ENDPOINTS)
+    def test_hydrates_no_pay_period_row(
+        self, app, auth_client, seed_user, seed_periods_today, endpoint,
+    ):
+        """No ORM ``PayPeriod`` is loaded while the fragment renders.
+
+        The structural claim itself: an ownership check written as
+        ``row.user_id != current_user.id`` needs the ROW, so an empty
+        hydration count is the property that cannot hold while the old guard
+        exists.  It fails on the pre-C2-f3e routes, which is what makes it a
+        firing control rather than a restatement.
+
+        A statement counter could not make this measurement -- a
+        ``db.session.get`` served from the identity map issues none -- and
+        counting identity-map survivors could not either, because the map is
+        weak.  See :func:`tests._test_helpers.pay_periods_hydrated`.
+
+        ``expunge_all`` FIRST, and it is what keeps the probe honest rather
+        than a tidy-up: the fixture hands back live ORM ``PayPeriod`` rows, and
+        an id already in the identity map is returned by ``session.get``
+        without a load, so the event this counts would never fire and the
+        guard would pass on the very code it exists to refuse.  It does fire
+        without this line today (measured against the pre-step routes), so
+        this pins a property the fixture currently supplies by accident.
+
+        See the class docstring for the one owner shape this is NOT true of.
+        """
+        with app.app_context():
+            args = self._own_cell(seed_user, seed_periods_today)
+            db.session.expunge_all()
+            with pay_periods_hydrated() as hydrated:
+                resp = auth_client.get(endpoint, query_string=args)
+            assert resp.status_code == 200
+            assert hydrated == [], (
+                f"{endpoint} hydrated {len(hydrated)} PayPeriod row(s); it "
+                f"resolves the submitted id against the owner's derived "
+                f"calendar, which is loaded as a column tuple"
+            )
 
 
 class TestCarryForwardOwnership:

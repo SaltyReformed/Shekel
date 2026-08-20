@@ -4,21 +4,26 @@
    Expected context:
      category      -- Category object for this row (may be None for uncategorized)
      period_id     -- int; budget.pay_periods.id of this column's paycheck
-     account       -- Account object for the viewed account
+     account_id    -- int; budget.accounts.id of the viewed account
      txn_type_id   -- integer transaction type ID (TXN_TYPE_INCOME or TXN_TYPE_EXPENSE)
 
-   It took the whole `period` object until plan step C2-f2b and read one
-   scalar off it.  This partial has TWO render entries and they no longer
-   hold the same TYPE of period: the desktop grid macro
-   (`grid/_grid_row_macros.html`) iterates the read pass's derived calendar,
-   while `transactions.get_empty_cell` resolves an ORM `PayPeriod` to check
-   ownership of a submitted id.  Both can name an id, and an id is all this
-   ever wanted -- so the contract is the value rather than whichever object
-   happened to be carrying it.
+   `category` is the one object here, and it is one because the markup reads
+   two fields off it (`id` and `item_name`).  Everything else is a SCALAR,
+   which is the whole of what this partial builds: one URL.
+
+   It took a whole ORM `PayPeriod` until plan step C2-f2b and a whole ORM
+   `Account` until C2-f3e, reading exactly one integer off each.  This partial
+   has TWO render entries -- the desktop grid macro
+   (`grid/_grid_row_macros.html`), which iterates the read pass's derived
+   calendar, and `transactions.get_empty_cell`, which resolves a submitted id
+   against the owner's own derived calendar since C2-f3e -- and its two
+   sibling create partials (`_transaction_quick_create`,
+   `_transaction_full_create`) now name the same two scalars, so the family
+   states one contract rather than two.
 #}
 {% if category %}
 <div class="txn-cell txn-empty-cell"
-     hx-get="{{ url_for('transactions.get_quick_create', category_id=category.id, period_id=period_id, transaction_type_id=txn_type_id, account_id=account.id) }}"
+     hx-get="{{ url_for('transactions.get_quick_create', category_id=category.id, period_id=period_id, transaction_type_id=txn_type_id, account_id=account_id) }}"
      hx-trigger="click"
      hx-target="closest td"
      hx-swap="innerHTML"

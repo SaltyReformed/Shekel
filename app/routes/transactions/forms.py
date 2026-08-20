@@ -7,6 +7,8 @@ quick-create / full-create / empty-cell placeholders.  None of these
 mutate state.
 """
 
+from typing import NamedTuple
+
 from flask import render_template, request
 from flask_login import current_user, login_required
 
@@ -16,12 +18,12 @@ from app.extensions import db
 from app.models.transfer import Transfer
 from app.models.ref import Status
 from app.models.category import Category
-from app.models.pay_period import PayPeriod
 from app.models.account import Account
 from app.services import pay_period_service, transaction_service
+from app.services.pay_calendar import calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.state_machine import allowed_transitions
-from app.utils.auth_helpers import require_owner
+from app.utils.auth_helpers import log_refused_lookup, require_owner
 from app.utils.dates import display_today
 from app.routes._period_options import period_move_options
 from app.routes._render_helpers import (
@@ -190,13 +192,96 @@ def get_full_edit(txn_id):
     )
 
 
-@transactions_bp.route("/transactions/new/quick", methods=["GET"])
-@login_required
-@require_owner
-def get_quick_create():
-    """HTMX partial: return a quick-create input for an empty cell.
+# ---- the empty-cell family ------------------------------------------
+#
+# The three fragments a cell with no transaction in it can show -- the dash,
+# the quick-create input, the full-create popover -- are all addressed by the
+# same coordinate, so they resolve it through one function.
 
-    Query params: category_id, period_id, transaction_type_id.
+
+class _GridCell(NamedTuple):
+    """The grid coordinate one of the three empty-cell fragments renders for.
+
+    Produced by :func:`_resolve_grid_cell`, the query-string prefix that
+    :func:`get_quick_create`, :func:`get_full_create` and
+    :func:`get_empty_cell` share: all three read the same four ids and
+    ownership-check the same three of them, and until plan step **C2-f3e**
+    each wrote that out for itself.
+
+    Attributes:
+        category: The row's :class:`~app.models.category.Category`, proved to
+            belong to the requester.
+        period_id: The ``budget.pay_periods.id`` of the column's paycheck, as
+            the owner's own calendar answered it -- an id this owner holds by
+            construction rather than one a comparison let through.  It is what
+            the two create forms POST back as ``pay_period_id``, so it is the
+            paycheck any row created from this cell is funded by.
+        account: The viewed :class:`~app.models.account.Account`, proved to
+            belong to the requester.
+        transaction_type_id: Income or expense.  A reference-table id and so
+            not ownership-checked; that it is also unvalidated is one of the
+            ``request.args.get(..., type=int)`` sites plan step
+            ``balance:X-ah`` owns.
+    """
+
+    category: Category
+    period_id: int
+    account: Account
+    transaction_type_id: int
+
+
+def _resolve_grid_cell():
+    """Resolve and ownership-check the grid cell this request's query names.
+
+    Plan step **C2-f3e**, closing ledger row **P51**.
+
+    **The period is answered by the OWNER'S CALENDAR, and that is what makes
+    the ownership check structural.**  It was a fourth
+    :func:`_resolve_owned_fks` spec -- fetch ``budget.pay_periods`` by primary
+    key, then compare ``row.user_id`` against the requester.  A calendar holds
+    ONE owner's whole schedule and nothing else, so an id that is not in it is
+    not this owner's, and a single lookup answers "no such period" and "not
+    yours" with the identical 404 the security response rule asks for.  There
+    is no comparison left for a later edit to drop.  This is the shape plan
+    step C2-f2b put on ``grid.partials.mobile_this_period_summary`` and plan
+    step C2-f3c put on ``_resolve_carry_forward_context`` one module over.
+
+    **It does NOT take the last ORM ``PayPeriod`` out of this blueprint, and a
+    first draft of this paragraph claimed it did.**  Measured with
+    ``tests._test_helpers.pay_periods_hydrated``: after this step
+    ``/transactions/<id>/cell``, ``/quick-edit`` and ``/full-edit`` each still
+    hydrate exactly one, because :func:`._helpers._get_owned_transaction`
+    walks ``txn.pay_period.user_id``.  It is one of ELEVEN such comparisons in
+    ``app/`` and one of EIGHT more that fetch the row by primary key instead --
+    ledger row **P75** carries the census and the remedy to rule.  What this
+    closes is the three cell fragments.
+
+    **What it costs, stated rather than glossed**, because the honest
+    comparison is not free: a primary-key ``session.get`` becomes
+    :func:`~app.services.pay_calendar.calendar_for`'s two queries and a
+    derivation over the owner's whole payday set.  That is once per fragment
+    request, where the page that offers the fragment already derives one per
+    render, and the two cheap probes are ordered FIRST so a request naming a
+    foreign category or account is refused before any of it runs.  No row
+    count is quoted here on purpose: the owner's payday set GROWS as the
+    rolling top-up extends the schedule, and eleven docstrings in this
+    repository already state that moving number, ten of them at a value it has
+    since passed.
+
+    Returns:
+        ``(cell, None)`` on success, or ``(None, (message, 404))`` on the
+        first ownership failure -- a Flask response tuple the caller returns
+        directly to HTMX.  ``period_id`` is carried out of the DERIVED period
+        rather than off the query string: the two are the same integer, and
+        taking the confirmed one means no unchecked value can reach a form
+        even if a later edit moves the guard.
+
+    Raises:
+        PayCalendarError: The owner's paydays cannot define a calendar (see
+            :func:`~app.services.pay_calendar.calendar_for`).  Uncaught, as it
+            is at every other route that derives one: the grid page these
+            fragments are swapped into derives its own calendar to render at
+            all, so an owner who can reach this door has one that derives.
     """
     category_id = request.args.get("category_id", type=int)
     period_id = request.args.get("period_id", type=int)
@@ -206,32 +291,66 @@ def get_quick_create():
         default=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
     )
 
-    # Ownership check: prevent IDOR -- return identical 404 for "does
-    # not exist" and "belongs to another user" so attackers cannot
-    # distinguish the two cases.  See audit finding H1.
+    # Ownership: prevent IDOR -- return the identical 404 for "does not exist"
+    # and "belongs to another user" so an attacker cannot distinguish the two
+    # cases and enumerate another user's category names.  See audit finding H1.
     objs, err = _resolve_owned_fks([
         (Category, category_id, "Not found"),
-        (PayPeriod, period_id, "Not found"),
         (Account, account_id, "Not found"),
     ])
     if err is not None:
-        return err
-    category = objs[Category]
-    period = objs[PayPeriod]
-    acct = objs[Account]
+        return None, err
 
-    # Look up the baseline scenario for hidden fields.
+    period = calendar_for(current_user.id).period_by_id(period_id)
+    if period is None:
+        # The forensic half the calendar cannot supply on its own, and the
+        # rule :func:`~app.utils.auth_helpers.log_refused_lookup` was written
+        # for: an owner-scoped lookup cannot tell "no such row" from "not
+        # yours", which is the stronger security property and exactly why it
+        # must not also mean no trail.  The two probes ABOVE are silent and
+        # stay so here: they run through ``_resolve_owned_fks``, which the
+        # write routes share, so what that door logs is its own question.
+        log_refused_lookup("PayPeriod", period_id)
+        return None, ("Not found", 404)
+
+    return _GridCell(
+        category=objs[Category],
+        period_id=period.period_id,
+        account=objs[Account],
+        transaction_type_id=transaction_type_id,
+    ), None
+
+
+@transactions_bp.route("/transactions/new/quick", methods=["GET"])
+@login_required
+@require_owner
+def get_quick_create():
+    """HTMX partial: return a quick-create input for an empty cell.
+
+    Query params: category_id, period_id, account_id, transaction_type_id.
+    """
+    cell, err = _resolve_grid_cell()
+    if err is not None:
+        return err
+
+    # Look up the baseline scenario for hidden fields.  Not part of the cell
+    # coordinate: :func:`get_empty_cell` renders a dash for an owner who has
+    # none, and answering it 400 would be a new refusal rather than a shared
+    # one.
     scenario = get_baseline_scenario(current_user.id)
     if not scenario:
         return "No baseline scenario", 400
 
     return render_template(
         "grid/_transaction_quick_create.html",
-        category=category,
-        period=period,
-        account_id=acct.id,
+        category=cell.category,
+        # The ID, not the row -- the whole ``PayPeriod`` was being carried for
+        # this one integer (plan step C2-f3e, ledger row **P51**), which left
+        # the three create partials stating their period contract two ways.
+        period_id=cell.period_id,
+        account_id=cell.account.id,
         scenario_id=scenario.id,
-        transaction_type_id=transaction_type_id,
+        transaction_type_id=cell.transaction_type_id,
     )
 
 
@@ -243,25 +362,9 @@ def get_full_create():
 
     Query params: category_id, period_id, account_id, transaction_type_id.
     """
-    category_id = request.args.get("category_id", type=int)
-    period_id = request.args.get("period_id", type=int)
-    account_id = request.args.get("account_id", type=int)
-    transaction_type_id = request.args.get(
-        "transaction_type_id", type=int,
-        default=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-    )
-
-    # Ownership check: same IDOR fix as get_quick_create (H1).
-    objs, err = _resolve_owned_fks([
-        (Category, category_id, "Not found"),
-        (PayPeriod, period_id, "Not found"),
-        (Account, account_id, "Not found"),
-    ])
+    cell, err = _resolve_grid_cell()
     if err is not None:
         return err
-    category = objs[Category]
-    period = objs[PayPeriod]
-    acct = objs[Account]
 
     scenario = get_baseline_scenario(current_user.id)
     if not scenario:
@@ -273,11 +376,12 @@ def get_full_create():
     # mark-done / cancel / credit / full-edit actions on the saved row.
     return render_template(
         "grid/_transaction_full_create.html",
-        category=category,
-        period=period,
-        account_id=acct.id,
+        category=cell.category,
+        # The ID, not the row -- see :func:`get_quick_create`.
+        period_id=cell.period_id,
+        account_id=cell.account.id,
         scenario_id=scenario.id,
-        transaction_type_id=transaction_type_id,
+        transaction_type_id=cell.transaction_type_id,
     )
 
 
@@ -288,39 +392,23 @@ def get_empty_cell():
     """HTMX partial: return the empty cell placeholder.
 
     Used by Escape key to revert a quick-create form back to the dash.
-    Query params: category_id, period_id, transaction_type_id.
+    Query params: category_id, period_id, account_id, transaction_type_id.
     """
-    category_id = request.args.get("category_id", type=int)
-    period_id = request.args.get("period_id", type=int)
-    account_id = request.args.get("account_id", type=int)
-    transaction_type_id = request.args.get(
-        "transaction_type_id", type=int,
-        default=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-    )
-
-    # Ownership check: same IDOR fix as get_quick_create (H1).
-    objs, err = _resolve_owned_fks([
-        (Category, category_id, "Not found"),
-        (PayPeriod, period_id, "Not found"),
-        (Account, account_id, "Not found"),
-    ])
+    cell, err = _resolve_grid_cell()
     if err is not None:
         return err
-    category = objs[Category]
-    account = objs[Account]
 
     return render_template(
         "grid/_transaction_empty_cell.html",
-        category=category,
-        # The ID, not the row.  The ORM lookup above is the OWNERSHIP check
-        # (the IDOR fix H1) and nothing more; the partial builds one URL from
-        # one integer, and its other render entry -- the desktop grid macro --
-        # has only a ``DerivedPeriod`` to give it since plan step C2-f2b.  One
-        # partial, two callers, one contract they can both keep.  The value is
-        # the request's own ``period_id``, which ``_resolve_owned_fks`` has
-        # just proved belongs to this user; reading it back off the row would
-        # be the same integer by a longer route.
-        period_id=period_id,
-        account=account,
-        txn_type_id=transaction_type_id,
+        category=cell.category,
+        # IDS, not rows.  The partial builds one URL and reads nothing else off
+        # either; its other render entry -- the desktop grid macro -- has only
+        # a ``DerivedPeriod`` to give it since plan step C2-f2b.  The ACCOUNT
+        # moved the same way here: both callers hold an ORM row, so it was not
+        # the two-types defect **P51** records, but it was the same whole row
+        # carried for one integer, and leaving it made the family's contract
+        # false in its own header comment.
+        period_id=cell.period_id,
+        account_id=cell.account.id,
+        txn_type_id=cell.transaction_type_id,
     )

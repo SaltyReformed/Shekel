@@ -6247,6 +6247,150 @@ class TestBornProjected:
             assert 'name="status_id"' not in body
 
 
+class TestCreateFragmentsCarryThePeriodId:
+    """The two create fragments state their period contract as an ID.
+
+    Plan step **C2-f3e**, closing ledger row **P51**.  Both partials took a
+    whole ORM ``PayPeriod`` and read ``period.id`` off it, where their
+    sibling ``_transaction_empty_cell.html`` had taken the scalar since plan
+    step C2-f2b -- one family of three partials stating one contract two ways.
+
+    **These assert the rendered VALUE, not merely that the route answers
+    200**, and the reason is Jinja's default ``Undefined``: this application
+    configures no ``StrictUndefined``, so a context key that stops being
+    passed renders as the empty string in silence.  ``pay_period_id`` is the
+    field that decides which paycheck funds every row created from this cell,
+    so a blank one is exactly the failure that must not be able to pass
+    quietly (the same argument ``forms.get_quick_edit`` records for priming
+    the Estimated field from a map rather than a scalar).
+    """
+
+    def _cell_args(self, seed_user, seed_periods_today):
+        """Return the query string naming one real cell of the owner's grid."""
+        return {
+            "category_id": seed_user["categories"]["Groceries"].id,
+            "period_id": seed_periods_today[3].id,
+            "account_id": seed_user["account"].id,
+            "transaction_type_id": ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+        }
+
+    def test_quick_create_posts_back_the_requested_period(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The quick-create form's hidden pay_period_id is the cell's own."""
+        with app.app_context():
+            period_id = seed_periods_today[3].id
+            response = auth_client.get(
+                "/transactions/new/quick",
+                query_string=self._cell_args(seed_user, seed_periods_today),
+            )
+            assert response.status_code == 200
+            body = response.get_data(as_text=True)
+            assert (
+                f'name="pay_period_id" value="{period_id}"' in body
+            ), body
+
+    def test_quick_create_expand_button_carries_the_period(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The expand button's data-period-id is the cell's own.
+
+        ``grid_edit.js`` reads it back off the DOM to build the full-create
+        URL (``openFullCreate``), so a blank here breaks F2 / the three-dots
+        button rather than the save -- a second consumer of the same value,
+        and the reason the partial names the id twice.
+        """
+        with app.app_context():
+            period_id = seed_periods_today[3].id
+            response = auth_client.get(
+                "/transactions/new/quick",
+                query_string=self._cell_args(seed_user, seed_periods_today),
+            )
+            assert response.status_code == 200
+            body = response.get_data(as_text=True)
+            assert f'data-period-id="{period_id}"' in body, body
+
+    def test_full_create_posts_back_the_requested_period(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The full-create form's hidden pay_period_id is the cell's own."""
+        with app.app_context():
+            period_id = seed_periods_today[3].id
+            response = auth_client.get(
+                "/transactions/new/full",
+                query_string=self._cell_args(seed_user, seed_periods_today),
+            )
+            assert response.status_code == 200
+            body = response.get_data(as_text=True)
+            assert (
+                f'name="pay_period_id" value="{period_id}"' in body
+            ), body
+
+    def test_empty_cell_reopens_the_same_cell(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The dash's hx-get names the period it was rendered for.
+
+        Escape swaps the quick-create input back to this fragment, and its
+        ``hx-get`` is what a following click re-opens; a blank period there
+        would offer the create form for a cell in no paycheck at all.
+        """
+        with app.app_context():
+            period_id = seed_periods_today[3].id
+            response = auth_client.get(
+                "/transactions/empty-cell",
+                query_string=self._cell_args(seed_user, seed_periods_today),
+            )
+            assert response.status_code == 200
+            body = response.get_data(as_text=True)
+            assert f"period_id={period_id}" in body, body
+
+    def test_created_row_lands_in_the_requested_period(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The whole loop: the form the route renders files the row correctly.
+
+        The end-to-end statement the two field assertions above decompose --
+        it posts the create form's OWN hidden fields back, so the row's
+        ``pay_period_id`` is whatever the fragment actually emitted rather
+        than whatever the test would have typed.  A partial that rendered a
+        blank id is caught here as a 422, and one that rendered the WRONG id
+        as a row in the wrong paycheck.
+        """
+        with app.app_context():
+            period_id = seed_periods_today[3].id
+            form = auth_client.get(
+                "/transactions/new/quick",
+                query_string=self._cell_args(seed_user, seed_periods_today),
+            ).get_data(as_text=True)
+
+            hidden = dict(
+                re.findall(
+                    r'<input type="hidden" name="([^"]+)" value="([^"]*)">',
+                    form,
+                ),
+            )
+            assert set(hidden) == {
+                "account_id", "category_id", "pay_period_id", "scenario_id",
+                "transaction_type_id",
+            }, hidden
+
+            created = auth_client.post(
+                "/transactions/inline",
+                data={**hidden, "estimated_amount": "42.00"},
+            )
+            assert created.status_code == 201, created.get_data(as_text=True)
+
+            txn = (
+                db.session.query(Transaction)
+                .filter_by(estimated_amount=Decimal("42.00"))
+                .order_by(Transaction.id.desc())
+                .first()
+            )
+            assert txn is not None
+            assert txn.pay_period_id == period_id
+
+
 class TestSchemaValidation:
     """Tests for due_day_of_month and due_date schema validation."""
 

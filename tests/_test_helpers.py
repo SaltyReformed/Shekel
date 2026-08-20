@@ -5835,3 +5835,61 @@ def all_periods(user_id):
         .order_by(PayPeriod.start_date)
         .all()
     )
+
+
+@contextmanager
+def pay_periods_hydrated():
+    """Count the ``PayPeriod`` ORM entities LOADED inside this block.
+
+    The measurement a statement count cannot make: an eager load rides inside
+    another query as a JOIN and issues no statement of its own, and a
+    ``db.session.get`` served from the identity map issues none either.  Both
+    hydrate an entity, which is what this counts.
+
+    **The event and not the identity map**, because the map holds WEAK
+    references: a probe that counted survivors after the call read zero for a
+    producer that had hydrated twelve, since nothing outside the producer
+    holds a ``Transaction`` to keep its ``pay_period`` back-reference alive.
+    That was measured -- a first cut of this helper read the map and could not
+    fire.  ``loaded_as_persistent`` fires per load and cannot be collected
+    away.
+
+    **A caller must EXPUNGE first, and this is the one thing about the probe
+    that is not obvious.**  ``loaded_as_persistent`` fires on a LOAD, so an
+    instance already in the session's identity map is returned by
+    ``db.session.get`` without firing anything: a fixture that hands back live
+    ORM rows makes this read ZERO for a producer that is hydrating on every
+    call, and the guard then passes on exactly the code it exists to refuse.
+    Measured at plan step C2-f3e -- with ten periods preloaded, a
+    ``db.session.get(PayPeriod, ...)`` inside this block records nothing.  An
+    earlier wording of this paragraph claimed the probe counts such a call and
+    it does not.
+
+    Shared here rather than per-suite because two SUITES now assert the same
+    structural property -- no ORM ``PayPeriod`` on this path.  Written for plan
+    step C2-f3d (``test_spending_report_service``), moved here whole by plan
+    step C2-f3e (``test_transaction_auth``); both are pay-calendar steps, and
+    an earlier wording of this sentence said "two arcs".
+
+    Yields:
+        The list of hydrated :class:`~app.models.pay_period.PayPeriod`
+        instances, appended to as the block runs.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app or ORM
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from sqlalchemy import event
+    from sqlalchemy.orm import Session
+    from app.models.pay_period import PayPeriod
+
+    loaded = []
+
+    def _record(_session, instance):
+        if isinstance(instance, PayPeriod):
+            loaded.append(instance)
+
+    event.listen(Session, "loaded_as_persistent", _record)
+    try:
+        yield loaded
+    finally:
+        event.remove(Session, "loaded_as_persistent", _record)

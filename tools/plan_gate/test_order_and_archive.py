@@ -15,7 +15,7 @@ import pytest
 import _archive as archive
 import _order as order
 import _registry as registry
-from _staging import row_of, with_cell
+from _staging import row_of, stage_a_live_container, with_cell
 
 
 class TestTheOrderIsATotalOrderTheGraphAllows:
@@ -231,30 +231,36 @@ class TestTheStartsCellIsDerivedAndReconciled:
         one identity class stating TWO tick ranks and every gate stayed green
         over it, which is the equally damning and accurate version.
         """
-        line = row_of("steps", "| balance | X-l |")
-        stage("steps", line, with_cell(line, 6, "ticks with #1"))
-        ticks = order.rank_map()["balance:X-l"]
+        members = stage_a_live_container(stage)
+        parent = members[0]
+        ticks = order.rank_map()[parent]
+        arc, ident = parent.split(":", 1)
+        line = row_of("steps", f"| {arc} | {ident} |")
+        stage("steps", line, with_cell(line, 6, f"ticks with #{ticks + 1}"))
         problems = order.starts_violations()
         assert any(
-            "balance:X-l" in p and f"#{ticks}" in p for p in problems
+            parent in p and f"#{ticks}" in p for p in problems
         ), problems
 
     def test_the_control_fires_on_a_one_way_alias_cell(self, stage):
         """Class membership is UNDIRECTED, or a blanked cell re-opens the hole.
 
-        `balance:X-l` carries no arc-local leaf, so its tick rank comes entirely
-        from the class.  Read the class off the parent's own `also` cell alone
+        The class's declared parent carries no arc-local leaf, so its tick rank
+        comes entirely from the class.  Read the class off the parent's own `also` cell alone
         and blanking that cell restores the exact blindness the sibling control
         above grades -- a stale tick rank with every arm green.  Measured on a
         staged copy 2026-08-11: 1 problem with the class intact, 0 without.
         """
-        ticks = order.rank_map()["balance:X-l"]
-        line = row_of("steps", "| balance | X-l |")
-        staged = with_cell(with_cell(line, 6, f"ticks with #{ticks - 1}"), 2, "--")
+        members = stage_a_live_container(stage)
+        parent = members[0]
+        ticks = order.rank_map()[parent]
+        arc, ident = parent.split(":", 1)
+        line = row_of("steps", f"| {arc} | {ident} |")
+        staged = with_cell(with_cell(line, 6, f"ticks with #{ticks + 1}"), 2, "--")
         stage("steps", line, staged)
         problems = order.starts_violations()
         assert any(
-            "balance:X-l" in p and f"#{ticks}" in p for p in problems
+            parent in p and f"#{ticks}" in p for p in problems
         ), problems
 
     def test_the_ready_count_matches_the_table(self):
