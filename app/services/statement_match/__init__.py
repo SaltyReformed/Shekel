@@ -94,7 +94,7 @@ from ._offers import (
     PurchaseDestination,
     RowKind,
     corrected_purchase_day,
-    merchant_of,
+    merchant_label,
 )
 from ._propose import DAY_WINDOW, ProposedMatches, propose
 from ._reads import (
@@ -137,7 +137,7 @@ __all__ = [
     "create_purchase_from_line",
     "destinations_for",
     "matched_subjects",
-    "merchant_of",
+    "merchant_label",
     "propose",
     "release_match",
     "review_set",

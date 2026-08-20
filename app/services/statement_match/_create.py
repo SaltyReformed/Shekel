@@ -71,7 +71,7 @@ from ._candidates import (
     purchase_candidate,
     unmatched_destinations,
 )
-from ._offers import PurchaseCreation, merchant_of
+from ._offers import PurchaseCreation, merchant_label
 from ._scope import ReviewScope
 
 _logger = logging.getLogger(__name__)
@@ -546,14 +546,18 @@ def create_purchase_from_line(
         user_id=scope.owner_id,
         details=entry_service.EntryDetails(
             amount=amount,
-            # What the BANK called the merchant, not the whole line
-            # (:func:`~._offers.merchant_of`).  The app's own purchases are
+            # What the BANK NAMES the merchant, not the whole line
+            # (:func:`~._offers.merchant_label`).  The app's own purchases are
             # named "Walmart" and "Food Lion", and a purchase called
             # ``POINT OF SALE DEBIT L340 DATE 08-13 Amazon.com*5H2RA5V...``
             # would be the only row in the entries list nobody can read.  The
             # bank's full wording is not lost: it stays on the statement line,
             # which the match this door records ties to this purchase.
-            description=merchant_of(line.description)[:200],
+            # **The LABEL, not the key** (plan step X-f6a-3d): it falls back to
+            # the description for a source that names no merchant, because
+            # ``transaction_entries.description`` is NOT NULL and this door
+            # calls ``create_entry`` directly.
+            description=merchant_label(line)[:200],
             purchased_on=made_on,
             settled_on=line.posted_on,
         ),

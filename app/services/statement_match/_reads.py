@@ -315,6 +315,7 @@ def _as_bank_line(row: BankStatementLine) -> BankLine:
         amount=Decimal(str(row.amount)),
         description=row.description,
         transaction_on=row.transaction_on,
+        merchant=row.merchant,
     )
 
 

@@ -1034,6 +1034,7 @@ class TestTheCreateArm:
             seed_user, statement, amount="-57.96",
             posted_on=seed_user["bootstrap_period"].start_date,
             description="POINT OF SALE DEBIT L340 WAL-MART (Walmart)",
+            merchant="Walmart",
         )
         self._an_open_envelope(seed_user)
         db.session.commit()
@@ -1043,7 +1044,8 @@ class TestTheCreateArm:
         assert response.status_code == 200
         assert b"a purchase you never recorded" in response.data
         assert b"-- a new envelope --" in response.data
-        # The name box is prefilled with the MERCHANT, not the whole line.
+        # The name box is prefilled with the MERCHANT the bank NAMED -- the
+        # recorded column since plan step X-f6a-3d -- not the whole line.
         assert b'value="Walmart"' in response.data
 
     def test_the_select_DEFAULTS_to_leaving_the_line_alone(

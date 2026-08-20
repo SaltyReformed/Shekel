@@ -161,7 +161,7 @@ def an_import(seed_user, account=None):
 def a_bank_line(
     seed_user, statement, *, amount="-180.00", posted_on=None,
     description="ACH DEBIT DUKEENERGY", sequence_in_group=0,
-    transaction_on=None,
+    transaction_on=None, merchant=None,
 ):
     """Stage and return one recorded bank line under *statement*.
 
@@ -178,6 +178,18 @@ def a_bank_line(
             (179 of 361 lines) and because a fixture that always states one
             would never exercise :attr:`~._offers.BankLine.happened_on`'s
             fallback.
+        merchant: What the bank NAMES the merchant, or ``None`` for a source
+            naming none -- which is the DEFAULT, and it is a fixture decision
+            worth stating.  **It is NOT derived from *description* here.**  A
+            builder that re-ran the adapter's own parse would move with it, so
+            a change to that parse would shift the fixture and the assertion
+            together and grade nothing; the parse is graded where it belongs,
+            against real CSV bytes, in
+            ``tests/test_services/test_statement_import/test_secu_csv.py``.
+            What these builders state is the recorded FACT.  ``None`` is the
+            default because it is the state every guard here has to survive: a
+            line with no merchant joins no destination policy, and the label
+            readers fall back to *description*.
 
     Returns:
         The staged
@@ -191,6 +203,7 @@ def a_bank_line(
         transaction_on=transaction_on,
         amount=Decimal(amount),
         description=description,
+        merchant=merchant,
         sequence_in_group=sequence_in_group,
     )
     db.session.add(line)
