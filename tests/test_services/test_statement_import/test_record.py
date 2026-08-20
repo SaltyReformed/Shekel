@@ -44,10 +44,22 @@ from . import _csv_builder as build
 _SOURCE = StatementSourceEnum.SECU_CHECKING_CSV
 
 _ENTRIES = [
-    (date(2026, 3, 2), "-25.00", "POINT OF SALE DEBIT L340 COFFEE"),
-    (date(2026, 3, 3), "1500.00", "ACH DEPOSIT TOWN OF CLAYTON  PAYROLL"),
-    (date(2026, 3, 4), "-40.81", "POINT OF SALE DEBIT L340 FOOD LION"),
+    (date(2026, 3, 2), "-25.00",
+     "POINT OF SALE DEBIT L340 COFFEE (Big Cheese Clayton)"),
+    (date(2026, 3, 3), "1500.00",
+     "ACH DEPOSIT TOWN OF CLAYTON  PAYROLL (TOWN OF CLAYTON PAYROLL)"),
+    (date(2026, 3, 4), "-40.81",
+     "POINT OF SALE DEBIT L340 FOOD LION (Food Lion)"),
 ]
+
+#: What SECU NAMES the merchant on each of those, in the same order -- the
+#: parenthesised trailing token the adapter reads.  **Written out rather than
+#: re-parsed here**: a fixture that re-ran the parse would move with it, so a
+#: change to the adapter's rule would shift this list and its assertion
+#: together and grade nothing.  The shared entries carry a token because every
+#: one of the developer's 361 real lines does; a case that wants the ``None``
+#: state says so with its own rows.
+_MERCHANTS = ["Big Cheese Clayton", "TOWN OF CLAYTON PAYROLL", "Food Lion"]
 
 
 def _file(entries=None, start="100.00", account_number=None):
@@ -95,6 +107,24 @@ class TestItRecordsWhatTheBankSaid:
 
         assert outcome.recorded_count == 3
         assert db.session.query(BankStatementLine).count() == 3
+
+    def test_it_records_the_merchant_the_bank_NAMED(
+        self, app, db, seed_user,
+    ):
+        """The column a destination policy is keyed by, written by the adapter.
+
+        Plan step X-f6a-3d.  What makes this worth its own case at THIS tier is
+        that the adapter's answer has to reach the row: the parse is graded in
+        ``test_secu_csv``, and this is the only place that says the value
+        travels from the parse to the column rather than being dropped by the
+        staging call.
+        """
+        _record(seed_user, _file())
+
+        rows = db.session.query(BankStatementLine).order_by(
+            BankStatementLine.posted_on,
+        ).all()
+        assert [row.merchant for row in rows] == _MERCHANTS
 
     def test_it_records_the_banks_posted_day(self, app, db, seed_user):
         """The whole point of the arc: the day the BANK says, not the app."""
@@ -472,6 +502,62 @@ class TestItAbsorbsWhatALaterExportAdds:
 
         assert db.session.query(BankStatementLine).one().source_category == (
             "Food/Coffee"
+        )
+
+
+    def test_a_merchant_arriving_later_is_recorded(
+        self, app, db, seed_user,
+    ):
+        """The arm a destination POLICY keys on (plan step X-f6a-3d).
+
+        A line whose merchant is NULL joins no policy, so a row recorded by an
+        adapter that could not name one would go on being offered a bare
+        chooser forever -- even after an export that DOES name one had been
+        imported over it.  Same rule, same direction, as the transaction-day
+        arm above; the consequence here is a decision the owner has to make
+        again rather than a date left wrong.
+        """
+        entries = [(date(2026, 3, 2), "-25.00",
+                    "POINT OF SALE DEBIT L340 COFFEE (Big Cheese Clayton)")]
+        _record(seed_user, build.build(build.chained("100.00", entries)))
+        recorded = db.session.query(BankStatementLine).one()
+        assert recorded.merchant == "Big Cheese Clayton"
+        # Stand in for a row an older adapter wrote, which named no merchant.
+        recorded.merchant = None
+        db.session.flush()
+
+        second = _record(seed_user, build.build(build.chained(
+            "100.00", entries,
+        )), file_name="again.csv")
+
+        assert second.recorded_count == 0
+        assert db.session.query(BankStatementLine).one().merchant == (
+            "Big Cheese Clayton"
+        )
+
+    def test_a_DISAGREEING_merchant_is_left_alone(
+        self, app, db, seed_user,
+    ):
+        """Only NULL is filled, and here that is a POLICY's key.
+
+        THE FIRING CONTROL for the arm's ``is None`` guard: widen it to an
+        unconditional write and this fails.  Overwriting would silently
+        re-point every destination policy the owner had stated against the old
+        name, which is a decision moving without anyone deciding it.
+        """
+        entries = [(date(2026, 3, 2), "-25.00",
+                    "POINT OF SALE DEBIT L340 COFFEE (Big Cheese Clayton)")]
+        _record(seed_user, build.build(build.chained("100.00", entries)))
+        recorded = db.session.query(BankStatementLine).one()
+        recorded.merchant = "Cheese Shop"
+        db.session.flush()
+
+        _record(seed_user, build.build(build.chained(
+            "100.00", entries,
+        )), file_name="again.csv")
+
+        assert db.session.query(BankStatementLine).one().merchant == (
+            "Cheese Shop"
         )
 
 

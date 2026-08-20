@@ -29,6 +29,7 @@ from app.schemas.validation._helpers import (
     _normalize_empty_inputs,
 )
 from app.services.statement_import import supported_sources
+from app.services.statement_match import NEW_ENVELOPE
 from app.utils.digit_strings import is_ascii_digits, parse_row_id
 
 
@@ -109,7 +110,13 @@ _MAX_BATCH_ITEMS: int = 500
 #: (three adversarial reviews, 2026-08-19).  One control now states which of
 #: the three things the owner meant, so nothing has to be inferred from an
 #: absence.
-NEW_ENVELOPE: str = "new"
+#:
+#: **Re-exported from the SERVICE rather than declared here** (plan step
+#: X-f6a-3d), because the service produces this value as well as reading it:
+#: ``Placement.select_value`` answers what a line's control would be set to.
+#: Two literals would be one wire value spelled twice, which is this package's
+#: own root cause 1 -- and the import direction is the one this module already
+#: takes for ``supported_sources``.
 
 #: What that select submits when the owner has not picked anything, which is
 #: its DEFAULT.  The line is left alone: it is not an act, so it never reaches
@@ -283,6 +290,139 @@ class StatementPurchaseSchema(BaseSchema):
     category_id = RowId(required=False, load_default=None)
 
 
+class PolicyAnswerField(fields.Field):
+    """Which of the four things the policy control's one select can say.
+
+    **One field because the owner makes one choice**, exactly as
+    :class:`PurchaseDestination` is one field: the control is a single
+    ``<select>`` whose options are *I have not said*, each recurring envelope
+    on the account, *a new envelope*, and *never a purchase*.  Splitting it
+    into an id plus an implied arm is what let a form name two destinations at
+    once one leaf earlier.
+
+    **The id half is exactly as strict as :class:`RowId`**, through the same
+    :func:`~app.utils.digit_strings.parse_row_id`: after the ``t:`` prefix,
+    ``'٧'``, ``' 7 '``, ``'+7'``, ``'0_7'``, ``'007'``, ``'-7'`` and ``'0'``
+    name no template here either.
+    """
+
+    default_error_messages = {
+        "invalid": "That is not somewhere a merchant's spending can go.",
+    }
+
+    def _deserialize(self, value, attr, data, **kwargs):
+        """Return the answer *value* names.
+
+        Args:
+            value: The submitted value.
+            attr: The field name being loaded (marshmallow's contract).
+            data: The whole payload being loaded (marshmallow's contract).
+            **kwargs: Marshmallow's contract, unused.
+
+        Returns:
+            :data:`NOT_SAID`, :data:`NEVER`, :data:`NEW_ENVELOPE`, or the
+            ``int`` id of a recurring definition.
+
+        Raises:
+            ValidationError: When *value* is none of those.
+        """
+        if value in (NOT_SAID, NEVER, NEW_ENVELOPE):
+            return value
+        if not isinstance(value, str) or not value.startswith(
+            _TEMPLATE_VALUE_PREFIX,
+        ):
+            raise self.make_error("invalid")
+        row_id = parse_row_id(value[len(_TEMPLATE_VALUE_PREFIX):])
+        if row_id is None:
+            raise self.make_error("invalid")
+        return row_id
+
+
+class MerchantPolicySchema(BaseSchema):
+    """Validate ONE merchant's stated destination.
+
+    **It states no owner and no account**, for the reason
+    :class:`StatementPurchaseSchema` states none: whose account this is, is
+    the route's one proved statement.
+
+    **The merchant is free text from a BANK and is not validated here**, and
+    that is deliberate rather than an omission.  What makes it safe is a scope
+    check the schema cannot perform -- ``refuse_unknown_merchants`` compares it
+    against the merchants this account's recorded lines actually name -- and a
+    length rule here would only add a second, weaker answer to the same
+    question.  The 100 matches ``bank_statement_lines.merchant``, so a string
+    no line could carry is refused before the service is asked.
+
+    **The name and the category are PARAMETERS OF ONE ANSWER**, like
+    ``StatementPurchaseSchema``'s, and whether that answer is COMPLETE is the
+    service's question rather than this schema's -- for the same reason, one
+    door over: a ``@validates_schema`` rule refuses the WHOLE payload, and this
+    payload carries every merchant on the account.
+    """
+
+    @pre_load
+    def strip_empty_strings(self, data, **kwargs):
+        """Drop empty inputs; map empties on nullable fields to None."""
+        return _normalize_empty_inputs(self, data)
+
+    merchant = fields.String(
+        required=True, validate=validate.Length(min=1, max=100),
+        error_messages={"required": "Which merchant is this about?"},
+    )
+    answer = PolicyAnswerField(
+        required=True,
+        error_messages={"required": "Where should this merchant's spending go?"},
+    )
+    envelope_name = fields.String(
+        required=False, load_default=None,
+        validate=validate.Length(min=1, max=200),
+    )
+    category_id = RowId(required=False, load_default=None)
+
+
+class MerchantPolicyBatchSchema(Schema):
+    """Validate ONE pass over the policy section: every merchant it renders.
+
+    Plan step ``bank_import:X-f6a-3d``.  **A plain
+    :class:`marshmallow.Schema`, not a
+    :class:`~app.schemas.validation._helpers.BaseSchema`**, for the reason
+    :class:`StatementBatchSchema` is: that base drops a FORM's ``csrf_token``
+    with ``unknown = EXCLUDE``, and this schema never sees a form --
+    :func:`policy_payload` has already turned one into a list.  Inheriting it
+    would silently swallow a key this schema does not declare.
+    """
+
+    class Meta:
+        """Refuse an unknown key rather than dropping it silently."""
+
+        unknown = RAISE
+
+    policies = fields.List(
+        fields.Nested(MerchantPolicySchema), required=False,
+        load_default=list,
+    )
+
+    @validates_schema
+    def validate_pass_is_not_too_large(self, data, **kwargs):
+        """Refuse a submission answering for more merchants than one may carry.
+
+        Args:
+            data: The deserialized payload.
+            **kwargs: Marshmallow's context, unused.
+
+        Raises:
+            ValidationError: When it names more than :data:`_MAX_POLICY_ITEMS`.
+        """
+        total = len(data.get("policies", ()))
+        if total > _MAX_POLICY_ITEMS:
+            raise ValidationError(
+                f"That is {total:,} merchants to answer for at once, and this "
+                f"page records at most {_MAX_POLICY_ITEMS:,}.  Nothing was "
+                f"changed.",
+                field_name="policies",
+            )
+
+
 class StatementBatchSchema(Schema):
     """Validate ONE reviewed pass: every match ticked, every line named.
 
@@ -345,6 +485,63 @@ class StatementBatchSchema(Schema):
                 field_name="matches",
             )
 
+
+#: What the policy control submits when the owner has not answered for a
+#: merchant, which is its DEFAULT -- and, when a policy already exists, what
+#: WITHDRAWS it.
+#:
+#: **A NAMED arm rather than the empty string, and the first draft of this
+#: constant WAS the empty string and was unreachable.**  ``BaseSchema``'s
+#: ``@pre_load`` normalizer drops every ``""`` a form submits, because for an
+#: ordinary optional control that means *untouched*; here it means *forget what
+#: I said*, so the drop turned ``required=True`` into "this answer is missing"
+#: and made a policy restatable but never withdrawable.  Caught by this
+#: package's own wire test.  It is the same correction plan step X-f6a-3c-2
+#: made to :data:`NEW_ENVELOPE` -- an arm is STATED, never inferred from an
+#: absence -- and the reason it bit here and not on
+#: :data:`LEAVE_ALONE` is that the two mean different things: leaving a LINE
+#: alone is not an act and :func:`_creation_items` drops it before the schema
+#: sees it, while not answering for a MERCHANT is an act that has to reach the
+#: door.
+NOT_SAID: str = "unset"
+
+#: What it submits for *never a purchase*.  A NAMED arm rather than an absence,
+#: for the reason :data:`NEW_ENVELOPE` is one: "the owner said never" and "the
+#: owner has not said" are different answers and the screen shows them
+#: differently, so the wire has to be able to tell them apart.
+NEVER: str = "never"
+
+#: The prefix a submitted policy answer carries, keyed by the merchant's own
+#: rendered POSITION rather than by the merchant string.  A merchant is free
+#: text from a bank -- it carries spaces, apostrophes and parentheses -- so a
+#: field name built from it could not be split back apart reliably, where a
+#: bank line's id (``destination-<id>``) can.  The merchant itself travels in
+#: :data:`_POLICY_MERCHANT_PREFIX`, and the SERVICE checks it against the
+#: merchants this account has actually recorded
+#: (``statement_match.refuse_unknown_merchants``) -- so an index the owner
+#: cannot forge is not what makes this safe, and nothing here depends on one.
+_POLICY_PREFIX = "policy-"
+_POLICY_MERCHANT_PREFIX = "policy_merchant-"
+_POLICY_NAME_PREFIX = "policy_name-"
+_POLICY_CATEGORY_PREFIX = "policy_category-"
+
+#: What a TEMPLATE answer's value is prefixed with, so one control can carry
+#: three kinds of answer without a second field saying which kind it is.  The
+#: id half is read through the same :func:`~app.utils.digit_strings.parse_row_id`
+#: every other row id on this screen goes through.
+_TEMPLATE_VALUE_PREFIX = "t:"
+
+#: The most merchants one submission of the policy section may answer for.
+#: **A separate ceiling from :data:`_MAX_BATCH_ITEMS`, and the distinction is
+#: the subject rather than a second copy of one rule.**  That one bounds MONEY
+#: acts, each of which runs a settle door and costs about 10 ms; a policy
+#: statement writes at most one small row and moves nothing, and the section
+#: submits every merchant it renders -- so most of a real pass is no-ops.
+#: Bounded by what an account can actually show: the developer's own 361-line
+#: export names 59 distinct merchants, and ``_secu_csv.MAX_LINES`` caps an
+#: import at 20,000 lines.  2,000 is far past any real statement and still
+#: refuses a body inventing merchants.
+_MAX_POLICY_ITEMS: int = 2000
 
 #: The prefix a submitted match item carries.  Its INDEX is the rendered
 #: position of the proposal it came from, so the ids of the item the owner
@@ -478,6 +675,48 @@ def _creation_items(form) -> list:
             "category_id": form.get(f"{_CATEGORY_PREFIX}{key}", ""),
         })
     return items
+
+
+def policy_payload(form) -> dict:
+    """Return one pass over the policy section as :class:`MerchantPolicyBatchSchema` loads it.
+
+    **The form shape lives HERE, beside the schema that grades it**, for the
+    reason :func:`batch_payload` gives.
+
+    **Every merchant the section rendered submits an item, including the ones
+    the owner did not touch.**  There is no way to tell an untouched control
+    from a deliberately-repeated answer on the wire, and inventing one -- a
+    hidden "what it was" field -- would be a value the submitter could forge
+    into a write nobody asked for.  The SERVICE compares each answer against
+    what is stored and reports only what changed, which is the same question
+    asked where the answer is actually known.
+
+    Args:
+        form: The request's ``MultiDict``.
+
+    Returns:
+        ``{"policies": [...]}``.  Raw strings: the schema is what reads them.
+    """
+    keys = [
+        field[len(_POLICY_PREFIX):] for field in form.keys()
+        if field.startswith(_POLICY_PREFIX)
+    ]
+    items = []
+    for key in sorted(keys, key=_sort_key):
+        merchant = form.get(f"{_POLICY_MERCHANT_PREFIX}{key}")
+        if merchant is None:
+            # A policy answer with no merchant beside it names nothing.  It is
+            # dropped rather than refused because it is unreachable from this
+            # screen -- the two fields are rendered together -- and because a
+            # crafted body naming an answer for nobody has asked for nothing.
+            continue
+        items.append({
+            "merchant": merchant,
+            "answer": form[f"{_POLICY_PREFIX}{key}"],
+            "envelope_name": form.get(f"{_POLICY_NAME_PREFIX}{key}", ""),
+            "category_id": form.get(f"{_POLICY_CATEGORY_PREFIX}{key}", ""),
+        })
+    return {"policies": items}
 
 
 def batch_payload(form) -> dict:

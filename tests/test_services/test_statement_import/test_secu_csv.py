@@ -740,3 +740,134 @@ class TestItRecordsTheDayTheBankSTATED:
         assert [line.transaction_on for line in lines] == [
             date(2025, 12, 31), date(2026, 8, 13),
         ]
+
+
+class TestItRecordsTheMerchantTheBankNAMES:
+    """The parenthesised trailing token of the description CELL, or ``None``.
+
+    Plan step **bank_import:X-f6a-3d**.  SECU appends its own normalized
+    merchant at the end of every description cell -- ``BJS FUEL #9151
+    25GARNER     NC (BJ's Fuel)`` -- on **361 of 361** of the developer's
+    recorded lines, resolving to 59 distinct merchants, the longest 28
+    characters.
+
+    **Why it matters that this is right, and why it is a COLUMN.**  This string
+    is the key a merchant destination policy is stated against, so a wrong
+    value files a payment in the wrong envelope on every later statement.  It
+    was a reader over the stored description
+    (``statement_match._offers.merchant_of``) while its only consumer was a
+    form's name box; a reader has to be TOTAL, and SECU's own OFX truncates 326
+    of those 361 descriptions to the same 32 characters -- so a total reader
+    would key one policy on that string and fire it on every merchant behind
+    it.  ``None`` here keys nothing.
+    """
+
+    @staticmethod
+    def _one(description, memo=""):
+        """Return the single parsed line of a file holding just this row."""
+        rows = [build.row(
+            date(2026, 8, 14), "-25.00", description, memo=memo,
+            running="75.00",
+        )]
+        _, lines = parse_statement(_SOURCE, build.build(rows))
+        return lines[0]
+
+    def test_it_reads_the_merchant(self):
+        """The ordinary card line, which is 361 of the developer's 361."""
+        line = self._one(
+            "POINT OF SALE DEBIT L340 BJS FUEL #9151 25GARNER     NC "
+            "(BJ's Fuel)"
+        )
+
+        assert line.merchant == "BJ's Fuel"
+
+    def test_a_line_naming_no_merchant_records_NONE(self):
+        """The NULL is the source saying so, and it keys no policy.
+
+        Not a fallback to the description: that fallback is what made the old
+        reader unusable as a key, because a source with no merchant field gives
+        every line the same truncated string.
+        """
+        line = self._one("ACH DEBIT GEICO            PREM COLL 026002003831385")
+
+        assert line.merchant is None
+
+    def test_the_merchant_is_read_from_the_CELL_not_the_stored_text(self):
+        """A memo's own parentheses are the USER's, not the bank's.
+
+        The stored description is a ``Description | Memo`` join, so a memo
+        ending "(anything)" would become the merchant -- and now the key a rule
+        matches on.  Reading the CELL makes that unreachable rather than
+        guarded against, which is the bound
+        ``_stated_transaction_day`` learned to make structural on 2026-08-18.
+        """
+        line = self._one("CHECK 1234", memo="dinner (Patinos Super Bar)")
+
+        assert line.description == "CHECK 1234 | dinner (Patinos Super Bar)"
+        assert line.merchant is None
+
+    def test_a_parenthesis_inside_the_banks_own_wording_is_not_the_merchant(
+        self,
+    ):
+        """Only the TRAILING token is a candidate, so mid-string text is not.
+
+        ``KOBO (US) INC`` is a real line of the developer's, and its ``(US)``
+        is part of what the bank called the movement.  The pattern is anchored
+        at the end of the cell, so the merchant here is the token SECU
+        appended and not the one inside its own prose.
+        """
+        line = self._one(
+            "POINT OF SALE DEBIT L340 DATE 01-03 KOBO (US) INC     "
+            "180-036-8539 (Kobo Us Inc)"
+        )
+
+        assert line.merchant == "Kobo Us Inc"
+
+    def test_a_trailing_parenthesis_that_is_the_WHOLE_description_is_read(self):
+        """``SECU FOUNDATION (Secu Foundation)`` is 8 of the developer's lines.
+
+        A non-card line whose entire description is the bank's own words plus
+        the token.  It names a merchant like any other.
+        """
+        line = self._one("SECU FOUNDATION (Secu Foundation)")
+
+        assert line.merchant == "Secu Foundation"
+
+    def test_a_BLANK_token_records_NONE_rather_than_a_blank_key(self):
+        """An all-whitespace token is not a name, and here that is a KEY.
+
+        A blank merchant would be a policy the owner could neither read on the
+        screen nor restate.  ``ck_bank_statement_lines_merchant_not_blank``
+        says the same thing in the database, so the adapter and the table
+        cannot drift.
+        """
+        line = self._one("POINT OF SALE DEBIT L340 SOMETHING (   )")
+
+        assert line.merchant is None
+
+    def test_a_token_longer_than_the_column_records_NONE(self):
+        """The pattern's own bound is the column's, so no write can truncate.
+
+        A truncated merchant would be a DIFFERENT key from the one the bank
+        named, silently -- so a token too long to store is read as no merchant
+        at all rather than as a shortened one.
+        """
+        line = self._one(
+            "POINT OF SALE DEBIT L340 SOMETHING (" + "X" * 101 + ")"
+        )
+
+        assert line.merchant is None
+
+    def test_the_merchant_is_read_from_the_UNTRUNCATED_cell(self):
+        """The stored description is cut to 200 characters; the cell is not.
+
+        A merchant read after the cut would be missing on exactly the longest
+        bank strings, so the token has to be read from the cell -- the same
+        reason ``_stated_transaction_day`` is.
+        """
+        line = self._one(
+            "POINT OF SALE DEBIT L340 " + "X" * 190 + " (Long Merchant)"
+        )
+
+        assert len(line.description) == 200
+        assert line.merchant == "Long Merchant"

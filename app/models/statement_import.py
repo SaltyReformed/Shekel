@@ -272,6 +272,15 @@ class BankStatementLine(db.Model):
         amount       -- signed, positive INTO the account (see the module
                         docstring).
         description  -- what the bank called it, verbatim.
+        merchant     -- what the bank NAMES the merchant, or ``None`` where the
+                        source names none.  **The one column here that a rule
+                        MATCHES on** (plan step ``bank_import:X-f6a-3d``): a
+                        :class:`~app.models.merchant_destination
+                        .MerchantDestination` is keyed by it, so *lines from
+                        this merchant go in this budget line* is a fact the
+                        owner states once.  That is why it is a column the
+                        ADAPTER writes rather than a token a reader parses out
+                        of :attr:`description` -- see below.
         source_category -- the bank's OWN category string, kept as provenance
                         and never read as logic.  It is the bank's opinion
                         about a merchant, not a Shekel category, and treating
@@ -300,6 +309,27 @@ class BankStatementLine(db.Model):
     depending on it, while a source that HAS one still cannot write two lines
     claiming it (``uq_bank_statement_lines_external_id``).  One identity rule
     serves every adapter, including ``X-f6b``'s, instead of one rule per format.
+
+    **``merchant`` is a COLUMN the adapter writes, not a token a reader parses,
+    and the NULL is the source saying it names none** (plan step
+    ``bank_import:X-f6a-3d``).  It was
+    ``statement_match._offers.merchant_of(description)``, read at render time,
+    and that was right for what it fed: a form's name box, where a wrong parse
+    costs a badly-named row.  Keying a POLICY on it is a stronger claim than a
+    display default can carry, in one specific way -- that reader is TOTAL, so
+    a source with no merchant token falls back to the whole description, and
+    SECU's own OFX truncates 326 of its 361 descriptions to exactly 32
+    characters.  Every one of those would key one policy, which would then fire
+    on every merchant behind them.  A NULL keys nothing, so a source that
+    cannot name a merchant offers no policy rather than a wrong one -- the same
+    direction a missing fact has to fail in that :attr:`transaction_on` already
+    fails in.
+    **It is read from the source's own merchant FIELD** (for SECU's CSV, the
+    parenthesised trailing token of the Description CELL) rather than from
+    :attr:`description`, which is the ``Description | Memo`` join -- so a
+    user's own memo ending in parentheses cannot become the key a rule matches
+    on.  That bound is structural rather than guarded, exactly as
+    ``_secu_csv._stated_transaction_day``'s is.
 
     **There is deliberately no ``transaction_on <= posted_on`` CHECK.**  The
     obvious constraint is false on real data: 2 of 361 lines in the developer's
@@ -376,10 +406,29 @@ class BankStatementLine(db.Model):
             "OR running_balance < 'NaN'::numeric)",
             name="ck_bank_statement_lines_amount_real_nonzero",
         ),
+        # A merchant is a NAME or it is nothing.  Stricter than the provenance
+        # columns beside it because this one is a KEY: a blank merchant would
+        # be a policy the owner could neither read on the screen nor restate,
+        # and ``uq_merchant_destinations_owner_account_merchant`` would happily
+        # hold it.  ``_secu_csv._stated_merchant`` answers ``None`` for the
+        # same input, so the adapter and the table state one rule.
+        db.CheckConstraint(
+            "merchant IS NULL OR btrim(merchant) <> ''",
+            name="ck_bank_statement_lines_merchant_not_blank",
+        ),
         # The walk reads a whole account in posted-day order.
         db.Index(
             "idx_bank_statement_lines_account_day",
             "account_id", "posted_on",
+        ),
+        # The review screen groups an account's unexplained lines BY MERCHANT
+        # and resolves one policy per group (plan step ``bank_import:X-f6a-3d``,
+        # ``statement_match._policy``).  Partial, because a NULL merchant joins
+        # no policy and so is never looked up by this column.
+        db.Index(
+            "idx_bank_statement_lines_account_merchant",
+            "account_id", "merchant",
+            postgresql_where=db.text("merchant IS NOT NULL"),
         ),
         {"schema": "budget"},
     )
@@ -400,6 +449,12 @@ class BankStatementLine(db.Model):
     transaction_on = db.Column(db.Date)
     amount = db.Column(db.Numeric(12, 2), nullable=False)
     description = db.Column(db.String(200), nullable=False)
+    # NULLABLE, and the NULL means "this source names no merchant" rather than
+    # "unknown" -- see the class docstring for why that direction is the safe
+    # one on a column a rule matches against.  100 characters: the longest of
+    # the developer's 361 is 28 (``Department of motor vehicles``), and the
+    # adapter's own pattern will not read a longer token.
+    merchant = db.Column(db.String(100))
     source_category = db.Column(db.String(100))
     external_id = db.Column(db.String(64))
     # NO server default, deliberately.  The table is new and empty, so there

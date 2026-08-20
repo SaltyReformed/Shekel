@@ -401,13 +401,18 @@ class TestTheNewEnvelopeArm:
     def test_the_purchase_is_named_for_the_MERCHANT(
         self, app, db, seed_user,
     ):
-        """The bank's own merchant field, not its whole line.
+        """The merchant the bank NAMED, not its whole line.
 
         The app's own purchases are called "Walmart" and "Food Lion"; a row
         called ``POINT OF SALE DEBIT L340 DATE 08-13 Amazon.com*5H2RA5V...``
         would be the only one in the entries list nobody can read.  The bank's
         full wording is not lost -- it stays on the statement line, which the
         match ties to this purchase.
+
+        The merchant is the RECORDED column since plan step X-f6a-3d, not a
+        parse of the description: what reads it here is
+        :func:`~app.services.statement_match.merchant_label`, and what fills it
+        is the adapter (graded in ``test_secu_csv``).
         """
         with app.app_context():
             envelope = _closed_from_purchases(seed_user)
@@ -419,6 +424,7 @@ class TestTheNewEnvelopeArm:
                     "POINT OF SALE DEBIT L340 DATE 08-13 "
                     "Amazon.com*5H2RA5VAmzn.com/bil (Amazon)"
                 ),
+                merchant="Amazon",
             )
 
             recorded = _record(seed_user, line, transaction_id=envelope.id)
@@ -427,22 +433,26 @@ class TestTheNewEnvelopeArm:
             entry = db.session.get(TransactionEntry, recorded.entry_id)
             assert entry.description == "Amazon"
 
-    def test_a_description_with_no_merchant_token_is_kept_whole(
+    def test_a_line_naming_no_merchant_is_named_by_its_DESCRIPTION(
         self, app, db, seed_user,
     ):
-        """The fallback is TOTAL, which is what lets a second adapter reach it.
+        """The LABEL is total even though the key is not.
 
-        SECU's own OFX truncates 326 of 361 descriptions to 32 characters and
-        would have no room for the token; falling back to the description is
-        the honest answer rather than an empty name the NOT NULL column would
-        refuse.
+        A source that names no merchant records ``NULL``, which keys no
+        destination policy -- but ``transaction_entries.description`` is NOT
+        NULL and this door calls ``create_entry`` directly, so the name has to
+        come from somewhere.  Falling back to the description is the honest
+        answer, and it is why the label and the key are different readers:
+        SECU's OFX truncates 326 of 361 descriptions to the same 32
+        characters, which is a usable name and a ruinous key.
         """
         with app.app_context():
             envelope = _closed_from_purchases(seed_user)
             statement = an_import(seed_user)
             day = seed_user["bootstrap_period"].start_date + timedelta(days=5)
             line = a_bank_line(seed_user, statement, amount="-57.96",
-                               posted_on=day, description="ACH DEBIT GEICO")
+                               posted_on=day, description="ACH DEBIT GEICO",
+                               merchant=None)
 
             recorded = _record(seed_user, line, transaction_id=envelope.id)
             db.session.flush()
