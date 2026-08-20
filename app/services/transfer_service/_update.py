@@ -18,7 +18,6 @@ Flask-isolated like the rest of the package: plain data in, ORM rows out, no
 import logging
 from datetime import date
 from decimal import Decimal
-
 from sqlalchemy.orm.attributes import flag_modified
 
 from app import ref_cache
@@ -29,8 +28,14 @@ from app.models.transfer import Transfer
 from app.services import account_posting_service
 from app.services import posting_service
 from app.services.transfer_service import _settle
+from app.services.transfer_service._endpoints import (
+    _apply_endpoint_move,
+    _resolve_endpoints,
+)
 from app.services.transfer_service._loan_posting import (
     _reject_installment_move_before_loan,
+    _resync_vacated_loan,
+    _reverse_loan_payment_before_it_leaves,
     _sync_loan_postings_if_loan,
 )
 from app.services.transfer_service._ownership import (
@@ -95,8 +100,22 @@ logger = logging.getLogger(__name__)
 # reconcile is idempotent, so listing a field that did not move the effect is a
 # harmless no-op; this set is the cheap pre-filter that avoids a ledger
 # round-trip on a pure metadata edit.
+#
+# ``from_account_id`` / ``to_account_id`` ARE here, and they are plan step
+# R10-b's addition.  An endpoint move changes WHICH ledger accounts a settled
+# transfer's two legs sit on, which is a change of the posted effect in exactly
+# the sense this set names -- ``_posting_write.reconcile_periods`` takes the
+# per-ledger-account delta over the UNION of what is posted and what is
+# targeted, so the vacated accounts reverse to zero and the new ones post the
+# effect, converging in one pass.  What that reconcile does NOT reach is the
+# vacated accounts' own anchor corrections and, when the vacated destination was
+# an amortizing loan, that loan's genesis ledger; both are re-derived
+# explicitly in :func:`_reconcile_postings_after_update`.
 _POSTING_RELEVANT_FIELDS = frozenset(
-    {"status_id", "amount", "settled_amount", "pay_period_id", "due_date"}
+    {
+        "status_id", "amount", "settled_amount", "pay_period_id", "due_date",
+        "from_account_id", "to_account_id",
+    }
 )
 
 
@@ -252,7 +271,12 @@ def _dispatch_settle(
     )
 
 
-def _reconcile_postings_after_update(xfer: Transfer, updates: dict[str, object]) -> None:
+def _reconcile_postings_after_update(
+    xfer: Transfer,
+    updates: dict[str, object],
+    vacated: "tuple[int, ...]" = (),
+    vacated_destination_id: "int | None" = None,
+) -> None:
     """Bring the posting ledger back in step after an ``update_transfer`` edit.
 
     Extracted from :func:`update_transfer` (which was at its branch/statement
@@ -299,10 +323,43 @@ def _reconcile_postings_after_update(xfer: Transfer, updates: dict[str, object])
       self-heal does not cover; an always-correct resync is the point of this
       seam.
 
+    * **The accounts an ENDPOINT MOVE left behind (plan step R10-b), LAST**: the cash
+      reconcile above heals the LEGS by itself -- ``reconcile_periods`` takes
+      the per-ledger-account delta over the union of posted and target, so a
+      vacated ledger account reverses to zero in the same pass the new one
+      posts -- but two things it emits are scoped to the transfer's CURRENT
+      endpoints and reach no further.  ``sync_transfer_postings``' own
+      Step-5 self-heal names ``(from_account_id, to_account_id)``, so a vacated
+      account's opening / true-up corrections are re-derived here instead; and
+      when the vacated destination was an amortizing LOAN, that loan's genesis
+      ledger and its recurring payment's window both still count a payment it
+      no longer has (:func:`._loan_posting._resync_vacated_loan`).  Both walks
+      are idempotent and neither is gated on the transfer being settled: a
+      PROJECTED payment posts no cash but is still inside the payoff projection
+      the loan's window is bounded by, so a projected payment moving off a loan
+      moves that loan's payoff.
+
     Args:
         xfer: The updated, flushed :class:`Transfer`.
         updates: The ``update_transfer`` kwargs that were applied.
+        vacated: The account IDs this update moved the transfer OFF
+            (:attr:`_Endpoints.vacated`); empty for every update that names no
+            account, which is every caller outside the recurrence engine and the
+            non-repeating propagation.
+        vacated_destination_id: Which of those was the DESTINATION, or ``None``.
+            Only that one can have been a loan whose payment set counted this
+            transfer; see the comment at the call.
     """
+    # **The vacated walks below need no disjunct of their own**, and three
+    # adversarial reviews of this step each flagged the one that stood here.
+    # *vacated* is non-empty only when ``from_account_id`` or ``to_account_id``
+    # is in *updates*, and both are members of
+    # :data:`_POSTING_RELEVANT_FIELDS` -- so ``vacated`` implies
+    # ``needs_reconcile`` by MEMBERSHIP in that set, and ``or vacated`` could
+    # never be the term that admitted a call.  A guard no input can exercise is
+    # the shape this step deleted from both retention predicates; the
+    # implication is stated here instead, where the set it rests on is three
+    # definitions up and visible.
     needs_reconcile = bool(_POSTING_RELEVANT_FIELDS & updates.keys())
     settled_on_edited = "settled_on" in updates
     if not (needs_reconcile or settled_on_edited):
@@ -325,6 +382,31 @@ def _reconcile_postings_after_update(xfer: Transfer, updates: dict[str, object])
         account_posting_service.sync_account_anchor_postings(
             xfer.to_account_id, xfer.scenario_id,
         )
+    # LAST, and the position is load-bearing rather than tidy: both walks below
+    # read the vacated account's ledger, and until ``sync_transfer_postings``
+    # above has reversed this transfer's legs off it that ledger still holds a
+    # net for a transfer with no shadow there.  Run first instead, the account
+    # walk raises ``PostingError`` -- *"Ledger account 8 holds a nonzero net for
+    # transfer ids [409] but no active shadow on account 1 resolves them;
+    # Transfer Invariant 1 is broken"* -- which is the invariant correctly
+    # reporting a ledger this function had not finished moving.  Measured on a
+    # production clone before the order was fixed.
+    for account_id in vacated:
+        account_posting_service.sync_account_anchor_postings(
+            account_id, xfer.scenario_id,
+        )
+    # The LOAN half is the vacated DESTINATION's alone, and that narrowing is a
+    # measurement rather than an economy.  A loan reached as a transfer's SOURCE
+    # carries that transfer's EXPENSE shadow, and a loan's payment set is
+    # ``loan_loaders.query_shadow_income`` -- INCOME shadows only -- so such a
+    # transfer was never one of the loan's payments and there is no split to
+    # re-derive when it leaves.  Its raw cash leg is reversed by
+    # ``sync_transfer_postings`` above, which takes the per-ledger-account delta
+    # over the union of posted and target.  Verified by removing the call: the
+    # legacy-loan-source case stays green either way, where the destination
+    # cases fail.
+    if vacated_destination_id is not None:
+        _resync_vacated_loan(vacated_destination_id, xfer.scenario_id)
 
 
 def _apply_remaining_fields(
@@ -583,9 +665,19 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
     """
     rows = load_transfer_rows(transfer_id, user_id)
 
+    # The ENDPOINTS this update leaves the transfer with, resolved and refused
+    # first because the guard below GRADES against the resulting destination:
+    # re-pointing a payment at another loan moves which origination date it is
+    # judged by without moving its own installment at all.  Resolving here is
+    # also what ownership-checks both accounts before any refusal can name one
+    # (plan step R10-b).
+    endpoints = _resolve_endpoints(rows, user_id, updates)
+
     # R-C: refuse an edit that would move a loan payment before its loan, before
     # any field is applied.  See :func:`_reject_installment_move_before_loan`.
-    _reject_installment_move_before_loan(rows.transfer, user_id, updates)
+    _reject_installment_move_before_loan(
+        rows.transfer, user_id, updates, endpoints.to_account,
+    )
 
     # The FIGURE's own gate, in the same place and for the same reason: a
     # refused request must leave all three rows untouched, and the first field
@@ -598,6 +690,19 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
     # the arms that assign them, which is after the settle has already written
     # both shadows.
     _reject_unowned_references(user_id, updates)
+
+    # The AMOUNT's own refusal, hoisted for the same rule and by plan step
+    # R10-b's adversarial review.  It ran at the arm that assigns it, two
+    # writes later -- so ``update_transfer(to_account_id=<other>,
+    # amount=Decimal("-5"))`` moved the pair between accounts and reversed a
+    # loan payment's split BEFORE deciding the amount was illegal.  Validating
+    # here leaves the refusal where every other one is: ahead of the first
+    # write.  ``None`` when the caller states no amount, which the arm below
+    # distinguishes by asking *updates*, not this value.
+    amount = (
+        _validate_positive_amount(updates["amount"])
+        if "amount" in updates else None
+    )
 
     # ── is_override ────────────────────────────────────────────────
     # Applied FIRST, and the position is load-bearing rather than tidy: the
@@ -615,9 +720,26 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
         for shadow in rows.shadows:
             shadow.is_override = flag
 
+    # ── from_account_id / to_account_id ────────────────────────────
+    # A caller-stated fact like the flag above, and applied with it for the
+    # same reason: the settle dispatch below reads which account the transfer
+    # is left pointing AT.  See :func:`_apply_endpoint_move`.
+    #
+    # A loan payment's SPLIT correction is reversed FIRST, while the pair is
+    # still on the loan -- the same reverse-before / resync-after sequence the
+    # DELETE path runs, and for the same reason: the loan-side reconcile finds
+    # a loan's payments through the account its income shadow sits on, so a
+    # correction whose shadow has already moved is invisible to every later
+    # pass.  See :func:`._loan_posting._reverse_loan_payment_before_it_leaves`
+    # for the `-$4.17` that measured it.  The resync half is in
+    # :func:`_reconcile_postings_after_update`.
+    if endpoints.vacated_destination_id is not None:
+        _reverse_loan_payment_before_it_leaves(rows.transfer)
+    _apply_endpoint_move(rows, endpoints)
+
     # ── amount ─────────────────────────────────────────────────────
     if "amount" in updates:
-        new_amount = _validate_positive_amount(updates["amount"])
+        new_amount = amount
         rows.transfer.amount = new_amount
         # The parent now states its OWN figure, so the relation that priced it
         # is cleared with it -- ``ck_transfers_amount_ownership`` is the same
@@ -663,7 +785,10 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
     # The ORIGINAL updates, not *remaining*: what the caller ASKED to change is
     # what decides whether the ledger needs re-deriving, and a settle's
     # ``status_id`` is precisely the field that says it does.
-    _reconcile_postings_after_update(rows.transfer, updates)
+    _reconcile_postings_after_update(
+        rows.transfer, updates, endpoints.vacated,
+        endpoints.vacated_destination_id,
+    )
 
     log_event(
         logger, logging.INFO, EVT_TRANSFER_UPDATED, BUSINESS,
@@ -757,10 +882,27 @@ def update_transfer(transfer_id, user_id, **kwargs):
     the pair's day and the correction rule.  A door that means ONLY that should
     call :func:`settle_transfer`, which says so.
 
+    **A change that moves the transfer between ACCOUNTS moves both legs**, and
+    that arm is plan step R10-b's: a transfer's endpoints are two of the six
+    columns a recurring definition states, and until that step this door could
+    write only four of them -- so a definition's account change reached its
+    generated rows by DESTROYING and rebuilding every one of them, and a
+    NON-repeating transfer refused the same edit outright because nothing could
+    carry it.  Both are gone.  See :func:`_resolve_endpoints` for what a move
+    is refused for and :func:`_apply_endpoint_move` for what it writes.
+
     Accepted kwargs:
         amount         -- New transfer amount (positive Decimal).
         status_id      -- New status for transfer and both shadows.
         pay_period_id  -- New period for transfer and both shadows.
+        from_account_id -- New SOURCE account for the transfer and its expense
+                          shadow, whose display name is re-derived with it.
+                          May not be an amortizing loan (a disbursement is not
+                          modelled) and may not equal the destination.
+        to_account_id  -- New DESTINATION for the transfer and its income
+                          shadow, likewise re-named.  Re-grades the payment
+                          against the destination loan's origination (ruling
+                          R-C) and re-reconciles the loan it left.
         category_id    -- New category (expense shadow only).
         name           -- New display name (transfer only, not shadows).
         notes          -- New notes (transfer only, not shadows).

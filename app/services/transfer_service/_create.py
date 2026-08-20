@@ -30,6 +30,7 @@ from app import ref_cache
 from app.enums import SettlementBasisEnum, TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db
+from app.models.account import Account
 from app.models.ref import Status
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
@@ -57,6 +58,58 @@ from app.utils.log_events import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def shadow_names(
+    from_account: Account, to_account: Account
+) -> "tuple[str, str]":
+    """Return the ``(expense, income)`` shadow display names for two endpoints.
+
+    **A shadow's name is DERIVED from the pair's endpoints, and this is the one
+    place it is COMPOSED** -- here, beside the constructor that first applies
+    it, and called again by
+    :mod:`app.services.transfer_service._endpoints`, which re-derives both names
+    when a transfer moves between accounts.  Until plan step R10-b there was no
+    second writer, because there was no way to move a transfer's endpoints at
+    all: the recurrence engine applied a definition's account change by DELETING
+    every generated row and building replacements, which re-ran this rule by
+    re-running the create.
+
+    **One reader PARSES the format back out, and it does not go through here**
+    (adversarial review of R10-b).  ``grid_view_service._short_display_name``
+    strips ``"Transfer to "`` / ``"Transfer from "`` by literal prefix and
+    length, so the grid's row label silently mis-renders if this format ever
+    moves -- and R10-b raises that stake rather than lowering it, by making a
+    shadow's name MUTABLE after creation.  Reported rather than fixed here: the
+    coupling is display-only, the fix is a shared prefix constant that arm reads,
+    and it is not this step's to change.
+
+    Leaving a moved pair's names alone would show "Transfer to Fidelity Money
+    Market" on a row whose money now arrives at Emergency Fund -- a label that
+    contradicts its own row, which is the class of defect the recurrence arc
+    keeps finding one table at a time.
+
+    The PARENT's name is deliberately not derived here.  A transfer's own
+    ``name`` is the caller's: :func:`create_transfer` defaults it from the
+    endpoints only when the caller states none, and every template-linked
+    transfer carries its definition's name instead -- so re-deriving it on a
+    move would overwrite a stated fact with a default.
+
+    Args:
+        from_account: The source account -- the expense leg's account, and the
+            account the INCOME shadow's name says the money came from.
+        to_account: The destination account -- the income leg's account, and
+            the account the EXPENSE shadow's name says the money went to.
+
+    Returns:
+        ``(expense_shadow_name, income_shadow_name)``, in the order
+        :class:`~app.services.transfer_service._validation.TransferRows`
+        declares its legs.
+    """
+    return (
+        f"Transfer to {to_account.name}",
+        f"Transfer from {from_account.name}",
+    )
 
 
 def _build_shadow(
@@ -231,8 +284,9 @@ def create_transfer(spec: TransferSpec) -> Transfer:
 
     # ── Determine names ────────────────────────────────────────────
     transfer_name = spec.name or f"{from_account.name} to {to_account.name}"
-    expense_shadow_name = f"Transfer to {to_account.name}"
-    income_shadow_name = f"Transfer from {from_account.name}"
+    expense_shadow_name, income_shadow_name = shadow_names(
+        from_account, to_account,
+    )
 
     # ── Create transfer record ─────────────────────────────────────
     xfer = Transfer(

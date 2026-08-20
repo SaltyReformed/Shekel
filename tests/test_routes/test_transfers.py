@@ -10,7 +10,9 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import AcctTypeEnum, SettlementBasisEnum, StatusEnum
+from app.enums import (
+    AcctTypeEnum, SettlementBasisEnum, StatusEnum, TxnTypeEnum,
+)
 from app.extensions import db
 from app.models.account import Account
 from app.models.journal_entry import JournalEntry
@@ -631,6 +633,87 @@ class TestTemplateUpdate:
 
             db.session.refresh(template)
             assert template.default_amount == Decimal("300.00")
+
+    def test_a_retained_transfer_is_reported_and_the_edit_still_commits(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A row the pass declined to change is TOLD, not put to the owner.
+
+        Plan step R10-b's route half, and the transfer twin of
+        ``test_templates.py``'s transaction case.  A retained row has no
+        keep-vs-use question -- the pass already took the only safe outcome --
+        so ``regenerate_or_conflict_chooser`` must NOT render the chooser over
+        it, must flash the notice, and must let the edit commit.  Rendering the
+        chooser here would show an empty table and roll the whole edit back,
+        which is how an ordinary amount change came to do nothing silently.
+        """
+        with app.app_context():
+            from app.services import transfer_recurrence
+
+            savings = _create_savings_account(seed_user)
+            template = _create_template(seed_user, savings)  # rule, amount 200
+            periods = all_periods(seed_user["user"].id)
+            transfer_recurrence.generate_for_template(
+                template, GenerationSchedule.for_period_ids(
+                    calendar_for(template.user_id), {p.id for p in periods},
+                ), seed_user["scenario"].id,
+            )
+            db.session.flush()
+            # A note on a FUTURE row, which the update route's sweep reaches.
+            noted = (
+                db.session.query(Transfer)
+                .filter_by(transfer_template_id=template.id)
+                .order_by(Transfer.due_date.desc())
+                .first()
+            )
+            transfer_service.update_transfer(
+                noted.id, seed_user["user"].id, notes="reconcile this one",
+            )
+            # Moving the DESTINATION is what retains it: the row's records
+            # would be re-filed against an account nobody asserted them on.
+            elsewhere = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=savings.account_type_id,
+                    name="Second Savings",
+                    anchor_balance=Decimal("0.00"),
+                ),
+            )
+            db.session.commit()
+            tid, noted_id = template.id, noted.id
+            elsewhere_id = elsewhere.id
+
+            # The amount MOVES (200 -> 275), which is what arms the chooser
+            # branch at all: it is gated on ``template.default_amount !=
+            # before.amount``.  An adversarial review of R10-b found the first
+            # version posting the unchanged 200.00, so the "no chooser"
+            # assertion below was dead however the branch behaved.
+            resp = auth_client.post(f"/transfers/{tid}", data={
+                "name": "Monthly Savings",
+                "default_amount": "275.00",
+                "from_account_id": str(seed_user["account"].id),
+                "to_account_id": str(elsewhere_id),
+                **cadence_payload(),
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"Some upcoming instances were hand-edited" not in resp.data
+            assert b"kept the value it already had" in resp.data
+
+            db.session.expire_all()
+            reloaded = db.session.get(TransferTemplate, tid)
+            assert reloaded.to_account_id == elsewhere_id, (
+                "the edit was rolled back by a conflict that asked nothing"
+            )
+            assert reloaded.default_amount == Decimal("275.00")
+            held = db.session.get(Transfer, noted_id)
+            assert held.to_account_id == savings.id, (
+                "the retained row must be exactly as the pass found it"
+            )
+            assert held.notes == "reconcile this one"
+            assert held.amount == Decimal("200.00"), (
+                "a retained row is left ALONE, not re-priced"
+            )
 
     def test_transfer_amount_change_with_override_shows_chooser(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -3137,20 +3220,26 @@ class TestOneTimeTransfer:
             .one()
         )
 
-    def test_changing_accounts_on_a_non_repeating_transfer_is_refused(
+    def test_changing_accounts_on_a_non_repeating_transfer_moves_the_pair(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """An account change its existing Transfer could not follow is refused.
+        """An account change reaches the Transfer and BOTH of its shadows.
 
-        The edit propagates amount, name and category through
-        ``transfer_service.update_transfer``, which does NOT accept the two
-        account columns -- a shadow's ``account_id`` is derived from them when
-        the pair is created.  Letting the template claim accounts its own
-        Transfer does not use is the divergence the propagation exists to
-        prevent, so the change is refused rather than half-applied.
+        **RE-RULED at plan step R10-b** (developer decision, 2026-08-20).  This
+        case asserted a REFUSAL -- "cannot be moved between accounts" -- and
+        that refusal existed for one reason: ``transfer_service.update_transfer``
+        could not move a transfer between accounts, so the propagation door
+        carried amount, name and category and nothing else.  It was a limit of
+        the door, not a rule about transfers: a RECURRING template with the
+        identical edit had it applied, by a regeneration that destroyed and
+        rebuilt every generated row to do it.  The door moves a pair now
+        (``transfer_service._endpoints``), so the edit applies here too and one
+        edit stops meaning two different things.
 
-        Asserts the TEMPLATE is unchanged too: refusing after the field loop
-        had already written would leave exactly the state being refused.
+        Asserts all three rows, because moving the parent alone would leave the
+        shadows on the accounts the money no longer moves between -- and each
+        shadow's display NAME is derived from the endpoints, so a moved leg
+        keeping its old name is a row that contradicts itself.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -3178,23 +3267,110 @@ class TestOneTimeTransfer:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"cannot be moved between accounts" in resp.data
             db.session.expire_all()
             tmpl = db.session.get(TransferTemplate, tmpl.id)
-            assert tmpl.to_account_id == savings.id
+            assert tmpl.to_account_id == other.id
             xfer = db.session.query(Transfer).filter_by(
                 transfer_template_id=tmpl.id).one()
-            assert xfer.to_account_id == savings.id
+            assert xfer.to_account_id == other.id
+            assert xfer.from_account_id == seed_user["account"].id
+            shadows = {
+                shadow.transaction_type_id: shadow
+                for shadow in db.session.query(Transaction).filter_by(
+                    transfer_id=xfer.id, is_deleted=False,
+                )
+            }
+            expense = shadows[ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)]
+            income = shadows[ref_cache.txn_type_id(TxnTypeEnum.INCOME)]
+            assert expense.account_id == seed_user["account"].id
+            assert income.account_id == other.id
+            assert expense.name == f"Transfer to {other.name}"
+            assert income.name == f"Transfer from {seed_user['account'].name}"
+
+    def test_a_non_repeating_transfer_holding_a_record_is_retained_too(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The rule-less path asks the same question the recurring one does.
+
+        **Found by an adversarial review of plan step R10-b.**  Removing the
+        "cannot be moved between accounts" refusal made the two account columns
+        propagate here -- and this door applied the definition unconditionally,
+        so a non-repeating transfer carrying a settlement record retained
+        through a revert had its pair moved in SILENCE, while the identical edit
+        on a RECURRING template was retained and reported.  That is the very
+        inconsistency the step removed, re-created in the opposite direction.
+
+        The record is the one ``status_seam`` keeps when the owner reverts in
+        order to edit: a figure read off the OLD destination's statement, which
+        re-pointing the pair would re-file against an account nobody asserted it
+        on.
+        """
+        with app.app_context():
+            savings = _create_savings_account(seed_user)
+            other = Account(
+                user_id=seed_user["user"].id, name="Other Savings",
+                account_type_id=savings.account_type_id, is_active=True,
+            )
+            db.session.add(other)
+            db.session.commit()
+            future = [
+                p for p in seed_periods_today if p.start_date > display_today()
+            ]
+            tmpl = self._create_non_repeating(
+                auth_client, seed_user, savings, future[0], name="Has A Record",
+            )
+            xfer = db.session.query(Transfer).filter_by(
+                transfer_template_id=tmpl.id).one()
+            transfer_service.settle_transfer(
+                xfer.id, seed_user["user"].id, submitted=Decimal("412.90"),
+                settled_on=display_today(),
+            )
+            transfer_service.update_transfer(
+                xfer.id, seed_user["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            )
+            db.session.commit()
+            tmpl_id, xfer_id, other_id = tmpl.id, xfer.id, other.id
+            savings_id = savings.id
+
+            resp = auth_client.post(f"/transfers/{tmpl_id}", data={
+                "name": "Has A Record",
+                "default_amount": "500.00",
+                "from_account_id": str(seed_user["account"].id),
+                "to_account_id": str(other_id),
+                "recurrence_unit": "",
+                "category_id": str(seed_user["categories"]["Rent"].id),
+                "version_id": str(tmpl.version_id),
+            }, follow_redirects=True)
+
+            assert resp.status_code == 200
+            assert b"kept the value it already had" in resp.data
+            db.session.expire_all()
+            assert db.session.get(
+                TransferTemplate, tmpl_id,
+            ).to_account_id == other_id, "the definition itself still moves"
+            held = db.session.get(Transfer, xfer_id)
+            assert held.to_account_id == savings_id, (
+                "the row carrying a recorded figure was re-filed anyway"
+            )
+            legs = db.session.query(Transaction).filter_by(
+                transfer_id=xfer_id, is_deleted=False,
+            ).all()
+            assert [leg.account_id for leg in legs].count(savings_id) == 1
+            assert all(
+                leg.settled_amount == Decimal("412.90") for leg in legs
+            )
 
     def test_changing_accounts_is_allowed_with_no_live_transfer(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The refusal is about the Transfer, so with none it does not fire.
+        """A rule-less template with NO live Transfer re-points cleanly.
 
-        A template whose recurrence was CLEARED is rule-less with no upcoming
-        Transfer (the clear swept them).  Nothing can diverge, so re-pointing
-        it must not be blocked -- otherwise the guard would be a rule about
-        templates rather than about the row it protects.
+        The propagation loop has nothing to iterate here -- a template whose
+        recurrence was CLEARED keeps no upcoming Transfer -- so the edit must
+        land on the template alone and raise nothing.  It is the empty half of
+        the case above, and it is the half that would break if the propagation
+        ever assumed a row was there to write.
         """
         with app.app_context():
             savings = _create_savings_account(seed_user)
@@ -3230,11 +3406,16 @@ class TestOneTimeTransfer:
             }, follow_redirects=True)
 
             assert resp.status_code == 200
-            assert b"cannot be moved between accounts" not in resp.data
             db.session.expire_all()
             assert db.session.get(
                 TransferTemplate, tmpl.id,
             ).to_account_id == other.id
+            # The propagation had nothing to write and said nothing about it:
+            # no retained notice, and no Transfer came back.
+            assert b"kept the value it already had" not in resp.data
+            assert db.session.query(Transfer).filter_by(
+                transfer_template_id=tmpl.id,
+            ).count() == 0
 
     def test_a_settled_transfer_does_not_follow_the_definition(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -3243,7 +3424,7 @@ class TestOneTimeTransfer:
 
         A Paid transfer carries posting-ledger entries and real money that
         already moved; the same rule
-        ``_recurrence_common.partition_regeneration_rows`` applies to every
+        ``_recurrence_common.classify_maintain_work`` applies to every
         recurring template's regeneration applies here.
         """
         with app.app_context():

@@ -71,7 +71,7 @@ class DerivedRowFields(NamedTuple):
             applicable**: ``fk_transaction_entries_parent_account`` binds a
             purchase's account to its parent's, so moving a row that holds
             purchases moves them too and invalidates any statement link they
-            carry.  ``_maintain._classify_maintain_work`` routes that case to
+            carry.  ``_recurrence_common.classify_maintain_work`` routes that case to
             the owner, as a RETAINED conflict, instead of applying it.
         name: The template's name.  Also propagated to rows OUTSIDE this pass's
             reach by ``routes.templates.crud._apply_fields_and_propagate_rename``,
