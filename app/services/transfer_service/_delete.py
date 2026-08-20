@@ -19,8 +19,8 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.services import posting_service
 from app.services.transfer_service._loan_posting import (
-    _resync_loan_postings_after_delete,
-    _reverse_loan_payment_before_delete,
+    _resync_loan_after_payment_left,
+    _reverse_loan_payment_before_it_leaves,
 )
 from app.services.transfer_service._validation import _get_transfer_or_raise
 from app.utils.log_events import (
@@ -74,7 +74,7 @@ def delete_transfer(transfer_id, user_id, soft=False):
     # before the row can be deleted, so the downstream payments (whose running
     # balance the deletion changes) can be re-split afterwards.  A no-op for a
     # non-loan transfer.
-    is_loan_payment = _reverse_loan_payment_before_delete(xfer)
+    is_loan_payment = _reverse_loan_payment_before_it_leaves(xfer)
     loan_account_id = xfer.to_account_id
     scenario_id = xfer.scenario_id
 
@@ -132,5 +132,5 @@ def delete_transfer(transfer_id, user_id, soft=False):
     # whose owed_before it moved.  Idempotent and self-healing; skipped entirely
     # for a non-loan transfer.
     if is_loan_payment:
-        _resync_loan_postings_after_delete(loan_account_id, scenario_id)
+        _resync_loan_after_payment_left(loan_account_id, scenario_id)
     return result

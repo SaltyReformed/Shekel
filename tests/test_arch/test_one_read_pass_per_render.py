@@ -120,6 +120,10 @@ Test IDs
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
+from app import ref_cache
+from app.enums import TxnTypeEnum
 from app.models.ref import FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.services import account_resolver
@@ -955,4 +959,60 @@ class TestOneCalendarDerivationPerRender:
             f"/savings derived the pay calendar {counts['calendar_for']} times "
             "for three investment accounts, so a producer is deriving PER "
             "ACCOUNT rather than reading the read pass's memo"
+        )
+
+    @pytest.mark.parametrize("path", [
+        "/transactions/new/quick",
+        "/transactions/new/full",
+        "/transactions/empty-cell",
+    ])
+    def test_the_grid_cell_fragments_derive_the_calendar_once(
+        self, app, db, auth_client, seed_user, seed_periods_today, path,
+    ):
+        """Each grid empty-cell fragment derives the pay calendar exactly once.
+
+        **A pin of a +1 this step deliberately introduced, not a count that
+        came down** -- the same honesty ``/dashboard/balance`` and the income
+        statement above owe.  Before pay-calendar plan step **C2-f3e** these
+        three derived ZERO calendars and proved the submitted ``period_id``
+        with a primary-key ``db.session.get(PayPeriod, ...)`` plus a
+        ``row.user_id != current_user.id`` comparison.  They ask the owner's
+        own calendar now, so an id another user holds is simply absent and the
+        comparison is gone; the price is this one derivation.
+
+        What it grades from here is what every case in this class grades: a
+        second producer wired below one of these routes and left to resolve
+        its own schedule.  They share ONE resolver
+        (``routes/transactions/forms._resolve_grid_cell``), so a second
+        derivation reaching any of the three reaches all three.
+
+        The body assertion is not decoration: a refused cell answers 404 with
+        no calendar derived at all, which would satisfy a bare ``== 1`` only by
+        accident of the number, so each case pins that the fragment it is
+        counting actually rendered.
+        """
+        with app.app_context():
+            args = {
+                "category_id": seed_user["categories"]["Groceries"].id,
+                "period_id": seed_periods_today[3].id,
+                "account_id": seed_user["account"].id,
+                "transaction_type_id": ref_cache.txn_type_id(
+                    TxnTypeEnum.EXPENSE,
+                ),
+            }
+
+        with counting_calls(_CALENDAR_DOOR) as counts:
+            resp = auth_client.get(
+                path, query_string=args, headers={"HX-Request": "true"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert str(seed_periods_today[3].id) in body, (
+            f"{path} did not render the cell it was asked for, so this count "
+            "was taken over a fragment that refused before it built anything"
+        )
+        assert counts["calendar_for"] == 1, (
+            f"{path} derived the pay calendar {counts['calendar_for']} times; "
+            "the three cell fragments share one resolver and it derives one"
         )

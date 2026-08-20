@@ -62,13 +62,29 @@ of how far the schedule happens to have been generated.
 The rule also covers plan step R8's WEEK unit with no second rule:
 ``round(365.2425 / 7) = 52``.
 
-**And it covers the forward HORIZONS at plan step R-F17.**  Three surfaces
-label a window in months and then resolve it in pay periods -- the account
-pages' balance chips, their "Interest, next 12 mo" chip and the grid's range
-buttons -- and each held its own hardcoded ``months x 26 / 12``.  They read
-:meth:`PayCadence.paychecks_within` now, so the count of paychecks in a span is
-derived here for the horizons exactly as it already was for the money.  Ledger
-row **F-17**, ruling **R-R31**.
+**And it covers the forward HORIZONS at plan step R-F17.**  Every surface that
+labels a window in MONTHS and then resolves it in pay periods reads
+:meth:`PayCadence.paychecks_within` now, where each held its own hardcoded
+``months x 26 / 12``.  Ledger row **F-17**, ruling **R-R31**.
+
+**The census is stated as MEMBERSHIP rather than a count, because the count has
+been wrong four times.**  It read TWO in the ledger row, THREE here, FOUR in
+``period_projections`` and FIVE after R-F17's two adversarial reviews -- and an
+adversarial review of plan step R10-b found FIVE wrong too.  Every version
+collapsed something.  The re-greppable statement:
+
+* ``paychecks_within`` has FOUR call sites --
+  ``period_projections.offered_spans`` (the shared resolver),
+  ``routes.accounts.detail`` (the interest chip), ``routes.grid.page`` (the
+  mobile Plan window) and ``dashboard_service._pulse`` (the chart);
+* ``offered_spans`` serves THREE renderers -- the ACCOUNT DETAIL page's balance
+  chips and the ``/savings`` cockpit's, which call it separately through
+  ``horizon_offsets``, and the grid's range buttons;
+* so SIX rendered surfaces resolve through four call sites.
+
+Collapsing the two chip renderers into "the account pages' balance chips" is
+what produced FIVE, and it is the same collapse every earlier count made.  Grep
+``paychecks_within`` and ``horizon_offsets``; do not count from a sentence.
 
 Why the conversions live on the value
 -------------------------------------
@@ -276,20 +292,25 @@ class PayCadence:
         """Return how many of this owner's paychecks arrive within *months*.
 
         The rule behind every forward window this application labels in MONTHS
-        and then resolves in PAY PERIODS.  There are FIVE, and an accurate
-        census took two adversarial reviews: the balance chips' "3 months" /
-        "6 months" / "1 year", the "Interest, next 12 mo" chip, the grid's
-        6M / 1Y / 2Y range buttons, the mobile Plan tab's window, and the
-        dashboard pulse chart -- whose canvas announces "the next six months"
-        to a screen reader while a ``_CHART_HORIZON_PERIODS = 13`` decided what
-        it drew.  Ledger row **F-17** names the first two; the developer
-        widened the step to the grid, and BOTH reviews found the last two by
-        re-grepping the row's own predicate rather than the diff.  All five
-        counted a hardcoded 6 / 13 / 26 / 52 until plan step **R-F17**, which
-        is ledger row **F-17**: those numbers are ``months x 26 / 12``, so the
-        label told the truth for a biweekly owner and for nobody else.  At a
-        weekly cadence "1 year" reached 26 x 7 = 182 days and said a year; at a
-        monthly one it reached 780 days and said the same.
+        and then resolves in PAY PERIODS: the balance chips' "3 months" /
+        "6 months" / "1 year" on the account page AND on ``/savings``, the
+        "Interest, next 12 mo" chip, the grid's 6M / 1Y / 2Y range buttons, the
+        mobile Plan tab's window, and the dashboard pulse chart -- whose canvas
+        announces "the next six months" to a screen reader while a
+        ``_CHART_HORIZON_PERIODS = 13`` decided what it drew.  Ledger row
+        **F-17** names the first two; the developer widened the step to the
+        grid, and both of R-F17's reviews found the mobile window and the chart
+        by re-grepping the row's own predicate rather than the diff.  Every one
+        of them counted a hardcoded 6 / 13 / 26 / 52 until plan step **R-F17**:
+        those numbers are ``months x 26 / 12``, so the label told the truth for
+        a biweekly owner and for nobody else.  At a weekly cadence "1 year"
+        reached 26 x 7 = 182 days and said a year; at a monthly one it reached
+        780 days and said the same.
+
+        **The module docstring states the census as membership and says why a
+        COUNT of it keeps going stale** -- this docstring said FIVE until an
+        adversarial review of plan step R10-b showed the two chip renderers are
+        two, not one.
 
         **Ruling R-R31 (developer, 2026-08-19): the horizon is the LAST WHOLE
         PAYCHECK that ARRIVES within the span.**  Paydays are exactly

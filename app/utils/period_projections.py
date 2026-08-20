@@ -36,11 +36,16 @@ if TYPE_CHECKING:
 
 #: The forward spans this application offers, in MONTHS, each named ONCE.
 #:
-#: Four surfaces render a subset of these -- the account pages' balance chips
-#: (3 / 6 / 12), the grid's date-range buttons (6 / 12 / 24), the mobile Plan
-#: tab (6) and the dashboard pulse chart (6) -- and each names its own labels,
-#: because a chip says "6 months" where a button says "6M" with that as its
-#: tooltip.  What they may
+#: SIX surfaces render a subset of these -- the ACCOUNT DETAIL page's balance
+#: chips and the ``/savings`` cockpit's (3 / 6 / 12, resolved separately through
+#: :func:`horizon_offsets`), the account page's "Interest, next 12 mo" chip
+#: (12), the grid's date-range buttons (6 / 12 / 24), the mobile Plan tab (6)
+#: and the dashboard pulse chart (6) -- and each names its own labels, because a
+#: chip says "6 months" where a button says "6M" with that as its tooltip.
+#: (It said FOUR, then FIVE; an adversarial review of plan step R10-b found the
+#: two chip renderers counted as one.  ``pay_calendar._cadence``'s module
+#: docstring states the census as membership and says why the COUNT keeps going
+#: stale.)  What they may
 #: NOT do is name their own NUMBER: two literal sixes in two modules is the
 #: agreement-by-sentence that ledger row **F-17** is, one level up from the
 #: period counts it was about.  ``accounts/detail.py`` held a separate

@@ -119,13 +119,21 @@ def parse_conflict_decisions(form) -> dict[int, str] | None:
     return decisions
 
 
-def flash_retained_notice(conflict) -> None:
+def flash_retained_notice(retained) -> None:
     """Tell the owner which rows the pass left alone, and why.
 
-    ``RecurrenceConflict.retained`` names the rows a regeneration declined to
-    touch because the owner has records against them -- purchases, a note, or a
-    hand-entered actual -- and applying the definition change would have
-    destroyed or re-attributed those (plan step R10-a, finding **N-292**).
+    *retained* names the rows a pass declined to touch because the owner has
+    records against them -- purchases, a note, or a settled figure -- and
+    applying the definition change would have destroyed or re-attributed those
+    (plan steps R10-a and R10-b, finding **N-292**).
+
+    **It takes the IDS, not the exception.**  It read ``conflict.retained`` off
+    a :class:`~app.exceptions.RecurrenceConflict` until plan step R10-b, whose
+    third caller has no exception to hand it: the rule-less propagation RETURNS
+    its retained ids rather than raising, because nothing there is a conflict
+    the caller must catch.  Constructing an exception purely to carry a list
+    past a function that reads one attribute of it is a data carrier wearing a
+    control-flow type, which an adversarial review of that step named.
 
     **It is a notice, not a prompt, and that asymmetry is deliberate.**  The
     other two conflict kinds ask a question because either answer is a
@@ -137,11 +145,11 @@ def flash_retained_notice(conflict) -> None:
     destructive action nobody asked for.
 
     Args:
-        conflict: The caught :class:`~app.exceptions.RecurrenceConflict`.
+        retained: The row ids the pass left untouched.  Empty flashes nothing.
     """
-    if not conflict.retained:
+    if not retained:
         return
-    count = len(conflict.retained)
+    count = len(retained)
     noun = "instance" if count == 1 else "instances"
     flash(
         f"{count} upcoming {noun} kept the value it already had, because you "
@@ -423,9 +431,11 @@ def regenerate_or_conflict_chooser(
     the untouched projected rows from ``effective_from`` forward and generates
     nothing, because there is no rule left to generate from.  Settled rows are
     immutable and overridden ones raise as conflicts exactly as they do for
-    any other edit (``_recurrence_common.partition_regeneration_rows``), so
-    clearing a recurrence destroys neither history nor a deliberate
-    per-instance change.
+    any other edit (``_recurrence_common.classify_maintain_work``), and since
+    plan steps R10-a and R10-b a row carrying the owner's own records is
+    RETAINED rather than removed -- so clearing a recurrence destroys neither
+    history, nor a deliberate per-instance change, nor anything the owner
+    recorded against a row.
 
     A template that neither has nor had a rule is still skipped, and the
     distinction is load-bearing: a RULE-LESS transfer template's single
@@ -531,7 +541,7 @@ def regenerate_or_conflict_chooser(
             # describe a pass that no longer happened.  The notice fires on the
             # two paths that reach the caller's commit, below.
             return chooser
-        flash_retained_notice(conflict)
+        flash_retained_notice(conflict.retained)
     return None
 
 

@@ -524,8 +524,9 @@ def decomposition_violations() -> list[str]:
 
     **The parent set is DECLARED** (:attr:`StepRow.is_decomposed_parent`) and
     the leaf set is derived by :func:`decomposition_leaf_keys` FROM that set.
-    Deriving both would claim ``R-F1`` as the parent of ``R-F10`` / ``R-F12`` /
-    ``R-F13``; deriving neither would need a name list, which is N-147's defect.
+    Deriving both would claim ``pay_calendar:C1`` as the parent of ``C10`` /
+    ``C11`` / ``C12`` (the live specimen :func:`_staging.a_prefix_trap`
+    derives); deriving neither would need a name list, N-147's defect.
     Declaring the small set and deriving the large one costs one phrase per
     parent and has no list to rot.  **This arm re-spelled that derivation
     inline until 2026-08-11**, per-arc, so it could not see a class whose leaves

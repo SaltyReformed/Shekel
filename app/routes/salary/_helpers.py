@@ -211,7 +211,7 @@ def _regenerate_salary_transactions(profile):
         # decide -- but a retained row means this pass declined to apply the
         # profile's change to a row carrying their own records, which is a
         # silent no-op unless it is said out loud.
-        flash_retained_notice(e)
+        flash_retained_notice(e.retained)
     except SQLAlchemyError:
         # Narrow catch (C-46 / F-145): logging hook that re-raises.
         # SQLAlchemy errors from the regenerate flush get the

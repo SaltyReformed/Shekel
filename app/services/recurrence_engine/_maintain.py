@@ -19,11 +19,15 @@ worth ``$499.82``, taken with no prompt and an ``overridden_conflict_count`` of
 ``actual_amount``, ``created_at`` and the row's own id.
 
 The decision and the write are separate on purpose
-(:func:`_classify_maintain_work` reads, :func:`_apply_maintain_work` writes),
-so what a regeneration decides can be asserted without a database write.
+(:func:`~app.services._recurrence_common.classify_maintain_work` reads,
+:func:`_apply_maintain_work` writes), so what a regeneration decides can be
+asserted without a database write.  **The decision itself is SHARED with the
+transfer engine since plan step R10-b** and lives in
+:mod:`app.services._recurrence_common`; what stays here is what is about this
+table -- what a generated row's definition says, what "the owner's records"
+means on it, and the write.
 """
 import logging
-from typing import NamedTuple
 
 from app.extensions import db
 from app.models.transaction import Transaction
@@ -31,8 +35,10 @@ from app.models.transaction_entry import TransactionEntry
 from app.exceptions import RecurrenceConflict
 from app.services import posting_service
 from app.services._recurrence_common import (
+    MaintainOutcome,
     check_scenario_ownership,
-    refuse_unstorable_repeats,
+    classify_maintain_work,
+    refuse_repeats_this_pass,
     rows_this_pass_may_maintain,
 )
 from app.services.recurrence_engine._generate import _selector
@@ -205,123 +211,6 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
 
 
 
-class _MaintainWork(NamedTuple):
-    """What a maintain pass will DO, decided before anything is written.
-
-    :func:`_classify_maintain_work` fills this by reading rows only, and
-    :func:`_apply_maintain_work` is the only thing that writes -- so what a
-    regeneration decides can be asserted without a database write, and a change
-    to the decision cannot hide inside a change to the write.
-
-    Attributes:
-        update: Rule-generated rows the definition still names, to be brought
-            into line with :class:`DerivedRowFields`.
-        create_in: ``pay_periods.id`` values the rule names that hold no row of
-            this template at all.  A period holding ANY row -- immutable,
-            overridden or soft-deleted -- is absent, which is the long-standing
-            "one row per template per paycheck" rule
-            (:func:`_recurrence_common.should_skip_period`).
-        retire: Rows the rule no longer names that carry nothing of the
-            owner's, to be deleted.
-        overridden_ids: Conflicts -- the owner set this row's amount by hand.
-        deleted_ids: Conflicts -- the owner removed this row.
-        retained_ids: Conflicts -- the row carries the owner's own records, and
-            applying the definition change would have destroyed or
-            re-attributed them (finding **N-292**).
-    """
-
-    update: list[Transaction]
-    create_in: list[int]
-    retire: list[Transaction]
-    overridden_ids: list[int]
-    deleted_ids: list[int]
-    retained_ids: list[int]
-
-
-
-
-class _MaintainOutcome(NamedTuple):
-    """What one maintain pass actually did, for the audit event and the raise.
-
-    Attributes:
-        created: Rows created this pass -- the value
-            :func:`regenerate_for_template` returns, which keeps the meaning
-            every caller already reads it with.
-        updated: Rows brought into line in place.  Before plan step R10-a these
-            were deleted and recreated, so they appeared in *created*.
-        removed: Rows the rule no longer names that carried nothing.
-        overridden_ids: See :class:`_MaintainWork`.
-        deleted_ids: See :class:`_MaintainWork`.
-        retained_ids: See :class:`_MaintainWork`.
-    """
-
-    created: list[Transaction]
-    updated: list[Transaction]
-    removed: list[Transaction]
-    overridden_ids: list[int]
-    deleted_ids: list[int]
-    retained_ids: list[int]
-
-
-
-
-# What the owner can own about a generated row, and therefore the three ways a
-# row stops being the rule's to rewrite: its PERMANENCE (an immutable status),
-# its AMOUNT (``is_override``) and its EXISTENCE (``is_deleted``).  Named
-# because :func:`_classify_maintain_work` must tell them apart -- each routes to
-# a different conflict list -- while :func:`_is_maintainable` only asks whether
-# there is one.
-_BLOCK_IMMUTABLE = "immutable"
-_BLOCK_OVERRIDE = "override"
-_BLOCK_DELETED = "deleted"
-
-
-def _owner_hold_on(row) -> str | None:
-    """Return which owner-held fact stops *row* being the rule's to rewrite.
-
-    **The ONE statement of the three, so its two readers cannot drift.**  The
-    classifier needs to tell them apart (each is a different conflict list) and
-    the repeat refusal only needs to know whether there is one, so a bare
-    boolean could not serve both and two copies of the chain is what an
-    adversarial review of plan step R10-a actually found here.  The order is
-    load-bearing: an immutable row is never touched whatever else is true of
-    it, which is what keeps a settled row out of every list.
-
-    Args:
-        row: The Transaction to classify.
-
-    Returns:
-        :data:`_BLOCK_IMMUTABLE`, :data:`_BLOCK_OVERRIDE` or
-        :data:`_BLOCK_DELETED`, or ``None`` when the row is the rule's own --
-        auto-generated, live and still mutable.
-    """
-    if row.status and row.status.is_immutable:
-        return _BLOCK_IMMUTABLE
-    if row.is_override:
-        return _BLOCK_OVERRIDE
-    if row.is_deleted:
-        return _BLOCK_DELETED
-    return None
-
-
-def _is_maintainable(row) -> bool:
-    """Return True when *row* is the RULE's own row, free to be maintained.
-
-    The boolean face of :func:`_owner_hold_on`, for the one caller that does
-    not care WHICH hold applies -- :func:`_refuse_repeats_this_pass`, which
-    only needs to know whether a row blocks a write.
-
-    Args:
-        row: The Transaction to classify.
-
-    Returns:
-        True when the row is auto-generated, live and still mutable.
-    """
-    return _owner_hold_on(row) is None
-
-
-
-
 def _rows_holding_owner_records(existing) -> set[int]:
     """Return the ids of rows carrying content their template did not put there.
 
@@ -338,18 +227,21 @@ def _rows_holding_owner_records(existing) -> set[int]:
     classifier would issue a query per row on the hot path of every template
     edit.
 
-    **A STATEMENT LINK counts too, and it is here for symmetry with the child**
-    (adversarial review of plan step R10-a).  The account-move half of the
-    retention rule is justified by two composite keys that scope a clearing
-    link BY ACCOUNT -- ``fk_transaction_entries_reconciled_by`` on the purchase
-    and ``fk_transactions_reconciled_by`` on the row itself -- and the rule
-    named both while the predicate tested neither directly.  A row carrying its
-    own ``reconciled_by_id`` is unreachable here today through a chain of three
-    separate facts (a link needs ``settled_on``, which only the status seam
-    writes, and only alongside a settled status, and every settled status is
-    immutable), but a rule that holds by a three-step chain elsewhere in the
-    codebase is a rule that will stop holding without anyone noticing.  One
-    condition makes it structural.
+    **A STATEMENT LINK counts too, and it needs no condition of its own** --
+    which plan step R10-b measured, correcting what R10-a's own adversarial
+    review concluded here.  The account-move half of the retention rule is
+    justified by two composite keys that scope a clearing link BY ACCOUNT
+    (``fk_transaction_entries_reconciled_by`` on the purchase and
+    ``fk_transactions_reconciled_by`` on the row itself), so a linked row must
+    be retained -- and it already is.  Two CHECK constraints chain into an
+    implication: ``ck_transactions_cleared_needs_settle_day`` says a link needs
+    a settle day, ``ck_transactions_settle_day_needs_basis`` says a settle day
+    needs a basis, so ``reconciled_by_id IS NOT NULL`` implies
+    ``settled_basis_id IS NOT NULL``.  The ``elif`` that used to follow the
+    settlement arm was therefore reached by no row that exists, which is why
+    deleting it moved nothing: verified against PostgreSQL, which refuses to
+    clear the basis on a linked row.  If either CHECK is ever dropped, this
+    paragraph is what says the arm has to come back.
 
     **The SETTLEMENT arm reads the record rather than a column that used to
     proxy for it** (plan step X-au-c3).  It was ``actual_amount is not None``,
@@ -372,8 +264,9 @@ def _rows_holding_owner_records(existing) -> set[int]:
         existing: The rows this pass is considering.
 
     Returns:
-        The subset of their ids that hold purchases, a note, a settlement
-        record, or a statement link of their own.
+        The subset of their ids that hold purchases, a note, or a settlement
+        record of their own -- which, by the implication above, is also every
+        row that names a statement.
     """
     ids = [row.id for row in existing]
     if not ids:
@@ -391,76 +284,35 @@ def _rows_holding_owner_records(existing) -> set[int]:
             holding.add(row.id)
         elif row.settled_basis_id is not None:
             holding.add(row.id)
-        elif row.reconciled_by_id is not None:
-            holding.add(row.id)
     return holding
 
 
 
 
-def _classify_maintain_work(existing, named_period_ids, account_id, with_records):
-    """Decide what a maintain pass must do to each row, WITHOUT writing.
+def _rows_the_definition_reattributes(existing, account_id) -> "set[int]":
+    """Return the ids of rows whose ACCOUNT this template has moved.
 
-    The whole decision of ruling **R-R19** in one pure reduction: a row the rule
-    still names is maintained, a row it no longer names is retired, and either
-    becomes a conflict the moment the owner's own records are in the way.
+    Half of what :func:`_recurrence_common.classify_maintain_work` needs and
+    cannot ask for itself: a transaction has ONE account and a transfer has two,
+    so "the definition moved where this row's records are filed" is a question
+    about the model rather than about maintenance (plan step R10-b).
 
-    **A row is retained rather than changed in exactly two shapes**, and both
-    are finding **N-292**: the rule no longer fires in this row's period (the
-    old sweep deleted the row, and its purchases CASCADE with it), or the
-    template's ACCOUNT has moved, which drags every purchase onto the new
-    account -- ``fk_transaction_entries_parent_account`` binds a purchase's
-    account to its parent's -- and invalidates any statement link the purchases
-    carry, since ``fk_transaction_entries_reconciled_by`` scopes that link BY
-    ACCOUNT.  Neither is safe to apply silently, so the pass leaves the row
-    exactly as it found it and asks.
+    Applying such a move is what the retention rule refuses on a row holding
+    records: ``fk_transaction_entries_parent_account`` binds a purchase's
+    account to its parent's, so moving the row drags every purchase onto the new
+    account, and ``fk_transaction_entries_reconciled_by`` scopes a clearing link
+    BY ACCOUNT, so the statement link the purchases carry is invalidated by the
+    same edit.  A row carrying NOTHING follows its template's account freely,
+    which is the ordinary case and the behaviour every earlier version had.
 
     Args:
-        existing: Every row of this template in the pass's WRITE WINDOW at
-            or after its bound.  The window half is the load-bearing one:
-            it is what keeps this domain a superset of the plan's, and so
-            what makes the RETIRE branch reachable.
-        named_period_ids: The ``pay_periods.id`` values the rule names now.
-            Empty for a template whose recurrence was CLEARED, which correctly
-            makes every row an orphan.
-        account_id: The template's account NOW, compared against each row's to
-            detect a move.
-        with_records: Ids of rows carrying the owner's own records, from
-            :func:`_rows_holding_owner_records`.
+        existing: The rows this pass is considering.
+        account_id: The template's account NOW.
 
     Returns:
-        The :class:`_MaintainWork` this pass should apply.
+        The subset of their ids sitting on a different account.
     """
-    work = _MaintainWork([], [], [], [], [], [])
-    occupied = set()
-    for row in existing:
-        named = row.pay_period_id in named_period_ids
-        if named:
-            # ANY row occupies its period, so no second row is created beside
-            # it -- including the immutable, overridden and soft-deleted rows
-            # the loop below then declines to maintain.
-            occupied.add(row.pay_period_id)
-        hold = _owner_hold_on(row)
-        if hold == _BLOCK_IMMUTABLE:
-            continue
-        if hold == _BLOCK_OVERRIDE:
-            work.overridden_ids.append(row.id)
-            continue
-        if hold == _BLOCK_DELETED:
-            work.deleted_ids.append(row.id)
-            continue
-        if not named:
-            if row.id in with_records:
-                work.retained_ids.append(row.id)
-            else:
-                work.retire.append(row)
-            continue
-        if row.account_id != account_id and row.id in with_records:
-            work.retained_ids.append(row.id)
-            continue
-        work.update.append(row)
-    work.create_in.extend(sorted(named_period_ids - occupied))
-    return work
+    return {row.id for row in existing if row.account_id != account_id}
 
 
 
@@ -473,7 +325,8 @@ def _apply_maintain_work(work, derived, template_id, scenario_id, projected_id):
     are reconciled against the amount and account the flush actually stored.
 
     Args:
-        work: The :class:`_MaintainWork` from :func:`_classify_maintain_work`.
+        work: The :class:`~app.services._recurrence_common.MaintainWork`
+            from :func:`~app.services._recurrence_common.classify_maintain_work`.
         derived: ``{pay_period_id: DerivedRowFields}`` for every period the
             rule names -- the single statement of what a generated row's
             definition says, consumed identically by the update and the create.
@@ -534,51 +387,6 @@ def _apply_maintain_work(work, derived, template_id, scenario_id, projected_id):
 
 
 
-def _refuse_repeats_this_pass(template, placements, existing):
-    """Refuse a maintain pass that would write one paycheck's row twice.
-
-    ``idx_transactions_template_period_scenario`` holds one row per
-    ``(template, period, scenario)``, and forward generation legitimately names
-    a paycheck more than once at a cadence of 30 days or more, so an unstorable
-    cadence must be refused before anything is written
-    (:func:`_recurrence_common.refuse_unstorable_repeats`, plan ledger row
-    **D19**).
-
-    **The blocking set is narrower here than on the generate path, and the
-    reason is PARITY rather than storage.**  An earlier revision of this
-    docstring said two placements onto a maintained row "would still be two
-    rows"; an adversarial review disproved it.  On this path they would not:
-    ``create_in`` excludes every occupied period and ``update`` holds at most
-    one row per period, so a repeat is physically storable here and no index
-    violation is possible.  What the narrowing preserves is the ANSWER the old
-    delete-then-generate pass gave -- it deleted the rule's own row first, so
-    the paycheck looked empty to the refusal and an unstorable cadence was
-    reported.  Widening the set would silently start ACCEPTING a cadence this
-    app has refused since plan ledger row **D19**, turning a loud refusal into
-    a schedule that quietly bills one paycheck once for a rule that names it
-    twice.  Verified to fire identically on both sides: a maintainable row does
-    not make its paycheck safe, a non-maintainable one does.
-
-    Args:
-        template: The template being maintained -- read for its name by the
-            refusal's message.
-        placements: This pass's :class:`PlannedOccurrence` values.
-        existing: ``{pay_period_id: [row, ...]}`` for this template.
-
-    Raises:
-        RecurrenceCadenceUnsupported: See
-            :func:`_recurrence_common.refuse_unstorable_repeats`.
-    """
-    blocking = {}
-    for period_id, rows in existing.items():
-        held = [row for row in rows if not _is_maintainable(row)]
-        if held:
-            blocking[period_id] = held
-    refuse_unstorable_repeats(template, placements, blocking)
-
-
-
-
 def _maintain_instances(template, plan, calendar, scenario_id, existing):
     """Resolve and apply everything one regeneration does to a template's rows.
 
@@ -609,14 +417,12 @@ def _maintain_instances(template, plan, calendar, scenario_id, existing):
             what makes the RETIRE branch reachable.
 
     Returns:
-        The :class:`_MaintainOutcome` for the audit event and the conflict
+        The :class:`~app.services._recurrence_common.MaintainOutcome` for
+        the audit event and the conflict
         raise.
     """
     placements = plan.placements if plan is not None else ()
-    by_period: dict[int, list[Transaction]] = {}
-    for row in existing:
-        by_period.setdefault(row.pay_period_id, []).append(row)
-    _refuse_repeats_this_pass(template, placements, by_period)
+    refuse_repeats_this_pass(template, placements, existing)
 
     salary_profile = _get_salary_profile(template)
     derived = {
@@ -625,19 +431,15 @@ def _maintain_instances(template, plan, calendar, scenario_id, existing):
         )
         for placement in placements
     }
-    work = _classify_maintain_work(
-        existing, set(derived), template.account_id,
-        _rows_holding_owner_records(existing),
+    work = classify_maintain_work(
+        existing, set(derived),
+        with_records=_rows_holding_owner_records(existing),
+        reattributed=_rows_the_definition_reattributes(
+            existing, template.account_id,
+        ),
     )
     created, updated = _apply_maintain_work(
         work, derived, template.id, scenario_id,
         plan.projected_id if plan is not None else None,
     )
-    return _MaintainOutcome(
-        created=created,
-        updated=updated,
-        removed=work.retire,
-        overridden_ids=work.overridden_ids,
-        deleted_ids=work.deleted_ids,
-        retained_ids=work.retained_ids,
-    )
+    return MaintainOutcome.after(work, created, updated)

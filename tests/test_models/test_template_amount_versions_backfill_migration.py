@@ -5,7 +5,7 @@ The migration creates ``budget.template_amount_versions`` and reconstructs each
 recurring definition's price history from the rows it already generated.  Which
 rows are trustworthy EVIDENCE is not a judgement call -- it falls out of what
 regeneration does to each one
-(``app/services/_recurrence_common.py::partition_regeneration_rows``):
+(``app/services/_recurrence_common.py::classify_maintain_work``):
 
   * an **overridden or soft-deleted** row is a CONFLICT the sweep leaves alone,
     so its amount is a per-row figure the user typed or a price that has gone

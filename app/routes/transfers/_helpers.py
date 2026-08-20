@@ -108,8 +108,8 @@ def _resolve_shadow_context(xfer):
     # The shared rule, not ``type=int`` (plan step X-ae): Werkzeug catches the
     # ValueError so this never crashed, but the coercion is ``int()``, which
     # read a shadow-transaction id spelled in any digit script, padded, or
-    # signed.  The only ``request.form`` site among the 43 ``type=int`` uses --
-    # the rest are query-string and are N-142's.
+    # signed.  It was the only ``request.form`` one; the 34 that remain are all
+    # query-string and are N-142's, re-counted by AST at plan step C2-f3e.
     source_txn_id = parse_row_id(request.form.get("source_txn_id"))
     if source_txn_id is None:
         return None
