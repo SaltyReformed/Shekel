@@ -685,20 +685,30 @@ class PayCalendar:
 
         The one question here that is not about a DATE.
 
-        **It has ELEVEN live ``app/`` callers, and this paragraph has claimed
-        ZERO, FIVE and SEVEN in turn.**  Plan step R7b-4's note -- "nothing in
-        the application asks this" -- was already false then
+        **It has THIRTEEN live callers, and this paragraph has claimed ZERO,
+        FIVE, SEVEN and ELEVEN in turn.**  Plan step R7b-4's note -- "nothing
+        in the application asks this" -- was already false then
         (``grid/partials.py``, ``companion_service.py``); C2-f2d-3 added the
         salary cockpit's period selector, its anatomy fragment and the
         recurrence engine's pricing lookup; C2-f3a added both window labels;
         the statement matcher and the schedule truncate door arrived with their
-        own steps; and C2-f3c DELETED the pricing lookup while adding three --
-        the carry-forward route and both of its service-side period lookups,
-        where this replaced a ``db.session.get`` plus a hand-written
-        ``row.user_id`` comparison.  **A sentence about the tree goes stale
-        exactly like one about the code**, and this one has now gone stale
-        three times; the census that produced the number is
-        ``grep -rn "period_by_id(" app/``.
+        own steps; C2-f3c DELETED the pricing lookup while adding three -- the
+        carry-forward route and both of its service-side period lookups, where
+        this replaced a ``db.session.get`` plus a hand-written ``row.user_id``
+        comparison; and C2-f3e added the grid's cell-fragment resolver, the
+        same replacement one blueprint over.
+
+        **A sentence about the tree goes stale exactly like one about the
+        code**, and this one has now gone stale FOUR times -- the fourth
+        without any step touching it, because ELEVEN was already TWELVE when
+        C2-f3e re-ran the census.  So the predicate is written out here rather
+        than left to be reconstructed: call sites of this method or of
+        :func:`~._searches.period_by_id` that live in ``app/`` OUTSIDE this
+        package, which is ``grep -rn "period_by_id(" app/`` with the
+        definitions, the re-exports and the docstring mentions struck out.
+        The one call inside the package -- this method's own delegation on the
+        line below -- is deliberately not counted, and saying so is the whole
+        difference between a number that can be checked and one that cannot.
 
         Never answers a projected period, which has no id.
 

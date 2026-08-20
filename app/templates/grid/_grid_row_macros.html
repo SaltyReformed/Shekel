@@ -178,15 +178,19 @@
         {% endfor %}
       {% else %}
         {% set category = rk.category %}
-        {#- The partial takes the ID, not the period: its other render entry
-            (`transactions.get_empty_cell`) resolves an ORM `PayPeriod` to
-            check ownership of a submitted id, so the two callers carry
-            different TYPES and only the id is common to both (plan step
-            C2-f2b).  Whitespace-controlled (`{%-`): this row renders once per
+        {#- The partial takes IDS, not objects: it builds one URL and reads
+            nothing else off either row (plan steps C2-f2b for the period,
+            C2-f3e for the account).  Both render entries hold a
+            `DerivedPeriod` since C2-f3e moved `transactions.get_empty_cell`
+            onto the owner's own derived calendar -- the same value this macro
+            is iterating -- so the scalar is now what they have in common
+            rather than the least they have in common.  Whitespace-controlled
+            (`{%-`): this row renders once per
             EMPTY cell, 226 of them on the real 6-period grid and ~1,200 at
             `?periods=52`, so an uncontrolled tag costs 29 KB of blank lines on
             the widest window -- measured before it was controlled. -#}
         {%- set period_id = period.period_id %}
+        {%- set account_id = account.id %}
         {% include "grid/_transaction_empty_cell.html" with context %}
       {% endif %}
     </td>
