@@ -47,9 +47,12 @@ class AmountRule(Enum):
     two source kinds are DISJOINT by a write-door refusal rather than by
     convention: ``routes/transactions/mutations.py`` refuses Credit status on an
     entry-capable row and the grid renders no Credit control for one.  Measured
-    on the 2026-08-20 production clone: 22 live paybacks, 10 with an
-    entry-capable source and 12 with a single-spend one.  **21 of the 22
-    reproduce their stored figure under the arm their source selects**; the
+    on a 2026-08-20 clone of PRODUCTION ITSELF: 23 live paybacks, 10 with an
+    entry-capable source and 13 with a single-spend one.  A first census read
+    22 / 10 / 12 off a STALE dev clone and was re-taken against production
+    before the release; it moved the single-spend arm by one row and nothing
+    else.  **22 of the 23 reproduce their stored figure under the arm their
+    source selects**; the
     exception is payback 2590, which stores ``$123.18`` against ``$181.58`` of
     credit purchases because a human typed over it -- finding **N-252**, and the
     one row migration ``d5c31f8b7e04`` reports on the way through.  It has
@@ -270,7 +273,7 @@ def _rule_within_credit_source(txn) -> AmountRule:
     created only once ``total_credit > 0``), and a single-spend source can never
     acquire entries because ``entry_service`` refuses a parent that is not
     entry-capable (*"This transaction does not support individual purchase
-    tracking"*).  Production agrees: all 12 row-backed paybacks have a source
+    tracking"*).  Production agrees: all 13 row-backed paybacks have a source
     carrying zero entries.
 
     The published predicate is still the right one to read, and the reason is

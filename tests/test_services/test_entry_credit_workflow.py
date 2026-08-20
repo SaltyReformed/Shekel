@@ -1516,10 +1516,15 @@ class TestAPaybackIsWorthTheCardSpendItRepays:
 
     **Both arms are graded because the step's own one-line specification named
     only one of them.**  It said *"a payback's figure is the credit entries it
-    repays"*, and a census of the 2026-08-20 production clone measured 22 live
-    paybacks of which **12 have a source with no entries at all** -- their
+    repays"*, and a census of a 2026-08-20 clone of PRODUCTION measured 23 live
+    paybacks of which **13 have a source with no entries at all** -- their
     source is a whole transaction marked Credit.  Applied literally that
-    sentence values those twelve at ``$0.00``.
+    sentence values those thirteen at ``$0.00``.
+
+    (A first census read 22 / 10 / 12 off a STALE dev clone.  Re-taken against
+    production while rehearsing the release: the single-spend arm moved by one
+    row and nothing else did, which is why both arms are graded here rather
+    than trusted to a count.)
     """
 
     def test_an_entry_capable_source_is_worth_its_CREDIT_purchases(

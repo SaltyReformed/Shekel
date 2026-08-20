@@ -418,7 +418,7 @@ hides.
   drift.** **What a LATER leaf must obey**: a derived row's answer must be INVARIANT under a change
   to its own amount column -- agreement alone cannot see this resolver. Opened **N-252**, **N-253**.
 * [x] **X-au-i** `11b32051` a payback is worth the CARD SPEND it repays -- the FIRST per-kind
-  cutover, closing **N-252** and **N-323**. **Its one-line spec was measured FALSE**: 12 of the 22
+  cutover, closing **N-252** and **N-323**. **Its one-line spec was measured FALSE**: 13 of the 23
   live paybacks have a source with NO entries, so "the credit entries it repays" zeroes them. The
   `credit_source` relation REFINES on `tracks_purchases`, disjoint by `mutations.py`'s write-door
   refusal. **What a LATER leaf must obey**: read the refinement off the SOURCE live, never stamp it;

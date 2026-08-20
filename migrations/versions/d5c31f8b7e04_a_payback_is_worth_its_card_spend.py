@@ -19,11 +19,15 @@ per-transaction"*) and the grid renders no Credit control for one.  So:
   * a single-spend source went on the card whole, so its card spend is the
     row's own resolved amount.
 
-**Measured on the 2026-08-20 production clone before it was written**: 22 live
-paybacks, 0 soft-deleted, **10 with an entry-capable source and 12 with a
-single-spend one**.  The step's original one-line specification -- *"a payback's
-figure is the credit entries it repays"* -- would have valued those 12 at
-``$0.00``, which is what the census refuted and what the second arm exists for.
+**Measured on a 2026-08-20 clone of PRODUCTION ITSELF**: 23 live paybacks, 0
+soft-deleted, **10 with an entry-capable source and 13 with a single-spend
+one**.  The step's original one-line specification -- *"a payback's figure is the
+credit entries it repays"* -- would have valued those 13 at ``$0.00``, which is
+what the census refuted and what the second arm exists for.
+
+*A first census read 22 / 10 / 12 off a STALE dev clone.  It was re-taken
+against production while rehearsing this release, which moved the single-spend
+arm by one row and changed nothing else -- including the reported set below.*
 
 Upgrade:
 
@@ -41,14 +45,14 @@ Upgrade:
   3. REFUSE when a single-spend source is ITSELF declared derived, because its
      amount column is then NULL and no SQL here can resolve it.  Unreachable
      today and stated rather than assumed: this is the FIRST per-kind cutover,
-     so every source row still owns its figure (0 of 22 declare a relation).
+     so every source row still owns its figure (0 of 23 declare a relation).
      The later cutovers -- X-au-d salary, X-au-e template, X-au-f transfer --
      run after this one and change no source of a payback.
   4. Declare the paybacks derived: ``amount_source_id = credit_source`` and
      ``estimated_amount = NULL``, which ``ck_transactions_amount_ownership``
      pairs one-to-one.
 
-**NO MONEY MOVES, and that is structural rather than lucky.**  All 22 live
+**NO MONEY MOVES, and that is structural rather than lucky.**  All 23 live
 paybacks have SETTLED, and ``row_valuation.fixed_contribution`` answers for a
 settled row from its RECORD (``settled_amount`` / ``settled_basis_id`` /
 ``settled_on``) before the amount model is consulted at all -- plan step
@@ -157,7 +161,7 @@ def _rows(conn):
                 for r in unresolvable
             )
             + ". This is the FIRST per-kind cutover and every source still owns "
-            "its figure on production (0 of 22 declare a relation), so reaching "
+            "its figure on production (0 of 23 declare a relation), so reaching "
             "here means a later cutover ran first. Resolve those sources' "
             "amounts through the app before running this."
         )
