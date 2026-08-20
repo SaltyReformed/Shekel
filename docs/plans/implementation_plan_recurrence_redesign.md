@@ -54,6 +54,7 @@ Taken 2026-08-05 (developer):
 | **Where the nth-weekday coordinate LIVES** | **On `budget.recurrence_rules`, as an EXCLUSIVE ARC of columns under one CHECK, and `budget.recurrence_weekday_anchors` is DROPPED unwritten. "A rule fires on a day-of-month OR an nth-weekday" cannot be a CHECK while the two live in different tables -- PostgreSQL CHECKs are single-table -- so the satellite form would need a trigger or a door-only fence for an invariant the column form makes structural. The same move ruling R-R16 made for `nominal_day` and R7c-c made for the unwritten `recurrence_month_anchors`. R-R25, ruled 2026-08-16; owned by R8-c** |
 | **What "non-business day" MEANS** | **Weekends plus the eleven US federal holidays, DERIVED as rules rather than seeded as rows -- they are nth-weekday-of-month rules and fixed dates with weekend observation, so there is no per-year seed to keep current and the derivation composes with R8-c's own machinery. R-R26, ruled 2026-08-16; owned by R8-d. Finding F-4, the PAY SCHEDULE's own holiday shift, is a different question and is not settled by this** |
 | **Whether the closed set's TABLE and its ENUM may go in ONE release** | **YES, and R-R11's hazard does not generalise to a dropped TABLE at all -- which an adversarial review of R9 established after the step had argued the opposite. R-R11 held the `Once` ROW because `ref_cache.init` raises for an enum member with no row in a table that EXISTS; `_load_rows` CATCHES the `ProgrammingError` a missing table raises, and `init` records it unavailable and completes, pinned by `test_ref_cache.py::test_init_records_unavailable_table_and_keeps_others_usable`. Three independent reasons the auto-rollback image is safe, in the order they fire: it never reaches `ref_cache`, because `entrypoint.sh` step 3 runs `init_database.py` with `init_ref_cache=False` and its Alembic tree cannot resolve the new revision, so `set -eEuo pipefail` aborts (finding F-8); `shekel-deploy:repin_is_safe` refuses the re-pin for the same reason, leaving the pre-deploy dump as recovery; and booted anyway it would degrade rather than die. Precedent measured the same day: R7c-a, R7c-b and R7c-c all reached production in ONE release (PR #102, `41e09dad`), and R7c-c dropped a column the previous image's ORM mapped. R-R27, ruled 2026-08-17; shipped as R9** |
+| **What a forward window named in MONTHS resolves to** | **The LAST WHOLE PAYCHECK that ARRIVES within the span, counted against the CADENCE itself: `floor(months x DAYS_PER_YEAR / (MONTHS_PER_YEAR x cadence_days))`. So the LABEL is the fixed thing and the pay-period count derives from the owner's stated rhythm. Flooring rather than rounding was measured: over all 365 legal cadences crossed with the 3 / 6 / 12 / 24-month spans the two disagree on 388 of 1,460 cases, and by mean absolute distance between the resolved period's END and the day the label names the floored answer is closer in 387 and equal in the last. Deriving it through the ROUNDED `periods_per_year` instead was the first implementation and an adversarial review measured it wrong -- double rounding disagrees with the arrival test on 384 cases, always overshooting, and in 74 of them OFFERS a horizon the owner has no paycheck inside at all. A span no paycheck reaches resolves to ZERO and is NOT OFFERED; a surface that must render something anyway (the Plan tab, the pulse chart) shows the paycheck the owner is in, which is a POLICY and not an invariant. R-R31, ruled 2026-08-19; shipped as R-F17** |
 | **What a REGENERATION does to the rows it already generated** | **It MAINTAINS them; it does not destroy and rebuild them. A row the rule still names is UPDATED in place, a period the rule names with no row gets one, and a row the rule no longer names is removed only when it carries nothing of the owner's. A row holding the owner's own records -- purchases, a note, a hand-entered actual -- is RETAINED and reported, in two shapes: the rule stopped naming its period, or the template's ACCOUNT moved, which drags every purchase onto the new account and invalidates the statement link that cleared it. The delete-and-recreate this replaces was safe only while a generated row was a pure projection of `(template, period)`; `transaction_entries` CASCADE from their parent, so it destroyed `$499.82` of recorded purchases on live data. R-R19, ruled 2026-08-15; shipped as R10-a (`5fc13cdb`), closing row N-292** |
 
 ---
@@ -374,6 +375,11 @@ it (two carrying `<input name="due_date">`, so the wire format moves too). The p
 `rate_period_engine.py` and `loan_payment_service.py` hold **zero** column references between them
 and are R6 surfaces.
 
+**It must also re-examine `build_transient_rule`**, carried here from `R-F6`'s entry when that step
+was archived (2026-08-19, `conventions.md` rule 4: an overflow's destination is the OWNING step):
+its last callers are tests needing a rule only because `compute_due_date` takes one, and this step
+deletes that function.
+
 - [ ] **R6 -- Delete `payment_day`; one installment accessor.**
 
 `loan_installment_date(...)` becomes the single derivation over the rule plus `due_on`.
@@ -407,9 +413,6 @@ accounted for in `historical/recurrence_as_built_2026-08-14.md` and the last two
 
 - [x] **R7a-2a -- the paycheck count is per owner.** `003e3657`. `PAY_PERIODS_PER_YEAR` deleted for
       `PayCadence`'s derivation. Opened **F-16**, **F-17**.
-
-- [x] **R7a-2b -- the monthly equivalent is ONE expression.** `7c417b90`. Over `(interval_n, unit)`.
-      All three archived under rule 5 to `historical/recurrence_findings_as_built_2026-08-15.md`.
 
 - [x] **R7c -- THE CUTOVER, the DECOMPOSED parent of three leaves.** `ee35bca7`, ticked with
       `R7c-c`, its last leaf. Split 2026-08-14 (**R-R18**) as an expand / migrate / contract, so the
@@ -654,13 +657,6 @@ nothing; that record names all three hashes, and says why `R-F1` stayed.
       uses this id as its worked example of the PREFIX trap, and archiving it emptied that trap out
       of the corpus. Finding **D42**.
 
-- [x] **R-F6 -- a rule is owned by its definition.** `a679bb2e`, migration `e7a2c4f18d05`. Ownership
-      INVERTED (developer ruling 2026-08-18): the owning FK is an exclusive arc on
-      `budget.recurrence_rules` under `ON DELETE CASCADE`, so the orphan is inexpressible rather
-      than fixed. `recurrence_rules.user_id`, `_rule_is_exclusively_owned` and `integrity_check`
-      **OR-02** all went with it. Closed **F-6**. **R5 must re-examine `build_transient_rule`**: its
-      last callers are tests needing a rule only because `compute_due_date` takes one.
-
 - [x] **R-F10 -- delete the gap machinery.** `fe365de1`. Closed **F-10**; the LOSS survives as
       `pay_calendar:P16`. Account archived to `historical/recurrence_as_built_2026-08-15.md`.
 
@@ -719,15 +715,26 @@ makes a historical modelled balance move when a raise lands.
 
 **MOVES MONEY** and needs its own review pass.
 
-- [ ] **R-F17 -- the two period-INDEX horizon windows** (finding F-17).
+- [x] **R-F17 -- a month-named window resolves in the OWNER's paychecks.** `e2afd21b`, ruling
+      **R-R31**, closed **F-17**. `PayCadence.paychecks_within` replaced the hardcoded 6 / 13 / 26 /
+      52 in FIVE surfaces: the balance chips, the "Interest, next 12 mo" chip, the grid's 6M / 1Y /
+      2Y buttons, the mobile Plan window and the dashboard pulse chart, whose canvas announced six
+      months over thirteen weeks. Biweekly answers the same numbers, so nothing on the developer's
+      data moved. Opened **F-21** and `pay_calendar:P73`.
 
-`utils/period_projections.py:16` offers `("1 year", 26)` and `routes/accounts/detail.py`'s
-`_ONE_YEAR_PERIODS = 26` bounds the "Interest, next 12 months" chip. Both count PERIODS and label
-MONTHS, so at a weekly cadence the chip sums six months of interest under a twelve-month heading and
-at a monthly cadence two years. Left by R7a-2a because they are index arithmetic rather than the
-money constant that step replaced.
+- [ ] **R15 -- what a payroll deduction's own FREQUENCY means** (finding **F-21**).
 
-**Its own ruling first**: `round(365.2425 / cadence_days)` gives a whole count for the chip, but
-`period_projections`' offsets are a module-level tuple of `(label, offset)` pairs shared by several
-surfaces, so making them per-owner means deciding whether the LABEL or the OFFSET is the fixed thing
--- and what a fractional period offset means when neither divides evenly. Small, and no migration.
+`salary.paycheck_deductions.deductions_per_year` server-defaults to `26` and the salary form offers
+exactly three values -- `26 (every paycheck)`, `24 (skip 3rd paycheck)`, `12 (monthly)`. It is never
+multiplied or divided: `paycheck_calculator._deduction_applies_in_period` compares it against `24`
+and `12` and nothing else, so it is a three-valued MODE wearing a biweekly paycheck count, compared
+in Python and again in `_deductions_section.html` -- which is the "IDs for logic, strings for
+display" rule of `CLAUDE.md` with an integer in the string's place. At a weekly cadence "every
+paycheck" is 52 and "the 3rd paycheck of the month" names nothing; at a monthly one only the third
+option survives. **11 of the developer's 12 live deductions carry `24`**, the mode that generalises
+least, so the migration has real rows to re-express.
+
+**Its own ruling first**: whether the mode becomes a `ref` table, whether "skip the 3rd paycheck"
+generalises to "skip the Nth" or is retired, and what the three live values become. No figure moves
+-- nothing computes from the number -- so it is a migration and a form change rather than a money
+step. Sequenced behind **R14**, which re-opens the same table for what a deduction is PRICED from.
