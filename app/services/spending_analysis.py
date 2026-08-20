@@ -13,10 +13,12 @@ defined once rather than re-implemented per surface (coding-standards rule
 13; the T-P3 ``projection_inputs`` precedent, which closed a cross-file
 ``duplicate-code`` finding the same way):
 
-* :func:`query_settled_expenses` -- the one settled-expense ORM query
-  (settled status, expense type, not deleted, scoped to one account /
-  scenario / period set).  Every consumer reads spending through it, so a
-  change to what "settled spending" selects is a single edit.
+* :func:`query_settled_expenses` -- the settled-expense ORM query selected by
+  a PERIOD SET (settled status, expense type, not deleted, scoped to one
+  account / scenario / period set).  Its one caller is the Spending report's
+  pay-period arm, which no route reaches today; the sibling below is what a
+  live render runs.  The two share their row filters, so a change to what
+  "settled spending" selects is still a single edit.
 * :func:`query_settled_expenses_in_span` -- the same row filters selected
   by the attribution rule instead of a period set: COALESCE(due_date,
   owning period start) inside a calendar span, across ALL the user's pay
@@ -34,15 +36,16 @@ defined once rather than re-implemented per surface (coding-standards rule
   days-before-due rule, given the already window-attributed settled
   expenses.
 
-Pure-function module -- no Flask imports; the only side effect is the read
-query in :func:`query_settled_expenses`.
+Pure-function module -- no Flask imports; the only side effects are the two
+read queries, :func:`query_settled_expenses` and
+:func:`query_settled_expenses_in_span`.
 """
 
 import calendar as cal_mod
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 
-from sqlalchemy.orm import contains_eager, joinedload, selectinload
+from sqlalchemy.orm import joinedload, selectinload
 
 from app import ref_cache
 from app.enums import TxnTypeEnum
@@ -110,9 +113,30 @@ def query_settled_expenses(
     Credit, which are not settled, are excluded), expense type only, not
     deleted, one account, one scenario, and ``pay_period_id`` in
     *period_ids*.  Transfer shadows are included: they are ordinary
-    ``Transaction`` rows that participate in spending.  Eager-loads
-    ``category`` and ``pay_period`` to prevent N+1 lookups when the caller
-    groups by category or attributes by period.
+    ``Transaction`` rows that participate in spending.
+
+    **It eager-loads ``category`` and NOT ``pay_period``**, and the second half
+    of that changed at pay-calendar plan step **C2-f3d** -- in BOTH queries,
+    for one reason: an AST and grep census over everything reachable from
+    ``compute_spending_report`` found no read of ``txn.pay_period`` anywhere.
+    The period IS the window on this path, so its identity is already resolved
+    (:func:`._window._resolve_window`), and neither the breakdown, the
+    surprises, the hero nor ``owned_contribution`` asks a row which paycheck
+    it sits in.  The load's stated reason was that a caller "attributes by
+    period", which no caller does.
+
+    **What the removal actually costs, said conditionally because the two
+    queries differ in whether they run.**  This one is reached only from the
+    pay-period arm, which no route builds (see :func:`._window._series_windows`),
+    so its ``joinedload`` executed on zero live renders; what it did there was
+    hydrate a ``PayPeriod`` per window into the identity map, which is what hid
+    the ``db.session.get`` the retired ordinal walk beside it ran.  The sibling
+    is the one every ``/analytics/spending`` render runs twelve times, and its
+    ``contains_eager`` went too -- **its JOIN is load-bearing and its
+    hydration was not**, which an earlier draft of this paragraph conflated:
+    the COALESCE attribution filter runs on the join, so the join stays and
+    only the ``PayPeriod`` columns leave the SELECT.  Measured on a clone of
+    production: the same 29 rows with the same ids, six fewer columns each.
 
     Args:
         scenario_id: The budget scenario to scope to (the caller's
@@ -138,7 +162,6 @@ def query_settled_expenses(
         db.session.query(Transaction)
         .options(
             joinedload(Transaction.category),
-            joinedload(Transaction.pay_period),
             # ``resolved_actual_amount`` asks ``row_valuation.settled_figure``,
             # which sums a ``purchases``-basis row's OWN entries rather than
             # reading a stored copy (plan step X-au-c3).  Without this the
@@ -193,7 +216,9 @@ def query_settled_expenses_in_span(
 
     Returns:
         The matching settled expense :class:`Transaction` rows, with
-        ``category`` and ``pay_period`` eager-loaded like the sibling query.
+        ``category`` eager-loaded like the sibling query.  ``pay_period`` is
+        JOINED and not loaded: the join carries the COALESCE filter above, and
+        no consumer reads the relationship (plan step C2-f3d).
     """
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
     attribution_day = db.func.coalesce(
@@ -204,7 +229,6 @@ def query_settled_expenses_in_span(
         .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
         .options(
             joinedload(Transaction.category),
-            contains_eager(Transaction.pay_period),
             # The sibling query's reason, and the same consumer: see
             # :func:`query_settled_expenses` above.
             selectinload(Transaction.entries),

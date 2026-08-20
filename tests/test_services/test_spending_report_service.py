@@ -5,35 +5,53 @@ Hand-confirmed tests for :mod:`app.services.spending_report_service`: the
 category breakdown and its shares, window filtering, the estimate-surprises
 kernel (capped list + net), the hero band (vs-prior / vs-average with
 None-safety and per-window-type prior arithmetic), the trailing window
-series (the chart / hero one-source identity), the window-over-window
-deltas (items, groups, and the By-change rows with their zero-current
-rider), and the empty / no-account contracts.  Every value assertion
-carries the arithmetic that produces it.
+series (the chart / hero one-source identity, and the twelve windows it
+is derived from), the window-over-window deltas (items, groups, and the
+By-change rows with their zero-current rider), and the empty / no-account
+contracts.  Every value assertion carries the arithmetic that produces it.
+
+**The chart's windows are DERIVED off the owner's pay calendar** since plan
+step C2-f3d; ``TestTheChartReadsTheDerivedOrdinal`` is that step's firing
+control, and it fails on the ``period_index`` queries it replaced.
 """
 
-from datetime import date
+from contextlib import contextmanager
+from datetime import date, timedelta
 from decimal import Decimal
 from unittest.mock import patch
+
+from sqlalchemy import event
+from sqlalchemy.orm import Session
 
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.models.category import Category
+from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
-from app.services import spending_report_service
-# The privates these tests exercise moved into the package's submodules at plan
-# step X-au-c2b, when finding **N-270**'s 1000-line ceiling forced the split;
-# they are imported from where they live rather than re-exported, so the test
-# names the module that owns each rule.
-from app.services.spending_report_service._surprises import _MAX_SURPRISES
-from app.services.spending_report_service._window import (
-    _CHART_WINDOW_COUNT,
-    _shift_month,
-    _shift_window,
+from app.services import (
+    pay_period_write,
+    spending_analysis,
+    spending_report_service,
 )
+from app.services.pay_calendar import PayCalendar
 from app.services.spending_report_service import (
     Comparison,
     SpendingWindow,
     compute_spending_report,
+)
+# The privates these tests exercise moved into the package's submodules at plan
+# step X-au-c2b, when finding **N-270**'s 1000-line ceiling forced the split;
+# they are imported from where they live rather than re-exported, so the test
+# names the module that owns each rule.
+from app.services.spending_report_service._hero import (
+    _TRAILING_WINDOW_COUNT,
+)
+from app.services.spending_report_service._surprises import _MAX_SURPRISES
+from app.services.spending_report_service._types import _ScopeIds
+from app.services.spending_report_service._window import (
+    _CHART_WINDOW_COUNT,
+    _series_windows,
+    _shift_month,
 )
 from tests._test_helpers import default_settle_day, settlement_columns
 
@@ -90,6 +108,60 @@ def _txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
 def _pp_window(period):
     """Return a pay-period SpendingWindow for a period."""
     return SpendingWindow(window_type="pay_period", period_id=period.id)
+
+
+@contextmanager
+def _pay_periods_hydrated():
+    """Count the ``PayPeriod`` ORM entities LOADED inside this block.
+
+    The measurement a statement count cannot make: an eager load rides inside
+    another query as a JOIN and issues no statement of its own, and a
+    ``db.session.get`` served from the identity map issues none either.  Both
+    hydrate an entity, which is what this counts.
+
+    **The event and not the identity map**, because the map holds WEAK
+    references: a probe that counted survivors after the call read zero for a
+    producer that had hydrated twelve, since nothing outside the producer
+    holds a ``Transaction`` to keep its ``pay_period`` back-reference alive.
+    That was measured -- a first cut of this helper read the map and could not
+    fire.  ``loaded_as_persistent`` fires per load and cannot be collected
+    away.
+    """
+    loaded = []
+
+    def _record(_session, instance):
+        if isinstance(instance, PayPeriod):
+            loaded.append(instance)
+
+    event.listen(Session, "loaded_as_persistent", _record)
+    try:
+        yield loaded
+    finally:
+        event.remove(Session, "loaded_as_persistent", _record)
+
+
+@contextmanager
+def _pay_period_selects(engine):
+    """Capture every statement this block SELECTs from ``budget.pay_periods``.
+
+    The engine rather than the session, because what is being counted is
+    round trips to the database: a ``db.session.get`` served out of the
+    identity map issues none, which is exactly how the retired ordinal
+    walk's own row load stayed invisible while it ran eleven queries beside
+    it (plan step C2-f3d).
+    """
+    captured = []
+
+    def _record(_conn, _cursor, statement, _params, _context, _executemany):
+        flattened = " ".join(statement.split())
+        if "FROM budget.pay_periods" in flattened:
+            captured.append(flattened)
+
+    event.listen(engine, "before_cursor_execute", _record)
+    try:
+        yield captured
+    finally:
+        event.remove(engine, "before_cursor_execute", _record)
 
 
 def _group(report, group_name):
@@ -420,11 +492,31 @@ class TestHero:
             assert timing["avg_days_before_due"] == Decimal("0.00")
 
 
-# ── Prior-window arithmetic ──────────────────────────────────────────
+# ── The chart's twelve windows (plan step C2-f3d) ────────────────────
 
 
-class TestPriorWindowArithmetic:
-    """Month/year prior-window stepping (including the year rollover)."""
+def _calendar_scope(paydays, cadence_days=14, user_id=1):
+    """Return a ``_ScopeIds`` whose calendar is *paydays*, with no database.
+
+    ``_series_windows`` reads the scope's CALENDAR and nothing else, so the
+    three window arms are exercised over hand-written paydays rather than
+    through a fixture -- which is what lets the cases below name an exact
+    expected id list per slot.  The account and scenario ids are never read
+    on this path.
+    """
+    return _ScopeIds(
+        user_id=user_id, account_id=1, scenario_id=1,
+        calendar=PayCalendar.from_paydays(paydays, cadence_days, user_id),
+    )
+
+
+class TestSeriesWindows:
+    """The twelve chart windows, derived in one pass off the calendar.
+
+    ``_shift_month`` is exercised here rather than in a class of its own: it
+    is the month arm's one primitive and has no other caller since plan step
+    C2-f3d deleted ``_shift_window``.
+    """
 
     def test_shift_month_january_rolls_to_prior_december(self):
         """One month before January 2026 is December 2025."""
@@ -434,15 +526,422 @@ class TestPriorWindowArithmetic:
         # Thirteen months before June 2026 is May 2025.
         assert _shift_month(2026, 6, 13) == (2025, 5)
 
-    def test_shift_year(self, app, seed_user, seed_periods, db):
-        """A year window steps back to the prior calendar year."""
-        with app.app_context():
-            prior = _shift_window(
-                seed_user["user"].id,
-                SpendingWindow(window_type="year", year=2026), 1,
+    def test_year_series_is_twelve_descending_years(self):
+        """A year window's series is 2015..2026, the chosen year last."""
+        scope = _calendar_scope([(1, date(2026, 1, 2))])
+        chosen = SpendingWindow(window_type="year", year=2026)
+
+        windows = _series_windows(scope, chosen)
+
+        assert len(windows) == _CHART_WINDOW_COUNT
+        assert [w.year for w in windows] == list(range(2015, 2027))
+        assert {w.window_type for w in windows} == {"year"}
+        assert windows[-1] == chosen
+
+    def test_month_series_rolls_the_year(self):
+        """March 2026 trails back to April 2025, twelve slots inclusive."""
+        scope = _calendar_scope([(1, date(2026, 1, 2))])
+        chosen = SpendingWindow(window_type="month", month=3, year=2026)
+
+        windows = _series_windows(scope, chosen)
+
+        assert [(w.year, w.month) for w in windows] == [
+            (2025, 4), (2025, 5), (2025, 6), (2025, 7), (2025, 8),
+            (2025, 9), (2025, 10), (2025, 11), (2025, 12),
+            (2026, 1), (2026, 2), (2026, 3),
+        ]
+        assert windows[-1] == chosen
+
+    def test_pay_period_series_is_the_twelve_preceding_paychecks(self):
+        """With 20 paydays, viewing #14 gives ids 3..14 and no blank slot.
+
+        Paydays are ids 1..20 on a 14-day cadence from 2026-01-02, so the
+        calendar's derived ordinals are 0..19 in that same order.  Viewing
+        the period with ordinal 13 (id 14) fills every slot: ordinals
+        2..13, which are ids 3..14.
+        """
+        paydays = [
+            (n + 1, date(2026, 1, 2) + timedelta(days=14 * n))
+            for n in range(20)
+        ]
+        chosen = SpendingWindow(window_type="pay_period", period_id=14)
+
+        windows = _series_windows(_calendar_scope(paydays), chosen)
+
+        assert len(windows) == _CHART_WINDOW_COUNT
+        assert [w.period_id for w in windows] == list(range(3, 15))
+        assert windows[-1] == chosen
+
+    def test_pay_period_series_pads_before_the_first_payday(self):
+        """A schedule shorter than the chart leaves the LEADING slots blank.
+
+        Four paydays, viewing the third (ordinal 2, id 3): the two earlier
+        paychecks fill slots 9 and 10, the chosen one slot 11, and the nine
+        slots below the owner's first payday are ``None`` rather than
+        shortening the series -- which is what keeps ``series[-2]`` the
+        prior window for every owner.
+        """
+        paydays = [
+            (n + 1, date(2026, 1, 2) + timedelta(days=14 * n))
+            for n in range(4)
+        ]
+        chosen = SpendingWindow(window_type="pay_period", period_id=3)
+
+        windows = _series_windows(_calendar_scope(paydays), chosen)
+
+        assert [w.period_id if w else None for w in windows] == (
+            [None] * 9 + [1, 2, 3]
+        )
+
+    def test_pay_period_series_of_the_first_paycheck_has_no_prior(self):
+        """The earliest paycheck fills one slot; the other eleven are blank."""
+        paydays = [
+            (n + 1, date(2026, 1, 2) + timedelta(days=14 * n))
+            for n in range(4)
+        ]
+        chosen = SpendingWindow(window_type="pay_period", period_id=1)
+
+        windows = _series_windows(_calendar_scope(paydays), chosen)
+
+        assert windows[:-1] == [None] * (_CHART_WINDOW_COUNT - 1)
+        assert windows[-1] == chosen
+
+    def test_an_unmatched_period_id_leaves_every_earlier_slot_blank(self):
+        """An id naming none of this calendar's periods resolves no predecessor.
+
+        The ``None`` branch, stated at the unit level over a hand-written
+        calendar; the case that MATTERS -- an id belonging to another owner
+        rather than to nobody -- takes the same branch and is asserted
+        end to end by
+        ``TestTheChartReadsTheDerivedOrdinal.test_another_owners_period_id_buys_no_bar_of_this_owners_money``,
+        which is where the money is.
+        """
+        paydays = [
+            (n + 1, date(2026, 1, 2) + timedelta(days=14 * n))
+            for n in range(4)
+        ]
+        chosen = SpendingWindow(window_type="pay_period", period_id=9999)
+
+        windows = _series_windows(_calendar_scope(paydays), chosen)
+
+        assert windows == [None] * (_CHART_WINDOW_COUNT - 1) + [chosen]
+
+    def test_the_series_never_reaches_past_the_chosen_window(self):
+        """No slot names a paycheck LATER than the chosen one.
+
+        The chart is retrospective: ``viewed_index`` is the last bar, so a
+        later period appearing anywhere in the list would draw future
+        spending beside the window the user asked for.
+        """
+        paydays = [
+            (n + 1, date(2026, 1, 2) + timedelta(days=14 * n))
+            for n in range(20)
+        ]
+        scope = _calendar_scope(paydays)
+
+        for period_id in range(1, 21):
+            windows = _series_windows(
+                scope,
+                SpendingWindow(window_type="pay_period", period_id=period_id),
             )
-            assert prior.window_type == "year"
-            assert prior.year == 2025
+            assert [w.period_id for w in windows if w is not None] == [
+                earlier for earlier in range(1, period_id + 1)
+            ][-_CHART_WINDOW_COUNT:]
+
+
+class TestTheChartAndTheHeroCountTheSameWindows:
+    """The two window counts are held in step by a test, not by a comment.
+
+    Both modules state the relation and both say it is unenforced.  It was:
+    mutation testing of plan step C2-f3d set ``_TRAILING_WINDOW_COUNT`` to 12
+    and the whole 10,236-test suite stayed green, while the vs-average chip
+    silently began averaging over a window the chart does not draw -- a wrong
+    figure given quietly, which is this project's worst failure shape.  The
+    precedent is ``test_pay_schedule.TestTheCadenceBoundHasOneValue``, which
+    holds the two cadence bounds equal the same way.
+    """
+
+    def test_the_average_reads_fewer_windows_than_the_chart_draws(self):
+        """vs-average must derive from bars the chart actually draws.
+
+        ``_build_hero`` averages ``series[-(N + 1):-1]``, so the baseline
+        stays inside the drawn series only while ``_TRAILING_WINDOW_COUNT``
+        is strictly below ``_CHART_WINDOW_COUNT``.
+        """
+        assert 1 <= _TRAILING_WINDOW_COUNT < _CHART_WINDOW_COUNT
+
+    def test_the_chart_has_room_for_a_chosen_window_and_a_prior(self):
+        """``[-1]`` and ``[-2]`` are named positions, so the count is >= 2.
+
+        ``_series_windows``, ``_build_series``, ``_build_hero`` and the
+        chart's ``compare_index`` all index the last two slots directly.
+        """
+        assert _CHART_WINDOW_COUNT >= 2
+
+
+class TestTheChartReadsTheDerivedOrdinal:
+    """The chart's paychecks come from payday order, not a stored column."""
+
+    def test_a_scrambled_stored_period_index_does_not_move_a_bar(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Swapping two stored ordinals leaves every bar on its own paycheck.
+
+        **The firing control for plan step C2-f3d.**  The retired walk
+        selected each bar with ``WHERE period_index = <chosen> - <steps>``,
+        so a stored ordinal out of payday order -- the state
+        ``uq_pay_periods_user_index`` and three runtime fences exist to
+        police, and which ``pay_period_write`` REPAIRS when it sees it --
+        put the wrong paycheck in a bar silently.  Here periods 3 and 4
+        spend ``300`` and ``400``; their stored ordinals are swapped, and
+        the series still reports ``300`` before ``400`` because the
+        calendar derives the ordinal from the paydays.  On the walk this
+        assertion fails with the two totals transposed.
+        """
+        with app.app_context():
+            for idx, amount in enumerate(
+                ["100.00", "200.00", "300.00", "400.00", "500.00"], start=0
+            ):
+                _txn(db, seed_user, seed_periods[idx], f"P{idx}", "Rent",
+                     amount)
+            # Swap the two stored ordinals through a parking value, because
+            # ``uq_pay_periods_user_index`` is checked per statement.
+            third, fourth = seed_periods[2].id, seed_periods[3].id
+            for pk, index in ((third, 999), (fourth, 2), (third, 3)):
+                db.session.query(PayPeriod).filter_by(id=pk).update(
+                    {"period_index": index},
+                )
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(seed_periods[4]),
+            )
+
+            totals = [point.total for point in report.series[-5:]]
+            assert totals == [
+                Decimal("100.00"), Decimal("200.00"), Decimal("300.00"),
+                Decimal("400.00"), Decimal("500.00"),
+            ]
+            assert [p.window.period_id for p in report.series[-5:]] == [
+                p.id for p in seed_periods[:5]
+            ]
+
+    def test_a_gap_in_the_stored_ordinal_does_not_move_the_average(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """A HOLE in the stored ordinal moves a MONEY figure on the walk.
+
+        The second of the three faults ``budget.pay_periods.period_index``
+        can express (the arc's taxonomy is in
+        :mod:`app.services.pay_calendar`), and it fails DIFFERENTLY from the
+        transposition above: the walk matched nothing at the missing ordinal,
+        so eleven steps reached only TEN paychecks and the series began one
+        paycheck later than it should.
+
+        **Twenty periods, not the fixture's ten, and that is the point.**  On
+        a ten-period owner both sides end up holding the same six windows, so
+        only the bar POSITIONS move and every figure survives -- a control
+        that would pin the defect's shape and not its cost.  Here the twelfth
+        slot is occupied, so the lost slot is a paycheck: the vs-average
+        baseline reads ``$1,300.00`` on the walk against a true
+        ``$1,250.00``.
+
+        Spends run ``$100.00`` x (ordinal + 1), so the trailing six windows
+        the hero averages (ordinals 9-14) are ``$1,000.00``..``$1,500.00`` =
+        ``$7,500.00`` / 6 = ``$1,250.00``.  The walk drops ordinal 9 and
+        averages the remaining five: ``$6,500.00`` / 5 = ``$1,300.00``.
+        """
+        with app.app_context():
+            # ``record_paydays`` returns the rows it RECORDED, so the owner's
+            # whole extended schedule is re-read rather than inferred from it.
+            pay_period_write.record_paydays(
+                user_id=seed_user["user"].id,
+                first_payday=seed_periods[0].start_date,
+                num_periods=20,
+                cadence_days=14,
+            )
+            db.session.flush()
+            periods = (
+                db.session.query(PayPeriod)
+                .filter_by(user_id=seed_user["user"].id)
+                .order_by(PayPeriod.start_date)
+                .all()
+            )
+            assert len(periods) == 20
+            for idx, period in enumerate(periods):
+                _txn(db, seed_user, period, f"P{idx}", "Rent",
+                     f"{(idx + 1) * 100}.00")
+            # Open a hole at stored ordinal 10 by pushing 10..19 up one.
+            # Highest first, so no statement collides with
+            # uq_pay_periods_user_index.
+            for period in reversed(periods[10:]):
+                db.session.query(PayPeriod).filter_by(id=period.id).update(
+                    {"period_index": PayPeriod.period_index + 1},
+                )
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(periods[15]),
+            )
+
+            # Twelve occupied slots, ordinals 4..15, no blank anywhere.  The
+            # ``if`` is what lets this REPORT the walk's blank mid-chart slot
+            # rather than dying on it: a control that raises says less than
+            # one that prints both lists.
+            assert [
+                point.window.period_id if point.window else None
+                for point in report.series
+            ] == [period.id for period in periods[4:16]]
+            assert report.hero.spent_total == Decimal("1600.00")
+            assert report.hero.vs_prior.baseline == Decimal("1500.00")
+            assert report.hero.vs_average.baseline == Decimal("1250.00")
+            assert report.hero.vs_average.delta == Decimal("350.00")
+
+    def test_another_owners_period_id_buys_no_bar_of_this_owners_money(
+        self, app, seed_user, second_user, seed_periods, db,
+    ):
+        """A FOREIGN period id resolves nothing, chips included.
+
+        The walk read the chosen id with an unscoped ``db.session.get``, so
+        another owner's period supplied an ordinal and THIS owner's paychecks
+        were listed beneath it: five bars of real money under a window whose
+        own total is ``None``, with both hero chips priced off them
+        (measured on the merge base: vs-prior ``$500.00``, vs-average
+        ``$300.00``, each at ``-100%``).  The calendar holds one owner's
+        periods, so the id now matches none and every slot is blank.
+
+        Unreachable from ``/analytics/spending``, which exposes only month
+        and year -- this pins the door rather than closing a live leak, and
+        it is the ownership case ``9999`` cannot make because an id belonging
+        to NOBODY takes the same branch as one belonging to someone else.
+        """
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=second_user["user"].id,
+                first_payday=date(2026, 1, 2),
+                num_periods=10,
+                cadence_days=14,
+            )
+            db.session.flush()
+            foreign = (
+                db.session.query(PayPeriod)
+                .filter_by(user_id=second_user["user"].id)
+                .order_by(PayPeriod.start_date)
+                .all()
+            )
+            for idx in range(5):
+                _txn(db, seed_user, seed_periods[idx], f"P{idx}", "Rent",
+                     f"{(idx + 1) * 100}.00")
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id,
+                SpendingWindow(window_type="pay_period",
+                               period_id=foreign[5].id),
+            )
+
+            assert [point.window for point in report.series[:-1]] == (
+                [None] * (_CHART_WINDOW_COUNT - 1)
+            )
+            assert report.series[-1].window.period_id == foreign[5].id
+            assert report.series[-1].total is None
+            assert report.hero.spent_total == Decimal("0")
+            assert report.hero.vs_prior.baseline is None
+            assert report.hero.vs_average.baseline is None
+            assert report.breakdown == [] and report.changes == []
+
+    def test_the_report_reads_pay_periods_exactly_once(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """A report reads one ``budget.pay_periods`` row set and hydrates none.
+
+        **Measured on the merge base at TWELVE statements for this fixture and
+        TWENTY-THREE on a clone of production**, and the difference is the
+        point: the retired walk's eleven ``db.session.get`` calls issued no
+        statement whenever the chosen window's own rows had already hydrated
+        that period, and eleven statements when it had no rows to do so (the
+        identity map holds weak references).  Either way the eleven
+        ``period_index`` queries beside them always ran.
+
+        **The two assertions catch different things and neither is redundant**
+        (mutation testing of this step measured the gap).  A statement count
+        alone is order-dependent and JOIN-blind: nine per-bar
+        ``db.session.get`` calls placed AFTER the row loads emit no statement,
+        and an eager load renders as ``LEFT OUTER JOIN budget.pay_periods``
+        inside the transactions query, which the capture predicate cannot see.
+        The identity map sees both -- a report that resolves a paycheck any
+        way at all leaves the ORM entity behind, and this path is meant to
+        leave none, because the calendar is loaded as a column tuple.
+
+        ONE statement is the count for an owner with a ``budget.pay_schedule``
+        row, which every owner a live door creates has had since plan step
+        X-ad-a.  A legacy owner without one (plan finding **P8**) reads TWO,
+        because ``pay_schedule_service.resolve_cadence`` infers the cadence
+        from a second ``budget.pay_periods`` query -- one that C4 deletes with
+        the column it orders by.  ``seed_user`` has the row.
+        """
+        with app.app_context():
+            for idx in range(10):
+                _txn(db, seed_user, seed_periods[idx], f"P{idx}", "Rent",
+                     "100.00")
+            db.session.commit()
+            with _pay_period_selects(db.engine) as selects, \
+                    _pay_periods_hydrated() as hydrated:
+                compute_spending_report(
+                    seed_user["user"].id, _pp_window(seed_periods[9]),
+                )
+
+            assert len(selects) == 1, "\n".join(selects)
+            # The one surviving read may not be an ORDINAL search: C4 drops
+            # that column, and ``_loader.calendar_for`` selects id + start_date
+            # precisely so it already runs against the schema C4 leaves.
+            assert "period_index" not in selects[0]
+            assert hydrated == [], (
+                f"the report hydrated {len(hydrated)} PayPeriod row(s); "
+                f"it resolves every paycheck from the calendar it already "
+                f"holds, which is loaded as a column tuple"
+            )
+
+    def test_no_settled_expense_query_loads_a_pay_period(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Neither window query hydrates ``Transaction.pay_period``.
+
+        The other half of the guard above, and it needs its own case because
+        the statement counter cannot see this one: an eager load rides INSIDE
+        the transactions query as a ``JOIN budget.pay_periods``, so re-adding
+        one emits no statement of its own and moves no count.  What it does
+        move is the identity map, which is what this asserts.
+
+        Nothing on this read path asks a row which paycheck it sits in, so
+        both queries were carrying a per-row ``PayPeriod`` for nobody.  The
+        span query keeps its JOIN -- the COALESCE attribution filter runs on
+        it -- and drops only the hydration.
+        """
+        with app.app_context():
+            _txn(db, seed_user, seed_periods[0], "A", "Rent", "100.00")
+            _txn(db, seed_user, seed_periods[1], "B", "Rent", "200.00")
+            db.session.commit()
+
+            with _pay_periods_hydrated() as hydrated:
+                by_period = spending_analysis.query_settled_expenses(
+                    seed_user["scenario"].id,
+                    [seed_periods[0].id, seed_periods[1].id],
+                    seed_user["account"].id,
+                )
+                by_span = spending_analysis.query_settled_expenses_in_span(
+                    seed_user["scenario"].id, seed_user["account"].id,
+                    seed_user["user"].id,
+                    seed_periods[0].start_date, seed_periods[1].end_date,
+                )
+
+            # Both queries must actually return rows, or "nothing was
+            # hydrated" is true of a query that loaded nothing at all.
+            assert len(by_period) == 2 and len(by_span) == 2
+            assert hydrated == [], (
+                "a settled-expense query hydrated a PayPeriod, and no "
+                "consumer of either query reads txn.pay_period"
+            )
 
 
 # ── Trailing series (the chart / hero one-source identity) ──────────
@@ -506,6 +1005,38 @@ class TestSeries:
             assert series[9].total == Decimal("1200.00")
             assert series[10].total == Decimal("0")   # Feb: tracked, no spend
             assert series[11].total == Decimal("300.00")  # March (viewed)
+
+    def test_year_window_series_end_to_end(self, app, seed_user,
+                                           seed_periods, db):
+        """A YEAR window produces a full twelve-point series through the report.
+
+        The arm had no end-to-end case: the only ``window_type="year"`` outside
+        ``tests/manual/`` was the unit test on ``_series_windows``.  It is
+        unrenderable by the S-P1 deferral (the route exposes month only) and
+        computable, which is exactly the pair that goes untested by accident.
+
+        ``seed_periods`` spans 2026-01-02..2026-05-21 with 1200 spent in
+        January, so 2026 totals 1200.00, 2025 and earlier overlap no pay
+        period and are ``None``.
+        """
+        with app.app_context():
+            _txn(db, seed_user, seed_periods[0], "JanRent", "Rent", "1200.00",
+                 due_date=date(2026, 1, 10))
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id,
+                SpendingWindow(window_type="year", year=2026),
+            )
+
+            assert [p.window.year for p in report.series] == list(
+                range(2015, 2027)
+            )
+            assert report.series[-1].total == Decimal("1200.00")
+            assert [p.total for p in report.series[:-1]] == [None] * 11
+            assert report.hero.spent_total == Decimal("1200.00")
+            assert report.hero.vs_prior.baseline is None
+            assert report.hero.vs_average.baseline is None
 
     def test_hero_baselines_read_the_series(self, app, seed_user,
                                             seed_periods, db):

@@ -124,9 +124,13 @@ class SeriesPoint:
     """One bar of the hero chart's trailing same-type window series.
 
     Attributes:
-        window: The window this point covers, or ``None`` when the step
-            walked past the user's pay-period history (a ``"pay_period"``
-            window with no earlier period; calendar windows always shift).
+        window: The window this point covers, or ``None`` when the series
+            names none for that slot -- either it lies before the user's
+            pay-period history, or the chosen ``period_id`` matched none of
+            their periods (:func:`._window._series_windows`).  Only a
+            ``"pay_period"`` series can hold one, since a ``"month"`` /
+            ``"year"`` series is calendar arithmetic and always names a
+            window.
         total: The window's settled spend, or ``None`` when the window
             overlaps no pay period (before the user's history) -- the chart
             renders such a point as a baseline tick, and the vs-average
@@ -328,8 +332,11 @@ class _ScopeIds:
 
     One cohesive concept -- WHOSE data a window reads (the owner, the checking
     account, the baseline scenario) and the pay CALENDAR they resolve against,
-    which rides here because ``_build_series`` resolves thirteen windows and it
-    varies with none -- thirteen derivations of one value otherwise (C2-f1).
+    which rides here because one report resolves TWELVE windows against it and
+    it varies with none of them -- twelve derivations of one value otherwise
+    (C2-f1).  A ``"pay_period"`` report asks it twice more, for the chart's own
+    run of preceding paychecks (:func:`._window._series_windows`, C2-f3d);
+    those two reads replaced eleven ``budget.pay_periods`` QUERIES.
     """
 
     user_id: int
