@@ -652,16 +652,11 @@ nothing; that record names all three hashes, and says why `R-F1` stayed.
 - [x] **R-F10 -- delete the gap machinery.** `fe365de1`. Closed **F-10**; the LOSS survives as
       `pay_calendar:P16`. Account archived to `historical/recurrence_as_built_2026-08-15.md`.
 
-- [ ] **R-F12 -- One `PeriodCalendar`, not three period-containing searches** (finding F-12).
-
-**RULED 2026-08-10, and this step's own count was wrong**: an AST census found **SIX**
-implementations, not three. The third's fallback (`loan_ledger/_visible.py:150`) is a legitimate
-second QUESTION and gets its own named method on the one value -- proven equivalent over 1,800
-(shape, day) pairs to "the latest period starting on or before the day, else the earliest", which is
-the exact mirror of the `period_starting_on_or_after` this arc's own `PeriodCalendar` already
-carries. **DELIVERED by the pay-calendar arc's C2**, now DECOMPOSED into `C2-a`..`C2-f`; `C2-b` is
-the leaf that retires `PeriodCalendar` and `SchedulePeriod` into it, and the arc's 430-shape
-baseline must stay byte-identical across it. **Tick this box with C2's LAST leaf.**
+- [x] **R-F12 -- one `PeriodCalendar`, not three period-containing searches.** `4f134bf4`. Closed
+      **F-12**. Delivered by the pay-calendar arc's `C2` -- one commit under three names, the third
+      being `balance:X-l` -- and this arc's `PeriodCalendar`, `SchedulePeriod` and
+      `RecurrenceScheduleError` were DELETED into it at `C2-b2`.
+      **The count this entry stated was wrong**: an AST census found SIX implementations, not three.
 
 - [x] **R-F16 -- ONE producer for "how often am I paid".** `4258ce28`, migration `f2b7c40d918e`.
       `salary_profiles.pay_periods_per_year` dropped; the engine takes a `PayrollBasis` binding a

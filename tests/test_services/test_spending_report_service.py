@@ -21,7 +21,6 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from sqlalchemy import event
-from sqlalchemy.orm import Session
 
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
@@ -53,7 +52,14 @@ from app.services.spending_report_service._window import (
     _series_windows,
     _shift_month,
 )
-from tests._test_helpers import default_settle_day, settlement_columns
+from tests._test_helpers import (
+    default_settle_day,
+    # ``pay_periods_hydrated`` moved to the shared helper module at plan step
+    # C2-f3e, when a second suite needed the same firing control.  Its sibling
+    # below did not: it still has one consumer, and this suite is it.
+    pay_periods_hydrated,
+    settlement_columns,
+)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -111,44 +117,30 @@ def _pp_window(period):
 
 
 @contextmanager
-def _pay_periods_hydrated():
-    """Count the ``PayPeriod`` ORM entities LOADED inside this block.
-
-    The measurement a statement count cannot make: an eager load rides inside
-    another query as a JOIN and issues no statement of its own, and a
-    ``db.session.get`` served from the identity map issues none either.  Both
-    hydrate an entity, which is what this counts.
-
-    **The event and not the identity map**, because the map holds WEAK
-    references: a probe that counted survivors after the call read zero for a
-    producer that had hydrated twelve, since nothing outside the producer
-    holds a ``Transaction`` to keep its ``pay_period`` back-reference alive.
-    That was measured -- a first cut of this helper read the map and could not
-    fire.  ``loaded_as_persistent`` fires per load and cannot be collected
-    away.
-    """
-    loaded = []
-
-    def _record(_session, instance):
-        if isinstance(instance, PayPeriod):
-            loaded.append(instance)
-
-    event.listen(Session, "loaded_as_persistent", _record)
-    try:
-        yield loaded
-    finally:
-        event.remove(Session, "loaded_as_persistent", _record)
-
-
-@contextmanager
 def _pay_period_selects(engine):
-    """Capture every statement this block SELECTs from ``budget.pay_periods``.
+    """Capture every statement this block SELECTs FROM ``budget.pay_periods``.
 
     The engine rather than the session, because what is being counted is
     round trips to the database: a ``db.session.get`` served out of the
     identity map issues none, which is exactly how the retired ordinal
     walk's own row load stayed invisible while it ran eleven queries beside
     it (plan step C2-f3d).
+
+    **It matches the FROM clause and so a JOIN is invisible to it**, which is
+    deliberate and was measured at plan step C2-f3e: a query JOINing the table
+    is captured as ZERO statements even while it hydrates ten ``PayPeriod``
+    entities.  That is the right scope for the question here -- the assertions
+    below count reads of the table as a SUBJECT, and
+    ``query_settled_expenses_in_span`` KEEPS its join for the COALESCE
+    attribution filter -- but it means this probe cannot grade a
+    join-filtered read, and :func:`~tests._test_helpers.pay_periods_hydrated`
+    beside it is what sees those.
+
+    Args:
+        engine: The SQLAlchemy engine to listen on, normally ``db.engine``.
+
+    Yields:
+        The list of flattened SQL statements, appended to as the block runs.
     """
     captured = []
 
@@ -886,7 +878,7 @@ class TestTheChartReadsTheDerivedOrdinal:
                      "100.00")
             db.session.commit()
             with _pay_period_selects(db.engine) as selects, \
-                    _pay_periods_hydrated() as hydrated:
+                    pay_periods_hydrated() as hydrated:
                 compute_spending_report(
                     seed_user["user"].id, _pp_window(seed_periods[9]),
                 )
@@ -923,7 +915,7 @@ class TestTheChartReadsTheDerivedOrdinal:
             _txn(db, seed_user, seed_periods[1], "B", "Rent", "200.00")
             db.session.commit()
 
-            with _pay_periods_hydrated() as hydrated:
+            with pay_periods_hydrated() as hydrated:
                 by_period = spending_analysis.query_settled_expenses(
                     seed_user["scenario"].id,
                     [seed_periods[0].id, seed_periods[1].id],

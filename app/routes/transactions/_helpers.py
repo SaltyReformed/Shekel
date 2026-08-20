@@ -455,7 +455,14 @@ def _resolve_owned_fks(specs):
     Centralizes the IDOR probe shared by the transaction create routes
     (:func:`create_inline`, :func:`create_transaction`) and the grid
     form-partial routes (:func:`get_quick_create`,
-    :func:`get_full_create`, :func:`get_empty_cell`).  For each
+    :func:`get_full_create`, :func:`get_empty_cell`, which reach it through
+    their one shared ``_resolve_grid_cell``) and the PATCH door's own
+    :func:`_verify_owned_fks_in_update`.  **A ``PayPeriod`` spec no longer
+    arrives from the three form-partial routes**: plan step C2-f3e answers the
+    period from the owner's derived pay calendar, where an id another user
+    holds is simply absent and there is no ``user_id`` comparison to write.
+    The other three call sites still pass one, and whether they should is
+    ledger row **P75**'s question rather than this docstring's.  For each
     ``(model, obj_id, not_found_msg)`` spec the row is fetched by
     primary key and confirmed to belong to ``current_user``; a missing
     row and a cross-user row return the identical 404 so an attacker

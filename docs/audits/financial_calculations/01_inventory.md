@@ -1,5 +1,14 @@
 # Phase 1: Calculation Surface Inventory
 
+> **A SNAPSHOT, not a statement of the current code.** Every row carries the LINE NUMBERS and the
+> render contract of the session that wrote it, and the sessions ran May-June 2026. Many are now
+> wrong in both directions -- `transactions.get_quick_create` and `get_full_create` no longer
+> resolve a `PayPeriod` or render a `period` (pay-calendar plan step **C2-f3e**, 2026-08-20);
+> `carry_forward_preview` no longer calls `pay_period_service.get_current_period`, which
+> **C2-f3a** deleted. Cite this file for what the audit FOUND, never for what the app does; the
+> code as committed is the source of truth. Noted rather than patched at C2-f3e, because
+> correcting two rows of a table that lags throughout would imply the rest does not.
+
 Layer-by-layer enumeration. Each Phase 1 session appends one layer. Reader should be able to grep
 this file by concept token and find every location that produces or consumes that concept.
 

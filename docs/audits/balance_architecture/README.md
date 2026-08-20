@@ -737,37 +737,12 @@ hides.
   `ValidationError` handler so a refused write 500s on extend and unarchive. The money consequence
   is on a balance screen: a shadow generated past a bound that later moves EARLIER keeps its
   checking-side expense leg.
-* [ ] **X-l** `feat(periods): the pay calendar answers any date` -- closes **N-82**, **N-128**, and
-  **N-79**'s surviving far half. **The value type this needs already EXISTS** (noted 2026-08-08):
-  the recurrence arc built `app.services.recurrence.PeriodCalendar`, a frozen schedule whose
-  ordering invariant is CHECKED in `__post_init__` and which already answers `opening_bound`,
-  `horizon`, `period_containing`, `period_starting_on_or_after` and `earliest_start_in_month`.
-  **The app now holds THREE implementations of "which pay period contains this date"** -- that
-  one, `balance_at/_cash_periods.py:310` (a byte-similar bisect) and
-  `loan_ledger/_visible.py:117` (a linear scan whose fallback the other two deliberately
-  refuse). That is the recurrence arc's finding **F-12**, owned there by step **R-F12**, and
-  the two steps must be SEQUENCED TOGETHER or the fourth answer gets built here.
-  **Since 2026-08-08 it is THREE steps, not two: this step IS the pay-calendar arc's `C2`**
-  (`docs/plans/implementation_plan_pay_calendar.md`), which supplies the total function this row
-  asks for by DERIVING the calendar from the paydays, and `C2` adds one requirement this row did not
-  have -- **row P14: the calendar may not be constructed from a partial window** (the sibling shape
-  is measured in-repo at `$150,000.00`, `loan_ledger/_visible.py:78-95`).
-  **`C2` was RULED on three forks 2026-08-10 and DECOMPOSED into `C2-a`..`C2-f`, so this box ticks
-  with its LAST leaf rather than with one commit.** The census that sized it corrected a claim
-  BOTH other documents carried: **SIX** implementations of "which paycheck covers this day", not
-  three, across **66** `app/` call sites. The specifications are the pay-calendar document's
-  section 4; nothing about them is restated here. **Root, and it is this arc's own disease on the other axis: the pay
-  calendar is a PARTIAL function.** `get_all_periods` returns the MATERIALIZED rows and nothing
-  else, so past the last row every consumer improvises and the improvisations disagree -- precisely
-  the shape Section 1 describes and Section 3 deletes with a total fold. Measured: past the horizon
-  the modelled replay's ACCRUAL tier keeps running while its CONTRIBUTION tier stops (Empower
-  **+$2,501.92**, Property **+$5,427.07** at six months out) -- a HALF model with nothing on screen
-  saying so; and `growth_engine._project_one_period` looks a `ContributionRecord` up by
-  `period.start_date`, so past the real calendar every period falls back to the flat
-  `periodic_contribution` (ruling **R-AF** closed the NEAR half for free by landing the synthetic
-  axis on the real one). **N-128 is in the FOLD, not above it**: `_cash_sums` and `_assertion_sums`
-  skip a fact whose day no period can place while `_period_balances` keeps it, so a hole breaks
-  R-K's reconciliation identity (`-$140.63` on the gapped clone).
+* [x] **X-l -- the pay calendar answers any date.** `4f134bf4`. ONE step under THREE names: this
+  row, `pay_calendar:C2` and `recurrence:R-F12`. The calendar is DERIVED from the owner's paydays
+  and is total past the last stored one, so no consumer improvises; the specifications and the
+  as-built are the pay-calendar document's section 4. Closed **N-128** (at `C2-c`). **It did NOT
+  close N-82 or N-79's far half and this row claimed it would**, so both were re-pointed at the
+  tick -- N-79 to **X-m**, N-82 to a stated developer decision.
 * [ ] **X-m** `refactor(growth): the projection engine takes its axis, not its boundaries` -- closes
   **N-86**. **Root: `growth_engine.project_balance` takes a derived boundary as an ARGUMENT its
   caller must compute to match the window the caller also passes**, and nothing checks that they
@@ -841,7 +816,7 @@ hides.
   that is precisely the form the first ruling specified and measurement rejected. The instrument is
   an open question the step's trace decides, and it must be shown FIRING on a planted defect.
 * [ ] **X-ah** `fix(routes): a query-string id is parsed like every other id` -- closes **N-142**.
-  The one submitted-id surface X-ae did not convert: 42 `request.args.get(..., type=int)` call sites
+  The one submitted-id surface X-ae did not convert: 34 `request.args.get(..., type=int)` call sites
   where Werkzeug catches the `ValueError` (so no crash) but the coercion is `int()` (so `'١٠٦'` is
   106, `' 2026 '` is 2026, `'1_0'` is 10). **It needs a per-site ruling, which is why it is a step**:
   the path parameters were all row ids and the schema fields all row ids, so each took one blanket
@@ -849,6 +824,15 @@ hides.
   `offset`, `periods` and `show_all` are not, and `offset=0` / `show_all=0` are meaningful, so a
   blanket `parse_row_id` would silently refuse them. Owes a second small rule in `digit_strings`:
   ASCII-strict, canonical, but admitting zero.
+  **The count is DERIVED and here is how, because it moves and three other sentences state it.**
+  It is an AST census over `app/` -- a `Call` whose func is a `.get` attribute on a receiver whose
+  name ends in `args`, carrying a `type=int` keyword -- and a line grep is not the same thing: a
+  grep counts docstring mentions and continuation lines and misses `grid/page.py`'s local
+  `request_args`, which is how a review of `pay_calendar:C2-f3e` re-measured it at 40 and was
+  wrong in both directions at once. It read **42** until that step and reads **34** after it, which
+  collapsed twelve sites in `routes/transactions/forms.py` into four; `url_converters.py`,
+  `routes/transfers/_helpers.py` (which counts its own `request.form` site, so it says 35) and
+  `steps.md` state the same number and were moved with it.
 * [ ] **X-ao** `feat(plan-gate): a ruling id resolves to one ruling` -- closes **N-217**. The
   registries are graded on findings, on steps and on the graph between them; the arc documents'
   RULINGS tables are not parsed at all, and the corpus carried a LIVE collision -- two sessions

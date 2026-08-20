@@ -138,10 +138,14 @@ class StepRow:
         **Declared, never derived, and that is the whole design.**  Rule 2 puts
         a decomposition in the id, so deriving the relation by longest id
         prefix is the obvious implementation -- and it is wrong on this corpus:
-        ``R-F1`` is a string prefix of ``R-F10``, ``R-F12`` and ``R-F13``,
-        which are unrelated findings-steps, and ``R-F1`` is SHIPPED while all
-        three are open.  A derived arm would have reported three false
-        failures on its first run.
+        ``pay_calendar:C1`` is SHIPPED and is a string prefix of ``C10``,
+        ``C11`` and ``C12``, three unrelated OPEN steps, so a derived arm
+        reports three false failures.  **The worked example was the recurrence
+        arc's ``R-F1`` against ``R-F10`` / ``R-F12`` / ``R-F13`` until
+        2026-08-20**, and it went stale in both directions -- R-F13 is not in
+        the index at all and the other two have SHIPPED -- which is why
+        :func:`_staging.a_prefix_trap` now derives the specimen instead of
+        three docstrings naming one.
 
         Consulting only DECLARED parents removes that class by construction
         rather than by an exception list -- which is finding **N-147**'s defect
