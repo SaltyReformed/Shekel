@@ -19,6 +19,7 @@ from app.enums import (
     TxnTypeEnum,
 )
 from app.extensions import db
+from app.models.merchant_destination import MerchantDestination
 from app.models.statement_import import BankStatementLine, StatementImport
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
@@ -161,7 +162,7 @@ def an_import(seed_user, account=None):
 def a_bank_line(
     seed_user, statement, *, amount="-180.00", posted_on=None,
     description="ACH DEBIT DUKEENERGY", sequence_in_group=0,
-    transaction_on=None,
+    transaction_on=None, merchant=None,
 ):
     """Stage and return one recorded bank line under *statement*.
 
@@ -178,6 +179,18 @@ def a_bank_line(
             (179 of 361 lines) and because a fixture that always states one
             would never exercise :attr:`~._offers.BankLine.happened_on`'s
             fallback.
+        merchant: What the bank NAMES the merchant, or ``None`` for a source
+            naming none -- which is the DEFAULT, and it is a fixture decision
+            worth stating.  **It is NOT derived from *description* here.**  A
+            builder that re-ran the adapter's own parse would move with it, so
+            a change to that parse would shift the fixture and the assertion
+            together and grade nothing; the parse is graded where it belongs,
+            against real CSV bytes, in
+            ``tests/test_services/test_statement_import/test_secu_csv.py``.
+            What these builders state is the recorded FACT.  ``None`` is the
+            default because it is the state every guard here has to survive: a
+            line with no merchant joins no destination policy, and the label
+            readers fall back to *description*.
 
     Returns:
         The staged
@@ -191,11 +204,51 @@ def a_bank_line(
         transaction_on=transaction_on,
         amount=Decimal(amount),
         description=description,
+        merchant=merchant,
         sequence_in_group=sequence_in_group,
     )
     db.session.add(line)
     db.session.flush()
     return line
+
+
+def a_policy(
+    seed_user, merchant, *, template_id=None, envelope_name=None,
+    category_id=None, account=None,
+):
+    """Stage and return one stated merchant destination.
+
+    Built through the ORM like everything else here, so a broken
+    ``state_policies`` cannot also break the fixture a reader test would have
+    caught it with.
+
+    Args:
+        seed_user: The seeded user bundle.
+        merchant: The bank's own merchant string, which is the key.
+        template_id: The recurring definition to file into, for the TEMPLATE
+            answer.
+        envelope_name: What to call the envelope to create, for the
+            NEW ENVELOPE answer.
+        category_id: The category to create it under, likewise.
+        account: The account it governs; the seeded checking one by default.
+
+    Returns:
+        The staged
+        :class:`~app.models.merchant_destination.MerchantDestination`.  With no
+        arm given it is the NEVER answer, which is a row with all three columns
+        NULL rather than the absence of a row.
+    """
+    row = MerchantDestination(
+        user_id=seed_user["user"].id,
+        account_id=(account or seed_user["account"]).id,
+        merchant=merchant,
+        template_id=template_id,
+        envelope_name=envelope_name,
+        category_id=category_id,
+    )
+    db.session.add(row)
+    db.session.flush()
+    return row
 
 
 def a_scope(seed_user, account=None):

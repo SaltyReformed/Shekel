@@ -72,21 +72,28 @@ from app.routes.accounts._statement_doors import (
 from app.routes.accounts._cash_page import load_cash_account_or_404
 from app.schemas.validation import form_payload
 from app.schemas.validation.statements import (
+    NEVER,
     NEW_ENVELOPE,
+    NOT_SAID,
+    MerchantPolicyBatchSchema,
     StatementBatchSchema,
     StatementMatchReleaseSchema,
     batch_payload,
+    policy_payload,
 )
 from app.services.category_service import list_active_categories
 from app.services.statement_match import (
     MatchSubmission,
     NewEnvelope,
+    PolicyAnswer,
+    PolicyStatement,
     PurchaseCreation,
     ReviewedBatch,
     ReviewScope,
     apply_reviewed,
     release_match,
     review_set,
+    state_policies,
 )
 from app.utils.auth_helpers import require_owner
 from app.utils.error_fragments import designed_error
@@ -101,6 +108,7 @@ _logger = logging.getLogger(__name__)
 #: One schema instance each, constructed at import like every sibling's.
 _batch_schema = StatementBatchSchema()
 _release_schema = StatementMatchReleaseSchema()
+_policy_schema = MerchantPolicyBatchSchema()
 
 #: The partial both the page and the batch POST render.  Extracted at plan step
 #: X-f6a-3c-2 so the answer to "apply this pass" is the SCREEN carrying its own
@@ -179,7 +187,9 @@ def _refusal_sentence(errors) -> str:
     return "; ".join(parts)
 
 
-def _review_context(account, scope, outcome=None, error=None) -> dict:
+def _review_context(
+    account, scope, outcome=None, error=None, policies=None,
+) -> dict:
     """Assemble what the review body renders, for the page and for the POST.
 
     ONE builder, because the POST's answer IS the screen: a second assembly
@@ -198,6 +208,12 @@ def _review_context(account, scope, outcome=None, error=None) -> dict:
         error: A sentence explaining why nothing was applied at all, or
             ``None``.  Distinct from a refused ITEM: this one means the
             submission never reached the door.
+        policies: The :class:`~app.services.statement_match.StatedPolicies` a
+            pass over the merchant section produced, or ``None``.  A SEPARATE
+            receipt from *outcome* because it reports a separate act: stating
+            where a merchant goes moves no money, and folding the two would put
+            "3 recorded" beside "2 merchants answered for" under one heading
+            that could only be true of one of them.
 
     Returns:
         The template context.
@@ -213,6 +229,7 @@ def _review_context(account, scope, outcome=None, error=None) -> dict:
         "categories": list_active_categories(current_user.id),
         "outcome": outcome,
         "error": error,
+        "policies": policies,
     }
 
 
@@ -388,6 +405,125 @@ def apply_statement_review(account_id):
             account, ReviewScope.build(current_user.id, account_id),
             outcome=outcome,
         ),
+    )
+
+
+def _submitted_policies(submitted) -> "tuple[PolicyStatement, ...]":
+    """Return the loaded payload as the statements the service records.
+
+    **The wire's four values become the service's three answers plus a
+    withdrawal**, and the mapping happens HERE because it is a fact about the
+    FORM rather than about the domain: the service's
+    :class:`~app.services.statement_match.PolicyAnswer` has no member for "not
+    said", since not having said something is the absence of a row.
+
+    Args:
+        submitted: What :class:`~app.schemas.validation.statements
+            .MerchantPolicyBatchSchema` loaded.
+
+    Returns:
+        One :class:`~app.services.statement_match.PolicyStatement` per merchant
+        the section rendered, in the order it rendered them.
+    """
+    statements = []
+    for item in submitted["policies"]:
+        answer = item["answer"]
+        if answer == NOT_SAID:
+            statements.append(PolicyStatement(
+                merchant=item["merchant"], answer=None,
+            ))
+        elif answer == NEVER:
+            statements.append(PolicyStatement(
+                merchant=item["merchant"], answer=PolicyAnswer.NEVER,
+            ))
+        elif answer == NEW_ENVELOPE:
+            statements.append(PolicyStatement(
+                merchant=item["merchant"],
+                answer=PolicyAnswer.NEW_ENVELOPE,
+                envelope_name=item["envelope_name"],
+                category_id=item["category_id"],
+            ))
+        else:
+            statements.append(PolicyStatement(
+                merchant=item["merchant"], answer=PolicyAnswer.TEMPLATE,
+                template_id=answer,
+            ))
+    return tuple(statements)
+
+
+@accounts_bp.route(
+    "/accounts/<int:account_id>/statements/review/merchants",
+    methods=["POST"],
+)
+@login_required
+@require_owner
+def state_merchant_destinations(account_id):
+    """Record where this owner says each merchant's spending goes.
+
+    **It MOVES NO MONEY and can move none.**  A policy is read to SUGGEST a
+    destination on the review screen below; the only thing that records a
+    purchase is an explicit destination submitted for one specific line, which
+    is what keeps ruling **R-FZ**'s *the destination select IS the tick* whole.
+    That is also why this is its own door rather than a third item kind inside
+    the batch: two acts with two consequences, one of which is money and one of
+    which is not.
+
+    **It derives the scope ONCE, before the write**, and reuses it for the
+    answer and for every refusal -- see the comment at the derivation for why
+    both the count and the moment matter.
+
+    Args:
+        account_id: The account being reviewed.
+
+    Returns:
+        The re-rendered review body carrying what was recorded, at 200; or the
+        same body carrying one refusal sentence at 400, marked as a designed
+        fragment so htmx swaps it.
+    """
+    account = load_cash_account_or_404(account_id)
+
+    # ONE derivation, built BEFORE the write, and both halves of that are the
+    # point.  **Once**, because every arm below renders the screen and
+    # ``_refused``'s own docstring records what re-deriving costs: on the
+    # database arm, the connection that produced the first error very likely
+    # produces a second, which escapes as an unhandled 500 that htmx will not
+    # swap -- so the owner presses Save and sees nothing at all.  **Before**,
+    # because ``ReviewScope.build`` raises ``PayCalendarError`` loud by design,
+    # and deriving after the commit would report failure for a write that had
+    # already landed.
+    #
+    # **It stays valid for the answer**, which a scope built before a MONEY
+    # pass would not: this door writes exactly one table,
+    # ``budget.merchant_destinations``, through the ORM and calls no service --
+    # so nothing it can do touches the calendar, the candidates or their
+    # prices, and ``review_set`` re-reads the policies themselves.  That is a
+    # closed argument over one table rather than an enumeration over an open
+    # set of writers, which is the shape adversarial review measured false at
+    # X-f6a-3c-2.
+    scope = ReviewScope.build(current_user.id, account_id)
+
+    payload = policy_payload(request.form)
+    errors = _policy_schema.validate(payload)
+    if errors:
+        return _refused(account, scope, _refusal_sentence(errors))
+    statements = _submitted_policies(_policy_schema.load(payload))
+
+    try:
+        recorded = state_policies(statements, current_user.id, account_id)
+        db.session.commit()
+    except ValidationError as exc:
+        db.session.rollback()
+        return _refused(account, scope, str(exc))
+    except SQLAlchemyError:
+        db.session.rollback()
+        _logger.exception(
+            "user_id=%d failed to record merchant destinations on account %d",
+            current_user.id, account_id,
+        )
+        return _refused(account, scope, _DB_ERROR_MESSAGE)
+
+    return render_template(
+        _BODY, **_review_context(account, scope, policies=recorded),
     )
 
 

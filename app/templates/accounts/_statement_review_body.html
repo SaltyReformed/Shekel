@@ -21,7 +21,9 @@
    untouched control writes money.
 
    Context: account, review (ReviewSet), categories, outcome (BatchOutcome or
-   None), error (a sentence or None). #}
+   None), error (a sentence or None), policies (StatedPolicies or None -- what
+   a pass over the merchant section recorded, which is a SEPARATE receipt
+   because it is a separate act that moves no money). #}
 
 <div id="statement-review-body">
 
@@ -116,6 +118,204 @@
     </div>
     {% endif %}
   </div>
+  {% endif %}
+
+  {# ── What the last policy pass recorded ───────────────────────────────── #}
+  {% if policies %}
+  <div class="card mb-3 border-{% if policies.refused %}warning{% else %}success{% endif %}">
+    <div class="card-header">
+      <i class="bi bi-signpost-split"></i> Where your merchants go
+    </div>
+    <div class="card-body">
+      {% if policies.stated %}
+      <ul class="mb-0 small">
+        {% for said in policies.stated %}
+        <li class="mb-1">{{ said }}</li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="mb-0 text-body-secondary">
+        Nothing changed -- every answer was already what you had said.
+      </p>
+      {% endif %}
+      {% if policies.unchanged_count %}
+      {# The DENOMINATOR.  The section submits every merchant it renders, so
+         most of a real pass is no-ops; "2 recorded" with nothing beside it
+         would read as though the other 19 had failed. #}
+      <p class="mt-2 mb-0 small text-body-secondary">
+        {{ policies.unchanged_count }} other merchant(s) were already answered
+        for and were left as they are. This changed no money.
+      </p>
+      {% else %}
+      <p class="mt-2 mb-0 small text-body-secondary">This changed no money.</p>
+      {% endif %}
+    </div>
+    {% if policies.refused %}
+    <div class="card-body border-top">
+      <p class="fw-semibold mb-2">These were not recorded:</p>
+      <ul class="mb-0 small">
+        {% for reason in policies.refused %}
+        <li class="mb-1">{{ reason }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {# ── Where your merchants go ──────────────────────────────────────────── #}
+  {# THE POLICY CONTROL, plan step bank_import:X-f6a-3d.
+
+     The screen's shape matching the model's.  The leftover list below asks 91
+     questions on the developer's own statement and the real question is asked
+     21 times -- there are 21 distinct merchants behind those 91 lines -- so a
+     screen with 91 selects and no per-merchant control renders a decision
+     nobody actually makes one line at a time.
+
+     IT IS ITS OWN FORM POSTING TO ITS OWN DOOR, and that is the ruling of
+     2026-08-19 rather than a layout choice.  Saying where a merchant goes
+     MOVES NO MONEY: it is read to SUGGEST a destination on each line below,
+     and the only thing that records a purchase is that line's own select,
+     which still opens on "leave this line alone".  A remembered destination
+     arriving already selected would be a default pointing at money, which is
+     exactly what ruling R-FZ removed when it found 78 of 91 lines defaulting
+     onto envelopes closed at a fixed figure.
+
+     An answer is restated or withdrawn at any time -- "I have not said"
+     deletes it -- because a policy is a statement about today's budget rather
+     than a judgement. #}
+  {% if review.merchants.merchants %}
+  <form method="post"
+        action="{{ url_for('accounts.state_merchant_destinations', account_id=account.id) }}"
+        hx-post="{{ url_for('accounts.state_merchant_destinations', account_id=account.id) }}"
+        hx-target="#statement-review-body"
+        hx-swap="outerHTML"
+        hx-disabled-elt="find button[type=submit]">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="card mb-3">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-signpost-split"></i> Where your merchants go</span>
+        <span class="badge text-bg-secondary">
+          {{ review.merchants.answered_count }} of {{ review.merchants.merchants | length }} answered
+        </span>
+      </div>
+      <div class="card-body">
+        <p class="text-body-secondary small mb-0">
+          Say this once per merchant and the list below fills itself in on every
+          later statement. <strong>Saving this moves no money</strong> -- it only
+          suggests. Nothing is recorded until you tick it below and press Apply.
+        </p>
+        <p class="text-body-secondary small mb-0">
+          Pick a recurring envelope and the import finds whichever one your pay
+          period holds, so the answer keeps working next month. Pick
+          <em>never a purchase</em> for anything your budget already holds in
+          another shape -- a card payment your app records as payback rows would
+          be counted twice if you recorded it here.
+        </p>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0">
+          <thead>
+            <tr>
+              <th scope="col">Merchant</th>
+              <th scope="col" class="text-end">Waiting</th>
+              <th scope="col">Goes in</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in review.merchants.merchants %}
+            {% set idx = loop.index0 %}
+            <tr>
+              <td>
+                <span class="fw-semibold">{{ row.merchant }}</span>
+                <input type="hidden" name="policy_merchant-{{ idx }}"
+                       value="{{ row.merchant }}">
+              </td>
+              <td class="text-end text-nowrap">
+                {% if row.line_count %}
+                {{ row.line_count }} line(s)
+                <div class="small text-body-secondary">{{ money(row.total) }}</div>
+                {% else %}
+                <span class="small text-body-secondary">none right now</span>
+                {% endif %}
+              </td>
+              <td>
+                <div class="row g-2 align-items-center" data-policy-row>
+                  <div class="col-12 col-lg-5">
+                    <select class="form-select form-select-sm"
+                            name="policy-{{ idx }}" data-policy
+                            aria-label="Where {{ row.merchant }} goes">
+                      <option value="unset"{% if not row.policy %} selected{% endif %}>-- I have not said --</option>
+                      {% for template_id, template_name in review.merchants.templates %}
+                      <option value="t:{{ template_id }}"{% if row.policy and row.policy.template_id == template_id %} selected{% endif %}>
+                        {{ template_name }}
+                      </option>
+                      {% endfor %}
+                      {# A STORED answer whose template has stopped being
+                         offerable -- deactivated, or no longer an envelope --
+                         still has to be shown, because a select with no
+                         selected option displays and submits its FIRST, which
+                         is "I have not said": the screen would have reported a
+                         policy as unanswered and the next Save would have
+                         silently withdrawn it.  Rendered as its own option so
+                         the form round-trips it, and re-submitting it unchanged
+                         is a no-op rather than a refusal. #}
+                      {% if row.stale_template_label %}
+                      <option value="t:{{ row.policy.template_id }}" selected>
+                        {{ row.stale_template_label }} -- no longer offered
+                      </option>
+                      {% endif %}
+                      <option value="new"{% if row.policy and row.policy.is_new_envelope %} selected{% endif %}>-- a new envelope --</option>
+                      <option value="never"{% if row.policy and row.policy.is_never %} selected{% endif %}>-- never a purchase --</option>
+                    </select>
+                  </div>
+                  <div class="col-12 col-lg-4{% if not (row.policy and row.policy.is_new_envelope) %} d-none{% endif %}"
+                       data-policy-new-field>
+                    <input class="form-control form-control-sm" type="text"
+                           name="policy_name-{{ idx }}" maxlength="200"
+                           value="{{ row.policy.envelope_name if row.policy and row.policy.is_new_envelope else row.merchant }}"
+                           aria-label="Name for the envelope to create">
+                  </div>
+                  <div class="col-12 col-lg-3{% if not (row.policy and row.policy.is_new_envelope) %} d-none{% endif %}"
+                       data-policy-new-field>
+                    <select class="form-select form-select-sm"
+                            name="policy_category-{{ idx }}"
+                            aria-label="Category for the envelope to create">
+                      {# NO default, for the reason the create form's own
+                         category select has none: the category is what every
+                         spending report groups by, so an envelope filed under
+                         whichever one sorts first is a misclassification
+                         nobody chose. #}
+                      {% set answered = row.policy.category_id if row.policy and row.policy.is_new_envelope else None %}
+                      <option value=""{% if not answered %} selected{% endif %}>-- choose a category --</option>
+                      {% for category in categories %}
+                      <option value="{{ category.id }}"{% if answered == category.id %} selected{% endif %}>{{ category.display_name }}</option>
+                      {% endfor %}
+                    </select>
+                  </div>
+                </div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="card-footer d-flex justify-content-between align-items-center">
+        <span class="small text-body-secondary">
+          Saving this records no purchase and changes no balance.
+        </span>
+        <span>
+          <span class="htmx-indicator text-body-secondary small">
+            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+            Saving...
+          </span>
+          <button type="submit" class="btn btn-outline-primary btn-sm">
+            Save where my merchants go
+          </button>
+        </span>
+      </div>
+    </div>
+  </form>
   {% endif %}
 
   {# ── The reviewed pass: tick what you agree with, then Apply ─────────── #}
@@ -320,6 +520,48 @@
           second time; those belong in the match form below, not in this list.
         </p>
       </div>
+      {% if review.placed_by_class %}
+      {# THE SWEEPS, and they are what turn a suggestion into a tick.
+
+         PER CLASS, exactly as the proposal sweep above is, and for the reason
+         ruling R-FZ(c) gives: the riskiest class may not ride the same click
+         as the safest.  Filing into a budget line that is still open is
+         absorbed by what it reserved; raising what a CLOSED row records as its
+         cost is a bigger thing to do; and creating a budget line the account
+         did not have is bigger again -- and is the one act releasing the match
+         cannot undo, because the purchase and the envelope both stay.  A first
+         draft swept all three together, and 29 of this account's 220 offerable
+         destinations have already closed.
+
+         JS-only, like every sweep on this screen: with scripting off each line
+         still has its own select and the placement is still printed beside it,
+         so this is a convenience over a form that works without it and never
+         the only way to reach a control.
+
+         Nothing is swept for a merchant answered "never a purchase" or for a
+         policy that cannot reach this line's period: neither has a value to
+         set, so neither is counted here. #}
+      <div class="card-body border-top border-bottom py-2">
+        <div class="d-flex flex-wrap gap-3 small">
+          {% for group, label in [
+            ('into_open', 'into a budget line that is still open'),
+            ('into_closed', 'into one that has already closed, raising what it recorded'),
+            ('creates', 'into a NEW envelope this would create'),
+          ] %}
+          {% set count = review.placed_by_class.get(group, 0) %}
+          {% if count %}
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox"
+                   id="tick-placed-{{ group }}" data-tick-placed="{{ group }}">
+            <label class="form-check-label" for="tick-placed-{{ group }}">
+              record {{ count }} line(s) {{ label }}
+            </label>
+          </div>
+          {% endif %}
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
       <div class="table-responsive">
         <table class="table table-sm align-middle mb-0">
           <thead>
@@ -348,7 +590,8 @@
                   amount of extending it forward will reach.
                 </span>
                 {% else %}
-                <div class="row g-2 align-items-center" data-creatable-row>
+                <div class="row g-2 align-items-center" data-creatable-row
+                     {% if item.placement and item.placement.select_value %}data-placement="{{ item.placement.select_value }}" data-placement-class="{{ item.placement.sweep_class }}"{% endif %}>
                   <div class="col-12 col-lg-5">
                     <select class="form-select form-select-sm"
                             name="destination-{{ item.line.line_id }}"
@@ -364,9 +607,16 @@
                     </select>
                   </div>
                   <div class="col-12 col-lg-4 d-none" data-new-envelope-field>
+                    {# PREFILLED FROM THE POLICY where one names an envelope,
+                       else from what the bank called the merchant.  Decided on
+                       the SERVER so the sweep and a hand-picked "a new
+                       envelope" cannot disagree: a first version set these two
+                       from JavaScript when the sweep ran, which left the
+                       no-script path filing the policy's line under the
+                       merchant's name instead of the one the owner stated. #}
                     <input class="form-control form-control-sm" type="text"
                            name="envelope_name-{{ item.line.line_id }}" maxlength="200"
-                           value="{{ item.line.merchant }}"
+                           value="{{ item.placement.new_envelope.name if item.placement and item.placement.new_envelope else item.line.merchant_label }}"
                            aria-label="Name for the new envelope">
                   </div>
                   <div class="col-12 col-lg-3 d-none" data-new-envelope-field>
@@ -378,9 +628,10 @@
                          envelope filed under whichever category sorts first is
                          a misclassification nobody chose.  The service refuses
                          a new envelope stated by halves. #}
-                      <option value="" selected>-- choose a category --</option>
+                      {% set chosen = item.placement.new_envelope.category_id if item.placement and item.placement.new_envelope else None %}
+                      <option value=""{% if not chosen %} selected{% endif %}>-- choose a category --</option>
                       {% for category in categories %}
-                      <option value="{{ category.id }}">{{ category.display_name }}</option>
+                      <option value="{{ category.id }}"{% if chosen == category.id %} selected{% endif %}>{{ category.display_name }}</option>
                       {% endfor %}
                     </select>
                   </div>
@@ -389,6 +640,43 @@
                     No envelope in this pay period can take a purchase -- every one of
                     them closed at a fixed figure, so adding to it would not record
                     this money. "A new envelope" is the only place open to it.
+                  </div>
+                  {% endif %}
+                  {# WHAT YOUR POLICY SAYS, printed beside the control and
+                     never selected into it (plan step X-f6a-3d).  The select
+                     above still opens on "leave this line alone": a remembered
+                     destination that arrived already chosen would be a default
+                     pointing at money, which is what ruling R-FZ removed. #}
+                  {% if item.placement %}
+                  <div class="col-12 small">
+                    {% if item.placement.records_in %}
+                    <span class="text-body-secondary">
+                      <i class="bi bi-signpost"></i>
+                      You file {{ item.placement.merchant }} in
+                      <strong>{{ item.placement.destination.label }}</strong>{% if item.placement.destination.is_settled %} -- closed{% endif %}.
+                    </span>
+                    {% elif item.placement.creates %}
+                    <span class="text-body-secondary">
+                      <i class="bi bi-signpost"></i>
+                      You give {{ item.placement.merchant }} a new envelope
+                      called <strong>{{ item.placement.new_envelope.name }}</strong>.
+                      One is created per line, so two lines in one pay period
+                      make two -- pick an envelope for the second if you would
+                      rather they shared.
+                    </span>
+                    {% elif item.placement.is_not_a_purchase %}
+                    <span class="text-body-secondary">
+                      <i class="bi bi-slash-circle"></i>
+                      You have said {{ item.placement.merchant }} is never a
+                      purchase, so nothing here records it. Your budget holds
+                      this money in another shape.
+                    </span>
+                    {% else %}
+                    <span class="text-warning-emphasis">
+                      <i class="bi bi-exclamation-triangle"></i>
+                      {{ item.placement.unresolved_reason }}
+                    </span>
+                    {% endif %}
                   </div>
                   {% endif %}
                 </div>
@@ -568,6 +856,23 @@
       <li>
         {{ review.bounds.unpriceable_count }} row(s) on this account could not be
         valued, so they were not offered as matches.
+      </li>
+      {% endif %}
+      {% if review.bounds.impossible_day_count %}
+      {# Finding N-325, ruled 2026-08-19: SAID rather than clamped.  Money
+         cannot leave an account before it is spent, so a line whose bank dates
+         the purchase after the day it took the money has no day a purchase
+         could be made on -- and the app refuses one, correctly.  Offering it a
+         destination chooser would render a control whose submission can never
+         succeed.  The rejected alternative was to take whichever day is
+         earlier, which decides which day the app believes when the bank
+         contradicts itself; ruling R-FW refused that substitution one clock
+         over. #}
+      <li>
+        {{ review.bounds.impossible_day_count }} line(s) are dated by your bank
+        as having been MADE after the day it took the money, so there is no day
+        a purchase could have happened on. Money cannot leave before it is
+        spent, so they are not offered as purchases here.
       </li>
       {% endif %}
     </ul>
