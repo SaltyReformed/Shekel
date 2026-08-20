@@ -22,7 +22,20 @@ from app.enums import StatusEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.services import pay_calendar
+from app.services.cash_ledger import amount_basis
+from app.services.scenario_resolver import require_baseline_scenario
 from app.services.statement_match import RowKind, candidates_for
+
+
+def _basis(seed_user):
+    """Return the pass's amount basis, the way ``ReviewScope.build`` does.
+
+    Built here rather than defaulted inside ``candidates_for`` because plan
+    step X-au-j made it the PASS's, and a producer that rebuilt its caller's
+    basis is exactly the copy the parameter exists to remove.
+    """
+    owner_id = seed_user["user"].id
+    return amount_basis(owner_id, require_baseline_scenario(owner_id).id)
 
 from ._builders import a_purchase, a_transaction
 
@@ -32,6 +45,7 @@ def _candidate(seed_user, row_id, kind):
     rows = candidates_for(
         seed_user["account"].id,
         pay_calendar.calendar_for(seed_user["user"].id),
+        _basis(seed_user),
     ).rows
     return next(
         (r for r in rows if r.row_id == row_id and r.kind is kind), None,
@@ -119,7 +133,9 @@ class TestTheCalendarIsTheOwnershipSCOPE:
             db.session.commit()
 
             calendar = pay_calendar.calendar_for(seed_user["user"].id)
-            rows = candidates_for(seed_user["account"].id, calendar).rows
+            rows = candidates_for(
+                seed_user["account"].id, calendar, _basis(seed_user),
+            ).rows
 
             assert rows
             assert all(row.expected_window is not None for row in rows)

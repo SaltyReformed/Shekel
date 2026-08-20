@@ -284,7 +284,8 @@ def resolve_rows(
     ]
     found = [
         fresh for fresh in (
-            repriced(row, scope.calendar) for row in offered
+            repriced(row, scope.calendar, scope.amounts)
+            for row in offered
         )
         if fresh is not None
     ]

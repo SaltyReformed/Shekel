@@ -44,6 +44,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.services import pay_calendar
+from app.services.cash_ledger import AmountBasis, amount_basis
+from app.services.scenario_resolver import require_baseline_scenario
 
 from ._candidates import candidates_for, destinations_for
 from ._offers import Candidates, PurchaseDestination
@@ -66,6 +68,21 @@ class ReviewScope:
             own, and a creation filing a purchase into an envelope whose
             payback was soft-deleted reaches it.  Narrowing the claim rather
             than widening the parameter, because that module is another arc's.
+        amounts: The pass's :class:`~app.services.cash_ledger.AmountBasis`,
+            built ONCE for everything this package prices (plan step X-au-j).
+            It is the calendar's twin one column over and it is here for the
+            same reason: a basis holds the owner's live DERIVATIONS -- the
+            paycheck engine over the whole pay-period set, each loan's P&I and
+            escrow history -- and asking for them per ROW is finding **N-228**,
+            which ``amount_basis``'s own docstring names.  Finding **N-309**
+            measured this pass doing exactly that: **609 salary-pricing and 609
+            loan-pricing constructions** over 825 candidates, `4.7 s` to render,
+            and the accept door paying it again.  It is built for the BASELINE
+            scenario because the candidate scan is baseline-only by the same
+            argument ``_candidates`` states for not filtering on
+            ``scenario_id``; a row from another scenario is REFUSED by
+            ``resolve_transaction_amount`` rather than mispriced, which is the
+            direction that fails loud.
         candidates: Every row the account could offer, priced
             (:func:`~._candidates.candidates_for`), before any claim is
             narrowed out.
@@ -77,6 +94,7 @@ class ReviewScope:
     owner_id: int
     account_id: int
     calendar: "pay_calendar.PayCalendar"
+    amounts: "AmountBasis"
     candidates: Candidates
     destinations: "tuple[PurchaseDestination, ...]"
 
@@ -103,10 +121,14 @@ class ReviewScope:
                 **N-312** records.
         """
         calendar = pay_calendar.calendar_for(owner_id)
+        amounts = amount_basis(
+            owner_id, require_baseline_scenario(owner_id).id,
+        )
         return cls(
             owner_id=owner_id,
             account_id=account_id,
             calendar=calendar,
-            candidates=candidates_for(account_id, calendar),
+            amounts=amounts,
+            candidates=candidates_for(account_id, calendar, amounts),
             destinations=tuple(destinations_for(owner_id, account_id)),
         )

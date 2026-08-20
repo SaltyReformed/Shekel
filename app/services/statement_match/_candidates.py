@@ -177,7 +177,7 @@ def unmatched_destinations(
     ]
 
 
-def _price(txn: Transaction) -> "Decimal | None":
+def _price(txn: Transaction, basis) -> "Decimal | None":
     """Return *txn*'s signed cash effect, or ``None`` when no rule prices it.
 
     The one branch in this module, and it is the settled / projected split
@@ -217,6 +217,15 @@ def _price(txn: Transaction) -> "Decimal | None":
 
     Args:
         txn: The row to price, with ``entries`` loaded.
+        basis: The PASS's :class:`~app.services.cash_ledger.AmountBasis`, built
+            once by :meth:`~._scope.ReviewScope.build` and threaded here (plan
+            step X-au-j).  It was built per row until then, which finding
+            **N-309** measured at **609 salary-pricing and 609 loan-pricing
+            constructions** over 825 candidates and `4.7 s` to render -- and
+            ``amount_basis``'s own docstring had already named calling the
+            derivations per row as finding **N-228**.  The same reason the
+            calendar is a parameter one line down, and the same shape a balance
+            pass threads its ``BalanceContext`` for.
 
     Returns:
         Its signed cash effect on this account, or ``None`` when the amount
@@ -229,7 +238,7 @@ def _price(txn: Transaction) -> "Decimal | None":
     try:
         if txn.status.is_settled:
             return cash_ledger.settled_cash_leg(txn)
-        return cash_ledger.cash_leg_of(txn, settle_amount(txn))
+        return cash_ledger.cash_leg_of(txn, settle_amount(txn, basis))
     except AmountUnresolvable:
         return None
 
@@ -339,7 +348,7 @@ def transaction_candidate(
     )
 
 
-def repriced(row: CandidateRow, calendar) -> "CandidateRow | None":
+def repriced(row: CandidateRow, calendar, basis) -> "CandidateRow | None":
     """Return *row* as it stands NOW, re-read and re-valued.
 
     **The scope answers WHICH rows an act may reach; this answers what one of
@@ -371,6 +380,15 @@ def repriced(row: CandidateRow, calendar) -> "CandidateRow | None":
         row: The candidate the scope offered.
         calendar: The pass's
             :class:`~app.services.pay_calendar.PayCalendar`.
+        basis: The pass's
+            :class:`~app.services.cash_ledger.AmountBasis` (plan step X-au-j).
+            **Sharing it does NOT weaken the re-derivation this function is
+            for**: a basis holds the owner's live DERIVATIONS, not per-row
+            answers, so re-pricing against one still reads the row's own
+            columns and its own entries -- which is where a sibling write lands.
+            What it removes is paying for the profile lookup and the loan
+            resolve once per act, which is what finding **N-309** measured on
+            the door that calls this.
 
     Returns:
         The row as it stands now, or ``None`` when it has gone, cannot be
@@ -385,14 +403,14 @@ def repriced(row: CandidateRow, calendar) -> "CandidateRow | None":
     txn = db.session.get(Transaction, row.row_id)
     if txn is None:
         return None
-    amount = _price(txn)
+    amount = _price(txn, basis)
     if amount is None:
         return None
     return transaction_candidate(txn, calendar, amount)
 
 
 def _transaction_candidates(
-    account_id: int, calendar, period_ids: "set[int]",
+    account_id: int, calendar, period_ids: "set[int]", basis,
 ) -> "tuple[list[CandidateRow], list[int]]":
     """Return the transactions on *account_id* a statement could be showing.
 
@@ -451,6 +469,10 @@ def _transaction_candidates(
         period_ids: The saved period ids of that same calendar, resolved ONCE
             by :func:`candidates_for` and threaded rather than re-derived per
             arm.
+        basis: The pass's :class:`~app.services.cash_ledger.AmountBasis`,
+            built ONCE by :meth:`~._scope.ReviewScope.build` and threaded for
+            exactly the reason above one column over (plan step X-au-j): a
+            derivation the whole pass shares, not a per-row answer.
 
     Returns:
         ``(candidates, unpriceable)`` -- one
@@ -485,7 +507,7 @@ def _transaction_candidates(
     candidates = []
     unpriceable = []
     for txn in rows:
-        amount = _price(txn)
+        amount = _price(txn, basis)
         if amount is None:
             unpriceable.append(txn.id)
             continue
@@ -560,7 +582,7 @@ def _purchase_candidates(
     )
 
 
-def candidates_for(account_id: int, calendar) -> Candidates:
+def candidates_for(account_id: int, calendar, basis) -> Candidates:
     """Return every row on *account_id* a statement could be showing.
 
     **The ONE entry point, and the reason it exists is that the two arms share
@@ -597,6 +619,10 @@ def candidates_for(account_id: int, calendar) -> Candidates:
             whose rows may be offered and the two could disagree.  Nothing here
             re-derives it -- a producer that rebuilt its caller's pass would be
             the copy this parameter exists to remove.
+        basis: The pass's :class:`~app.services.cash_ledger.AmountBasis`, on
+            the same ground and built by the same caller (plan step X-au-j).
+            Every row this returns is priced against it, where each row used to
+            build its own -- finding **N-309**.
 
     Returns:
         A :class:`~._offers.Candidates`.  Its ``rows`` are the transactions and
@@ -616,7 +642,7 @@ def candidates_for(account_id: int, calendar) -> Candidates:
         if period.period_id is not None
     }
     transactions, unpriceable = _transaction_candidates(
-        account_id, calendar, period_ids,
+        account_id, calendar, period_ids, basis,
     )
     return Candidates(
         rows=transactions + _purchase_candidates(account_id, period_ids),

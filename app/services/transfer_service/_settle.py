@@ -191,7 +191,7 @@ def frozen_amount(shadow: Transaction, basis: AmountBasis) -> Decimal | None:
     return basis.loans.live_cash(shadow)
 
 
-def settle_amount(shadow: Transaction) -> Decimal:
+def settle_amount(shadow: Transaction, basis=None) -> Decimal:
     """Return what settling this transfer would BOOK on *shadow*'s account.
 
     **The transfer twin of ``transaction_service.settle_amount``, and it exists
@@ -206,6 +206,9 @@ def settle_amount(shadow: Transaction) -> Decimal:
 
     Args:
         shadow: The leg being offered, still Projected.
+        basis: The read pass's
+            :class:`~app.services.cash_ledger.AmountBasis`, when the caller
+            holds one (plan step X-au-j).  ``None`` builds one for this call.
 
     Returns:
         The frozen live figure when there is one, else what the row
@@ -231,8 +234,11 @@ def settle_amount(shadow: Transaction) -> Decimal:
         return held
     # ONE basis for both halves (plan step X-au-c2b, finding **N-269**): the
     # freeze and the fall-through both price this shadow, and building one each
-    # is how a single offered row paid for the transfer lookup twice.
-    basis = amount_basis(shadow.account.user_id, shadow.scenario_id)
+    # is how a single offered row paid for the transfer lookup twice.  **A
+    # caller pricing many rows supplies one for the whole PASS** (plan step
+    # X-au-j) -- the transaction twin's docstring carries the measurement.
+    if basis is None:
+        basis = amount_basis(shadow.account.user_id, shadow.scenario_id)
     frozen = frozen_amount(shadow, basis)
     return _unfrozen_amount(shadow, basis) if frozen is None else frozen
 

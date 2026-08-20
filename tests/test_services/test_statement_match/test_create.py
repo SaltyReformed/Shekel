@@ -45,6 +45,8 @@ from app.services import (
     transaction_service,
 )
 from app.services.balance_at import BalanceContext
+from app.services.cash_ledger import amount_basis
+from app.services.scenario_resolver import require_baseline_scenario
 from app.services.statement_match import NewEnvelope, PurchaseCreation
 from tests._test_helpers import settlement_if_settling
 
@@ -867,9 +869,11 @@ class TestWhatTheScreenMayOFFER:
         with app.app_context():
             envelope = _closed_from_purchases(seed_user)
             statement = an_import(seed_user)
+            owner_id = seed_user["user"].id
             leg = statement_match.candidates_for(
                 seed_user["account"].id,
-                pay_calendar.calendar_for(seed_user["user"].id),
+                pay_calendar.calendar_for(owner_id),
+                amount_basis(owner_id, require_baseline_scenario(owner_id).id),
             )
             worth = next(
                 row.cash_amount for row in leg.rows

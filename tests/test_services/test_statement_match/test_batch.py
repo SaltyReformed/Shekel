@@ -42,6 +42,8 @@ from app.models.statement_match import StatementMatch
 from app.models.transaction import Transaction
 from app.services import balance_at, cash_ledger, statement_match
 from app.services.posting_reads import PostingError
+from app.services.transaction_service import _settle as transaction_settle
+from app.services.transfer_service import _settle as transfer_settle
 from app.services.statement_match import (
     MatchSubmission,
     NewEnvelope,
@@ -876,9 +878,9 @@ class TestTheScopeIsDerivedONCE:
             calls = []
             real = statement_match._scope.candidates_for
 
-            def _counted(account_id, calendar):
+            def _counted(account_id, calendar, basis):
                 calls.append(account_id)
-                return real(account_id, calendar)
+                return real(account_id, calendar, basis)
 
             monkeypatch.setattr(
                 statement_match._scope, "candidates_for", _counted,
@@ -1616,3 +1618,69 @@ class TestConvergingMovesTheSameMoneyAsNotConverging:
         assert converged["balances"] == separate["balances"]
         assert converged["entries"] == separate["entries"]
         assert converged["postings"] == separate["postings"]
+
+
+class TestThePassHoldsONEAmountBasis:
+    """Plan step **X-au-j**: the derivations are the PASS's, not the row's.
+
+    An :class:`~app.services.cash_ledger.AmountBasis` holds the owner's live
+    derivations -- the paycheck engine run over the whole pay-period set, and
+    each loan's P&I, payment day and escrow history.  ``amount_basis``'s own
+    docstring says calling those per row is finding **N-228**, and finding
+    **N-309** measured this pass doing exactly that: **609 salary-pricing and
+    609 loan-pricing constructions** over 825 candidates, ``4.7 s`` to render,
+    with the accept door paying it all again.
+
+    It is ``TestTheScopeIsDerivedONCE`` one column over and it fails the same
+    way: a later change that let a producer build its own would restore the cost
+    in silence, because every figure would still be right.  Only the wall clock
+    moves, which is why the count is asserted rather than the timing.
+    """
+
+    def test_one_basis_serves_every_candidate_the_pass_prices(
+        self, app, db, seed_user, monkeypatch,
+    ):
+        """The firing control: ONE construction, however many rows are priced."""
+        with app.app_context():
+            # **PROJECTED rows, and that is what makes this control sharp.**  A
+            # SETTLED row is valued from its record (``settled_cash_leg``) and
+            # never reaches the resolver, so a pass of settled rows builds one
+            # basis whether or not this step shipped.  Each of these prices.
+            for index in range(8):
+                a_transaction(
+                    seed_user, name=f"Bill {index}",
+                    amount=f"{100 + index}.00",
+                )
+            _db.session.commit()
+
+            built = []
+            real = cash_ledger.amount_basis
+
+            def _counted(user_id, scenario_id):
+                built.append((user_id, scenario_id))
+                return real(user_id, scenario_id)
+
+            # Patched where the SEAM publishes it and where each priced row
+            # would reach it, so a row that built its own is visible whichever
+            # door it went through.
+            monkeypatch.setattr(cash_ledger, "amount_basis", _counted)
+            monkeypatch.setattr(
+                transaction_settle, "amount_basis", _counted,
+            )
+            monkeypatch.setattr(transfer_settle, "amount_basis", _counted)
+            monkeypatch.setattr(
+                statement_match._scope, "amount_basis", _counted,
+            )
+
+            scope = statement_match.ReviewScope.build(
+                seed_user["user"].id, seed_user["account"].id,
+            )
+
+            assert len(scope.candidates.rows) >= 8, (
+                "the pass must price several rows -- otherwise one basis and "
+                "one per row are the same number and this grades nothing"
+            )
+            assert len(built) == 1, (
+                f"the pass built {len(built)} amount bases for "
+                f"{len(scope.candidates.rows)} candidates; X-au-j makes it one"
+            )

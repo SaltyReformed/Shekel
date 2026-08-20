@@ -273,7 +273,7 @@ def retained_settle_amounts_by_id(rows) -> "dict[int, Decimal | None]":
     }
 
 
-def settle_amount(txn: Transaction) -> Decimal:
+def settle_amount(txn: Transaction, basis=None) -> Decimal:
     """Return what settling *txn* would BOOK, absent a caller-supplied actual.
 
     **The ONE valuation act 1 of :func:`settle_transaction` uses**, published
@@ -287,8 +287,24 @@ def settle_amount(txn: Transaction) -> Decimal:
     It is a PURE read: nothing here mutates, so the panel calls it per offered
     row and the verb calls it again at the settle.
 
+    **A caller pricing MANY rows passes its own basis** (plan step X-au-j,
+    finding **N-295** / **N-309**).  Building one per call is right for a door
+    valuing a single row and wrong for a PASS: the reconcile panel offered 825
+    candidates and paid **609 salary-pricing and 609 loan-pricing
+    constructions**, `4.7 s` to render, because each row built its own -- and
+    the accept door paid it again.  That is finding **N-228** one tier up, and
+    ``amount_basis``'s own docstring names it.  The parameter is OPTIONAL and
+    defaults to building one, so a single-row caller is unchanged and only a
+    pass has to know about it.
+
     Args:
         txn: The row about to be offered or settled, still Projected.
+        basis: The read pass's
+            :class:`~app.services.cash_ledger.AmountBasis`, when the caller
+            holds one.  It must be built for THIS row's owner and scenario;
+            ``resolve_transaction_amount`` refuses a foreign one rather than
+            answering from another scenario's profiles and loans.  ``None``
+            builds one for this call.
 
     Returns:
         ``sum(entries)`` when :func:`settles_from_entries`, else the freshest
@@ -307,9 +323,9 @@ def settle_amount(txn: Transaction) -> Decimal:
     fixed = fixed_settle_amount(txn)
     if fixed is not None:
         return fixed
-    return _manual_branch_figures(
-        txn, amount_basis(txn.account.user_id, txn.scenario_id),
-    )[0]
+    if basis is None:
+        basis = amount_basis(txn.account.user_id, txn.scenario_id)
+    return _manual_branch_figures(txn, basis)[0]
 
 
 def _manual_branch_figures(
