@@ -90,8 +90,10 @@ def decomposition_leaf_keys(parent: Step, rows: list[Step]) -> list[str]:
 
     **The asymmetry the previous derivation documented is preserved**: the
     parent set and the CLASS are both DECLARED, and only the leaf set is
-    derived.  Deriving the parent set too would claim ``R-F1`` as the parent of
-    ``R-F10`` / ``R-F12`` / ``R-F13``, three unrelated findings-steps.
+    derived.  Deriving the parent set too would claim ``pay_calendar:C1`` as
+    the parent of ``C10`` / ``C11`` / ``C12``, three unrelated steps; the
+    specimen is derived by :func:`_staging.a_prefix_trap` rather than named
+    here, because the one this sentence named until 2026-08-20 went stale.
 
     Args:
         parent: The container whose leaves to derive.

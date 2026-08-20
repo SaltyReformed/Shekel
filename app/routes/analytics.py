@@ -250,10 +250,15 @@ def taxes_tab():
     #
     # **This route DERIVES one where the statement tab threads the one it
     # already holds, and that is a known +1 on THIS render until plan step
-    # C2-f3e** (ledger row **P56**).  ``tax_report_service`` opens its own read
-    # pass and separately calls ``calendar_for`` for its year slice; both are
-    # doors that step closes by taking the pass from the route, at which point
-    # this derivation becomes the render's only one.  Deriving here is the
+    # C11** (ledger rows **P56** and **P69**).  ``tax_report_service`` opens
+    # its own read pass and separately calls ``calendar_for`` for its year
+    # slice; both are doors that step closes by taking the pass from the route,
+    # at which point this derivation becomes the render's only one.  **It named
+    # C2-f3e until 2026-08-20**, correctly when written and not afterwards:
+    # C11 was a LEAF of C2-f3 and was promoted out of it on 2026-08-19, so
+    # C2-f3e shipped without closing either row.  A step id written into a
+    # comment has no reconciler: the plan gate grades the registries and
+    # nothing grades this line, so it was corrected by hand at the tick.  Deriving here is the
     # direction that fix goes -- the route is the door -- so the duplicate is a
     # transient of the sequence rather than a second producer being added.
     available_years = _get_available_years(

@@ -23,9 +23,13 @@ import re
 import pytest
 
 import _registry as registry
+from _classes import decomposition_leaf_keys
 from _staging import (
     a_live_ledger_row,
+    a_prefix_trap,
     a_shipped_balance_row,
+    an_identity_class_with_leaves,
+    stage_an_open_leaf,
     an_open_step_key,
     row_of,
     with_cell,
@@ -340,9 +344,19 @@ class TestAnIdentityClassSharesOneTickState:
         assert "recurrence:R-F12" in keys["pay_calendar:C2"]
 
     def test_the_control_fires_when_one_name_ships_without_the_others(self, stage):
-        """The control fires when one name ships without the others."""
-        line = row_of("steps", "| pay_calendar | C2 |")
-        stage("steps", line, with_cell(line, 4, "SHIPPED"))
+        """The control fires when one name ships without the others.
+
+        The stage pushes a member AWAY from whatever its class shares.  It read
+        OPEN to SHIPPED until `pay_calendar:C2-f3e` ticked the whole class and
+        staging SHIPPED changed nothing: the property is DISAGREEMENT, never
+        one direction of it.
+        """
+        members, _leaves = an_identity_class_with_leaves()
+        rows = {row.key: row for row in registry.step_rows()}
+        arc, ident = members[0].split(":", 1)
+        line = row_of("steps", f"| {arc} | {ident} |")
+        opposite = "#1" if rows[members[0]].shipped else "SHIPPED"
+        stage("steps", line, with_cell(line, 4, opposite))
         problems = registry.alias_violations()
         assert any("ONE step under two names" in p for p in problems), problems
 
@@ -697,32 +711,19 @@ class TestAParentTicksWithTheLastOfItsLeaves:
     def test_a_prefix_derivation_would_have_fired_falsely_on_this_corpus(self):
         """The reason the parent set is DECLARED rather than derived.
 
-        ``R-F1`` is SHIPPED and is a string prefix of ``R-F10``, ``R-F12`` and
-        ``R-F13``, which are unrelated findings-steps.  Deriving parenthood
-        from the id alone would report failures the moment the arm was switched
-        on -- and the tempting fix is an exception list, which is finding
-        N-147's defect.  This control keeps that measurement alive: if the
-        corpus ever stops containing the trap, the reason for the design should
-        be re-read rather than assumed.
-
-        **It asserts that at least one prefix-sharer is OPEN, not that all
-        are.**  ``R-F10`` shipped at ``pay_calendar:C2-b2``, which turned an
-        ``all`` assertion red without the trap having gone anywhere -- a
-        control that fails when the corpus merely PROGRESSES is grading the
-        wrong thing.  What matters is that a shipped step still shares a prefix
-        with an open one, because that is the pair a derived arm would misread.
+        :func:`_staging.a_prefix_trap` carries the argument and RAISES when the
+        corpus stops holding the trap -- which is this control firing.
         """
-        rows = {row.ident: row for row in registry.step_rows()
-                if row.arc == "recurrence"}
-        assert rows["R-F1"].shipped
-        tempting = [i for i in rows if i != "R-F1" and i.startswith("R-F1")]
-        assert tempting, "the R-F1 prefix trap has left the corpus"
-        assert any(not rows[i].shipped for i in tempting), (
-            "the trap needs an OPEN prefix-sharer beside the shipped R-F1"
-        )
-        assert not rows["R-F1"].is_decomposed_parent, (
-            "R-F1 must NOT declare itself a parent -- it has no decomposition"
-        )
+        shipped, sharers = a_prefix_trap()
+        rows = registry.step_rows()
+        by_key = {row.key: row for row in rows}
+        # A PREFIX derivation would claim the sharers as this row's leaves...
+        derived = decomposition_leaf_keys(by_key[shipped], rows)
+        assert set(sharers) <= set(derived), (shipped, sharers, derived)
+        # ...and the DECLARED parent set is what stops the arm reporting it.
+        assert not any(
+            shipped in problem for problem in registry.decomposition_violations()
+        ), f"{shipped} is reported over {sharers}, which are unrelated steps"
 
     def test_the_control_fires_when_a_parent_ships_over_an_open_leaf(self, stage):
         """The control fires when a parent ships over an open leaf.
@@ -834,21 +835,22 @@ class TestAParentTicksWithTheLastOfItsLeaves:
         """A container's leaves may be filed under a SIBLING's name.
 
         **This arm re-spelled the leaf derivation inline, per-arc, until
-        2026-08-11.**  ``balance:X-l``, ``pay_calendar:C2`` and
-        ``recurrence:R-F12`` are ONE step under three names and every leaf of
-        the class is a ``pay_calendar:C2-*`` row, so shipping ``X-l`` over five
-        open leaves reported NOTHING: the arm looked for a `balance` row whose
-        id starts with `X-l` and there is none.  The class row `C2` happened to
-        cover it, which is why the hole was invisible -- one rename away from
-        being live.
+        2026-08-11**, so shipping a parent whose every leaf is filed under a
+        SIBLING's name reported NOTHING: it looked in the parent's own arc.
+
+        **The staging INVERTED on 2026-08-20** and the property did not: that
+        class shipped whole at `pay_calendar:C2-f3e`, so this re-opens a real
+        LEAF instead of shipping a real parent.  Class and leaf are derived --
+        see :func:`_staging.an_identity_class_with_leaves`.
         """
-        line = row_of("steps", "| balance | X-l |")
-        stage("steps", line, with_cell(line, 4, "SHIPPED"))
-        problems = [p for p in registry.decomposition_violations()
-                    if "balance:X-l" in p]
-        assert problems, registry.decomposition_violations()
-        assert "pay_calendar:C2-" in problems[0], (
-            f"the failure names no leaf of the class: {problems}"
+        members, leaf = stage_an_open_leaf(stage)
+        parent = members[0]
+        # The parent is named in an arc the leaf does not live in, which is
+        # the whole property: a per-arc derivation reports NOTHING here.
+        named = [p for p in registry.decomposition_violations() if parent in p]
+        assert named, registry.decomposition_violations()
+        assert all(leaf in p for p in named), (
+            f"{parent}'s failure names no leaf of its class: {named}"
         )
 
 

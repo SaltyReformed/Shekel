@@ -2,24 +2,24 @@
 
 ## Where this stands
 
-**Built:** **C1**, **C2-a**-**C2-e**, **C2-f1**, **C2-f2**, **C2-f3a**-**C2-f3d** and **C3** --
-section 4 carries each one's commit, and what reached `main` is a MEASUREMENT
-(`git log --oneline origin/main..dev`).
+**`C2` IS DONE, and with it `balance:X-l` and `recurrence:R-F12`** -- one step under three names,
+ticked at `C2-f3e` (`4f134bf4`). Built: **C1**, **C2** whole, **C3**. Section 4 carries each commit;
+what reached `main` is a MEASUREMENT (`git log --oneline origin/main..dev`).
 
-**No reader in `app/` asks the DATABASE "which paycheck" any more, and `C2-f3d` retired the last
-search of any kind** -- the Spending chart's `period_index - steps` walk, an ORDINAL search and so
-structurally invisible to the containment census row **P6** kept. `pay_period_service` is down to
+**No reader in `app/` asks the DATABASE "which paycheck" any more.** `pay_period_service` is down to
 `earliest_recordable_day`, which is not a calendar question: it takes the EARLIER of the owner's
-first payday and today, so the clock is half its answer.
-**THREE query-position reads of a column `C4` drops survive**, and row **P70** names all three; `C4`
-cannot ship until they go.
+first payday and today. Row **P6**'s census was re-grepped at the tick and is empty; its three
+near-misses are named in `historical/pay_calendar_c2f3_as_built_2026-08-20.md`.
 
-**`C2-f3` is a container of FIVE leaves, and `C10`-`C12` came OUT of it**: the salary package's
-clock (**P49**, which `C2-f3a` wrongly closed), the layer predicate (**P56**) and the
-current-paycheck merge (**P62** / **P63**) -- the last two promoted out 2026-08-19 for gating **C4**
-on work it does not depend on. **P64**'s calendar half closed at `C2-f3b`; its ENGINE half, with
-zero headroom and no step shrinking it, is **C12**'s. **A cold session starts at section 4**; the
-shared registries are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
+**`C4` is NEXT and is the deepest cut in the arc** -- it drops `end_date` and `period_index`.
+**THREE query-position reads of those columns survive** and row **P70** names all three; C4 cannot
+ship until they go, and its own specification carries `PayCalendarError`'s blast radius, which four
+steps have now widened.
+
+**`C10`-`C12` came OUT of `C2-f3`** on 2026-08-19 for gating C4 on work it does not depend on: the
+salary package's clock (**P49**, which `C2-f3a` wrongly closed), the layer predicate (**P56**) and
+the current-paycheck merge (**P62** / **P63**). **A cold session starts at section 4**; the shared
+registries are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
 
 ## Rulings
 
@@ -188,6 +188,42 @@ Row **P10** carries the two halves that must be specified first: what happens to
 orphan), and whether the split-off payday is repopulated (a monthly billed twice) or left empty
 (income understated for the whole horizon).
 
+### The question `C2-f3e` leaves open: how a transaction's owner is proved
+
+Finding **P75**. `budget.transactions` carries no `user_id`; ownership is its pay period's, so every
+door that refuses a foreign row states that relationship BY HAND -- **nineteen** of them in `app/`
+after `C2-f3e`, in two shapes. Both censuses were re-run 2026-08-20 after that step's first count of
+three was refuted by two adversarial reviews.
+
+**ELEVEN walk the RELATIONSHIP** (`grep -rn "\.pay_period\.user_id" app/`, keeping the reads that
+REFUSE: ten are the comparison itself and the eleventh binds the owner one line above the two
+comparisons that use it): `utils/auth_helpers.py:347` (`get_accessible_transaction`, the canonical
+route-boundary door, reached from eight route sites), `routes/transactions/_helpers.py:447`,
+`routes/transfers/_helpers.py:137`, `routes/entries.py:241`, `entry_service/_doors.py` `:655` `:814`
+`:935` `:994`, `credit_workflow.py` `:114` `:448`, `recurrence_engine/_conflicts.py:77`.
+
+**EIGHT fetch the row by PRIMARY KEY** and compare, P51's literal wording:
+`transfer_service/_ownership.py:61` and `routes/transfers/_instances.py:142` directly, plus
+`_user_owns(PayPeriod, ...)` at `transfers/mutations.py:185` `:307` and
+`transfers/templates.py:250`, and `_resolve_owned_fks` with a `PayPeriod` spec at
+`transactions/create.py:120` `:179` and in `_verify_owned_fks_in_update`.
+
+**NOT this finding**: reads that derive an owner to SCOPE or STAMP rather than to refuse
+(`posting_service.py` x4, `loan_posting_service/_payments.py` x3,
+`transaction_service/_settle.py:936`, `routes/transactions/_helpers.py:156`). Counting one of those
+as a check is how the first census reached three.
+
+**The fork.** `C2-f3e` answered its own three doors with the owner's CALENDAR: it holds one owner's
+schedule, so a foreign id is ABSENT. The alternative is already in the house at
+`statement_match/_candidates.py:716` -- `Transaction.pay_period.has(user_id=owner_id)` -- ONE
+indexed query where the calendar is two plus a derivation, also leaving no Python comparison, and
+refusing by never RETURNING the row. **Ruling one way while `C2-f3e` has shipped the other leaves
+two structural answers to one question on adjacent doors**, which is the denormalisation this arc
+exists to remove. So what is owed is not "which is better" but what each is FOR: the calendar where
+the caller needs the PERIOD (a window, a label, a placement), the JOIN where it needs only the row
+it was already fetching. Under that rule `C2-f3e`'s three fragments are on the right side of it and
+the nineteen above are not.
+
 ## 4. Step sequence
 
 Each step is a leaf boundary -- one commit, its own tests green, independently revertible -- and
@@ -205,24 +241,17 @@ payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to sur
 - [x] **C1 -- the derivation, proven equal to what is stored.** `f9d148fe`. Opened **P15**, **P16**.
       Proof: `_derive.py`'s docstring.
 
-- [ ] **C2 -- one calendar value answers every "which period" question** -- the DECOMPOSED parent,
-      RULED on three forks 2026-08-10. Ticks with the last of its leaves, and that tick is also
-      `balance:X-l` and `recurrence:R-F12`: one step under three names, one commit each.
-      **Row P6's census is EMPTY as of `C2-f3a`**, which deleted its last survivor,
-      `pay_period_service.get_current_period` -- SQL whose `.first()` carried no `ORDER BY` (row
-      **P19**). The seven and where each went are in
-      `historical/pay_calendar_c2a_c2e_as_built_2026-08-18.md`; the ROW stays open until this
-      container ticks. **The lesson is the one to carry forward:** an AST census keyed on the
-      containment PREDICATE could not see `savings_dashboard_service._period_id_at`, and one keyed
-      on containment cannot see an ORDINAL search at all -- `C2-f1` found three more that way and
-      `C2-f3a`'s reviews found a seventh spelling of a period LABEL nobody had censused. A census of
-      this kind is a floor.
-
-*Condensed under rule 5 into `historical/pay_calendar_c2a_c2e_as_built_2026-08-18.md`, which carries
-each one's proof. **Must not be undone**: `_PeriodSpans`, `generate_projection_periods` and
-`SyntheticPeriod` are DELETED, and the seam's domain is `BalanceContext.reported_periods()`.*
+- [x] **C2 -- one calendar value answers every "which period" question.** `4f134bf4`. The DECOMPOSED
+      parent, RULED on three forks 2026-08-10; ticked with `C2-f3e`, and that tick is also
+      `balance:X-l` and `recurrence:R-F12`: one step under three names. Closed **P6**, whose
+      predicate was RE-GREPPED at the tick rather than assumed. The census lesson and the three
+      near-misses that re-grep turned up are in
+      `historical/pay_calendar_c2f3_as_built_2026-08-20.md`.
 
 - [x] **C2-a -- the one calendar VALUE, and nothing calls it.** `3cb3082f`. Opened **P21**-**P25**.
+      The whole `C2-a`..`C2-e` span is condensed under rule 5 into
+      `historical/pay_calendar_c2a_c2e_as_built_2026-08-18.md`, which carries each one's proof and
+      the shapes that must not be undone.
 
 - [x] **C2-b -- the recurrence cutover.** `fe365de1`. The parent, ticked with C2-b2.
 
@@ -239,14 +268,10 @@ each one's proof. **Must not be undone**: `_PeriodSpans`, `generate_projection_p
 - [x] **C2-e -- the projection axis.** `8143c6fe`. Closed **P17**, **P20**-**P23**; opened
       **P40**-**P44**; re-pointed **P7** to **C2-f**.
 
-- [ ] **C2-f -- the readers answer from the calendar** -- the DECOMPOSED parent, split into three
-      leaves 2026-08-14 (developer). Its six `get_*` readers have **60** `app/` call sites (AST,
-      2026-08-14). **The split is by READER and its ORDER is measured**: 13 functions read two or
-      more of the six across 27 of those sites, and 11 of them pair `get_current_period` with
-      `get_all_periods`, so those two may never be separated -- splitting them leaves a dozen
-      context objects holding an ORM row in one field and a `DerivedPeriod` in another.
-      `earliest_recordable_day` is NOT one of the six and stays: it asks no "which period" question,
-      only `min(first payday, today)`.
+- [x] **C2-f -- the readers answer from the calendar.** `4f134bf4`. The DECOMPOSED parent, split by
+      READER 2026-08-14 over its six `get_*` readers' **60** `app/` call sites. All six are gone;
+      `earliest_recordable_day` was never one of them and stays, because it asks no "which period"
+      question, only `min(first payday, today)`.
 
 - [x] **C2-f1 -- the three the calendar already answered.** `792e3b21`. Opened **P45**-**P50**. Its
       TWO must-not-undo shapes are in `historical/pay_calendar_c2a_c2e_as_built_2026-08-18.md`.
@@ -256,52 +281,12 @@ each one's proof. **Must not be undone**: `_PeriodSpans`, `generate_projection_p
       FOUR must-not-undo shapes. Closed **P36**-**P37**, **P43**, **P48**, **P55**, **P57**-**P59**,
       **P61**, **P65**-**P66**; opened **P52**-**P54**, **P60**, **P62**-**P63**.
 
-- [ ] **C2-f3 -- the rest, and the module's last two readers** -- the DECOMPOSED parent, split into
-      SIX leaves 2026-08-18 (developer). Its sentence is unchanged: every remaining site loads
-      `calendar_for` ONCE per producer and threads it, the write-path reads that hand ORM ROWS to
-      `pay_period_write` move into that writer, and both readers are DELETED, leaving
-      `pay_period_service` holding `earliest_recordable_day` alone. **What the split is for is the
-      four ledger rows the step OWNED and its sentence did not cover** (**P56**, **P62**, **P63**,
-      **P64**): rule 1 forbids an owner that will not do the work, and rule 8 says a finding
-      materially larger than its step gets its own, so each is now a leaf with a checkable end
-      state. The by-READER axis its parent used is spent -- only TWO functions still paired the
-      readers, and both moved inside the first leaf -- so the split is by SURFACE and by LAYER.
-      Ticks with the last leaf, and that tick is also `balance:X-l` and `recurrence:R-F12`.
-
-- [x] **C2-f3a -- the surfaces that hold no read pass.** `d09761a7`.
-      **`get_current_period` is DELETED** with its missing `ORDER BY` and its process clock. Closed
-      **P19**, **P52** and **P47**'s duplicate half; opened **P67**-**P69**. Proof:
-      `tests/manual/verify_current_period_cutover.py` (1,668 days, 0 disagreements, firing control
-      12) and `TestTheWindowIsAnsweredByTheDerivation`, whose two regression cases were RUN against
-      the merge base and FAIL there.
-
-- [x] **C2-f3b -- the destructive doors decide in DERIVED periods.** `91e7f5bf`. No decision in
-      `pay_period_admin` or the settings period list reads a column **C4** drops; the lock
-      classifier takes a `PayCalendar`, so an unmaterialised period is unconstructible rather than
-      refused; both writer doors take retiring IDS; each door reads the OWNER's day once. Closed
-      **P64**'s calendar half; opened **P70**, **P71**. Proof: `verify_pay_period_doors_cutover.py`
-      (62 periods, 0 disagreements, firing control 1).
-
-- [x] **C2-f3c -- the generation seam holds ONE read.** `53488cbf`. `GenerationSchedule` is
-      `(calendar, write_period_ids)`; no ORM `PayPeriod` reaches its ten modules, the regenerate row
-      select is a period-ID set, and `get_all_periods` and `regeneration_bound` are DELETED. Closed
-      **P68** (carry-forward render: 2 derivations -> 1). Proof: on PRODUCTION all 62 periods'
-      derived end and ordinal equal the stored ones, zero disagreements; a mutant narrowing the
-      sweep to the plan's periods is killed by NINE tests.
-
-- [x] **C2-f3d -- the Spending report's ordinal search.** `1bb99847`. The chart's twelve windows are
-      ONE `PayCalendar.window` slice, `_shift_window` is DELETED with `app/`'s last ORDINAL search,
-      and neither settled-expense query hydrates `Transaction.pay_period`. Closed **P45**, whose
-      count was wrong (**23** statements a render, or 12 where the chosen window's rows masked the
-      pk loads; now **1**); opened **P72** and **P74**. Proof: 102 windows byte-identical on
-      production, a PLANTED ordinal swap moves 112 figures on HEAD and none here, five guards RUN.
-
-- [ ] **C2-f3e -- the grid's create fragments take the ID.** The two create partials take a whole
-      ORM `PayPeriod` for the one integer they use, where their sibling `_transaction_empty_cell`
-      already takes a scalar; and the same routes' ownership resolve becomes the owner's calendar,
-      which `C2-f2b` showed makes the check structural rather than a hand-written `period.user_id`
-      comparison. Closes **P51**. A leaf since 2026-08-19: that row named the CONTAINER, which rule
-      14 says is never a thing a reader picks up and which the gate cannot see.
+- [x] **C2-f3 -- the rest, and the module's last two readers.** `4f134bf4`. Five leaves, condensed
+      into `historical/pay_calendar_c2f3_as_built_2026-08-20.md` with its must-not-undo shapes.
+      **`C11` and `C12` were promoted OUT of it 2026-08-19**: neither removes a reader of a column
+      **C4** drops, so leaving them here gated C4. Closed **P19**, **P45**, **P47**'s duplicate
+      half, **P51**, **P52**, **P64**'s calendar half, **P68**, `balance:D42`; opened **P67**,
+      **P69**-**P72**, **P74**, **P75**, `balance:N-328` and `balance:N-329`.
 
 - [ ] **C10 -- the salary package reads the OWNER's day.** Five sites answer "which paycheck am I
       in" as `period_containing(date.today())` -- `routes/salary/_helpers.py:175` and `:256`,
@@ -322,8 +307,10 @@ each one's proof. **Must not be undone**: `_PeriodSpans`, `generate_projection_p
 - [ ] **C12 -- one current-paycheck producer.** The THREE implementations become one, which needs a
       RULING first because it changes what `/savings` and `/retirement` publish. The merged producer
       gives `income_service`'s amount basis a threaded calendar, so `balance:X-i1` and this step
-      decide for each other. It also owes `paycheck_calculator.py`'s 1000-line ceiling, at EXACTLY
-      zero headroom and shrunk by no other step. Closes **P62**, **P63**, **P64**'s engine half.
+      decide for each other. It also owes `paycheck_calculator.py`'s 1000-line ceiling, which
+      `recurrence:R-F16` took from EXACTLY 1000 to 873 on 2026-08-19 -- so the headroom is real now
+      and this step's own growth is what would spend it (re-measured at C2-f3e; row **P64** and
+      section 0 said zero and were stale). Closes **P62**, **P63**, **P64**'s engine half.
 
 **`C11` and `C12` were LEAVES of `C2-f3` and were promoted OUT 2026-08-19**, on a dependency reading
 the decomposition did not have: neither removes a reader of `end_date` or `period_index`, so leaving
@@ -356,8 +343,8 @@ four surviving fences of section 1, including BA-03/BA-04 and `_pp_assert_struct
 **What deleting the fallback stops raising, which is row P35's blast radius and belongs here rather
 than in a ledger cell** (`conventions.md` rule 4). `resolve_cadence` infers an owner's cadence from
 their last period's LENGTH when they have no `budget.pay_schedule` row, `derive_periods` refuses
-anything outside 1..365, and `app/error_handlers.py` leaves the raise on a bare 500. Two renders
-joined the blast radius after C2-c widened it to every balance page:
+anything outside 1..365, and `app/error_handlers.py` leaves the raise on a bare 500. Four steps have
+joined renders to the blast radius since C2-c widened it to every balance page:
 
 - **`C2-f2b`** -- `/grid` derives the calendar BEFORE it looks at an account, so the zero-ACCOUNT
   render, which used to reach `empty_grid_view()` without one, raises with the rest.
@@ -371,6 +358,12 @@ joined the blast radius after C2-c widened it to every balance page:
   **RESET does NOT derive one**: it reads its ids through `pay_period_write.owner_period_ids`, so
   the door that rebuilds from a SUBMITTED cadence still repairs this owner -- it SUCCEEDED at the
   merge base, and that regression stood until the step's review measured it.
+- **`C2-f3e`** -- the grid's three empty-cell fragments (`/transactions/new/quick`, `/new/full`,
+  `/empty-cell`) derive it to prove the submitted `period_id` belongs to the requester, where they
+  used to read the row by primary key. Same ordering argument as `C2-f2e`'s and no stronger: a
+  fragment is only ever swapped into a `/grid` that derived one to render at all, so an owner who
+  can reach these doors has a calendar that derives -- and because htmx does not swap a 500, the
+  failure there is a click that silently does nothing rather than a visible error page.
 
 Zero affected owners on either database (re-measured 2026-08-19: one owner, a schedule row, a widest
 period of 14 days), so this is a state the fallback can produce rather than one it does.
