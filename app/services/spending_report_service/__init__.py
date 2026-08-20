@@ -35,6 +35,16 @@ chips, top movers) retired with D7: the per-period trend basis misled on a
 month-anchored page, so the surface's only change basis is now
 window-over-window.
 
+**The producer answers THREE window types and the surface exposes ONE**, which
+is the S-P1 gate ruling deferring the pay-period and year pickers rather than
+cancelling them -- so `/analytics/spending` builds only month windows and
+:func:`app.routes.analytics_view.serialize_spending_chart` has only a month
+branch.  A pay-period report is therefore computable and not renderable today.
+The arm is maintained rather than deleted because plan step **C4** drops the
+``period_index`` column every "which paycheck precedes this one" answer used to
+read, and an arm that reads it owes that conversion whichever surface reaches it
+(developer ruling 2026-08-19, at plan step C2-f3d).
+
 The Spending surface is MEASURED: settled-only, scoped to the user's active
 checking account (the audit's target-IA row).  It carries the account
 name / id and the settled-only flag so the template can label the scope on
@@ -97,7 +107,7 @@ from ._window import (
     _build_series,
     _load_window,
     _resolve_window,
-    _shift_window,
+    _series_windows,
     _window_total,
     _window_transactions,
 )
@@ -166,10 +176,16 @@ def compute_spending_report(
     txns = _window_transactions(ids, resolved)
     viewed_total = _window_total(resolved, txns)
 
+    # The chart's twelve windows are DERIVED once, off the calendar the
+    # scope already carries (plan step C2-f3d): the prior window is the
+    # second-to-last slot rather than a separate backwards step, so the
+    # figure the hero compares against and the bar beside it are one answer.
+    windows = _series_windows(ids, window)
+    prior_window = windows[-2]
+
     # The prior window loads once: its transactions feed the per-category
     # deltas AND its total feeds both the series' step-1 point and the
     # hero's vs-prior baseline (one load, three consumers that must agree).
-    prior_window = _shift_window(user_id, window, 1)
     if prior_window is None:
         prior_txns: list[Transaction] = []
         prior_total = None
@@ -177,9 +193,8 @@ def compute_spending_report(
         prior_txns, prior_total = _load_window(ids, prior_window)
 
     series = _build_series(
-        ids, window,
+        ids, windows,
         viewed_total=viewed_total,
-        prior_window=prior_window,
         prior_total=prior_total,
     )
 
