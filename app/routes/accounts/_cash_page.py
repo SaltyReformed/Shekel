@@ -23,9 +23,8 @@ can create a cycle.
 
 from flask import abort
 
-from app import ref_cache
-from app.enums import AcctCategoryEnum
 from app.models.account import Account
+from app.services.account_resolver import serves_cash_detail
 from app.utils.auth_helpers import get_or_404
 
 
@@ -42,18 +41,16 @@ def cash_detail_wrong_type(account: Account) -> bool:
     account with no ``account_type`` (degenerate / partially loaded) is
     served as a plain cash account, matching ``classify_account``'s
     None-is-PLAIN convention.
+
+    **The rule itself lives in
+    :func:`~app.services.account_resolver.serves_cash_detail`**, which this
+    inverts.  The grid's bank statement control asks the same question from
+    outside this package, and a private module cannot answer it
+    (``shekel-private-module-import``); a rule stated in two places is a rule
+    that drifts once.  This name stays because the page and its fragments
+    read as refusals (``if cash_detail_wrong_type(account): abort(404)``).
     """
-    acct_type = account.account_type
-    if acct_type is None:
-        return False
-    return bool(
-        acct_type.has_amortization
-        or acct_type.has_appreciation
-        or acct_type.category_id in (
-            ref_cache.acct_category_id(AcctCategoryEnum.RETIREMENT),
-            ref_cache.acct_category_id(AcctCategoryEnum.INVESTMENT),
-        )
-    )
+    return not serves_cash_detail(account)
 
 
 # ── Cash Detail (checking + interest + plain cash) ────────────────

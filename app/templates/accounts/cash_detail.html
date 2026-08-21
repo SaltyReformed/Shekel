@@ -28,12 +28,19 @@
     <span class="acctd-type-tag">{{ account.account_type.name if account.account_type else '--' }}</span>
   </div>
   <div class="d-flex align-items-center gap-2">
-    {# The only way in to what the BANK said (plan step bank_import:X-f6a-1).
+    {# One of two ways in to what the BANK said (plan step bank_import:X-f6a-1).
        A plain link, not a form: the page it opens only READS, and the import
-       that writes is that page's own POST. #}
+       that writes is that page's own POST.
+
+       It was the ONLY way in until the grid grew its own door, and being the
+       only one three levels down is why the developer went looking for this
+       feature and did not find it.  Both doors now NAME THE ACTION rather
+       than the filing cabinet: "Bank statements" described where the page
+       files things, so landing on it still did not read as "import the CSV
+       I just downloaded". #}
     <a class="btn btn-sm btn-outline-secondary"
        href="{{ url_for('accounts.statements', account_id=account.id) }}">
-      <i class="bi bi-bank"></i> Bank statements
+      <i class="bi bi-bank"></i> Import statements
     </a>
     {{ back_link(url_for('savings.dashboard'), 'Accounts') }}
   </div>

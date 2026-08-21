@@ -115,6 +115,7 @@ from ._reads import (
     MerchantSummary,
     ReviewBounds,
     ReviewSet,
+    awaiting_review_count,
     review_set,
 )
 from ._scope import ReviewScope
@@ -154,6 +155,7 @@ __all__ = [
     "StatedPolicies",
     "accept_match",
     "apply_reviewed",
+    "awaiting_review_count",
     "candidates_for",
     "corrected_purchase_day",
     "create_purchase_from_line",

@@ -348,6 +348,78 @@ def _could_have_been_shown(
     return window[0] <= covered[1] and window[1] >= covered[0]
 
 
+def _spoken_for(account_id: int):
+    """Return the query naming *account_id*'s lines a match already claims.
+
+    One definition of "spoken for", because two readers ask it: the review
+    screen's own list (:func:`_unmatched_lines`) and the cheap count the grid
+    renders (:func:`awaiting_review_count`).  A count that answered a
+    different question from the list it links to would be a figure
+    disagreeing with its caption.
+
+    Args:
+        account_id: The account.
+
+    Returns:
+        The query of claimed ``bank_statement_line_id`` values.
+    """
+    return (
+        db.session.query(StatementMatchMember.bank_statement_line_id)
+        .filter(
+            StatementMatchMember.account_id == account_id,
+            StatementMatchMember.bank_statement_line_id.isnot(None),
+        )
+    )
+
+
+def awaiting_review_count(account_id: int, opens: "date | None") -> int:
+    """Return how many recorded lines the review has NOT disposed of.
+
+    The grid's bank statement control renders this figure, so it is a COUNT
+    in the database rather than ``len`` over hydrated rows: the screen it
+    links to is the expensive one (:meth:`~._scope.ReviewScope.build`), and a
+    control on the app's hottest render path may not pay for it.
+
+    **It applies exactly the two predicates
+    :func:`review_set` splits on, and no others**, which is what lets the
+    number and the screen agree:
+
+    * no accepted match names the line (:func:`_spoken_for`), and
+    * the line is not BEFORE the owner's first payday
+      (:func:`_split_at_calendar_open`), because a line the pay calendar
+      never covers can never be matched -- 130 of 361 on the developer's own
+      export -- and counting those would leave the figure permanently
+      non-zero and therefore meaningless.
+
+    It deliberately does NOT run the proposer.  A line a proposal explains is
+    still work until the owner ACCEPTS it, so the count is the whole of the
+    screen's ``proposals`` plus its ``unmatched`` -- every line the review is
+    still asking about.
+
+    Args:
+        account_id: The account.
+        opens: The first day the owner's pay calendar covers
+            (:meth:`~app.services.pay_calendar.PayCalendar.opening_bound`),
+            or ``None`` for an owner with no periods at all -- in which case
+            nothing is before the calendar, matching
+            :func:`_split_at_calendar_open`.  **Taken as a parameter rather
+            than derived here**: the grid route already holds the pass's
+            memoized calendar, and a producer below the route reads the
+            pass's derivation instead of building a second one that can
+            disagree with it under READ COMMITTED.
+
+    Returns:
+        The count, ``0`` when the account has nothing recorded.
+    """
+    query = db.session.query(db.func.count(BankStatementLine.id)).filter(
+        BankStatementLine.account_id == account_id,
+        BankStatementLine.id.notin_(_spoken_for(account_id)),
+    )
+    if opens is not None:
+        query = query.filter(BankStatementLine.posted_on >= opens)
+    return query.scalar() or 0
+
+
 def _unmatched_lines(account_id: int) -> "list[BankStatementLine]":
     """Return the account's recorded lines that no match explains.
 
@@ -357,13 +429,7 @@ def _unmatched_lines(account_id: int) -> "list[BankStatementLine]":
     Returns:
         The lines, ascending by posted day then id.
     """
-    spoken_for = (
-        db.session.query(StatementMatchMember.bank_statement_line_id)
-        .filter(
-            StatementMatchMember.account_id == account_id,
-            StatementMatchMember.bank_statement_line_id.isnot(None),
-        )
-    )
+    spoken_for = _spoken_for(account_id)
     return (
         db.session.query(BankStatementLine)
         .filter(

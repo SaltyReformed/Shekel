@@ -107,6 +107,34 @@ spreadsheet that grew a real interface; the forward, period-by-period view is th
   Paid button predicates to projected-only, closing the documented Credit/Cancelled dead affordance
   on both cards.
 
+### E. Discoverability of adjacent features (added 2026-08-21)
+
+- **E1. The bank importer had no door on the grid. (FIXED 2026-08-21.)** The whole
+  `bank_import:X-f6a` importer shipped reachable only from the cash detail page, three levels from
+  the grid, behind a button labelled "Bank statements" that named the filing cabinet rather than the
+  act. The developer went looking for the feature and could not find it; that report is this
+  finding. The entrance now sits beside the anchor balance, because the two answer one question: the
+  anchor is that balance stated from memory, an imported statement is the bank's own account of it.
+  Four calls were taken with the developer rather than inferred, and are recorded first.
+  - **Beside the anchor, not a ninth navbar destination.** `navbar_audit.md` surface 7 reviewed the
+    eight-item set and returned "keep", and importing is periodic work, not a daily destination.
+  - **The door always renders**, badge or no badge. A control that appeared only once lines existed
+    could not be found by anyone who had never imported one, which is the defect itself. The badge
+    is state on a door; it is never the door.
+  - **The badge counts what the review has not disposed of**, applying exactly the two predicates
+    `statement_match.review_set` splits on: no accepted match names the line, and the line is not
+    before the owner's first payday. The second is load-bearing. 130 of 361 lines on the developer's
+    own export fall before their calendar opens and can never be matched, so counting them would pin
+    the figure permanently non-zero and the badge would stop being read.
+  - **Desktop only.** Importing means picking a downloaded file off a filesystem. Below `md` the
+    label collapses and the control renders as a bare bank glyph, so it is gated, not shrunk.
+  - **Also.** Both doors were renamed to name the act, and the two destinations registered as Ctrl+K
+    actions read off the rendered control, so the palette cannot point where the header does not.
+    Which accounts get a door is `account_resolver.serves_cash_detail`, promoted out of
+    `routes.accounts._cash_page` for this: the grid's own account rule is wider, refusing only
+    amortizing loans, so an owner with no checking account resolves a Property or an IRA onto the
+    grid, and those are exactly the kinds the statements page 404s.
+
 ## Prioritized fix list for the rebuild
 
 1. Desktop one-click mark-paid on the cell (A1 / A2 / C1).
