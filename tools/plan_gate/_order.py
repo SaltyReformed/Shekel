@@ -384,3 +384,81 @@ def description_violations() -> list[str]:
                 f"(conventions.md rule 4)",
             )
     return problems
+
+
+def row_order_violations() -> list[str]:
+    """Rule 14: the ORDER TABLE is SORTED, and holds only ranked rows.
+
+    **The arm whose absence let the document drift, added 2026-08-20.**  Every
+    other arm here grades the ``order`` COLUMN -- that ranks are dense, that no
+    two unrelated steps share one, that none precedes its own blocker -- and
+    none of them reads where a row physically SITS.  So the column stayed
+    perfect while the file stopped being sorted: `#16` sat above `#15`, three
+    recurrence rows ranked `#81`-`#83` were wedged between `#15` and `#17`, and
+    three SHIPPED rows sat inside the order table.  The gate passed 200/200
+    throughout, because nothing was looking.
+
+    Rule 14 states both predicates since 2026-08-20; it did NOT when this arm
+    was first written, and an adversarial review caught the arm citing a rule
+    for something the rule did not say -- a predicate graded but not stated is
+    a rule the reader does not have.
+
+    That matters because ``steps.md`` makes a promise no other arm can keep:
+    *"the order table below is sorted into EXECUTION ORDER. The next step is
+    its first row."*  A reader who trusts that sentence on an unsorted table
+    picks up the wrong step, and the whole registry exists so that reading one
+    row is enough.
+
+    Two predicates, and together they say "this table holds exactly the ranked
+    rows, in rank order":
+
+    * ranked rows appear in ASCENDING rank as the document reads.  Equal ranks
+      are legal and pass: an IDENTITY CLASS shares one, which rule 11 requires
+      and ``_shared_rank_problems`` is what polices;
+    * every row up to the LAST ranked one is itself ranked, so the ranked rows
+      are the document's LEADING block.  That is what catches a SHIPPED row or
+      a container left in the order table instead of moved to its own section.
+
+    **The second predicate scans from row ZERO, and an adversarial review is
+    why.**  A first version started it at the first RANKED row, which made the
+    arm blind in the one position it exists to police: staging the order
+    table's literal FIRST row as ``SHIPPED`` -- precisely the state that makes
+    ``steps.md``'s *"the next step is its first row"* false -- returned no
+    violations at all, because everything above the first ranked row was
+    outside the loop.  ``## The order`` is the first section
+    :func:`_registry.step_rows` reads, so a ranked row is expected at index 0
+    and anything unranked before the last one is misfiled.
+
+    Written without table provenance on purpose: :func:`_registry.step_rows`
+    reads all three sections into one list in document order, and a rule that
+    needed to know which section a row came from would need the reader to know
+    it too.
+
+    Returns:
+        One message per violation, each citing the rule.
+    """
+    rows = registry.step_rows()
+    ranked = [(i, row) for i, row in enumerate(rows) if row.rank is not None]
+    if not ranked:
+        return []
+    problems = []
+    for (_, before), (_, after) in zip(ranked, ranked[1:]):
+        if after.rank < before.rank:
+            problems.append(
+                f"{after.key} is ranked #{after.rank} and sits BELOW "
+                f"{before.key} at #{before.rank}.  The order table is sorted "
+                f"into execution order -- its first row is the next step, and "
+                f"an unsorted table makes that sentence false ({_RULE})",
+            )
+    last = ranked[-1][0]
+    for index in range(last):
+        row = rows[index]
+        if row.rank is None:
+            problems.append(
+                f"{row.key} is {row.state!r} and sits INSIDE the order table, "
+                f"between ranked rows.  A row with no rank is not a position: "
+                f"a container belongs in Containers and a shipped step in "
+                f"Shipped, so that every row of the order is workable "
+                f"({_RULE})",
+            )
+    return problems

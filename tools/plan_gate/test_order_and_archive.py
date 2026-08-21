@@ -455,3 +455,56 @@ class TestEveryRegistryIsUnderItsCap:
         problems = registry.registry_line_cap_violations()
         assert len(problems) == 1, problems
         assert problems[0].startswith(over) and "rule 4" in problems[0]
+
+
+class TestTheOrderTableIsSorted:
+    """conventions.md rule 14: the table is SORTED, and holds only positions.
+
+    **The arm whose absence let the live document drift.** Every other order
+    arm grades the ``order`` COLUMN and none reads where a row physically
+    SITS, so the column stayed perfect while the file stopped being sorted --
+    `#16` above `#15`, three recurrence rows at `#81`-`#83` wedged between
+    `#15` and `#17`, and three SHIPPED rows inside the order table. The gate
+    passed 200/200 the whole time.
+    """
+
+    def test_the_live_order_table_is_sorted(self):
+        """The live table reads in rank order and holds nothing else."""
+        assert not order.row_order_violations()
+
+    def test_the_live_corpus_has_enough_rows_to_grade(self):
+        """A rule with no subject is untested by the clean case above.
+
+        Two premises: several ranked rows exist, so "ascending" can fail; and
+        unranked rows exist somewhere in the file, so "contiguous" is a real
+        constraint rather than one nothing could violate.
+        """
+        rows = registry.step_rows()
+        assert sum(1 for row in rows if row.rank is not None) >= 50
+        assert any(row.rank is None for row in rows), (
+            "no unranked row anywhere -- the contiguity arm grades nothing"
+        )
+
+    def test_the_control_fires_when_a_row_sits_below_a_higher_rank(self, stage):
+        """The defect: a sorted-looking table whose first row is not next."""
+        line = row_of("steps", "| balance | X-f4 |")
+        stage("steps", line, with_cell(line, 4, "#90"))
+        problems = order.row_order_violations()
+        assert any(
+            "balance:X-f4" in p and "sits BELOW" in p for p in problems
+        ), problems
+
+    def test_the_control_fires_on_an_unranked_row_inside_the_order(self, stage):
+        """A SHIPPED row left in the order table is not a position.
+
+        This is the live defect the arm was written for: three of them sat in
+        the order table -- ``bank_import:X-f6a-4``, ``balance:X-au-c3`` and
+        ``recurrence:R-F17`` -- while every column-grading arm passed.
+        """
+        line = row_of("steps", "| balance | X-f4 |")
+        stage("steps", line, with_cell(line, 4, "SHIPPED"))
+        problems = order.row_order_violations()
+        assert any(
+            "balance:X-f4" in p and "INSIDE the order table" in p
+            for p in problems
+        ), problems

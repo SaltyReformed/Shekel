@@ -187,7 +187,8 @@ exists to end.
     its last leaf holds. **A CONTAINER is not a position.** A decomposed parent is a name for a
     group, never a thing a reader picks up, so it leaves the order entirely and says which rank it
     ticks at instead. The previous index listed `X-f`, `X-aj`, `X-i` and `X-x` as though they were
-    pickable work. **The `starts` cell is DERIVED and this rule is its reconciler**: `NOW` exactly
+    pickable work. **The TABLE is SORTED**: ranked rows ascend and are its LEADING block (ungraded
+    to 2026-08-20). **The `starts` cell is DERIVED and this rule is its reconciler**: `NOW` exactly
     when nothing unshipped blocks it, `after #N` naming the LATEST unshipped blocker's rank. Storing
     it at all is a deliberate exception to the rule against derived copies, and it is only legal
     because the gate recomputes it on every commit that touches the file -- an unreconciled copy is
