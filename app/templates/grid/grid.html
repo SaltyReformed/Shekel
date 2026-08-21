@@ -23,6 +23,47 @@
     {% else %}
     <span class="text-muted">No account configured</span>
     {% endif %}
+
+    {# The door into what the BANK said, beside the anchor because they answer
+       the same question: the anchor is this balance typed from memory, and an
+       imported statement is the bank's own account of how it got there.  It
+       was reachable only from the account detail page (three levels from
+       here), which is where the developer went looking for it and did not
+       find it.
+
+       ALWAYS rendered when the account can hold statements, badge or no
+       badge: a control that appeared only once lines existed could not be
+       found by someone who had never imported one, which is the exact failure
+       being fixed.  The badge is accent, not a money token -- lines awaiting
+       review are work outstanding, not a money state (design language D11) --
+       and the count never stands alone as the signal, since the icon and
+       label carry the meaning without it.
+
+       DESKTOP ONLY (``d-none d-md-inline-block``), matching the date-range
+       controls above rather than the Add buttons beside it.  Importing means
+       picking a downloaded CSV off a filesystem, which is a desktop act, and
+       below ``sm`` the label collapses and it renders as a bare unlabelled
+       bank glyph.  Developer decision 2026-08-20.  To surface it on mobile,
+       delete the two classes -- nothing else is conditioned on width.
+
+       ``inline-block`` and NOT ``inline-flex``: a flex container collapses
+       the leading space inside the label span, which rendered the control as
+       a glyph jammed against its own text.  Every sibling button here is
+       Bootstrap's default inline-block for the same reason. #}
+    {% if bank_control %}
+    <a class="btn btn-sm btn-outline-secondary grid-bank-door d-none d-md-inline-block"
+       href="{{ url_for('accounts.statements', account_id=bank_control.account_id) }}"
+       data-review-url="{{ url_for('accounts.review_statements', account_id=bank_control.account_id) }}"
+       title="{% if bank_control.awaiting %}{{ bank_control.awaiting }} imported bank line{{ '' if bank_control.awaiting == 1 else 's' }} still to review{% else %}Import a bank statement, or review what is already imported{% endif %}">
+      <i class="bi bi-bank"></i><span class="d-none d-sm-inline"> Import statements</span>
+      {% if bank_control.awaiting %}
+      <span class="badge rounded-pill grid-bank-badge">{{ bank_control.awaiting }}</span>
+      <span class="visually-hidden">
+        bank line{{ '' if bank_control.awaiting == 1 else 's' }} awaiting review
+      </span>
+      {% endif %}
+    </a>
+    {% endif %}
   </div>
 
   {# --- Date Range Controls (desktop only) --- #}

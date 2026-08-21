@@ -28,7 +28,10 @@ from app.services import (
     grid_view_service,
     pay_period_admin,
 )
-from app.services.account_resolver import resolve_grid_account
+from app.services.account_resolver import (
+    resolve_grid_account,
+    serves_cash_detail,
+)
 from app.services.balance_at import BalanceContext
 from app.services.cash_ledger import (
     display_amounts_by_id,
@@ -36,6 +39,7 @@ from app.services.cash_ledger import (
 )
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services.grid_view_service import RowKey
+from app.services.statement_match import awaiting_review_count
 from app.services.transaction_service import retained_settle_amounts_by_id
 from app.services.pay_calendar import DerivedPeriod, PayCadence, PeriodWindow
 from app.utils.auth_helpers import require_owner
@@ -513,6 +517,53 @@ def _build_plan_view(ctx, all_transactions, grid_view, all_categories, budgets):
     }
 
 
+class _BankControl(NamedTuple):
+    """The grid's door into what the BANK said, and whether it is waiting.
+
+    Attributes:
+        account_id: The grid account, for the statements page URL.
+        awaiting: How many recorded lines the review has not disposed of
+            (:func:`~app.services.statement_match.awaiting_review_count`).
+            ``0`` is rendered as a plain door rather than hiding it: the
+            control is how the feature is FOUND, and a badge that appears
+            only once lines exist cannot be found by someone who has never
+            imported one.
+    """
+
+    account_id: int
+    awaiting: int
+
+
+def _bank_control(account, calendar) -> "_BankControl | None":
+    """Return the grid's bank statement control, or ``None`` for no control.
+
+    **Gated on the target page's own kind rule**
+    (:func:`~app.services.account_resolver.serves_cash_detail`), not on the
+    grid's.  The two differ: :func:`~app.services.account_resolver
+    .is_cash_flow_account` refuses only amortizing loans, so an owner with no
+    checking account can have a Property or a Roth IRA resolved as their grid
+    account -- and the statements page 404s exactly those.  Rendering the
+    control off the grid's own gate would put a door onto an error page.
+
+    Args:
+        account: The resolved grid account, or ``None`` when the owner has no
+            account rows at all.
+        calendar: The read pass's memoized
+            :class:`~app.services.pay_calendar.PayCalendar`.  Threaded from
+            the route rather than re-derived, so this count and the screen it
+            links to split at the same first payday.
+
+    Returns:
+        The :class:`_BankControl`, or ``None`` when no control belongs here.
+    """
+    if account is None or not serves_cash_detail(account):
+        return None
+    return _BankControl(
+        account_id=account.id,
+        awaiting=awaiting_review_count(account.id, calendar.opening_bound()),
+    )
+
+
 @grid_bp.route("/grid")
 @login_required
 @require_owner
@@ -626,6 +677,10 @@ def index():
         # nullable this step exists to stop handing out.
         scenario_id=ctx.balance_ctx.scenario_id,
         account=ctx.account,
+        # The door into what the BANK said, beside the anchor it agrees
+        # with: both answer "what did this account really do", and the
+        # import is how the anchor stops being typed from memory.
+        bank_control=_bank_control(ctx.account, ctx.balance_ctx.calendar()),
         periods=ctx.periods,
         current_period=ctx.current_period,
         columns=grid_view.columns,
