@@ -393,7 +393,8 @@ the resolver's dispatch ORDER is a rule rather than a convenience. And the 49 ad
 "own their amount and always will", as the first draft of this sentence said: **21 of them are CC
 paybacks**, whose figure is derived from the purchases they repay and stored with no reconciler.
 That is the kind carrying NEITHER link, which is why R-FI's discriminator is declared rather than
-read off the columns, and it is now step **X-au-i**. `template_id` and `transfer_id` are mutually
+read off the columns. **That kind is no longer cut over here** -- X-au-i is withdrawn to the card
+arc, which deletes the payback outright. `template_id` and `transfer_id` are mutually
 exclusive across every row -- STRUCTURALLY since X-au-c1's `ck_transactions_one_pricing_link`,
 which widened the convention to the third link and was measured at 0 violations -- but the five rules
 are NOT a partition over those two columns (ruling R-FI). Stored-vs-derived drift TODAY is **0 rows /
@@ -407,7 +408,16 @@ hides.
   unreachable (`live_amount_overrides` merges the salary and loan halves at
   `cash_ledger/_amounts.py:684`, and the loan half feeds BOTH shadow legs, so the loan half being out
   of scope left nothing deletable), and it claimed **N-40**, which `../../plans/ledger.md` owned to
-  `X-i2`.
+  `X-i2`. **It also WITHDRAWS `X-au-i`** (developer, 2026-08-21), which leaves the order as `X-ar`
+  did: the CC payback is a PHANTOM the card arc's locked 2026-07-19 rulings already condemn -- "the
+  phantom payback dies", `CC3b` deletes it and `CC3c` deletes `credit_workflow.py` whole while
+  RENAMING `credit_payback_for_id` to `card_charge_for_id` -- so a `credit_source` relation, a ref
+  seed and a 23-row migration would buy structure on a column about to be renamed, for a kind R-FI's
+  five never included. What was LIVE in it shipped at X-au-j: **N-252**'s hand-edit refusal and
+  **N-323**'s narrowed predicate. N-243's payback bullets and N-311 pass to the card arc. The
+  `is_envelope` re-pricing measured while tracing it (`$181.58` to `$500.00` through the popover's
+  own Save) is NOT the ground: ruling **R-FK** accepted that class for SALARY at `$13,499.89`
+  (**N-261**) and put its remedy at the write DOOR.
 * [x] **X-au-a** `81138fb8` a recurring definition's amount is an effective-dated series: the model,
   the ONE write door, the read-and-correct panel, and the backfill mining what the rows record.
   **44 templates, 47 versions, 625 minable rows reproduced with 0 mismatches** on a production
@@ -417,17 +427,6 @@ hides.
   **997 of 997 rows on a production clone agree with what the app publishes, 0 refusals, `$0.00`
   drift.** **What a LATER leaf must obey**: a derived row's answer must be INVARIANT under a change
   to its own amount column -- agreement alone cannot see this resolver. Opened **N-252**, **N-253**.
-* [ ] **X-au-i** `refactor(cards): a payback is worth the purchases it repays` -- the CC PAYBACK
-  cutover, closing **N-243** and **N-252**. The kind ruling R-FI names that carries NEITHER link, so
-  no link-derived discriminator can reach it and X-au-b's dispatch places it as OWN: 21 rows on the
-  production clone, 20 of them settled. Two writers state the same figure and neither reconciles it
-  -- `credit_workflow.create_cc_payback_transaction` copies the source row's amount at the moment it
-  is marked Credit and repairs it never, and `entry_credit_workflow.sync_entry_payback` re-states it
-  as the sum of the source's credit entries on every entry mutation, unconditionally. **It must RULE
-  what a hand edit means first**: `routes/transactions/mutations.py:252` sets `is_override` only for
-  a template-linked row, so on a payback that flag is unreachable and the next sync silently reverts
-  a typed figure -- production payback 2590 is one, hand-edited to `$123.18` on 2026-06-02 against
-  credit entries summing to `$181.58`, and settled at the edited figure.
 * [ ] **X-au-c** the amount model's SEAM -- the DECOMPOSED parent of three leaves (developer,
   2026-08-12), because the census this step's own specification demanded as its first act came back
   at ~25 code reads across 15 modules and it is not one session's work. The split puts the schema
@@ -485,14 +484,12 @@ hides.
   while `loan_payment_service._manual_shadow_amount:660` reads `shadow.estimated_amount` under a
   docstring asserting that column is "NOT NULL, always the generated base" -- manual-mode loan
   payments would be broken for the whole interval between the two leaves.
-* [ ] **X-au-j** `perf(reconcile): the panel holds ONE amount basis for the pass` -- closing
-  **N-295**. `reconcile_service` prices each offered row through `transaction_service.settle_amount`
-  / `transfer_service.settle_amount`, and each builds its own `amount_basis`; a settle builds three.
-  X-au-c2b made a basis SHAREABLE within one call and closed N-268 / N-269 there, and this is the
-  same shape one tier up -- the PANEL is the caller that can hold one. It waited for X-au-c3 because
-  that step rebuilt the settle doors, and threading a basis into a signature about to change is work
-  done twice. `$0.00`: every basis answers the same figure, so what it costs is K profile lookups
-  and, once a loan payment derives, K loan resolves per panel render.
+* [x] **X-au-j** `cc7679a7` BOTH read passes hold ONE amount basis, closing **N-295**, **N-309**,
+  **N-252** and **N-323**. `$0.00`; what goes is K profile lookups and K loan resolves per pass.
+  **What a LATER leaf must obey**: the basis is a REQUIRED parameter on both `settle_amount` twins,
+  because an optional one leaves the expensive shape as what a caller gets by saying nothing -- how
+  this cost regrew after X-au-c2b closed it one tier down; and the BASELINE pin is stated once, in
+  `cash_ledger.baseline_amount_basis`, so what-if scenarios move every surface in ONE edit.
 
 * [ ] **X-au-h** `refactor(transactions): is_override says one thing` -- closes **N-238**. The flag
   carries FOUR facts, not the two the first draft named, and an adversarial review found the other
