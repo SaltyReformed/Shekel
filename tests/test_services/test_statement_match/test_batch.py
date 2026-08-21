@@ -50,6 +50,8 @@ from app.services.statement_match import (
 # module reaches into it, which is the allowance every sibling here takes.
 from app.services.statement_match import _create  # pylint: disable=protected-access
 
+from tests._test_helpers import count_amount_bases
+
 from ._builders import (
     a_bank_line,
     a_later_period,
@@ -835,9 +837,9 @@ class TestTheScopeIsDerivedONCE:
             calls = []
             real = statement_match._scope.candidates_for
 
-            def _counted(account_id, calendar):
+            def _counted(account_id, calendar, basis):
                 calls.append(account_id)
-                return real(account_id, calendar)
+                return real(account_id, calendar, basis)
 
             monkeypatch.setattr(
                 statement_match._scope, "candidates_for", _counted,
@@ -1575,3 +1577,116 @@ class TestConvergingMovesTheSameMoneyAsNotConverging:
         assert converged["balances"] == separate["balances"]
         assert converged["entries"] == separate["entries"]
         assert converged["postings"] == separate["postings"]
+
+
+class TestThePassHoldsONEAmountBasis:
+    """Plan step **X-au-j**, finding **N-309**: the derivations are the PASS's.
+
+    An :class:`~app.services.cash_ledger.AmountBasis` holds the owner's live
+    derivations -- the paycheck engine run over the whole pay-period set, and
+    each loan's P&I, payment day and escrow history.  ``amount_basis``'s own
+    docstring says calling those per row is finding **N-228**, and N-309
+    measured this pass doing exactly that: **609 salary-pricing and 609
+    loan-pricing constructions** over 825 candidates, `4.7 s` to render, with
+    the accept door paying it all again.
+
+    It is :class:`TestTheScopeIsDerivedONCE` one column over and it fails the
+    same way: a later change that let a producer build its own would restore
+    the cost in SILENCE, because every figure would still be right.  Only the
+    wall clock moves, which is why the count is asserted and the timing is not.
+    """
+
+    def test_one_basis_serves_every_candidate_the_pass_prices(
+        self, app, db, seed_user, monkeypatch,
+    ):
+        """The firing control: ONE construction, however many rows are priced.
+
+        **The rows are PROJECTED deliberately, and that is what makes this
+        control sharp.**  A settled row is valued from its own record
+        (``cash_ledger.settled_cash_leg``) and never reaches the resolver, so a
+        pass of settled rows builds one basis whether or not this step shipped
+        -- the assertion would hold over a broken tree.  Each of these prices.
+        """
+        with app.app_context():
+            for index in range(8):
+                a_transaction(
+                    seed_user, name=f"Bill {index}",
+                    amount=f"{100 + index}.00",
+                )
+            _db.session.commit()
+
+            built = count_amount_bases(monkeypatch)
+            scope = statement_match.ReviewScope.build(
+                seed_user["user"].id, seed_user["account"].id,
+            )
+
+            assert len(scope.candidates.rows) >= 8, (
+                "the pass must price several rows -- otherwise one basis and "
+                "one per row are the same number and this grades nothing"
+            )
+            assert len(built) == 1, (
+                f"the pass built {len(built)} amount bases for "
+                f"{len(scope.candidates.rows)} candidates; X-au-j makes it one"
+            )
+            assert built == [
+                (seed_user["user"].id, seed_user["scenario"].id),
+            ]
+
+    def test_the_accept_door_prices_against_the_PASS_basis(
+        self, app, db, seed_user, monkeypatch,
+    ):
+        """And the accept door builds none of its own either.
+
+        ``repriced`` re-derives every row an act names -- that is finding
+        N-306's fix and it stays -- but re-deriving a ROW is not re-deriving
+        the OWNER: N-309's measurement says the accept door paid for the whole
+        salary and loan derivation again, per act, on top of the pass that had
+        just built one.  Asserted separately from the scope build above,
+        because the two are different callers and a change could restore the
+        cost at either.
+        """
+        with app.app_context():
+            statement = an_import(seed_user)
+            day = seed_user["bootstrap_period"].start_date
+            items = []
+            for index in range(4):
+                line = a_bank_line(
+                    seed_user, statement, amount=f"-{100 + index}.00",
+                    posted_on=day, sequence_in_group=index,
+                )
+                # PROJECTED, for the reason the control above states: a
+                # settled row is valued from its record and never reaches the
+                # resolver, so a batch of settled rows would build one basis
+                # whether or not this step shipped.  A first draft of THIS
+                # case used settled rows and passed against a planted defect.
+                row = a_transaction(
+                    seed_user, name=f"Bill {index}", amount=f"{100 + index}.00",
+                )
+                items.append(_match(
+                    seed_user, lines=[line], transactions=[row],
+                ))
+
+            built = count_amount_bases(monkeypatch)
+            outcome = _batch(seed_user, matches=items)
+
+            assert outcome.applied_count == 4
+            # ONE for the pass, plus ONE per SETTLED ROW -- and the second term
+            # is a different question that this step does not answer.  A settle
+            # is a single-row WRITE and resolves its own basis by design
+            # (``transaction_service._settle._manual_branch_figures``: "ONE
+            # settle resolves ONE basis"); what X-au-j fixes is the READ under
+            # it, which used to build one per row PRICED on top of all of that.
+            #
+            # **Counted in ROWS, not matches**, because those are two different
+            # numbers and only the fixture makes them equal: each match here
+            # names exactly one transaction.  A first version asserted
+            # ``1 + outcome.applied_count`` and would have gone silently wrong
+            # -- while still printing the per-settle rule -- the moment a case
+            # gave one match two rows (adversarial review 2026-08-20).
+            settled_rows = sum(len(item.transaction_ids) for item in items)
+            assert settled_rows == 4, "the fixture pins one row per match"
+            assert len(built) == 1 + settled_rows, (
+                f"{len(built)} amount bases were built settling "
+                f"{settled_rows} rows; the pass holds ONE for every row it "
+                "prices, and each settle resolves its own"
+            )

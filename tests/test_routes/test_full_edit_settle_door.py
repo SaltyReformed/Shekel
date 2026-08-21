@@ -42,6 +42,7 @@ from app.services.state_machine import allowed_transitions
 from app.utils.dates import display_today
 from tests._test_helpers import (
     add_entry,
+    amount_basis_for,
     create_envelope_txn,
     net_posted_by_day,
     settlement_basis_id,
@@ -804,7 +805,7 @@ class TestWhatAReSettleBooksIsWhatTheOfferSHOWED:
             txn = self._reverted_bill(seed_user, seed_periods_today[3])
             txn_id = txn.id
 
-            offered = transaction_service.settle_amount(txn)
+            offered = transaction_service.settle_amount(txn, amount_basis_for(txn))
             transaction_service.settle_transaction(txn, submitted=offered)
             db.session.commit()
 

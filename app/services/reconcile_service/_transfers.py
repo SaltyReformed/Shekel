@@ -56,7 +56,7 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import transfer_service
-from app.services.cash_ledger import AnchorPoint
+from app.services.cash_ledger import AmountBasis, AnchorPoint
 from app.services.reconcile_service import _rows
 from app.services.reconcile_service._offers import (
     OfferKind,
@@ -165,6 +165,7 @@ def arm(owner_id: int) -> _rows.Arm:
 
 def outstanding_transfers(
     owner_id: int, account_id: int, anchor: AnchorPoint,
+    basis: "AmountBasis",
 ) -> "dict[int, OutstandingTransaction]":
     """Return this arm's offers, ``{shadow transaction id: offer}``.
 
@@ -198,6 +199,13 @@ def outstanding_transfers(
         anchor: The governing assertion -- the STATEMENT being
             reconciled against.  Its ``observed_on`` bounds the offer
             set and its id is what a tick records (ruling **R-FL**).
+        basis: The PANEL's :class:`~app.services.cash_ledger.AmountBasis`,
+            built ONCE by :func:`~._assemble.outstanding_set` and threaded
+            (plan step X-au-j, finding **N-295**).  This is the EXPENSIVE half of that
+            finding: each offered shadow built its own basis and so paid the
+            scenario-wide loan-config join, plus a full loan resolve for every
+            derive-mode payment -- finding **N-269** reintroduced one tier up,
+            exactly as N-295's impact column predicted.
 
     Returns:
         ``{transaction_id: OutstandingTransaction}`` keyed on the SHADOW's own
@@ -212,7 +220,7 @@ def outstanding_transfers(
         shadow.id: OutstandingTransaction(
             transaction_id=shadow.id,
             attributed_on=_rows.attributed_on(shadow),
-            amount=transfer_service.settle_amount(shadow),
+            amount=transfer_service.settle_amount(shadow, basis),
             # Always the whole figure: a shadow can hold no entries, so there
             # is no card half for the statement to disagree with (N-226).
             cash_amount=None,

@@ -64,7 +64,11 @@ from app.services import (
 )
 from app.services.generation_schedule import GenerationSchedule
 from app.utils.dates import attribution_date, display_today
-from tests._test_helpers import create_transfer, settlement_basis_id
+from tests._test_helpers import (
+    amount_basis_for,
+    create_transfer,
+    settlement_basis_id,
+)
 from tests.test_integration.test_loan_transfer_live_amount import (
     _build_derived_loan_transfer,
 )
@@ -344,7 +348,7 @@ class TestTheSettleFreezeIsTheSERVICEs:
         with app.app_context():
             xfer, shadow = _derived_loan_transfer(seed_user, seed_periods)
 
-            offered = transfer_service.settle_amount(shadow)
+            offered = transfer_service.settle_amount(shadow, amount_basis_for(shadow))
             assert offered == _LIVE_PITI
 
             transfer_service.update_transfer(
@@ -743,7 +747,7 @@ class TestATransfersOfferIsWhatItsReSettleBOOKS:
             assert expense.settled_on is None
 
             # THE CLAIM: what the panel would offer is what a tick will book.
-            offered = transfer_service.settle_amount(expense)
+            offered = transfer_service.settle_amount(expense, amount_basis_for(expense))
             assert offered == Decimal("95.50"), (
                 f"the panel would offer {offered} for a transfer whose "
                 "re-settle books its retained correction"

@@ -44,6 +44,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.services import pay_calendar
+from app.services.cash_ledger import AmountBasis, baseline_amount_basis
 
 from ._candidates import candidates_for, destinations_for
 from ._offers import Candidates, PurchaseDestination
@@ -66,6 +67,20 @@ class ReviewScope:
             own, and a creation filing a purchase into an envelope whose
             payback was soft-deleted reaches it.  Narrowing the claim rather
             than widening the parameter, because that module is another arc's.
+        basis: The owner's :class:`~app.services.cash_ledger.AmountBasis`.
+            ONE per pass, for the reason ``calendar`` above it is one (plan
+            step X-au-j, finding **N-309**): every producer under a read pass
+            takes the pass's derivations rather than building its own.  It was
+            built PER PRICED ROW until this step -- **609 salary-pricing and
+            609 loan-pricing constructions** over 825 candidates, `4.7 s` to
+            render, with the accept door paying it all again.
+
+            **It belongs in the scope on the scope's own rule**, which is that
+            a scope holds what a pass CANNOT change: a basis carries the
+            owner's salary derivation and the scenario's loan derivation, and
+            no act this package performs writes a salary profile, a payday, a
+            loan parameter or an escrow line.  It holds no per-row answer, so
+            :func:`~._candidates.repriced` still re-reads every row it values.
         candidates: Every row the account could offer, priced
             (:func:`~._candidates.candidates_for`), before any claim is
             narrowed out.
@@ -77,6 +92,7 @@ class ReviewScope:
     owner_id: int
     account_id: int
     calendar: "pay_calendar.PayCalendar"
+    basis: AmountBasis
     candidates: Candidates
     destinations: "tuple[PurchaseDestination, ...]"
 
@@ -101,12 +117,35 @@ class ReviewScope:
                 without the calendar that says which paycheck it is budgeted
                 in, and answering anyway is the unbounded state finding
                 **N-312** records.
+            BaselineMissingError: From
+                :func:`~app.services.scenario_resolver.require_baseline_scenario`,
+                answered by the application-level handler that renders the
+                setup-recovery page (ruling **R-BW**).  The RAISING form is
+                right here on that ruling's own criterion: this pass's answer
+                is UNDEFINED without a scenario, because a basis prices rows
+                from a scenario's salary profiles and a scenario's loans and
+                there is no honest figure to publish when nobody can say
+                which.
         """
         calendar = pay_calendar.calendar_for(owner_id)
+        # ONE basis for the pass (plan step X-au-j, finding **N-309**).  The
+        # BASELINE pin and its Phase-1 deferral are stated once, in
+        # ``cash_ledger.baseline_amount_basis``; it matches the ground
+        # ``_candidates._transaction_candidates`` already gives for not
+        # filtering the candidate scan on ``scenario_id``.
+        #
+        # A foreign-scenario row is REPORTED rather than raised in this
+        # package: ``_candidates._price`` catches ``AmountUnresolvable`` and
+        # the row leaves the candidate set into ``unpriceable``, which the
+        # screen counts.  Unreachable today, and NOT the same answer the
+        # reconcile panel gives -- said here because a first draft of this
+        # comment claimed both passes "fail loud" and only one does.
+        basis = baseline_amount_basis(owner_id)
         return cls(
             owner_id=owner_id,
             account_id=account_id,
             calendar=calendar,
-            candidates=candidates_for(account_id, calendar),
+            basis=basis,
+            candidates=candidates_for(account_id, calendar, basis),
             destinations=tuple(destinations_for(owner_id, account_id)),
         )

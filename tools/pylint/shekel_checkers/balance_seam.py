@@ -409,6 +409,11 @@ _FENCED_MODULE_RULINGS = {
         # a status, an entered actual and an envelope's purchases.  Nothing here
         # folds, dates, sums, or reads an anchor.
         "amount_basis",
+        # Its BASELINE-pinned form (plan step X-au-j): the same constructor
+        # with the Phase-1 scenario pin resolved, stated once for the three
+        # surfaces that make it.  Non-producer for the identical reason --
+        # it resolves nothing, folds nothing, and reads no anchor.
+        "baseline_amount_basis",
         "amount_rule",
         "resolve_transaction_amount",
         "resolve_transfer_amount",

@@ -30,10 +30,8 @@ from app.services.status_seam import (
     correction_record,
     figure_for_status,
 )
-from app.services.transaction_service._settle import (
-    settle_transaction,
-    settles_from_entries,
-)
+from app.services.transaction_service._row_rules import settles_from_entries
+from app.services.transaction_service._settle import settle_transaction
 from app.services.transaction_service._status_rules import (
     reject_mismatched_settled_status,
 )
@@ -220,7 +218,7 @@ def _correction_for_status(
         return None
     submitted = figure
     # **The door owns its own precondition**, which is the rule
-    # :func:`._settle.reject_unsettleable` states for the settle verbs: an
+    # :func:`._row_rules.reject_unsettleable` states for the settle verbs: an
     # envelope's figure IS the sum of its purchases (ruling **R-FF**), so a
     # typed one would be written and then contradicted by the row's own
     # children.  The PATCH handler refuses it first with a message naming the

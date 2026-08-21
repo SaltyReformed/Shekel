@@ -24,7 +24,7 @@ from app.models.pay_period import PayPeriod
 from app.services import pay_calendar
 from app.services.statement_match import RowKind, candidates_for
 
-from ._builders import a_purchase, a_transaction
+from ._builders import a_basis, a_purchase, a_transaction
 
 
 def _candidate(seed_user, row_id, kind):
@@ -32,6 +32,7 @@ def _candidate(seed_user, row_id, kind):
     rows = candidates_for(
         seed_user["account"].id,
         pay_calendar.calendar_for(seed_user["user"].id),
+        a_basis(seed_user),
     ).rows
     return next(
         (r for r in rows if r.row_id == row_id and r.kind is kind), None,
@@ -119,7 +120,9 @@ class TestTheCalendarIsTheOwnershipSCOPE:
             db.session.commit()
 
             calendar = pay_calendar.calendar_for(seed_user["user"].id)
-            rows = candidates_for(seed_user["account"].id, calendar).rows
+            rows = candidates_for(
+                seed_user["account"].id, calendar, a_basis(seed_user),
+            ).rows
 
             assert rows
             assert all(row.expected_window is not None for row in rows)

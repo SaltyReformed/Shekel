@@ -1482,3 +1482,165 @@ class TestASettledPaybackCannotBeReDerived:
                 "left the account, erased with no refusal"
             )
             assert settled_figure(reloaded) == Decimal("100.00")
+
+
+class TestASettledPaybackWithDRIFTStillAdmitsUnrelatedEdits:
+    """Finding **N-323**: the guard's POLICY is right, its PREDICATE was wider.
+
+    The refusal exists because a settled payback records what MOVED, so a later
+    card purchase cannot be re-derived underneath it -- that stays.  What was
+    wrong is the question it asked: it compared the recorded figure against the
+    credit sum NOW and refused whenever they differed AT ALL, so a payback
+    already carrying drift refused every subsequent edit on its envelope,
+    including edits that cannot touch the credit sum.
+
+    **Measured on the developer's production clone**: envelope 2275's payback
+    2457 recorded ``$50.80`` against ``$49.52`` of credit entries, and envelope
+    2276's payback 2590 recorded ``$123.18`` against ``$181.58`` -- ``$59.68``
+    of drift no screen reports.  Six debit purchases sit under those two
+    envelopes, and **5 of 124 statement proposals worth `$706.35` could not be
+    accepted at all**, because accepting one stamps a debit purchase's bank
+    posting day and that ran into a guard about credit.
+    """
+
+    def _drifted(self, txn, user):
+        """Return a payback that RECORDED less than its envelope's card spend.
+
+        **Built through a real door rather than by writing the column**, so the
+        state under test is one the app can actually reach: the reconcile
+        panel offers a payback as CORRECTABLE (``is_correctable`` is ``not
+        settles_from_entries``, and a payback holds no entries of its own), so
+        a tick may book a figure of the user's rather than the plan.  Settling
+        ``$100.00`` against ``$150.00`` of credit purchases is exactly the
+        shape production carries -- payback 2590 recorded ``$123.18`` against
+        ``$181.58`` -- and it leaves ``$50.00`` of drift that no screen reports.
+
+        Returns:
+            ``(payback, entry)`` -- the drifted payback and its credit purchase.
+        """
+        entry = entry_service.create_entry(
+            transaction_id=txn.id, user_id=user.id,
+            details=entry_service.EntryDetails(
+                amount=Decimal("150.00"), description="Card buy",
+                purchased_on=date(2026, 1, 5), is_credit=True,
+            ),
+        )
+        payback = sync_entry_payback(txn.id, user.id)
+        db.session.flush()
+        transaction_service.settle_transaction(
+            payback, submitted=Decimal("100.00"),
+        )
+        db.session.flush()
+        # The drift itself, asserted so the cases below cannot silently grade
+        # a payback whose record and card spend agree -- against which the
+        # old predicate and the new one are the same guard.
+        assert settled_figure(payback) == Decimal("100.00")
+        # Queried rather than read off ``txn.entries``: ``sync_entry_payback``
+        # expires that collection, so the relationship is stale here and a
+        # stale read would assert 0 and pass for the wrong reason.
+        assert db.session.query(
+            db.func.coalesce(db.func.sum(TransactionEntry.amount), 0),
+        ).filter(
+            TransactionEntry.transaction_id == txn.id,
+            TransactionEntry.is_credit.is_(True),
+        ).scalar() == Decimal("150.00")
+        return payback, entry
+
+    def test_a_debit_purchases_posting_day_can_still_be_stamped(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The case N-323 measured, worth `$706.35` of blocked acceptances.
+
+        Stamping ``settled_on`` on a DEBIT purchase changes no credit entry, so
+        the credit sum is identical before and after -- and the guard has
+        nothing to say about it.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+            payback, _ = self._drifted(txn, user)
+
+            debit = entry_service.create_entry(
+                transaction_id=txn.id, user_id=user.id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("25.00"), description="Cash buy",
+                    purchased_on=date(2026, 1, 9), is_credit=False,
+                ),
+            )
+            # Drift, created after the settle exactly as production's was.
+            entry_service.update_entry(
+                debit.id, user.id, amount=Decimal("30.00"),
+            )
+            db.session.flush()
+
+            # THE ACT: record the day the bank took that debit purchase.
+            entry_service.update_entry(
+                debit.id, user.id, settled_on=date(2026, 1, 11),
+            )
+            db.session.flush()
+
+            assert db.session.get(
+                TransactionEntry, debit.id,
+            ).settled_on == date(2026, 1, 11)
+            # And the settled payback is untouched: its record is its record.
+            assert settled_figure(payback) == Decimal("100.00")
+
+    def test_a_write_that_DOES_move_the_credit_total_is_still_refused(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The policy half, unchanged -- narrowing is not deleting.
+
+        Without this the case above would pass for a guard that had simply been
+        removed, which is the outcome a first draft of X-au-i actually reached
+        before a test named for the policy caught it.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+            payback, _ = self._drifted(txn, user)
+
+            with pytest.raises(ValidationError) as exc:
+                entry_service.create_entry(
+                    transaction_id=txn.id, user_id=user.id,
+                    details=entry_service.EntryDetails(
+                        amount=Decimal("50.00"), description="Second card buy",
+                        purchased_on=date(2026, 1, 9), is_credit=True,
+                    ),
+                )
+
+            assert "has settled at" in str(exc.value)
+            assert settled_figure(payback) == Decimal("100.00")
+
+    def test_a_DEBIT_amount_edit_cannot_move_the_credit_total_either(
+        self, app, db, seed_user, seed_periods, seed_entry_template,
+    ):
+        """The case a field-NAME predicate still gets wrong.
+
+        A first narrowing asked "was ``amount`` or ``is_credit`` submitted",
+        reusing the constant that names what re-costs a ROW.  That still
+        refuses this edit: ``amount`` was submitted, but on a DEBIT purchase,
+        which is not in the credit sum at all.  The shipped predicate compares
+        the entry's own CONTRIBUTION to that sum before and after, so it
+        answers every combination rather than the two that were remembered.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            user = seed_user["user"]
+            payback, _ = self._drifted(txn, user)
+
+            debit = entry_service.create_entry(
+                transaction_id=txn.id, user_id=user.id,
+                details=entry_service.EntryDetails(
+                    amount=Decimal("25.00"), description="Cash buy",
+                    purchased_on=date(2026, 1, 9), is_credit=False,
+                ),
+            )
+            entry_service.update_entry(
+                debit.id, user.id, amount=Decimal("40.00"),
+            )
+            db.session.flush()
+
+            assert db.session.get(
+                TransactionEntry, debit.id,
+            ).amount == Decimal("40.00")
+            assert settled_figure(payback) == Decimal("100.00")

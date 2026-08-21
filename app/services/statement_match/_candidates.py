@@ -177,7 +177,7 @@ def unmatched_destinations(
     ]
 
 
-def _price(txn: Transaction) -> "Decimal | None":
+def _price(txn: Transaction, basis: "cash_ledger.AmountBasis") -> "Decimal | None":
     """Return *txn*'s signed cash effect, or ``None`` when no rule prices it.
 
     The one branch in this module, and it is the settled / projected split
@@ -217,6 +217,16 @@ def _price(txn: Transaction) -> "Decimal | None":
 
     Args:
         txn: The row to price, with ``entries`` loaded.
+        basis: The PASS's
+            :class:`~app.services.cash_ledger.AmountBasis`, built once by
+            :meth:`~._scope.ReviewScope.build` and threaded (plan step
+            X-au-j).  Every offered row built its own until then, which finding
+            **N-309** measured at **609 salary-pricing and 609 loan-pricing
+            constructions** over 825 candidates and `4.7 s` to render -- and
+            ``amount_basis``'s own docstring had already named calling the
+            derivations per row as finding **N-228**.  The same reason the
+            calendar is a parameter one tier up, and the same shape a balance
+            pass threads its ``BalanceContext`` for.
 
     Returns:
         Its signed cash effect on this account, or ``None`` when the amount
@@ -229,7 +239,7 @@ def _price(txn: Transaction) -> "Decimal | None":
     try:
         if txn.status.is_settled:
             return cash_ledger.settled_cash_leg(txn)
-        return cash_ledger.cash_leg_of(txn, settle_amount(txn))
+        return cash_ledger.cash_leg_of(txn, settle_amount(txn, basis))
     except AmountUnresolvable:
         return None
 
@@ -339,7 +349,9 @@ def transaction_candidate(
     )
 
 
-def repriced(row: CandidateRow, calendar) -> "CandidateRow | None":
+def repriced(
+    row: CandidateRow, calendar, basis: "cash_ledger.AmountBasis",
+) -> "CandidateRow | None":
     """Return *row* as it stands NOW, re-read and re-valued.
 
     **The scope answers WHICH rows an act may reach; this answers what one of
@@ -371,6 +383,18 @@ def repriced(row: CandidateRow, calendar) -> "CandidateRow | None":
         row: The candidate the scope offered.
         calendar: The pass's
             :class:`~app.services.pay_calendar.PayCalendar`.
+        basis: The pass's
+            :class:`~app.services.cash_ledger.AmountBasis` (plan step X-au-j).
+            **Sharing it does NOT weaken the re-derivation this function
+            exists for**, and the counterexample above is why it cannot: an
+            :class:`~app.services.cash_ledger.AmountBasis` holds the owner's
+            salary and loan DERIVATIONS, never a per-row answer, and the
+            sibling write that defect turns on writes a ROW's own column.
+            This re-reads the row and its entries from the database either
+            way.  Nothing an accept act does -- settling rows, creating
+            purchases -- writes a salary profile, a payday or a loan
+            parameter, which is the same argument that lets the calendar
+            beside it be shared across the pass.
 
     Returns:
         The row as it stands now, or ``None`` when it has gone, cannot be
@@ -385,7 +409,7 @@ def repriced(row: CandidateRow, calendar) -> "CandidateRow | None":
     txn = db.session.get(Transaction, row.row_id)
     if txn is None:
         return None
-    amount = _price(txn)
+    amount = _price(txn, basis)
     if amount is None:
         return None
     return transaction_candidate(txn, calendar, amount)
@@ -393,6 +417,7 @@ def repriced(row: CandidateRow, calendar) -> "CandidateRow | None":
 
 def _transaction_candidates(
     account_id: int, calendar, period_ids: "set[int]",
+    basis: "cash_ledger.AmountBasis",
 ) -> "tuple[list[CandidateRow], list[int]]":
     """Return the transactions on *account_id* a statement could be showing.
 
@@ -451,6 +476,10 @@ def _transaction_candidates(
         period_ids: The saved period ids of that same calendar, resolved ONCE
             by :func:`candidates_for` and threaded rather than re-derived per
             arm.
+        basis: The pass's :class:`~app.services.cash_ledger.AmountBasis`,
+            threaded for exactly the reason ``period_ids`` above it is (plan
+            step X-au-j): one derivation the whole pass shares, resolved once
+            and never rebuilt under it.
 
     Returns:
         ``(candidates, unpriceable)`` -- one
@@ -485,7 +514,7 @@ def _transaction_candidates(
     candidates = []
     unpriceable = []
     for txn in rows:
-        amount = _price(txn)
+        amount = _price(txn, basis)
         if amount is None:
             unpriceable.append(txn.id)
             continue
@@ -560,7 +589,9 @@ def _purchase_candidates(
     )
 
 
-def candidates_for(account_id: int, calendar) -> Candidates:
+def candidates_for(
+    account_id: int, calendar, basis: "cash_ledger.AmountBasis",
+) -> Candidates:
     """Return every row on *account_id* a statement could be showing.
 
     **The ONE entry point, and the reason it exists is that the two arms share
@@ -597,6 +628,14 @@ def candidates_for(account_id: int, calendar) -> Candidates:
             whose rows may be offered and the two could disagree.  Nothing here
             re-derives it -- a producer that rebuilt its caller's pass would be
             the copy this parameter exists to remove.
+        basis: The pass's
+            :class:`~app.services.cash_ledger.AmountBasis`, built by
+            :meth:`~._scope.ReviewScope.build` (plan step X-au-j, finding
+            **N-309**).  It is a parameter for exactly the reason stated one
+            column up and it is REQUIRED for exactly that reason too: a
+            producer that built its own would be the copy the parameter exists
+            to remove, and defaulting it would leave the expensive shape as
+            what a caller gets by saying nothing.
 
     Returns:
         A :class:`~._offers.Candidates`.  Its ``rows`` are the transactions and
@@ -616,7 +655,7 @@ def candidates_for(account_id: int, calendar) -> Candidates:
         if period.period_id is not None
     }
     transactions, unpriceable = _transaction_candidates(
-        account_id, calendar, period_ids,
+        account_id, calendar, period_ids, basis,
     )
     return Candidates(
         rows=transactions + _purchase_candidates(account_id, period_ids),

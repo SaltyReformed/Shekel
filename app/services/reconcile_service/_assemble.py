@@ -50,7 +50,7 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
-from app.services.cash_ledger import AnchorPoint
+from app.services.cash_ledger import AnchorPoint, baseline_amount_basis
 
 from . import _purchases, _rows, _transactions, _transfers
 from ._offers import (
@@ -247,6 +247,16 @@ def outstanding_set(
             through both halves is what stops the offer set and the tick
             describing different statements.
 
+    Raises:
+        BaselineMissingError: From
+            :func:`~app.services.scenario_resolver.require_baseline_scenario`,
+            answered by the application-level handler that renders the
+            setup-recovery page (ruling **R-BW**).  The RAISING form is right
+            on that ruling's own criterion: the panel prices every offer from
+            a scenario's salary profiles and a scenario's loans, so without one
+            there is no honest figure to publish -- and this panel's figures are
+            what a tick BOOKS.
+
     Returns:
         The :class:`~app.services.reconcile_service.OutstandingSet`, its
         ``groups`` ordered by section and then by each block's oldest offer
@@ -264,15 +274,36 @@ def outstanding_set(
     blocks = _purchases.outstanding_purchases(
         owner_id, account_id, anchor.observed_on,
     )
+    # **ONE amount basis for the whole panel** (plan step X-au-j, finding
+    # **N-295**).  Both source-row arms price every offered row through their
+    # own ``settle_amount``, and each of those built its own basis -- so K
+    # offered paychecks ran the paycheck engine K times over the owner's whole
+    # pay-period set, and K offered shadows each paid the scenario-wide
+    # loan-config join plus a full loan resolve.  That is finding **N-228** one
+    # tier up, which ``amount_basis``'s own docstring names, and N-295 records
+    # it at these two call sites by name.
+    #
+    # The BASELINE pin and its Phase-1 deferral are stated ONCE, in
+    # ``cash_ledger.baseline_amount_basis`` -- three surfaces make the same
+    # pin and spelling it at each was three places to edit when what-if
+    # scenarios land.  It matches the ground ``_rows.outstanding_scope`` gives
+    # for not filtering the offer set on ``scenario_id``.
+    #
+    # **A foreign-scenario row would RAISE out of this panel**, where the
+    # review pass one package over reports it instead (``_candidates._price``
+    # catches ``AmountUnresolvable`` and drops the row into ``unpriceable``).
+    # The two passes answer it differently on purpose and neither is reachable
+    # today; stated so the next reader does not assume symmetry.
+    basis = baseline_amount_basis(owner_id)
     # The two source-row arms union into ONE map, and they can: their scopes
     # are complements (``transfer_id IS NULL`` against ``IS NOT NULL``), so no
     # id is in both and the merge cannot silently drop one arm's offer.
     settles = {
         **_transactions.outstanding_transactions(
-            owner_id, account_id, anchor,
+            owner_id, account_id, anchor, basis,
         ),
         **_transfers.outstanding_transfers(
-            owner_id, account_id, anchor,
+            owner_id, account_id, anchor, basis,
         ),
     }
     parents = set(blocks) | set(settles)

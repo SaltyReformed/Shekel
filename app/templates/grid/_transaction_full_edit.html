@@ -135,14 +135,45 @@
        stale-form backstop.  The default keeps legacy render sites without
        the context permissive. #}
     {% set correctable = amount_correctable if amount_correctable is defined else true %}
+    {# **The ESTIMATE is withdrawn on a CC PAYBACK.**  A payback is worth the
+       card spend of the row it repays, so a figure typed here is not a
+       correction the app can honour -- on an entry-backed payback it is
+       written and then silently overwritten by the next purchase edit on the
+       source (finding N-252, $58.40 live on payback 2590), and on a row-backed
+       one it sticks and quietly stops matching the card spend.
+       ``budget_correctable`` is ``not transaction_service.repays_card_spend``,
+       resolved in the route -- the template displays it, it does not compute
+       it.  The default keeps legacy render sites without the context
+       permissive, exactly as ``amount_correctable`` above does. #}
+    {% set budget_editable = budget_correctable if budget_correctable is defined else true %}
+    {% set from_purchases = budget_from_purchases if budget_from_purchases is defined else true %}
     <div class="row g-1 mb-2">
       <div class="col">
         <label class="form-label mb-0 small">Estimated</label>
+        {% if budget_editable %}
         <input type="number" step="0.01" inputmode="decimal" name="estimated_amount"
                value="{{ budgets[txn.id] }}"
                class="form-control form-control-sm"
                placeholder="Estimated amount"
                {{ 'disabled' if locked else '' }}>
+        {% else %}
+        <div class="form-control form-control-sm bg-body-secondary">{{ money(budgets[txn.id]) }}</div>
+        {# The repair DIFFERS by payback kind and naming the wrong one is a
+           dead end: a row-backed payback's source has no purchases to send
+           anyone to. ``budget_from_purchases`` is
+           ``transaction_service.repays_tracked_purchases``, resolved in the
+           route. #}
+        <div class="form-text small">
+          {% if from_purchases %}
+          This is what went on the card. Change the purchases it repays, not
+          this figure.
+          {% else %}
+          This is what went on the card. To change it, press <strong>Undo
+          CC</strong> on the row it repays, correct that row, then mark it
+          Credit again.
+          {% endif %}
+        </div>
+        {% endif %}
       </div>
       {# **The ACTUAL: what the bank really took** (developer ruling,
          2026-08-17).  The estimate beside it and this are two DIFFERENT facts

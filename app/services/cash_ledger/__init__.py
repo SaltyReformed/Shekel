@@ -91,10 +91,13 @@ from app.services.row_valuation import (
     recorded_amounts_by_id,
     settled_amounts_by_id,
 )
-from ._amount_source import (
+from ._amount_basis import (
     AmountBasis,
-    AmountRule,
     amount_basis,
+    baseline_amount_basis,
+)
+from ._amount_source import (
+    AmountRule,
     amount_rule,
     amounts_by_id,
     resolve_transaction_amount,
@@ -161,6 +164,7 @@ __all__ = [
     "ReconciledThrough",
     "StatementCoverage",
     "amount_basis",
+    "baseline_amount_basis",
     "amount_rule",
     "amounts_by_id",
     "cash_anchor_facts",

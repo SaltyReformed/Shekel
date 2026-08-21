@@ -56,6 +56,7 @@ from app.services.statement_match import _create  # pylint: disable=protected-ac
 
 from ._builders import (
     a_bank_line,
+    a_basis,
     a_later_period,
     a_purchase,
     a_scope,
@@ -870,6 +871,7 @@ class TestWhatTheScreenMayOFFER:
             leg = statement_match.candidates_for(
                 seed_user["account"].id,
                 pay_calendar.calendar_for(seed_user["user"].id),
+                a_basis(seed_user),
             )
             worth = next(
                 row.cash_amount for row in leg.rows

@@ -31,12 +31,17 @@ from app.services import (
     status_seam,
     transfer_service,
 )
+from app.services.cash_ledger import amount_basis
 from app.services.reconcile_service import _transactions
 from app.utils.log_events import (
     EVT_TRANSACTIONS_RECONCILED,
     EVT_TRANSFERS_RECONCILED,
 )
-from tests._test_helpers import settlement_basis_id, settlement_if_settling
+from tests._test_helpers import (
+    count_amount_bases,
+    settlement_basis_id,
+    settlement_if_settling,
+)
 from tests._test_helpers import create_transfer
 from app.services.row_valuation import owned_contribution, settled_figure
 
@@ -1138,9 +1143,15 @@ class TestTheTransactionArm:
             # with the transfer arm out of the picture.  Without this the case
             # above would pass for a panel that offered the shadow through the
             # WRONG arm and settled one leg.
+            owner_id = seed_user["user"].id
             assert shadow.id not in _transactions.outstanding_transactions(
-                seed_user["user"].id, seed_user["account"].id,
+                owner_id, seed_user["account"].id,
                 _statement(seed_user["account"].id),
+                # The PANEL's own basis, which ``outstanding_set`` builds once
+                # (plan step X-au-j).  Built here rather than defaulted inside
+                # the arm: the parameter is required precisely so a producer
+                # cannot quietly rebuild its caller's derivations.
+                amount_basis(owner_id, seed_user["scenario"].id),
             )
 
     def test_a_settled_row_is_neither_offered_nor_re_settled(
@@ -1163,17 +1174,28 @@ class TestTheTransactionArm:
 
     def test_another_users_row_is_neither_offered_nor_settled(
         self, app, db, seed_user, seed_periods, seed_entry_template,
+        seed_second_user,
     ):
-        """Ownership, from both doors -- a forged id from another budget.
+        """Ownership, from both doors -- a REAL second budget.
 
         The scope reaches the owner through the row's PAY PERIOD, which is the
         only user_id a Transaction has, so this grades the join as well as the
         clause.
+
+        **The other owner is a seeded user rather than an id nobody holds**
+        (plan step X-au-j).  It was ``seed_user.id + 1000`` until this step,
+        which no ``users`` row answers to -- so every join dropped it for the
+        trivial reason and the ownership clause was never the thing under test.
+        A second budget that really exists, with its own baseline scenario and
+        its own periods, is the threat this control is written for, and it is
+        the shape the panel's amount basis now requires: that basis is built
+        for the OWNER being asked about (``require_baseline_scenario``), which
+        an unowned id cannot answer at all.
         """
         with app.app_context():
             txn = seed_entry_template["transaction"]
             db.session.commit()
-            other_id = seed_user["user"].id + 1000
+            other_id = seed_second_user["user"].id
 
             assert reconcile_service.outstanding_set(
                 other_id, seed_user["account"].id,
@@ -2317,3 +2339,69 @@ class TestTheSectionsAndTheOrder:
         assert {
             kind for kind in kinds if kind.section_note
         } == {reconcile_service.OfferKind.TRANSFER}
+
+
+class TestThePanelHoldsONEAmountBasis:
+    """Plan step **X-au-j**, finding **N-295**: the derivations are the PANEL's.
+
+    An :class:`~app.services.cash_ledger.AmountBasis` holds the owner's live
+    derivations -- the paycheck engine run over the whole pay-period set, and
+    each loan's P&I, payment day and escrow history.  ``amount_basis``'s own
+    docstring says calling those per row is finding **N-228**, and N-295
+    recorded the reconcile panel doing exactly that: both source-row arms
+    priced every offered row through their own ``settle_amount``, and each of
+    those built its own.
+
+    It is ``test_statement_match``'s ``TestThePassHoldsONEAmountBasis`` one
+    package over, and it fails the same way: a later change that let a producer
+    build its own would restore the cost in SILENCE, because every figure would
+    still be right.  Only the wall clock moves, which is why the count is
+    asserted and the timing is not.
+    """
+
+    def test_one_basis_serves_every_row_the_panel_offers(
+        self, app, db, seed_user, seed_periods, monkeypatch,
+    ):
+        """The firing control: ONE construction, however many rows are offered.
+
+        **The rows are PROJECTED deliberately, and that is what makes this
+        control sharp.**  A settled row is valued from its own record
+        (``row_valuation.fixed_contribution``) and never reaches the resolver,
+        so a panel of settled rows builds one basis whether or not this step
+        shipped -- the assertion would hold over a broken tree.
+        """
+        with app.app_context():
+            # Six offerable bills, plus the seed fixture's own envelope close.
+            for index in range(6):
+                TestTheTransactionArm._bill(
+                    seed_user, seed_periods[0],
+                    name=f"Bill {index}", amount=f"{100 + index}.00",
+                )
+            db.session.commit()
+
+            built = count_amount_bases(monkeypatch)
+
+            offers = {
+                group.settle.transaction_id: group.settle
+                for group in reconcile_service.outstanding_set(
+                    seed_user["user"].id, seed_user["account"].id,
+                    _statement(seed_user["account"].id),
+                ).groups
+                if group.settle is not None
+            }
+
+            assert len(offers) >= 6, (
+                "the panel must offer several rows -- otherwise one basis and "
+                "one per row are the same number and this grades nothing"
+            )
+            assert len(built) == 1, (
+                f"the panel built {len(built)} amount bases for "
+                f"{len(offers)} offered rows; X-au-j makes it one"
+            )
+            # And it is the OWNER's own, not some other budget's: a basis
+            # prices from a scenario's salary profiles and a scenario's loans,
+            # so a foreign one answers a different figure with nothing to say
+            # so (``resolve_transaction_amount`` refuses it).
+            assert built == [
+                (seed_user["user"].id, seed_user["scenario"].id),
+            ]

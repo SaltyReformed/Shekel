@@ -35,11 +35,15 @@ from app.services import (
     status_seam,
     transaction_service,
 )
-from app.services.state_machine import verify_transition
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import get_accessible_transaction, require_owner
 from app.utils.balance_predicates import is_credit
 from app.routes.transactions._bp import transactions_bp
+from app.routes.transactions._gates import (
+    _reject_tracking_on_income,
+    _reject_typed_payback_figure,
+    _resolve_status_change,
+)
 from app.routes._render_helpers import render_transaction_cell
 from app.routes.transactions._helpers import (
     _credit_payback_idempotent_response,
@@ -132,89 +136,16 @@ _SEAM_OWNED_FIELDS = frozenset(
 )
 
 
-def _resolve_status_change(txn, data):
-    """Validate a PATCH status transition early, before any column is mutated.
-
-    Runs the status-dependent guards for a regular (non-shadow)
-    :func:`update_transaction` before the ``setattr`` loop dirties the session:
-    verifies the requested transition through the state machine (F-161 / C-21)
-    and blocks the Credit status on purchase-tracking transactions (credit is
-    per-entry, scope doc 5.2).  Doing it here gives the precise 400 precedence
-    (an illegal transition reports before a finalised-field lock or an FK error)
-    and leaves the row untouched on rejection.  ``settled_on`` is NOT decided here:
-    the status seam (:func:`status_seam.apply_status_change`, invoked
-    once the field is applied) owns the stamp/clear and re-runs this same
-    verification as the single source of truth -- this early call exists purely
-    for error precedence.
-
-    Args:
-        txn: The Transaction being edited.
-        data: The schema-loaded PATCH payload.
-
-    Returns:
-        ``None`` when the status change is allowed (or absent), or a Flask
-        ``(msg, 400)`` response tuple the caller returns directly when a guard
-        rejects the request.
-    """
-    if "status_id" not in data:
-        return None
-
-    # Verify the transition BEFORE any other status-dependent work.  An illegal
-    # transition -- for example settled -> projected -- short-circuits the
-    # request with a 400 and leaves the row untouched.  Audit reference: F-161 /
-    # commit C-21 of the 2026-04-15 security remediation plan.
-    try:
-        verify_transition(txn, data["status_id"])
-    except ValidationError as exc:
-        return _error_transaction_response(txn.id, str(exc))
-
-    # Block Credit status on entry-capable transactions -- credit
-    # handling is per-entry, not per-transaction (scope doc section 5.2).
-    credit_id = ref_cache.status_id(StatusEnum.CREDIT)
-    if data["status_id"] == credit_id and txn.tracks_purchases:
-        return _error_transaction_response(
-            txn.id,
-            "Cannot set Credit status on transactions with individual "
-            "purchase tracking. Use entry-level credit instead.",
-        )
-
-    return None
-
-
-def _reject_tracking_on_income(txn, data):
-    """Reject enabling purchase tracking on an income row.
-
-    Purchase tracking is expense-only.  The popover only renders the
-    ``is_envelope`` checkbox for ad-hoc EXPENSE rows, so this is the crafted-
-    request backstop -- the same layering every other route-tier guard here
-    uses.  Checked against the STORED type because ``TransactionUpdateSchema``
-    carries no ``transaction_type_id``, so a PATCH cannot change it.
-
-    It is a function rather than an inline branch so it joins
-    :func:`_apply_regular_update`'s single pre-mutation gate chain: three guards
-    sharing one error exit, which is what keeps that handler inside pylint's
-    return-count limit as the arc adds refusals to it.
-
-    Args:
-        txn: The Transaction being edited.
-        data: The schema-loaded PATCH payload.
-
-    Returns:
-        A designed 400 response tuple, or ``None`` when the edit may proceed.
-    """
-    if data.get("is_envelope") and txn.is_income:
-        return _error_transaction_response(
-            txn.id, "Purchase tracking is only available for expenses.",
-        )
-    return None
-
-
 def _apply_field_updates(txn, data):
     """Write the submitted fields onto *txn*, refusing what may not be written.
 
     The FIELD half of :func:`_apply_regular_update`, extracted so the handler
-    keeps one exit per concern rather than growing a branch per rule.  Three
-    acts, and the order is load-bearing:
+    keeps one exit per concern rather than growing a branch per rule.  FOUR
+    acts, and the order is load-bearing.  **This enumeration said "three" and
+    listed three until plan step X-au-j**, by which time the body already
+    performed four: an adversarial review found the count stale in the one
+    helper whose whole discipline is that its order matters.  The one it had
+    never named is marked NEW below.
 
     1. the ``setattr`` loop.  ``status_id`` and ``settled_on`` are BOTH excluded
        and routed through the status verb instead: a bare ``setattr`` would
@@ -235,6 +166,11 @@ def _apply_field_updates(txn, data):
        ``idx_transactions_template_period_scenario``'s partial predicate
        (``is_override = FALSE``) and trips a unique violation on a move into a
        period the recurrence engine has already populated.
+    2b. **(NEW to this list, shipped at X-au-c2b)** ``amount_source_id = None``
+       whenever a figure is typed: a hand-priced row OWNS its figure, and
+       ``ck_transactions_amount_ownership`` pairs the two one-to-one, so
+       writing the column while a relation still claimed the row is an
+       ``IntegrityError``.
     3. the derived-amount refusal, asked AFTER the loop so ``tracks_purchases``
        reads the RESULTING row: unchecking "Track individual purchases" in the
        same save legitimately gives the row its own amount back.  **It reads a
@@ -351,6 +287,8 @@ def _apply_regular_update(txn, txn_id, data):
         _resolve_status_change(txn, data)
         or _finalised_edit_response(txn, data)
         or _reject_tracking_on_income(txn, data)
+        # A payback's figure is not its own to state (N-252); see the gate.
+        or _reject_typed_payback_figure(txn, data)
     )
     if gate_error is not None:
         return gate_error

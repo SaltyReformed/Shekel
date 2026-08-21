@@ -5893,3 +5893,80 @@ def pay_periods_hydrated():
         yield loaded
     finally:
         event.remove(Session, "loaded_as_persistent", _record)
+
+
+def amount_basis_for(row):
+    """Return the :class:`AmountBasis` that prices ONE row, for a test.
+
+    **Named for the thing it builds, because ``basis_for`` was already taken**
+    by the ``ProjectedBasis`` helper above -- appending a second definition of
+    that name silently shadowed it and took 63 tests down with a
+    ``TypeError``.  Two different "bases" live in this suite and neither may
+    answer to the bare word.
+
+    **The single-row form of what a read pass holds** (plan step X-au-j).  Both
+    ``settle_amount`` twins take their basis as a REQUIRED parameter, because
+    their two live callers are PASSES and an optional one would leave the
+    expensive shape as what a caller gets by saying nothing -- which is how
+    findings **N-295** and **N-309** grew back one tier up after plan step
+    X-au-c2b closed the same cost within a call.
+
+    A test valuing one row is the caller that legitimately holds no pass, so it
+    builds one for that row and says so.  Shared here rather than spelled at
+    each of the sites that need it, which is this project's DRY rule; it stays
+    EXPLICIT at every call (``settle_amount(txn, amount_basis_for(txn))``), so the
+    derivation being built is still visible where it is paid for.
+
+    Args:
+        row: The :class:`~app.models.transaction.Transaction` being valued.
+            Its ``account.user_id`` and ``scenario_id`` are what a basis is
+            pinned to.
+
+    Returns:
+        The :class:`~app.services.cash_ledger.AmountBasis` for that row's owner
+        and scenario.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app or ORM
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services.cash_ledger import amount_basis
+
+    return amount_basis(row.account.user_id, row.scenario_id)
+
+
+def count_amount_bases(monkeypatch):
+    """Return a list that records every ``AmountBasis`` CONSTRUCTION.
+
+    **It counts the producer, not the factory, and that difference is the
+    whole instrument** (plan step X-au-j).  A first version of this control
+    patched ``amount_basis`` on the modules that import it and PASSED against a
+    planted defect: every module does ``from app.services.cash_ledger import
+    amount_basis``, which binds the function by value at import time, so
+    patching a name in one module says nothing about the copy another module
+    already holds -- and the arm rebuilding its caller's basis was invisible.
+
+    ``amount_basis`` calls ``income_service.salary_pricing`` unconditionally on
+    every construction, through a module ATTRIBUTE resolved at call time, so a
+    patch here is seen no matter which module reached the factory.  One entry
+    per basis built, by anybody.
+
+    Args:
+        monkeypatch: The test's ``monkeypatch`` fixture.
+
+    Returns:
+        The list the counter appends ``(user_id, scenario_id)`` to.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app or ORM
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services import income_service
+
+    built = []
+    real = income_service.salary_pricing
+
+    def _counted(user_id, scenario_id):
+        built.append((user_id, scenario_id))
+        return real(user_id, scenario_id)
+
+    monkeypatch.setattr(income_service, "salary_pricing", _counted)
+    return built

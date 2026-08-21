@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 
 def sync_entry_payback(
-    transaction_id: int, owner_id: int,
+    transaction_id: int, owner_id: int, *, moves_credit_total: bool = True,
 ) -> Transaction | None:
     """Synchronize the aggregated CC Payback for a transaction's credit entries.
 
@@ -63,6 +63,12 @@ def sync_entry_payback(
         transaction_id: The parent transaction's ID.
         owner_id: The resolved owner user ID (companion -> owner mapping
             already applied by the caller).
+        moves_credit_total: Whether the write that triggered this sync can
+            CHANGE the envelope's credit-entry sum (finding **N-323**).  Each
+            of the three ``entry_service`` doors knows what it touched and
+            says so; the default is the safe answer for any other caller.
+            It gates the settled-payback refusal below and nothing else --
+            the link maintenance and the figure both run either way.
 
     Returns:
         The CC Payback Transaction if one exists after sync, else None.
@@ -142,8 +148,26 @@ def sync_entry_payback(
         # row and settling it again, never by re-deriving it underneath.  The
         # comparison is against what the payback RECORDED rather than against
         # its plan, so a sync that changes nothing still passes.
+        #
+        # **The POLICY above is right and stays; the PREDICATE was wider than
+        # the policy needs, and that is finding N-323.**  It fired whenever the
+        # recorded figure ALREADY differed from ``total_credit`` at all -- so a
+        # settled payback carrying pre-existing drift refused every later edit
+        # on its envelope, including edits that cannot change that sum.
+        # Stamping a DEBIT purchase's bank posting day is the case that
+        # measured it: it touches no credit entry, so the sum is the same
+        # before and after, and it was refused by a guard about credit.  On the
+        # developer's own production clone that blocked **5 of 124 statement
+        # proposals worth `$706.35`**, plus 6 debit purchases under the two
+        # envelopes whose paybacks carry `$59.68` of drift.
+        #
+        # The question a write should be asked is whether IT moves the total,
+        # which is what ``moves_credit_total`` carries.  Drift that already
+        # exists is left alone rather than treated as a fresh offence -- it is
+        # a finding the amount model reports, not something to punish the next
+        # unrelated edit for.
         recorded = settled_figure(existing_payback)
-        if recorded is not None and recorded != total_credit:
+        if moves_credit_total and recorded is not None and recorded != total_credit:
             raise ValidationError(
                 f"Payback {existing_payback.id} has settled at {recorded}, so "
                 f"it cannot be re-derived to {total_credit}: a settled row "

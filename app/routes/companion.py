@@ -48,11 +48,10 @@ from app.extensions import db
 from app.models.category import Category
 from app.services import companion_service, grid_view_service
 from app.services.cash_ledger import (
-    amount_basis,
+    baseline_amount_basis,
     display_amounts_by_id,
     settled_amounts_by_id,
 )
-from app.services.scenario_resolver import require_baseline_scenario
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services.transaction_service import retained_settle_amounts_by_id
 from app.utils.dates import display_today
@@ -132,13 +131,13 @@ def _build_partial_context(
     #
     # It resolves the SAME scenario ``get_visible_transactions`` scoped its
     # query to -- the owner's baseline -- which is what makes the pins right
-    # rather than merely present.  Both go through ``require_baseline_scenario``,
-    # so an owner with no baseline meets the application's ONE designed answer
-    # (ruling R-BW) instead of two surfaces disagreeing about whether they can
-    # price anything.
+    # rather than merely present.  Both go through
+    # ``cash_ledger.baseline_amount_basis``, which resolves the pin and RAISES
+    # on a missing baseline, so an owner without one meets the application's
+    # ONE designed answer (ruling R-BW) instead of two surfaces disagreeing
+    # about whether they can price anything.
     budgets = display_amounts_by_id(
-        transactions,
-        amount_basis(owner_id, require_baseline_scenario(owner_id).id),
+        transactions, baseline_amount_basis(owner_id),
     )
     # What each row's money DID, beside what its amount IS (plan step X-au-c3).
     # The card macro reads BOTH maps -- a settled row shows the figure it

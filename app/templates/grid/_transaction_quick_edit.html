@@ -1,3 +1,4 @@
+{% from "_money_macros.html" import money %}
 {# Quick edit -- single amount input that fits inside the <td>.
    Replaces cell content on click for fast estimated_amount edits.
    Expand button (⋯) or F2 opens the full edit popover.
@@ -18,6 +19,15 @@
       hx-disabled-elt="find input">
   {# Optimistic-locking pin (commit C-18). #}
   <input type="hidden" name="version_id" value="{{ txn.version_id }}">
+  {# **Withdrawn on a CC PAYBACK**, exactly as the full-edit popover withdraws
+     it (plan step X-au-j): a payback is worth the card spend of the row it
+     repays, so a figure typed here is one the PATCH door refuses. Rendering an
+     input the server always rejects is a door onto an error.
+     ``budget_correctable`` is ``not transaction_service.repays_card_spend``,
+     resolved in the route. The default keeps legacy render sites permissive,
+     as the full-edit popover's twin of this does. #}
+  {% set budget_editable = budget_correctable if budget_correctable is defined else true %}
+  {% if budget_editable %}
   <input type="number"
          step="0.01"
          inputmode="decimal"
@@ -26,6 +36,11 @@
          class="form-control form-control-sm txn-quick-input flex-1-min-0"
          aria-label="Edit amount for {{ txn.name }}"
          {% if locked %}disabled{% else %}autofocus{% endif %}>
+  {% else %}
+  <span class="form-control form-control-sm bg-body-secondary flex-1-min-0"
+        aria-label="Amount for {{ txn.name }}, set by the card spend it repays"
+        >{{ money(budgets[txn.id]) }}</span>
+  {% endif %}
   <button type="button"
           class="btn btn-sm btn-link p-0 txn-expand-btn"
           title="More options (F2)"

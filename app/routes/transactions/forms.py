@@ -75,6 +75,17 @@ def get_quick_edit(txn_id):
         # fallback that ships a blank into a save is the shape this whole step
         # exists to delete, so it may not survive on the edit doors.
         budgets=fragment_amounts(txn).budgets,
+        # **The SECOND render site of an Estimated box**, and it needs the same
+        # withdrawal the full-edit popover got (plan step X-au-j).  An
+        # adversarial review found this one ungated: nothing in
+        # ``app/templates`` or ``app/static/js`` links here any more
+        # (``grid_edit.js`` keeps tier-1 inline editing only for the
+        # empty-cell quick-create), but the route is live under
+        # ``@login_required @require_owner``, so an owner reaching it by URL
+        # was offered a control the PATCH door now always rejects. The census
+        # in ``repays_card_spend``'s docstring said "two surfaces"; it was
+        # three.
+        budget_correctable=not transaction_service.repays_card_spend(txn),
     )
 
 
@@ -189,6 +200,22 @@ def get_full_edit(txn_id):
         # branch.  An envelope carrying purchases settles at ``sum(entries)``,
         # so an Actual box beside it would take a figure the settle discards.
         amount_correctable=not transaction_service.settles_from_entries(txn),
+        # **A CC payback's ESTIMATE is not its own to state either**, which is
+        # the same sentence one box over: a payback is worth the card spend of
+        # the row it repays, so you change it by changing what went on the
+        # card.  The box rendered and took a figure until now, and the next
+        # entry mutation on the source silently overwrote it -- finding
+        # **N-252**, ``$58.40`` live on the developer's own payback 2590.
+        # ``transaction_service.repays_card_spend``'s docstring carries the
+        # whole rule, including why a ROW-backed payback needs it for the
+        # opposite reason (nothing overwrites it, so the lie sticks).
+        budget_correctable=not transaction_service.repays_card_spend(txn),
+        # WHICH repair the withdrawn box should name.  The two payback kinds
+        # are corrected by different acts and only one of them involves
+        # purchases -- ``transaction_service.repays_tracked_purchases``'s
+        # docstring carries the fork.  Resolved here rather than in the
+        # template, which displays a decision and never takes one.
+        budget_from_purchases=transaction_service.repays_tracked_purchases(txn),
     )
 
 

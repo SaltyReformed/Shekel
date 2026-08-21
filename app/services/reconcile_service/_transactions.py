@@ -45,7 +45,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models.transaction import Transaction
 from app.services import cash_ledger, transaction_service
-from app.services.cash_ledger import AnchorPoint
+from app.services.cash_ledger import AmountBasis, AnchorPoint
 from app.services.reconcile_service import _rows
 from app.services.reconcile_service._offers import (
     OfferKind,
@@ -213,6 +213,7 @@ ARM = _rows.Arm(
 
 def outstanding_transactions(
     owner_id: int, account_id: int, anchor: AnchorPoint,
+    basis: "AmountBasis",
 ) -> "dict[int, OutstandingTransaction]":
     """Return this arm's offers, ``{transaction id: offer}``.
 
@@ -235,6 +236,12 @@ def outstanding_transactions(
         anchor: The governing assertion -- the STATEMENT being
             reconciled against.  Its ``observed_on`` bounds the offer
             set and its id is what a tick records (ruling **R-FL**).
+        basis: The PANEL's :class:`~app.services.cash_ledger.AmountBasis`,
+            built ONCE by :func:`~._assemble.outstanding_set` and threaded
+            (plan step X-au-j, finding **N-295**).  Every offer built its own until
+            then, so K offered PAYCHECKS ran the paycheck engine K times over
+            the owner's whole pay-period set -- which is finding **N-228** one
+            tier up, named by ``amount_basis``'s own docstring.
 
     Returns:
         ``{transaction_id: OutstandingTransaction}``, insertion-ordered by
@@ -248,17 +255,19 @@ def outstanding_transactions(
     """
     statement = _rows.Statement(owner_id, account_id, anchor)
     return {
-        txn.id: _offer(txn)
+        txn.id: _offer(txn, basis)
         for txn in _rows.outstanding_rows(ARM, statement)
     }
 
 
-def _offer(txn: Transaction) -> OutstandingTransaction:
+def _offer(txn: Transaction, basis: AmountBasis) -> OutstandingTransaction:
     """Return the offer this arm makes for one row.
 
     Args:
         txn: A row in scope, with ``entries``, ``pay_period`` and ``template``
             loaded.
+        basis: The panel's :class:`~app.services.cash_ledger.AmountBasis`,
+            threaded from :func:`outstanding_transactions` (plan step X-au-j).
 
     Returns:
         Its :class:`OutstandingTransaction`.  ``amount`` is resolved once and
@@ -266,7 +275,7 @@ def _offer(txn: Transaction) -> OutstandingTransaction:
         figures are the same number seen two ways, and asking the verb again
         would be a second answer to one money question.
     """
-    booked = transaction_service.settle_amount(txn)
+    booked = transaction_service.settle_amount(txn, basis)
     return OutstandingTransaction(
         transaction_id=txn.id,
         attributed_on=_rows.attributed_on(txn),

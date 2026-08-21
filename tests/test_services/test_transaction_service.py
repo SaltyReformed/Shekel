@@ -37,7 +37,9 @@ from app.services import posting_service, status_seam, transaction_service
 # the package attribute would grade nothing.
 from app.services.transaction_service import _settle
 from app.services.row_valuation import owned_contribution, settled_figure
+from app.services.cash_ledger import amount_basis
 from tests._test_helpers import (
+    amount_basis_for,
     make_every_period_rule,
     net_posted_by_day,
     settlement_basis_id,
@@ -688,7 +690,7 @@ class TestSettleTransactionTheVerb:
             db.session.flush()
 
             with pytest.raises(ValidationError) as exc:
-                transaction_service.settle_amount(txn)
+                transaction_service.settle_amount(txn, amount_basis_for(txn))
 
             assert "soft-deleted" in str(exc.value)
 
@@ -1156,8 +1158,20 @@ class TestASettleBooksTheFreshestFigure:
                                       template=template)
             txn.transfer_id = 1
 
+            # The basis comes from the SEEDED bundle, not from the row:
+            # this row is deliberately left dirty in memory (a template link
+            # AND a transfer link, which ``ck_transactions_one_pricing_link``
+            # forbids), and reading ``txn.account`` to build one would autoflush
+            # that state into an IntegrityError before the refusal under test
+            # could speak.  ``reject_unsettleable`` fires first either way; the
+            # bundle just keeps the session clean while it does.
             with pytest.raises(ValidationError) as exc:
-                transaction_service.settle_amount(txn)
+                transaction_service.settle_amount(
+                    txn,
+                    amount_basis(
+                        seed_user["user"].id, seed_user["scenario"].id,
+                    ),
+                )
 
             assert "transfer shadow" in str(exc.value)
 
@@ -1468,7 +1482,7 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
             self._revert(txn)
             db.session.flush()
 
-            offered = transaction_service.settle_amount(txn)
+            offered = transaction_service.settle_amount(txn, amount_basis_for(txn))
             assert offered == Decimal("245.32")
 
             self._settle(txn)
@@ -1503,7 +1517,9 @@ class TestARevertKeepsWhatMovedAndReleasesTheAssertion:
             db.session.flush()
             # Nothing is OFFERED from the retained record either -- the offer
             # and the booking are one expression, so both re-derive.
-            assert transaction_service.settle_amount(txn) == Decimal("610.00")
+            assert transaction_service.settle_amount(
+                txn, amount_basis_for(txn),
+            ) == Decimal("610.00")
 
             self._settle(txn)
             db.session.flush()

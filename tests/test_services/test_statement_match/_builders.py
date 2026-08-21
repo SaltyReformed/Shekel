@@ -25,6 +25,7 @@ from app.models.statement_import import BankStatementLine, StatementImport
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
+from app.services.cash_ledger import amount_basis
 from app.services.statement_match import ReviewScope
 
 
@@ -310,3 +311,21 @@ def a_scope(seed_user, account=None):
     return ReviewScope.build(
         seed_user["user"].id, (account or seed_user["account"]).id,
     )
+
+
+def a_basis(seed_user):
+    """Return the pass's amount basis, for a test calling a producer directly.
+
+    :meth:`~app.services.statement_match.ReviewScope.build` derives one per
+    pass and threads it (plan step X-au-j); a case that calls
+    :func:`~app.services.statement_match.candidates_for` on its own is standing
+    in for that caller and must supply the same thing.  Built from the seeded
+    scenario rather than resolved, because these fixtures own it.
+
+    Args:
+        seed_user: The seeded user bundle.
+
+    Returns:
+        The :class:`~app.services.cash_ledger.AmountBasis` for that owner.
+    """
+    return amount_basis(seed_user["user"].id, seed_user["scenario"].id)

@@ -191,7 +191,7 @@ def frozen_amount(shadow: Transaction, basis: AmountBasis) -> Decimal | None:
     return basis.loans.live_cash(shadow)
 
 
-def settle_amount(shadow: Transaction) -> Decimal:
+def settle_amount(shadow: Transaction, basis: AmountBasis) -> Decimal:
     """Return what settling this transfer would BOOK on *shadow*'s account.
 
     **The transfer twin of ``transaction_service.settle_amount``, and it exists
@@ -204,8 +204,20 @@ def settle_amount(shadow: Transaction) -> Decimal:
     It is a PURE read: nothing here mutates, so the panel calls it per offered
     row and the verb resolves again at the settle.
 
+    **The basis is the CALLER'S and this builds none** (plan step X-au-j,
+    finding **N-295**).  A shadow is the expensive half of that finding: each
+    one built its own basis and so paid the scenario-wide loan-config join,
+    plus a full loan resolve for every derive-mode payment -- which is finding
+    **N-269** reintroduced one tier up, on the panel rather than within a call.
+    Its twin's docstring carries the rest of the argument, including why the
+    parameter is REQUIRED rather than defaulted.
+
     Args:
         shadow: The leg being offered, still Projected.
+        basis: The read pass's
+            :class:`~app.services.cash_ledger.AmountBasis`, built for this
+            shadow's owner and scenario.  Its ``loans`` derivation is what
+            answers the freeze.
 
     Returns:
         The frozen live figure when there is one, else what the row
@@ -231,8 +243,9 @@ def settle_amount(shadow: Transaction) -> Decimal:
         return held
     # ONE basis for both halves (plan step X-au-c2b, finding **N-269**): the
     # freeze and the fall-through both price this shadow, and building one each
-    # is how a single offered row paid for the transfer lookup twice.
-    basis = amount_basis(shadow.account.user_id, shadow.scenario_id)
+    # is how a single offered row paid for the transfer lookup twice.  Since
+    # plan step X-au-j that one basis is the PASS's rather than this call's, so
+    # K offered shadows share it instead of building K (finding **N-295**).
     frozen = frozen_amount(shadow, basis)
     return _unfrozen_amount(shadow, basis) if frozen is None else frozen
 

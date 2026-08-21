@@ -84,7 +84,7 @@ def _mismatched_settled_status_ids(txn: Transaction) -> frozenset[int]:
     (:func:`reject_mismatched_settled_status`) and the dropdown's pre-hint
     (:func:`offerable_status_ids`).  Stated once so the enforced rule and the
     displayed rule cannot drift, which is the same reason
-    :func:`._settle.settles_from_entries` is published.
+    :func:`._row_rules.settles_from_entries` is published.
 
     **It is the TYPE PAIR minus this row's, NOT the settled band minus this
     row's, and the difference is a capability.**  The band has THREE members and

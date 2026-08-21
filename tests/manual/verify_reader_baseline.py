@@ -78,7 +78,7 @@ from app.services import (
 from app.services.balance_at import BalanceContext
 from app.services.investment_dashboard_service import compute_dashboard_data
 from app.utils.balance_predicates import is_projected_clause
-from tests._test_helpers import all_periods
+from tests._test_helpers import all_periods, amount_basis_for
 
 # Six fixed valuation dates, the same discipline
 # ``verify_balance_baseline`` applies: a producer read at one date is blind
@@ -396,7 +396,9 @@ def _transfer_settle(scenario_id):
     return {
         str(shadow.id): _guard(
             f"settle_amount:{shadow.id}",
-            lambda s=shadow: _money(transfer_service.settle_amount(s)),
+            lambda s=shadow: _money(
+                transfer_service.settle_amount(s, amount_basis_for(s)),
+            ),
         )
         for shadow in shadows
     }

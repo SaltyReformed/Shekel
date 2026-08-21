@@ -41,6 +41,7 @@ from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.services import posting_service
 from app.services.cash_ledger import (
+    AmountBasis,
     amount_basis,
     contribution_of,
     live_override,
@@ -60,90 +61,9 @@ from app.utils.log_events import (
     log_event,
 )
 
+from ._row_rules import reject_unsettleable, settles_from_entries
+
 logger = logging.getLogger(__name__)
-
-
-def settles_from_entries(txn: Transaction) -> bool:
-    """Return whether a settle DERIVES this row's amount from its entries.
-
-    **The verb's own branch predicate, published** -- because three things ask
-    it and two of them are not this module.  :func:`settle_transaction` picks
-    its branch on it; :func:`settle_amount` values the row on it; and the
-    reconcile panel decides whether to render an editable amount on it, which
-    is ruling **R-FF**: a tick is correctable exactly when the verb takes its
-    MANUAL branch.
-
-    Writing the predicate at each of those three sites is the shape this arc
-    exists to remove, and the failure it produces here is specific: a panel
-    that offers a box the verb ignores takes a user's typed figure and drops
-    it, silently, on the screen whose whole job is entering the true one.
-
-    **Both halves are load-bearing.**  ``tracks_purchases`` alone would claim
-    production's ``Kayla's Spending Money`` -- envelope-tracked, `$100.00`
-    budgeted, ZERO entries -- derives its amount from entries that do not
-    exist, settling it at `$0.00` and refusing the user the box that would have
-    corrected it.
-
-    Args:
-        txn: The row.  Reads ``tracks_purchases`` (a template lookup for a
-            template-linked row) and the ``entries`` relationship.
-
-    Returns:
-        True when a settle takes the ``sum(entries)`` branch.
-    """
-    return bool(txn.tracks_purchases and txn.entries)
-
-
-def reject_unsettleable(txn: Transaction) -> None:
-    """Refuse a row NO settle door may touch -- both rules, stated once.
-
-    **Two refusals in one statement, because they are the same kind of rule and
-    they had drifted apart** (finding **N-233**).  Every public settle surface
-    in this module asks it: :func:`settle_transaction`, which would otherwise
-    settle one leg of a transfer pair silently; :func:`settle_amount`, which
-    would otherwise price one off the loan-payment seam and hand a caller a
-    figure this module refuses to book; and :func:`settle_from_entries`, which
-    asked BOTH questions in its own words and so gave the transfer rule a
-    second, shorter spelling.  A verb owns its own preconditions; three verbs
-    owning the same two own them once.
-
-    **A transfer shadow** settles through ``transfer_service.update_transfer``
-    so both legs and the parent move together (``CLAUDE.md`` transfer invariants
-    3 and 4).
-
-    **A soft-deleted row** must not be resurrected by a status change.  It
-    values at ``Decimal("0")`` through the valuation gate, so settling one
-    books nothing while stamping the row Paid and dated: a row that reads
-    settled and is worth nothing.  The envelope branch refused this from the
-    beginning and the MANUAL branch never did, and the gap was REACHABLE --
-    ``get_accessible_transaction`` does not filter ``is_deleted``, so
-    ``POST /transactions/<id>/mark-done`` on a soft-deleted non-envelope row
-    flipped it into the settled band.  Measured on production: 102 soft-deleted
-    rows, every one of them Projected, so the ledger cost is ``$0.00`` and the
-    cost is to the data.
-
-    Ordered shadow-then-deleted so a row that is both reports the rule that
-    routes it somewhere else rather than the one that refuses it outright.  Both
-    are column reads, so neither triggers the relationship lazy-load
-    :func:`settle_from_entries`' cheap-first precondition ordering avoids.
-
-    Args:
-        txn: The row to check.  Reads ``transfer_id`` and ``is_deleted``.
-
-    Raises:
-        ValidationError: When *txn* is a transfer shadow or is soft-deleted.
-    """
-    if txn.transfer_id is not None:
-        raise ValidationError(
-            f"Transaction {txn.id} is a transfer shadow; "
-            "transfers settle via transfer_service.update_transfer so both "
-            "legs and the parent move together.",
-        )
-    if txn.is_deleted:
-        raise ValidationError(
-            f"Transaction {txn.id} is soft-deleted; a settle cannot "
-            "resurrect a deleted row.",
-        )
 
 
 def fixed_settle_amount(txn: Transaction) -> "Decimal | None":
@@ -238,7 +158,7 @@ def retained_settle_amounts_by_id(rows) -> "dict[int, Decimal | None]":
     }
 
 
-def settle_amount(txn: Transaction) -> Decimal:
+def settle_amount(txn: Transaction, basis: AmountBasis) -> Decimal:
     """Return what settling *txn* would BOOK, absent a caller-supplied actual.
 
     **The ONE valuation act 1 of :func:`settle_transaction` uses**, published
@@ -252,8 +172,32 @@ def settle_amount(txn: Transaction) -> Decimal:
     It is a PURE read: nothing here mutates, so the panel calls it per offered
     row and the verb calls it again at the settle.
 
+    **The basis is the CALLER'S and this builds none** (plan step X-au-j,
+    findings **N-295** / **N-309**).  It built its own per call until then, and
+    both live callers are PASSES, so the paycheck engine ran over the owner's
+    whole pay-period set once per offered row: N-309 measured **609
+    salary-pricing and 609 loan-pricing constructions** over 825 candidates and
+    `4.7 s` to render, which ``amount_basis``'s own docstring had already named
+    as finding **N-228**.
+
+    **It is REQUIRED rather than defaulted, and that is the structural half.**
+    An optional basis leaves the expensive shape as what a caller gets by
+    saying nothing, so the next pass to reach this function reintroduces N-228
+    in silence -- which is how the cost regrew one tier up after plan step
+    X-au-c2b closed it WITHIN a call (N-268 / N-269).  The pass's PayCalendar
+    one package over is required for the same reason and says so the same way:
+    *"a producer that rebuilt its caller's pass would be the copy this
+    parameter exists to remove"*.  A caller holding no pass builds one and says
+    so in a line.
+
     Args:
         txn: The row about to be offered or settled, still Projected.
+        basis: The read pass's
+            :class:`~app.services.cash_ledger.AmountBasis`.  It must be built
+            for THIS row's owner and scenario;
+            :func:`~app.services.cash_ledger.resolve_transaction_amount`
+            REFUSES a foreign one rather than answering from another
+            scenario's salary profiles and another scenario's loans.
 
     Returns:
         ``sum(entries)`` when :func:`settles_from_entries`, else the freshest
@@ -272,9 +216,7 @@ def settle_amount(txn: Transaction) -> Decimal:
     fixed = fixed_settle_amount(txn)
     if fixed is not None:
         return fixed
-    return _manual_branch_figures(
-        txn, amount_basis(txn.account.user_id, txn.scenario_id),
-    )[0]
+    return _manual_branch_figures(txn, basis)[0]
 
 
 def _manual_branch_figures(
