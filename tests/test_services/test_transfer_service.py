@@ -32,10 +32,12 @@ from app.utils.dates import display_today
 from app.exceptions import NotFoundError, ValidationError
 from tests._test_helpers import (
     add_anchor_history,
+    an_entered_day,
     create_loan_account,
     settlement_basis_id,
     settlement_columns,
 )
+from app.services.settle_day import record_settle_day
 
 
 @pytest.fixture()
@@ -799,7 +801,7 @@ class TestUpdateTransfer:
             explicit = display_today() - timedelta(days=5)
             transfer_service.update_transfer(
                 xfer.id, td["user"].id,
-                status_id=done_status.id, settled_on=explicit,
+                status_id=done_status.id, settle_day=an_entered_day(explicit),
             )
             db.session.flush()
             shadows = (
@@ -1286,7 +1288,7 @@ class TestRestoreTransfer:
             paid_id = ref_cache.status_id(StatusEnum.DONE)
             real_settle = date(2026, 3, 20)
             transfer_service.update_transfer(
-                xfer_id, td["user"].id, status_id=paid_id, settled_on=real_settle,
+                xfer_id, td["user"].id, status_id=paid_id, settle_day=an_entered_day(real_settle),
             )
             transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
             db.session.flush()
@@ -1300,11 +1302,11 @@ class TestRestoreTransfer:
             drifted.status_id = ref_cache.status_id(StatusEnum.PROJECTED)
             # The whole record is stripped with the day, which is the LEGACY
             # drift this test is about: a row that pre-dates the settlement
-            # record entirely.  ``ck_transactions_settle_day_needs_basis`` only
+            # record entirely.  ``ck_transactions_settle_day_needs_a_record`` only
             # forbids the reverse (a day naming no figure), so the RETAINED
             # shape -- record kept, day released -- is legal and is covered by
             # ``test_a_repair_prefers_the_leg_still_in_the_settled_band``.
-            drifted.settled_on = None
+            record_settle_day(drifted, None)
             drifted.settled_amount = None
             drifted.settled_basis_id = None
             db.session.flush()
@@ -1349,7 +1351,7 @@ class TestRestoreTransfer:
             paid_id = ref_cache.status_id(StatusEnum.DONE)
             transfer_service.update_transfer(
                 xfer_id, td["user"].id, status_id=paid_id,
-                settled_on=date(2026, 3, 20),
+                settle_day=an_entered_day(date(2026, 3, 20)),
             )
             transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
             db.session.flush()
@@ -1371,7 +1373,7 @@ class TestRestoreTransfer:
             # The DRIFTED leg is reverted exactly as the seam reverts: the
             # ASSERTION released, the RECORD retained -- and stale.
             expense.status_id = ref_cache.status_id(StatusEnum.PROJECTED)
-            expense.settled_on = None
+            record_settle_day(expense, None)
             expense.reconciled_by_id = None
             expense.settled_amount = Decimal("25.00")
             expense.settled_basis_id = settlement_basis_id(
@@ -1419,7 +1421,7 @@ class TestRestoreTransfer:
             drifted.status_id = ref_cache.status_id(StatusEnum.DONE)
             # A dated row carries the whole record (plan step X-au-c3); the
             # drift under test is the STATUS, so the record is coherent.
-            drifted.settled_on = date(2026, 3, 20)
+            record_settle_day(drifted, an_entered_day(date(2026, 3, 20)))
             for column, value in settlement_columns(
                 date(2026, 3, 20), drifted.estimated_amount,
             ).items():
@@ -1467,7 +1469,7 @@ class TestRestoreTransfer:
             # The drift under test is the STATUS; the day and the RECORD come
             # with it so the fixture expresses exactly one defect rather than
             # three (plan step X-au-c3).
-            drifted.settled_on = display_today()
+            record_settle_day(drifted, an_entered_day(display_today()))
             for column, value in settlement_columns(
                 display_today(), drifted.estimated_amount,
             ).items():
@@ -1996,7 +1998,7 @@ class TestDueDateAndSettleDayShadows:
 
             corrected = display_today() - timedelta(days=3)
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, settled_on=corrected,
+                xfer.id, td["user"].id, settle_day=an_entered_day(corrected),
             )
             db.session.flush()
 
@@ -2029,7 +2031,7 @@ class TestDueDateAndSettleDayShadows:
 
             with pytest.raises(ValidationError) as exc:
                 transfer_service.update_transfer(
-                    xfer.id, td["user"].id, settled_on=display_today(),
+                    xfer.id, td["user"].id, settle_day=an_entered_day(display_today()),
                 )
             assert "not a settled status" in str(exc.value)
 
@@ -2065,7 +2067,7 @@ class TestDueDateAndSettleDayShadows:
 
             with pytest.raises(ValidationError) as exc:
                 transfer_service.update_transfer(
-                    xfer.id, td["user"].id, settled_on=None,
+                    xfer.id, td["user"].id, settle_day=None,
                 )
             assert "cannot be cleared" in str(exc.value)
 
@@ -2104,7 +2106,7 @@ class TestDueDateAndSettleDayShadows:
             db.session.flush()
 
             transfer_service.update_transfer(
-                xfer.id, td["user"].id, settled_on=None
+                xfer.id, td["user"].id, settle_day=None
             )
             db.session.flush()
 
@@ -2161,7 +2163,7 @@ class TestTheStatusMirrorIsAtomic:
             income_shadow.status_id = ref_cache.status_id(StatusEnum.SETTLED)
             # As above: the drift under test is the STATUS alone, so the day
             # and the RECORD come with it (plan step X-au-c3).
-            income_shadow.settled_on = display_today()
+            record_settle_day(income_shadow, an_entered_day(display_today()))
             for column, value in settlement_columns(
                 display_today(), income_shadow.estimated_amount,
             ).items():
@@ -2817,7 +2819,7 @@ class TestMovingATransferBetweenAccounts:
                 ),
             )
             transfer_service.settle_transfer(
-                xfer.id, td["user"].id, settled_on=display_today(),
+                xfer.id, td["user"].id, settle_day=an_entered_day(display_today()),
             )
             db.session.flush()
             posted = _ledger_nets_for_transfer(xfer.id)
@@ -2889,7 +2891,7 @@ class TestMovingATransferBetweenAccounts:
             )
             xfer = _create_basic_transfer(td)
             transfer_service.settle_transfer(
-                xfer.id, td["user"].id, settled_on=display_today(),
+                xfer.id, td["user"].id, settle_day=an_entered_day(display_today()),
             )
             db.session.flush()
 
@@ -2952,7 +2954,7 @@ class TestMovingATransferBetweenAccounts:
                     ),
                 )
                 transfer_service.settle_transfer(
-                    payment.id, td["user"].id, settled_on=display_today(),
+                    payment.id, td["user"].id, settle_day=an_entered_day(display_today()),
                 )
                 payments.append(payment)
             db.session.flush()
@@ -2994,7 +2996,7 @@ class TestMovingATransferBetweenAccounts:
             elsewhere = self._other_savings(td, name="Third Savings")
             xfer = _create_basic_transfer(td)
             transfer_service.settle_transfer(
-                xfer.id, td["user"].id, settled_on=display_today(),
+                xfer.id, td["user"].id, settle_day=an_entered_day(display_today()),
             )
             db.session.flush()
             add_anchor_history(
@@ -3092,7 +3094,7 @@ class TestMovingATransferBetweenAccounts:
             xfer = _create_basic_transfer(td)
             elsewhere = self._other_savings(td)
             transfer_service.settle_transfer(
-                xfer.id, td["user"].id, settled_on=display_today(),
+                xfer.id, td["user"].id, settle_day=an_entered_day(display_today()),
             )
             db.session.flush()
             vacated = _ledger_nets_for_transfer(xfer.id)

@@ -27,8 +27,12 @@ from app.services.balance_at import BalanceContext
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.dates import display_today
 
-from tests._test_helpers import settlement_if_settling
+from tests._test_helpers import (
+    an_entered_day,
+    settlement_if_settling,
+)
 from tests._test_helpers import freeze_today
+from app.services.settle_day import record_settle_day
 
 #: A civil day whose EVENING in ``America/New_York`` falls on the PREVIOUS UTC
 #: day's successor -- i.e. an instant where the two calendars disagree.  Frozen
@@ -155,7 +159,7 @@ class TestApplyStatusChangeSettleDay:
             explicit = date(2026, 3, 15)
 
             status_seam.apply_status_change(
-                txn, ref_cache.status_id(StatusEnum.DONE), settled_on=explicit,
+                txn, ref_cache.status_id(StatusEnum.DONE), settle_day=an_entered_day(explicit),
                 settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
             db.session.commit()
@@ -184,7 +188,7 @@ class TestApplyStatusChangeSettleDay:
 
             with pytest.raises(TypeError) as exc:
                 status_seam.apply_status_change(
-                    txn, done_id, settled_on=instant,
+                    txn, done_id, settle_day=an_entered_day(instant),
                     settlement=settlement_if_settling(txn, done_id),
                 )
             assert "must be a date" in str(exc.value)
@@ -212,7 +216,7 @@ class TestApplyStatusChangeSettleDay:
 
             with pytest.raises(ValidationError) as exc:
                 status_seam.apply_status_change(
-                    txn, projected_id, settled_on=date(2026, 3, 15),
+                    txn, projected_id, settle_day=an_entered_day(date(2026, 3, 15)),
                     settlement=settlement_if_settling(txn, projected_id),
                 )
             assert "not a settled status" in str(exc.value)
@@ -245,7 +249,7 @@ class TestApplyStatusChangeSettleDay:
             done_id = ref_cache.status_id(StatusEnum.DONE)
             settled_a_month_ago = display_today() - timedelta(days=30)
             status_seam.apply_status_change(
-                txn, done_id, settled_on=settled_a_month_ago,
+                txn, done_id, settle_day=an_entered_day(settled_a_month_ago),
                 settlement=settlement_if_settling(txn, done_id),
             )
             db.session.commit()
@@ -418,9 +422,14 @@ class TestSettleDayForStatus:
             settled_ids = settled_status_ids()
             assert settled_ids, "the settled band is empty; nothing is graded"
             for status_id in settled_ids:
+                # The pair, not a bare day (plan step **X-az**): the reading
+                # answers WHAT KIND of day a form submitted, and a day out of a
+                # date box is the owner's own -- ``entered``.
                 assert status_seam.settle_day_for_status(
                     user_id, status_id, typed,
-                ) == typed, f"status {status_id} dropped a legitimate correction"
+                ) == an_entered_day(typed), (
+                    f"status {status_id} dropped a legitimate correction"
+                )
 
     def test_a_day_beside_a_revert_is_dropped(
         self, app, db, seed_user, seed_periods,
@@ -508,7 +517,7 @@ class TestSettleDayForStatus:
                 )
                 try:
                     status_seam.apply_status_change(
-                        txn, status_id, settled_on=day,
+                        txn, status_id, settle_day=an_entered_day(day),
                         settlement=settlement_if_settling(txn, status_id),
                     )
                 except ValidationError as exc:
@@ -559,7 +568,7 @@ class TestRejectFutureSettleDay:
                 status_seam.apply_status_change(
                     txn,
                     ref_cache.status_id(StatusEnum.DONE),
-                    settled_on=display_today() + timedelta(days=1),
+                    settle_day=an_entered_day(display_today() + timedelta(days=1)),
                     settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
                 )
             assert "has not happened yet" in str(exc.value)
@@ -590,7 +599,7 @@ class TestRejectFutureSettleDay:
                     seed_user, seed_periods[0], status=StatusEnum.PROJECTED,
                 )
                 status_seam.apply_status_change(
-                    txn, ref_cache.status_id(StatusEnum.DONE), settled_on=day,
+                    txn, ref_cache.status_id(StatusEnum.DONE), settle_day=an_entered_day(day),
                     settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
                 )
                 assert txn.settled_on == day
@@ -628,7 +637,7 @@ class TestRejectFutureSettleDay:
                 status_seam.apply_status_change(
                     txn,
                     ref_cache.status_id(StatusEnum.DONE),
-                    settled_on=_UTC_DAY_AT_AN_EASTERN_EVENING,
+                    settle_day=an_entered_day(_UTC_DAY_AT_AN_EASTERN_EVENING),
                     settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
                 )
             assert "has not happened yet" in str(exc.value)
@@ -707,7 +716,7 @@ class TestTheSettleDayFloor:
             floor = pay_period_service.earliest_recordable_day(user_id)
             assert status_seam.settle_day_for_status(
                 user_id, ref_cache.status_id(StatusEnum.DONE), floor,
-            ) == floor
+            ) == an_entered_day(floor)
 
     def test_a_dropped_day_is_never_bounded(
         self, app, db, seed_user, seed_periods,
@@ -747,14 +756,14 @@ class TestTheSettleDayFloor:
             before_the_schedule = floor - timedelta(days=45)
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
-                settled_on=before_the_schedule,
+                settle_day=an_entered_day(before_the_schedule),
                 settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
             assert txn.settled_on == before_the_schedule
 
 
 class TestASettleDayNeedsARecord:
-    """``ck_transactions_settle_day_needs_basis``, said in words at the door.
+    """``ck_transactions_settle_day_needs_a_record``, said in words at the door.
 
     The constraint is the surviving half of a repealed biconditional: a row
     asserting the day its money moved must record WHAT moved, while a record
@@ -783,14 +792,14 @@ class TestASettleDayNeedsARecord:
             txn = _make_txn(seed_user, seed_periods[0], status=StatusEnum.DONE)
             # The legacy shape, reproduced the only way it can be: straight at
             # the columns.  The seam refuses to CREATE one.
-            txn.settled_on = None
+            record_settle_day(txn, None)
             txn.settled_amount = None
             txn.settled_basis_id = None
             db.session.flush()
 
             with pytest.raises(ValidationError) as exc:
                 status_seam.apply_status_change(
-                    txn, txn.status_id, settled_on=display_today(),
+                    txn, txn.status_id, settle_day=an_entered_day(display_today()),
                 )
 
             assert "records nothing that moved" in str(exc.value)
@@ -808,13 +817,13 @@ class TestASettleDayNeedsARecord:
         """
         with app.app_context():
             txn = _make_txn(seed_user, seed_periods[0], status=StatusEnum.DONE)
-            txn.settled_on = None
+            record_settle_day(txn, None)
             txn.settled_amount = None
             txn.settled_basis_id = None
             db.session.flush()
 
             status_seam.apply_status_change(
-                txn, txn.status_id, settled_on=display_today(),
+                txn, txn.status_id, settle_day=an_entered_day(display_today()),
                 settlement=status_seam.Settlement(
                     amount=Decimal("50.00"),
                     basis=SettlementBasisEnum.CORRECTED,
@@ -849,7 +858,7 @@ class TestASettleDayNeedsARecord:
             yesterday = display_today() - timedelta(days=1)
 
             status_seam.apply_status_change(
-                txn, txn.status_id, settled_on=yesterday,
+                txn, txn.status_id, settle_day=an_entered_day(yesterday),
             )
 
             assert txn.settled_on == yesterday

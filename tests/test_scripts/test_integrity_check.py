@@ -15,7 +15,10 @@ from app.models.user import User
 from app.enums import StatusEnum
 from app.services.auth_service import hash_password
 from app.services import account_service
-from tests._test_helpers import settlement_columns
+from tests._test_helpers import (
+    settle_day_columns,
+    settlement_columns,
+)
 from tests._test_helpers import add_txn, make_every_period_rule, open_calendar_hole
 from scripts.integrity_check import (
     CheckResult,
@@ -595,7 +598,7 @@ class TestDataConsistency:
             name="Done No Correction",
             transaction_type_id=txn_type.id,
             estimated_amount=Decimal("50.00"),
-            settled_on=settled_on,
+            **settle_day_columns(settled_on),
             **settlement_columns(settled_on, Decimal("50.00")),
         )
         db.session.add(txn)

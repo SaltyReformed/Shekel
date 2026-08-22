@@ -654,3 +654,64 @@ class SettlementBasisEnum(enum.Enum):
     DERIVED = "derived"
     CORRECTED = "corrected"
     PURCHASES = "purchases"
+
+
+class SettledDayBasisEnum(enum.Enum):
+    """HOW a settled row's settle DAY is known (plan step **X-az**).
+
+    :class:`SettlementBasisEnum`'s twin one column over.  That one says how the
+    FIGURE beside ``settled_on`` is known; this one says how the DAY itself is.
+    Three writers put three different kinds of fact into that one column and
+    nothing said which (finding **N-332**):
+
+        observed  -- a bank statement showed the money posting on this day.  It
+                     is a POINT: the bank named the day, and an observation
+                     beats a belief.
+        asserted  -- the owner asserted a BALANCE for this day and this money
+                     was inside it, so the money moved on or before it.  It is
+                     an UPPER BOUND and not a point; the true posting day may
+                     be days earlier.
+        entered   -- the app's own record with no bank document behind it: the
+                     owner typed the day, or a settle door stamped the day the
+                     act happened.  A POINT, on the owner's word.
+
+    **The partition is over EVIDENCE, which is what makes it exhaustive.**  A
+    settle day is backed by a bank line, by a balance assertion, or by neither;
+    there is no fourth kind of evidence for it, so every writer lands in exactly
+    one member.  What separates ``entered`` from ``observed`` is not confidence
+    but provenance -- both are points, and a reader that wants to rank them can,
+    because the column now says which is which.
+
+    **Its whole reason for existing is that the difference decides a WINDOW.**
+    ``statement_match._offers.CandidateRow.expected_window`` bounds a purchase
+    by ``(purchased_on, settled_on)`` when the day is a bound and pins it to a
+    point when it is not, and it used to tell the two apart by testing whether
+    ``reconciled_by_id`` was populated.  That inference was exact over the three
+    writers of the day it happened to meet and blind to the third of them: a day
+    the owner typed read as a day the bank had shown.  Reading the bound as an
+    observation had already cost **50 duplicate purchases worth `$3,590.00`** on
+    the developer's dev database before ``f633d46a``, and inferring a fact from
+    another column being populated is the shape finding **N-241** deleted one
+    column over -- ``settled_basis_id`` exists precisely so that *"which one a
+    figure is stands in ``settled_basis_id`` rather than being inferred from a
+    column being populated"*.
+
+    **It does NOT replace ``reconciled_by_id``, and the two are not the same
+    question.**  That column names WHICH statement was seen to show this money;
+    this one says what kind of day the row records.  A row whose asserted day
+    the bank later CONFIRMS keeps its link and becomes ``observed`` -- one fact
+    changed, the other did not -- which the coupled reading could not express at
+    all.
+
+    Application code resolves these via ``ref_cache.settled_day_basis_id`` and
+    compares against the integer ID -- never the string ``name`` -- matching the
+    project-wide ``ref-table: IDs for logic, strings for display only``
+    invariant.  There is deliberately no member meaning *not settled*: a row
+    that carries no day carries no basis either, and the pairing CHECK is a
+    BICONDITIONAL over the two NULL-nesses, so no ref id is frozen into the
+    schema (the reason :class:`AmountSourceEnum` has no ``own`` member).
+    """
+
+    OBSERVED = "observed"
+    ASSERTED = "asserted"
+    ENTERED = "entered"

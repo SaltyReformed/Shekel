@@ -33,18 +33,20 @@ from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
     all_periods,
-    make_every_period_rule,
-    settlement_basis_id,
+    an_entered_day,
     cadence_payload,
     create_account_of_type,
     create_loan_account,
     field_is_disabled,
+    make_every_period_rule,
     make_transfer_template,
     net_posted_by_day,
     override_anchor,
+    settlement_basis_id,
 )
 from app.services.row_valuation import owned_contribution
 from app.services.pay_calendar import calendar_for
+from app.services.settle_day import record_settle_day
 
 
 def _create_savings_account(seed_user):
@@ -1085,7 +1087,7 @@ class TestTransferInstance:
             settled_at = display_today() - timedelta(days=7)
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                status_id=done_id, settled_on=settled_at,
+                status_id=done_id, settle_day=an_entered_day(settled_at),
             )
             db.session.commit()
 
@@ -1854,7 +1856,7 @@ class TestAdHoc:
             # a genuinely week-old settle is really in.
             settled_a_week_ago = display_today() - timedelta(days=7)
             transfer_service.update_transfer(
-                xfer.id, seed_user["user"].id, settled_on=settled_a_week_ago,
+                xfer.id, seed_user["user"].id, settle_day=an_entered_day(settled_a_week_ago),
             )
             db.session.commit()
 
@@ -1928,7 +1930,7 @@ class TestTransferSettleDayEditDoor:
             status_id=ref_cache.status_id(StatusEnum.DONE),
         )
         transfer_service.update_transfer(
-            xfer.id, seed_user["user"].id, settled_on=day,
+            xfer.id, seed_user["user"].id, settle_day=an_entered_day(day),
         )
         db.session.commit()
         return xfer
@@ -2136,7 +2138,7 @@ class TestTransferSettleDayEditDoor:
                 status_id=ref_cache.status_id(StatusEnum.DONE),
             )
             transfer_service.update_transfer(
-                xfer.id, seed_user["user"].id, settled_on=settled_day,
+                xfer.id, seed_user["user"].id, settle_day=an_entered_day(settled_day),
             )
             db.session.commit()
 
@@ -2203,14 +2205,14 @@ class TestTransferSettleDayEditDoor:
             # the settlement record entirely -- settled status, nothing recorded
             # -- so all three columns are cleared together.  That is narrower
             # than what the schema forbids: only the DAY needs a figure beside
-            # it (``ck_transactions_settle_day_needs_basis``), and a record with
+            # it (``ck_transactions_settle_day_needs_a_record``), and a record with
             # no day is the legal RETAINED state.
             for row in (
                 db.session.query(Transaction)
                 .filter_by(transfer_id=xfer.id, is_deleted=False)
                 .all()
             ):
-                row.settled_on = None
+                record_settle_day(row, None)
                 row.settled_amount = None
                 row.settled_basis_id = None
             db.session.commit()
@@ -3323,7 +3325,7 @@ class TestOneTimeTransfer:
                 transfer_template_id=tmpl.id).one()
             transfer_service.settle_transfer(
                 xfer.id, seed_user["user"].id, submitted=Decimal("412.90"),
-                settled_on=display_today(),
+                settle_day=an_entered_day(display_today()),
             )
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
@@ -4378,7 +4380,7 @@ class TestTransferActualBox:
             status_id=ref_cache.status_id(StatusEnum.DONE),
         )
         transfer_service.update_transfer(
-            xfer.id, seed_user["user"].id, settled_on=day,
+            xfer.id, seed_user["user"].id, settle_day=an_entered_day(day),
         )
         db.session.commit()
         return xfer
@@ -4659,7 +4661,7 @@ class TestTransferActualBox:
         """The legacy shape's repair, and it needs BOTH halves in one save.
 
         A settled row carrying no settlement record predates the record
-        entirely (finding **N-181**).  ``ck_transactions_settle_day_needs_basis``
+        entirely (finding **N-181**).  ``ck_transactions_settle_day_needs_a_record``
         pairs the day with the record, so stating the DAY alone violates it --
         measured: the day-only save returns a designed 400 rather than
         repairing anything.  Stating both is the repair, and the Actual box is
@@ -4676,7 +4678,7 @@ class TestTransferActualBox:
             # The legacy shape, reproduced the only way it can be: straight at
             # the columns, behind the seam's back.
             for leg in self._legs(xfer.id):
-                leg.settled_on = None
+                record_settle_day(leg, None)
                 leg.settled_amount = None
                 leg.settled_basis_id = None
             db.session.commit()

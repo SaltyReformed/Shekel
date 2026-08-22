@@ -48,7 +48,7 @@ from decimal import Decimal
 from sqlalchemy.orm import contains_eager, joinedload, selectinload
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum
+from app.enums import SettledDayBasisEnum, SettlementBasisEnum
 from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app.models.statement_match import StatementMatchMember
@@ -56,6 +56,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transaction_entry import TransactionEntry
 from app.services import cash_ledger, transaction_service, transfer_service
+from app.services.settle_day import recorded_settle_day
 from app.utils.balance_predicates import (
     balance_contributing_clause,
     not_archived_clause,
@@ -263,6 +264,43 @@ def _label(txn: Transaction) -> str:
     return f"{txn.name} (transfer leg)"
 
 
+def _day_basis(row) -> SettledDayBasisEnum | None:
+    """Return WHICH KIND of settle day *row* records, or ``None`` for none.
+
+    Plan step **X-az**.  ONE reading for both candidate constructors, because a
+    transaction and a purchase carry the same pair of columns and answering the
+    question twice is two chances to answer it differently -- which is exactly
+    what the two ``reconciled_by_id`` tests this replaced were.
+
+    **It reads the stored basis and derives nothing.**  The basis is what the
+    row's own settle door recorded: ``observed`` for a day the bank posted,
+    ``asserted`` for the day a balance was asserted FOR (an upper bound), and
+    ``entered`` for the owner's own.  Nothing here re-classifies, because a
+    re-classification is the defect finding **N-332** names.
+
+    Structurally typed over the two models, which is
+    :meth:`~._offers.MatchDays.of`'s idiom: both expose ``settled_on`` and
+    ``settled_day_basis_id`` and nothing else here is read.
+
+    Args:
+        row: A :class:`~app.models.transaction.Transaction` or a
+            :class:`~app.models.transaction_entry.TransactionEntry`.
+
+    Returns:
+        Its :class:`~app.enums.SettledDayBasisEnum` member, or ``None`` when the
+        row carries no settle day at all.
+
+    Raises:
+        ValueError: When the row carries a day and no basis, or a basis and no
+            day (propagated from
+            :func:`app.services.settle_day.recorded_settle_day`).  Each table's
+            ``ck_*_settle_day_basis_pairing`` makes both unstorable, so reaching
+            either means something wrote around every door.
+    """
+    recorded = recorded_settle_day(row)
+    return None if recorded is None else recorded.basis
+
+
 def purchase_candidate(entry: TransactionEntry) -> CandidateRow:
     """Return one purchase as the candidate value every consumer here shares.
 
@@ -298,12 +336,14 @@ def purchase_candidate(entry: TransactionEntry) -> CandidateRow:
         # does not hold (ruling **R-FW**).
         expected_on=entry.purchased_on,
         expected_through=entry.purchased_on,
-        # WHICH KIND of day ``settled_on`` is, carried rather than guessed.  A
-        # link means the reconcile panel stamped the day it was asserted FOR,
-        # which is a bound; its absence means the day is the one a statement
-        # showed, or one the owner typed.  ``CandidateRow.expected_window``
+        # WHICH KIND of day ``settled_on`` is, READ rather than inferred (plan
+        # step **X-az**, finding **N-332**).  It tested ``reconciled_by_id`` --
+        # a different question, WHICH statement was seen to show this money --
+        # and that inference was exact over the panel's bound and the bank's
+        # observation and blind to the owner's own typed day, which carries no
+        # link and so read as an observation.  ``CandidateRow.expected_window``
         # is the single reader and states the measurement.
-        settle_day_is_upper_bound=entry.reconciled_by_id is not None,
+        settle_day_basis=_day_basis(entry),
     )
 
 
@@ -357,7 +397,7 @@ def transaction_candidate(
         # assertion's day (``reconcile_service._transactions`` for a bill,
         # ``transfer_service._settle`` for a shadow leg), so its window opens at
         # the period rather than closing on that day.
-        settle_day_is_upper_bound=txn.reconciled_by_id is not None,
+        settle_day_basis=_day_basis(txn),
     )
 
 

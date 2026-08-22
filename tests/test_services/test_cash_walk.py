@@ -42,8 +42,8 @@ from app.enums import StatusEnum
 from app.exceptions import UndatedSettleError
 from app.utils.dates import DISPLAY_TIMEZONE, display_today, to_display_date
 from tests._test_helpers import (
-    settlement_if_settling,
     add_txn,
+    an_entered_day,
     append_balance_assertion,
     basis_for,
     create_savings_account,
@@ -51,7 +51,10 @@ from tests._test_helpers import (
     create_settled_transfer,
     freeze_today,
     restamp_opening_assertion,
+    settle_day_columns,
+    settlement_if_settling,
 )
+from app.services.settle_day import record_settle_day
 
 
 def _instant(year, month, day, hour=0, minute=0, second=0):
@@ -554,7 +557,7 @@ class TestSourceFactValuation:
                 description="purchase",
                 purchased_on=day,
                 is_credit=is_credit,
-                settled_on=day,
+                **settle_day_columns(day),
             ))
         db.session.flush()
         # Settled through PRODUCTION's own verb rather than hand-set: the
@@ -568,7 +571,7 @@ class TestSourceFactValuation:
         transaction_service.settle_transaction(txn)
         assert settled_figure(txn) == Decimal("200.00")
         assert purchases_total(list(txn.entries)) == Decimal("200.00")
-        txn.settled_on = date(2026, 2, 1)
+        record_settle_day(txn, an_entered_day(date(2026, 2, 1)))
         posting_service.sync_transaction_postings(txn, settled=True)
         db.session.commit()
 
@@ -733,7 +736,7 @@ class TestTheWalkSeesOnlyItsOwnRows:
             description="credit purchase",
             purchased_on=date(2026, 2, 1),
             is_credit=True,
-            settled_on=date(2026, 2, 1),
+            **settle_day_columns(date(2026, 2, 1)),
         ))
         txn.is_deleted = True
         db.session.commit()
@@ -1460,7 +1463,7 @@ class TestARecordedClearingFactMayNotMoveALineAcrossAStatement:
             amount=Decimal("100.00"),
             description="ticked on the second reading",
             purchased_on=date(2026, 2, 10),
-            settled_on=date(2026, 2, 10),
+            **settle_day_columns(date(2026, 2, 10)),
             is_credit=False,
         )
         db.session.add(entry)

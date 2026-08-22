@@ -46,7 +46,7 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import StatusEnum, TxnTypeEnum
+from app.enums import SettledDayBasisEnum, StatusEnum, TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.category import Category
@@ -58,6 +58,7 @@ from app.services import (
     transaction_service,
 )
 from app.services.scenario_resolver import require_baseline_scenario
+from app.services.settle_day import SettleDay
 from app.utils.log_events import (
     BUSINESS,
     EVT_STATEMENT_LINE_RECORDED,
@@ -612,7 +613,7 @@ def _close_day(
     line: BankStatementLine,
     envelope: Transaction,
     created: bool,
-) -> "date | None":
+) -> "SettleDay | None":
     """Return the day this envelope should CLOSE on, or ``None`` to leave it.
 
     Three cases, and the middle one is the correction adversarial review found
@@ -643,17 +644,40 @@ def _close_day(
         created: Whether THIS act created it.
 
     Returns:
-        The day to close on, or ``None`` when the close is not this act's to
-        write.
+        The day to close on and HOW that day is known
+        (:class:`app.services.settle_day.SettleDay`), or ``None`` when the close
+        is not this act's to write.  The basis is always ``observed`` (plan step
+        **X-az**): every day this function can return is a bank line's own
+        posting day, so a statement is what showed it.
     """
     if created:
-        return line.posted_on
+        return _observed(line)
     if creation.transaction_id is not None:
         return None
     # The new-envelope arm reusing what an earlier line of this press minted.
     if envelope.settled_on is not None and line.posted_on <= envelope.settled_on:
         return None
-    return line.posted_on
+    return _observed(line)
+
+
+def _observed(line: BankStatementLine) -> SettleDay:
+    """Return *line*'s posting day as a day a bank statement SHOWED.
+
+    One statement of the basis this module writes, for the three places that
+    write it -- the purchase born from the line, and :func:`_close_day`'s two
+    arms -- because a second spelling of "what kind of day is a bank line's
+    posting day" is the shape finding **N-332** is about one tier down.
+
+    Args:
+        line: The bank line being recorded.
+
+    Returns:
+        A :class:`~app.services.settle_day.SettleDay` over ``line.posted_on`` on
+        the ``observed`` basis.
+    """
+    return SettleDay(
+        day=line.posted_on, basis=SettledDayBasisEnum.OBSERVED,
+    )
 
 
 def create_purchase_from_line(
@@ -754,7 +778,15 @@ def create_purchase_from_line(
             # calls ``create_entry`` directly.
             description=merchant_label(line)[:200],
             purchased_on=made_on,
-            settled_on=line.posted_on,
+            # ``observed``: the bank line IS why this purchase exists, so its
+            # posting day is a day a statement showed rather than a bound or a
+            # day the owner typed (plan step **X-az**).  This is the only door
+            # that BORNS a purchase carrying a posting day, and it is the only
+            # one whose basis could never be anything else.  Through
+            # :func:`_observed` rather than constructed here, because this is
+            # the THIRD of its three sites and a second construction is the
+            # duplication that helper exists to remove.
+            settle_day=_observed(line),
         ),
     )
     close_on = _close_day(creation, line, envelope, created)
@@ -768,7 +800,7 @@ def create_purchase_from_line(
         # row a match re-dates: the row's OWN status, a new day.  One verb for
         # "a settled row's day moved", not a second one here.
         transaction_service.apply_requested_status(
-            envelope, envelope.status_id, settled_on=close_on,
+            envelope, envelope.status_id, settle_day=close_on,
         )
     elif close_on is not None:
         # **A row created to hold something that has already happened says
@@ -785,7 +817,7 @@ def create_purchase_from_line(
         # this very verb anyway; doing it here dates the close on the day the
         # bank posted, where carry-forward would date it whenever it next ran.
         transaction_service.settle_from_entries(
-            envelope, settled_on=close_on,
+            envelope, settle_day=close_on,
         )
         # **``settle_from_entries`` does NOT reconcile the ledger** -- it is the
         # envelope PRIMITIVE, and its docstring says carry-forward owes that

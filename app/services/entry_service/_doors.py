@@ -29,6 +29,11 @@ from app.enums import RoleEnum
 from app.exceptions import NotFoundError, ValidationError
 from app.services import posting_service
 from app.services.entry_credit_workflow import sync_entry_payback
+from app.services.settle_day import (
+    SettleDay,
+    record_settle_day,
+    recorded_settle_day,
+)
 from app.services.entry_service._refusals import (
     _COST_BEARING_FIELDS,
     _reject_future_posting_day,
@@ -57,7 +62,7 @@ logger = logging.getLogger(__name__)
 
 # Fields that can be updated on an entry via update_entry().
 _UPDATABLE_FIELDS = frozenset({
-    "amount", "description", "purchased_on", "settled_on", "is_credit",
+    "amount", "description", "purchased_on", "settle_day", "is_credit",
 })
 
 
@@ -189,11 +194,15 @@ class EntryDetails:
             :func:`_reject_future_purchase_date`).
         is_credit:   Whether this was paid with a credit card.
 
-        settled_on: The day the BANK took the money, when the caller already
-            knows it, else ``None`` -- which is the state every hand-typed
-            purchase is born in.
+        settle_day: The day the BANK took the money and HOW that day is
+            known (:class:`app.services.settle_day.SettleDay`), when the caller
+            already knows it, else ``None`` -- which is the state every
+            hand-typed purchase is born in.  The one caller that supplies one
+            is ``statement_match._create.create_purchase_from_line``, and its
+            basis is always ``observed``: the bank line IS why the purchase
+            exists.
 
-    **``settled_on`` was deliberately NOT here until plan step
+    **The posting day was deliberately NOT here until plan step
     ``bank_import:X-f6a-3b``, and the premise that kept it out was true only of
     the doors that existed then.**  It read: *the day the bank took the money is
     an observation, and at the moment a purchase is recorded there is nothing to
@@ -213,7 +222,7 @@ class EntryDetails:
     description: str
     purchased_on: date
     is_credit: bool = False
-    settled_on: "date | None" = None
+    settle_day: SettleDay | None = None
 
 
 
@@ -233,8 +242,9 @@ def create_entry(
         transaction_id: Parent transaction ID.
         user_id: The creating user's ID (owner or companion).
         details: :class:`EntryDetails` -- the purchase content (amount,
-            description, purchased_on, is_credit, and the posting day where
-            the caller already has one).
+            description, purchased_on, is_credit, and the posting day --
+            with the basis that says how it is known -- where the caller
+            already has one).
 
     Returns:
         The newly created TransactionEntry (flushed, id available).
@@ -296,6 +306,15 @@ def create_entry(
             "Cannot add entries to a transaction with Credit status. "
             "Entry-capable transactions handle credit at the entry level."
         )
+    # The DAY the pair states, unwrapped once for the three refusals that are
+    # about the day and not about how it is known (plan step **X-az**).  They
+    # take a ``date`` rather than the pair because none of them reads the basis:
+    # a day in the future is not a fact whatever named it, and money cannot
+    # leave before it was spent whoever says when it left.
+    posting_day = (
+        details.settle_day.day if details.settle_day is not None else None
+    )
+
     # A SETTLED parent is the third refusal, and it is finding **N-229**: an
     # entry on such a row used to be accepted, persisted, and silently inert --
     # the actual was not recomputed (that half graded ``is_done``) while the
@@ -303,7 +322,7 @@ def create_entry(
     # **Its own rule since plan step X-f6a-3b**: a new purchase against a row
     # whose figure IS its purchases is what a bank statement evidences, where a
     # row storing a fixed figure cannot record one at all.
-    _reject_settled_addition(txn, details.settled_on)
+    _reject_settled_addition(txn, posting_day)
 
     # Content guard, after the ownership and transaction guards so a
     # non-owner still gets the 404 rather than a validation message that
@@ -314,13 +333,13 @@ def create_entry(
     # and for the same reasons -- a day the bank has not reached yet (ruling
     # **R-FM**), and a day before the purchase it belongs to
     # (``ck_transaction_entries_settled_not_before_purchase``).  They arrived
-    # here with ``EntryDetails.settled_on`` at plan step X-f6a-3b: a door that
+    # here with ``EntryDetails``' posting day at plan step X-f6a-3b: a door that
     # accepts a field and leaves its rules to the OTHER door is a boundary that
     # holds on one and not the other, which is exactly what
     # :func:`_reject_future_purchase_date`'s own docstring warns against.  Both
     # are no-ops for the ``None`` every hand-typed purchase is born with.
-    _reject_future_posting_day(details.settled_on)
-    _reject_settled_before_purchase(details.purchased_on, details.settled_on)
+    _reject_future_posting_day(posting_day)
+    _reject_settled_before_purchase(details.purchased_on, posting_day)
 
     entry = TransactionEntry(
         transaction_id=transaction_id,
@@ -334,8 +353,13 @@ def create_entry(
         description=details.description,
         purchased_on=details.purchased_on,
         is_credit=details.is_credit,
-        settled_on=details.settled_on,
     )
+    # The posting day and the basis that says how it is known, written as
+    # ONE pair (plan step **X-az**).  Assigned through the shared writer
+    # rather than as two constructor kwargs so this door and
+    # :func:`update_entry` cannot come to disagree about which columns the
+    # pair is -- and so the constructor cannot state half of it.
+    record_settle_day(entry, details.settle_day)
     db.session.add(entry)
     db.session.flush()
 
@@ -354,8 +378,14 @@ def create_entry(
         # back instead.  A receipt that named only the amount could not tell
         # the two apart.
         settled_on=(
-            details.settled_on.isoformat()
-            if details.settled_on is not None else None
+            posting_day.isoformat() if posting_day is not None else None
+        ),
+        # WHICH KIND of day it is, beside the day itself (plan step X-az):
+        # a receipt naming only the day cannot tell a bank observation from
+        # a bound, and the two mean different things about this purchase.
+        settled_day_basis=(
+            details.settle_day.basis.value
+            if details.settle_day is not None else None
         ),
     )
 
@@ -373,10 +403,19 @@ def create_entry(
 def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     """Update an existing entry.
 
-    Allowed fields: amount, description, purchased_on, settled_on, is_credit.
+    Allowed fields: amount, description, purchased_on, settle_day, is_credit.
     Re-validates ownership through the entry's parent transaction.
 
-    ``settled_on`` records the day the bank took the money.  For a hand-typed
+    **``settle_day`` is the PAIR, not the column** (plan step **X-az**): a
+    :class:`app.services.settle_day.SettleDay` carrying the day AND how that day
+    is known, written to ``settled_on`` and ``settled_day_basis_id`` together by
+    :func:`app.services.settle_day.record_settle_day`.  The key is not a column
+    name because the value is not one column, and the three callers each state a
+    different basis -- the entry PATCH ``entered``, the statement matcher
+    ``observed``, and the reconcile panel writes its own ``asserted`` days
+    through its bulk ``UPDATE`` rather than through this door.
+
+    The day it carries records when the bank took the money.  For a hand-typed
     purchase that is an observation the user makes LATER -- off a statement, or
     by ticking the purchase at a balance true-up through
     :func:`app.services.reconcile_service.record_settled_days` -- which is why
@@ -400,8 +439,8 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
             passed, or the parent row has SETTLED and this update touches
             anything that changes what the row cost
             (:func:`_reject_settled_parent`).  An update touching only
-            ``settled_on`` is admitted on a settled parent: it records when the
-            bank took the purchase, not how much of it moved.
+            ``settle_day`` is admitted on a settled parent: it records when
+            the bank took the purchase, not how much of it moved.
     """
     unknown = set(kwargs) - _UPDATABLE_FIELDS
     if unknown:
@@ -425,7 +464,7 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
 
     # A settled row's purchases are closed to RE-PRICING (finding **N-229**),
     # and this is the door that passes what it was actually asked to write:
-    # a submission touching only ``settled_on`` records when the bank took the
+    # a submission touching only ``settle_day`` records when the bank took the
     # purchase and is admitted, where anything cost-bearing is refused.
     # Checked after ownership so a non-owner still gets the 404 rather than a
     # message confirming the row exists, exactly as the create door orders its
@@ -440,23 +479,29 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     # Both date rules are checked on the RESULT, not the submission: a
     # partial update moves one side against a stored other side, and both
     # directions can break the pair invariant.
-    resulting_settled_on = valid_updates.get("settled_on", entry.settled_on)
+    resulting_settle_day = (
+        valid_updates["settle_day"] if "settle_day" in valid_updates
+        else recorded_settle_day(entry)
+    )
+    resulting_posting_day = (
+        resulting_settle_day.day if resulting_settle_day is not None else None
+    )
     _reject_settled_before_purchase(
         valid_updates.get("purchased_on", entry.purchased_on),
-        resulting_settled_on,
+        resulting_posting_day,
     )
     # The posting day's own bound (ruling **R-FM**, plan step X-f3b): a day the
     # bank has not reached yet would release this purchase's reservation now and
     # book its cash later.  On the RESULT for the same reason as the pair above,
     # and it therefore also re-refuses a stored forward day a partial update
     # would otherwise carry through -- of which production has none.
-    _reject_future_posting_day(resulting_settled_on)
+    _reject_future_posting_day(resulting_posting_day)
 
     # The two edits that make a recorded clearing fact FALSE.  Both release it
     # below; see the comment there for why releasing rather than refusing.
     releases_the_link = (
-        "settled_on" in valid_updates
-        and valid_updates["settled_on"] != entry.settled_on
+        "settle_day" in valid_updates
+        and resulting_posting_day != entry.settled_on
     ) or (
         "is_credit" in valid_updates
         and valid_updates["is_credit"]
@@ -477,6 +522,18 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
         if valid_updates.get("is_credit", entry.is_credit) else Decimal("0")
     )
     for field, value in valid_updates.items():
+        # ``settle_day`` is the ONE key that is not a column: it is the day AND
+        # the basis that says how the day is known, and
+        # :func:`app.services.settle_day.record_settle_day` is what writes both
+        # (plan step **X-az**).  A ``setattr`` here would put a
+        # :class:`~app.services.settle_day.SettleDay` into ``settled_on`` and
+        # leave the basis unwritten, which the table's own
+        # ``ck_transaction_entries_settle_day_basis_pairing`` would then refuse
+        # -- but the point of the branch is that the pair has exactly one writer,
+        # not that the constraint would catch a second one.
+        if field == "settle_day":
+            record_settle_day(entry, value)
+            continue
         setattr(entry, field, value)
     # **Moving the posting day RELEASES the clearing fact** (plan step X-f3a-1,
     # ruling **R-FL**).  ``reconciled_by_id`` records that a named statement was
@@ -496,8 +553,21 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     # back to UNKNOWN, where the date rule answers it exactly as it did before
     # any of this shipped.  Re-ticking on the next statement records it again.
     #
-    # It fires on ANY move, including to ``None``, which is also what
+    # It fires on ANY move of the DAY, including to ``None``, which is also what
     # ``ck_transaction_entries_cleared_needs_settle_day`` requires.
+    #
+    # **It does NOT fire when only the BASIS moves** (plan step **X-az**).  The
+    # link records that a named statement was seen to show this purchase ON a
+    # named day; re-stating the same day on a better-known basis agrees with
+    # that observation rather than contradicting it.  That is the case the
+    # statement matcher produces when a bank line CONFIRMS a day the reconcile
+    # panel had recorded as an upper bound -- the day is unchanged, the basis
+    # rises from ``asserted`` to ``observed``, and releasing the link there
+    # would drop a true observation for a write that strengthened it.  The
+    # predicate above compares ``resulting_posting_day`` with the stored day for
+    # exactly that reason, where a naive ``valid_updates["settle_day"] !=
+    # <the stored pair>`` would compare the BASIS too and release on a
+    # confirmation.
     #
     # **Flipping a purchase to CARD releases it too, and that arm is a 500 fix**
     # (found by X-f3b's trace, 2026-08-15).  A card purchase never touches this

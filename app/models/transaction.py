@@ -6,65 +6,23 @@ assigned to a specific pay period and scenario, with estimated and
 actual amounts plus a status workflow.
 """
 
-from datetime import date, datetime
-
-from sqlalchemy.orm import validates
+from datetime import date
 
 from app.extensions import db
 from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.models.mixins import (
     OptimisticLockMixin,
+    SettleDatedMixin,
     SoftDeleteOverridableMixin,
     TimestampMixin,
     TrackingVisibilityMixin,
 )
 
 
-def reject_settle_instant(value: date | None) -> date | None:
-    """Return *value*, refusing a ``datetime`` where a civil DAY is required.
-
-    **The ONE statement of finding N-179's rule**, consumed by the column's own
-    ORM validator below and by ``status_seam.apply_status_change`` -- which
-    calls it BEFORE it assigns anything, so a rejected settle leaves the row
-    entirely untouched rather than status-changed and undated.
-
-    ``datetime`` subclasses ``date``, so a type annotation catches nothing and
-    the value flows all the way to PostgreSQL, which coerces it into the
-    ``DATE`` column on the SESSION clock -- UTC.  An instant at
-    2026-03-04 04:30 UTC is 2026-03-03 23:30 Eastern, so the row stores
-    2026-03-04: one day later than the user's civil day, silently, which is
-    exactly the UTC-vs-display split ruling **R-DH (b)** exists to delete,
-    reintroduced one layer down.  Measured during the X-f1 conversion: 16 test
-    sites handed the seam an instant and 8 of them stayed GREEN while doing it,
-    one writing a journal entry whose ``DATE`` column held
-    ``2026-03-20T13:00:00+00:00``.
-
-    Args:
-        value: The candidate settle day, or ``None``.
-
-    Returns:
-        *value* unchanged, so the function composes into an assignment.
-
-    Raises:
-        TypeError: When *value* is a ``datetime``.  A programming error at the
-            call site rather than user input -- no form can submit an instant
-            into a date field -- so it is not a ``ValidationError``.
-    """
-    if isinstance(value, datetime):
-        raise TypeError(
-            f"settled_on must be a date, got datetime {value!r}.  A "
-            "settle records the CIVIL DAY its money moved, and an instant "
-            "handed here is truncated by PostgreSQL on the session clock "
-            "(UTC), so an evening-Eastern settle would be filed on the "
-            "following day.  Pass the user's civil day -- display_today(), or "
-            "the day the bank showed."
-        )
-    return value
-
-
 class Transaction(
     OptimisticLockMixin,
+    SettleDatedMixin,
     SoftDeleteOverridableMixin,
     TrackingVisibilityMixin,
     TimestampMixin,
@@ -96,20 +54,24 @@ class Transaction(
     **A row carries THREE facts about money, and they have three different
     lifetimes** (plan step **X-au-c3**).  No column belongs to two of them:
 
-    ====================  ====================  =====================
+    ====================  ====================  =========================
     the PLAN              WHAT MOVED            the ASSERTION
-    ====================  ====================  =====================
+    ====================  ====================  =========================
     ``estimated_amount``  ``settled_amount``    ``settled_on``
-    ``amount_source_id``  ``settled_basis_id``  ``reconciled_by_id``
-    ====================  ====================  =====================
+    ``amount_source_id``  ``settled_basis_id``  ``settled_day_basis_id``
+                                                ``reconciled_by_id``
+    ====================  ====================  =========================
 
     * the **PLAN** is what the row is forecast to cost.  It exists from creation
       and no settle path writes it;
     * **WHAT MOVED** is what the bank actually took, and how that figure is
       known.  It comes into existence at a settle and is a fact about the ROW
       from then on;
-    * the **ASSERTION** is "this money moved, on this day, and that statement
-      showed it".  A revert withdraws it.
+    * the **ASSERTION** is "this money moved, on this day, that is what kind of
+      day it is, and that statement showed it".  A revert withdraws all of it.
+      ``settled_day_basis_id`` joined it at plan step **X-az**: the day and the
+      KIND of day are one fact, so they share the assertion's lifetime and are
+      released together (finding **N-332**).
 
     **A revert releases the ASSERTION and keeps WHAT MOVED**, and that asymmetry
     is the model's centre.  A first version of this step made all three one
@@ -266,6 +228,15 @@ class Transaction(
         # leaving a balance in silence; a constraint is what makes the row
         # neither tier can see.
         #
+        # **It was named ``ck_transactions_settle_day_needs_basis`` until plan
+        # step X-az** (developer approval 2026-08-22), and the rename is a
+        # correction rather than tidying: this constraint is about the FIGURE's
+        # basis, and beside X-az's ``ck_transactions_settle_day_basis_pairing``
+        # the old name read as though it were about the DAY's.  Two live
+        # comments already read it that way.  The name it has now is what its
+        # predicate says, and it is the name of the service-tier refusal that
+        # mirrors it -- ``reject_settle_day_without_a_record``.
+        #
         # **It is an IMPLICATION, and a first version of this step made it a
         # BICONDITIONAL** (``ck_transactions_settlement_recorded``,
         # ``(settled_on IS NULL) = (settled_basis_id IS NULL)``).  The ``<-``
@@ -291,7 +262,34 @@ class Transaction(
         # STATUS, asked by ``row_valuation.settled_figure``, and not this.
         db.CheckConstraint(
             "settled_on IS NULL OR settled_basis_id IS NOT NULL",
-            name="ck_transactions_settle_day_needs_basis",
+            name="ck_transactions_settle_day_needs_a_record",
+        ),
+        # A SETTLE DAY SAYS HOW IT IS KNOWN (plan step **X-az**, finding
+        # **N-332**): a row carrying the day its money moved always records
+        # which KIND of day it is -- a day the bank showed, a day a balance was
+        # asserted for, or the owner's own entry
+        # (:class:`app.enums.SettledDayBasisEnum`).
+        #
+        # **It is a BICONDITIONAL where the figure's pairing above is an
+        # IMPLICATION, and the asymmetry is the point** (developer,
+        # 2026-08-22).  ``settled_amount`` outlives the assertion that recorded
+        # it -- a revert releases the day and KEEPS what moved -- so a figure
+        # with no day is the legal RETAINED state and the ``<-`` direction had
+        # to go.  The day and ITS basis have no such split lifetime: the basis
+        # describes the day, so the two are born and released together, and
+        # forbidding a basis left behind with no day costs nothing and removes
+        # the only residue a revert could leave.  ``settled_day_basis_id`` is
+        # written only through
+        # :func:`app.services.settle_day.record_settle_day`, which assigns or
+        # clears both columns in one statement; this is the storage tier that
+        # makes that door's discipline a property of the table.
+        #
+        # Written as two NULL tests rather than against a basis VALUE, so no
+        # ``ref.settled_day_bases`` id is frozen into the schema -- the same
+        # reason ``ck_transactions_amount_ownership`` is written that way.
+        db.CheckConstraint(
+            "(settled_on IS NULL) = (settled_day_basis_id IS NULL)",
+            name="ck_transactions_settle_day_basis_pairing",
         ),
         # THE AMOUNT MODEL'S ONE CONSTRAINT (ruling **R-FI**, plan step
         # X-au-c1): a row's amount is either its OWN or it is DERIVED, and a
@@ -504,69 +502,42 @@ class Transaction(
     )
     notes = db.Column(db.Text)
     due_date = db.Column(db.Date, nullable=True)
-    # The CASH clock.  Nullable, and the NULL is the invariant rather than a
-    # gap: a row carries a settle day if and only if it is in a settled status
-    # (Paid / Received / Settled).  Both halves are written by ONE statement --
-    # ``status_seam.apply_status_change``, the single door that assigns
-    # ``status_id`` -- so they cannot diverge.  See the class docstring for why
-    # this is not a CHECK constraint and why it has no bounds.
-    settled_on = db.Column(db.Date)
-    # WHICH statement showed this line -- the ``account_anchor_history`` row
-    # whose balance the user (or, from plan step X-f6a, the bank's own export)
-    # was reading when they confirmed the money had moved.  Ruling **R-FL**.
+    # settled_on, settled_day_basis_id and reconciled_by_id are provided by
+    # SettleDatedMixin -- the three columns that ARE this row's ASSERTION, and
+    # its ``settled_on`` validator refuses a ``datetime`` on every write path
+    # (finding **N-179**).  What is specific to THIS table is stated here:
     #
-    # Nullable, and the NULL is a FACT rather than a gap: it means no statement
-    # has been RECORDED as showing this line.  It is not "not cleared" -- the
-    # three-state model the developer ruled on 2026-08-14 calls it UNKNOWN, and
-    # the ONE clearing rule (``cash_ledger.StatementCoverage``) answers an
-    # UNKNOWN line from the date rule this column exists to retire.  What turns
-    # UNKNOWN into NOT CLEARED is the statement itself being recorded as walked
-    # line by line, which is plan step X-f3a-2's fact and not this column's.
+    # ``settled_on`` is the CASH clock, and its NULL is the invariant rather
+    # than a gap: a transaction carries a settle day if and only if it is in a
+    # settled status (Paid / Received / Settled).  Both halves are written by
+    # ONE statement -- ``status_seam.apply_status_change``, the single door that
+    # assigns ``status_id`` -- so they cannot diverge.  See the class docstring
+    # for why that half is not a CHECK constraint and why the day has no bounds.
     #
-    # **Nothing was backfilled and that is deliberate.**  The date rule is a
-    # guess -- of 110 movements matched to the developer's bank lines only 33
-    # carry the day the bank posted them -- so backfilling this column from it
-    # would launder that guess into an observation nobody made, and no later
+    # ``settled_day_basis_id`` says WHICH KIND of day it is, and
+    # ``ck_transactions_settle_day_basis_pairing`` above welds the two
+    # NULL-nesses (plan step **X-az**, finding **N-332**).
+    #
+    # ``reconciled_by_id`` names WHICH statement showed this line -- the
+    # ``account_anchor_history`` row whose balance the user (or, from plan step
+    # X-f6a, the bank's own export) was reading when they confirmed the money
+    # had moved.  Ruling **R-FL**.  Nullable, and the NULL is a FACT rather than
+    # a gap: it means no statement has been RECORDED as showing this line.  It
+    # is not "not cleared" -- the three-state model the developer ruled on
+    # 2026-08-14 calls it UNKNOWN, and the ONE clearing rule
+    # (``cash_ledger.StatementCoverage``) answers an UNKNOWN line from the date
+    # rule this column exists to retire.  What turns UNKNOWN into NOT CLEARED is
+    # the statement itself being recorded as walked line by line, which is plan
+    # step X-f3a-2's fact and not this column's.
+    #
+    # **Nothing was backfilled into it and that is deliberate.**  The date rule
+    # is a guess -- of 110 movements matched to the developer's bank lines only
+    # 33 carry the day the bank posted them -- so backfilling this column from
+    # it would launder that guess into an observation nobody made, and no later
     # reader could tell the two apart.  History is filled from the BANK at plan
-    # step X-f6a.
-    #
-    # Its foreign key is COMPOSITE over ``account_id``; see
+    # step X-f6a.  Its foreign key is COMPOSITE over ``account_id``; see
     # ``fk_transactions_reconciled_by`` above for why a single-column one cannot
     # express the rule.
-    reconciled_by_id = db.Column(db.Integer)
-
-    @validates("settled_on")
-    def _refuse_a_settle_instant(self, _key, value):
-        """Refuse a ``datetime`` written to :attr:`settled_on`, on ANY path.
-
-        The type guard lives on the COLUMN rather than only at the write door,
-        and that placement is the point (finding **N-179**).  The seam refuses
-        an instant it is handed, but nothing stopped a caller -- or a fixture --
-        assigning the attribute directly, and PostgreSQL then truncates the
-        instant on the UTC session clock in silence.  A validator fires for the
-        constructor, for a plain ``txn.settled_on = ...``, and for every ORM
-        write path, so the wrong type is a loud ``TypeError`` wherever it is
-        written instead of a day that is wrong by one.
-
-        It is not a fence with an allowlist and it hunts no call sites: the
-        column simply does not accept the type.  The residual, stated because
-        an unstated limit reads as stronger than it is: a bulk
-        ``query.update({"settled_on": ...})`` bypasses the ORM attribute layer
-        and is not seen here, the same boundary
-        ``LoanAnchorEvent``'s append-only guard states for itself.
-
-        Args:
-            value: The candidate settle day.  (SQLAlchemy also passes the
-            attribute name, always ``settled_on``, which this ignores.)
-
-        Returns:
-            *value* unchanged when it is a civil ``date`` or ``None``.
-
-        Raises:
-            TypeError: When *value* is a ``datetime`` (from
-                :func:`reject_settle_instant`).
-        """
-        return reject_settle_instant(value)
     # is_envelope and companion_visible are provided by
     # TrackingVisibilityMixin.  On an ad-hoc (template_id IS NULL) row
     # they carry the row's own setting; on a template-generated row they

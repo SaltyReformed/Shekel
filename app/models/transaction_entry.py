@@ -8,10 +8,21 @@ budget and the checking balance impact.
 """
 
 from app.extensions import db
-from app.models.mixins import OptimisticLockMixin, TimestampMixin, UserScopedMixin
+from app.models.mixins import (
+    OptimisticLockMixin,
+    SettleDatedMixin,
+    TimestampMixin,
+    UserScopedMixin,
+)
 
 
-class TransactionEntry(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.Model):
+class TransactionEntry(
+    UserScopedMixin,
+    OptimisticLockMixin,
+    SettleDatedMixin,
+    TimestampMixin,
+    db.Model,
+):
     """An individual purchase recorded against a parent transaction.
 
     Entries accumulate against the parent transaction's estimated amount.
@@ -66,6 +77,13 @@ class TransactionEntry(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.
                            unjustifiable constant, and a wrong forward date is
                            visible on the row and self-corrects at the next
                            true-up.
+        settled_day_basis_id -- WHICH KIND of day ``settled_on`` is: a day the
+                           bank showed (``observed``), the day a balance was
+                           asserted for and so an UPPER BOUND (``asserted``), or
+                           the owner's own entry (``entered``).  Paired to
+                           ``settled_on`` by a BICONDITIONAL check, so the two
+                           are born and released together.  Plan step **X-az**,
+                           :class:`app.enums.SettledDayBasisEnum`.
         credit_payback_id -- FK to the CC Payback transaction created for
                              this entry (SET NULL on payback deletion).
 
@@ -150,6 +168,24 @@ class TransactionEntry(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.
             "reconciled_by_id IS NULL OR settled_on IS NOT NULL",
             name="ck_transaction_entries_cleared_needs_settle_day",
         ),
+        # A SETTLE DAY SAYS HOW IT IS KNOWN (plan step **X-az**, finding
+        # **N-332**), and this is the transaction twin of
+        # ``ck_transactions_settle_day_basis_pairing``; see
+        # ``app.models.transaction.Transaction`` for why the pairing is a
+        # BICONDITIONAL where the settled FIGURE's is a bare implication.
+        #
+        # **This table needs it for the same reason and gets it in the same
+        # step, which the figure's basis did not.**  ``settled_basis_id`` lives
+        # only on ``budget.transactions`` because a purchase stores no figure of
+        # its own -- it IS the figure its parent's close is made of.  A purchase
+        # does carry its own DAY, and all three kinds are written to it: the
+        # bank's day by ``statement_match``, a balance assertion's upper bound
+        # by ``reconcile_service._purchases``, and the owner's own by
+        # ``entry_service.update_entry``.
+        db.CheckConstraint(
+            "(settled_on IS NULL) = (settled_day_basis_id IS NULL)",
+            name="ck_transaction_entries_settle_day_basis_pairing",
+        ),
         # A CARD purchase never touches checking -- it leaves through its own CC
         # Payback sibling -- so this link, which is scoped to the ENVELOPE's
         # account, could only ever claim that the checking statement showed it.
@@ -187,23 +223,24 @@ class TransactionEntry(UserScopedMixin, OptimisticLockMixin, TimestampMixin, db.
     purchased_on = db.Column(
         db.Date, nullable=False, server_default=db.text("CURRENT_DATE"),
     )
-    # Nullable BY DESIGN, and the NULL is a fact rather than a gap: it means
-    # the user has not seen this purchase on a statement yet, so the engine
-    # treats it as still outstanding.  Filling it with a default would be
-    # storing a guess where a read-time rule can at least be seen.
-    settled_on = db.Column(db.Date)
-    # WHICH statement showed this purchase -- the ``account_anchor_history`` row
-    # whose balance the user was reading when they ticked it off.  Ruling
-    # **R-FL**, and the transaction twin of
+    # settled_on, settled_day_basis_id and reconciled_by_id are provided by
+    # SettleDatedMixin, which is where the pairing and the ``datetime`` refusal
+    # are stated once for both tables.  What is specific to a PURCHASE:
+    #
+    # ``settled_on`` is nullable BY DESIGN and the NULL is a fact rather than a
+    # gap -- it means the user has not seen this purchase on a statement yet, so
+    # the engine treats it as still outstanding.  Filling it with a default would
+    # be storing a guess where a read-time rule can at least be seen.
+    #
+    # ``reconciled_by_id`` names WHICH statement showed this purchase -- the
+    # ``account_anchor_history`` row whose balance the user was reading when they
+    # ticked it off (ruling **R-FL**).  The transaction twin of
     # ``app.models.transaction.Transaction.reconciled_by_id``; that column's
     # comment carries the full rationale, including why NULL is a FACT (UNKNOWN,
-    # not "not cleared") and why nothing was backfilled into it.
-    #
-    # It does NOT replace ``settled_on`` beside it.  The two record different
-    # facts: ``settled_on`` is WHEN the money moved, this is WHICH statement was
-    # seen to show it, and a statement legitimately shows a line that moved days
-    # earlier.
-    reconciled_by_id = db.Column(db.Integer)
+    # not "not cleared") and why nothing was backfilled into it.  It does NOT
+    # replace ``settled_on`` beside it: that is WHEN the money moved, this is
+    # WHICH statement was seen to show it, and a statement legitimately shows a
+    # line that moved days earlier.
     is_credit = db.Column(
         db.Boolean, nullable=False, default=False, server_default="false",
     )

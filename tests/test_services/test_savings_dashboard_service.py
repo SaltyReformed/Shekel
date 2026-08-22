@@ -36,7 +36,11 @@ from app.services.account_category import account_category
 from app.services.pay_calendar import DerivedPeriod
 from app.services.savings_dashboard_service._types import AccountProjection
 
-from tests._test_helpers import current_pay_period, all_periods
+from tests._test_helpers import (
+    all_periods,
+    current_pay_period,
+    settle_day_columns,
+)
 from tests.oracles.recurrence_baseline import MONTHLY
 
 
@@ -2787,7 +2791,7 @@ def _add_entry(
         amount=amount,
         description=description,
         purchased_on=date(2026, 1, 15),
-        settled_on=date(2026, 1, 15) if is_settled else None,
+        **settle_day_columns(date(2026, 1, 15) if is_settled else None),
         is_credit=is_credit,
     ))
     db_session.flush()

@@ -253,6 +253,20 @@ _REF_TABLE_SEEDS = (
     # posting and recurrence refs use.  Names match the enum ``.value`` strings
     # in ``app/enums.py`` exactly.
     ("SettlementBasis", ["derived", "corrected", "purchases"]),
+    # The settle DAY's discriminator (balance arc, plan step X-az).  HOW a
+    # settled row's ``settled_on`` is known: ``observed`` is a day a bank
+    # statement showed the money posting on, ``asserted`` is the day the owner
+    # asserted a BALANCE for -- an UPPER BOUND on the true posting day, not a
+    # point -- and ``entered`` is the app's own record with no bank document
+    # behind it.  A row that carries no settle day carries no basis, so there is
+    # deliberately no ``not_settled`` row here; each table's pairing CHECK is a
+    # BICONDITIONAL over the two NULL-nesses -- see
+    # :class:`app.enums.SettledDayBasisEnum`.  The migration ``c7d31f9a45e8``
+    # inline-seeds the identical rows so a freshly upgraded DB resolves the enum
+    # before this idempotent reseed runs -- the same dual-seed pattern the
+    # settlement-record, amount-model, posting and recurrence refs use.  Names
+    # match the enum ``.value`` strings in ``app/enums.py`` exactly.
+    ("SettledDayBasis", ["observed", "asserted", "entered"]),
 )
 # pylint: enable=line-too-long
 # fmt: on

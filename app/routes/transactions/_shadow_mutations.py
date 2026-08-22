@@ -46,6 +46,7 @@ from app.services import (
     status_seam,
     transfer_service,
 )
+from app.services.settle_day import recorded_settle_day
 
 logger = logging.getLogger(__name__)
 
@@ -124,11 +125,20 @@ def _apply_shadow_update(txn, txn_id, data):
             current_user.id,
             data.get("status_id", txn.transfer.status_id),
             data.get("settled_on"),
+            # The SHADOW's own recorded pair, which is the pair for both legs
+            # (Transfer Invariant 3).  It makes the reading echo-aware, so a
+            # re-submitted day does not restamp its basis (plan step X-az).
+            recorded_settle_day(txn),
         )
     except ValidationError as exc:
         return _error_transaction_response(txn_id, str(exc))
     if settle_day is not None:
-        svc_kwargs["settled_on"] = settle_day
+        # ``settle_day``, not ``settled_on``: the value is the day AND the basis
+        # that says how it is known (plan step **X-az**), and the transfer
+        # service's kwargs key is named for the pair rather than for a column
+        # ``Transfer`` does not have.  ``settle_day_for_status`` stamped the
+        # ``entered`` basis, which is what a day out of a date box is.
+        svc_kwargs["settle_day"] = settle_day
 
     try:
         transfer_service.update_transfer(

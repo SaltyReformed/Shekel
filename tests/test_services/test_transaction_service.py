@@ -40,6 +40,7 @@ from app.services.row_valuation import owned_contribution, settled_figure
 from app.services.cash_ledger import amount_basis
 from tests._test_helpers import (
     amount_basis_for,
+    an_entered_day,
     make_every_period_rule,
     net_posted_by_day,
     settlement_basis_id,
@@ -1765,7 +1766,7 @@ class TestTheDoorAppliesTheStatusANDTheCorrection:
         db.session.flush()
         transaction_service.apply_requested_status(
             txn, ref_cache.status_id(StatusEnum.DONE),
-            settled_on=display_today() - cls._SETTLED_DAY_OFFSET,
+            settle_day=an_entered_day(display_today() - cls._SETTLED_DAY_OFFSET),
         )
         return txn
 

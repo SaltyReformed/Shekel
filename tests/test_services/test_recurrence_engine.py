@@ -63,13 +63,15 @@ from tests.oracles.recurrence_baseline import (
 )
 from tests._test_helpers import (
     all_periods,
+    an_entered_day,
     derived_calendar,
-    make_every_period_rule,
     make_cadence_rule,
+    make_every_period_rule,
     open_calendar_hole,
     settlement_basis_id,
     settlement_if_settling,
 )
+from app.services.settle_day import record_settle_day
 
 
 # --- Rule / period objects for the pure pattern-matching tests ---------------
@@ -2082,7 +2084,7 @@ class TestRegenerateForTemplate:
         )
         if settled_on is not None:
             entry_service.update_entry(
-                entry.id, seed_user["user"].id, settled_on=settled_on,
+                entry.id, seed_user["user"].id, settle_day=None if settled_on is None else an_entered_day(settled_on),
             )
         db.session.flush()
         return entry
@@ -2648,9 +2650,9 @@ class TestRegenerateForTemplate:
             # back to Projected in order to edit it.  Retiring it now would
             # delete that figure, which is what retention exists to keep.
             #
-            # The columns satisfy ``ck_transactions_settle_day_needs_basis``: a
+            # The columns satisfy ``ck_transactions_settle_day_needs_a_record``: a
             # record without a day is precisely what that implication admits.
-            priced.settled_on = None
+            record_settle_day(priced, None)
             priced.settled_amount = Decimal("41.10")
             priced.settled_basis_id = settlement_basis_id(SettlementBasisEnum.CORRECTED)
             db.session.flush()

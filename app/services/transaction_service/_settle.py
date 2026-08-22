@@ -33,7 +33,6 @@ Architecture:
 """
 
 import logging
-from datetime import date
 from decimal import Decimal
 
 from app.enums import SettlementBasisEnum
@@ -47,6 +46,7 @@ from app.services.cash_ledger import (
     live_override,
 )
 from app.services.row_valuation import purchases_total
+from app.services.settle_day import SettleDay
 from app.services.status_seam import (
     Settlement,
     apply_status_change,
@@ -322,7 +322,7 @@ def settle_transaction(
     txn: Transaction,
     *,
     submitted: Decimal | None = None,
-    settled_on: date | None = None,
+    settle_day: SettleDay | None = None,
 ) -> bool:
     """Settle one regular transaction -- what "the money moved" MEANS for a row.
 
@@ -422,9 +422,11 @@ def settle_transaction(
             step X-au-c3: it was ``actual_amount``, and the column of that name
             is gone -- a settled row records what moved in ``settled_amount``
             beside a ``settled_basis_id`` that says whether this figure is why.
-        settled_on: The civil day the money moved, when the CALLER knows it --
-            the reconcile tick's statement date.  ``None`` derives it through
-            the seam.  A day in the future or one supplied for a non-settled
+        settle_day: The civil day the money moved and HOW that day is known
+            (:class:`app.services.settle_day.SettleDay`), when the CALLER knows
+            it -- the reconcile tick's statement date on the ``asserted``
+            basis, the matcher's bank day on ``observed``.  ``None`` derives it
+            through the seam.  A day in the future or one supplied for a non-settled
             status is refused there (rulings **R-EJ** / finding **N-183**);
             the tick cannot reach either, because an assertion's own
             ``observed_on`` is already refused in the future by
@@ -496,7 +498,7 @@ def settle_transaction(
 
     correction = None
     if settles_from_entries(txn):
-        settle_from_entries(txn, settled_on=settled_on)
+        settle_from_entries(txn, settle_day=settle_day)
     else:
         # Act 1b's DECISION, taken before act 1a moves anything.  The echo rule
         # -- a figure equal to what the row would book anyway is not a
@@ -564,7 +566,7 @@ def settle_transaction(
         # retained ``corrected`` one, which is what makes that round trip
         # lossless rather than merely slower to destroy the figure.
         apply_status_change(
-            txn, settled_status_id(txn), settled_on=settled_on,
+            txn, settled_status_id(txn), settle_day=settle_day,
             settlement=Settlement.from_settle(
                 booked, correction, recorded_settlement(txn),
             ),
@@ -702,7 +704,7 @@ def _freshest_amount(txn: Transaction, basis) -> Decimal | None:
 
 
 def settle_from_entries(
-    txn: Transaction, *, settled_on: date | None = None,
+    txn: Transaction, *, settle_day: SettleDay | None = None,
 ) -> None:
     """Settle a tracked-envelope transaction at sum(entries).
 
@@ -749,7 +751,7 @@ def settle_from_entries(
       - ``status_id`` is set to ``DONE`` for expense transactions and
         ``RECEIVED`` for income transactions, matching the display
         convention used by ``app/routes/transactions.py:mark_done``.
-      - ``settled_on`` is *settled_on* when the caller supplied one, else the
+      - ``settled_on`` is *settle_day*'s day when the caller supplied one, else the
         status seam's own rule: the user's today on the first entry into a
         settled status, preserved on a re-settle.
 
@@ -799,11 +801,13 @@ def settle_from_entries(
         txn: The Transaction to settle.  Must be attached to the
             current SQLAlchemy session so the entries relationship
             resolves correctly.
-        settled_on: The civil day the money moved, when the caller knows it.
-            ``None`` leaves the seam to derive it.  Passed straight through --
-            every refusal that guards it (a future day, a day beside a
-            non-settled status, a ``datetime``) is the seam's, so this helper
-            adds no second opinion about a value it does not own.
+        settle_day: The civil day the money moved and HOW that day is known
+            (:class:`app.services.settle_day.SettleDay`), when the caller knows
+            it.  ``None`` leaves the seam to derive it -- the owner's today on
+            the ``entered`` basis.  Passed straight through -- every refusal
+            that guards it (a future day, a day beside a non-settled status) is
+            the seam's, so this helper adds no second opinion about a value it
+            does not own.
 
     Raises:
         ValidationError: If any precondition is violated.  The error
@@ -861,7 +865,7 @@ def settle_from_entries(
     # and a purchase corrected next week moves the close by exactly its own
     # difference with no second write.
     apply_status_change(
-        txn, new_status_id, settled_on=settled_on,
+        txn, new_status_id, settle_day=settle_day,
         settlement=Settlement(
             amount=None, basis=SettlementBasisEnum.PURCHASES,
         ),

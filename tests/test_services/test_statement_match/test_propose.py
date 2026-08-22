@@ -17,6 +17,7 @@ sides, and the whole difference between the two algorithms shows up there.
 from datetime import date, timedelta
 from decimal import Decimal
 
+from app.enums import SettledDayBasisEnum
 from app.services.statement_match import DAY_WINDOW
 from app.services.statement_match._offers import (
     BankLine,
@@ -1378,7 +1379,7 @@ def _ticked(row_id, amount, made_on, asserted_for, label=None):
         label=label or f"Groceries: purchase {row_id}",
         cash_amount=Decimal(amount), settled_on=asserted_for, is_settled=True,
         parent_id=900, expected_on=made_on, expected_through=made_on,
-        settle_day_is_upper_bound=True,
+        settle_day_basis=SettledDayBasisEnum.ASSERTED,
     )
 
 

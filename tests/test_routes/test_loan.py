@@ -38,8 +38,8 @@ from app.services import (
 )
 
 from tests._test_helpers import (
-    make_cadence_rule,
     add_escrow_line,
+    an_entered_day,
     clear_loan_ledger,
     create_account_of_type,
     create_loan_account,
@@ -51,6 +51,7 @@ from tests._test_helpers import (
     linked_ledger_account,
     linked_net_by_date,
     loan_params_for,
+    make_cadence_rule,
     posted_loan_balance_at,
     select_option_values,
 )
@@ -3223,7 +3224,7 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
             amount=amount,
             status_id=status_id,
             category_id=seed_user["categories"]["Rent"].id,
-            settled_on=period.start_date if settled else None,
+            settle_day=an_entered_day(period.start_date) if settled else None,
         ),
     )
 

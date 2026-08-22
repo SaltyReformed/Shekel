@@ -60,6 +60,7 @@ from app.services.entry_service import EntryDetails
 from app.services.posting_reads import _ledger_account_for
 from tests._test_helpers import (
     add_txn,
+    an_entered_day,
     create_envelope_txn,
     linked_ledger_account,
 )
@@ -588,7 +589,7 @@ class TestEnvelopePostingLifecycle:
         db.session.flush()
         return entry_service.update_entry(
             entry.id, seed_user["user"].id,
-            settled_on=txn.pay_period.start_date + timedelta(days=1),
+            settle_day=an_entered_day(txn.pay_period.start_date + timedelta(days=1)),
         )
 
     def test_entry_create_on_a_posted_envelope_resyncs(
@@ -623,7 +624,7 @@ class TestEnvelopePostingLifecycle:
             )
             entry_service.update_entry(
                 late.id, user_id,
-                settled_on=seed_periods[0].start_date + timedelta(days=1),
+                settle_day=an_entered_day(seed_periods[0].start_date + timedelta(days=1)),
             )
             db.session.commit()
 
@@ -761,7 +762,7 @@ class TestEnvelopePostingLifecycle:
             txn_id = txn.id
 
             updated = entry_service.update_entry(
-                entry_id, user_id, settled_on=purchased_on,
+                entry_id, user_id, settle_day=an_entered_day(purchased_on),
             )
             db.session.commit()
             auth_client.post(f"/transactions/{txn_id}/mark-done")
@@ -838,7 +839,7 @@ class TestAPurchaseIsAPostingSourceOfItsOwn:
             entry_id, txn_id = entry.id, txn.id
 
             entry_service.update_entry(
-                entry_id, user_id, settled_on=seed_periods[0].start_date,
+                entry_id, user_id, settle_day=an_entered_day(seed_periods[0].start_date),
             )
             db.session.commit()
 
@@ -878,7 +879,7 @@ class TestAPurchaseIsAPostingSourceOfItsOwn:
             entry = _add_purchase(seed_user, txn, "40.00", is_credit=False)
             db.session.commit()
             entry_service.update_entry(
-                entry.id, user_id, settled_on=seed_periods[0].start_date,
+                entry.id, user_id, settle_day=an_entered_day(seed_periods[0].start_date),
             )
             db.session.commit()
             old_category_ledger = ledger_account_service.\
@@ -927,7 +928,7 @@ class TestAPurchaseIsAPostingSourceOfItsOwn:
             db.session.commit()
             entry_id, txn_id = entry.id, txn.id
             entry_service.update_entry(
-                entry_id, user_id, settled_on=seed_periods[0].start_date,
+                entry_id, user_id, settle_day=an_entered_day(seed_periods[0].start_date),
             )
             db.session.commit()
             posted, = _entries_for_purchase(entry_id)
@@ -977,7 +978,7 @@ class TestAPurchaseIsAPostingSourceOfItsOwn:
                 checking.id, seed_user["scenario"].id,
             )
             entry_service.update_entry(
-                entry_id, user_id, settled_on=seed_periods[0].start_date,
+                entry_id, user_id, settle_day=an_entered_day(seed_periods[0].start_date),
             )
             db.session.commit()
             assert _entries_for_purchase(entry_id), (

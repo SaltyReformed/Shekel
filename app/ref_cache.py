@@ -35,6 +35,7 @@ from app.enums import (
     AcctCategoryEnum,
     AcctTypeEnum,
     AmountSourceEnum,
+    SettledDayBasisEnum,
     SettlementBasisEnum,
     BusinessDayShiftEnum,
     CalcMethodEnum,
@@ -221,6 +222,7 @@ def _build_ref_specs(ref_models) -> list[_RefSpec]:
         _RefSpec(AmountSourceEnum, ref_models.AmountSource),
         _RefSpec(StatementSourceEnum, ref_models.StatementSource),
         _RefSpec(SettlementBasisEnum, ref_models.SettlementBasis),
+        _RefSpec(SettledDayBasisEnum, ref_models.SettledDayBasis),
     ]
 
 
@@ -957,3 +959,38 @@ def settlement_basis_id(member):
     """
     _require_init()
     return _cache.enum_ids[SettlementBasisEnum][member]
+
+
+def settled_day_basis_id(member):
+    """Return the integer primary key for a SettledDayBasisEnum member.
+
+    The settle DAY's discriminator (plan step **X-az**): HOW a settled row's
+    ``settled_on`` is known -- a bank observation, a balance assertion's upper
+    bound, or the owner's own entry.  Stamped on
+    ``budget.transactions.settled_day_basis_id`` and
+    ``budget.transaction_entries.settled_day_basis_id`` by the settle doors and
+    read by the statement matcher's window rule
+    (``statement_match._offers.CandidateRow.expected_window``) -- always via the
+    integer ID, never the string ``name``.  Matches the project-wide
+    IDs-for-logic invariant.
+
+    **There is deliberately no accessor for the NOT-SETTLED state**, for the
+    reason :func:`settlement_basis_id` states about its own: it is not a member
+    but the ABSENCE of one, so "does this row carry a settle day" is a NULL test
+    on ``settled_on`` and needs no cache read -- and no ref id is frozen into
+    the schema.  The two NULL-nesses are welded by a BICONDITIONAL check
+    constraint on each table, so the absence is exact rather than conventional.
+
+    Args:
+        member: A ``SettledDayBasisEnum`` member
+                (e.g. ``SettledDayBasisEnum.OBSERVED``).
+
+    Returns:
+        int -- the ``ref.settled_day_bases.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid SettledDayBasisEnum member.
+    """
+    _require_init()
+    return _cache.enum_ids[SettledDayBasisEnum][member]

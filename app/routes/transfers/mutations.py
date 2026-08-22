@@ -29,6 +29,7 @@ from app import ref_cache
 from app.enums import StatusEnum
 from app.services import status_seam, transfer_service
 from app.services.account_resolver import resolve_grid_account
+from app.services.settle_day import recorded_settle_day
 from app.services.state_machine import finalised_edit_rejection
 from app.exceptions import NotFoundError, ValidationError as ShekelValidationError
 from app.utils.auth_helpers import require_owner
@@ -500,8 +501,11 @@ def _grade_submitted_settle_day(xfer, data):
     Ruling **R-ED**'s correction door, graded by the ONE shared rule
     :func:`app.services.status_seam.settle_day_for_status` so this door and the
     two transaction-side doors cannot answer differently.  Mutates *data* in
-    place: a day the rule DROPS has its key removed, so the service never sees
-    it and the seam clears the column as part of the status change.
+    place: the schema's ``settled_on`` key always goes, and a day the rule KEEPS
+    comes back as a ``settle_day`` pair -- the day and the basis that says how it
+    is known (plan step **X-az**).  A day the rule DROPS leaves no key at all, so
+    the service never sees it and the seam clears both columns as part of the
+    status change.
 
     **Why a drop rather than a refusal** (ruling **R-EG**): both full-edit forms
     re-submit the row's whole state, and the documented way to unlock a
@@ -527,13 +531,24 @@ def _grade_submitted_settle_day(xfer, data):
         settle_day = status_seam.settle_day_for_status(
             current_user.id,
             data.get("status_id", xfer.status_id), data["settled_on"],
+            # What the PAIR already records, read off the income shadow through
+            # the transfer's own two properties (plan step X-az).  A transfer
+            # carries neither column, and without the stored pair an untouched
+            # Save of this prefilled form would restamp a bank-observed or
+            # panel-asserted day as the owner's own typing.
+            recorded_settle_day(xfer),
         )
     except ShekelValidationError as exc:
         return _error_transfer_response(xfer.id, str(exc))
-    if settle_day is None:
-        del data["settled_on"]
-    else:
-        data["settled_on"] = settle_day
+    # **The key is REPLACED, not overwritten** (plan step **X-az**): the schema
+    # loads a ``settled_on`` date and the service takes a ``settle_day`` pair --
+    # the day AND the basis that says how it is known -- so leaving the old key
+    # in place would hand ``update_transfer`` a kwarg it silently ignores while
+    # the pair arrived under the name it reads.  ``settle_day_for_status``
+    # stamped ``entered``, which is what a day out of a date box is.
+    del data["settled_on"]
+    if settle_day is not None:
+        data["settle_day"] = settle_day
     return None
 
 

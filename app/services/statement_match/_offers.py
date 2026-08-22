@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from app.enums import SettledDayBasisEnum
+
 
 class RowKind(enum.Enum):
     """Which of the app's two matchable row types a candidate is.
@@ -99,13 +101,24 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
             that was missing, and its absence had no bound at all**: plan step
             ``bank_import:X-f6a-3c``, finding **N-312**.  See
             :attr:`expected_window`.
-        settle_day_is_upper_bound: Whether :attr:`settled_on` is the RECONCILE
-            PANEL's bound rather than an observed posting day -- true exactly
-            when the row carries a ``reconciled_by_id``.  The two settle days
-            this package can meet are not the same kind of fact and the
-            difference decides a window, which is why it travels as its own
-            field rather than being re-derived per asking site.  See
-            :attr:`expected_window`.
+        settle_day_basis: WHICH KIND of day :attr:`settled_on` is, read
+            straight off ``settled_day_basis_id``
+            (:class:`app.enums.SettledDayBasisEnum`): ``asserted`` is the
+            reconcile panel's UPPER BOUND, ``observed`` is a day a bank
+            statement showed, ``entered`` is the owner's own.  ``None`` exactly
+            when :attr:`settled_on` is.  The three settle days this package can
+            meet are not the same kind of fact and the difference decides a
+            window, which is why the basis travels rather than being re-derived
+            per asking site.  See :attr:`expected_window`.
+
+            **It was a BOOLEAN derived from ``reconciled_by_id`` until plan step
+            X-az** (finding **N-332**), and the column it was derived from
+            answered a different question -- WHICH statement was seen to show
+            this money, not what kind of day the row records.  The two agreed by
+            coincidence of the writers that existed: exact over the panel's
+            bound and the bank's observation, and BLIND to the third case, so a
+            day the owner typed read as a day the bank had shown.  Carrying the
+            basis is not a wider boolean, it is the fact itself.
     """
 
     kind: RowKind
@@ -118,7 +131,7 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
     parent_id: "int | None" = None
     expected_on: "date | None" = None
     expected_through: "date | None" = None
-    settle_day_is_upper_bound: bool = False
+    settle_day_basis: "SettledDayBasisEnum | None" = None
 
     @property
     def expected_window(self) -> "tuple[date, date] | None":
@@ -177,13 +190,21 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
         proposals name an unsettled transaction on either the first pass or the
         second.
 
-        **A RECONCILED row's settle day is a BOUND, and reading it as a point
-        made the matcher blind to the rows it most needed to see.**  The
-        reconcile panel stamps the day the owner asserted the BALANCE for --
+        **An ASSERTED settle day is a BOUND, and reading it as a point made
+        the matcher blind to the rows it most needed to see.**  The reconcile
+        panel stamps the day the owner asserted the BALANCE for --
         ``reconcile_service._purchases.record_settled_days`` says so in as many
         words, *"``settled_on`` is an UPPER BOUND on the true posting day"* --
         while this property read every settle day as the day a statement
-        showed.  Two packages, one column, two meanings.  Measured on the
+        showed.  Two packages, one column, two meanings.
+
+        **The row now SAYS which it holds** (plan step X-az, finding **N-332**).
+        This branch asked ``reconciled_by_id IS NOT NULL`` until then, which is
+        a different question -- WHICH statement was seen to show this money --
+        and it happened to answer the same way for the two writers it met.  It
+        could not see the third: a day the owner typed carries no link, so it
+        read as a bank observation and got a point.  ``settled_day_basis_id`` is
+        the fact itself, and the branch names the member it is about.  Measured on the
         developer's own dev database 2026-08-21: all 61 reconciled purchases on
         Checking carry ``settled_on = 2026-08-18``, and **59 of them sit more
         than** :data:`~._propose.DAY_WINDOW` **days after their purchase day**
@@ -239,7 +260,7 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
         if self.settled_on is not None:
             if (
                 self.kind is RowKind.PURCHASE
-                and self.settle_day_is_upper_bound
+                and self.settle_day_basis is SettledDayBasisEnum.ASSERTED
                 and self.expected_on is not None
                 and self.expected_on <= self.settled_on
             ):

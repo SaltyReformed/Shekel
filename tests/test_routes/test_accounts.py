@@ -27,11 +27,13 @@ from app.models.account import Account, AccountAnchorHistory
 from app.utils.dates import display_today
 from tests._test_helpers import (
     all_periods,
+    an_entered_day,
     append_balance_assertion,
     create_account_of_type,
     create_loan_account,
     create_transfer,
     current_pay_period,
+    settle_day_columns,
     settle_instant_on,
     settlement_basis_id,
     settlement_if_settling,
@@ -54,6 +56,7 @@ from app.services import (
 )
 from app.services.auth_service import hash_password
 from app.services.row_valuation import owned_contribution, settled_figure
+from app.services.settle_day import record_settle_day
 
 
 #: The out-of-band swap that carries the balance acknowledgement into
@@ -1814,7 +1817,7 @@ class TestTheReconcileRoute:
                 description="Test purchase",
                 purchased_on=purchased_on,
                 is_credit=is_credit,
-                settled_on=settled_on,
+                **settle_day_columns(settled_on),
             ))
         db.session.commit()
         return txn
@@ -2392,7 +2395,7 @@ class TestTheReconcileRoute:
         The parent is settled through ``status_seam.apply_status_change``
         rather than by assigning ``status_id``.  A raw assignment builds a
         settled row carrying no settle day and no record -- one no door in the
-        app can create, and one ``ck_transactions_settle_day_needs_basis`` and
+        app can create, and one ``ck_transactions_settle_day_needs_a_record`` and
         ``row_valuation.settled_figure`` between them exist to keep out of the
         database and out of a balance.
         """
@@ -3199,7 +3202,7 @@ class TestTheReconcileRoutesUngradedBranches:
             lands_id, already_id = lands.id, already.id
             # The second entry is settled behind the panel's back -- the second
             # device.  The form still posts both ids.
-            db.session.get(type(already), already_id).settled_on = past
+            record_settle_day(db.session.get(type(already), already_id), an_entered_day(past))
             db.session.commit()
 
             response = auth_client.post(
@@ -3229,9 +3232,12 @@ class TestTheReconcileRoutesUngradedBranches:
             )
             self._true_up(auth_client, seed_user["account"].id, "4537.66")
             entry_id = self._entries_of(txn.id)[0].id
-            db.session.get(
-                type(self._entries_of(txn.id)[0]), entry_id,
-            ).settled_on = past
+            record_settle_day(
+                db.session.get(
+                    type(self._entries_of(txn.id)[0]), entry_id,
+                ),
+                an_entered_day(past),
+            )
             db.session.commit()
 
             response = auth_client.post(
@@ -5516,7 +5522,7 @@ def _add_cleared_debit_entry(db_session, *, txn, user_id, amount):
         description="Cleared purchase",
         purchased_on=date(2026, 1, 15),
         is_credit=False,
-        settled_on=date(2026, 1, 15),
+        **settle_day_columns(date(2026, 1, 15)),
     ))
     db_session.flush()
 

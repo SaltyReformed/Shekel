@@ -48,6 +48,7 @@ from app.models.transfer import Transfer
 from app.services import posting_service, transfer_service
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    an_entered_day,
     create_account_of_type,
     linked_ledger_account,
 )
@@ -116,7 +117,7 @@ def _settle(transfer, user_id, **extra):
     transfer_service.update_transfer(
         transfer.id, user_id,
         status_id=ref_cache.status_id(StatusEnum.DONE),
-        settled_on=display_today(),
+        settle_day=an_entered_day(display_today()),
         **extra,
     )
 

@@ -66,6 +66,7 @@ from app.services.generation_schedule import GenerationSchedule
 from app.utils.dates import attribution_date, display_today
 from tests._test_helpers import (
     amount_basis_for,
+    an_entered_day,
     create_transfer,
     settlement_basis_id,
 )
@@ -620,7 +621,7 @@ class TestTheNamedVerbItself:
             first_day = display_today() - timedelta(days=3)
 
             transfer_service.settle_transfer(
-                xfer.id, owner, settled_on=first_day,
+                xfer.id, owner, settle_day=an_entered_day(first_day),
             )
             db.session.commit()
             db.session.expire_all()
@@ -630,7 +631,7 @@ class TestTheNamedVerbItself:
             assert transfer_service.settle_transfer(
                 xfer.id, owner,
                 submitted=Decimal("999.99"),
-                settled_on=display_today(),
+                settle_day=an_entered_day(display_today()),
             ) is False
             db.session.commit()
 

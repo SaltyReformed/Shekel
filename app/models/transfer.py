@@ -310,22 +310,75 @@ class Transfer(
         projection.  A caller that needs the day for MANY transfers must load
         the shadows itself.
         """
+        return self._income_shadow_settle_pair()[0]
+
+    @property
+    def settled_day_basis_id(self):
+        """Return WHICH KIND of day :attr:`settled_on` is, or ``None``.
+
+        :attr:`settled_on`'s twin, off the same shadow and by the same rule
+        (plan step **X-az**).  The two columns are ONE fact on a
+        ``Transaction`` -- welded by ``ck_transactions_settle_day_basis_pairing``
+        -- so a transfer that can read the day and not its basis could report a
+        day nobody could classify.
+
+        **It exists so a transfer answers
+        :func:`app.services.settle_day.recorded_settle_day`**, which is
+        structurally typed over the two column names: with both properties a
+        ``Transfer`` IS a settle-dated row for that reader, and the transfer
+        PATCH can ask what the pair already records without querying a shadow
+        itself.  That is what makes the echo rule
+        (:func:`app.services.settle_day.submitted_settle_day`) reachable from a
+        door whose row carries neither column.
+
+        There is no setter, for the reason :attr:`settled_on` has none.
+
+        **Cost: one more single-row SELECT**, and it is stated rather than
+        hidden.  A caller reading BOTH properties issues two, because neither
+        may cache a shadow's value on an instance whose shadow another request
+        may have moved.  Both are indexed single-row reads on a form PATCH, and
+        the SINGLE-ROW boundary :attr:`settled_on` documents applies unchanged:
+        a caller that needs this for MANY transfers must load the shadows.
+        """
+        return self._income_shadow_settle_pair()[1]
+
+    def _income_shadow_settle_pair(self):
+        """Return ``(settled_on, settled_day_basis_id)`` off the income shadow.
+
+        The ONE query the two properties above share, so the row they read and
+        the reasons they read it are stated once.  Read off the INCOME
+        (to-account) shadow, the same row ``posting_service._entry_date`` reads
+        for the pair, so the day this renders is the day the ledger files the
+        postings under.
+
+        The ``limit(1)`` is what keeps both properties total; see
+        :attr:`settled_on` for the ``MultipleResultsFound`` measurement that put
+        it there, and for why naming the row in SQL beats iterating an unordered
+        backref.
+
+        Returns:
+            The pair, or ``(None, None)`` when the transfer has no income
+            shadow at all.
+        """
         # Imported here rather than at module scope: ``Transaction`` imports
         # this module for its ``transfer`` relationship, so a top-level import
         # would close the cycle.
         # pylint: disable-next=import-outside-toplevel
         from app.models.transaction import Transaction
 
-        return (
-            db.session.query(Transaction.settled_on)
+        row = (
+            db.session.query(
+                Transaction.settled_on, Transaction.settled_day_basis_id,
+            )
             .filter(
                 Transaction.transfer_id == self.id,
                 Transaction.account_id == self.to_account_id,
                 Transaction.is_deleted.is_(False),
             )
             .limit(1)
-            .scalar()
+            .first()
         )
+        return (None, None) if row is None else (row[0], row[1])
 
     def __repr__(self):
         return f"<Transfer '{self.name}' ${self.amount} ({self.id})>"

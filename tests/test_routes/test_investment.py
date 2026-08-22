@@ -42,6 +42,7 @@ from app.utils.money import round_money
 from tests._test_helpers import (
     current_pay_period,
     restamp_opening_assertion,
+    settle_day_columns,
     settle_instant_on,
 )
 from app.services.investment_dashboard_service import _cards as investment_cards
@@ -2268,7 +2269,7 @@ def _add_envelope_expense_with_cleared_entries_inv(
             description="Cleared purchase",
             purchased_on=date(2026, 5, 15),
             is_credit=False,
-            settled_on=date(2026, 5, 15),
+            **settle_day_columns(date(2026, 5, 15)),
         ))
     db_session.flush()
     return txn

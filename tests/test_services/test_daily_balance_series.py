@@ -55,11 +55,12 @@ from app.services import balance_at
 from app.services.scenario_resolver import get_baseline_scenario
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
-    settlement_columns,
     append_balance_assertion,
     default_settle_day,
     mark_purchase_settled,
+    settle_day_columns,
     settle_instant_on,
+    settlement_columns,
 )
 
 _APR_FIRST = date(2026, 4, 1)
@@ -90,7 +91,7 @@ def _add_txn(
         due_date=due_date,
         # A settled row must carry the day its money moved; the rule for a
         # BARE-built fixture row is shared rather than restated (X-f1).
-        settled_on=default_settle_day(period, status_id),
+        **settle_day_columns(default_settle_day(period, status_id)),
     )
     db.session.add(txn)
     db.session.flush()

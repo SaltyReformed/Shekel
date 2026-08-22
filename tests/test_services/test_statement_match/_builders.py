@@ -28,6 +28,9 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services.cash_ledger import amount_basis
 from app.services.statement_match import ReviewScope
+from tests._test_helpers import (
+    settle_day_columns,
+)
 
 
 def a_transaction(
@@ -43,6 +46,7 @@ def a_transaction(
     category=None,
     template=True,
     reconciled_by=None,
+    settle_day_basis=None,
 ):
     """Stage and return one transaction on the seeded checking account.
 
@@ -71,8 +75,16 @@ def a_transaction(
             is a different answer with its own resolution.
         reconciled_by: The :func:`an_assertion` this row was TICKED against on
             the reconcile panel, or ``None`` for a row settled any other way.
-            Its presence is what makes *settled_on* a BOUND rather than an
-            observed posting day.
+            **It no longer decides what KIND of day *settled_on* is** (plan step
+            **X-az**): that column answers WHICH statement was seen to show the
+            money, and reading it as the day's provenance is finding **N-332**.
+            Pass *settle_day_basis* to say what the day is.
+        settle_day_basis: WHICH KIND of day *settled_on* is
+            (:class:`~app.enums.SettledDayBasisEnum`), or ``None`` for
+            ``entered`` -- the owner's own record, which is what a row settled
+            through an edit box or a Mark Paid carries.  A fixture standing in
+            for a reconcile-panel tick says ``ASSERTED``; one standing in for a
+            bank match says ``OBSERVED``.
 
     Returns:
         The staged :class:`~app.models.transaction.Transaction`.
@@ -106,7 +118,7 @@ def a_transaction(
         transaction_type_id=type_id,
         estimated_amount=Decimal(amount),
         is_envelope=is_envelope,
-        settled_on=settled_on,
+        **settle_day_columns(settled_on, settle_day_basis),
         settled_amount=Decimal(amount) if settled_on else None,
         settled_basis_id=(
             ref_cache.settlement_basis_id(SettlementBasisEnum.DERIVED)
@@ -122,6 +134,7 @@ def a_transaction(
 def a_purchase(
     seed_user, parent, *, amount="25.00", description="Kroger",
     purchased_on=None, settled_on=None, is_credit=False, reconciled_by=None,
+    settle_day_basis=None,
 ):
     """Stage and return one purchase under *parent*.
 
@@ -133,6 +146,12 @@ def a_purchase(
         purchased_on: The day it was made.
         settled_on: The day the bank took it, or ``None``.
         is_credit: Whether it went on a card (and so never touches checking).
+        settle_day_basis: WHICH KIND of day *settled_on* is
+            (:class:`~app.enums.SettledDayBasisEnum`), or ``None`` for
+            ``entered``.  See :func:`a_transaction`; a purchase ticked on the
+            reconcile panel is ``ASSERTED`` and one the bank stated is
+            ``OBSERVED``, and it is the basis rather than *reconciled_by* that
+            decides the window (plan step **X-az**).
         reconciled_by: The :func:`an_assertion` this purchase was TICKED
             against on the reconcile panel, or ``None`` for one settled any
             other way.  Its presence is what makes *settled_on* a BOUND rather
@@ -148,7 +167,7 @@ def a_purchase(
         amount=Decimal(amount),
         description=description,
         purchased_on=purchased_on or seed_user["bootstrap_period"].start_date,
-        settled_on=settled_on,
+        **settle_day_columns(settled_on, settle_day_basis),
         is_credit=is_credit,
         reconciled_by_id=reconciled_by.id if reconciled_by else None,
     )

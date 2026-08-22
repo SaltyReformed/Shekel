@@ -27,7 +27,10 @@ from app.services import (
     pay_period_write,
     pay_schedule_service,
 )
-from tests._test_helpers import settlement_columns
+from tests._test_helpers import (
+    settle_day_columns,
+    settlement_columns,
+)
 from tests._test_helpers import default_settle_day, make_cadence_rule
 from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
@@ -114,7 +117,7 @@ def _add_transaction(
         # A settled row must carry the day its money moved, and the rule for a
         # BARE-built fixture row is shared with ``_test_helpers.add_txn`` rather
         # than restated (plan step X-f1).
-        settled_on=default_settle_day(period, status_id),
+        **settle_day_columns(default_settle_day(period, status_id)),
         name=name,
         category_id=None,
         transaction_type_id=type_id,

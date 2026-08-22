@@ -23,7 +23,7 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import SettledDayBasisEnum, StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
@@ -33,14 +33,23 @@ from app.services import balance_at, entry_service, statement_match
 from app.services.balance_at import BalanceContext
 from app.services.statement_match import MatchSubmission
 
-from tests._test_helpers import create_settled_cash_transaction
+from tests._test_helpers import (
+    an_entered_day,
+    create_settled_cash_transaction,
+)
 
 from ._builders import (
     a_bank_line,
     a_purchase,
     a_scope,
     a_transaction,
+    an_assertion,
     an_import,
+)
+from app.services.settle_day import (
+    SettleDay,
+    record_settle_day,
+    recorded_settle_day,
 )
 
 
@@ -653,8 +662,7 @@ class TestATransferShadowIsMatchedThroughItsService:
         if settled:
             transfer_service.settle_transfer(
                 transfer.id, seed_user["user"].id,
-                settled_on=seed_user["bootstrap_period"].start_date
-                + timedelta(days=5),
+                settle_day=an_entered_day(seed_user["bootstrap_period"].start_date + timedelta(days=5)),
             )
         db.session.flush()
         assert isinstance(destination, Account)
@@ -789,7 +797,7 @@ class TestAnAcceptedMatchStopsAgreeingWhenItStopsHolding:
     def test_a_hand_moved_day_stops_it_agreeing(self, app, db, seed_user):
         """The owner contradicted the bank, and the screen says so."""
         salary, _ = self._accepted_pair(db, seed_user)
-        salary.settled_on = salary.settled_on + timedelta(days=1)
+        record_settle_day(salary, an_entered_day(salary.settled_on + timedelta(days=1)))
         db.session.flush()
 
         assert self._groups(seed_user)[0].agrees is False
@@ -1165,7 +1173,7 @@ class TestCorrectingAPurchaseDayMovesNoMoney:
 
         entry_service.update_entry(
             purchase.id, seed_user["user"].id,
-            settled_on=bank_day + timedelta(days=4),
+            settle_day=an_entered_day(bank_day + timedelta(days=4)),
         )
         db.session.flush()
 
@@ -1621,3 +1629,126 @@ class TestARedatedSettleLeavesNoPostingBehind:
         assert _posted_cash_by_day(db, txn, account) == {
             bank_day: Decimal("-180.00"),
         }
+
+
+class TestTheBankCanCONFIRMADayThePanelOnlyBOUNDED:
+    """Plan step **X-az**: a confirmation writes the basis, not the day.
+
+    **The reverse-direction half of finding N-332.**  The reconcile panel stamps
+    the day the owner asserted a BALANCE for -- the money moved on or BEFORE it.
+    When a bank line then posts on exactly that day the app has learned
+    something: the bound is the true posting day.  Nothing could record it,
+    because ``_apply_day``'s ``"unchanged"`` arm returned early and no settle
+    door fires when the day does not move, so such a row went on reporting
+    itself a bound forever.
+
+    **The DAY is unchanged, so the receipt is unchanged**: neither
+    ``settled_count`` nor ``corrected_count`` moves, because nothing settled and
+    nothing was corrected.  What moves is the stored answer to *how is this day
+    known*, and with it the window the matcher would bound a future line by.
+    """
+
+    @staticmethod
+    def _reconciled_purchase(seed_user, made_on, asserted_for):
+        """Return a purchase ticked on the panel: an ASSERTED day and a link."""
+        assertion = an_assertion(seed_user, observed_on=asserted_for)
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="100.00", is_envelope=True,
+        )
+        return a_purchase(
+            seed_user, envelope, amount="18.64", purchased_on=made_on,
+            settled_on=asserted_for, reconciled_by=assertion,
+            settle_day_basis=SettledDayBasisEnum.ASSERTED,
+        )
+
+    def test_a_line_on_the_bound_itself_raises_the_basis_to_observed(
+        self, app, db, seed_user,
+    ):
+        """The confirmation: same day, stronger evidence, recorded."""
+        with app.app_context():
+            made_on = seed_user["bootstrap_period"].start_date
+            asserted_for = made_on + timedelta(days=20)
+            purchase = self._reconciled_purchase(
+                seed_user, made_on, asserted_for,
+            )
+            statement = an_import(seed_user)
+            line = a_bank_line(
+                seed_user, statement, amount="-18.64", posted_on=asserted_for,
+            )
+            db.session.flush()
+
+            accepted = _submit(seed_user, lines=[line], entries=[purchase])
+            db.session.flush()
+
+            assert recorded_settle_day(purchase) == SettleDay(
+                day=asserted_for, basis=SettledDayBasisEnum.OBSERVED,
+            )
+            # The DAY did not move, so neither tally counts it.
+            assert accepted.settled_count == 0
+            assert accepted.corrected_count == 0
+
+    def test_the_confirmation_KEEPS_the_clearing_link(
+        self, app, db, seed_user,
+    ):
+        """A statement that AGREES does not withdraw the one already seen.
+
+        Every settle door releases ``reconciled_by_id`` when the day MOVES, and
+        the predicate is about the day rather than the pair for exactly this
+        case: an observation the bank confirms strengthens the record the link
+        holds instead of contradicting it.
+        """
+        with app.app_context():
+            made_on = seed_user["bootstrap_period"].start_date
+            asserted_for = made_on + timedelta(days=20)
+            purchase = self._reconciled_purchase(
+                seed_user, made_on, asserted_for,
+            )
+            linked_to = purchase.reconciled_by_id
+            statement = an_import(seed_user)
+            line = a_bank_line(
+                seed_user, statement, amount="-18.64", posted_on=asserted_for,
+            )
+            db.session.flush()
+
+            _submit(seed_user, lines=[line], entries=[purchase])
+            db.session.flush()
+
+            assert purchase.reconciled_by_id == linked_to
+
+    def test_a_row_already_OBSERVED_is_left_entirely_alone(
+        self, app, db, seed_user,
+    ):
+        """The early return survives: only a WEAKER basis is worth writing.
+
+        Without this arm the confirmation runs a full settle door on every
+        already-correct row of every accept -- a posting reconcile, a payback
+        sync and an optimistic-lock bump apiece, for a column that is already
+        right.
+        """
+        with app.app_context():
+            made_on = seed_user["bootstrap_period"].start_date
+            bank_day = made_on + timedelta(days=2)
+            envelope = a_transaction(
+                seed_user, name="Groceries", amount="100.00", is_envelope=True,
+            )
+            purchase = a_purchase(
+                seed_user, envelope, amount="18.64", purchased_on=made_on,
+                settled_on=bank_day,
+                settle_day_basis=SettledDayBasisEnum.OBSERVED,
+            )
+            statement = an_import(seed_user)
+            line = a_bank_line(
+                seed_user, statement, amount="-18.64", posted_on=bank_day,
+            )
+            db.session.flush()
+            before = purchase.version_id
+
+            _submit(seed_user, lines=[line], entries=[purchase])
+            db.session.flush()
+
+            assert purchase.version_id == before, (
+                "an already-observed row was written for nothing"
+            )
+            assert recorded_settle_day(purchase).basis is (
+                SettledDayBasisEnum.OBSERVED
+            )

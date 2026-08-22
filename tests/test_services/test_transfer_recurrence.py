@@ -39,13 +39,17 @@ from app.utils.log_events import (
 from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
-    make_cadence_rule, open_calendar_hole, settlement_basis_id,
+    an_entered_day,
+    make_cadence_rule,
+    open_calendar_hole,
+    settlement_basis_id,
 )
 from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
     MONTHLY,
 )
 from app.services.pay_calendar import calendar_for
+from app.services.settle_day import record_settle_day
 
 
 def _assert_shadows_valid(xfer):
@@ -1862,7 +1866,7 @@ class TestTransferMaintain:
         """
         transfer_service.settle_transfer(
             xfer.id, seed_user["user"].id, submitted=figure,
-            settled_on=display_today(),
+            settle_day=an_entered_day(display_today()),
         )
         transfer_service.update_transfer(
             xfer.id, seed_user["user"].id,
@@ -2151,7 +2155,7 @@ class TestTransferMaintain:
                 transfer_id=linked.id, account_id=savings.id,
             ).one()
             income.status_id = ref_cache.status_id(StatusEnum.DONE)
-            income.settled_on = display_today()
+            record_settle_day(income, an_entered_day(display_today()))
             income.settled_amount = linked.amount
             income.settled_basis_id = settlement_basis_id(
                 SettlementBasisEnum.DERIVED,
@@ -2182,7 +2186,7 @@ class TestTransferMaintain:
         ``_rows_holding_owner_records`` tests a settlement record and NOT a
         statement link, on the ground that two CHECK constraints chain:
         ``ck_transactions_cleared_needs_settle_day`` says a link needs a settle
-        day, and ``ck_transactions_settle_day_needs_basis`` says a settle day
+        day, and ``ck_transactions_settle_day_needs_a_record`` says a settle day
         needs a basis.  So ``reconciled_by_id IS NOT NULL`` implies
         ``settled_basis_id IS NOT NULL`` and the record arm already catches every
         linked row.
@@ -2206,7 +2210,7 @@ class TestTransferMaintain:
                 transfer_id=rows[0].id, account_id=savings.id,
             ).one()
             income.status_id = ref_cache.status_id(StatusEnum.DONE)
-            income.settled_on = display_today()
+            record_settle_day(income, an_entered_day(display_today()))
             income.reconciled_by_id = statement.id
             # A link, a day, and NO record: the state the deleted arm would
             # have been the only thing to catch.
@@ -2215,7 +2219,7 @@ class TestTransferMaintain:
 
             with pytest.raises(IntegrityError) as caught:
                 db.session.flush()
-            assert "ck_transactions_settle_day_needs_basis" in str(caught.value)
+            assert "ck_transactions_settle_day_needs_a_record" in str(caught.value)
             db.session.rollback()
 
     def test_an_endpoint_move_applies_to_a_row_holding_nothing(

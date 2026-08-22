@@ -18,7 +18,10 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import carry_forward_service, credit_workflow, pay_period_write
 from app.exceptions import NotFoundError, ValidationError
-from tests._test_helpers import settlement_columns
+from tests._test_helpers import (
+    settle_day_columns,
+    settlement_columns,
+)
 
 
 class TestCreditWorkflow:
@@ -434,7 +437,7 @@ class TestCarryForward:
                 estimated_amount=Decimal("500.00"),
                 # A settled row carries the whole record, resolved through the
                 # one door a bare-built fixture uses (plan step X-au-c3).
-                settled_on=seed_periods[0].start_date,
+                **settle_day_columns(seed_periods[0].start_date),
                 **settlement_columns(seed_periods[0].start_date, Decimal("500.00")),
             )
             db.session.add_all([t1, t2])
@@ -582,7 +585,7 @@ class TestCarryForward:
                 estimated_amount=Decimal("2000.00"),
                 # A settled row carries the whole record, resolved through the
                 # one door a bare-built fixture uses (plan step X-au-c3).
-                settled_on=seed_periods[0].start_date,
+                **settle_day_columns(seed_periods[0].start_date),
                 **settlement_columns(seed_periods[0].start_date, Decimal("2000.00")),
             )
             db.session.add_all([t1, t2])

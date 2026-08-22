@@ -54,10 +54,8 @@ from app.services.spending_report_service._window import (
 )
 from tests._test_helpers import (
     default_settle_day,
-    # ``pay_periods_hydrated`` moved to the shared helper module at plan step
-    # C2-f3e, when a second suite needed the same firing control.  Its sibling
-    # below did not: it still has one consumer, and this suite is it.
     pay_periods_hydrated,
+    settle_day_columns,
     settlement_columns,
 )
 
@@ -100,7 +98,7 @@ def _txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         estimated_amount=planned,
         due_date=due_date or period.start_date,
         is_deleted=is_deleted,
-        settled_on=settled_day,
+        **settle_day_columns(settled_day),
         **settlement_columns(
             settled_day, planned,
             submitted=Decimal(str(actual)) if actual is not None else None,

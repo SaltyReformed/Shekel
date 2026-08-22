@@ -18,7 +18,7 @@ from datetime import date, timedelta
 
 import pytest
 
-from app.enums import StatusEnum
+from app.enums import SettledDayBasisEnum, StatusEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.services import pay_calendar
@@ -144,13 +144,14 @@ class TestAReconciledDayIsABoundAndNotAnObservation:
             purchase = a_purchase(
                 seed_user, parent, amount="18.64", purchased_on=made_on,
                 settled_on=asserted_for, reconciled_by=assertion,
+                settle_day_basis=SettledDayBasisEnum.ASSERTED,
             )
             db.session.commit()
 
             row = _candidate(seed_user, purchase.id, RowKind.PURCHASE)
 
             assert row is not None
-            assert row.settle_day_is_upper_bound is True
+            assert row.settle_day_basis is SettledDayBasisEnum.ASSERTED
             # Made on the 1st, asserted for the 31st: the money moved somewhere
             # in those 30 days and the app cannot say where.
             assert row.expected_window == (made_on, asserted_for)
@@ -179,6 +180,7 @@ class TestAReconciledDayIsABoundAndNotAnObservation:
             txn = a_transaction(
                 seed_user, name="Electricity", settled_on=asserted_for,
                 status=StatusEnum.DONE, reconciled_by=assertion,
+                settle_day_basis=SettledDayBasisEnum.ASSERTED,
             )
             db.session.commit()
 
@@ -188,7 +190,7 @@ class TestAReconciledDayIsABoundAndNotAnObservation:
             # The FACT still travels -- it is the window rule that declines to
             # act on it -- so turning the arm on later is one predicate, not a
             # re-derivation.
-            assert row.settle_day_is_upper_bound is True
+            assert row.settle_day_basis is SettledDayBasisEnum.ASSERTED
             assert row.expected_window == (asserted_for, asserted_for)
             # What widening would have opened: a span in which
             # ``_days_outside`` scores every day zero, so same-amount lines
@@ -205,19 +207,25 @@ class TestAReconciledDayIsABoundAndNotAnObservation:
         link (ruling **R-FL**), which is precisely the row whose day IS an
         observation -- widening that one would re-admit the loose matching
         ``expected_window`` exists to refuse.
+
+        **The row SAYS ``observed`` rather than being read as one because it
+        carries no link** (plan step **X-az**).  That inference is finding
+        **N-332**, and it could not see the third case at all: a day the owner
+        typed carries no link either and is not an observation.
         """
         with app.app_context():
             settled_on = seed_user["bootstrap_period"].start_date
             txn = a_transaction(
                 seed_user, name="Electricity", settled_on=settled_on,
                 status=StatusEnum.DONE,
+                settle_day_basis=SettledDayBasisEnum.OBSERVED,
             )
             db.session.commit()
 
             row = _candidate(seed_user, txn.id, RowKind.TRANSACTION)
 
             assert row is not None
-            assert row.settle_day_is_upper_bound is False
+            assert row.settle_day_basis is SettledDayBasisEnum.OBSERVED
             assert row.expected_window == (settled_on, settled_on)
 
     def test_a_tick_EARLIER_than_the_row_s_own_period_keeps_the_point(
@@ -239,13 +247,14 @@ class TestAReconciledDayIsABoundAndNotAnObservation:
                 seed_user, name="Electricity", period=later,
                 settled_on=asserted_for, status=StatusEnum.DONE,
                 reconciled_by=assertion,
+                settle_day_basis=SettledDayBasisEnum.ASSERTED,
             )
             db.session.commit()
 
             row = _candidate(seed_user, txn.id, RowKind.TRANSACTION)
 
             assert row is not None
-            assert row.settle_day_is_upper_bound is True
+            assert row.settle_day_basis is SettledDayBasisEnum.ASSERTED
             # expected_on (the later period's start) is AFTER settled_on, so
             # the span would be inverted; the point stands instead.
             assert later.start_date > asserted_for

@@ -77,6 +77,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from app.enums import SettledDayBasisEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.statement_import import BankStatementLine
@@ -88,6 +89,7 @@ from app.services import (
     transaction_service,
     transfer_service,
 )
+from app.services.settle_day import SettleDay
 from app.utils.log_events import (
     BUSINESS,
     EVT_STATEMENT_MATCHED,
@@ -463,7 +465,10 @@ def _apply_day(
     Returns:
         ``"settled"`` when the row entered the settled band, ``"corrected"``
         when it was already settled on a different day, ``"unchanged"`` when it
-        already carried the bank's own day.
+        already carried the bank's own day.  **``"unchanged"`` is about the DAY
+        and not about whether anything was written** (plan step X-az): a row
+        already carrying the bank's day on a weaker basis has that basis raised
+        to ``observed``, which moves no day and so is not a correction.
 
     Raises:
         ValidationError: From a settle door -- a future day, a posting day
@@ -485,15 +490,36 @@ def _apply_day(
         else "corrected" if row.is_settled
         else "settled"
     )
-    if outcome == "unchanged":
+    # **An "unchanged" row is still written when the bank CONFIRMS a day the app
+    # only had a BOUND for** (plan step **X-az**, finding **N-332**).  The
+    # reconcile panel records the day a BALANCE was asserted for -- the money
+    # moved on or BEFORE it -- and a bank line posted on exactly that day turns
+    # the bound into an observation.  Nothing else in the app can make that
+    # write: no settle door fires when the day does not move, so before this
+    # step such a row kept reporting itself a bound forever.  The DAY is
+    # unchanged, so the outcome the caller counts stays ``"unchanged"`` and
+    # neither the settled nor the corrected tally moves; what changes is the
+    # stored answer to "how is this day known".
+    #
+    # It writes through the row's own settle door rather than assigning the
+    # column, exactly as the other arms do, so the basis keeps the single writer
+    # ``settled_on`` has.  Each door compares the resulting DAY with the stored
+    # one to decide whether to release the clearing link, and the day is equal
+    # here -- so a confirmation strengthens the observation the link records
+    # instead of dropping it.
+    if outcome == "unchanged" and row.settle_day_basis is (
+        SettledDayBasisEnum.OBSERVED
+    ):
         return outcome
+
+    settle_day = SettleDay(day=posts_on, basis=SettledDayBasisEnum.OBSERVED)
 
     if row.kind is RowKind.PURCHASE:
         # ONE call, both days, because ``update_entry`` checks the RESULTING
         # pair: submitting them separately would offer the door an intermediate
         # state where the posting day precedes the purchase day, and it would
         # rightly refuse the very correction that fixes it.
-        moves = {"settled_on": posts_on}
+        moves = {"settle_day": settle_day}
         if purchase_day is not None:
             moves["purchased_on"] = purchase_day
         entry_service.update_entry(row.row_id, owner_id, **moves)
@@ -502,11 +528,11 @@ def _apply_day(
     if row.transfer_id is not None:
         if row.is_settled:
             transfer_service.update_transfer(
-                row.transfer_id, owner_id, settled_on=posts_on,
+                row.transfer_id, owner_id, settle_day=settle_day,
             )
         else:
             transfer_service.settle_transfer(
-                row.transfer_id, owner_id, settled_on=posts_on,
+                row.transfer_id, owner_id, settle_day=settle_day,
             )
         return outcome
 
@@ -516,7 +542,7 @@ def _apply_day(
         else transaction_service.settled_status_id(txn)
     )
     transaction_service.apply_requested_status(
-        txn, target_status_id, settled_on=posts_on,
+        txn, target_status_id, settle_day=settle_day,
     )
     return outcome
 

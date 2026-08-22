@@ -36,10 +36,11 @@ from app.services import balance_at, pay_period_write, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 
 from tests._test_helpers import (
-    make_cadence_rule,
     create_hysa_account,
     create_loan_account,
     freeze_today,
+    make_cadence_rule,
+    settle_day_columns,
     settlement_columns,
     transient_cadence_rule,
 )
@@ -1333,7 +1334,7 @@ class TestEmergencyFundCommittedBaseline:
                     # record of what moved -- one fact in three columns (plan
                     # steps X-f1 / X-au-c3), resolved by the one door a
                     # bare-built fixture uses.
-                    settled_on=period.start_date,
+                    **settle_day_columns(period.start_date),
                     **settlement_columns(
                         period.start_date, Decimal("10.00"),
                     ),
@@ -1401,7 +1402,7 @@ class TestEmergencyFundCommittedBaseline:
                     category_id=category_id,
                     transaction_type_id=expense_type_id,
                     estimated_amount=Decimal("120.00"),
-                    settled_on=period.start_date,
+                    **settle_day_columns(period.start_date),
                     **settlement_columns(
                         period.start_date, Decimal("120.00"),
                     ),
@@ -1415,7 +1416,7 @@ class TestEmergencyFundCommittedBaseline:
                     category_id=category_id,
                     transaction_type_id=expense_type_id,
                     estimated_amount=Decimal("300.00"),
-                    settled_on=period.start_date,
+                    **settle_day_columns(period.start_date),
                     **settlement_columns(
                         period.start_date, Decimal("300.00"),
                     ),

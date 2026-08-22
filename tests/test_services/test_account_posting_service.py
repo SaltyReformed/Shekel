@@ -63,6 +63,7 @@ from app.services.pay_calendar import PayCalendarError
 from app.services.auth_service import hash_password
 from app.utils.dates import to_display_date
 from tests._test_helpers import (
+    an_entered_day,
     correction_net_in_period,
     create_account_of_type,
     create_envelope_txn,
@@ -72,8 +73,10 @@ from tests._test_helpers import (
     ledger_net,
     observed_day_of,
     restamp_opening_assertion,
+    settle_day_columns,
     settle_instant_on,
 )
+from app.services.settle_day import record_settle_day
 
 
 # ---------------------------------------------------------------------------
@@ -448,7 +451,7 @@ class TestWalkAccountLedger:
             # reach this walk with one: a bulk update bypasses the ORM, exactly
             # as the real hazard does.
             # The whole RECORD goes with the day, because
-            # ``ck_transactions_settle_day_needs_basis`` refuses a day that
+            # ``ck_transactions_settle_day_needs_a_record`` refuses a day that
             # names no figure (plan step X-au-c3).  The break under test is
             # still the missing DAY on a settled STATUS, which no constraint
             # can state -- the predicate is ``ref.statuses.is_settled`` and a
@@ -458,6 +461,11 @@ class TestWalkAccountLedger:
             ).update(
                 {
                     "settled_on": None,
+                    # The day's BASIS goes with the day, because
+                    # ``ck_transactions_settle_day_basis_pairing`` is a
+                    # BICONDITIONAL: a basis left behind with no day is as
+                    # unstorable as a day with no basis (plan step X-az).
+                    "settled_day_basis_id": None,
                     "settled_amount": None,
                     "settled_basis_id": None,
                 },
@@ -581,7 +589,7 @@ class TestWalkAccountLedger:
                 amount=Decimal("40.00"),
                 description="ticked on the second reading",
                 purchased_on=posted_on,
-                settled_on=posted_on,
+                **settle_day_columns(posted_on),
                 is_credit=False,
             )
             _db.session.add(entry)
@@ -1470,7 +1478,7 @@ class TestSyncEntryPoints:
                 seed_user, _db.session, seed_user["bootstrap_period"],
                 Decimal("40.00"), account=account, scenario=what_if,
             )
-            txn.settled_on = origin + timedelta(days=1)
+            record_settle_day(txn, an_entered_day(origin + timedelta(days=1)))
             _db.session.commit()
 
             account_posting_service.sync_account_anchor_postings_all_scenarios(
