@@ -41,8 +41,8 @@ class RowKind(enum.Enum):
 class CandidateRow:  # pylint: disable=too-many-instance-attributes
     """One app row a bank line could be, priced and dated as the app holds it.
 
-    Pylint: too-many-instance-attributes -- **ten fields because the subject
-    genuinely has ten**, not because the value wants splitting.
+    Pylint: too-many-instance-attributes -- **eleven fields because the subject
+    genuinely has eleven**, not because the value wants splitting.
     It describes ONE row drawn from either of two tables, for five consumers
     that each read a different subset: the proposer reads the amount and the
     days, the assignment reads the days, the screen reads the label and the
@@ -99,6 +99,13 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
             that was missing, and its absence had no bound at all**: plan step
             ``bank_import:X-f6a-3c``, finding **N-312**.  See
             :attr:`expected_window`.
+        settle_day_is_upper_bound: Whether :attr:`settled_on` is the RECONCILE
+            PANEL's bound rather than an observed posting day -- true exactly
+            when the row carries a ``reconciled_by_id``.  The two settle days
+            this package can meet are not the same kind of fact and the
+            difference decides a window, which is why it travels as its own
+            field rather than being re-derived per asking site.  See
+            :attr:`expected_window`.
     """
 
     kind: RowKind
@@ -111,6 +118,7 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
     parent_id: "int | None" = None
     expected_on: "date | None" = None
     expected_through: "date | None" = None
+    settle_day_is_upper_bound: bool = False
 
     @property
     def expected_window(self) -> "tuple[date, date] | None":
@@ -121,8 +129,12 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
         settled, and stating it at each asking site is how a whole kind came to
         have no answer at all.
 
-        * a SETTLED row is a point: ``settled_on`` is an OBSERVATION, and an
-          observation beats a belief, so the projection is not consulted;
+        * a row settled by an OBSERVED day is a point: that ``settled_on`` is
+          the day a statement showed the money moving, and an observation beats
+          a belief, so the projection is not consulted;
+        * a row settled by the RECONCILE PANEL spans ``expected_on`` to
+          ``settled_on``, because that day is a BOUND and not an observation --
+          see the measurement below;
         * a PURCHASE is a point at ``purchased_on``.  Every purchase has one
           -- ``transaction_entries.purchased_on`` is NOT NULL -- so "undated"
           is true of a purchase's CASH clock and false of the purchase.  Plan
@@ -164,6 +176,31 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
         proposals name an unsettled transaction on either the first pass or the
         second.
 
+        **A RECONCILED row's settle day is a BOUND, and reading it as a point
+        made the matcher blind to the rows it most needed to see.**  The
+        reconcile panel stamps the day the owner asserted the BALANCE for --
+        ``reconcile_service._purchases.record_settled_days`` says so in as many
+        words, *"``settled_on`` is an UPPER BOUND on the true posting day"* --
+        while this property read every settle day as the day a statement
+        showed.  Two packages, one column, two meanings.  Measured on the
+        developer's own dev database 2026-08-21: all 61 reconciled purchases on
+        Checking carry ``settled_on = 2026-08-18``, and **59 of them sit more
+        than** :data:`~._propose.DAY_WINDOW` **days after their purchase day**
+        (worst: 128).  So a point at ``settled_on`` put them out of reach of
+        their own bank lines, every such line read as unexplained, and the
+        merchant-destination policy offered to RECORD it -- **24 duplicate
+        purchases worth `$1,720.61`**, among them a `$18.64` Food Lion the app
+        already held on the bank's own day.  The remedy is to say what the app
+        actually knows: the money moved between the day the row was budgeted
+        for and the day the balance was asserted.
+
+        **The bound is applied only when it TIGHTENS nothing away.**  A
+        reconciled row whose ``expected_on`` falls after its ``settled_on``
+        keeps the point: the panel would then be asserting the money moved
+        before the app expected it, which bounds the span from ABOVE and says
+        nothing about its floor, and inventing one would be the looser reading
+        this property refuses everywhere else.
+
         Returns:
             ``(first, last)``, or ``None`` for a row the app can date no way at
             all -- which the proposer reads as NOT OFFERABLE rather than as
@@ -174,6 +211,12 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
             has to fail in on a money path.
         """
         if self.settled_on is not None:
+            if (
+                self.settle_day_is_upper_bound
+                and self.expected_on is not None
+                and self.expected_on <= self.settled_on
+            ):
+                return (self.expected_on, self.settled_on)
             return (self.settled_on, self.settled_on)
         if self.expected_on is None:
             return None

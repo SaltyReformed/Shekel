@@ -19,6 +19,7 @@ from app.enums import (
     TxnTypeEnum,
 )
 from app.extensions import db
+from app.models.account import AccountAnchorHistory
 from app.models.merchant_destination import MerchantDestination
 from app.models.pay_period import PayPeriod
 from app.models.statement_import import BankStatementLine, StatementImport
@@ -41,6 +42,7 @@ def a_transaction(
     period=None,
     category=None,
     template=True,
+    reconciled_by=None,
 ):
     """Stage and return one transaction on the seeded checking account.
 
@@ -67,6 +69,10 @@ def a_transaction(
             ``_create._create_envelope`` produces and therefore the only shape
             a NEW-ENVELOPE merchant answer converges onto -- naming a template
             is a different answer with its own resolution.
+        reconciled_by: The :func:`an_assertion` this row was TICKED against on
+            the reconcile panel, or ``None`` for a row settled any other way.
+            Its presence is what makes *settled_on* a BOUND rather than an
+            observed posting day.
 
     Returns:
         The staged :class:`~app.models.transaction.Transaction`.
@@ -106,6 +112,7 @@ def a_transaction(
             ref_cache.settlement_basis_id(SettlementBasisEnum.DERIVED)
             if settled_on else None
         ),
+        reconciled_by_id=reconciled_by.id if reconciled_by else None,
     )
     db.session.add(txn)
     db.session.flush()
@@ -114,7 +121,7 @@ def a_transaction(
 
 def a_purchase(
     seed_user, parent, *, amount="25.00", description="Kroger",
-    purchased_on=None, settled_on=None, is_credit=False,
+    purchased_on=None, settled_on=None, is_credit=False, reconciled_by=None,
 ):
     """Stage and return one purchase under *parent*.
 
@@ -126,6 +133,10 @@ def a_purchase(
         purchased_on: The day it was made.
         settled_on: The day the bank took it, or ``None``.
         is_credit: Whether it went on a card (and so never touches checking).
+        reconciled_by: The :func:`an_assertion` this purchase was TICKED
+            against on the reconcile panel, or ``None`` for one settled any
+            other way.  Its presence is what makes *settled_on* a BOUND rather
+            than an observed posting day.
 
     Returns:
         The staged :class:`~app.models.transaction_entry.TransactionEntry`.
@@ -139,10 +150,46 @@ def a_purchase(
         purchased_on=purchased_on or seed_user["bootstrap_period"].start_date,
         settled_on=settled_on,
         is_credit=is_credit,
+        reconciled_by_id=reconciled_by.id if reconciled_by else None,
     )
     db.session.add(entry)
     db.session.flush()
     return entry
+
+
+def an_assertion(
+    seed_user, *, observed_on=None, balance="1000.00", account=None,
+):
+    """Stage and return one asserted balance, for a row to be RECONCILED to.
+
+    **What the reconcile panel's tick points a row at**, and the thing that
+    makes a settle day a BOUND rather than an observation
+    (:attr:`~app.services.statement_match.CandidateRow.expected_window`).  A
+    fixture cannot fake the link with a bare integer: ``fk_transaction_entries
+    _reconciled_by`` and its transaction twin reference
+    ``account_anchor_history (account_id, id)``, so the assertion has to exist.
+
+    Args:
+        seed_user: The seeded user bundle.
+        observed_on: The civil day this balance is asserted FOR -- the day the
+            panel stamps onto every row ticked against it.  The bootstrap
+            period's start by default.
+        balance: The asserted figure, as a string.  Nothing here reads it; it
+            is stated because the column is NOT NULL.
+        account: The account it is asserted for; the seeded checking one by
+            default.
+
+    Returns:
+        The staged :class:`~app.models.account.AccountAnchorHistory`.
+    """
+    row = AccountAnchorHistory(
+        account_id=(account or seed_user["account"]).id,
+        anchor_balance=Decimal(balance),
+        observed_on=observed_on or seed_user["bootstrap_period"].start_date,
+    )
+    db.session.add(row)
+    db.session.flush()
+    return row
 
 
 def an_import(seed_user, account=None):

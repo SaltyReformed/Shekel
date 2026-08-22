@@ -298,6 +298,12 @@ def purchase_candidate(entry: TransactionEntry) -> CandidateRow:
         # does not hold (ruling **R-FW**).
         expected_on=entry.purchased_on,
         expected_through=entry.purchased_on,
+        # WHICH KIND of day ``settled_on`` is, carried rather than guessed.  A
+        # link means the reconcile panel stamped the day it was asserted FOR,
+        # which is a bound; its absence means the day is the one a statement
+        # showed, or one the owner typed.  ``CandidateRow.expected_window``
+        # is the single reader and states the measurement.
+        settle_day_is_upper_bound=entry.reconciled_by_id is not None,
     )
 
 
@@ -346,6 +352,12 @@ def transaction_candidate(
         transfer_id=txn.transfer_id,
         expected_on=period.start_date,
         expected_through=period.end_date,
+        # The same fact its twin carries, from the same column and for the same
+        # reason.  A transaction settled through the reconcile panel takes the
+        # assertion's day (``reconcile_service._transactions`` for a bill,
+        # ``transfer_service._settle`` for a shadow leg), so its window opens at
+        # the period rather than closing on that day.
+        settle_day_is_upper_bound=txn.reconciled_by_id is not None,
     )
 
 
