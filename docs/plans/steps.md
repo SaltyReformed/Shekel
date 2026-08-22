@@ -55,9 +55,9 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 
 | arc | id | also | what this step does | order | commit | starts |
 |---|---|---|---|---|---|---|
-| bank_import | X-f6d-1 | -- | Make a proposal a SCORE rather than an exact-amount gate, so a near miss is offered with the variance it would write instead of being silently withheld -- the defect that hid a $178.29 Geico line from the $178.32 row it belonged to. | #1 | -- | NOW |
-| bank_import | X-f6d-2 | -- | Let the accept door RECORD an unequal match instead of refusing it, taking the bank's figure as the settled figure and storing the difference as a reported variance. | #2 | -- | after #1 / bank_import:X-f6d-1 |
-| bank_import | X-f6d-3 | -- | Open every reviewed line on its best-scoring candidate and make the create-a-purchase arm WARN, naming the row, when a scored candidate is within reach. | #3 | -- | after #1 / bank_import:X-f6d-1 |
+| bank_import | X-f6d-2 | -- | Let the accept door RECORD an unequal match instead of refusing it, taking the bank's figure as the settled figure and storing the difference as a reported variance. | #1 | -- | NOW |
+| bank_import | X-f6d-1 | -- | Make a proposal a SCORE rather than an exact-amount gate, so a near miss is offered with the variance it would write instead of being silently withheld -- the defect that hid a $178.29 Geico line from the $178.32 row it belonged to. | #2 | -- | after #1 / bank_import:X-f6d-2 |
+| bank_import | X-f6d-3 | -- | Open every reviewed line on its best-scoring candidate and make the create-a-purchase arm WARN, naming the row, when a scored candidate is within reach. | #3 | -- | after #2 / bank_import:X-f6d-1 |
 | bank_import | X-f6e | -- | Make a statement prove itself, asserting that closing minus the sum of its lines equals opening and that the app's own balance for that day equals the bank's, refusing the file when either fails. | #4 | -- | NOW |
 | bank_import | X-f6f | -- | Give the review pass's create-a-purchase arm the inverse it never had, so a purchase the pass created in error is removable through a door rather than a hand-rolled repair script. | #5 | -- | NOW |
 | balance | X-f3c | -- | THE CUTOVER: the assertion stops resetting the ledger, `balance(T)` becomes opening equity plus the sum of postings, and an unexplained difference becomes a recorded uncategorized transaction the user accepts. **MOVES MONEY, OWN PR, NO BACKLOG.** Closes **N-171**, **N-172**, **N-174**, **N-275**, **N-276**. | #6 | -- | NOW / balance:X-f3b (shipped) |

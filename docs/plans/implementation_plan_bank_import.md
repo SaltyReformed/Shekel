@@ -100,17 +100,6 @@ than a second copy here (rule 16): **N-239** and **N-323**.
         MOVES-MONEY diff apart from a proposal diff, which is the review surface `X-f6a-3c` was
         decomposed for.
 
-    - [ ] **X-f6d-1** `feat(import): a proposal is SCORED, and a near miss is offered` -- the
-          proposer stops GATING on an exact figure and RANKS instead (**R-GD(b)**): amount distance
-          and day distance order the candidates, the merchant breaks a tie, and a proposal carries
-          the variance it would write so the screen can say `bank $178.29, your row $178.32` before
-          anything is pressed. **It writes nothing and moves no money**, which is why it goes first:
-          the whole change is observable as a count of proposals against today's 0 on the Geico
-          line. **INHERITED from `X-f6a-3c-1`, and this leaf is where it bites**: the pair test and
-          the group bucket must apply the SAME slack or they disagree silently, and a new candidate
-          KIND owes a window. **What a LATER leaf must obey**: a score is not a licence -- a scored
-          proposal is still a PROPOSAL (**R-FP**), never an auto-apply.
-
     - [ ] **X-f6d-2** `feat(import): a match records what the bank actually took` -- the accept door
           stops refusing an unequal match and RECORDS the difference (**R-GD(a)**), which supersedes
           **R-FV**'s refusal. **It MOVES MONEY**: the bank's figure becomes the settled figure on
@@ -120,6 +109,20 @@ than a second copy here (rule 16): **N-239** and **N-323**.
           **INHERITED from `X-f6a-3c-2`**: a pass's scope holds only what the pass cannot change, so
           the claims and a row's PRICE are re-read per act -- and a variance is a figure THIS door
           writes, which puts it on the changing side.
+
+    - [ ] **X-f6d-1** `feat(import): a proposal is SCORED, and a near miss is offered` -- the
+          proposer stops GATING on an exact figure and RANKS instead (**R-GD(b)**): amount distance
+          and day distance order the candidates, the merchant breaks a tie, and a proposal carries
+          the variance it would write so the screen can say `bank $178.29, your row $178.32` before
+          anything is pressed. **It writes nothing and moves no money**, and it is nonetheless
+          SECOND: `_accept._reject_unbalanced` sits on the SINGLE accept path, so a near miss
+          offered before `X-f6d-2` lands is a proposal whose Accept is guaranteed to fail, which is
+          the shape `unmatched_rows` already refuses to ship. Found while building 2026-08-22,
+          against a plan that had ordered these two the other way round.
+          **INHERITED from `X-f6a-3c-1`, and this leaf is where it bites**: the pair test and the
+          group bucket must apply the SAME slack or they disagree silently, and a new candidate KIND
+          owes a window. **What a LATER leaf must obey**: a score is not a licence -- a scored
+          proposal is still a PROPOSAL (**R-FP**), never an auto-apply.
 
     - [ ] **X-f6d-3** `feat(import): matching is the default act, creating is the fallback` -- the
           review screen opens each line on its best candidate rather than on a destination select
