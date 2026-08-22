@@ -132,9 +132,10 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
         * a row settled by an OBSERVED day is a point: that ``settled_on`` is
           the day a statement showed the money moving, and an observation beats
           a belief, so the projection is not consulted;
-        * a row settled by the RECONCILE PANEL spans ``expected_on`` to
+        * a PURCHASE settled by the RECONCILE PANEL spans ``purchased_on`` to
           ``settled_on``, because that day is a BOUND and not an observation --
-          see the measurement below;
+          see the measurement below.  A BILL ticked the same way keeps its
+          point for now, which the same passage explains;
         * a PURCHASE is a point at ``purchased_on``.  Every purchase has one
           -- ``transaction_entries.purchased_on`` is NOT NULL -- so "undated"
           is true of a purchase's CASH clock and false of the purchase.  Plan
@@ -188,18 +189,43 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
         than** :data:`~._propose.DAY_WINDOW` **days after their purchase day**
         (worst: 128).  So a point at ``settled_on`` put them out of reach of
         their own bank lines, every such line read as unexplained, and the
-        merchant-destination policy offered to RECORD it -- **24 duplicate
-        purchases worth `$1,720.61`**, among them a `$18.64` Food Lion the app
+        merchant-destination policy offered to RECORD it -- **50 duplicate
+        purchases worth `$3,590.00`**, among them a `$18.64` Food Lion the app
         already held on the bank's own day.  The remedy is to say what the app
         actually knows: the money moved between the day the row was budgeted
         for and the day the balance was asserted.
+
+        **PURCHASES only, and that is a measured scope rather than a
+        half-finished one** (developer decision 2026-08-22).  The panel stamps
+        bills and transfer shadows identically, so the argument for widening
+        them is the same -- but the EVIDENCE is not, and neither is the risk.
+        ``budget.transactions`` carries **zero** reconciled rows today, so that
+        arm would ship on argument alone; and a purchase's floor is a database
+        fact (``ck_transaction_entries_settled_not_before_purchase``) while a
+        bill's is its pay-period start, which this docstring calls a budgeting
+        fact and refuses to read as a point *for that very reason*.  Widening a
+        bill therefore opens a span with no floor and no cost signal: a
+        `$1,910.95` payment budgeted 2026-01-05..01-18 and reconciled 08-18
+        spans **225 days** in which :func:`~._propose._days_outside` scores
+        every day zero, so March, May and July lines of that same amount all
+        become legal top-ranked pairings -- against a
+        :data:`~._propose.DAY_WINDOW` measured at 14 precisely so *"a monthly
+        commitment cannot reach its neighbour"*.  Found by two independent
+        adversarial reviews 2026-08-22.
 
         **The bound is applied only when it TIGHTENS nothing away.**  A
         reconciled row whose ``expected_on`` falls after its ``settled_on``
         keeps the point: the panel would then be asserting the money moved
         before the app expected it, which bounds the span from ABOVE and says
         nothing about its floor, and inventing one would be the looser reading
-        this property refuses everywhere else.
+        this property refuses everywhere else.  **That branch is UNREACHABLE
+        through every door today** and is kept for the reason
+        :func:`corrected_purchase_day` keeps its own: a total accessor states
+        its impossible case rather than trusting the callers who make it so.
+        ``ck_transaction_entries_settled_not_before_purchase`` makes
+        ``purchased_on <= settled_on`` a database fact, so no purchase can
+        reach it; a pay-period ``start_date`` edit in the ``pay_calendar`` arc
+        is what would.
 
         Returns:
             ``(first, last)``, or ``None`` for a row the app can date no way at
@@ -212,7 +238,8 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
         """
         if self.settled_on is not None:
             if (
-                self.settle_day_is_upper_bound
+                self.kind is RowKind.PURCHASE
+                and self.settle_day_is_upper_bound
                 and self.expected_on is not None
                 and self.expected_on <= self.settled_on
             ):

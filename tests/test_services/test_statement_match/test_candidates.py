@@ -23,6 +23,7 @@ from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.services import pay_calendar
 from app.services.statement_match import RowKind, candidates_for
+from app.services.statement_match._propose import DAY_WINDOW
 
 from ._builders import (
     a_basis,
@@ -116,8 +117,8 @@ class TestAReconciledDayIsABoundAndNotAnObservation:
     2026-08-21: 59 of 61 reconciled purchases sat more than
     :data:`~app.services.statement_match._propose.DAY_WINDOW` days past their
     purchase day, so a point at the bound put every one out of reach of its own
-    bank line -- and the import recorded **24 duplicate purchases worth
-    `$1,720.61`** rather than matching what the app already held.
+    bank line -- and the import recorded **50 duplicate purchases worth
+    `$3,590.00`** rather than matching what the app already held.
 
     ``TestTheWindowEachRowCarries`` above grades the days a row carries; this
     grades which KIND of fact the settle day is, because that is what decides
@@ -154,14 +155,22 @@ class TestAReconciledDayIsABoundAndNotAnObservation:
             # in those 30 days and the app cannot say where.
             assert row.expected_window == (made_on, asserted_for)
 
-    def test_a_reconciled_TRANSACTION_opens_its_window_at_its_pay_period(
+    def test_a_reconciled_TRANSACTION_still_carries_only_its_settle_day(
         self, app, seed_user,
     ):
-        """The twin, from the same column, written by the panel's other arm.
+        """A BILL ticked on the panel keeps its point -- developer decision.
 
-        ``reconcile_service._transactions`` stamps the assertion onto a bill
-        exactly as ``_purchases`` does onto a purchase, so a rule that fixed
-        only purchases would leave the identical defect one table over.
+        The panel stamps a bill exactly as it stamps a purchase, so the
+        argument for widening both is the same.  **The evidence is not, and
+        neither is the risk** (developer decision 2026-08-22, after two
+        independent adversarial reviews): ``budget.transactions`` carries zero
+        reconciled rows, so that arm would ship on argument alone -- and a
+        purchase has a database floor where a bill has only its pay-period
+        start, which ``expected_window`` refuses to read as a point precisely
+        because it is a budgeting fact rather than an observation.
+
+        This asserts the SPAN a widened bill would open, so the case that made
+        the decision cannot come back silently.
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]
@@ -176,10 +185,16 @@ class TestAReconciledDayIsABoundAndNotAnObservation:
             row = _candidate(seed_user, txn.id, RowKind.TRANSACTION)
 
             assert row is not None
+            # The FACT still travels -- it is the window rule that declines to
+            # act on it -- so turning the arm on later is one predicate, not a
+            # re-derivation.
             assert row.settle_day_is_upper_bound is True
-            # The period is what the app asserts about WHEN; the assertion day
-            # is the ceiling it was ticked under.
-            assert row.expected_window == (period.start_date, asserted_for)
+            assert row.expected_window == (asserted_for, asserted_for)
+            # What widening would have opened: a span in which
+            # ``_days_outside`` scores every day zero, so same-amount lines
+            # months apart all become legal top-ranked pairings.
+            would_have_spanned = (asserted_for - period.start_date).days
+            assert would_have_spanned > 2 * DAY_WINDOW
 
     def test_a_row_settled_WITHOUT_a_tick_still_carries_the_point(
         self, app, seed_user,

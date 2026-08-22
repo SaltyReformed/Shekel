@@ -1361,3 +1361,119 @@ class TestAProposalSaysWhichOfThreeThingsItWouldDO:
         assert len(proposals) == 3
         classes = [p.review_class for p in proposals]
         assert sorted(classes) == ["confirm", "correct", "settle"]
+
+
+def _ticked(row_id, amount, made_on, asserted_for, label=None):
+    """Return one PURCHASE ticked on the reconcile panel.
+
+    The shape the whole class below is about: ``settled_on`` is the day the
+    OWNER asserted a balance for, not a day any statement showed, so the row's
+    window spans from the day it was made to that assertion.  Every such row on
+    an account shares one ``settled_on`` -- all 61 of the developer's carry
+    ``2026-08-18`` -- which is precisely what made the ordering defect below
+    invisible to a suite that built one row at a time.
+    """
+    return CandidateRow(
+        kind=RowKind.PURCHASE, row_id=row_id,
+        label=label or f"Groceries: purchase {row_id}",
+        cash_amount=Decimal(amount), settled_on=asserted_for, is_settled=True,
+        parent_id=900, expected_on=made_on, expected_through=made_on,
+        settle_day_is_upper_bound=True,
+    )
+
+
+class TestReconciledRowsArePairedByTheirWINDOW:
+    """Same amount, same assertion day, different purchase days.
+
+    **The population this arc actually has.**  A reconcile tick stamps one day
+    onto every row it settles, so an account's reconciled purchases are a block
+    of rows sharing ``settled_on`` and differing only in the day they were
+    made.  Nothing below can be graded by a case holding one such row, which is
+    why the defect these tests pin shipped: the four accessor-level tests in
+    ``test_candidates`` all passed against it.
+
+    Found by three independent adversarial reviews, 2026-08-22.
+    """
+
+    _MADE = [date(2026, 4, 1), date(2026, 5, 1), date(2026, 6, 1)]
+    _ASSERTED = date(2026, 8, 18)
+
+    def _pass(self, row_ids):
+        """Return (line day, row purchase day) pairs for one proposing pass.
+
+        *row_ids* is given explicitly because the defect was an ordering one:
+        the rows were sorted on a key that had stopped describing where their
+        windows sit, so the answer depended on insertion order alone.
+        """
+        rows = [
+            _ticked(row_id, "-1910.95", made, self._ASSERTED)
+            for row_id, made in zip(row_ids, self._MADE)
+        ]
+        lines = [
+            _line(i, "-1910.95", made + timedelta(days=1))
+            for i, made in enumerate(self._MADE, start=1)
+        ]
+        return [
+            (p.lines[0].posted_on, p.rows[0].expected_on)
+            for p in _offers(lines, rows)
+        ]
+
+    def test_every_line_is_paired_with_the_purchase_it_actually_was(self):
+        """Three identical amounts months apart, each to its own month."""
+        for posted_on, made_on in self._pass([10, 20, 30]):
+            assert posted_on.month == made_on.month
+
+    def test_the_answer_does_not_depend_on_the_rows_own_IDS(self):
+        """The property the ordering defect broke.
+
+        ``_least_cost_pairing`` requires its rows ASCENDING by the window they
+        occupy.  While every settled row's window WAS its settle day, sorting
+        on ``settled_on`` satisfied that by accident; once a ticked purchase's
+        window opened at its purchase day, the key collapsed to ``row_id`` --
+        the file order the whole assignment exists to eliminate.  Measured
+        before the fix on five identical `$1,910.95` transfers: 3 of 5 lines
+        paired, 1 of those to the right month, 2 left unexplained -- and an
+        unexplained line is what the merchant policy offers to RECORD.
+        """
+        ascending = self._pass([10, 20, 30])
+        descending = self._pass([30, 20, 10])
+
+        assert ascending == descending
+        assert len(ascending) == 3
+
+    def test_a_ticked_purchase_pairs_BEYOND_the_window_from_its_settle_day(
+        self,
+    ):
+        """The headline claim, asserted at the proposer rather than below it.
+
+        137 days from the assertion day and one day from the purchase.  Under
+        the old point rule this pass returned nothing at all, which is the
+        state that sent the line to the record-a-purchase path.
+        """
+        row = _ticked(10, "-18.64", date(2026, 4, 1), self._ASSERTED)
+        line = _line(1, "-18.64", date(2026, 4, 2))
+
+        proposals = _offers([line], [row])
+
+        assert len(proposals) == 1
+        assert abs((self._ASSERTED - line.posted_on).days) > DAY_WINDOW
+
+    def test_a_ticked_purchase_can_be_GROUPED_as_well_as_paired(self):
+        """The group pass must honour the same window the pair pass does.
+
+        ``_day_buckets`` filed every settled row under its settle day alone,
+        so a ticked purchase's span was visible to ``_within_window`` and
+        invisible to grouping -- the disagreement that function's own docstring
+        calls "not a bound".  Two ticked purchases summing to one line prove
+        both passes now read one window.
+        """
+        rows = [
+            _ticked(10, "-18.64", date(2026, 4, 1), self._ASSERTED),
+            _ticked(11, "-6.36", date(2026, 4, 2), self._ASSERTED),
+        ]
+        line = _line(1, "-25.00", date(2026, 4, 2))
+
+        proposals = _offers([line], rows)
+
+        assert len(proposals) == 1
+        assert {r.row_id for r in proposals[0].rows} == {10, 11}

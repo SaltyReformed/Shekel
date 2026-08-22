@@ -33,9 +33,11 @@ them would be a proposal a human has to refute.
 
 **Every row carries the WINDOW the app believes its money moved in**
 (:attr:`~._offers.CandidateRow.expected_window`), and that one accessor is what
-bounds both passes: a settled row is a point at its settle day, a purchase a
-point at the day it was made, and a bill the whole of its pay period.  Nothing
-here is unbounded, which it was until plan step ``bank_import:X-f6a-3c`` --
+bounds both passes: a settled row is a point at its settle day -- unless it is
+a PURCHASE the reconcile panel ticked, which spans back to the day it was made
+because that settle day is a bound rather than an observation -- an unsettled
+purchase a point at the day it was made, and a bill the whole of its pay
+period.  Nothing here is unbounded, which it was until ``bank_import:X-f6a-3c`` --
 finding **N-312** -- and the two constants that stood in for a bound on the
 group path (a global "undated pool" and its unrendered size) are deleted rather
 than reported, because a row that carries its own window needs neither.
@@ -152,10 +154,13 @@ def _within_window(row: CandidateRow, line: BankLine) -> bool:
     (:attr:`~._offers.CandidateRow.expected_window`) -- the days the app
     believes that money moved between -- widened by :data:`DAY_WINDOW` at each
     end.  A row with no window at all is refused rather than admitted: see the
-    comment on that branch.  For a settled row and for a purchase the window is one day, so the
-    test is exactly the ``abs(anchor - posted_on) <= DAY_WINDOW`` it has always
-    been; for an unsettled TRANSACTION it is that row's whole pay period, which
-    is the whole of what the app asserts about when the money moves.
+    comment on that branch.  For most settled rows and for an unsettled purchase
+    the window is one day, so the test is exactly the
+    ``abs(anchor - posted_on) <= DAY_WINDOW`` it has always been; for an
+    unsettled TRANSACTION it is that row's whole pay period, which is the whole
+    of what the app asserts about when the money moves; and for a PURCHASE the
+    reconcile panel ticked it is the span from its purchase day to the day the
+    balance was asserted, which is the whole of what the app knows there.
 
     **An unsettled transaction had NO distance test at all until plan step
     X-f6a-3c, and that was finding N-312.**  The reasoning was that the bank is
@@ -317,9 +322,23 @@ def _assign(
         line with no legal partner is simply absent, which is the honest shape:
         a statement may show a movement the app never recorded at all.
     """
+    # **Ordered by the WINDOW, exactly as the undated arm below is, because
+    # that is the position :func:`_least_cost_pairing` pairs against and its
+    # no-crossing argument assumes.**  This sorted on ``settled_on`` while a
+    # settled row's window WAS that day, which made the two keys the same key.
+    # Plan step ``bank_import`` 2026-08-22 broke that equivalence: a purchase
+    # ticked on the reconcile panel now opens its window at ``purchased_on``
+    # while ``settled_on`` stays the assertion day -- and every reconciled row
+    # on the developer's account shares ``2026-08-18``, so the key collapsed to
+    # ``row_id``, the file order this whole function exists to eliminate.
+    # Measured on five identical `$1,910.95` transfers: 3 of 5 lines paired, 1
+    # of those to the right month, 2 lines left unexplained -- and an
+    # unexplained line is what the merchant policy offers to RECORD, which is
+    # the duplicate this arc just finished removing 50 of.  Re-keyed: 5 of 5,
+    # all correct.  Found by three independent adversarial reviews.
     dated = sorted(
         (row for row in rows if row.settled_on is not None),
-        key=lambda row: (row.settled_on, row.row_id),
+        key=lambda row: (row.expected_window or (), row.row_id),
     )
     # **Rows with no settle day, ordered by their WINDOW**, because that is the
     # position :func:`_least_cost_pairing` pairs against.  A row carrying no
@@ -370,12 +389,19 @@ def _least_cost_pairing(
     it.
 
     **The cost is :func:`_days_outside`, which is ONE rule over both arms.**
-    A settled row's window is the single day it settled on, so the distance
-    from a line is exactly what this table always measured; an unsettled row's
-    is its pay period or its purchase day, and the distance is how far the bank
-    posted OUTSIDE that -- zero when the app's own belief already covers the
-    bank's day.  Writing the two as one function is what let the undated arm
-    stop being a greedy loop.
+    Most settled rows' windows are the single day they settled on, so the
+    distance from a line is exactly what this table always measured; an
+    unsettled row's is its pay period or its purchase day, and the distance is
+    how far the bank posted OUTSIDE that -- zero when the app's own belief
+    already covers the bank's day.  Writing the two as one function is what let
+    the undated arm stop being a greedy loop.
+
+    **A reconciled PURCHASE's window is a SPAN, and the cost signal inside it
+    is flat**: :func:`_days_outside` scores every day in the span zero, so
+    among rows whose spans all reach a line the table is choosing on the
+    tie-break rather than on distance.  That is why the caller orders its rows
+    by WINDOW -- the ordering is what carries the information the cost no
+    longer does.
 
     Args:
         lines: Bank lines sharing one amount, ASCENDING by day.
@@ -557,12 +583,38 @@ def _day_buckets(
     """
     buckets: "dict[date, list[CandidateRow]]" = {}
     for row in rows:
-        if row.settled_on is not None:
-            buckets.setdefault(row.settled_on, []).append(row)
-    for row in rows:
-        if row.settled_on is not None:
+        if row.settled_on is None:
             continue
         window = row.expected_window
+        # **A day is a bucket because the app believes money MOVED on it**, and
+        # for a purchase ticked on the reconcile panel the recorded settle day
+        # is the one day it is sure the money did not move on -- it is the day
+        # a BALANCE was asserted.  Such a row anchors its own bucket at the day
+        # it was made instead, which is where a group of purchases made
+        # together actually forms.  Without this the only bucket an account's
+        # reconciled rows could offer was the assertion day they all share, so
+        # every group among them sat months from any line and the search
+        # returned nothing -- silently, because a bucket nobody can reach is
+        # not a crowded day and is reported by nothing.
+        if window is not None and window[0] != window[1]:
+            buckets.setdefault(window[0], []).append(row)
+        buckets.setdefault(row.settled_on, []).append(row)
+    for row in rows:
+        window = row.expected_window
+        # **A row whose window is a POINT at its own settle day is already
+        # wholly represented by the loop above.**  Every settled row was one
+        # until a reconciled PURCHASE started spanning back to ``purchased_on``
+        # (:attr:`~._offers.CandidateRow.expected_window`), and this arm went on
+        # skipping all of them -- so the span was honoured by ``_within_window``
+        # and invisible here, which is precisely the disagreement this
+        # function's own docstring says is not a bound.  The skip is now about
+        # the WINDOW's shape rather than about the column being populated.
+        if (
+            row.settled_on is not None
+            and window is not None
+            and window[0] == window[1]
+        ):
+            continue
         if window is None:
             # A row the app can date no way at all joins no day.  It is
             # unconstructible through either candidate arm -- both fill
@@ -573,6 +625,11 @@ def _day_buckets(
         first, last = window
         slack = timedelta(days=DAY_WINDOW)
         for day, day_rows in buckets.items():
+            # The days the loop above already filed it under.
+            if day == row.settled_on or (
+                row.settled_on is not None and day == first
+            ):
+                continue
             if first - slack <= day <= last + slack:
                 day_rows.append(row)
 
