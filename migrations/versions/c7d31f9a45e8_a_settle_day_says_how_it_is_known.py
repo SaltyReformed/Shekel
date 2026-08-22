@@ -190,6 +190,88 @@ def _basis(name: str) -> str:
     return f"(SELECT id FROM ref.settled_day_bases WHERE name = '{name}')"
 
 
+def classify_settle_days(bind) -> None:
+    """Run the three backfill arms against *bind*.
+
+    **Module-level so a test can DRIVE it**, which is this chain's own pattern
+    and this file's own precedent one function up
+    (:func:`_basis`'s sibling ``refuse_settled_rows_without_a_plan`` in
+    ``e4b8a71c0f36``, whose docstring states the rule: *"a guard nothing
+    exercises is a guard nobody has seen work"*).  It was inline in
+    :func:`upgrade` until an adversarial review measured what that cost
+    (2026-08-22): the only test naming this revision asserted over a docstring
+    and a module constant, so deleting BOTH equality predicates -- restoring
+    verbatim the shape this step exists to delete -- left all 23 of its tests
+    passing.  A backfill that classifies money-adjacent provenance has to be
+    executable by a control.
+
+    Order is load-bearing: OBSERVED first, because each later arm narrows on
+    ``settled_day_basis_id IS NULL``, so a row proven by the bank cannot be
+    re-claimed by a weaker arm.
+
+    Args:
+        bind: A SQLAlchemy connection to run the three ``UPDATE``s on.
+    """
+    for table, member_column, alias in (
+        ("transactions", "transaction_id", "t"),
+        ("transaction_entries", "transaction_entry_id", "t"),
+    ):
+        posts_on = _MATCH_POSTS_ON.format(column=member_column, alias=alias)
+        # (1) OBSERVED -- an accepted statement match states this row's day, and
+        # the row still carries exactly that day.  The EQUALITY is what makes
+        # this a predicate rather than a stale measurement: a row whose day was
+        # later corrected by hand no longer holds the bank's answer, so it falls
+        # through to the ``entered`` arm instead of claiming an observation.
+        # Zero rows are in that state on either database today.
+        bind.execute(sa.text(
+            f"UPDATE budget.{table} {alias} SET "
+            f"settled_day_basis_id = {_basis('observed')} "
+            f"WHERE {alias}.settled_on IS NOT NULL "
+            f"AND {alias}.settled_on = ({posts_on})"
+        ))
+        # (2) ASSERTED -- the row names the balance assertion whose statement was
+        # seen to show it, AND still carries that assertion's own
+        # ``observed_on``, which is the day the reconcile panel writes.  That
+        # day is an UPPER BOUND: the money may have moved days earlier and the
+        # assertion merely contained it.  Narrowed on ``settled_day_basis_id IS
+        # NULL`` so a row the bank has since CONFIRMED keeps the stronger answer
+        # arm 1 gave it.
+        #
+        # **The day EQUALITY is what makes this a predicate rather than a
+        # measurement, and its absence was a finding** (adversarial design
+        # review, 2026-08-22).  Testing ``reconciled_by_id IS NOT NULL`` alone
+        # is verbatim the "infer a fact from a column being populated" shape
+        # this whole step exists to delete, kept as the classifier of record --
+        # and that column answers WHICH statement was seen, not what kind of day
+        # the row holds, so a row whose day was later corrected by hand would
+        # still be called a bound.  Encoding the equality costs ZERO rows: all
+        # 66 linked purchases on production and all 11 on the developer's dev
+        # database carry exactly their anchor's ``observed_on`` (measured
+        # 2026-08-22).  A stale-linked row falls through to arm 3 and is called
+        # ``entered``, which is the honest answer for a day nothing stands
+        # behind.
+        bind.execute(sa.text(
+            f"UPDATE budget.{table} {alias} SET "
+            f"settled_day_basis_id = {_basis('asserted')} "
+            f"WHERE {alias}.settled_on IS NOT NULL "
+            f"AND {alias}.settled_day_basis_id IS NULL "
+            f"AND {alias}.settled_on = ("
+            "SELECT a.observed_on FROM budget.account_anchor_history a "
+            f"WHERE a.id = {alias}.reconciled_by_id)"
+        ))
+        # (3) ENTERED -- every other dated row.  No bank line and no assertion
+        # stands behind the day, so what it records is the app's own: a day the
+        # owner typed into the correction box, or the day a settle door stamped
+        # when they marked the row paid.
+        bind.execute(sa.text(
+            f"UPDATE budget.{table} {alias} SET "
+            f"settled_day_basis_id = {_basis('entered')} "
+            f"WHERE {alias}.settled_on IS NOT NULL "
+            f"AND {alias}.settled_day_basis_id IS NULL"
+        ))
+
+
+
 def upgrade():
     """Create the day-basis catalogue, add both columns, and classify every day.
 
@@ -253,63 +335,7 @@ def upgrade():
             ondelete="RESTRICT",
         )
 
-    for table, member_column, alias in (
-        ("transactions", "transaction_id", "t"),
-        ("transaction_entries", "transaction_entry_id", "t"),
-    ):
-        posts_on = _MATCH_POSTS_ON.format(column=member_column, alias=alias)
-        # (1) OBSERVED -- an accepted statement match states this row's day, and
-        # the row still carries exactly that day.  The EQUALITY is what makes
-        # this a predicate rather than a stale measurement: a row whose day was
-        # later corrected by hand no longer holds the bank's answer, so it falls
-        # through to the ``entered`` arm instead of claiming an observation.
-        # Zero rows are in that state on either database today.
-        op.execute(
-            f"UPDATE budget.{table} {alias} SET "
-            f"settled_day_basis_id = {_basis('observed')} "
-            f"WHERE {alias}.settled_on IS NOT NULL "
-            f"AND {alias}.settled_on = ({posts_on})"
-        )
-        # (2) ASSERTED -- the row names the balance assertion whose statement was
-        # seen to show it, AND still carries that assertion's own
-        # ``observed_on``, which is the day the reconcile panel writes.  That
-        # day is an UPPER BOUND: the money may have moved days earlier and the
-        # assertion merely contained it.  Narrowed on ``settled_day_basis_id IS
-        # NULL`` so a row the bank has since CONFIRMED keeps the stronger answer
-        # arm 1 gave it.
-        #
-        # **The day EQUALITY is what makes this a predicate rather than a
-        # measurement, and its absence was a finding** (adversarial design
-        # review, 2026-08-22).  Testing ``reconciled_by_id IS NOT NULL`` alone
-        # is verbatim the "infer a fact from a column being populated" shape
-        # this whole step exists to delete, kept as the classifier of record --
-        # and that column answers WHICH statement was seen, not what kind of day
-        # the row holds, so a row whose day was later corrected by hand would
-        # still be called a bound.  Encoding the equality costs ZERO rows: all
-        # 66 linked purchases on production and all 11 on the developer's dev
-        # database carry exactly their anchor's ``observed_on`` (measured
-        # 2026-08-22).  A stale-linked row falls through to arm 3 and is called
-        # ``entered``, which is the honest answer for a day nothing stands
-        # behind.
-        op.execute(
-            f"UPDATE budget.{table} {alias} SET "
-            f"settled_day_basis_id = {_basis('asserted')} "
-            f"WHERE {alias}.settled_on IS NOT NULL "
-            f"AND {alias}.settled_day_basis_id IS NULL "
-            f"AND {alias}.settled_on = ("
-            "SELECT a.observed_on FROM budget.account_anchor_history a "
-            f"WHERE a.id = {alias}.reconciled_by_id)"
-        )
-        # (3) ENTERED -- every other dated row.  No bank line and no assertion
-        # stands behind the day, so what it records is the app's own: a day the
-        # owner typed into the correction box, or the day a settle door stamped
-        # when they marked the row paid.
-        op.execute(
-            f"UPDATE budget.{table} {alias} SET "
-            f"settled_day_basis_id = {_basis('entered')} "
-            f"WHERE {alias}.settled_on IS NOT NULL "
-            f"AND {alias}.settled_day_basis_id IS NULL"
-        )
+    classify_settle_days(op.get_bind())
 
     # The FIGURE basis constraint's name, said the way its own predicate says it
     # (developer approval 2026-08-22; see the module docstring).  Dropped and

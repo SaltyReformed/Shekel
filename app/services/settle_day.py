@@ -194,15 +194,83 @@ def record_settle_day(
     row.settled_day_basis_id = settle_day.basis_id
 
 
+def settle_day_from_columns(
+    settled_on: "date | None", settled_day_basis_id: "int | None",
+) -> Optional[SettleDay]:
+    """Return the :class:`SettleDay` a stored PAIR of values means.
+
+    **The ONE decode, over VALUES rather than over a row**, so the two callers
+    that hold the pair different ways share it: :func:`recorded_settle_day` for a
+    row that carries the columns, and the transfer PATCH for a
+    :class:`~app.models.transfer.Transfer`, which carries neither -- its pair
+    lives on the income shadow and it reads both in ONE query.
+
+    **Taking values is what makes the second caller SAFE, not merely tidy.**  A
+    row-shaped reader forces a caller with no columns to fake them, and a
+    ``Transfer`` faking them with two properties would issue a SELECT per
+    attribute ACCESS -- five for one call of this function, over a query whose
+    ``limit(1)`` deliberately carries no ``ORDER BY`` (``Transfer.settled_on``
+    states why).  With duplicate income shadows, or across a concurrent commit
+    under READ COMMITTED, those reads can straddle two rows and hand this
+    function a day from one and a basis from the other, which it correctly
+    refuses -- as a ``ValueError`` naming a phantom writer, i.e. a 500 on the
+    transfer PATCH.  One read of two columns cannot straddle anything.  Found by
+    adversarial review 2026-08-22.
+
+    Args:
+        settled_on: The stored day, or ``None``.
+        settled_day_basis_id: The stored ``ref.settled_day_bases`` id, or
+            ``None``.
+
+    Returns:
+        The :class:`SettleDay` the pair states, or ``None`` when both are
+        ``None``.
+
+    Raises:
+        KeyError: When *settled_day_basis_id* names no
+            :class:`~app.enums.SettledDayBasisEnum` member.  Unreachable through
+            the foreign key, which admits only the seeded rows; it is how a
+            member ADDED without this map being extended fails loudly rather
+            than silently reading as one of the three that exist.
+        ValueError: When one of the two is ``None`` and the other is not.  Both
+            halves are refused by each table's ``ck_*_settle_day_basis_pairing``,
+            so reaching either means something wrote around every door -- and
+            answering ``None`` for the first would hand a caller a row it could
+            not classify while claiming it had no day at all.
+    """
+    if settled_on is None and settled_day_basis_id is None:
+        return None
+    if settled_on is None or settled_day_basis_id is None:
+        raise ValueError(
+            f"A settle day and its basis are one fact: settled_on="
+            f"{settled_on!r} beside settled_day_basis_id="
+            f"{settled_day_basis_id!r} is a half-written pair that "
+            "ck_transactions_settle_day_basis_pairing (and its "
+            "transaction_entries twin) makes unstorable. Something wrote "
+            "around app.services.settle_day.record_settle_day."
+        )
+    member = {
+        ref_cache.settled_day_basis_id(basis): basis
+        for basis in SettledDayBasisEnum
+    }[settled_day_basis_id]
+    return SettleDay(day=settled_on, basis=member)
+
+
 def recorded_settle_day(row: SettleDatedMixin) -> Optional[SettleDay]:
     """Return the settle day *row* records, or ``None`` when it carries none.
 
-    The read half of the pair, and :func:`record_settle_day`'s inverse.  Its
-    callers are the ones that must carry a row's day FORWARD without inventing
-    either term: the transfer pair's repair, which takes the day its sibling leg
-    already holds (Transfer Invariant 3), and the statement matcher's candidate
-    construction, which needs to know whether the day it is about to bound a
-    bank line against is a point or an upper bound.
+    The read half of the pair, and :func:`record_settle_day`'s inverse, for a
+    row that CARRIES the two columns.  Its callers are the ones that must carry
+    a row's day forward without inventing either term: the transfer pair's
+    repair, which takes the day its sibling leg already holds (Transfer
+    Invariant 3); the statement matcher's candidate construction, which needs to
+    know whether the day it is about to bound a bank line against is a point or
+    an upper bound; and the three form doors, which need it to tell a prefill
+    from a retype (:func:`submitted_settle_day`).
+
+    A caller holding the pair as VALUES rather than as a row -- the transfer
+    PATCH -- calls :func:`settle_day_from_columns` directly, which is where the
+    decode and its refusals live.
 
     Args:
         row: The transaction or purchase to read.
@@ -212,30 +280,7 @@ def recorded_settle_day(row: SettleDatedMixin) -> Optional[SettleDay]:
         day.
 
     Raises:
-        KeyError: When ``settled_day_basis_id`` names no
-            :class:`~app.enums.SettledDayBasisEnum` member.  Unreachable through
-            the foreign key, which admits only the seeded rows; it is how a
-            member ADDED without this map being extended fails loudly rather
-            than silently reading as one of the three that exist.
-        ValueError: When the row carries a day and no basis, or a basis and no
-            day.  Both are refused by the pairing CHECK, so reaching either
-            means something wrote around every door -- and answering ``None``
-            for the first would hand a caller a row it could not classify while
-            claiming it had no day at all.
+        KeyError: Propagated from :func:`settle_day_from_columns`.
+        ValueError: Propagated from :func:`settle_day_from_columns`.
     """
-    if row.settled_on is None and row.settled_day_basis_id is None:
-        return None
-    if row.settled_on is None or row.settled_day_basis_id is None:
-        raise ValueError(
-            f"A settle day and its basis are one fact: settled_on="
-            f"{row.settled_on!r} beside settled_day_basis_id="
-            f"{row.settled_day_basis_id!r} is a half-written pair that "
-            "ck_transactions_settle_day_basis_pairing (and its "
-            "transaction_entries twin) makes unstorable. Something wrote "
-            "around app.services.settle_day.record_settle_day."
-        )
-    member = {
-        ref_cache.settled_day_basis_id(basis): basis
-        for basis in SettledDayBasisEnum
-    }[row.settled_day_basis_id]
-    return SettleDay(day=row.settled_on, basis=member)
+    return settle_day_from_columns(row.settled_on, row.settled_day_basis_id)

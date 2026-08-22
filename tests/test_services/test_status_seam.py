@@ -16,6 +16,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 
 import pytest
+from unittest.mock import patch
 
 from app import ref_cache
 from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
@@ -167,10 +168,10 @@ class TestApplyStatusChangeSettleDay:
             db.session.refresh(txn)
             assert txn.settled_on == explicit
 
-    def test_an_instant_is_refused_not_truncated(
+    def test_an_instant_never_REACHES_this_seam(
         self, app, db, seed_user, seed_periods,
     ):
-        """A ``datetime`` raises ``TypeError`` before the row is touched.
+        """A ``datetime`` is refused one layer out, so no call is ever made.
 
         Finding **N-179**, and it is a refusal rather than a conversion because
         the conversion is the defect: ``datetime`` subclasses ``date``, so the
@@ -178,6 +179,17 @@ class TestApplyStatusChangeSettleDay:
         ``DATE`` column on the SESSION clock (UTC) -- filing an evening-Eastern
         settle on the following day, silently.  The instant below is
         2026-03-03 23:30 Eastern, which UTC calls 2026-03-04.
+
+        **The guard MOVED at plan step X-az and this test moved with it.**  The
+        seam used to call ``reject_settle_instant`` as its first statement,
+        purely so a refused call left the row untouched; the day now arrives as
+        a :class:`~app.services.settle_day.SettleDay`, whose constructor refuses
+        the instant at the CALLER -- strictly earlier, and it buys the same
+        property for free.  What this asserts is therefore that the seam is
+        never entered at all, which is why the row is examined AFTER the
+        ``raises`` block rather than inside it: a post-condition on a call that
+        did not happen restates the fixture, which is what this test had become
+        (adversarial review, 2026-08-22).
         """
         with app.app_context():
             txn = _make_txn(
@@ -185,15 +197,24 @@ class TestApplyStatusChangeSettleDay:
             )
             done_id = ref_cache.status_id(StatusEnum.DONE)
             instant = datetime(2026, 3, 4, 4, 30, tzinfo=timezone.utc)
+            calls = []
+            original = status_seam.apply_status_change
 
-            with pytest.raises(TypeError) as exc:
-                status_seam.apply_status_change(
-                    txn, done_id, settle_day=an_entered_day(instant),
-                    settlement=settlement_if_settling(txn, done_id),
-                )
+            def _record(*args, **kwargs):
+                calls.append((args, kwargs))
+                return original(*args, **kwargs)
+
+            with patch.object(status_seam, "apply_status_change", _record):
+                with pytest.raises(TypeError) as exc:
+                    status_seam.apply_status_change(
+                        txn, done_id, settle_day=an_entered_day(instant),
+                        settlement=settlement_if_settling(txn, done_id),
+                    )
             assert "must be a date" in str(exc.value)
-            # Refused BEFORE any mutation: the check runs ahead of the
-            # transition gate, so a rejected call leaves the row untouched.
+            assert calls == [], (
+                "the seam was ENTERED with an instant; the value type's "
+                "constructor is supposed to refuse it at the caller"
+            )
             assert txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
             assert txn.settled_on is None
 

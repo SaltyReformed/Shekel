@@ -29,7 +29,7 @@ from app import ref_cache
 from app.enums import StatusEnum
 from app.services import status_seam, transfer_service
 from app.services.account_resolver import resolve_grid_account
-from app.services.settle_day import recorded_settle_day
+from app.services.settle_day import settle_day_from_columns
 from app.services.state_machine import finalised_edit_rejection
 from app.exceptions import NotFoundError, ValidationError as ShekelValidationError
 from app.utils.auth_helpers import require_owner
@@ -531,12 +531,14 @@ def _grade_submitted_settle_day(xfer, data):
         settle_day = status_seam.settle_day_for_status(
             current_user.id,
             data.get("status_id", xfer.status_id), data["settled_on"],
-            # What the PAIR already records, read off the income shadow through
-            # the transfer's own two properties (plan step X-az).  A transfer
-            # carries neither column, and without the stored pair an untouched
-            # Save of this prefilled form would restamp a bank-observed or
-            # panel-asserted day as the owner's own typing.
-            recorded_settle_day(xfer),
+            # What the PAIR already records, read off the income shadow in ONE
+            # query (plan step X-az).  A transfer carries neither column, and
+            # without the stored pair an untouched Save of this prefilled form
+            # would restamp a bank-observed or panel-asserted day as the owner's
+            # own typing.  ``settle_day_columns`` is one read of both because two
+            # reads can straddle two shadows and produce a half-pair the decode
+            # rightly refuses -- a 500 for a phantom writer.
+            settle_day_from_columns(*xfer.settle_day_columns),
         )
     except ShekelValidationError as exc:
         return _error_transfer_response(xfer.id, str(exc))

@@ -549,9 +549,12 @@ def _pair_the_posting_day(
 
     An explicit ``None`` is a real user act -- *"I ticked this as posted and the
     statement does not actually show it"* -- and stays a ``None``, which clears
-    both columns.  The schema's ``allow_none`` is what carries it this far
-    (``EntryUpdateSchema``); an EMPTY input is dropped before here and never
-    reaches this function as a key at all.
+    both columns.  **An EMPTY date input IS that ``None``**: the schema declares
+    ``settled_on`` ``allow_none``, and ``_normalize_empty_inputs`` maps ``""`` to
+    ``None`` for exactly such a field rather than dropping the key, which is what
+    ``EntryUpdateSchema``'s own comment says the flag is for.  It reaches here as
+    a present key carrying ``None``, and the echo rule is skipped for it because
+    an emptied box asserts a CHANGE rather than re-stating a day.
 
     Args:
         data: The schema-loaded PATCH payload, mutated in place.

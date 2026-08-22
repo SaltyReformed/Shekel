@@ -68,9 +68,16 @@ from tests._test_helpers import (
     an_asserted_day,
     an_entered_day,
     an_observed_day,
+    append_balance_assertion,
+    load_migration_module,
     settle_day_columns,
     settled_day_basis_id,
+    settle_instant_on,
     settlement_columns,
+)
+
+_MIGRATION = load_migration_module(
+    "c7d31f9a45e8_a_settle_day_says_how_it_is_known.py"
 )
 
 
@@ -477,36 +484,157 @@ class TestAReSubmittedDayDoesNotRestateItsBasis:
 
 
 class TestTheBackfillArmsAreExactOverTheirOwnPredicates:
-    """The migration classifies by EVIDENCE, and each arm is a predicate.
+    """The migration's three arms, DRIVEN rather than described.
 
-    The step specification claimed no row could be shown ``observed``
-    retrospectively; ``budget.statement_match_members`` is that evidence and it
-    already ran, 235 of 235 rows on the developer's dev database carrying exactly
-    their match's own posting day.  What is graded here is the SQL's shape rather
-    than a row count, because a count goes stale and a predicate does not.
+    The migration classifies by EVIDENCE: a row is ``observed`` when an accepted
+    statement match states its day AND the row still carries exactly that day,
+    ``asserted`` when it names a balance assertion AND still carries exactly that
+    assertion's own day, and ``entered`` otherwise.  Each arm is a PREDICATE, so
+    a row whose day was later moved by hand falls through to ``entered`` instead
+    of claiming evidence it no longer holds.
+
+    **These tests EXECUTE the arms, and the reason is a measured failure of the
+    ones they replace.**  A first version asserted that the word "observed"
+    appeared in ``upgrade``'s docstring and that ``max(l.posted_on)`` appeared in
+    a module constant.  An adversarial review deleted BOTH equality predicates --
+    restoring verbatim the "infer a fact from a column being populated" shape
+    this step exists to delete -- and all 23 tests still passed.  A test over a
+    docstring grades a docstring.  ``classify_settle_days`` is module-level so
+    this class can call it, which is the same reason
+    ``e4b8a71c0f36.refuse_settled_rows_without_a_plan`` is.
+
+    The pairing CHECKs are dropped for the duration of each case, because the
+    state a backfill classifies -- a dated row with NO basis -- is exactly the
+    intermediate the migration itself creates before it adds them. DDL is
+    transactional in PostgreSQL, so the rollback each case ends with restores
+    them.
     """
 
-    def test_every_arm_requires_the_day_to_EQUAL_its_evidence(self):
-        """Neither arm classifies on a column merely being POPULATED.
+    @staticmethod
+    def _unpair(db):
+        """Drop both pairing CHECKs, so the pre-backfill state is expressible."""
+        for table in ("transactions", "transaction_entries"):
+            db.session.execute(sqlalchemy.text(
+                f"ALTER TABLE budget.{table} "
+                f"DROP CONSTRAINT ck_{table}_settle_day_basis_pairing"
+            ))
 
-        That shape -- inferring a fact from another column being non-NULL -- is
-        verbatim what finding **N-332** is about, so a backfill that used it
-        would install the defect as the classifier of record.  The ``asserted``
-        arm tested ``reconciled_by_id IS NOT NULL`` alone until an adversarial
-        review said so.
-        """
-        # pylint: disable-next=import-outside-toplevel
-        from tests._test_helpers import load_migration_module
+    @staticmethod
+    def _basis_names(db):
+        """Return ``{transaction id: basis name}`` for every dated row."""
+        rows = db.session.execute(sqlalchemy.text(
+            "SELECT t.id, b.name FROM budget.transactions t "
+            "LEFT JOIN ref.settled_day_bases b "
+            "  ON b.id = t.settled_day_basis_id "
+            "WHERE t.settled_on IS NOT NULL"
+        )).all()
+        return {row[0]: row[1] for row in rows}
 
-        module = load_migration_module(
-            "c7d31f9a45e8_a_settle_day_says_how_it_is_known.py"
+    def _dated_row(self, db, seed_user, seed_periods, day, **overrides):
+        """Stage one settled row carrying *day* and NO basis, and return it."""
+        txn = _make_transaction(
+            seed_user, seed_periods,
+            status_id=ref_cache.status_id(StatusEnum.DONE),
+            settled_on=day, settled_day_basis_id=None,
+            **settlement_columns(day, Decimal("300.00")),
+            **overrides,
         )
-        source = module.upgrade.__doc__ or ""
-        assert "observed" in source and "asserted" in source
+        db.session.add(txn)
+        db.session.flush()
+        return txn
 
-        # The two evidence joins, read off the module's own SQL fragments.
-        assert "max(l.posted_on)" in module._MATCH_POSTS_ON
-        assert "budget.statement_match_members" in module._MATCH_POSTS_ON
+    def test_a_row_carrying_its_anchors_own_day_is_ASSERTED(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The reconcile panel's shape: the link AND the assertion's own day."""
+        with app.app_context():
+            self._unpair(db)
+            anchor = append_balance_assertion(
+                db.session, seed_user["account"], seed_periods[0],
+                Decimal("1000.00"), settle_instant_on(seed_periods[0].end_date),
+            )
+            txn = self._dated_row(
+                db, seed_user, seed_periods, anchor.observed_on,
+                reconciled_by_id=anchor.id,
+            )
+
+            _MIGRATION.classify_settle_days(db.session.connection())
+
+            assert self._basis_names(db)[txn.id] == "asserted"
+            db.session.rollback()
+
+    def test_a_LINKED_row_whose_day_has_MOVED_is_ENTERED(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The firing control the arm's predicate exists for.
+
+        Delete the arm's `settled_on = <the anchor's own observed_on>` test --
+        leaving `reconciled_by_id IS NOT NULL`, which is what it read until an
+        adversarial review said so -- and this case is called a BOUND on a day
+        no balance ever bounded.  That is the inference N-332 is about, kept as
+        the classifier of record.
+        """
+        with app.app_context():
+            self._unpair(db)
+            anchor = append_balance_assertion(
+                db.session, seed_user["account"], seed_periods[0],
+                Decimal("1000.00"), settle_instant_on(seed_periods[0].end_date),
+            )
+            moved = anchor.observed_on - timedelta(days=4)
+            txn = self._dated_row(
+                db, seed_user, seed_periods, moved,
+                reconciled_by_id=anchor.id,
+            )
+
+            _MIGRATION.classify_settle_days(db.session.connection())
+
+            assert self._basis_names(db)[txn.id] == "entered"
+            db.session.rollback()
+
+    def test_a_row_with_no_evidence_at_all_is_ENTERED(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Every dated row lands somewhere: the arm that admits the rest."""
+        with app.app_context():
+            self._unpair(db)
+            txn = self._dated_row(
+                db, seed_user, seed_periods, seed_periods[0].start_date,
+            )
+
+            _MIGRATION.classify_settle_days(db.session.connection())
+
+            assert self._basis_names(db)[txn.id] == "entered"
+            db.session.rollback()
+
+    def test_no_dated_row_is_left_unclassified(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The arms are EXHAUSTIVE, which is what the pairing CHECK then needs.
+
+        The migration adds the biconditional immediately after the backfill, so
+        one dated row left with a NULL basis would fail the upgrade rather than
+        classify wrong -- and that is a claim about the arms as a SET rather than
+        about any one of them.
+        """
+        with app.app_context():
+            self._unpair(db)
+            anchor = append_balance_assertion(
+                db.session, seed_user["account"], seed_periods[0],
+                Decimal("1000.00"), settle_instant_on(seed_periods[0].end_date),
+            )
+            self._dated_row(
+                db, seed_user, seed_periods, anchor.observed_on,
+                reconciled_by_id=anchor.id,
+            )
+            self._dated_row(
+                db, seed_user, seed_periods,
+                anchor.observed_on - timedelta(days=4),
+            )
+
+            _MIGRATION.classify_settle_days(db.session.connection())
+
+            assert None not in self._basis_names(db).values()
+            db.session.rollback()
 
     def test_the_three_members_are_seeded_and_resolvable(self, app):
         """``ref_cache`` answers for every member, on a migration-built DB.

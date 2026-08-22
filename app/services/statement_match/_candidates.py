@@ -278,9 +278,10 @@ def _day_basis(row) -> SettledDayBasisEnum | None:
     ``entered`` for the owner's own.  Nothing here re-classifies, because a
     re-classification is the defect finding **N-332** names.
 
-    Structurally typed over the two models, which is
-    :meth:`~._offers.MatchDays.of`'s idiom: both expose ``settled_on`` and
-    ``settled_day_basis_id`` and nothing else here is read.
+    Its parameter is the two models' shared
+    :class:`~app.models.mixins.SettleDatedMixin`, which is where the pair is
+    declared once for both -- so this reads a column set the schema guarantees
+    rather than one it happens to share.
 
     Args:
         row: A :class:`~app.models.transaction.Transaction` or a

@@ -3012,20 +3012,27 @@ def mark_purchase_settled(db_session, account, entry, settled_on=None):
         f"assertion (and entry id={entry.id}'s dates) back inside the clock "
         f"this suite runs on rather than forward past it."
     )
-    # **The pair, through the app's own writer** (plan step **X-az**): a day
-    # written without the basis that says how it is known is unstorable, and
-    # this helper stands in for a purchase the OWNER ticked off a statement --
-    # the reconcile panel's act -- so ``asserted`` is what it means.  That day
-    # is an UPPER BOUND, which is exactly the assertion the precondition above
-    # checks: the entry is inside the account's latest asserted balance.
+    # **The pair, through the app's OWN pair writer** (plan step **X-az**): a day
+    # written without the basis that says how it is known is unstorable, and a
+    # fixture that states half of one builds a row no door could write.
     #
-    # ``record_settle_day`` rather than a bare assignment, for the reason the
-    # app has one writer for the pair: a fixture that states half of it builds
-    # a row no door could write.
+    # **``entered``, and NOT ``asserted``, which a first version wrote** (found
+    # by adversarial review 2026-08-22).  The temptation is that this helper's
+    # precondition is about an assertion COVERING the day -- but the app's only
+    # ``asserted`` writer is ``reconcile_service._purchases.record_settled_days``,
+    # which in ONE statement writes the anchor's own ``observed_on`` AND the link
+    # naming it.  This helper writes neither: its day is the caller's and may be
+    # strictly earlier than the assertion, and it sets no link.  Calling that
+    # ``asserted`` builds a row the app cannot reach -- the migration's own
+    # backfill classifies exactly that row ``entered`` -- and the matcher would
+    # then hand it the BOUND branch of ``expected_window``, a span, for a row
+    # production would call a point.  That is finding **N-132**'s shape inside
+    # the helper written to prevent N-132.  A caller that wants the panel's own
+    # state ticks through the panel.
     # pylint: disable-next=import-outside-toplevel
     from app.services.settle_day import record_settle_day
 
-    record_settle_day(entry, an_asserted_day(settled_on))
+    record_settle_day(entry, an_entered_day(settled_on))
     db_session.flush()
     return entry
 

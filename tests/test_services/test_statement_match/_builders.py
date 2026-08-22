@@ -154,8 +154,11 @@ def a_purchase(
             decides the window (plan step **X-az**).
         reconciled_by: The :func:`an_assertion` this purchase was TICKED
             against on the reconcile panel, or ``None`` for one settled any
-            other way.  Its presence is what makes *settled_on* a BOUND rather
-            than an observed posting day.
+            other way.  **It no longer decides what KIND of day *settled_on*
+            is** (plan step **X-az**), for the reason :func:`a_transaction`'s
+            twin parameter states: that column answers WHICH statement was seen
+            to show the money, and reading it as the day's provenance is finding
+            **N-332**.  Pass *settle_day_basis*.
 
     Returns:
         The staged :class:`~app.models.transaction_entry.TransactionEntry`.

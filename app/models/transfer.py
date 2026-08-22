@@ -313,52 +313,63 @@ class Transfer(
         return self._income_shadow_settle_pair()[0]
 
     @property
-    def settled_day_basis_id(self):
-        """Return WHICH KIND of day :attr:`settled_on` is, or ``None``.
-
-        :attr:`settled_on`'s twin, off the same shadow and by the same rule
-        (plan step **X-az**).  The two columns are ONE fact on a
-        ``Transaction`` -- welded by ``ck_transactions_settle_day_basis_pairing``
-        -- so a transfer that can read the day and not its basis could report a
-        day nobody could classify.
-
-        **It exists so a transfer answers
-        :func:`app.services.settle_day.recorded_settle_day`**, which is
-        structurally typed over the two column names: with both properties a
-        ``Transfer`` IS a settle-dated row for that reader, and the transfer
-        PATCH can ask what the pair already records without querying a shadow
-        itself.  That is what makes the echo rule
-        (:func:`app.services.settle_day.submitted_settle_day`) reachable from a
-        door whose row carries neither column.
-
-        There is no setter, for the reason :attr:`settled_on` has none.
-
-        **Cost: one more single-row SELECT**, and it is stated rather than
-        hidden.  A caller reading BOTH properties issues two, because neither
-        may cache a shadow's value on an instance whose shadow another request
-        may have moved.  Both are indexed single-row reads on a form PATCH, and
-        the SINGLE-ROW boundary :attr:`settled_on` documents applies unchanged:
-        a caller that needs this for MANY transfers must load the shadows.
-        """
-        return self._income_shadow_settle_pair()[1]
-
-    def _income_shadow_settle_pair(self):
+    def settle_day_columns(self):
         """Return ``(settled_on, settled_day_basis_id)`` off the income shadow.
 
-        The ONE query the two properties above share, so the row they read and
-        the reasons they read it are stated once.  Read off the INCOME
-        (to-account) shadow, the same row ``posting_service._entry_date`` reads
-        for the pair, so the day this renders is the day the ledger files the
-        postings under.
+        **ONE read of BOTH columns, and that is a correctness property rather
+        than a saving** (plan step **X-az**, corrected by adversarial review
+        2026-08-22).  A transfer carries neither column -- its money moves on
+        its two shadow ``Transaction`` rows -- so a caller that needs the pair
+        must read a shadow, and reading it as two separate PROPERTIES would
+        issue a SELECT per attribute ACCESS: five for one call of
+        ``settle_day.recorded_settle_day``, over a query whose ``limit(1)``
+        deliberately carries no ``ORDER BY`` (:attr:`settled_on` states why it
+        tolerates duplicate shadows rather than raising on them).  Those reads
+        can straddle two rows -- with duplicate income shadows, or across a
+        concurrent commit under READ COMMITTED -- and hand
+        ``settle_day.settle_day_from_columns`` a day from one and a basis from
+        the other, which it correctly refuses as a ``ValueError`` naming a
+        phantom writer: a 500 on the transfer PATCH, which is exactly the
+        outcome the ``limit(1)`` was written to prevent.  One read of two
+        columns cannot straddle anything.
 
-        The ``limit(1)`` is what keeps both properties total; see
-        :attr:`settled_on` for the ``MultipleResultsFound`` measurement that put
-        it there, and for why naming the row in SQL beats iterating an unordered
-        backref.
+        **Its ONE caller is the transfer PATCH's echo rule** -- what the pair
+        already records, so a re-submitted day does not restate its basis.  It
+        pairs with ``settle_day.settle_day_from_columns``, which takes the two
+        VALUES rather than a row precisely so a transfer can answer it: a
+        ``Transfer`` is not a ``SettleDatedMixin`` and carries neither column,
+        so the row-shaped reader beside it cannot be handed one.
+
+        Read off the INCOME (to-account) shadow, the same row
+        ``posting_service._entry_date`` reads for the pair, so the day this
+        answers is the day the ledger files the postings under.
+
+        There is no setter, for the reason :attr:`settled_on` has none:
+        ``status_seam.apply_status_change`` and
+        ``settle_day.record_settle_day`` are the writers.
+
+        **SINGLE-ROW reads only**, the boundary :attr:`settled_on` documents:
+        one scoped SELECT per transfer, which is right for a form PATCH and an
+        N+1 the moment anything loops.
+
+        Returns:
+            The pair, or ``(None, None)`` when the transfer has no income shadow
+            at all.
+        """
+        return self._income_shadow_settle_pair()
+
+    def _income_shadow_settle_pair(self):
+        """Return ``(settled_on, settled_day_basis_id)`` in ONE query.
+
+        The single read :attr:`settled_on` and :attr:`settle_day_columns` share,
+        so the row they take and the reasons they take it are stated once.  The
+        ``limit(1)`` is what keeps both total; see :attr:`settled_on` for the
+        ``MultipleResultsFound`` measurement that put it there, and for why
+        naming the row in SQL beats iterating an unordered backref.
 
         Returns:
             The pair, or ``(None, None)`` when the transfer has no income
-            shadow at all.
+            shadow.
         """
         # Imported here rather than at module scope: ``Transaction`` imports
         # this module for its ``transfer`` relationship, so a top-level import

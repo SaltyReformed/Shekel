@@ -33,7 +33,9 @@ from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
     all_periods,
+    an_asserted_day,
     an_entered_day,
+    an_observed_day,
     cadence_payload,
     create_account_of_type,
     create_loan_account,
@@ -46,7 +48,10 @@ from tests._test_helpers import (
 )
 from app.services.row_valuation import owned_contribution
 from app.services.pay_calendar import calendar_for
-from app.services.settle_day import record_settle_day
+from app.services.settle_day import (
+    record_settle_day,
+    recorded_settle_day,
+)
 
 
 def _create_savings_account(seed_user):
@@ -1954,6 +1959,129 @@ class TestTransferSettleDayEditDoor:
             .filter_by(transfer_id=xfer_id, is_deleted=False)
             .all()
         }
+
+    def test_a_RE_SUBMITTED_day_does_not_restate_its_basis(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Plan step **X-az**: the ECHO rule at the TRANSFER PATCH.
+
+        This form prefills the settle-day box and posts it on Save, so an
+        untouched Save re-submits the day the pair already carries.  Stamping
+        that ``entered`` rewrites what the legs knew about their own day -- a
+        reconcile-panel BOUND, or a day the bank stated, becomes the owner's own
+        typing, with the day unchanged so nothing releases the clearing link.
+
+        A transfer carries neither settle column, so the rule needs the pair off
+        the INCOME shadow (``Transfer.settle_day_columns``, ONE read of both).
+        Drop the ``recorded`` argument at this route's ``settle_day_for_status``
+        call and this fails.
+        """
+        with app.app_context():
+            day = display_today() - timedelta(days=6)
+            xfer = self._settled_transfer(
+                seed_user, seed_periods_today, day,
+            )
+            for shadow in db.session.query(Transaction).filter_by(
+                transfer_id=xfer.id, is_deleted=False,
+            ):
+                record_settle_day(shadow, an_asserted_day(day))
+            db.session.commit()
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"settled_on": day.isoformat()},
+            )
+            assert response.status_code == 200, response.get_data(
+                as_text=True,
+            )[:300]
+
+            db.session.expire_all()
+            bases = {
+                recorded_settle_day(shadow)
+                for shadow in db.session.query(Transaction).filter_by(
+                    transfer_id=xfer.id, is_deleted=False,
+                )
+            }
+            assert bases == {an_asserted_day(day)}, (
+                "an untouched Save laundered the pair's BOUND into the owner's "
+                "own day"
+            )
+
+    def test_a_transfer_day_the_owner_MOVED_is_their_own(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """The firing half of the rule above, so it is not "never restate"."""
+        with app.app_context():
+            day = display_today() - timedelta(days=6)
+            corrected = day + timedelta(days=2)
+            xfer = self._settled_transfer(
+                seed_user, seed_periods_today, day,
+            )
+            for shadow in db.session.query(Transaction).filter_by(
+                transfer_id=xfer.id, is_deleted=False,
+            ):
+                record_settle_day(shadow, an_asserted_day(day))
+            db.session.commit()
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"settled_on": corrected.isoformat()},
+            )
+            assert response.status_code == 200, response.get_data(
+                as_text=True,
+            )[:300]
+
+            db.session.expire_all()
+            bases = {
+                recorded_settle_day(shadow)
+                for shadow in db.session.query(Transaction).filter_by(
+                    transfer_id=xfer.id, is_deleted=False,
+                )
+            }
+            assert bases == {an_entered_day(corrected)}
+
+    def test_the_SHADOW_branch_of_the_transaction_PATCH_echoes_too(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Plan step **X-az**: the ECHO rule at the THIRD status door.
+
+        A transfer shadow PATCHed through ``/transactions/<id>`` branches into
+        ``routes/transactions/_shadow_mutations``, which carries its own call of
+        the shared reading -- and a third spelling of one rule is three chances
+        for one of them to launder.  It reads the SHADOW's own recorded pair,
+        which is the pair for both legs (Transfer Invariant 3).
+
+        Drop the ``recorded`` argument there and this fails while the two doors
+        above stay green, which is the point of grading all three.
+        """
+        with app.app_context():
+            day = display_today() - timedelta(days=6)
+            xfer = self._settled_transfer(
+                seed_user, seed_periods_today, day,
+            )
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=xfer.id, is_deleted=False,
+            ).all()
+            for shadow in shadows:
+                record_settle_day(shadow, an_observed_day(day))
+            db.session.commit()
+            shadow_id = shadows[0].id
+
+            response = auth_client.patch(
+                f"/transactions/{shadow_id}",
+                data={"settled_on": day.isoformat()},
+            )
+            assert response.status_code == 200, response.get_data(
+                as_text=True,
+            )[:300]
+
+            db.session.expire_all()
+            assert recorded_settle_day(
+                db.session.get(Transaction, shadow_id),
+            ) == an_observed_day(day), (
+                "the shadow branch laundered a bank OBSERVATION into the "
+                "owner's own day"
+            )
 
     def test_correcting_the_day_moves_both_shadows_and_the_ledger(
         self, app, auth_client, seed_user, seed_periods_today,
