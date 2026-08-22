@@ -43,21 +43,21 @@ side: both were unblocked and they shared no file.
 pairing two inside one arc, check that neither names a module the other deletes. A row marked
 **MOVES MONEY** takes its own PR either way, so it is never the second lane.
 
-**The rank is a DECISION, not a derivation.** 51 of these steps are legal to start right now, so the
+**The rank is a DECISION, not a derivation.** 52 of these steps are legal to start right now, so the
 dependency graph alone cannot say which comes next; the sequence below follows each arc's own stated
 sequencing -- the balance README's ten blocks, and each plan's section 0.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**149 steps, 109 open.** The dependency graph holds 84 edges over 56 rows.
+**150 steps, 109 open.** The dependency graph holds 84 edges over 56 rows.
 
 ## The order
 
 | arc | id | also | what this step does | order | commit | starts |
 |---|---|---|---|---|---|---|
-| bank_import | X-f6d-2 | -- | Let the accept door RECORD an unequal match instead of refusing it, taking the bank's figure as the settled figure and storing the difference as a reported variance. | #1 | -- | NOW |
-| bank_import | X-f6d-1 | -- | Make a proposal a SCORE rather than an exact-amount gate, so a near miss is offered with the variance it would write instead of being silently withheld -- the defect that hid a $178.29 Geico line from the $178.32 row it belonged to. | #2 | -- | after #1 / bank_import:X-f6d-2 |
-| bank_import | X-f6d-3 | -- | Open every reviewed line on its best-scoring candidate and make the create-a-purchase arm WARN, naming the row, when a scored candidate is within reach. | #3 | -- | after #2 / bank_import:X-f6d-1 |
+| bank_import | X-f6d-1 | -- | Make a proposal a SCORE rather than an exact-amount gate, so a near miss is offered with the variance it would write instead of being silently withheld -- the defect that hid a $178.29 Geico line from the $178.32 row it belonged to. | #1 | -- | NOW / bank_import:X-f6d-2 (shipped) |
+| bank_import | X-f6d-3 | -- | Open every reviewed line on its best-scoring candidate and make the create-a-purchase arm WARN, naming the row, when a scored candidate is within reach. | #2 | -- | after #1 / bank_import:X-f6d-1 |
+| bank_import | X-f6d-4 | -- | Make a group's residual an ordinary uncategorized row the owner accepts, rather than a difference the door refuses outright or an invisible plug to anchor equity. | #3 | -- | NOW |
 | bank_import | X-f6e | -- | Make a statement prove itself, asserting that closing minus the sum of its lines equals opening and that the app's own balance for that day equals the bank's, refusing the file when either fails. | #4 | -- | NOW |
 | bank_import | X-f6f | -- | Give the review pass's create-a-purchase arm the inverse it never had, so a purchase the pass created in error is removable through a door rather than a hand-rolled repair script. | #5 | -- | NOW |
 | balance | X-f3c | -- | THE CUTOVER: the assertion stops resetting the ledger, `balance(T)` becomes opening equity plus the sum of postings, and an unexplained difference becomes a recorded uncategorized transaction the user accepts. **MOVES MONEY, OWN PR, NO BACKLOG.** Closes **N-171**, **N-172**, **N-174**, **N-275**, **N-276**. | #6 | -- | NOW / balance:X-f3b (shipped) |
@@ -189,6 +189,7 @@ The fuller as-built entries are in each arc's archive.
 
 | arc | id | also | what this step does | order | commit | starts |
 |---|---|---|---|---|---|---|
+| bank_import | X-f6d-2 | -- | Let the accept door RECORD an unequal match instead of refusing it, taking the bank's figure as the settled figure and storing the difference as a reported variance. | SHIPPED | `674dcc94` | -- |
 | balance | X-au-j | -- | Give BOTH read passes ONE amount basis for the whole pass instead of one per priced row -- the statement-match review pass and the reconcile panel each derive one and thread it, and both `settle_amount` twins take it as a REQUIRED parameter so the cost cannot regrow by a caller saying nothing. Closed **N-295**, **N-309**, **N-252**, **N-323**. | SHIPPED | `cc7679a7` | -- |
 | balance | X-au-c3 | -- | A settle RECORDS what moved instead of refreshing an amount: `settled_amount` + `settled_basis_id` + `settled_on` are one record the status seam alone writes, a revert releases the ASSERTION and KEEPS the fact, and both full-edit popovers correct a figure IN PLACE. Closed **N-241**, **N-242**, **N-257**, **N-259**, **N-265**, **N-282**, **N-298**; opened **N-301**-**N-304**. | SHIPPED | `3d1379d1` | -- |
 | recurrence | R-F17 | -- | A forward window named in MONTHS is resolved in the OWNER's paychecks: `PayCadence.paychecks_within` replaced the hardcoded 6 / 13 / 26 / 52 in the balance chips, the "Interest, next 12 mo" chip, the grid's 6M / 1Y / 2Y buttons, the mobile Plan window and the dashboard pulse chart, whose canvas announced six months over thirteen weeks. Closed **F-17**; opened **F-21** and **P73**. | SHIPPED | `e2afd21b` | -- |

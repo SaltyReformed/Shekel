@@ -101,20 +101,21 @@ than a second copy here (rule 16): **N-239** and **N-323**.
         MOVES-MONEY diff apart from a proposal diff, which is the review surface `X-f6a-3c` was
         decomposed for.
 
-    - [ ] **X-f6d-2** `feat(import): a match records what the bank actually took` -- the accept door
-          stops refusing an unequal match and UPDATES instead (**R-GD(a)**), superseding **R-FV**'s
-          refusal. **It MOVES MONEY.** Three arms, and the split is what makes the residual question
-          disappear for the common one: ONE line to ONE row takes the bank's figure as a CORRECTION
-          through the seam that already exists (`status_seam.correction_record`, whose own rule is
-          that a figure read off a statement is a FACT), so **nothing is left over to book** -- 8 of
-          the developer's 10 near misses, every Geico among them. A PURCHASE takes it the same way,
-          under **R-GE**. Only a GROUP cannot say WHICH member is wrong, and its residual is
-          **R-FN**'s ordinary uncategorized row on the owner's own explicit act -- never an
-          automatic plug to `anchor_equity`, which is what `balance:X-f4` deletes and what R-FN
-          replaced. **N-239**'s payroll residue is that arm's first customer and its acceptance
-          test. **INHERITED from `X-f6a-3c-2`**: a pass's scope holds only what the pass cannot
-          change, so the claims and a row's PRICE are re-read per act -- and a variance is a figure
-          THIS door writes, which puts it on the changing side.
+    - [x] **X-f6d-2** `674dcc94` a match UPDATES the row to what the bank took (**R-GD(a)**,
+          **R-GE**), superseding **R-FV**'s refusal: where the bank's figure names ONE row it is
+          written to that row through the correction seam, so a one-to-one match has no residual
+          left to book. **What a LATER leaf must obey**: the not-its-own-figure census is TWO
+          predicates (`settles_from_entries` AND `repays_card_spend`) because the transaction door's
+          own backstop refuses only the first. Carries **N-335** with `X-f6d-1`.
+
+    - [ ] **X-f6d-4** `feat(import): a group's residual is a row you accept` -- the arm `X-f6d-2`
+          did NOT build. A GROUP cannot say WHICH member the difference belongs to, so **R-FN**
+          applies: it becomes an ordinary row with NO category, booked to the per-owner
+          Uncategorized account on the owner's own explicit act and categorizable later -- never an
+          automatic plug to `anchor_equity`, which `balance:X-f4` deletes. Until it ships the door
+          REFUSES such a group and names the difference, which is what it did before. **N-239**'s
+          `$0.05`-`$0.06` payroll residue is its acceptance test, and the bucket it accumulates in
+          is the instrument that finally makes that defect visible rather than absorbed.
 
     - [ ] **X-f6d-1** `feat(import): a proposal is SCORED, and a near miss is offered` -- the
           proposer stops GATING on an exact figure and RANKS instead (**R-GD(b)**): amount distance
