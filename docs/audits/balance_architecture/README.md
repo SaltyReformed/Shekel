@@ -897,6 +897,36 @@ hides.
   table's `.name` whose `__eq__` against a `str` RAISES, retiring W9902 and its two module sets. The
   Jinja half needs its own answer.
 
+* [ ] **X-az** `refactor(settlement): a settle day says HOW it is known` -- closes **N-332**.
+  **`settled_on` carries three different kinds of fact and the column says which one it holds
+  nowhere.** The reconcile panel writes the day a BALANCE was asserted for -- an UPPER BOUND, in
+  `reconcile_service._purchases`' own words; a statement match writes the day the bank posted -- an
+  OBSERVATION; the date box writes whatever the owner typed. The statement matcher tells the first
+  apart by testing whether `reconciled_by_id` is populated, which is verbatim the shape **N-241**
+  closed one column over: `settled_basis_id` exists precisely so that *"which one a figure is stands
+  in `settled_basis_id` rather than being inferred from a column being populated"*. The inference is
+  exact over today's three writers and is one new writer from wrong -- and it cannot see the third
+  case at all, so a day the owner typed reads as an observation the matcher will pair a bank line
+  against.
+  **The remedy is `settled_basis_id`'s own shape, one column over**: a `SettledDayBasisEnum`
+  (`observed` / `asserted` / `entered`), a `ref.settled_day_bases` catalogue, and a
+  `settled_day_basis_id` on **both** `budget.transactions` and `budget.transaction_entries` --
+  both, because both carry `settled_on`, where the figure's basis needed only the one table. Paired
+  to the day by CHECK (`settled_on IS NULL OR settled_day_basis_id IS NOT NULL`) exactly as
+  `ck_transactions_settled_amount_needs_basis` pairs the figure with its own.
+  **Three write sites, and the basis is the CALLER's to state**: `status_seam._seam` for a
+  transaction, `entry_service._doors` for a purchase, and `reconcile_service._purchases`' bulk
+  UPDATE. So the parameter threads through `apply_requested_status`, `settle_transaction`,
+  `update_entry`, `settle_transfer` / `update_transfer` and the panel's three arms -- which is the
+  size of this step and the reason it is its own one.
+  **The backfill is derivable and lossless**: `reconciled_by_id IS NOT NULL` is `asserted` on every
+  existing row, everything else `entered`; no row can be shown to be `observed` retrospectively,
+  because the door that would have said so is the one this step adds.
+  **What it retires**: `_candidates.settle_day_is_upper_bound` stops reading `reconciled_by_id` and
+  reads the basis, which also closes the reverse-direction hole -- a reconciled row whose assertion
+  day the bank CONFIRMS keeps its link today, because no settle door fires when the day does not
+  move, so the flag says bound where the day has become an observation.
+
 ## 6. The findings ledger
 
 **Moved to `../../plans/ledger.md`**, the one findings table for every arc. This arc's rows
