@@ -23,12 +23,12 @@ signpost.
 
 | | | detail |
 |---|---|---|
-| **just landed** | **X-au-c2b** -- a row's BUDGET is RESOLVED, not read off `estimated_amount`, at 14 readers and in every template; ONE rule says what a row DISPLAYS as, where the grid, the HTMX fragments and the companion had three; and under them an `AmountBasis` pinned to `(user_id, scenario_id)` rather than to a ROW SET, which is what a pricing pass was always scoped by. `priced_ids` and the two duplicate loan producers are deleted, a scenario refusal replaces the membership guard, and `BalanceContext.amounts()` memoizes one basis per read pass. Byte-identical across four harnesses on a 1,012-row clone, before AND after four adversarial reviews. Closed **N-268**, **N-269**, **N-270**, **N-271**; opened **N-294**-**N-298** | Section 5 |
-| **in flight** | Nothing. **X-au-c3** shipped at `3d1379d1`, so the FIVE cutovers (X-au-d / e / g / f / i) and **X-au-j** are all unblocked; the cutover cluster still waits on `bank_import:X-f6a`. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app` | Section 5 |
+| **just landed** | **X-az** -- a settle day says HOW it is known. `settled_on` carried three kinds of fact on both tables that have it -- a day the BANK showed, the day a BALANCE was asserted for (an UPPER BOUND), the day the owner typed -- and the matcher told the first apart by testing whether `reconciled_by_id` was populated, which answers a different question and is blind to the third case. `settled_day_basis_id` now says it, paired to the day by a BICONDITIONAL and written through ONE `SettleDay(day, basis)` value. `$0.00`: no balance, fold or posting reads it. Closed **N-332**; opened **N-334** and widened **N-305**. **Its own first build re-opened N-332 through the edit door** -- every form prefills the settle-day control, so an untouched Save restamped a BOUND as the owner's typing, `$4,173.07` over 59 of production's 66 linked purchases, found by two independent adversarial reviews | Section 5 |
+| **in flight** | Nothing. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app`. What to pick up next is `../../plans/steps.md`'s first row | Section 5 |
 | **what changed the plan** | **X-f3 DECOMPOSED and X-f6 moved AHEAD of the cutover** (developer, 2026-08-13), because two of R-EB's premises were refuted by measurement against the developer's own YTD bank exports: the residual it would classify is dominated by date misplacement rather than by spending (lag-1 autocorrelation `-0.306`; bank-anchored untracked spend `$2,096.37`, not the `$15,413.71` gross), and an assertion is **not** the closing balance for its civil day (17 of 55 equal the bank's closing; only 30% of 110 matched movements carry the day the bank posted them). What X-f3 needed was never the import surface but CLEARING FACTS -- rulings **R-FL**..**R-FO** here and **R-FP** in the import arc. **X-f5 is superseded** by X-f3c | Section 3.3, Section 4 |
 | **blocked on you** | What to do next is `../../plans/steps.md`'s first row, never this section. Six `developer-decision` / `operator` rows carry this arc's open questions (`ledger.md`); the one this change ADDS is **R-FO**, the modelled half of the cutover -- whether a Roth / Traditional / 401(k) / Property true-up books to a per-account `investment_return` account (`$10,623.66` measured) or stays on `anchor_equity` with its own step. Stated as a recommendation, not a decision. Outside this arc, the recurrence arc's X-an-a sequencing ruling is still open | Section 4, R-FO |
 | **complementary arcs** | TWO, neither part of this arc and neither pausing it: the recurrence redesign (block 9) and the pay calendar (block 10). **The pay calendar's `C2` IS this arc's `X-l`**, and also recurrence `R-F12` -- one commit under three names, so whoever builds it must satisfy all three specifications | `implementation_plan_recurrence_redesign.md`, `implementation_plan_pay_calendar.md` |
-| **the live lesson** | **A cache keyed on the CALLER's row set, when everything expensive behind it is scoped by the owner, makes every second reader pay again -- and the duplication gets filed as two findings before anyone reads it as one.** N-268 and N-269 were two symptoms of one shape; so were the two loan producers whose own docstring said one *"mirrors"* the other. A membership guard (`priced_ids`) had been added to make the wrong keying safe, which is the tell: a fence protecting a state the model should not be able to reach | Section 5, X-au-c2b |
+| **the live lesson** | **A column that says WHICH KIND of fact it holds is only as good as the rule for when that answer may be RE-STATED, and a form that prefills a control re-states every field it renders on every Save.** X-az replaced an inference with a stored fact and then let three edit doors overwrite it with `entered` on a day nobody had touched -- the defect it closed, arriving through a door it had not looked at. The figure one column over already had the answer (`figure_for_status`' ECHO rule, which takes the ROW precisely so it can tell a prefill from a retype); the day did not, because the first build read the status alone. **A guard that needs the stored value cannot be written without it** | Section 5, X-az |
 | **resuming cold** | Branch from `dev`; whether it leads `main` is a MEASUREMENT (`git log --oneline origin/main..dev`). Read the repo's migration head from `alembic_version` rather than from prose, and rebuild the test template only if you add a migration. **Pass `TEST_DB_PREFIX=<name>` when another checkout may be running the suite**, put the venv on `PATH` (`scripts/test.sh` execs bare `pytest`) and keep it ACTIVE for `git commit` (pre-commit hooks are `language: system`). The registries have their own gate: `pytest tools/plan_gate -c /dev/null -q`. Two REFERENCE tags, neither a rebase candidate: `xd-attempt-1-parked-n155` (X-d) and `xx-attempt-1-held-rde` (X-x) | `../../plans/verification.md` |
 
 Section 5 is the work that remains and Section 4 the rulings that govern it; `archive/` is what
@@ -585,6 +585,16 @@ hides.
     currently make, one of which (Received) is not in the transfer map at all, so the refusal would
     be correct and the test wrong. That is a behaviour change on a creation path and gets its own
     worked ruling, not a build decision.
+    **It also carries N-334, and the five surfaces are enumerated here because a
+    ledger row is an index entry** (conventions rule 4): since plan step X-az a row records
+    WHICH KIND of settle day it holds -- a bank observation, a balance assertion's UPPER BOUND,
+    or the owner's own -- and no screen says so. `grid/_transaction_entries.html` is the one that
+    says the opposite (*"Posted <date> -- this money has left your account"*, for a day the bank
+    may never have confirmed); `accounts/_statement_review_body.html`,
+    `grid/_transaction_full_edit.html`, `transfers/_transfer_full_edit.html` and
+    `statement_match._accepted_view` are silent. The telemetry half is smaller and belongs with
+    them: `entry_service.create_entry` logs `settled_day_basis` and `update_entry`'s event does
+    not, so one door's receipt can tell a bound from an observation and the other's cannot.
 * [ ] **X-ak** `refactor(transfers): a shadow inherits its parent's fields by ONE rule` -- closes
   **N-148**, **N-150**, **N-152**, **N-156**, **N-159**, **N-170**. **Root: the transfer -> shadow
   mirror is written THREE times and the three already disagree** -- at construction, per-field on
@@ -897,35 +907,12 @@ hides.
   table's `.name` whose `__eq__` against a `str` RAISES, retiring W9902 and its two module sets. The
   Jinja half needs its own answer.
 
-* [ ] **X-az** `refactor(settlement): a settle day says HOW it is known` -- closes **N-332**.
-  **`settled_on` carries three different kinds of fact and the column says which one it holds
-  nowhere.** The reconcile panel writes the day a BALANCE was asserted for -- an UPPER BOUND, in
-  `reconcile_service._purchases`' own words; a statement match writes the day the bank posted -- an
-  OBSERVATION; the date box writes whatever the owner typed. The statement matcher tells the first
-  apart by testing whether `reconciled_by_id` is populated, which is verbatim the shape **N-241**
-  closed one column over: `settled_basis_id` exists precisely so that *"which one a figure is stands
-  in `settled_basis_id` rather than being inferred from a column being populated"*. The inference is
-  exact over today's three writers and is one new writer from wrong -- and it cannot see the third
-  case at all, so a day the owner typed reads as an observation the matcher will pair a bank line
-  against.
-  **The remedy is `settled_basis_id`'s own shape, one column over**: a `SettledDayBasisEnum`
-  (`observed` / `asserted` / `entered`), a `ref.settled_day_bases` catalogue, and a
-  `settled_day_basis_id` on **both** `budget.transactions` and `budget.transaction_entries` --
-  both, because both carry `settled_on`, where the figure's basis needed only the one table. Paired
-  to the day by CHECK (`settled_on IS NULL OR settled_day_basis_id IS NOT NULL`) exactly as
-  `ck_transactions_settled_amount_needs_basis` pairs the figure with its own.
-  **Three write sites, and the basis is the CALLER's to state**: `status_seam._seam` for a
-  transaction, `entry_service._doors` for a purchase, and `reconcile_service._purchases`' bulk
-  UPDATE. So the parameter threads through `apply_requested_status`, `settle_transaction`,
-  `update_entry`, `settle_transfer` / `update_transfer` and the panel's three arms -- which is the
-  size of this step and the reason it is its own one.
-  **The backfill is derivable and lossless**: `reconciled_by_id IS NOT NULL` is `asserted` on every
-  existing row, everything else `entered`; no row can be shown to be `observed` retrospectively,
-  because the door that would have said so is the one this step adds.
-  **What it retires**: `_candidates.settle_day_is_upper_bound` stops reading `reconciled_by_id` and
-  reads the basis, which also closes the reverse-direction hole -- a reconciled row whose assertion
-  day the bank CONFIRMS keeps its link today, because no settle door fires when the day does not
-  move, so the flag says bound where the day has become an observation.
+* [x] **X-az** `488e8dd2` a settle day says HOW it is known, closing **N-332**, opening **N-334**.
+  `settled_day_basis_id` on BOTH tables carrying `settled_on`, a `SettleDay(day, basis)` through
+  every door, `ck_transactions_settle_day_needs_basis` renamed `..._needs_a_record` (it is the
+  FIGURE's). `$0.00`. **A LATER leaf must obey**: the pairing is a BICONDITIONAL, not this
+  section's implication -- a day and its basis share ONE lifetime; and a form-RESUBMITTED day is an
+  ECHO that may not restate its basis, which cost `$4,173.07` over 59 of 66 rows before it did.
 
 ## 6. The findings ledger
 
