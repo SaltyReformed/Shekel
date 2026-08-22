@@ -15,6 +15,14 @@
    five seconds, which is not where a sentence naming work still to do
    belongs.
 
+   **Every form here swaps with ``show:top``, and that is load-bearing.**  The
+   POST re-renders this WHOLE body and the receipt is the panel at its top,
+   while the buttons that trigger it sit up to nine screens down a 14,479px
+   page -- and htmx does not scroll on swap.  Measured 2026-08-21: the outcome
+   card rendered at viewport y=-1268 with scrollY unchanged, so a door that
+   worked and answered looked inert, and the developer reported it as the
+   button doing nothing.  A receipt nobody can see is not a receipt.
+
    R-FP -- nothing is applied that the owner did not accept -- is structural
    here: a proposal needs its tick, and a bank line needs its destination
    select moved off "leave this line alone".  There is no state in which an
@@ -189,7 +197,7 @@
         action="{{ url_for('accounts.state_merchant_destinations', account_id=account.id) }}"
         hx-post="{{ url_for('accounts.state_merchant_destinations', account_id=account.id) }}"
         hx-target="#statement-review-body"
-        hx-swap="outerHTML"
+        hx-swap="outerHTML show:top"
         hx-disabled-elt="find button[type=submit]">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="card mb-3">
@@ -323,7 +331,7 @@
         action="{{ url_for('accounts.apply_statement_review', account_id=account.id) }}"
         hx-post="{{ url_for('accounts.apply_statement_review', account_id=account.id) }}"
         hx-target="#statement-review-body"
-        hx-swap="outerHTML"
+        hx-swap="outerHTML show:top"
         hx-disabled-elt="find button[type=submit]"
         data-statement-review-form>
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
@@ -744,7 +752,7 @@
         action="{{ url_for('accounts.apply_statement_review', account_id=account.id) }}"
         hx-post="{{ url_for('accounts.apply_statement_review', account_id=account.id) }}"
         hx-target="#statement-review-body"
-        hx-swap="outerHTML"
+        hx-swap="outerHTML show:top"
         hx-disabled-elt="find button[type=submit]">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="apply" value="hand">
@@ -836,8 +844,20 @@
         </div>
       </div>
     </div>
-    <div class="d-flex justify-content-end mb-3">
-      <button type="submit" class="btn btn-outline-primary">
+    {# **The rule stated where the ACT is, not only in the card above it.**  The
+       door refuses a group whose two sides do not sum to the same figure
+       (``_accept._reject_unbalanced``, the developer's ruling of 2026-08-17),
+       and until now the only warning of that sat in a paragraph two columns and
+       one scroll away.  The refusal it produces is exact and useful -- it names
+       both sums and the difference -- so what was missing is knowing the rule
+       applies BEFORE pressing a button, not after. #}
+    <div class="d-flex justify-content-between align-items-center gap-3 mb-3">
+      <p class="text-body-secondary small mb-0">
+        The ticked lines and the ticked rows must come to the
+        <strong>same total</strong>. If they do not, nothing is changed and the
+        difference is named at the top of this page.
+      </p>
+      <button type="submit" class="btn btn-outline-primary flex-shrink-0">
         Match the ticked lines and rows
       </button>
     </div>

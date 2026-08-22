@@ -63,11 +63,20 @@
               <option value="{{ source.value }}">{{ source.label }}</option>
               {% endfor %}
             </select>
+            {# **It said "with the running-balance column included" as though
+               that were a requirement, and it is not one.**  A file carrying no
+               balance column imports fine -- 376 lines of the developer's own
+               2026-08-20 export did, with `carries_running_balance` false and
+               the self-check simply not run.  Saying "included" sent them
+               hunting an export option their bank had been failing to produce
+               for a month, to satisfy a rule the importer does not enforce.
+               State what the column BUYS and let the owner decide. #}
             <div class="form-text">
-              Export your transactions as CSV <strong>with the running-balance
-              column included</strong>. The running balance is what lets the
-              import check the file against itself; without it a missing line
-              cannot be detected.
+              Export your transactions as CSV. If your bank offers a
+              <strong>running-balance</strong> column, include it: it is what
+              lets the import check the file against itself, so a missing line
+              is caught. Without it the import still works, and that check is
+              simply not available.
             </div>
           </div>
 
