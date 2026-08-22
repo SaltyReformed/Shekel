@@ -658,13 +658,25 @@ class TestOneRequestWorksTheWholeStatement:
             seed_user, an_import(seed_user), amount="2573.43",
             posted_on=seed_user["bootstrap_period"].start_date,
         )
-        bad_row = a_transaction(
-            seed_user, name="Salary", amount="2473.38", income=True,
-        )
+        # **A GROUP, since ruling R-GD (2026-08-22).**  A one-to-one
+        # difference is a CORRECTION now -- the bank's figure names one row and
+        # becomes it -- so the refusal this test is about needs the shape that
+        # still refuses, which is also finding **N-239**'s own: one payroll
+        # deposit against the two rows the app splits it into, with nothing
+        # saying which of them is the five cents wrong.
+        bad_rows = [
+            a_transaction(
+                seed_user, name="Salary", amount="2473.38", income=True,
+            ),
+            a_transaction(
+                seed_user, name="Phone Allowance", amount="100.00",
+                income=True,
+            ),
+        ]
         db.session.commit()
 
         data = _pass(
-            _match(index=0, lines=[bad_line], transactions=[bad_row]),
+            _match(index=0, lines=[bad_line], transactions=bad_rows),
             _match(index=1, lines=[pairs[0][0]], transactions=[pairs[0][1]]),
         )
 
@@ -678,7 +690,7 @@ class TestOneRequestWorksTheWholeStatement:
         assert b"0.05" in response.data, "the refusal lost its own figures"
         db.session.expire_all()
         assert db.session.query(StatementMatch).count() == 1
-        assert bad_row.settled_on is None
+        assert all(row.settled_on is None for row in bad_rows)
 
     def test_the_screen_re_renders_from_AFTER_the_pass(
         self, auth_client, db, seed_user,

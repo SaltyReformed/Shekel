@@ -24,7 +24,7 @@ raise or ``None`` out; no Flask import, no writes.
 from datetime import date
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum
+from app.enums import SettledDayBasisEnum, SettlementBasisEnum
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
 from app.utils.balance_predicates import is_archived
@@ -75,6 +75,40 @@ from app.utils.dates import display_today
 #: ``settled_amount`` / ``settled_basis_id`` are WHAT MOVED -- read one level
 #: down, on the purchase instead of on the row.
 _COST_BEARING_FIELDS = frozenset({"amount", "is_credit"})
+
+
+def cost_fields_changing(valid_updates: dict) -> "frozenset[str]":
+    """Return the fields :func:`_reject_settled_parent` must weigh for one call.
+
+    **Ruling R-GE (2026-08-22): a bank statement's evidence justifies re-costing
+    a settled purchase, and the EVIDENCE IS IN THE CALL.**
+    :data:`_COST_BEARING_FIELDS` exists for a human's second thoughts -- a typed
+    figure with nothing behind it -- and a statement is the opposite of one.  So
+    ``amount`` leaves the refused set exactly when the same submission records a
+    settle day whose basis is ``observed``.
+
+    **What bounds the permission is the BASIS, not a flag a caller asserts**, and
+    that is the whole design: ``observed`` means *the bank showed this money
+    move*, and the statement matcher is its only writer -- the entry PATCH door
+    writes ``entered`` and the reconcile panel ``asserted`` through its own bulk
+    UPDATE.  A caller holding an ``observed`` day HAS the evidence, so the rule
+    needs no second channel and no ordinary edit form can reach it.
+
+    ``is_credit`` is NOT released with it: which side of the card a purchase sat
+    on is not a figure a statement states.
+
+    Args:
+        valid_updates: The submission, already narrowed to updatable fields.
+
+    Returns:
+        The field names to weigh -- every changing field, less ``amount`` where
+        the call carries the bank's own observation.
+    """
+    changing = frozenset(valid_updates)
+    evidence = valid_updates.get("settle_day")
+    if getattr(evidence, "basis", None) is SettledDayBasisEnum.OBSERVED:
+        return changing - {"amount"}
+    return changing
 
 
 def _reject_settled_parent(

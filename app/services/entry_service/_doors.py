@@ -41,6 +41,7 @@ from app.services.entry_service._refusals import (
     _reject_settled_addition,
     _reject_settled_before_purchase,
     _reject_settled_parent,
+    cost_fields_changing,
 )
 from app.utils.balance_predicates import is_cancelled
 # ``is_credit`` from balance_predicates collides with the
@@ -469,7 +470,13 @@ def update_entry(entry_id: int, user_id: int, **kwargs) -> TransactionEntry:
     # Checked after ownership so a non-owner still gets the 404 rather than a
     # message confirming the row exists, exactly as the create door orders its
     # guards.
-    _reject_settled_parent(entry.transaction, frozenset(valid_updates))
+    # **Ruling R-GE**: a statement's evidence may re-cost a settled
+    # purchase, and what bounds the permission is the settle day's own
+    # BASIS rather than a flag -- stated once, beside the constant it
+    # narrows (:func:`cost_fields_changing`).
+    _reject_settled_parent(
+        entry.transaction, cost_fields_changing(valid_updates),
+    )
 
     # The same boundary the create door applies, and only when the caller is
     # actually moving the date -- a partial update that leaves ``purchased_on``

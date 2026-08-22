@@ -140,9 +140,17 @@ class TestARefusedItemDoesNotCostTheOthers:
     def _good_and_bad(seed_user):
         """Return (a match that lands, a match that cannot).
 
-        The bad one is UNBALANCED -- the shape finding **N-239** takes on the
-        developer's own payroll, where the bank shows `$0.05` more than the
-        app's rows sum to.
+        The bad one is an UNBALANCED GROUP -- **finding N-239's own shape**,
+        where the bank shows ONE payroll deposit `$0.05` above what the two app
+        rows it splits into sum to.
+
+        **It was a one-to-one match until ruling R-GD (2026-08-22)**, and had
+        to change with it: a one-to-one difference is no longer a refusal but a
+        CORRECTION, because the bank's figure names exactly one row and simply
+        becomes it.  A GROUP is what still refuses, and it is the shape this
+        docstring always claimed -- nothing says WHICH of the two rows is the
+        five cents wrong, which is the indeterminacy R-FV described and R-GD
+        left standing.
         """
         statement = an_import(seed_user)
         day = seed_user["bootstrap_period"].start_date
@@ -157,22 +165,28 @@ class TestARefusedItemDoesNotCostTheOthers:
             seed_user, statement, amount="2573.43", posted_on=day,
             sequence_in_group=1,
         )
-        bad_row = a_transaction(
-            seed_user, name="Salary", amount="2473.38", income=True,
-        )
-        return (good_line, good_row, bad_line, bad_row)
+        bad_rows = [
+            a_transaction(
+                seed_user, name="Salary", amount="2473.38", income=True,
+            ),
+            a_transaction(
+                seed_user, name="Phone Allowance", amount="100.00",
+                income=True,
+            ),
+        ]
+        return (good_line, good_row, bad_line, bad_rows)
 
     def test_the_good_one_lands_and_the_bad_one_is_quoted(
         self, app, db, seed_user,
     ):
         """One pass, two outcomes, and the refusal keeps its own sentence."""
         with app.app_context():
-            good_line, good_row, bad_line, bad_row = self._good_and_bad(
+            good_line, good_row, bad_line, bad_rows = self._good_and_bad(
                 seed_user,
             )
 
             outcome = _batch(seed_user, matches=[
-                _match(seed_user, lines=[bad_line], transactions=[bad_row]),
+                _match(seed_user, lines=[bad_line], transactions=bad_rows),
                 _match(seed_user, lines=[good_line], transactions=[good_row]),
             ])
 
@@ -196,10 +210,10 @@ class TestARefusedItemDoesNotCostTheOthers:
         named here fail.
         """
         with app.app_context():
-            _, good_row, bad_line, bad_row = self._good_and_bad(seed_user)
+            _, good_row, bad_line, bad_rows = self._good_and_bad(seed_user)
 
             _batch(seed_user, matches=[
-                _match(seed_user, lines=[bad_line], transactions=[bad_row]),
+                _match(seed_user, lines=[bad_line], transactions=bad_rows),
                 _match(
                     seed_user,
                     lines=[db.session.query(
@@ -210,7 +224,7 @@ class TestARefusedItemDoesNotCostTheOthers:
             ])
             db.session.flush()
 
-            assert bad_row.settled_on is None
+            assert all(row.settled_on is None for row in bad_rows)
             assert good_row.settled_on is not None
             assert db.session.query(StatementMatch).count() == 1
 
