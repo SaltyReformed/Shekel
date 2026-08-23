@@ -87,7 +87,7 @@ def _row(row_id, amount, settled_on=_DAY, is_settled=True, label=None,
     return CandidateRow(
         kind=RowKind.TRANSACTION, row_id=row_id,
         label=label or f"row {row_id}", cash_amount=Decimal(amount),
-        settled_on=settled_on, is_settled=is_settled,
+        settled_on=settled_on, is_settled=is_settled, states_own_figure=True,
         expected_on=period[0], expected_through=period[1],
     )
 
@@ -103,7 +103,7 @@ def _bill(row_id, amount, period=_PERIOD, label=None):
     return CandidateRow(
         kind=RowKind.TRANSACTION, row_id=row_id,
         label=label or f"bill {row_id}", cash_amount=Decimal(amount),
-        settled_on=None, is_settled=False,
+        settled_on=None, is_settled=False, states_own_figure=True,
         expected_on=period[0], expected_through=period[1],
     )
 
@@ -132,6 +132,7 @@ class TestTheWindowAccessorItself:
         purchase = CandidateRow(
             kind=RowKind.PURCHASE, row_id=1, label="Kroger",
             cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
+            states_own_figure=True,
             parent_id=900, expected_on=_DAY, expected_through=_DAY,
         )
 
@@ -150,6 +151,7 @@ class TestTheWindowAccessorItself:
         half = CandidateRow(
             kind=RowKind.TRANSACTION, row_id=1, label="Bill",
             cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
+            states_own_figure=True,
             expected_on=_DAY,
         )
 
@@ -167,6 +169,7 @@ class TestTheWindowAccessorItself:
         nowhere = CandidateRow(
             kind=RowKind.TRANSACTION, row_id=1, label="Bill",
             cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
+            states_own_figure=True,
         )
 
         assert nowhere.expected_window is None
@@ -314,7 +317,7 @@ class TestAPurchaseIsNotOfferedBeforeItWasMade:
         return CandidateRow(
             kind=RowKind.PURCHASE, row_id=row_id, label="Kroger",
             cash_amount=Decimal(amount), settled_on=settled_on,
-            is_settled=settled_on is not None,
+            is_settled=settled_on is not None, states_own_figure=True,
             parent_id=900, expected_on=purchased_on,
         )
 
@@ -402,7 +405,8 @@ class TestAPurchaseIsNotOfferedBeforeItWasMade:
             [CandidateRow(
                 kind=RowKind.TRANSACTION, row_id=10, label="Bill",
                 cash_amount=Decimal("-25.00"), settled_on=None,
-                is_settled=False, expected_on=date(2026, 5, 8),
+                is_settled=False,
+                states_own_figure=True, expected_on=date(2026, 5, 8),
             )],
         )
 
@@ -724,7 +728,7 @@ class TestTheGroupSearchSaysWhatItSkipped:
     def test_a_group_may_not_hold_a_row_the_ACCEPT_DOOR_would_refuse(self):
         """The per-MEMBER half, and what is left of it.
 
-        ``_groups`` re-asks :func:`~._propose._within_window` of every member.
+        ``_groups`` re-asks :func:`~._pairing.within_window` of every member.
         Since :func:`~._propose._day_buckets` widens by the same
         :data:`DAY_WINDOW`, the window half of that test is now implied by
         membership -- what it still refuses on its own is the PURCHASE FLOOR:
@@ -744,7 +748,7 @@ class TestTheGroupSearchSaysWhatItSkipped:
         unreachable = CandidateRow(
             kind=RowKind.PURCHASE, row_id=600, label="Kroger",
             cash_amount=Decimal("-1000.00"), settled_on=None,
-            is_settled=False, parent_id=900,
+            is_settled=False, states_own_figure=True, parent_id=900,
             expected_on=_DAY + timedelta(days=3),
             expected_through=_DAY + timedelta(days=3),
         )
@@ -762,7 +766,7 @@ class TestTheGroupSearchSaysWhatItSkipped:
         """The bucket and the pair test apply the SAME slack, or they disagree.
 
         A bill budgeted 2026-08-13..08-26 and paid on 08-30 beside a settled
-        partner is legal for the line (:func:`~._propose._within_window`
+        partner is legal for the line (:func:`~._pairing.within_window`
         widens the window by :data:`DAY_WINDOW`) -- and was unbuildable into a
         group while the bucket used the unwidened window, so the proposal
         vanished with nothing to report it.  A bound only one of two passes
@@ -820,7 +824,8 @@ class TestTheGroupSearchSaysWhatItSkipped:
         purchase = CandidateRow(
             kind=RowKind.PURCHASE, row_id=600, label="Kroger",
             cash_amount=Decimal("-1000.00"), settled_on=None,
-            is_settled=False, parent_id=900, expected_on=_DAY,
+            is_settled=False,
+            states_own_figure=True, parent_id=900, expected_on=_DAY,
             expected_through=_DAY,
         )
         target = dated[0].cash_amount + purchase.cash_amount
@@ -832,7 +837,7 @@ class TestTheGroupSearchSaysWhatItSkipped:
         elsewhere = CandidateRow(
             kind=RowKind.PURCHASE, row_id=601, label="Kroger",
             cash_amount=Decimal("-1000.00"), settled_on=None,
-            is_settled=False, parent_id=900,
+            is_settled=False, states_own_figure=True, parent_id=900,
             expected_on=date(2026, 7, 1), expected_through=date(2026, 7, 1),
         )
         assert _offers(
@@ -921,6 +926,7 @@ class TestTheFloorIsAppliedPerPAIRAndNotPerAmountGroup:
         return CandidateRow(
             kind=RowKind.PURCHASE, row_id=10, label="Kroger",
             cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
+            states_own_figure=True,
             parent_id=900, expected_on=made_on,
         )
 
@@ -982,6 +988,7 @@ class TestAnUndatedPurchaseIsBoundedByTheDayItWasMADE:
         return CandidateRow(
             kind=RowKind.PURCHASE, row_id=10, label="Kroger",
             cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
+            states_own_figure=True,
             parent_id=900, expected_on=made_on,
         )
 
@@ -1139,12 +1146,14 @@ class TestAnUnsettledBillIsBoundedByItsPayPeriod:
         made_early = CandidateRow(
             kind=RowKind.PURCHASE, row_id=1, label="Kroger",
             cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
+            states_own_figure=True,
             parent_id=900, expected_on=date(2026, 4, 21),
             expected_through=date(2026, 4, 21),
         )
         made_late = CandidateRow(
             kind=RowKind.PURCHASE, row_id=2, label="Kroger",
             cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
+            states_own_figure=True,
             parent_id=900, expected_on=date(2026, 5, 7),
             expected_through=date(2026, 5, 7),
         )
@@ -1378,6 +1387,7 @@ def _ticked(row_id, amount, made_on, asserted_for, label=None):
         kind=RowKind.PURCHASE, row_id=row_id,
         label=label or f"Groceries: purchase {row_id}",
         cash_amount=Decimal(amount), settled_on=asserted_for, is_settled=True,
+        states_own_figure=True,
         parent_id=900, expected_on=made_on, expected_through=made_on,
         settle_day_basis=SettledDayBasisEnum.ASSERTED,
     )

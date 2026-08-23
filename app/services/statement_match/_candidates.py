@@ -62,7 +62,8 @@ from app.utils.balance_predicates import (
     not_archived_clause,
 )
 
-from ._offers import CandidateRow, Candidates, PurchaseDestination, RowKind
+from ._creations import PurchaseDestination
+from ._offers import CandidateRow, Candidates, RowKind
 
 
 @dataclass(frozen=True)
@@ -331,6 +332,15 @@ def purchase_candidate(entry: TransactionEntry) -> CandidateRow:
         cash_amount=-Decimal(str(entry.amount)),
         settled_on=entry.settled_on,
         is_settled=entry.settled_on is not None,
+        # **A purchase always states its own figure.**  The two shapes whose
+        # amount is a fact about another row are both TRANSACTIONS -- an
+        # envelope worth its purchases and a payback worth the spend it repays
+        # -- and a purchase is what those rows are made OF.  Ruling **R-GE** is
+        # what lets a match correct one even under a settled parent, and it
+        # bounds that permission by the DOOR rather than by the row, so nothing
+        # here narrows it further.  See
+        # :attr:`~._offers.CandidateRow.figure_is_correctable`.
+        states_own_figure=True,
         parent_id=entry.transaction_id,
         # A purchase's budget clock is ONE day, so both ends of its window are
         # that day: it is not undated, it is dated on a clock the cash column
@@ -390,6 +400,36 @@ def transaction_candidate(
         cash_amount=amount,
         settled_on=txn.settled_on,
         is_settled=txn.status.is_settled,
+        # **The not-its-own-figure census, stated ONCE and here, because both
+        # members are load-bearing and one of them was missed** (plan step
+        # ``bank_import:X-f6d-1``).  ``transaction_service`` publishes exactly
+        # two predicates for *this figure is not this row's to state* and they
+        # are siblings by that module's own docstring: an ENVELOPE derives its
+        # figure from the purchases recorded against it, and a CC PAYBACK from
+        # the card spend of the row it names.  Correcting either writes a
+        # number the next sibling write silently reverts (finding **N-252**),
+        # and the transaction door's own backstop (``_correction_for_status``)
+        # refuses only the FIRST -- a payback is refused at the PATCH route
+        # instead -- so a door reaching it from here would have written a
+        # ``corrected`` record onto a figure that is a fact about another row.
+        # Measured by the batch suite's own stale-price case, which booked
+        # `-60.00` against a payback re-derived to `50.00`.
+        #
+        # A transfer SHADOW is the third member of that class and is NOT
+        # folded in: ``transfer_id`` beside it already states it, and what the
+        # owner must do about one is different (change the transfer, not a
+        # purchase), which is why the accept door gives it its own sentence.
+        # :attr:`~._offers.CandidateRow.figure_is_correctable` is where the two
+        # facts are read together.
+        #
+        # Neither predicate costs a query: ``_transaction_candidates`` eager
+        # loads both ``entries`` and ``template``, which are all
+        # ``settles_from_entries`` reads, and ``repays_card_spend`` is a plain
+        # column.
+        states_own_figure=not (
+            transaction_service.repays_card_spend(txn)
+            or transaction_service.settles_from_entries(txn)
+        ),
         transfer_id=txn.transfer_id,
         expected_on=period.start_date,
         expected_through=period.end_date,
@@ -790,7 +830,7 @@ def destinations_for(
         account_id: The cash account the statement is for.
 
     Returns:
-        One :class:`~._offers.PurchaseDestination` per offerable row, oldest
+        One :class:`~._creations.PurchaseDestination` per offerable row, oldest
         pay period first and then by name -- a deterministic order, so the
         chooser a screen shows does not depend on what the planner returned.
     """

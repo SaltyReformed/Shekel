@@ -70,7 +70,8 @@ from app.extensions import db
 
 from ._accept import accept_match
 from ._create import MintedEnvelopes, create_purchase_from_line
-from ._offers import MatchSubmission, PurchaseCreation
+from ._creations import PurchaseCreation
+from ._offers import MatchSubmission
 from ._scope import ReviewScope
 
 
@@ -79,7 +80,7 @@ class ReviewedBatch:
     """What the owner ticked, in the order the screen showed it.
 
     Ids only, exactly as :class:`~._offers.MatchSubmission` and
-    :class:`~._offers.PurchaseCreation` are: every figure and every day is
+    :class:`~._creations.PurchaseCreation` are: every figure and every day is
     re-derived from the rows the ids name, inside the same transaction, so a
     stale page cannot commit a number the database no longer holds.
 
@@ -148,8 +149,16 @@ class RefusedItem:
 
 
 @dataclass(frozen=True)
-class BatchOutcome:
+class BatchOutcome:  # pylint: disable=too-many-instance-attributes
     """What a whole reviewed pass did.
+
+    Pylint: too-many-instance-attributes (8/7) -- **eight because a pass
+    receipt has eight things to say**, and the eighth is
+    ``repriced_count``, which is what stopped this panel rendering
+    *"Nothing moved."* over a rewritten figure (2026-08-22).  Dropping a
+    count to satisfy a limit is how that sentence came to be false.
+    :class:`~._accept.AcceptedMatch` carries the same disable for the same
+    reason.
 
     Attributes:
         applied: The acts that landed, in the order they were applied.
@@ -159,6 +168,13 @@ class BatchOutcome:
             has still done everything it could.
         settled_count: How many rows the pass marked as having happened.
         corrected_count: How many settled rows had a day moved onto the bank's.
+        repriced_count: How many rows had their FIGURE moved onto the bank's
+            (:attr:`~._accept.AcceptedMatch.repriced_count`).  **Without it
+            :attr:`moved_nothing` was FALSE rather than merely quiet**: a
+            repricing whose row already carried the bank's day reports
+            ``unchanged`` on every day count, so a pass that rewrote what a
+            payment cost rendered *"Nothing moved."*  Found by adversarial
+            design review 2026-08-22.
         redated_count: How many purchases had their PURCHASE day corrected
             (ruling **R-FW**).
         recorded_count: How many bank lines became a purchase the app did not
@@ -171,6 +187,7 @@ class BatchOutcome:
     settled_count: int
     corrected_count: int
     redated_count: int
+    repriced_count: int
     recorded_count: int
     envelopes_created: int
 
@@ -198,6 +215,7 @@ class BatchOutcome:
             self.settled_count
             or self.corrected_count
             or self.redated_count
+            or self.repriced_count
             or self.recorded_count
         )
 
@@ -233,6 +251,15 @@ def _match_summary(accepted) -> str:
     if accepted.redated_count:
         did.append(
             f"corrected the purchase date on {accepted.redated_count} row(s)"
+        )
+    # **The AMOUNT, and it is named LAST because it is the one thing here that
+    # changes what money was SPENT** rather than when it moved.  Without it a
+    # repricing on a row already carrying the bank's day fell through to
+    # "confirmed what you already had" -- a sentence that was not merely silent
+    # but false.
+    if accepted.repriced_count:
+        did.append(
+            f"corrected the amount on {accepted.repriced_count} row(s)"
         )
     what = " and ".join(did) if did else "confirmed what you already had"
     return (
@@ -278,8 +305,12 @@ def _created_summary(recorded) -> str:
 
 
 @dataclass
-class _Tally:
+class _Tally:  # pylint: disable=too-many-instance-attributes
     """The running receipt one pass builds.
+
+    Pylint: too-many-instance-attributes (8/7) -- it accumulates exactly
+    the counters :class:`BatchOutcome` publishes, so it carries that
+    class's disable for that class's reason.
 
     Mutable and private, because it IS the loop's accumulator; what leaves this
     module is the frozen :class:`BatchOutcome` built from it.
@@ -290,6 +321,7 @@ class _Tally:
     settled: int = 0
     corrected: int = 0
     redated: int = 0
+    repriced: int = 0
     recorded: int = 0
     envelopes: int = 0
 
@@ -400,6 +432,7 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
         tally.settled += accepted.settled_count
         tally.corrected += accepted.corrected_count
         tally.redated += accepted.redated_count
+        tally.repriced += accepted.repriced_count
         tally.applied.append(AppliedItem(
             line_ids=line_ids, summary=_match_summary(accepted),
         ))
@@ -433,6 +466,7 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
         settled_count=tally.settled,
         corrected_count=tally.corrected,
         redated_count=tally.redated,
+        repriced_count=tally.repriced,
         recorded_count=tally.recorded,
         envelopes_created=tally.envelopes,
     )

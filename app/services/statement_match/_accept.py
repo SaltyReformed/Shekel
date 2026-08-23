@@ -47,7 +47,7 @@ parent/child guard, where there were two queries answering the same question.
 
 **This door applies no DATE bound, and that asymmetry is deliberate.**  The
 proposer refuses to OFFER a pairing outside the row's own window
-(``_propose._within_window``, ruling **R-FY**); the hand-build form on the
+(``_pairing.within_window``, ruling **R-FY**); the hand-build form on the
 review screen exists precisely so an owner may assert a grouping the proposer
 would not guess, so refusing one here on a date would refuse the act ruling
 **R-FP** reserves to them.  What this door does enforce is the SCOPE: every id
@@ -118,8 +118,16 @@ _logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class AcceptedMatch:
+class AcceptedMatch:  # pylint: disable=too-many-instance-attributes
     """What accepting one match did.
+
+    Pylint: too-many-instance-attributes (8/7) -- **eight because a receipt
+    for this act has eight things to say**, not because the value wants
+    splitting.  The eighth is ``repriced_count``, and it is the one that made
+    the panel say *"Nothing moved."* about a rewritten figure until
+    2026-08-22; dropping a count to satisfy a limit is how that sentence came
+    to be false in the first place.  ``CandidateRow`` carries the same disable
+    for the same reason.
 
     Attributes:
         match_id: The ``budget.statement_matches`` row recording the act.
@@ -135,6 +143,16 @@ class AcceptedMatch:
             correction is in neither, and reporting it as "corrected" would
             claim work that did not happen.
         line_count: How many bank lines the act explains.
+        repriced_count: How many member rows had their FIGURE moved onto the
+            bank's (ruling **R-GD(a)**, plan step ``bank_import:X-f6d-1``).
+            **It cuts ACROSS the day partition exactly as ``redated_count``
+            does, and for a sharper reason**: a repricing whose row already
+            carried the bank's day reports ``unchanged`` on every day count, so
+            without this the receipt said *"confirmed what you already had"*
+            about a request that had just rewritten what a payment cost.  The
+            day counts are silent there and the SENTENCE was false, which is
+            worse than the silence ``redated_count`` was added to fix.  Found
+            by adversarial design review 2026-08-22.
         redated_count: How many member PURCHASES had their purchase day moved
             onto the bank's (ruling **R-FW**).  **It cuts ACROSS the partition
             above rather than joining it**, and it has to: a purchase that was
@@ -154,6 +172,7 @@ class AcceptedMatch:
     corrected_count: int
     line_count: int
     redated_count: int
+    repriced_count: int
 
 
 def load_lines(
@@ -401,34 +420,6 @@ def _reject_parent_and_its_own_purchase(
         )
 
 
-def _figure_is_not_its_own(row: CandidateRow) -> bool:
-    """Return whether *row*'s amount is a fact about some OTHER row.
-
-    **The census, stated once because both members are load-bearing and one of
-    them was missed.**  ``transaction_service`` publishes exactly two
-    predicates for *this figure is not this row's to state* and they are
-    siblings by that module's own docstring: an ENVELOPE derives its figure
-    from the purchases recorded against it, and a CC PAYBACK from the card
-    spend of the row it names.  Correcting either writes a number the next
-    sibling write silently reverts (finding **N-252**).
-
-    A transfer SHADOW is the third member of the class and is NOT here: it is
-    refused by its own clause with its own sentence, because what a user must
-    do about it is different (change the transfer, not a purchase).
-
-    Args:
-        row: The member row, which must be a TRANSACTION.
-
-    Returns:
-        True when no figure submitted for it could survive.
-    """
-    txn = db.session.get(Transaction, row.row_id)
-    return (
-        transaction_service.settles_from_entries(txn)
-        or transaction_service.repays_card_spend(txn)
-    )
-
-
 def _reject_uncorrectable(
     lines: "list[BankStatementLine]", rows: "list[CandidateRow]",
 ) -> None:
@@ -450,20 +441,16 @@ def _reject_uncorrectable(
       nothing saying WHICH is wrong -- ruling **R-FV**'s reason, undisturbed by
       R-GD, whose remedy is **R-FN**'s ordinary accepted row rather than a
       figure this door picks for a member;
-    * a row whose FIGURE IS NOT ITS OWN TO STATE.  Two published predicates
-      answer that and BOTH are asked, because asking only the first ships a
-      defect: an ENVELOPE derives its figure from its purchases
-      (``transaction_service.settles_from_entries``) and a CC PAYBACK from the
-      row it repays (``transaction_service.repays_card_spend``), and a
-      correction written to either is reverted by the next sibling write --
-      finding **N-252**'s mechanism.  The transaction door's own backstop
-      (``_correction_for_status``) refuses only the FIRST of the two, the
-      payback being refused at the PATCH route instead, so a door reaching it
-      from here would have written a ``corrected`` record onto a figure that is
-      a fact about another row.  Measured by the batch suite's own stale-price
-      case, which booked `-60.00` against a payback re-derived to `50.00`.  A
-      difference on either says a PURCHASE is missing or wrong, which is a
-      different repair on a different row;
+    * a row whose FIGURE IS NOT ITS OWN TO STATE, which the row now SAYS
+      (:attr:`~._offers.CandidateRow.states_own_figure`) rather than this door
+      re-deriving.  A difference on one says a PURCHASE is missing or wrong,
+      which is a different repair on a different row.  **The census that
+      answers it is TWO published predicates and it moved to the candidate
+      constructor at plan step X-f6d-1**, because the PROPOSER has to ask the
+      same question and is pure: a near miss offered on such a row is an
+      Accept button that can never succeed.  Two derivations of one refusal on
+      a money gate is this arc's own root cause 1, and the argument for both
+      members lives where the fact is now built;
     * a transfer SHADOW.  ``CLAUDE.md`` transfer invariant 3 holds a shadow's
       amount equal to its parent's, so correcting one means correcting the
       TRANSFER, which is not this door;
@@ -510,7 +497,7 @@ def _reject_uncorrectable(
             f"{app_side:+,.2f}.  A transfer's two halves must stay equal, so "
             f"change the transfer itself and then match it." + nothing
         )
-    if row.kind is RowKind.TRANSACTION and _figure_is_not_its_own(row):
+    if row.kind is RowKind.TRANSACTION and not row.states_own_figure:
         raise ValidationError(
             f"These do not add up.  Your bank shows {bank:+,.2f} and this row "
             f"is {app_side:+,.2f}.  This row is worth whatever its purchases "
@@ -831,9 +818,14 @@ def record_match(
     # ``bank_cash_for`` answers only where the figure names a single row, so a
     # group's members are handed ``None`` and keep their own figures.
     bank_cash = bank_cash_for(lines, rows)
+    # Read BEFORE the writes, exactly as ``redated_count`` is and for the same
+    # reason: once a settle door has taken the bank's figure the row agrees
+    # with it, so counting afterwards would report zero every time.
+    figures = [corrected_figure(row, bank_cash) for row in ordered]
+    repriced_count = sum(1 for figure in figures if figure is not None)
     outcomes = [
-        _apply_day(row, owner_id, days, corrected_figure(row, bank_cash))
-        for row in ordered
+        _apply_day(row, owner_id, days, figure)
+        for row, figure in zip(ordered, figures, strict=True)
     ]
     match = _record(owner_id, account_id, lines, rows)
 
@@ -846,6 +838,7 @@ def record_match(
         corrected_count=outcomes.count("corrected"),
         line_count=len(lines),
         redated_count=redated_count,
+        repriced_count=repriced_count,
     )
     log_event(
         _logger, logging.INFO, EVT_STATEMENT_MATCHED, BUSINESS,
@@ -860,6 +853,7 @@ def record_match(
         settled_count=accepted.settled_count,
         corrected_count=accepted.corrected_count,
         redated_count=accepted.redated_count,
+        repriced_count=accepted.repriced_count,
     )
     return accepted
 

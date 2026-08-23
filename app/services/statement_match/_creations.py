@@ -1,0 +1,212 @@
+"""What a CREATION is, as values -- a bank line BECOMING a budget row.
+
+Ruling **R-FS**'s THIRD shape, split out of :mod:`._offers` at plan step
+``bank_import:X-f6d-1``.  That module answers *what a MATCH is* -- a
+correspondence between lines the bank recorded and rows the app already holds
+-- and these five names answer a different question: *what the owner may ask
+this import to CREATE*, and where.  Two subjects, two reasons to change, and
+the package already draws that seam one tier up in :mod:`._accept` against
+:mod:`._create`.
+
+**The split is a line cap made useful rather than worked around.**  Adding the
+fact a scored near miss needs (:attr:`~._offers.CandidateRow.states_own_figure`)
+took :mod:`._offers` past this project's 1,000-line module bound, and the two
+honest answers to that are to cut the record or to cut the module.  Nothing
+here changed on the way across.
+
+**The argument is the SUBJECT and not the import graph, and a first draft of
+this header got that wrong.**  It claimed the consumers were disjoint from the
+matching ones; the tree refutes it -- five of the six modules that take a name
+from here take one from :mod:`._offers` too, because a review screen is about
+both a match and a creation.  An unmeasured claim in a header is this package's
+own root cause 1, found by adversarial design review 2026-08-22.
+
+Services-boundary discipline (``CLAUDE.md`` Architecture): frozen dataclasses,
+no Flask import, no query, no clock read.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date
+
+
+@dataclass(frozen=True)
+class PurchaseDestination:  # pylint: disable=too-many-instance-attributes
+    """One budget line a bank line could BECOME a purchase against.
+
+    Plan step ``bank_import:X-f6a-3b``.  The offered set is
+    :func:`~._reads.destinations_for`'s, and it mirrors every guard
+    ``entry_service.create_entry`` and :func:`~._accept.accept_match` apply --
+    so the screen cannot render a destination whose submission is refused,
+    which is the failure this arc has now fixed three times.
+
+    Pylint: too-many-instance-attributes -- **eight because a destination
+    genuinely states eight things** (8/7), and three of them are what a merchant
+    policy has to MATCH on rather than display: the name, the category, and
+    whether a recurring definition owns the row.  ``StatementLine``,
+    ``CandidateRow`` and ``CreatedPurchase`` carry the same disable for the same
+    reason.
+
+    Attributes:
+        transaction_id: The budget line.
+        name: The row's OWN name, unlabelled -- what a merchant policy's stated
+            envelope name is compared against (plan step
+            ``bank_import:X-f6a-4``, finding **N-327**), so that a second
+            statement files into the envelope the first one created instead of
+            minting another beside it.
+        category_id: The category it files under.  **A policy's answer is a
+            NAME AND a category and both are part of what it names**: two
+            answers spelling one word under two categories are two budget
+            lines, and reusing one for the other would file spending under a
+            category the owner did not pick.  The within-press registry
+            (:class:`~._create.MintedEnvelopes`) keys on it, and a first draft
+            of the cross-statement half compared the name alone -- so the two
+            halves of one rule disagreed, which is what this column being here
+            makes impossible.
+        period_start / period_end: Its pay period's span, from which
+            :attr:`label` is derived.
+        pay_period_id: The period it is budgeted under, so a caller can offer
+            the line's OWN period first without re-reading the calendar.
+        is_settled: Whether it has already closed.  Adding to a closed row
+            raises what that row RECORDS as its cost, which is a bigger thing
+            to do than filling in an open budget, so the screen says which it
+            is rather than leaving the reviewer to know.
+        template_id: The recurring definition this row was generated from, or
+            ``None`` for an ad-hoc one.  **It is the row's identity ACROSS pay
+            periods, and that is what a merchant destination policy is keyed
+            on** (plan step ``bank_import:X-f6a-3d``): a policy cannot name
+            ``transaction_id`` -- an envelope belongs to one period, and the 24
+            unexplained Amazon lines on the developer's own statement fall in
+            ten of them -- and it cannot name the NAME either, because template
+            22 generated a row called ``Kayla`` in one period and ``Kayla's
+            Spending Money`` in the other 60.  ``None`` is a real answer and it
+            means this row can hold a purchase but can never be a POLICY's
+            destination, because there is nothing period-independent to
+            remember about it.
+    """
+
+    transaction_id: int
+    name: str
+    category_id: int
+    period_start: date
+    period_end: date
+    pay_period_id: int
+    is_settled: bool
+    template_id: "int | None" = None
+
+    @property
+    def label(self) -> str:
+        """Return what to call this destination on screen.
+
+        The same envelope name recurs every period, so a reviewer picking a
+        destination for a May swipe has to see which May it is.
+
+        **DERIVED rather than stored beside its source**, which is the rule
+        :attr:`~._offers.MatchProposal.posts_on` states one class over: a
+        second spelling could let the screen print one row's name while a
+        policy matched another's.
+        """
+        return f"{self.name} ({self.period_start} - {self.period_end})"
+
+
+def envelope_answer_key(
+    new_envelope: NewEnvelope, pay_period_id: int,
+) -> "tuple[str, int, int]":
+    """Return what identifies ONE new-envelope answer in ONE pay period.
+
+    **The one spelling of "the same envelope this answer means"**, and it lives
+    here beside :class:`NewEnvelope` because the two callers are in different
+    packages' modules: :class:`~._create.MintedEnvelopes` writes it as a press
+    mints envelopes, and :func:`~._reads._marked_joining` reads it to say which
+    line CREATES and which JOINS.  A first version spelled the tuple twice, in
+    those two modules, which is exactly the silent drift a key stated once
+    prevents -- a mismatch converges nothing and raises nothing.
+
+    All three terms are load-bearing.  The NAME and the CATEGORY are what the
+    owner's answer states, and two answers spelling one word under two
+    categories are two budget lines.  The PERIOD is what an envelope belongs
+    to, so converging on the name alone would file a March swipe into an April
+    budget line.
+
+    Args:
+        new_envelope: The answer the owner stated.
+        pay_period_id: The period the purchase is budgeted in.
+
+    Returns:
+        ``(name, category_id, pay_period_id)``.
+    """
+    return (new_envelope.name, new_envelope.category_id, pay_period_id)
+
+
+#: What the destination select submits for the create-a-new-envelope arm, and
+#: the ONE definition of it.
+#:
+#: **It lives in the service because the service PRODUCES it**:
+#: :attr:`~._policy.Placement.select_value` answers what a line's control would
+#: be set to, so the value is part of what this package says rather than only
+#: something a schema reads.  ``app.schemas.validation.statements`` imports it
+#: -- the direction that module already takes for
+#: ``statement_import.supported_sources`` -- rather than declaring a second
+#: literal, because two spellings of one wire value is a rule stated twice and
+#: this package's own root cause 1.
+NEW_ENVELOPE: str = "new"
+
+
+@dataclass(frozen=True)
+class NewEnvelope:
+    """A budget line the import is being asked to CREATE for a bank line.
+
+    Only the two facts an owner can state about spending the plan did not
+    anticipate.  What it BUDGETS is not one of them -- nothing budgeted it, so
+    the figure is ``0.00`` and :mod:`._create` writes it rather than accepting
+    it, which keeps a form from proposing that unplanned spending was planned.
+
+    Attributes:
+        name: What to call the budget line.  Defaulted from what the bank
+            called the merchant, and editable, because the bank's own words are
+            the only description of this spending that exists.
+        category_id: The owner's category it files under.  A REQUIRED choice
+            and not a default: the bank's ``source_category`` is that bank's
+            opinion about a merchant, governed by no ``ref`` table, and reading
+            it as a Shekel category would be exactly the string-for-id
+            substitution the project-wide reference rule forbids.
+    """
+
+    name: str
+    category_id: int
+
+
+@dataclass(frozen=True)
+class PurchaseCreation:
+    """What the owner submitted to turn one bank line into a purchase.
+
+    Ids and a name, and deliberately no figure and no day: :mod:`._create`
+    takes both days and the amount from the recorded LINE, inside the same
+    transaction, so a stale page cannot commit a number the bank did not state.
+    The same reason :class:`MatchSubmission` carries ids only.
+
+    **Exactly one destination arm is set**, and :mod:`._create` refuses the
+    other two shapes rather than preferring one -- a door that silently picked
+    an arm would record something nobody asked for.
+
+    **It names no OWNER and no ACCOUNT** (plan step ``bank_import:X-f6a-3c-2``).
+    Whose account this is, is the :class:`~._scope.ReviewScope`'s -- one
+    statement, which the route proved once -- and a submission carrying its own
+    pair was a second statement that could disagree with it: an item naming
+    another account would have been priced from this scope and written against
+    that one.  Unreachable through the route, which set both from the same
+    verified ids, and unreachable is not the same as unspellable.  It is the
+    rule :func:`~._candidates.candidates_for` already states for its own
+    signature, applied one tier up.  Named by adversarial design review
+    2026-08-19.
+
+    Attributes:
+        line_id: The bank line to record.
+        transaction_id: An existing envelope to put it in, or ``None``.
+        new_envelope: An envelope to create for it, or ``None``.
+    """
+
+    line_id: int
+    transaction_id: "int | None" = None
+    new_envelope: "NewEnvelope | None" = None

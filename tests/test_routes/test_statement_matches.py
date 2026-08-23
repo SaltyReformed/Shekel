@@ -275,6 +275,68 @@ class TestTheReviewPage:
         assert b"Electricity" in response.data
         assert b"moves the day by 3 day(s)" in response.data
 
+    def test_it_states_the_AMOUNT_a_near_miss_would_correct(
+        self, auth_client, db, seed_user,
+    ):
+        """*bank `$178.29`, your row `$178.32`* -- before anything is pressed.
+
+        Plan step **bank_import:X-f6d-1**, finding **N-335**.  This proposal
+        did not exist at all until this step: the match predicate gated on an
+        exact cent, so the line read as unexplained and the screen's cheapest
+        remaining act recorded it a SECOND time -- `$356.61` booked for one
+        `$178.29` movement.  Offering the pairing without the figures would
+        put a money correction in front of the owner with nothing saying what
+        it was, so all three are asserted.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        a_bank_line(
+            seed_user, statement, amount="-178.29", posted_on=bank_day,
+            description="ACH DEBIT GEICO PREM COLL", merchant="Geico",
+        )
+        a_transaction(
+            seed_user, name="Geico", amount="178.32",
+            status=StatusEnum.DONE, settled_on=bank_day + timedelta(days=4),
+        )
+        db.session.commit()
+
+        response = auth_client.get(_review_url(seed_user["account"].id))
+        body = response.data
+
+        assert response.status_code == 200
+        assert b"corrects the amount from -$178.32 to -$178.29" in body
+        assert b'data-proposal-class="reprice"' in body
+
+    def test_a_line_whose_row_does_not_NAME_the_merchant_is_left_alone(
+        self, auth_client, db, seed_user,
+    ):
+        """The corroboration rule, from the screen (developer, 2026-08-22).
+
+        Measured on a production clone: without it a `Lowe's` swipe pairs with
+        a ``CC Payback: Mint Mobile`` row 0.106% away -- nearer than two
+        genuine `Geico` pairs at 0.180%, so no bound separates them.  The line
+        stays UNEXPLAINED here, which is what keeps it on the
+        create-a-purchase arm rather than consuming it with a pairing the app
+        cannot justify.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        a_bank_line(
+            seed_user, statement, amount="-131.74", posted_on=bank_day,
+            description="POINT OF SALE DEBIT LOWE S #677", merchant="Lowe's",
+        )
+        a_transaction(
+            seed_user, name="Mint Mobile", amount="131.60",
+            status=StatusEnum.DONE, settled_on=bank_day,
+        )
+        db.session.commit()
+
+        body = auth_client.get(_review_url(seed_user["account"].id)).data
+
+        assert b"corrects the amount from" not in body
+        assert b'data-proposal-class=' not in body
+        assert b"POINT OF SALE DEBIT LOWE S #677" in body
+
     def test_it_names_the_purchase_date_it_would_CORRECT(
         self, auth_client, db, seed_user,
     ):
@@ -348,6 +410,37 @@ class TestTheReviewPage:
 
         assert b"older than your pay calendar" in response.data
 
+    def test_it_names_the_near_misses_it_would_not_CHOOSE_between(
+        self, auth_client, db, seed_user,
+    ):
+        """A score that withholds is a bound, and a silent bound is a sweep.
+
+        Plan step **bank_import:X-f6d-1**.  Two rows of the owner's sit the
+        same distance from one line and both name its merchant, so the pass
+        declines to pick -- *an ambiguous proposal is a question dressed as an
+        answer*.  Saying nothing would leave the line looking like one nothing
+        could explain, which is the state the merchant policy offers to RECORD
+        and the duplicate this whole step exists to stop.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        a_bank_line(
+            seed_user, statement, amount="-178.29", posted_on=bank_day,
+            description="ACH DEBIT GEICO PREM COLL", merchant="Geico",
+        )
+        for suffix in ("Auto", "Home"):
+            a_transaction(
+                seed_user, name=f"Geico {suffix}", amount="178.32",
+                status=StatusEnum.DONE, settled_on=bank_day,
+            )
+        db.session.commit()
+
+        body = auth_client.get(_review_url(seed_user["account"].id)).data
+
+        assert b"1 line(s) have a row of yours" in body
+        assert b"not one this page would pick for you" in body
+        assert b'data-proposal-class=' not in body
+
 
 class TestTheAcceptPost:
     """The write door, end to end through HTTP."""
@@ -376,6 +469,46 @@ class TestTheAcceptPost:
         assert b"onto the bank&#39;s day" in response.data
         db.session.expire_all()
         assert txn.settled_on == bank_day
+
+    def test_a_NEAR_MISS_the_page_offered_can_actually_be_ACCEPTED(
+        self, auth_client, db, seed_user,
+    ):
+        """The end-to-end proof that this tier ships no dead Accept button.
+
+        Plan step **bank_import:X-f6d-1**.  The proposer's own leaf was
+        ordered SECOND for exactly this reason: ``_reject_unbalanced`` sat on
+        the single accept path, so a near miss offered before ``X-f6d-2``
+        landed would have been a proposal whose Accept was guaranteed to fail.
+        This walks the whole path -- the page offers it, the tick posts it, the
+        row takes the bank's figure and the bank's day -- because a service
+        test on either half alone cannot see a mismatch between them.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(
+            seed_user, statement, amount="-178.29", posted_on=bank_day,
+            description="ACH DEBIT GEICO PREM COLL", merchant="Geico",
+        )
+        txn = a_transaction(
+            seed_user, name="Geico", amount="178.32",
+            status=StatusEnum.DONE, settled_on=bank_day + timedelta(days=4),
+        )
+        db.session.commit()
+
+        offered = auth_client.get(_review_url(seed_user["account"].id))
+        assert b"corrects the amount from -$178.32 to -$178.29" in (
+            offered.data
+        )
+
+        response = auth_client.post(
+            _review_url(seed_user["account"].id),
+            data=_match(lines=[line], transactions=[txn]),
+        )
+
+        assert response.status_code == 200
+        db.session.expire_all()
+        assert txn.settled_on == bank_day
+        assert txn.settled_amount == Decimal("178.29")
 
     def test_a_GROUP_posts_the_same_field_twice_and_all_of_it_lands(
         self, auth_client, db, seed_user,
@@ -752,10 +885,16 @@ class TestOneRequestWorksTheWholeStatement:
         """Per-class rather than one "tick all" (developer ruling 2026-08-19).
 
         A proposal either confirms a day the app already had, moves one it got
-        wrong, or marks a row as having happened -- three different acts with
-        three different consequences, so the riskiest is never swept by the
-        same click as the safest.  The classes must SUM to the proposal count,
-        which is the property a caption counting them relies on.
+        wrong, marks a row as having happened, or changes an AMOUNT -- four
+        different acts with four different consequences, so the riskiest is
+        never swept by the same click as the safest.  The classes must SUM to
+        the proposal count, which is the property a caption counting them
+        relies on.
+
+        **The fourth class is plan step ``bank_import:X-f6d-1``** (developer
+        decision 2026-08-22): a near miss moves money rather than only a day,
+        and classing it by its day effect would have put it on the same
+        checkbox as 104 day-only corrections on the developer's own statement.
         """
         statement = an_import(seed_user)
         day = seed_user["bootstrap_period"].start_date
@@ -780,6 +919,17 @@ class TestOneRequestWorksTheWholeStatement:
             sequence_in_group=2,
         )
         a_transaction(seed_user, name="Settles", amount="33.00")
+        # One that changes an AMOUNT: the bank is four cents under the row, and
+        # the row NAMES the merchant the bank recorded, which is what admits a
+        # near miss at all.
+        a_bank_line(
+            seed_user, statement, amount="-44.04", posted_on=day,
+            sequence_in_group=3, merchant="Geico",
+        )
+        a_transaction(
+            seed_user, name="Geico", amount="44.00",
+            status=StatusEnum.DONE, settled_on=day,
+        )
         db.session.commit()
 
         response = auth_client.get(_review_url(seed_user["account"].id))
@@ -788,9 +938,10 @@ class TestOneRequestWorksTheWholeStatement:
         assert b"tick all 1 that only confirm a day you already had" in body
         assert b"tick all 1 that move a day onto the bank" in body
         assert b"tick all 1 that mark a row as having happened" in body
-        # Each proposal is tagged with exactly one class, and the three tags
-        # cover all three proposals.
-        assert body.count(b'data-proposal-class=') == 3
+        assert b"tick all 1 that change an amount onto the bank" in body
+        # Each proposal is tagged with exactly one class, and the four tags
+        # cover all four proposals.
+        assert body.count(b'data-proposal-class=') == 4
 
 
     def test_a_refusal_raised_OUTSIDE_an_item_still_answers_with_the_screen(

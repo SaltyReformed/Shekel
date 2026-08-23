@@ -23,7 +23,7 @@ from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.services import pay_calendar
 from app.services.statement_match import RowKind, candidates_for
-from app.services.statement_match._propose import DAY_WINDOW
+from app.services.statement_match._pairing import DAY_WINDOW
 
 from ._builders import (
     a_basis,
@@ -44,6 +44,105 @@ def _candidate(seed_user, row_id, kind):
     return next(
         (r for r in rows if r.row_id == row_id and r.kind is kind), None,
     )
+
+
+class TestEachRowSaysWhetherItsFigureIsItsOwn:
+    """``states_own_figure``, read off the row that produced it.
+
+    Plan step **bank_import:X-f6d-1**.  The accept door has always refused a
+    correction to a figure that is a fact about ANOTHER row (finding
+    **N-252**), and it re-derived the census per act; the near-miss proposer
+    needs the same answer and is pure, with no session to ask.  So the
+    constructor states it and both read it -- which means the census is graded
+    HERE, once, rather than only through the door's four sentences.
+
+    **The two members are load-bearing and one of them was missed once**:
+    ``transaction_service`` publishes ``settles_from_entries`` AND
+    ``repays_card_spend``, and the transaction door's own backstop refuses only
+    the first.
+    """
+
+    def test_an_ORDINARY_bill_states_its_own_figure(self, app, db, seed_user):
+        """The common shape, and the one a near miss may correct."""
+        txn = a_transaction(seed_user, name="Electricity", amount="180.00")
+        db.session.flush()
+
+        row = _candidate(seed_user, txn.id, RowKind.TRANSACTION)
+
+        assert row.states_own_figure is True
+        assert row.figure_is_correctable is True
+
+    def test_an_ENVELOPE_HOLDING_PURCHASES_does_not(self, app, db, seed_user):
+        """Its figure IS its purchases, so a correction is reverted.
+
+        **Both halves of ``settles_from_entries`` matter**: an envelope with
+        NO entries derives nothing and keeps its own figure, which the case
+        below is the control for.
+        """
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="100.00", is_envelope=True,
+        )
+        a_purchase(seed_user, envelope, amount="25.00")
+        db.session.flush()
+
+        row = _candidate(seed_user, envelope.id, RowKind.TRANSACTION)
+
+        assert row.states_own_figure is False
+        assert row.figure_is_correctable is False
+
+    def test_an_EMPTY_envelope_still_states_its_own(self, app, db, seed_user):
+        """Production's ``Kayla's Spending Money``: envelope-tracked, 0 entries.
+
+        ``tracks_purchases`` alone would claim it and settle it at `$0.00`;
+        the predicate asks for entries too, and this is what says so.
+        """
+        envelope = a_transaction(
+            seed_user, name="Fuel", amount="100.00", is_envelope=True,
+        )
+        db.session.flush()
+
+        row = _candidate(seed_user, envelope.id, RowKind.TRANSACTION)
+
+        assert row.states_own_figure is True
+
+    def test_a_CC_PAYBACK_does_not(self, app, db, seed_user):
+        """The member a first draft of the census MISSED.
+
+        A payback's figure is a fact about the row it repays, and
+        ``entry_credit_workflow.sync_entry_payback`` re-states it on every
+        entry mutation.
+        """
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="100.00", is_envelope=True,
+        )
+        db.session.flush()
+        # No template: ``ck_transactions_one_pricing_link`` admits a recurring
+        # definition OR a payback link, never both -- a payback is priced by
+        # the row it repays.
+        payback = a_transaction(
+            seed_user, name="CC Payback: Groceries", amount="60.00",
+            template=False,
+        )
+        payback.credit_payback_for_id = envelope.id
+        db.session.flush()
+
+        row = _candidate(seed_user, payback.id, RowKind.TRANSACTION)
+
+        assert row.states_own_figure is False
+        assert row.figure_is_correctable is False
+
+    def test_a_PURCHASE_states_its_own_figure(self, app, db, seed_user):
+        """A purchase is what the derived rows are made OF."""
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="100.00", is_envelope=True,
+        )
+        purchase = a_purchase(seed_user, envelope, amount="25.00")
+        db.session.flush()
+
+        row = _candidate(seed_user, purchase.id, RowKind.PURCHASE)
+
+        assert row.states_own_figure is True
+        assert row.figure_is_correctable is True
 
 
 class TestTheWindowEachRowCarries:
@@ -115,7 +214,7 @@ class TestAReconciledDayIsABoundAndNotAnObservation:
     UPPER BOUND on the true posting day"*; a statement match stamps the day the
     bank actually posted.  Measured on the developer's dev database
     2026-08-21: 59 of 61 reconciled purchases sat more than
-    :data:`~app.services.statement_match._propose.DAY_WINDOW` days past their
+    :data:`~app.services.statement_match._pairing.DAY_WINDOW` days past their
     purchase day, so a point at the bound put every one out of reach of its own
     bank line -- and the import recorded **50 duplicate purchases worth
     `$3,590.00`** rather than matching what the app already held.

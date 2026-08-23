@@ -82,22 +82,26 @@ from ._candidates import (
     unmatched_destinations,
 )
 from ._create import CreatedPurchase, create_purchase_from_line
-from ._offers import (
+from ._creations import (
     NEW_ENVELOPE,
+    NewEnvelope,
+    PurchaseCreation,
+    PurchaseDestination,
+)
+from ._offers import (
     BankLine,
     CandidateRow,
     Candidates,
     MatchDays,
     MatchProposal,
     MatchSubmission,
-    NewEnvelope,
-    PurchaseCreation,
-    PurchaseDestination,
     RowKind,
     corrected_purchase_day,
     merchant_label,
 )
-from ._propose import DAY_WINDOW, ProposedMatches, propose
+from ._near import NEAR_MISS_BOUND
+from ._pairing import DAY_WINDOW
+from ._propose import ProposedMatches, propose
 from ._accepted_view import AcceptedGroup, AcceptedRow
 from ._placement import Placement, PlacementKind
 from ._policy import (
@@ -132,6 +136,7 @@ __all__ = [
     "CreatableLine",
     "CreatedPurchase",
     "DAY_WINDOW",
+    "NEAR_MISS_BOUND",
     "MatchDays",
     "MerchantPolicy",
     "MerchantSection",

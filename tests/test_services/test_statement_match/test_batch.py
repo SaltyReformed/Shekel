@@ -725,6 +725,51 @@ class TestTheReceiptSaysWhatHappened:
             assert outcome.applied_count == 1
             assert outcome.moved_nothing is True
 
+    def test_a_pass_that_only_REPRICES_does_NOT_say_it_moved_nothing(
+        self, app, db, seed_user,
+    ):
+        """The receipt was not merely silent about an amount -- it was FALSE.
+
+        Plan step **bank_import:X-f6d-1**, found by adversarial design review
+        2026-08-22.  ``_apply_day`` decides its outcome on the DAY, so a
+        repricing whose row ALREADY carries the bank's day reports
+        ``"unchanged"`` and lands in neither the settled nor the corrected
+        tally.  With no count of its own, this pass rewrote what a payment cost
+        and the panel rendered *"Nothing moved. Everything that was applied
+        confirmed a day you already had."*
+
+        The fixture is the case above with ONE difference -- the figures
+        disagree by four cents -- which is what makes it a control on the
+        amount rather than on anything else.
+        """
+        with app.app_context():
+            statement = an_import(seed_user)
+            day = seed_user["bootstrap_period"].start_date
+            line = a_bank_line(
+                seed_user, statement, amount="-180.04", posted_on=day,
+                merchant="Duke",
+            )
+            row = a_transaction(
+                seed_user, name="Duke Energy", amount="180.00",
+                status=StatusEnum.DONE, settled_on=day,
+            )
+
+            outcome = _batch(seed_user, matches=[
+                _match(seed_user, lines=[line], transactions=[row]),
+            ])
+
+            assert outcome.applied_count == 1
+            assert outcome.settled_count == 0
+            assert outcome.corrected_count == 0
+            assert outcome.redated_count == 0
+            assert outcome.repriced_count == 1
+            assert outcome.moved_nothing is False
+            assert "corrected the amount on 1 row(s)" in (
+                outcome.applied[0].summary
+            )
+            db.session.expire_all()
+            assert row.settled_amount == Decimal("180.04")
+
     def test_an_EMPTY_pass_is_not_an_error(self, app, db, seed_user):
         """Ticking nothing and pressing Apply is an ordinary thing to do."""
         with app.app_context():

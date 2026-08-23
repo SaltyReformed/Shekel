@@ -37,12 +37,11 @@ from ._candidates import (
     unmatched_destinations,
     unmatched_rows,
 )
+from ._creations import PurchaseDestination, envelope_answer_key
 from ._offers import (
     BankLine,
     CandidateRow,
     MatchProposal,
-    PurchaseDestination,
-    envelope_answer_key,
 )
 from ._placement import Placement, placements_for
 from ._policy import PolicyView
@@ -87,6 +86,16 @@ class ReviewBounds:
             substitution one clock over.  0 of the developer's own 361
             recorded lines are this shape; the OFX adapter's own measurement
             found 2 of 361, so a second source makes it live.
+        undecided_near_count: How many lines the NEAR pass found a row within
+            :data:`~._near.NEAR_MISS_BOUND` of and then declined to choose --
+            because two rows tied at the top of that line's ranking, or
+            because the row it would have named ranks another line higher
+            (:attr:`~._propose.ProposedMatches.undecided_near_count`).  A
+            SCORE that withholds is a bound like any other here, and this
+            package has twice shipped one that read as a clean sweep (findings
+            **N-315**, **N-322**).  0 on the developer's own data, where all
+            five scored lines resolve; live the moment one merchant's swipes
+            sit near two of their own rows.
     """
 
     calendar_opens: "date | None"
@@ -95,12 +104,13 @@ class ReviewBounds:
     crowded_days: "tuple[date, ...]"
     unpriceable_count: int
     impossible_day_count: int = 0
+    undecided_near_count: int = 0
 
     @property
     def any_limit(self) -> bool:
         """Return whether this pass left anything unexamined.
 
-        The one question the template asks, answered here rather than as four
+        The one question the template asks, answered here rather than as five
         ``or``-ed truth tests in a Jinja condition -- where a fifth limit
         added later would silently not appear.
         """
@@ -109,6 +119,7 @@ class ReviewBounds:
             or self.crowded_days
             or self.unpriceable_count
             or self.impossible_day_count
+            or self.undecided_near_count
         )
 
 
@@ -477,7 +488,7 @@ def _creatable_lines(
     bank contradicts itself -- the substitution ruling **R-FW** refused one
     clock over.  The predicate is
     :attr:`~._offers.BankLine.states_impossible_days`, stated once because
-    :func:`~._propose._within_window` asks it too.
+    :func:`~._pairing.within_window` asks it too.
 
     Args:
         calendar: The owner's
@@ -906,5 +917,9 @@ def review_set(scope: ReviewScope) -> ReviewSet:
             crowded_days=proposed.crowded_days,
             unpriceable_count=len(candidates.unpriceable_ids),
             impossible_day_count=leftovers.impossible_day_count,
+            # **The near tier's own bound, published by the pass that applied
+            # it**, for the reason the crowded days beside it are: a reader
+            # re-deriving it would be scoring a different population.
+            undecided_near_count=proposed.undecided_near_count,
         ),
     )

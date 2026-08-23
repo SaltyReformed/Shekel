@@ -47,7 +47,8 @@ from app.services import pay_calendar
 from app.services.cash_ledger import AmountBasis, baseline_amount_basis
 
 from ._candidates import candidates_for, destinations_for
-from ._offers import Candidates, PurchaseDestination
+from ._creations import PurchaseDestination
+from ._offers import Candidates
 
 
 @dataclass(frozen=True)

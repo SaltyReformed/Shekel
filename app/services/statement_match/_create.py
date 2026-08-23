@@ -72,12 +72,12 @@ from ._candidates import (
     purchase_candidate,
     unmatched_destinations,
 )
-from ._offers import (
+from ._creations import (
     NewEnvelope,
     PurchaseCreation,
     envelope_answer_key,
-    merchant_label,
 )
+from ._offers import merchant_label
 from ._scope import ReviewScope
 
 _logger = logging.getLogger(__name__)

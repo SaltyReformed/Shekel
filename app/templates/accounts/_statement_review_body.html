@@ -79,6 +79,15 @@
         {% if outcome.redated_count %}
         <li>{{ outcome.redated_count }} purchase date(s) corrected.</li>
         {% endif %}
+        {# The AMOUNT (plan step bank_import:X-f6d-1).  It is the only line
+           here that says what money was SPENT rather than when it moved, and
+           without it a repricing on a row that already carried the bank's day
+           reported through EVERY day count as unchanged -- so this panel said
+           "Nothing moved." about a request that had just rewritten what a
+           payment cost.  Found by adversarial design review 2026-08-22. #}
+        {% if outcome.repriced_count %}
+        <li>{{ outcome.repriced_count }} row(s) corrected to the bank's amount.</li>
+        {% endif %}
         {% if outcome.recorded_count %}
         <li>
           {{ outcome.recorded_count }} bank line(s) recorded as a purchase your
@@ -343,23 +352,31 @@
         <span class="badge text-bg-secondary">{{ review.proposals | length }}</span>
       </div>
       {% if review.proposals %}
-      {# THE THREE CLASSES, and they PARTITION the proposals rather than
-         overlapping: a proposal either confirms the day the app already had,
-         moves a day it got wrong, or marks a row as having happened for the
-         first time.  Measured on the developer's own statement: 27 / 46 / 51
-         of 124.
+      {# THE FOUR CLASSES, and they PARTITION the proposals rather than
+         overlapping: a proposal either changes an AMOUNT, or confirms the day
+         the app already had, or moves a day it got wrong, or marks a row as
+         having happened for the first time.  Measured on the developer's own
+         statement: the three day classes came to 27 / 46 / 51 of 124.
 
          Sweeping by CLASS rather than by one "tick all" is the developer's
          ruling of 2026-08-19, and it is what keeps R-FP meaningful at this
          volume: the review happens once per class, so the riskiest class is
          never swept by the same click as the safest.  None is ticked by
-         default. #}
+         default.
+
+         "reprice" is the fourth class and it is LAST here on purpose (plan
+         step bank_import:X-f6d-1, developer decision 2026-08-22): it is the
+         only proposal on this card that changes what money was SPENT rather
+         than only when it moved, so it gets its own click.  Its rows also sort
+         to the bottom of the table below, which is the same
+         ascending-by-how-much-changes rule the day classes already follow. #}
       <div class="card-body border-bottom py-2">
         <div class="d-flex flex-wrap gap-3 small">
           {% for group, label in [
             ('confirm', 'that only confirm a day you already had'),
             ('correct', "that move a day onto the bank's"),
             ('settle', 'that mark a row as having happened'),
+            ('reprice', "that change an amount onto the bank's"),
           ] %}
           {% set count = review.proposals | selectattr('review_class', 'equalto', group) | list | length %}
           {% if count %}
@@ -439,6 +456,27 @@
                 {% endfor %}
               </td>
               <td class="text-end small">
+                {# The AMOUNT, stated before anything is pressed (plan step
+                   bank_import:X-f6d-1, ruling R-GD(a)).  The bank's figure is
+                   the record, so accepting writes it onto your row -- and the
+                   figure this names is the CASH the row moves, which is what
+                   both sides of the comparison are.  It is first because it is
+                   the only line in this column that changes what was SPENT
+                   rather than when it moved.
+
+                   FROM and TO rather than the signed difference, which
+                   ``MatchProposal.difference`` carries and which reads
+                   ambiguously on a screen: both figures are already negative
+                   for a debit, so "a difference of $0.03" leaves a reviewer
+                   working out which way it moved.  The two figures say it
+                   without arithmetic.
+
+                   ONE LINE in the source on purpose: Jinja keeps the newlines
+                   and the indentation it is given, so a sentence wrapped here
+                   is a sentence no test can assert as a sentence. #}
+                {% if proposal.reprices %}
+                <div class="text-warning-emphasis fw-semibold">corrects the amount from {{ money(proposal.app_amount) }} to {{ money(proposal.bank_amount) }}</div>
+                {% endif %}
                 {% set settles = proposal.rows | rejectattr('is_settled') | list %}
                 {% if settles %}
                 <div>marks {{ settles | length }} row(s) as happened</div>
@@ -907,6 +945,20 @@
         as having been MADE after the day it took the money, so there is no day
         a purchase could have happened on. Money cannot leave before it is
         spent, so they are not offered as purchases here.
+      </li>
+      {% endif %}
+      {% if review.bounds.undecided_near_count %}
+      {# Plan step bank_import:X-f6d-1.  The near-miss score WITHHOLDS where it
+         cannot choose -- two of your rows equally close to one line, or one row
+         that fits another line better -- and a bound that says nothing about
+         what it dropped reads as a clean sweep.  Naming it is what tells you
+         to build the match by hand rather than record the line a second time,
+         which is the duplicate this whole step exists to stop. #}
+      <li>
+        {{ review.bounds.undecided_near_count }} line(s) have a row of yours
+        very close on the amount, but not one this page would pick for you --
+        either two rows are equally close, or the row fits a different line
+        better. Match those by hand if you know which is right.
       </li>
       {% endif %}
     </ul>

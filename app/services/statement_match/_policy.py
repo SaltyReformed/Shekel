@@ -399,7 +399,7 @@ class PolicyStatement:
     act on money, and the door re-derives everything it checks from the ids.
 
     **It names no OWNER and no ACCOUNT**, for the reason
-    :class:`~._offers.PurchaseCreation` states: whose account this is, is the
+    :class:`~._creations.PurchaseCreation` states: whose account this is, is the
     route's one proved statement, and a submission carrying its own pair would
     be a second one that could disagree with it.
 
