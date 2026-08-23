@@ -142,6 +142,35 @@ class StatementMatchMember(db.Model):
         bank_statement_line_id -- the bank's line, when this member is one.
         transaction_id -- the app's row, when this member is one.
         transaction_entry_id -- the app's purchase, when this member is one.
+        created_version_id -- the subject's ``version_id`` at the moment THIS
+            ACT created it, or NULL for a subject that already existed.
+
+    **``created_version_id`` says two things in one column, and that is why it
+    is a version rather than a flag** (plan step ``bank_import:X-f6d-4``,
+    developer ruling 2026-08-23).  Its PRESENCE says this act brought the
+    subject into existence; its VALUE says at which revision, so a release can
+    tell a row nobody has touched from one the owner has since made their own.
+    A boolean would have needed a second column to answer the second question,
+    and answering it by re-deriving "does this still look minted" would be a
+    guess about columns that move for other reasons.
+
+    **What it is FOR is the undo.**  A group's difference is recorded as a row
+    (ruling **R-FN**), and unlike a purchase created from a bank line, that row
+    means nothing once the grouping is released: the bank line goes back to
+    unexplained, and re-accepting the same group would record the difference a
+    SECOND time.  Measured by adversarial security review 2026-08-23 in two
+    ordinary clicks -- two `$0.05` rows for one `$0.05` difference, with the
+    balance reading high and nothing naming it.  So
+    :func:`~app.services.statement_match.release_match` removes what the act
+    created, and refuses when the row has moved since.
+
+    **The create-a-purchase arm does NOT set it yet, and that is a ruling
+    rather than an omission.**  ``create_purchase_from_line`` also brings its
+    subject into existence, but whether releasing that match should delete the
+    purchase -- and the envelope it may have minted, and any purchases added
+    to it since -- is plan step ``X-f6f``'s question, which exists to give
+    that arm the inverse it never had.  Widening the writer is that step's;
+    the column is shaped to take it.
 
     **Each subject belongs to at most ONE match, and that is structural.**  The
     three partial unique indexes below are what make "already matched" a
@@ -248,6 +277,19 @@ class StatementMatchMember(db.Model):
         ),
         # The reader loads a whole act at once.
         db.Index("idx_statement_match_members_match", "match_id"),
+        # A CREATED subject is an app row, never a bank line: this act cannot
+        # bring a line into existence -- an import does that, and the line is
+        # what the act is ABOUT.  Stated as a CHECK because it is the column's
+        # meaning rather than a habit of its writers.
+        db.CheckConstraint(
+            "created_version_id IS NULL "
+            "OR bank_statement_line_id IS NULL",
+            name="ck_statement_match_members_created_is_an_app_row",
+        ),
+        db.CheckConstraint(
+            "created_version_id IS NULL OR created_version_id > 0",
+            name="ck_statement_match_members_created_version_positive",
+        ),
         {"schema": "budget"},
     )
 
@@ -260,6 +302,10 @@ class StatementMatchMember(db.Model):
     bank_statement_line_id = db.Column(db.Integer)
     transaction_id = db.Column(db.Integer)
     transaction_entry_id = db.Column(db.Integer)
+    # NULL means "this subject already existed"; a number means this act
+    # created it, at that revision.  See the class docstring for why one column
+    # carries both facts and what the undo does with them.
+    created_version_id = db.Column(db.Integer)
 
     match = db.relationship(
         "StatementMatch", back_populates="members",

@@ -13,7 +13,7 @@ Finding **N-336**: the review screen states the correction accepting would
 write -- *from ``-178.32`` to ``-178.29``* -- and until this step nothing
 compared that with what the door was about to write.  ``resolve_rows``
 re-derives each named row's price per act (finding **N-309**'s remedy, correct
-in itself) and :func:`~._accept.corrected_figure` then wrote the bank's figure
+in itself) and :func:`~._variance.corrected_figure` then wrote the bank's figure
 whatever the re-derived price was.  **Reproduced**: the row was edited to
 ``500.00`` in another tab between render and Apply, and the door wrote a
 **``$321.71``** correction under a ``$0.03`` caption.
@@ -85,6 +85,40 @@ _TOKEN_FIELDS: int = 4
 #: the real offer set at both extremes of ``Numeric(12, 2)``.  Named by two
 #: adversarial reviews 2026-08-23.
 _FIGURE = re.compile(r"^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,6})?$")
+
+
+def parse_figure(raw: str) -> Decimal:
+    """Return *raw* as a money figure, or refuse the spelling.
+
+    **The ONE strict money reader this screen's wire format has**, and it is
+    published because the screen submits money in two shapes: inside a row's
+    reviewed token, and as the difference the owner accepted for a hand-built
+    group (plan step ``bank_import:X-f6d-4``).  Reading them through two
+    readers is what an adversarial review measured on 2026-08-23 -- the token
+    refused ``"1_0"``, ``"+0.05"`` and ``" 0.05 "`` while the schema field
+    beside it on the same form took all three, and quantized a sub-cent figure
+    into agreement using ``ROUND_HALF_EVEN``, the mode ``app.utils.money``
+    forbids reaching implicitly.
+
+    **It REFUSES rather than repairs.**  A figure with more precision than the
+    app can hold is not a figure the owner was shown, so rounding it into one
+    would make the consent gate agree with a body it should have turned away.
+
+    Args:
+        raw: What arrived on the wire.
+
+    Returns:
+        Its :class:`~decimal.Decimal`.
+
+    Raises:
+        ValueError: When *raw* is not a spelling :data:`_FIGURE` admits.
+    """
+    if not _FIGURE.match(raw):
+        raise ValueError("that is not a figure a row can hold")
+    try:
+        return Decimal(raw)
+    except InvalidOperation as exc:  # pragma: no cover - _FIGURE precedes
+        raise ValueError("that is not a figure a row can hold") from exc
 
 @dataclass(frozen=True)
 class ReviewedRow:
@@ -202,12 +236,7 @@ class ReviewedRow:
             kind = RowKind(kind_value)
         except ValueError as exc:
             raise ValueError("that is not a kind of row") from exc
-        if not _FIGURE.match(figure):
-            raise ValueError("that is not a figure a row can hold")
-        try:
-            cash_amount = Decimal(figure)
-        except InvalidOperation as exc:  # pragma: no cover - _FIGURE precedes
-            raise ValueError("that is not a figure a row can hold") from exc
+        cash_amount = parse_figure(figure)
         # **BOTH counters through the schema layer's own reader**, which is the
         # rule plan step X-ae imposed on every submitted digit string (finding
         # **N-136**): ``str.isdigit`` is true for 888 characters, 128 of which
@@ -347,10 +376,39 @@ class MatchSubmission:
             radius -- ``posted_first`` cannot move, so WHETHER a purchase is
             re-dated is stable and only the day it moves TO can shift.
         rows: The app rows that explain them, each as the screen showed it.
+        accepted_difference: The DIFFERENCE the screen showed and the owner
+            agreed to, or ``None`` where they agreed to none -- which is every
+            proposal the app itself offers (plan step ``bank_import:X-f6d-4``,
+            ruling **R-FN**).
+
+            **Named for the CONSENT rather than for the row**, because it
+            gates both of the two things a difference can become: the bank's
+            figure written to the one row a match names, and
+            :class:`~._accept.AcceptedMatch`'s ``residual`` -- the
+            uncategorized row a GROUP's leftover becomes.  Calling it
+            ``residual`` here made one word mean two things in one call
+            chain, on the two sides of a money gate.
+
+            **It is the one thing on this class that is not per-row, and that
+            is exactly why it has to travel.**  Every other precondition here
+            is reconciled by
+            :func:`~._resolve._reject_moved_since_review`, which compares each
+            ROW against the state the screen described -- so no per-row figure
+            can drift between render and Apply.  The difference is arithmetic
+            the BROWSER performed over those rows, and no per-row guard can see
+            that arithmetic being wrong: a page that says ``-0.06`` over a door
+            that writes ``-1,006.00`` is finding **N-336** one tier up.
+            :func:`~._variance.reject_unrecordable` is what reconciles it.
+
+            Like everything else here it is a PRECONDITION and never a payload:
+            the figure the door writes is its own
+            (:attr:`~._variance.MatchSides.difference`), derived inside the
+            same transaction from the rows the ids name.
     """
 
     line_ids: "frozenset[int]"
     rows: "frozenset[ReviewedRow]"
+    accepted_difference: "Decimal | None" = None
 
     @property
     def subjects(self) -> "dict[tuple[RowKind, int], ReviewedRow]":

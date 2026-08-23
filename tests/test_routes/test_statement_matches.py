@@ -34,6 +34,7 @@ service reaches them through different code and a decorator proves nothing
 about which arm ran.
 """
 
+import re
 from datetime import date, timedelta
 from html.parser import HTMLParser
 from decimal import Decimal
@@ -54,6 +55,7 @@ from app.routes.accounts import statement_matches as statement_matches_route
 from app.services import auth_service
 from app.services.statement_match import RowKind
 from app.services.statement_match import _batch as statement_match_batch
+from app.utils.money import round_money
 from tests.test_services.test_statement_match._builders import (
     a_bank_line,
     a_purchase,
@@ -68,7 +70,7 @@ def _review_url(account_id):
     return f"/accounts/{account_id}/statements/review"
 
 
-def _match(index=0, lines=(), transactions=(), entries=()):
+def _match(index=0, lines=(), transactions=(), entries=(), residual=None):
     """Return the form fields a TICKED match item submits.
 
     The FIELD NAMES ``_statement_review_body.html`` emits: the tick names the
@@ -88,11 +90,15 @@ def _match(index=0, lines=(), transactions=(), entries=()):
         lines: Bank line rows it explains.
         transactions: Transaction rows that explain them.
         entries: Purchase rows that explain them.
+        residual: What the consent box carries when the owner ticked it -- the
+            difference the screen showed (plan step ``bank_import:X-f6d-4``).
+            ``None`` leaves the field off entirely, which is what an unticked
+            checkbox submits.
 
     Returns:
         The form fields, as a plain ``dict`` for the test client.
     """
-    return {
+    fields = {
         "apply": [str(index)],
         f"match-{index}-line_ids": [str(line.id) for line in lines],
         f"match-{index}-rows": (
@@ -101,6 +107,9 @@ def _match(index=0, lines=(), transactions=(), entries=()):
             + [a_reviewed_token(entry, RowKind.PURCHASE) for entry in entries]
         ),
     }
+    if residual is not None:
+        fields[f"match-{index}-residual"] = [str(residual)]
+    return fields
 
 
 def _pass(*parts):
@@ -291,6 +300,105 @@ def _rendered_match_fields(page):
     reader = _TickedMatchReader()
     reader.feed(page)
     return reader.fields
+
+
+class _ConsentReader(HTMLParser):
+    """Read the hand-build panel's consent box, exactly as a browser would.
+
+    Plan step ``bank_import:X-f6d-4``.  The box's VALUE is the figure the
+    server computed and the door will compare, so scraping it is the only way
+    a test can post what the screen actually offered rather than a figure of
+    its own.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.value = None
+        self.disabled = None
+
+    def handle_starttag(self, tag, attrs):
+        """Record the consent control the panel rendered."""
+        attributes = dict(attrs)
+        if tag == "input" and attributes.get("name") == "match-hand-residual":
+            self.value = attributes.get("value", "")
+            self.disabled = "disabled" in attributes
+
+
+def _rendered_consent(page):
+    """Return ``(value, disabled)`` for the panel's consent box.
+
+    Args:
+        page: The rendered review body, or the panel fragment alone.
+
+    Returns:
+        The box's submitted value and whether a browser would submit it.
+    """
+    reader = _ConsentReader()
+    reader.feed(page)
+    return reader.value, reader.disabled
+
+
+class _VisibleText(HTMLParser):
+    """Collect the text a reader would SEE, with the markup out of the way.
+
+    A panel figure sits inside its own ``<span>`` for emphasis, so a byte match
+    over the raw fragment grades the styling rather than the sentence.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.parts = []
+
+    def handle_data(self, data):
+        """Keep every text node."""
+        self.parts.append(data)
+
+
+def _visible_text(page):
+    """Return *page*'s text with tags removed and whitespace collapsed."""
+    reader = _VisibleText()
+    reader.feed(page)
+    return " ".join(" ".join(reader.parts).split())
+
+
+def _element_carrying(page, needle):
+    """Return the source of the ``<div>`` whose start tag contains *needle*.
+
+    Depth-counted over ``<div`` / ``</div>``, so what comes back is that
+    element and everything nested inside it -- which is the question these
+    cases ask: which controls sit INSIDE a given element.  Every other tag on
+    this page is either void or cannot contain a div, so a div counter is
+    exact here.
+
+    Args:
+        page: The rendered body.
+        needle: A string appearing in the wanted element's start tag.
+
+    Returns:
+        The element's full source, or ``None`` when nothing carries *needle*.
+    """
+    at = page.find(needle)
+    if at == -1:
+        return None
+    start = page.rfind("<div", 0, at)
+    if start == -1:
+        return None
+    depth, cursor = 0, start
+    for match in re.finditer(r"<div\b|</div>", page[start:]):
+        depth += 1 if match.group().startswith("<div") else -1
+        if depth == 0:
+            cursor = start + match.end()
+            break
+    else:
+        cursor = len(page)
+    return page[start:cursor]
+
+
+def _totals_url(seed_user):
+    """Return the endpoint the hand-build panel re-renders through."""
+    return (
+        f"/accounts/{seed_user['account'].id}/statements/review/totals"
+    )
 
 
 class TestTheReviewPage:
@@ -1365,6 +1473,297 @@ class TestTheHandBuildForm:
         assert b"0.05" in response.data
         db.session.expire_all()
         assert salary.settled_on is None
+
+    def test_the_panel_ships_DISABLED_and_wired_to_its_endpoint(
+        self, auth_client, db, seed_user,
+    ):
+        """Plan step ``bank_import:X-f6d-4``: the consent control, before any
+        selection exists for the server to price.
+
+        **Disabled is the fail-closed state and it is what a JavaScript-off
+        browser submits**, which is exactly the behaviour that shipped before
+        this step: the door refuses the group and names both sums.  The
+        endpoint attribute is what makes it reachable at all, so its absence
+        would leave a control nobody can enable and a whole ruled act dead in a
+        browser with the suite green.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        a_bank_line(
+            seed_user, statement, amount="2573.43", posted_on=bank_day,
+        )
+        a_transaction(
+            seed_user, name="Salary", amount="2473.38", income=True,
+        )
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).get_data(as_text=True)
+
+        assert 'id="hand-build-form"' in page
+        assert _totals_url(seed_user) in page
+        assert 'hx-trigger="change"' in page
+        assert _rendered_consent(page) == ("", True)
+
+    def test_the_TRIGGER_does_not_contain_the_control_it_replaces(
+        self, auth_client, db, seed_user,
+    ):
+        """The consent box may not be inside the element that re-renders it.
+
+        **Driven in a real browser 2026-08-23, and it was dead there.**  The
+        trigger sat on the panel as ``change from:#hand-build-form``, so
+        TICKING THE CONSENT BOX fired a re-render and the swap replaced it with
+        a fresh unchecked one.  The owner could never keep it ticked and Apply
+        submitted no consent at all -- the whole ruled act unreachable, with
+        every server test green.
+
+        Asserted structurally rather than by driving a browser, because that
+        is the property: the element carrying ``hx-trigger`` must not contain
+        the control the swap replaces.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        a_bank_line(
+            seed_user, statement, amount="2573.43", posted_on=bank_day,
+        )
+        a_transaction(
+            seed_user, name="Salary", amount="2473.38", income=True,
+        )
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).get_data(as_text=True)
+
+        trigger = _element_carrying(page, "hx-trigger")
+        assert trigger is not None, "nothing re-prices the panel at all"
+        assert "match-hand-line_ids" in trigger, (
+            "the trigger does not contain the tick lists, so nothing fires"
+        )
+        assert "match-hand-residual" not in trigger, (
+            "the consent box is inside the element that triggers its own "
+            "replacement -- ticking it would swap it away"
+        )
+        # ...and the panel it targets is not itself a trigger.
+        assert 'id="hand-totals"' in page
+        assert 'hx-trigger' not in _element_carrying(page, 'id="hand-totals"')
+
+    def test_ONE_side_ticked_shows_that_SIDES_total(
+        self, auth_client, db, seed_user,
+    ):
+        """A ticked line is not nothing, and the panel may not say it is.
+
+        A first version answered the empty panel until BOTH sides were ticked,
+        so a `$2,573.43` line the owner had just picked read `$0.00`.  Caught
+        by driving the real screen; a match still needs both halves, so no
+        consent is offered.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(
+            seed_user, statement, amount="2573.43", posted_on=bank_day,
+        )
+        db.session.commit()
+
+        response = auth_client.post(
+            _totals_url(seed_user), data=_match(index="hand", lines=[line]),
+        )
+
+        text = _visible_text(response.get_data(as_text=True))
+        assert "Your bank shows $2,573.43" in text
+        assert "the rows you ticked come to $0.00" in text
+        assert _rendered_consent(
+            response.get_data(as_text=True),
+        ) == ("", True)
+
+    def test_the_SERVER_prices_what_is_ticked_and_offers_the_figure(
+        self, auth_client, db, seed_user,
+    ):
+        """The panel is the accept door asked what it would do.
+
+        No arithmetic happens in the browser: the body posted here is the body
+        Apply would send, and everything on the answer -- both sums, the
+        difference, the label and the box's value -- is the server's.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(
+            seed_user, statement, amount="2573.43", posted_on=bank_day,
+        )
+        salary = a_transaction(
+            seed_user, name="Salary", amount="2473.38", income=True,
+        )
+        allowance = a_transaction(
+            seed_user, name="Allowance", amount="100.00", income=True,
+        )
+        db.session.commit()
+
+        response = auth_client.post(
+            _totals_url(seed_user),
+            data=_match(index="hand", lines=[line],
+                        transactions=[salary, allowance]),
+        )
+
+        assert response.status_code == 200
+        text = _visible_text(response.get_data(as_text=True))
+        # 2,573.43 - (2,473.38 + 100.00) = 0.05
+        assert "Your bank shows $2,573.43" in text
+        assert "the rows you ticked come to $2,573.38" in text
+        assert "difference $0.05" in text
+        assert "Record the $0.05 difference as a row with no category" in text
+        assert _rendered_consent(
+            response.get_data(as_text=True),
+        ) == ("0.05", False)
+
+    def test_the_PANELS_OWN_figure_is_what_the_door_accepts(
+        self, auth_client, db, seed_user,
+    ):
+        """The loop closed: price it, scrape what it offered, post that, land.
+
+        This is the only control that grades the panel's figure against the
+        door's own arithmetic.  Every other case states the figure itself, so
+        all of them would pass a panel that priced the wrong thing -- and in a
+        browser every hand-built difference would then be refused as "reviewed
+        against a difference of ...".
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(
+            seed_user, statement, amount="2573.43", posted_on=bank_day,
+        )
+        salary = a_transaction(
+            seed_user, name="Salary", amount="2473.38", income=True,
+        )
+        allowance = a_transaction(
+            seed_user, name="Allowance", amount="100.00", income=True,
+        )
+        db.session.commit()
+        ticked = _match(index="hand", lines=[line],
+                        transactions=[salary, allowance])
+
+        panel = auth_client.post(
+            _totals_url(seed_user), data=ticked,
+        ).get_data(as_text=True)
+        offered, disabled = _rendered_consent(panel)
+        assert disabled is False, (
+            "the panel offered no consent, so this graded nothing"
+        )
+
+        response = auth_client.post(
+            _review_url(seed_user["account"].id),
+            data={**ticked, "match-hand-residual": [offered]},
+        )
+
+        assert response.status_code == 200
+        assert b"do not add up" not in response.data
+        assert b"recorded the +0.05 difference" in response.data
+        db.session.expire_all()
+        assert salary.settled_on == bank_day
+        minted = (
+            db.session.query(Transaction)
+            .filter(
+                Transaction.account_id == seed_user["account"].id,
+                Transaction.category_id.is_(None),
+            )
+            .all()
+        )
+        assert len(minted) == 1
+        assert minted[0].estimated_amount == Decimal("0.05")
+
+    def test_the_panel_names_a_refusal_BEFORE_the_press(
+        self, auth_client, db, seed_user,
+    ):
+        """A selection the door will not record says so beside the boxes.
+
+        An envelope is worth whatever its purchases are, so a difference on one
+        is a purchase that is missing -- and learning that from the panel is
+        the difference between fixing it and pressing a button that refuses.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(
+            seed_user, statement, amount="-280.06", posted_on=bank_day,
+        )
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="180.00", is_envelope=True,
+        )
+        a_purchase(seed_user, envelope, amount="180.00")
+        power = a_transaction(seed_user, name="Power", amount="100.00")
+        db.session.commit()
+
+        response = auth_client.post(
+            _totals_url(seed_user),
+            data=_match(index="hand", lines=[line],
+                        transactions=[envelope, power]),
+        )
+
+        text = _visible_text(response.get_data(as_text=True))
+        assert "no figure of its own to correct" in text
+        assert _rendered_consent(
+            response.get_data(as_text=True),
+        ) == ("", True)
+
+    def test_ONE_row_is_offered_the_CORRECTION_rather_than_a_new_row(
+        self, auth_client, db, seed_user,
+    ):
+        """The two remedies are different acts, so the panel names which."""
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        first = a_bank_line(
+            seed_user, statement, amount="-100.00", posted_on=bank_day,
+        )
+        second = a_bank_line(
+            seed_user, statement, amount="-80.06",
+            posted_on=bank_day + timedelta(days=1),
+        )
+        txn = a_transaction(seed_user, amount="180.00")
+        db.session.commit()
+
+        response = auth_client.post(
+            _totals_url(seed_user),
+            data=_match(index="hand", lines=[first, second],
+                        transactions=[txn]),
+        )
+
+        text = _visible_text(response.get_data(as_text=True))
+        assert "Write your bank's -$180.06 to the row you ticked" in text
+        assert "in place of the -$180.00 your records hold" in text
+        assert _rendered_consent(
+            response.get_data(as_text=True),
+        ) == ("-0.06", False)
+
+    def test_the_receipt_names_the_difference_it_recorded(
+        self, auth_client, db, seed_user,
+    ):
+        """The panel's own line, beside the per-item sentence."""
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(
+            seed_user, statement, amount="2573.43", posted_on=bank_day,
+        )
+        salary = a_transaction(
+            seed_user, name="Salary", amount="2473.38", income=True,
+        )
+        allowance = a_transaction(
+            seed_user, name="Allowance", amount="100.00", income=True,
+        )
+        db.session.commit()
+
+        response = auth_client.post(
+            _review_url(seed_user["account"].id),
+            data=_match(index="hand", lines=[line],
+                        transactions=[salary, allowance], residual="0.05"),
+        )
+
+        # Tags stripped and whitespace collapsed, because the sentence wraps
+        # in the template and a byte match would grade the indentation.
+        text = _visible_text(response.get_data(as_text=True))
+        assert (
+            "1 difference(s) totalling $0.05 recorded as rows with no "
+            "category."
+        ) in text
+        assert "Nothing moved." not in text
 
     def test_a_hand_built_group_that_adds_up_is_accepted(
         self, auth_client, db, seed_user,

@@ -44,6 +44,11 @@ The public surface, and what each piece is for:
   outside the package imports**: ``AppliedItem``, ``RefusedItem``,
   ``MatchedSubjects`` and ``unmatched_rows`` were exported for symmetry and had
   no importer at all, which is a surface nobody asked for.
+* :func:`preview_hand_build` -- what the hand-build form's two sides come to
+  RIGHT NOW, so ruling **R-FN**'s *a difference is a transaction the user
+  accepts* has a figure to accept.  It runs the accept door's own reads and
+  refusals without the writes, so the screen and the door cannot state
+  different totals (plan step ``bank_import:X-f6d-4``).
 * :func:`release_match` -- the undo, which restores the QUESTION rather than
   the days.
 * The value types :class:`MatchProposal`, :class:`MatchSubmission`,
@@ -99,12 +104,18 @@ from ._offers import (
     corrected_purchase_day,
     merchant_label,
 )
-from ._submission import MatchSubmission, ReviewedRow, as_reviewed
+from ._submission import (
+    MatchSubmission,
+    ReviewedRow,
+    as_reviewed,
+    parse_figure,
+)
 from ._near import NEAR_MISS_BOUND
 from ._pairing import DAY_WINDOW
 from ._propose import ProposedMatches, propose
 from ._accepted_view import AcceptedGroup, AcceptedRow
 from ._placement import Placement, PlacementKind
+from ._preview import HandTotals, preview_hand_build
 from ._policy import (
     MerchantPolicy,
     PolicyAnswer,
@@ -136,6 +147,7 @@ __all__ = [
     "Candidates",
     "CreatableLine",
     "CreatedPurchase",
+    "HandTotals",
     "DAY_WINDOW",
     "NEAR_MISS_BOUND",
     "MatchDays",
@@ -169,7 +181,9 @@ __all__ = [
     "create_purchase_from_line",
     "destinations_for",
     "matched_subjects",
+    "parse_figure",
     "merchant_label",
+    "preview_hand_build",
     "propose",
     "release_match",
     "review_set",

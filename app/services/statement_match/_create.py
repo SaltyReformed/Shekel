@@ -291,47 +291,6 @@ def _made_on(line: BankStatementLine) -> date:
     return line.transaction_on or line.posted_on
 
 
-def _period_holding(calendar, day: date) -> int:
-    """Return the id of the pay period covering *day*, refusing if none does.
-
-    **The day it was MADE decides, not the day it posted**, and the difference
-    is a real one at a period boundary: a swipe made on the last day of one pay
-    period and posted on the first day of the next belongs to the budget of the
-    period it was made in.  ``purchased_on`` is the budget clock and its
-    container's period is what the app budgets against, so placing the row by
-    the posting day would file already-spent money against the wrong paycheck --
-    and would raise ``check_purchase_date_in_period``'s out-of-period warning
-    on a row this door had just built.
-
-    Args:
-        calendar: The PASS's own
-            :class:`~app.services.pay_calendar.PayCalendar`, taken rather than
-            loaded.  It asked ``calendar_for`` for itself until plan step
-            ``bank_import:X-f6a-3c-2``, which is a second read of a fact the
-            screen that offered this line had already resolved -- and under
-            READ COMMITTED the two can differ, so a line could be OFFERED
-            against one calendar and PLACED against another.
-        day: The day the purchase was made.
-
-    Returns:
-        The covering period's id.
-
-    Raises:
-        ValidationError: When no SAVED period covers it -- the line predates
-            the owner's first payday, or lies past the generated horizon.  130
-            of the developer's own 361 lines are the first case, which
-            :class:`~._reads.ReviewBounds` already reports rather than offering.
-    """
-    period = calendar.period_containing(day)
-    if period is None:
-        raise ValidationError(
-            f"No pay period covers {day.isoformat()}, so there is no budget "
-            f"for this purchase to belong to.  Extend your pay schedule to "
-            f"cover that day first.  Nothing was changed."
-        )
-    return period.period_id
-
-
 def _reject_ambiguous_destination(creation: PurchaseCreation) -> None:
     """Refuse a submission naming both destinations or neither.
 
@@ -750,7 +709,16 @@ def create_purchase_from_line(
     # BUDGETED, so it decides which envelopes may hold it and which period a
     # new one is created in.  Resolving it per arm is how the two came to
     # disagree.
-    pay_period_id = _period_holding(scope.calendar, made_on)
+    # **The day it was MADE decides, not the day it posted**, and the
+    # difference is real at a period boundary: a swipe made on the last
+    # day of one pay period and posted on the first day of the next
+    # belongs to the budget of the period it was made in.
+    # ``purchased_on`` is the budget clock and its container's period is
+    # what the app budgets against, so placing the row by the posting day
+    # would file already-spent money against the wrong paycheck -- and
+    # would raise ``check_purchase_date_in_period``'s out-of-period
+    # warning on a row this door had just built.
+    pay_period_id = scope.period_holding(made_on, "this purchase")
     if creation.transaction_id is not None:
         envelope = _existing_envelope(creation, pay_period_id, scope, matched)
         created = False
@@ -834,9 +802,12 @@ def create_purchase_from_line(
             envelope, settled=envelope.status.is_settled,
         )
 
+    # **No residual, and it can never have one**: this door built the purchase
+    # at the line's own figure, so the two sides agree to the cent by
+    # construction and there is no difference for ruling **R-FN**'s row to
+    # record (plan step ``bank_import:X-f6d-4``).
     accepted = record_match(
-        scope.owner_id,
-        scope.account_id,
+        scope,
         [line],
         [purchase_candidate(entry)],
         matched,

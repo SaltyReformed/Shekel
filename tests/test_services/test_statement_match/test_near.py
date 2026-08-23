@@ -335,7 +335,7 @@ class TestTheROWMustNAMETheMerchant:
 class TestItOffersNothingTheDoorWouldREFUSE:
     """The Accept-that-cannot-succeed shape, refused before it is rendered.
 
-    Every clause here mirrors one of ``_accept._reject_uncorrectable``'s, read
+    Every clause here mirrors one of ``_variance.reject_unrecordable``'s, read
     off the row rather than re-derived -- which is what
     :attr:`~._offers.CandidateRow.figure_is_correctable` exists for.
     """

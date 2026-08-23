@@ -7,6 +7,14 @@
 // still submitted -- they are merely always visible.  Nothing here decides
 // anything, and nothing here is the only way to reach a control.
 //
+// **NO MONEY IS COMPUTED HERE**, which is the project's coding rule and, since
+// plan step bank_import:X-f6d-4, true again.  That step first summed the
+// hand-build form's two sides in this file and posted the total back as the
+// owner's consent; the server renders it now
+// (``accounts/_statement_hand_totals.html``, driven by plain htmx attributes),
+// so the figure on screen and the figure the accept door checks are one
+// derivation rather than two in two languages with two rounding modes.
+//
 // Delegated from the document rather than bound per element, because the batch
 // POST swaps the whole review body through htmx: handlers bound at load would
 // be attached to nodes that no longer exist after the first Apply.

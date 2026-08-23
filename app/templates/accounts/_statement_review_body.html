@@ -94,6 +94,20 @@
           records did not have{% if outcome.envelopes_created %}, {{ outcome.envelopes_created }} of them in an envelope this created{% endif %}.
         </li>
         {% endif %}
+        {# The DIFFERENCE (plan step bank_import:X-f6d-4, ruling R-FN).  Every
+           other line here says what happened to a row the owner already had;
+           this one names rows this pass CREATED, holding money the bank showed
+           and the records did not.  Both numbers, because they answer
+           different questions and the total nets: the count is how many rows
+           are now waiting for a category, the total is how much money reached
+           the Uncategorized bucket. #}
+        {% if outcome.residual_count %}
+        <li>
+          {{ outcome.residual_count }} difference(s) totalling
+          {{ money(outcome.residual_total) }} recorded as rows with no
+          category. Give them one whenever you know what they were.
+        </li>
+        {% endif %}
       </ul>
       {% endif %}
       {% if outcome.applied %}
@@ -800,11 +814,14 @@
 
   {# ── Build a match by hand ────────────────────────────────────────────── #}
   {# THE HAND-BUILD FORM IS WHAT MAKES THE ACCEPT DOOR'S REFUSALS REACHABLE.
-     Without it, _reject_uncorrectable and _reject_parent_and_its_own_purchase fire
-     only on a crafted POST -- so the $0.05 payroll gap (finding N-239) is never
-     put in front of the person who can fix it, and the proposer's own docstring
-     claim that "the owner may still build such a group by hand" is false about
-     the shipped app.  Found by adversarial design review, 2026-08-17.
+     Without it, _variance.reject_unrecordable and
+     _accept._reject_parent_and_its_own_purchase fire only on a crafted POST --
+     so the $0.05 payroll gap (finding N-239) is never put in front of the
+     person who can fix it, and the proposer's own docstring claim that "the
+     owner may still build such a group by hand" is false about the shipped
+     app.  Found by adversarial design review, 2026-08-17.  Since plan step
+     bank_import:X-f6d-4 it is also the ONLY way that gap can be RECORDED: the
+     seven payroll deposits it names are built here or nowhere.
 
      It is its OWN form with its own button, and it posts to the same batch
      door as a pass of exactly one match: the ``apply`` index is hidden rather
@@ -819,7 +836,7 @@
      into ONE submission naming rows the owner never grouped.  A non-numeric
      index cannot collide with a rendered position, and _sort_key already sorts
      it last.  Named by adversarial test-quality review 2026-08-19. #}
-  <form method="post"
+  <form method="post" id="hand-build-form"
         action="{{ url_for('accounts.apply_statement_review', account_id=account.id) }}"
         hx-post="{{ url_for('accounts.apply_statement_review', account_id=account.id) }}"
         hx-target="#statement-review-body"
@@ -827,7 +844,27 @@
         hx-disabled-elt="find button[type=submit]">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <input type="hidden" name="apply" value="hand">
-    <div class="row g-3 mb-3">
+    {# The two tick lists, and the only thing that re-prices the panel below.
+
+       `change` bubbles, so one binding here covers every checkbox in both
+       cards -- and NOTHING ELSE in the form is inside this wrapper, which is
+       the point: the consent box lives in the panel, so ticking it cannot
+       trigger the swap that would replace it.  This element is never swapped,
+       so the binding survives every re-render.
+
+       `hx-disabled-elt` is UNSET because the form's is inherited and resolves
+       against the triggering element -- this wrapper, which holds no submit
+       button, so htmx logged "returned no matches" on every tick.  Unset
+       rather than re-pointed: this is a READ, and disabling the Apply button
+       while it runs would fight the owner for the control they are heading
+       towards.  Caught by driving the real screen in a browser. #}
+    <div class="row g-3 mb-3"
+         hx-post="{{ total_url }}"
+         hx-trigger="change"
+         hx-include="#hand-build-form"
+         hx-target="#hand-totals"
+         hx-swap="outerHTML"
+         hx-disabled-elt="unset">
       <div class="col-12 col-lg-6">
         <div class="card h-100">
           <div class="card-header d-flex justify-content-between align-items-center">
@@ -838,8 +875,8 @@
             <p class="text-body-secondary small mb-2">
               Nothing this account holds matches these on amount. Many are card
               purchases the app records inside an envelope rather than one by one.
-              If some of your rows DO add up to one of these, tick them here and
-              on the right, then match them.
+              If some of your rows add up to one of these, or nearly do, tick
+              them here and on the right, then match them.
             </p>
             {% if review.unmatched %}
             <div class="table-responsive stmt-pick-list">
@@ -932,33 +969,7 @@
         </div>
       </div>
     </div>
-    {# **The rule stated where the ACT is, not only in the card above it.**  The
-       door refuses a group whose two sides do not sum to the same figure
-       (``_accept._reject_uncorrectable``, the developer's ruling of 2026-08-17
-       as superseded by R-GD(a)),
-       and until now the only warning of that sat in a paragraph two columns and
-       one scroll away.  The refusal it produces is exact and useful -- it names
-       both sums and the difference -- so what was missing is knowing the rule
-       applies BEFORE pressing a button, not after. #}
-    <div class="d-flex justify-content-between align-items-center gap-3 mb-3">
-      {# STATED PER SHAPE since ruling R-GD(a), because the rule stopped being
-         one rule. A ONE-TO-ONE match may now disagree -- the bank's figure is
-         written to the row and the difference is the product rather than a
-         refusal -- while a GROUP is still refused, since nothing says WHICH
-         member is wrong. Saying "must come to the same total" of both was
-         true until X-f6d-2 and is now false of the commonest case. Found by
-         adversarial financial review 2026-08-23. #}
-      <p class="text-body-secondary small mb-0">
-        One line against one row may <strong>disagree</strong>: your bank's
-        figure is written to that row and the difference is reported. Several
-        of either must come to the <strong>same total</strong> -- nothing says
-        which member would be wrong -- and if they do not, nothing is changed
-        and the difference is named at the top of this page.
-      </p>
-      <button type="submit" class="btn btn-outline-primary flex-shrink-0">
-        Match the ticked lines and rows
-      </button>
-    </div>
+    {% include "accounts/_statement_hand_totals.html" %}
   </form>
 
   {# ── The bounds, stated rather than left silent ──────────────────────── #}

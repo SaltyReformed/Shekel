@@ -29,7 +29,11 @@ from app.schemas.validation._helpers import (
     _normalize_empty_inputs,
 )
 from app.services.statement_import import supported_sources
-from app.services.statement_match import NEW_ENVELOPE, ReviewedRow
+from app.services.statement_match import (
+    NEW_ENVELOPE,
+    ReviewedRow,
+    parse_figure,
+)
 from app.utils.digit_strings import is_ascii_digits, parse_row_id
 
 
@@ -222,6 +226,47 @@ class ReviewedRowField(fields.Field):
             raise self.make_error("invalid") from exc
 
 
+class ReviewedFigureField(fields.Field):
+    """One money figure a submission carries, in the format this screen emits.
+
+    :class:`ReviewedRowField`'s sibling and, since plan step
+    ``bank_import:X-f6d-4``, its co-reader: both go through
+    :func:`~app.services.statement_match._submission.parse_figure`, so the two
+    money strings this one form submits are strict in exactly the same way.
+    See :attr:`StatementMatchSchema.residual` for what having two strictnesses
+    measurably cost.
+
+    ``None`` passes through untouched, because absence is a state the schema
+    names (``load_default``) rather than a spelling this reads.
+    """
+
+    default_error_messages = {
+        "invalid": "That is not a figure this page could have shown you.",
+    }
+
+    def _deserialize(self, value, attr, data, **kwargs):
+        """Return the figure *value* names.
+
+        Args:
+            value: The submitted string.
+            attr: The field name being loaded (marshmallow's contract).
+            data: The whole payload being loaded (marshmallow's contract).
+            **kwargs: Marshmallow's contract, unused.
+
+        Returns:
+            Its :class:`~decimal.Decimal`.
+
+        Raises:
+            ValidationError: When *value* is not a figure this app emitted.
+        """
+        if not isinstance(value, str):
+            raise self.make_error("invalid")
+        try:
+            return parse_figure(value)
+        except ValueError as exc:
+            raise self.make_error("invalid") from exc
+
+
 class StatementMatchSchema(BaseSchema):
     """Validate ONE accepted match: its bank lines, and its reviewed rows.
 
@@ -270,6 +315,34 @@ class StatementMatchSchema(BaseSchema):
         ReviewedRowField(), required=False, load_default=list,
         validate=validate.Length(max=_MAX_MATCH_MEMBERS),
     )
+    #: The DIFFERENCE the SERVER showed for a hand-built group, which the
+    #: owner agreed to record (plan step ``bank_import:X-f6d-4``, ruling
+    #: **R-FN**).  Absent on every proposal the app itself offers, so
+    #: ``load_default=None``.
+    #:
+    #: **Read through the service's own strict reader, exactly as
+    #: :class:`ReviewedRowField` beside it is.**  A first version declared it
+    #: ``fields.Decimal(places=2)``, and an adversarial review measured what
+    #: that cost on 2026-08-23: marshmallow quantizes with the default context
+    #: rounding, which is ``ROUND_HALF_EVEN`` -- the mode
+    #: :mod:`app.utils.money` says must never be reached implicitly through a
+    #: bare ``.quantize`` -- so ``"0.054"`` was silently REPAIRED into
+    #: agreement with a true difference of ``0.05``, on the one field the
+    #: design says must be exact.  It also took ``"1_0"``, ``"+0.05"`` and
+    #: ``" 0.05 "``, which the row token on the same form deliberately refuses:
+    #: two strictnesses for two money strings on one door.
+    #:
+    #: **No ``Range`` bound, and the reason is NOT the one a first version
+    #: gave.**  That version said a bound was unnecessary because the
+    #: difference is "bounded by the ``Numeric(12, 2)`` columns it is summed
+    #: from", which is arithmetically false -- a match may name up to
+    #: :data:`_MAX_MATCH_MEMBERS` of them per side.  The bound lives at the
+    #: DOOR instead
+    #: (``app.services.statement_match._variance._reject_unstorable``), where
+    #: the sum it must bound actually exists; a bound here could only refuse a
+    #: figure the door was going to refuse anyway, since nothing is written
+    #: unless this equals the door's own derivation.
+    residual = ReviewedFigureField(required=False, load_default=None)
 
 
 class StatementMatchReleaseSchema(BaseSchema):
@@ -649,18 +722,40 @@ def _match_items(form) -> list:
 
     Returns:
         One ``{"line_ids": [...], "rows": [...]}`` per ticked index,
-        ascending.  Raw strings: the schema is what reads them, and a ``rows``
-        member is one token carrying a row's kind, id, reviewed figure and
-        reviewed revision together (plan step ``bank_import:X-f6d-3``) rather
-        than two lists a body could submit at different lengths.
+        ascending, plus ``"residual"`` where that item submitted one.  Raw
+        strings: the schema is what reads them, and a ``rows`` member is one
+        token carrying a row's kind, id, reviewed figure and reviewed revision
+        together (plan step ``bank_import:X-f6d-3``) rather than two lists a
+        body could submit at different lengths.
+
+        **``residual`` is OMITTED rather than sent as ``None``** when the item
+        did not carry one, so the schema's own ``load_default`` decides what
+        absence means -- one statement of that default, in the schema, rather
+        than one here and one there.  It is read with ``get`` and not
+        ``getlist`` because it is ONE consent per item: a body sending two
+        keeps the first, and whichever it keeps still has to equal the
+        difference the door derives, so no repeated key can choose what gets
+        written.
+
+        **An EMPTY consent is untouched, not malformed**, which is this
+        module's own founding principle: a browser submits every control it
+        renders, so an untouched one must be recognisable as untouched.  The
+        panel renders the box with ``value=""`` and ``disabled`` in lockstep,
+        so a browser cannot send one -- but a body that does would otherwise
+        400 the WHOLE pass over a field nobody filled in.  Found by
+        adversarial security review 2026-08-23.
     """
     getlist = form.getlist
     items = []
     for raw in sorted(set(getlist("apply")), key=_sort_key):
-        items.append({
+        item = {
             "line_ids": getlist(f"{_MATCH_PREFIX}{raw}-line_ids"),
             "rows": getlist(f"{_MATCH_PREFIX}{raw}-rows"),
-        })
+        }
+        residual = form.get(f"{_MATCH_PREFIX}{raw}-residual")
+        if residual:
+            item["residual"] = residual
+        items.append(item)
     return items
 
 

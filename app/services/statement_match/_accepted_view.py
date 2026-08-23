@@ -40,7 +40,8 @@ from app.utils.log_events import (
     EVT_STATEMENT_MATCH_LINELESS,
     log_event,
 )
-from app.utils.money import round_money
+
+from ._sides import MatchSides
 
 _logger = logging.getLogger(__name__)
 
@@ -296,17 +297,16 @@ def _still_holds(
         return False
     if any(row.settled_on != posts_on for row in rows):
         return False
-    # ``round_money`` on BOTH sides, because the accept door rounds before it
-    # compares (``_accept._reject_unbalanced``) and two spellings of one
+    # **Through the door's OWN derivation** (plan step ``bank_import:X-f6d-4``).
+    # This reader summed and rounded the two sides itself until then, with a
+    # comment saying it must match "``_accept._reject_unbalanced``" -- a
+    # function that has not existed for two steps.  Two spellings of one
     # invariant is a match the door accepted that this reader calls broken
-    # forever.
-    bank = round_money(
-        sum((Decimal(str(line.amount)) for line in lines), Decimal("0.00")),
-    )
-    app_side = round_money(
-        sum((row.cash_amount for row in rows), Decimal("0.00")),
-    )
-    return bank == app_side
+    # forever, and a citation that resolves to nothing is how the second
+    # spelling survived.  ``MatchSides.of`` is STRUCTURALLY typed over anything
+    # exposing ``amount`` / ``cash_amount``, which is exactly why these two
+    # shapes can reach it.
+    return not MatchSides.of(lines, rows).difference
 
 
 def _by_id(model, ids: "set[int]") -> dict:

@@ -33,6 +33,8 @@ from decimal import Decimal
 
 from app.enums import SettledDayBasisEnum
 
+from ._sides import MatchSides
+
 
 class RowKind(enum.Enum):
     """Which of the app's two matchable row types a candidate is.
@@ -344,10 +346,12 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
           :attr:`states_own_figure` is that fact, and it is TWO published
           predicates rather than one -- see that attribute.
 
-        **The FOURTH refusal is not here and must not be**: a group whose sides
-        differ is refused for a reason that is not about any one row (nothing
-        says WHICH member is wrong), so it belongs to the pass that builds the
-        group.  The FIFTH, a sign disagreement, is a fact about the PAIR.
+        **The refusals that are not here must not be**: a group's difference is
+        the owner's to ACCEPT rather than any row's fault (nothing says WHICH
+        member it belongs to), a sign disagreement is a fact about the PAIR,
+        and a figure too large to store is a fact about the SUM.  Each belongs
+        to :func:`~._variance.reject_unrecordable`, which owns everything
+        about the two sides disagreeing.
 
         **A PURCHASE gets no branch of its own**, and the omission is
         deliberate: it stores its own figure and belongs to no transfer, so
@@ -358,7 +362,7 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
         rather than by the row, so nothing here narrows it either.
 
         Returns:
-            Whether :func:`~._accept._reject_uncorrectable` would let a
+            Whether :func:`~._variance._reject_uncorrectable_row` would let a
             differing figure through for this row.
         """
         return self.transfer_id is None and self.states_own_figure
@@ -662,14 +666,26 @@ class MatchProposal:
     day_gap: "int | None"
 
     @property
+    def _sides(self) -> "MatchSides":
+        """Return what this proposal's two halves come to.
+
+        **The package's ONE derivation of it** (plan step
+        ``bank_import:X-f6d-4``).  This class summed and subtracted for
+        itself until then, which made four spellings of one subtraction --
+        and a proposal whose screen figure disagreed with the door's by a
+        cent would be an Accept the owner did not review.
+        """
+        return MatchSides.of(self.lines, self.rows)
+
+    @property
     def bank_amount(self) -> Decimal:
         """Return the signed total the bank states for this proposal."""
-        return sum((line.amount for line in self.lines), Decimal("0.00"))
+        return self._sides.bank
 
     @property
     def app_amount(self) -> Decimal:
         """Return the signed total the app currently holds for it."""
-        return sum((row.cash_amount for row in self.rows), Decimal("0.00"))
+        return self._sides.app
 
     @property
     def difference(self) -> Decimal:
@@ -682,14 +698,16 @@ class MatchProposal:
         pressed -- *bank `$178.29`, your row `$178.32`* -- which is plan step
         ``bank_import:X-f6d-1``'s own sentence.
 
-        **It stays non-zero only where the door can honestly record it.**  A
-        GROUP whose sides differ is still refused, because nothing says WHICH
-        member is wrong -- measured on the developer's own statement, 6 of 16
-        payroll deposits sit `$0.05`-`$0.06` apart from the app's own rows,
-        which is finding **N-239** and is `X-f6d-4`'s subject rather than a
-        figure this pass invents for a member.
+        **Every proposal this app makes is EXACT or one-to-one**, so this is
+        non-zero only on the near tier: the group tier sums to the line by
+        construction, and nothing scores a group (**R-GD**).  A group whose
+        sides differ is one the OWNER built by hand, and since plan step
+        ``X-f6d-4`` its difference is recordable -- as **R-FN**'s ordinary
+        accepted row rather than as a figure anything here invents for a
+        member.  This docstring said such a group was "still refused" until
+        that step made it false, on the property that computes the figure.
         """
-        return self.bank_amount - self.app_amount
+        return self._sides.difference
 
     @property
     def reprices(self) -> bool:

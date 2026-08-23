@@ -51,6 +51,22 @@ HUNDRED = Decimal("100")
 MONTHS_PER_YEAR = Decimal("12")
 
 
+#: The largest magnitude any of this app's money columns can hold.  Every one
+#: of them is ``Numeric(12, 2)``, so ten integer digits and two decimal places,
+#: and a figure at or above this is UNSTORABLE rather than merely large.
+#:
+#: **Named because a DERIVED figure can exceed it where an entered one cannot.**
+#: A schema bound keeps a typed figure inside the domain (see
+#: ``app.schemas.validation._helpers._NON_NEGATIVE_MONETARY``, and plan step
+#: X-f2-c3 for what omitting one cost), but a door that SUMS stored columns is
+#: bounded by the count of terms rather than by any one of them -- so the sum,
+#: and anything derived from it, needs the domain stated somewhere it can be
+#: compared against.  Reaching the database with a larger figure is
+#: ``psycopg2.errors.NumericValueOutOfRange``, which is an unhandled 500 and,
+#: inside a batch, one that discards every item applied beside it.
+MONEY_COLUMN_MAX: Decimal = Decimal("9999999999.99")
+
+
 def round_money(value: Decimal) -> Decimal:
     """Round a monetary Decimal to cents using ``ROUND_HALF_UP``.
 

@@ -72,6 +72,7 @@ route owns the unit of work.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 
 from app.exceptions import NotFoundError, ValidationError
 from app.extensions import db
@@ -164,13 +165,18 @@ class RefusedItem:
 class BatchOutcome:  # pylint: disable=too-many-instance-attributes
     """What a whole reviewed pass did.
 
-    Pylint: too-many-instance-attributes (8/7) -- **eight because a pass
-    receipt has eight things to say**, and the eighth is
-    ``repriced_count``, which is what stopped this panel rendering
-    *"Nothing moved."* over a rewritten figure (2026-08-22).  Dropping a
-    count to satisfy a limit is how that sentence came to be false.
+    Pylint: too-many-instance-attributes (10/7) -- **ten because a pass
+    receipt has ten things to say.**  ``repriced_count`` is what stopped this
+    panel rendering *"Nothing moved."* over a rewritten figure (2026-08-22),
+    and dropping a count to satisfy a limit is how that sentence came to be
+    false.  The last two are the residual pair, which names money this pass
+    RECORDED that the app did not hold at all -- the one effect here that no
+    other field can be read as covering.
     :class:`~._accept.AcceptedMatch` carries the same disable for the same
-    reason.
+    reason.  *(This paragraph called ``repriced_count`` "the eighth" until
+    2026-08-23; it is the sixth field declared.  An ordinal nobody can check
+    against the list beside it is exactly the kind of claim this codebase
+    keeps measuring wrong, so it is gone rather than corrected.)*
 
     Attributes:
         applied: The acts that landed, in the order they were applied.
@@ -192,6 +198,17 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
         recorded_count: How many bank lines became a purchase the app did not
             have.
         envelopes_created: How many budget lines the pass created to hold one.
+        residual_count: How many matched GROUPS had their difference recorded
+            as an ordinary uncategorized row (plan step
+            ``bank_import:X-f6d-4``, ruling **R-FN**).
+        residual_total: What those differences come to, signed and netted.
+            **A figure beside the count rather than instead of it**, because
+            the two answer different questions and the netting is why: seven
+            payroll deposits at `+$0.05` and one refund at `-$0.35` net to
+            `$0.00`, and a receipt saying "8 differences recorded" over a
+            total of nothing would be true and useless.  The count says how
+            many rows the owner now has to categorise; the total says how much
+            money reached the Uncategorized bucket.
     """
 
     applied: "tuple[AppliedItem, ...]"
@@ -202,6 +219,8 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
     repriced_count: int
     recorded_count: int
     envelopes_created: int
+    residual_count: int
+    residual_total: Decimal
 
     @property
     def applied_count(self) -> int:
@@ -228,6 +247,7 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
             or self.corrected_count
             or self.redated_count
             or self.repriced_count
+            or self.residual_count
             or self.recorded_count
         )
 
@@ -272,6 +292,15 @@ def _match_summary(accepted) -> str:
     if accepted.repriced_count:
         did.append(
             f"corrected the amount on {accepted.repriced_count} row(s)"
+        )
+    # **After it, because it is the only clause naming a row that did not
+    # exist before this act** (plan step bank_import:X-f6d-4).  It says
+    # "recorded" rather than "corrected" for that reason: nothing of the
+    # owner's was changed to produce it.
+    if accepted.residual is not None:
+        did.append(
+            f"recorded the {accepted.residual:+,.2f} difference as a row "
+            f"with no category"
         )
     what = " and ".join(did) if did else "confirmed what you already had"
     return (
@@ -320,7 +349,7 @@ def _created_summary(recorded) -> str:
 class _Tally:  # pylint: disable=too-many-instance-attributes
     """The running receipt one pass builds.
 
-    Pylint: too-many-instance-attributes (8/7) -- it accumulates exactly
+    Pylint: too-many-instance-attributes (10/7) -- it accumulates exactly
     the counters :class:`BatchOutcome` publishes, so it carries that
     class's disable for that class's reason.
 
@@ -336,6 +365,8 @@ class _Tally:  # pylint: disable=too-many-instance-attributes
     repriced: int = 0
     recorded: int = 0
     envelopes: int = 0
+    residuals: int = 0
+    residual_total: Decimal = Decimal("0.00")
 
 
 def _run(tally: _Tally, line_ids: "tuple[int, ...]", act) -> object:
@@ -445,6 +476,9 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
         tally.corrected += accepted.corrected_count
         tally.redated += accepted.redated_count
         tally.repriced += accepted.repriced_count
+        if accepted.residual is not None:
+            tally.residuals += 1
+            tally.residual_total += accepted.residual
         tally.applied.append(AppliedItem(
             line_ids=line_ids, summary=_match_summary(accepted),
         ))
@@ -481,5 +515,7 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
         repriced_count=tally.repriced,
         recorded_count=tally.recorded,
         envelopes_created=tally.envelopes,
+        residual_count=tally.residuals,
+        residual_total=tally.residual_total,
     )
     return outcome

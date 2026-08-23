@@ -84,6 +84,7 @@ from app.schemas.validation.statements import (
 )
 from app.services.category_service import list_active_categories
 from app.services.statement_match import (
+    HandTotals,
     MatchSubmission,
     NewEnvelope,
     PolicyAnswer,
@@ -92,6 +93,7 @@ from app.services.statement_match import (
     ReviewedBatch,
     ReviewScope,
     apply_reviewed,
+    preview_hand_build,
     release_match,
     review_set,
     state_policies,
@@ -116,6 +118,7 @@ _policy_schema = MerchantPolicyBatchSchema()
 #: receipt: ONE template, so what a batch swaps in cannot drift from what a
 #: reload shows.
 _BODY = "accounts/_statement_review_body.html"
+_HAND_TOTALS = "accounts/_statement_hand_totals.html"
 
 #: What a database failure tells the owner.  It names no table -- the traceback
 #: goes to the log -- and it ends the way every refusal in this package does,
@@ -161,6 +164,16 @@ def _review_context(
     return {
         "account": account,
         "review": review_set(scope),
+        # The hand-build panel, drawn EMPTY on every full render and re-drawn
+        # by its own endpoint as the owner ticks (plan step
+        # ``bank_import:X-f6d-4``).  Empty rather than derived, because a full
+        # render answers a request that ticked nothing -- and after a pass the
+        # form's checkboxes come back unticked, so a panel showing a total
+        # would be describing a selection that no longer exists.
+        "totals": HandTotals.untouched(),
+        "total_url": url_for(
+            "accounts.statement_review_totals", account_id=account.id,
+        ),
         # The picker the NEW-ENVELOPE arm needs (plan step X-f6a-3b).  Loaded
         # here rather than inside the review set because it is not a fact about
         # the statement: it is what any create form on this account offers, and
@@ -221,6 +234,7 @@ def _submitted_batch(submitted) -> ReviewedBatch:
             MatchSubmission(
                 line_ids=frozenset(item["line_ids"]),
                 rows=frozenset(item["rows"]),
+                accepted_difference=item["residual"],
             )
             for item in submitted["matches"]
         ),
@@ -329,6 +343,14 @@ def apply_statement_review(account_id):
         settled_count=outcome.settled_count,
         corrected_count=outcome.corrected_count,
         redated_count=outcome.redated_count,
+        # **The two effects this event was silent about**, and they are the
+        # ones that move money rather than dates: a repricing changes what a
+        # payment cost, and a residual records a row the app did not hold at
+        # all.  Named by adversarial financial review 2026-08-23; the first
+        # had been missing since the pass event was written.
+        repriced_count=outcome.repriced_count,
+        residual_count=outcome.residual_count,
+        residual_total=str(outcome.residual_total),
         recorded_count=outcome.recorded_count,
         envelopes_created=outcome.envelopes_created,
     )
@@ -502,6 +524,72 @@ def _refused(account, scope, message: str):
         ),
         400,
     )
+
+
+@accounts_bp.route(
+    "/accounts/<int:account_id>/statements/review/totals", methods=["POST"],
+)
+@login_required
+@require_owner
+def statement_review_totals(account_id):
+    """Answer what the hand-build form's ticked lines and rows come to.
+
+    Plan step ``bank_import:X-f6d-4``, ruling **R-FN**.  A difference is a
+    transaction the owner ACCEPTS, and the group they are assembling is one
+    nothing has computed -- so this computes it, and the consent box the
+    fragment renders carries the SERVER's own figure.
+
+    **It MOVES NO MONEY and writes nothing**, which is why it may fire on
+    every tick.  It runs the accept door's reads and refusals through
+    :func:`~app.services.statement_match.preview_hand_build` and renders the
+    answer; the only door that writes is still
+    ``apply_statement_review``.  It is a POST rather than a GET because it
+    carries a list of ids and a CSRF token, not because it changes anything --
+    the same reason the policy section posts.
+
+    **It takes the body Apply would send**, read through the same
+    ``batch_payload`` regrouping, so the panel is that act asked what it would
+    do rather than a second opinion about it.  A submission naming no hand
+    item -- which is what an untouched form sends -- renders the empty panel.
+
+    Args:
+        account_id: The account being reviewed.
+
+    Returns:
+        The re-rendered panel, at 200; or the same panel carrying one refusal
+        sentence at 400, marked as a designed fragment so htmx swaps it.
+    """
+    # The ownership proof, for its refusal rather than for its value: this
+    # answer names no account, and the project's rule is 404 for both "not
+    # found" and "not yours".
+    load_cash_account_or_404(account_id)
+    scope = ReviewScope.build(current_user.id, account_id)
+    context = {
+        "total_url": url_for(
+            "accounts.statement_review_totals", account_id=account_id,
+        ),
+    }
+
+    payload = batch_payload(request.form)
+    errors = _batch_schema.validate(payload)
+    if errors:
+        return designed_error(
+            render_template(
+                _HAND_TOTALS,
+                totals=HandTotals.refused(refusal_sentence(errors)),
+                **context,
+            ),
+            400,
+        )
+    submitted = _batch_schema.load(payload)
+    matches = _submitted_batch(submitted).matches
+    totals = (
+        preview_hand_build(matches[0], scope) if matches
+        else HandTotals.untouched()
+    )
+    # NO event and NO commit.  Nothing was written, and a read pass that logged
+    # would put a line in the audit trail for every checkbox on the page.
+    return render_template(_HAND_TOTALS, totals=totals)
 
 
 @accounts_bp.route(

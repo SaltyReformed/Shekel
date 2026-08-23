@@ -251,7 +251,13 @@ _LAX_DECLARATIONS = _LAX_INTEGER_SPELLINGS | _LAX_INTEGER_FACTORIES
 #: because ``test_the_factories_are_the_only_unscanned_call_form`` treats an
 #: unclassified builder as a hole -- and "it happens to return a String" is a
 #: fact about the helper that should be asserted rather than assumed.
-_NON_INTEGER_FIELD_FACTORIES = frozenset({"_auth_email_field"})
+_NON_INTEGER_FIELD_FACTORIES = frozenset({
+    "_auth_email_field",
+    # A money figure read through the statement package's own strict
+    # reader (plan step bank_import:X-f6d-4), so the row-id question does
+    # not arise: it holds a signed decimal, never an id.
+    "ReviewedFigureField",
+})
 
 #: Every marshmallow field spelling the package declares that is not an
 #: integer.
@@ -731,9 +737,14 @@ class TestNoIdFieldWasMissed:
         integer.  Otherwise the cheapest way past the sweep would be to
         register a lax integer builder as "not an integer".
         """
-        from app.schemas.validation import auth  # pylint: disable=import-outside-toplevel
+        # pylint: disable=import-outside-toplevel -- resolved here so the
+        # registry above stays a plain frozenset of names.
+        from app.schemas.validation import auth, statements
 
-        modules = {"_auth_email_field": auth}
+        modules = {
+            "_auth_email_field": auth,
+            "ReviewedFigureField": statements,
+        }
         for factory_name in _NON_INTEGER_FIELD_FACTORIES:
             module = modules.get(factory_name)
             assert module is not None, (

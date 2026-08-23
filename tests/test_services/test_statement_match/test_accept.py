@@ -119,7 +119,9 @@ def _posted_cash_by_day(db, txn, account):
     return {row[0]: row[1] for row in rows if row[1] != 0}
 
 
-def _submit(seed_user, lines=(), transactions=(), entries=()):
+def _submit(
+    seed_user, lines=(), transactions=(), entries=(), residual=None,
+):
     """Accept a match naming exactly these subjects.
 
     Args:
@@ -127,6 +129,8 @@ def _submit(seed_user, lines=(), transactions=(), entries=()):
         lines: Bank line rows.
         transactions: Transaction rows.
         entries: Purchase rows.
+        residual: The difference the screen showed and the owner agreed to
+            record, or ``None`` (plan step ``bank_import:X-f6d-4``).
 
     Returns:
         The :class:`~app.services.statement_match.AcceptedMatch`.
@@ -140,6 +144,7 @@ def _submit(seed_user, lines=(), transactions=(), entries=()):
     return statement_match.accept_match(
         a_submission(
             scope, lines=lines, transactions=transactions, entries=entries,
+            residual=residual,
         ),
         scope,
     )
@@ -225,15 +230,23 @@ class TestABalancedMatchIsRecorded:
 
 
 class TestTheGroupMustSum:
-    """The developer's ruling of 2026-08-17, and finding **N-239**'s own data."""
+    """The developer's ruling of 2026-08-17, and finding **N-239**'s own data.
+
+    **Amended by plan step ``bank_import:X-f6d-4``**: the sides must still
+    meet, but a difference the owner ACCEPTS is closed by a member this door
+    mints rather than by sending them away (ruling **R-FN**).  What is graded
+    here is the refusal that stands when nobody accepts one;
+    :mod:`.test_residual` grades the other half.
+    """
 
     def test_a_five_cent_shortfall_is_refused(self, app, db, seed_user):
         """The payroll shape: the bank paid more than the app's rows say.
 
-        6 of 16 payroll deposits on the developer's own statement sit
-        `$0.05`-`$0.06` apart from what the app holds.  A tolerance would
+        7 payroll deposits on a production clone of the developer's own data
+        sit `$0.04`-`$0.06` apart from what the app holds.  A tolerance would
         absorb exactly the defect the matcher is the first instrument able to
-        see.
+        see -- and this refusal is what stands when the owner has NOT agreed
+        to record the difference.
         """
         statement = an_import(seed_user)
         line = a_bank_line(seed_user, statement, amount="2573.43")
@@ -250,6 +263,9 @@ class TestTheGroupMustSum:
             )
 
         assert "0.05" in str(caught.value)
+        # It says what to do about it, which is the half X-f6d-4 added: before
+        # that step the only advice was to go and edit a row.
+        assert "tick the box" in str(caught.value)
         assert salary.settled_on is None
         assert allowance.settled_on is None
 

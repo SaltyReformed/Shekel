@@ -406,7 +406,9 @@ def a_basis(seed_user):
     return amount_basis(seed_user["user"].id, seed_user["scenario"].id)
 
 
-def a_submission(scope, *, lines=(), transactions=(), entries=()):
+def a_submission(
+    scope, *, lines=(), transactions=(), entries=(), residual=None,
+):
     """Return the submission a screen rendered from *scope* would post back.
 
     **It reads the reviewed state out of the SCOPE rather than inventing one**,
@@ -430,6 +432,15 @@ def a_submission(scope, *, lines=(), transactions=(), entries=()):
         lines: Bank line rows.
         transactions: Transaction rows.
         entries: Purchase rows.
+        residual: The difference the screen showed and the owner ticked, as a
+            string or a ``Decimal``; ``None`` for the ordinary case where they
+            accepted none (plan step ``bank_import:X-f6d-4``).  **Stated by the
+            caller rather than computed here**, and that is the point: the door
+            reconciles what the screen said against its own arithmetic, so a
+            helper that derived the figure would make every case agree by
+            construction and leave the reconciliation ungraded -- the same
+            reason the reviewed row state is read off the scope rather than
+            invented.
 
     Returns:
         The :class:`~app.services.statement_match.MatchSubmission`.
@@ -456,6 +467,9 @@ def a_submission(scope, *, lines=(), transactions=(), entries=()):
     return MatchSubmission(
         line_ids=frozenset(line.id for line in lines),
         rows=frozenset(rows),
+        accepted_difference=(
+            None if residual is None else Decimal(str(residual))
+        ),
     )
 
 

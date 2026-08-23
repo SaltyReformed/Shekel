@@ -49,7 +49,9 @@ out, no Flask import, no clock read.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
+from app.exceptions import ValidationError
 from app.services import pay_calendar
 from app.services.cash_ledger import AmountBasis, baseline_amount_basis
 
@@ -103,6 +105,58 @@ class ReviewScope:
     basis: AmountBasis
     candidates: Candidates
     destinations: "tuple[PurchaseDestination, ...]"
+
+    def period_holding(self, day: "date", subject: str) -> int:
+        """Return the id of the pay period covering *day*, refusing if none does.
+
+        **ONE statement of it for the whole package** (plan step
+        ``bank_import:X-f6d-4``): :mod:`._create` places a purchase it records
+        and :mod:`._variance` places the row it mints for a group's
+        difference, and the two had the identical body apart from one noun.
+        A second spelling of "which paycheck holds this day" is this arc's own
+        root cause 1 on the column that decides which budget a movement lands
+        in.
+
+        **It is a method rather than a free function taking a calendar**,
+        because the calendar it must use is THIS pass's.  Loading a second one
+        is what :func:`~._create.create_purchase_from_line` was doing until
+        plan step ``bank_import:X-f6a-3c-2``, and under READ COMMITTED the two
+        can differ -- so a line could be OFFERED against one calendar and
+        PLACED against another.  Taking it off the scope makes that
+        unrepresentable rather than merely avoided.
+
+        **WHICH day a caller passes is the caller's decision and they differ**:
+        a purchase is placed by the day it was MADE, because it has a budget
+        clock of its own, and a residual by the day the match POSTS on,
+        because it has none -- it IS the movement.
+
+        Args:
+            day: The civil day the money is placed by.
+            subject: What is being placed, for the refusal's sentence -- "this
+                purchase" or "the difference on this match".  Taken rather
+                than composed here, because a refusal an owner reads has to
+                name the act they performed.
+
+        Returns:
+            The covering period's id.
+
+        Raises:
+            ValidationError: When no SAVED period covers it.  **Both of
+            ``period_containing``'s two answers reach here**: a day before the
+            owner's first payday, and one past the generated horizon.  The
+            review screen splits off only the FIRST
+            (:func:`~._reads._split_at_calendar_open`), so a line posted past
+            the last saved period reaches a caller -- which is why callers
+            resolve this BEFORE they write anything.
+        """
+        period = self.calendar.period_containing(day)
+        if period is None:
+            raise ValidationError(
+                f"No pay period covers {day.isoformat()}, so there is no "
+                f"budget for {subject} to belong to.  Extend your pay "
+                f"schedule to cover that day first.  Nothing was changed."
+            )
+        return period.period_id
 
     @classmethod
     def build(cls, owner_id: int, account_id: int) -> "ReviewScope":

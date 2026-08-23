@@ -468,7 +468,11 @@ EVT_STATEMENT_MATCHED = _register(
 
 EVT_STATEMENT_MATCH_RELEASED = _register(
     "statement_match_released", BUSINESS,
-    "An owner undid a match; the bank lines it explained are unexplained again.",
+    "An owner undid a match; the bank lines it explained are unexplained "
+    "again.  It MOVES MONEY where the act had CREATED a row -- a group's "
+    "recorded difference states nothing once the grouping is released, so "
+    "the release removes it and reverses its postings (plan step "
+    "bank_import:X-f6d-4).  ``removed_count`` is how many such rows went.",
 )
 
 EVT_STATEMENT_MATCH_LINELESS = _register(
@@ -496,6 +500,17 @@ EVT_STATEMENT_LINE_RECORDED = _register(
     "statement_line_recorded", BUSINESS,
     "A bank line the app had no row for became a purchase against a budget "
     "line, which MOVES MONEY: the app now records a movement it did not have.",
+)
+
+EVT_STATEMENT_RESIDUAL_RECORDED = _register(
+    "statement_residual_recorded", BUSINESS,
+    "A matched GROUP's difference was recorded as an ordinary uncategorized "
+    "row, which MOVES MONEY: the app now records a movement the bank showed "
+    "and no row of the owner's accounted for (ruling R-FN).  Its own event "
+    "beside the match that produced it, because it is a different act with a "
+    "different consequence -- a match re-dates and re-prices rows that already "
+    "existed, and this CREATES one, in the per-owner Uncategorized bucket that "
+    "nothing else in the app has ever written.",
 )
 
 EVT_STATEMENT_BATCH_APPLIED = _register(

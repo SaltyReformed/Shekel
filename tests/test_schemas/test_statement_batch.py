@@ -90,6 +90,10 @@ class TestOnlyWhatWasTickedIsAnAct:
                     kind=RowKind.TRANSACTION, row_id=42,
                     cash_amount=Decimal("-180.00"), version_id=1,
                 )],
+                # A proposal carries no accepted difference: the app's own
+                # tiers propose only where the two sides agree exactly (plan
+                # step bank_import:X-f6d-4).
+                "residual": None,
             },
         ]
 
@@ -158,7 +162,7 @@ class TestOnlyWhatWasTickedIsAnAct:
         loaded = _load(_form([("apply", "not-an-index")]))
 
         assert loaded["matches"] == [
-            {"line_ids": [], "rows": []},
+            {"line_ids": [], "rows": [], "residual": None},
         ]
 
     @pytest.mark.parametrize("token, why", [
@@ -189,7 +193,7 @@ class TestOnlyWhatWasTickedIsAnAct:
         ]))
 
         assert loaded["matches"] == [
-            {"line_ids": [5], "rows": []},
+            {"line_ids": [5], "rows": [], "residual": None},
         ], why
 
     def test_a_destination_KEY_that_isdigit_accepts_does_not_raise(self):
@@ -209,6 +213,144 @@ class TestOnlyWhatWasTickedIsAnAct:
             ]))
 
         assert "line_id" in str(raised.value)
+
+
+class TestTheDifferenceTheOwnerAccepted:
+    """Plan step ``bank_import:X-f6d-4``: the one field that is not per-row.
+
+    The consent box is rendered DISABLED and only ``statement_review.js``
+    enables it, filling its value with the running total -- so an unticked
+    group, and a browser with no JavaScript, both submit nothing at all.  What
+    this grades is that the three states are distinguishable on the wire and
+    that a hostile spelling cannot reach the door as a figure.
+    """
+
+    def test_an_unticked_group_carries_NONE(self):
+        """Absence is a state the SCHEMA names, not one the reader invents.
+
+        ``batch_payload`` omits the key rather than sending ``None``, so the
+        default lives in exactly one place.
+        """
+        loaded = _load(_form([
+            ("apply", "hand"),
+            ("match-hand-line_ids", "11"),
+            ("match-hand-rows", "transaction:42:-180.00:1"),
+        ]))
+
+        assert loaded["matches"][0]["residual"] is None
+
+    def test_a_ticked_group_carries_the_figure_it_showed(self):
+        """A signed decimal, read into a ``Decimal`` for the door to compare."""
+        loaded = _load(_form([
+            ("apply", "hand"),
+            ("match-hand-line_ids", "11"),
+            ("match-hand-rows", "transaction:42:2473.38:1"),
+            ("match-hand-rows", "transaction:43:100.00:1"),
+            ("match-hand-residual", "0.05"),
+        ]))
+
+        assert loaded["matches"][0]["residual"] == Decimal("0.05")
+
+    def test_a_NEGATIVE_difference_is_read_as_one(self):
+        """The bank took more than the rows say, which is the expense arm."""
+        loaded = _load(_form([
+            ("apply", "hand"),
+            ("match-hand-line_ids", "11"),
+            ("match-hand-rows", "transaction:42:-180.00:1"),
+            ("match-hand-residual", "-0.06"),
+        ]))
+
+        assert loaded["matches"][0]["residual"] == Decimal("-0.06")
+
+    @pytest.mark.parametrize("spelling, why", [
+        ("NaN", "compares unequal to every figure, so a guard becomes a no-op"),
+        ("Infinity", "not a figure any row can hold"),
+        ("1e1000000000", "an exponent Decimal cannot quantize"),
+        ("0.05; DROP", "not a number at all"),
+        ("1_0", "a spelling the row token on this same form refuses"),
+        ("+0.05", "a leading plus the row token refuses"),
+        (" 0.05 ", "surrounding whitespace the row token refuses"),
+    ])
+    def test_a_hostile_spelling_is_REFUSED(self, spelling, why):
+        """Each of these reaches the field from a crafted POST.
+
+        A ``NaN`` is the one that matters most and it is why this class exists:
+        the door compares the accepted figure with its own using ``!=``, and
+        ``Decimal("NaN") != x`` is TRUE for every x -- so a ``NaN`` slipping
+        through would not open the door, it would jam it shut on every group,
+        which is a denial dressed as a safety.  The other spellings are the
+        ones this project has already paid to learn about
+        (``_submission._FIGURE``).
+
+        Args:
+            spelling: What a crafted body sends.
+            why: What is wrong with it, for the failure message.
+        """
+        with pytest.raises(ValidationError) as caught:
+            _load(_form([
+                ("apply", "hand"),
+                ("match-hand-line_ids", "11"),
+                ("match-hand-rows", "transaction:42:-180.00:1"),
+                ("match-hand-residual", spelling),
+            ]))
+
+        assert "matches" in caught.value.messages, why
+
+    def test_a_SUB_CENT_figure_is_read_verbatim_and_left_to_the_door(self):
+        """The reader is about the FORMAT; the VALUE is the door's question.
+
+        This is where a quantizer went wrong.  ``fields.Decimal(places=2)``
+        REPAIRED ``0.054`` into ``0.05`` and it then passed as consent for a
+        true difference of ``0.05`` -- a half-cent tolerance on the one field
+        the design says is exact, using the rounding mode
+        :mod:`app.utils.money` forbids.  Read verbatim, it simply is not the
+        door's own figure, and the door says so
+        (``test_residual.TestTheFigureTheOwnerAcceptedIsReconciled``).
+        """
+        loaded = _load(_form([
+            ("apply", "hand"),
+            ("match-hand-line_ids", "11"),
+            ("match-hand-rows", "transaction:42:-180.00:1"),
+            ("match-hand-residual", "0.054"),
+        ]))
+
+        assert loaded["matches"][0]["residual"] == Decimal("0.054")
+
+    def test_an_EMPTY_consent_box_is_UNTOUCHED_rather_than_malformed(self):
+        """This module's founding principle, on the newest control.
+
+        A browser submits every control it renders, so an untouched one has to
+        be recognisable as untouched.  The panel keeps ``value=""`` and
+        ``disabled`` in lockstep so no browser sends this -- and a body that
+        does would otherwise 400 the WHOLE pass over a field nobody filled in.
+        """
+        loaded = _load(_form([
+            ("apply", "hand"),
+            ("match-hand-line_ids", "11"),
+            ("match-hand-rows", "transaction:42:-180.00:1"),
+            ("match-hand-residual", ""),
+        ]))
+
+        assert loaded["matches"][0]["residual"] is None
+
+    def test_a_REPEATED_consent_cannot_desynchronise_the_item(self):
+        """One consent per item, so a repeated key keeps the first.
+
+        Whichever it keeps still has to EQUAL the difference the door derives
+        from the same submission's rows, so no repeated key can choose what
+        gets written -- which is why this reads with ``get`` rather than
+        growing a list the schema would then have to reconcile.
+        """
+        loaded = _load(_form([
+            ("apply", "hand"),
+            ("match-hand-line_ids", "11"),
+            ("match-hand-rows", "transaction:42:-180.00:1"),
+            ("match-hand-residual", "0.05"),
+            ("match-hand-residual", "-999.00"),
+        ]))
+
+        assert loaded["matches"][0]["residual"] == Decimal("0.05")
+
 
 
 class TestTheDestinationSelectIsTheTick:

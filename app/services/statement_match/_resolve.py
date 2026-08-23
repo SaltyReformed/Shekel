@@ -13,9 +13,10 @@ sent is what this pass could have offered.  Two are about the LINES -- a line
 this account does not hold, and one another match has claimed -- and three
 about the ROWS: a row this pass could not offer or can no longer price, one
 subject named twice, and a row that has MOVED since the screen described it.
-The refusals in :mod:`._accept` are about the WRITE instead -- an empty side,
-a parent matched beside its own child, a figure that is not the row's to
-state.
+The refusals in :mod:`._accept` are about the submission's SHAPE instead -- an
+empty side, a parent matched beside its own child -- and the ones in
+:mod:`._variance` are about the two sides DISAGREEING, which since plan step
+``bank_import:X-f6d-4`` includes the figure that is not the row's to state.
 
 *(This module's count is stated because this arc has shipped a taxonomy that
 did not add up before; if a sixth refusal is added here, this sentence is what
@@ -225,7 +226,8 @@ def _reject_moved_since_review(
 
     **It fails CLOSED, which is what the exact tier used to do by accident.**
     An equal match whose price moved became UNEQUAL and was refused by
-    :func:`_reject_uncorrectable`'s predecessor (**R-FV**); ``X-f6d-2`` made
+    :func:`~._variance.reject_unrecordable`'s predecessor (**R-FV**);
+    ``X-f6d-2`` made
     an unequal one-to-one recordable and that accident stopped protecting
     anything.  So this refuses on ANY movement, in either direction, on either
     coordinate -- not only where a correction would be written.  A match whose

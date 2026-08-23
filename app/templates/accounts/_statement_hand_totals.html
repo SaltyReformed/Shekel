@@ -1,0 +1,101 @@
+{% from "_money_macros.html" import money %}
+
+{# WHAT THE TICKED LINES AND ROWS COME TO, and what Apply would do about it.
+
+   Plan step bank_import:X-f6d-4, ruling R-FN.  A difference is a transaction
+   the owner ACCEPTS, so they have to see the figure first -- and a group they
+   assembled from two checkbox lists is one nothing has computed yet.
+
+   THE SERVER COMPUTES IT.  Ticking a box fires this fragment through htmx,
+   carrying the very body Apply would send, and `_preview.preview_hand_build`
+   answers it by running the accept door's own reads and refusals without the
+   writes.  So the figure on screen and the figure the door checks are one
+   derivation, not two that agree by reading.
+
+   A first version of this step summed the two sides in JavaScript.  Three
+   things were wrong with that, all of them gone here: the project's coding
+   rule says JS never computes monetary values; the schema quantized the
+   posted figure with ROUND_HALF_EVEN, which app/utils/money.py forbids, so a
+   sub-cent figure was repaired into agreement; and one total ended up spelled
+   four ways on one card.  It renders through the `money` macro now, which is
+   the app's ONE currency formatter.
+
+   WITH JAVASCRIPT OFF this never re-renders, so the consent box stays disabled
+   and submits nothing -- which leaves exactly the behaviour that shipped
+   before this step: the door refuses the group and names both sums.  The label
+   below says so, because that wording is only ever read in that world.
+
+   THE TRIGGER IS NOT HERE, and that is a fix rather than a layout choice.  It
+   sat on this div as `hx-trigger="change from:#hand-build-form"` until a
+   browser probe drove it: the consent box is inside the form, so TICKING IT
+   fired a re-render, and the swap replaced it with a fresh unchecked one.  The
+   owner could never keep it ticked, and Apply submitted no consent at all --
+   the whole ruled act dead in a browser with every server test green.  The
+   attributes live on the wrapper around the two tick lists instead
+   (`_statement_review_body.html`), which the swap never replaces and the
+   consent box is not inside.
+
+   Context: totals (HandTotals). #}
+
+<div id="hand-totals" class="card mb-3">
+  <div class="card-body py-2">
+    <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+      <div class="small text-body-secondary">
+        Your bank shows
+        <span class="fw-semibold text-body">{{ money(totals.bank) }}</span>
+        &middot; the rows you ticked come to
+        <span class="fw-semibold text-body">{{ money(totals.app) }}</span>
+        &middot; difference
+        <span class="fw-semibold text-body">{{ money(totals.difference) }}</span>
+      </div>
+      <button type="submit" class="btn btn-outline-primary flex-shrink-0">
+        Match the ticked lines and rows
+      </button>
+    </div>
+
+    {% if totals.refusal %}
+    {# The DOOR's own sentence, before the press rather than after it.  A group
+       naming a transfer shadow or a row worth whatever its purchases are is
+       one Apply will not record, and this arm is the difference between
+       learning that here and learning it from a receipt. #}
+    <div class="alert alert-warning d-flex gap-2 align-items-start mt-2 mb-0 py-2"
+         role="alert">
+      <i class="bi bi-exclamation-triangle mt-1"></i>
+      <div class="small">{{ totals.refusal }}</div>
+    </div>
+    {% endif %}
+
+    <div class="form-check mt-2 mb-0">
+      {# The value is the SERVER's own string.  The door re-derives the
+         difference and refuses the act if the two disagree, so this box is a
+         precondition rather than a payload -- the same distinction
+         MatchSubmission draws for every figure it carries. #}
+      <input class="form-check-input" type="checkbox"
+             id="hand-residual" name="match-hand-residual"
+             value="{{ totals.consent or '' }}"
+             {% if not totals.consent %}disabled{% endif %}>
+      <label class="form-check-label small" for="hand-residual">
+        {% if totals.remedy == 'records' %}
+        Record the {{ money(totals.difference) }} difference as a row with no
+        category that you can categorise later.
+        {% elif totals.remedy == 'corrects' %}
+        Write your bank's {{ money(totals.bank) }} to the row you ticked, in
+        place of the {{ money(totals.app) }} your records hold.
+        {% elif totals.remedy == 'agrees' %}
+        These add up. Nothing is left over.
+        {% elif totals.remedy == 'refused' %}
+        There is nothing to accept while the sentence above stands.
+        {% else %}
+        {# Also the JAVASCRIPT-OFF wording, because this is what the server
+           renders into the page and nothing ever replaces it there.  It says
+           what the door does, which is the only thing true in that world. #}
+        Tick lines on the left and rows on the right. One line against one row
+        may <strong>disagree</strong>: your bank's figure is written to that
+        row. Several rows must come to the <strong>same total</strong>, and if
+        they do not, nothing is changed and the difference is named at the top
+        of this page.
+        {% endif %}
+      </label>
+    </div>
+  </div>
+</div>
