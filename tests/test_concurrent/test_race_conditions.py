@@ -33,6 +33,7 @@ from app.services.auth_service import hash_password
 from app.services import account_service, pay_period_admin, pay_schedule_service
 from tests._test_helpers import assert_pay_period_invariants, linked_ledger_total
 from app.services import cash_ledger
+from app.utils.dates import display_today
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +138,19 @@ def _create_user_with_data(db_session):
     # Pay periods must exist before the account so the E-19 factory
     # has an anchor to assign.  Three periods: past, current
     # (containing today), and future.
-    today = date.today()
+    #
+    # **The APP's civil day, never the process's.**  ``pay_period_admin
+    # .top_up_rolling_window`` defaults ``as_of`` to ``display_today()``, so a
+    # fixture built from ``date.today()`` places its period boundaries on a
+    # DIFFERENT day whenever the process timezone has already rolled over and
+    # the display one has not.  CI pins ``TZ=Pacific/Kiritimati`` (UTC+14)
+    # exactly to catch that, and on 2026-08-23 it did: the process read Monday
+    # 08-24 while the app read Sunday 08-23, so the "past" period still ended
+    # ON the app's today, counted INSIDE the rolling window, and the deficit
+    # came out 3 where the test expected 4.  It fires only when the two clocks
+    # straddle a Sunday/Monday boundary, which is why it took until the first
+    # CI run inside that window to appear.
+    today = display_today()
     current_start = today - timedelta(days=today.weekday())  # Monday this week
     past_period = PayPeriod(
         user_id=user.id,
@@ -584,7 +597,8 @@ class TestConcurrentRollingTopUp:
         assert len(indices) == len(set(indices)), (
             f"duplicate period_index landed: {sorted(indices)}"
         )
-        future = [p for p in periods if p.end_date >= date.today()]
+        # The same clock the door counted with; see ``_create_user_with_data``.
+        future = [p for p in periods if p.end_date >= display_today()]
         assert len(future) == 5, (
             f"window should hold exactly the target of 5, found {len(future)}"
         )
@@ -619,7 +633,8 @@ class TestConcurrentRollingTopUp:
         assert len(indices) == len(set(indices)), (
             f"duplicate period_index landed: {sorted(indices)}"
         )
-        future = [p for p in periods if p.end_date >= date.today()]
+        # The same clock the door counted with; see ``_create_user_with_data``.
+        future = [p for p in periods if p.end_date >= display_today()]
         assert len(future) >= 5, (
             f"window should be filled to at least the target of 5, "
             f"found {len(future)}"
