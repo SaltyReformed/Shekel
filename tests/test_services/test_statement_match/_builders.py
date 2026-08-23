@@ -19,6 +19,7 @@ from app.enums import (
     TxnTypeEnum,
 )
 from app.extensions import db
+from app.models.account import Account, AccountAnchorHistory
 from app.models.merchant_destination import MerchantDestination
 from app.models.pay_period import PayPeriod
 from app.models.statement_import import BankStatementLine, StatementImport
@@ -26,7 +27,16 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services.cash_ledger import amount_basis
-from app.services.statement_match import ReviewScope
+from app.services.statement_match import (
+    MatchSubmission,
+    ReviewScope,
+    ReviewedRow,
+    RowKind,
+    as_reviewed,
+)
+from tests._test_helpers import (
+    settle_day_columns,
+)
 
 
 def a_transaction(
@@ -41,6 +51,8 @@ def a_transaction(
     period=None,
     category=None,
     template=True,
+    reconciled_by=None,
+    settle_day_basis=None,
 ):
     """Stage and return one transaction on the seeded checking account.
 
@@ -67,6 +79,18 @@ def a_transaction(
             ``_create._create_envelope`` produces and therefore the only shape
             a NEW-ENVELOPE merchant answer converges onto -- naming a template
             is a different answer with its own resolution.
+        reconciled_by: The :func:`an_assertion` this row was TICKED against on
+            the reconcile panel, or ``None`` for a row settled any other way.
+            **It no longer decides what KIND of day *settled_on* is** (plan step
+            **X-az**): that column answers WHICH statement was seen to show the
+            money, and reading it as the day's provenance is finding **N-332**.
+            Pass *settle_day_basis* to say what the day is.
+        settle_day_basis: WHICH KIND of day *settled_on* is
+            (:class:`~app.enums.SettledDayBasisEnum`), or ``None`` for
+            ``entered`` -- the owner's own record, which is what a row settled
+            through an edit box or a Mark Paid carries.  A fixture standing in
+            for a reconcile-panel tick says ``ASSERTED``; one standing in for a
+            bank match says ``OBSERVED``.
 
     Returns:
         The staged :class:`~app.models.transaction.Transaction`.
@@ -100,12 +124,13 @@ def a_transaction(
         transaction_type_id=type_id,
         estimated_amount=Decimal(amount),
         is_envelope=is_envelope,
-        settled_on=settled_on,
+        **settle_day_columns(settled_on, settle_day_basis),
         settled_amount=Decimal(amount) if settled_on else None,
         settled_basis_id=(
             ref_cache.settlement_basis_id(SettlementBasisEnum.DERIVED)
             if settled_on else None
         ),
+        reconciled_by_id=reconciled_by.id if reconciled_by else None,
     )
     db.session.add(txn)
     db.session.flush()
@@ -114,7 +139,8 @@ def a_transaction(
 
 def a_purchase(
     seed_user, parent, *, amount="25.00", description="Kroger",
-    purchased_on=None, settled_on=None, is_credit=False,
+    purchased_on=None, settled_on=None, is_credit=False, reconciled_by=None,
+    settle_day_basis=None,
 ):
     """Stage and return one purchase under *parent*.
 
@@ -126,6 +152,19 @@ def a_purchase(
         purchased_on: The day it was made.
         settled_on: The day the bank took it, or ``None``.
         is_credit: Whether it went on a card (and so never touches checking).
+        settle_day_basis: WHICH KIND of day *settled_on* is
+            (:class:`~app.enums.SettledDayBasisEnum`), or ``None`` for
+            ``entered``.  See :func:`a_transaction`; a purchase ticked on the
+            reconcile panel is ``ASSERTED`` and one the bank stated is
+            ``OBSERVED``, and it is the basis rather than *reconciled_by* that
+            decides the window (plan step **X-az**).
+        reconciled_by: The :func:`an_assertion` this purchase was TICKED
+            against on the reconcile panel, or ``None`` for one settled any
+            other way.  **It no longer decides what KIND of day *settled_on*
+            is** (plan step **X-az**), for the reason :func:`a_transaction`'s
+            twin parameter states: that column answers WHICH statement was seen
+            to show the money, and reading it as the day's provenance is finding
+            **N-332**.  Pass *settle_day_basis*.
 
     Returns:
         The staged :class:`~app.models.transaction_entry.TransactionEntry`.
@@ -137,12 +176,48 @@ def a_purchase(
         amount=Decimal(amount),
         description=description,
         purchased_on=purchased_on or seed_user["bootstrap_period"].start_date,
-        settled_on=settled_on,
+        **settle_day_columns(settled_on, settle_day_basis),
         is_credit=is_credit,
+        reconciled_by_id=reconciled_by.id if reconciled_by else None,
     )
     db.session.add(entry)
     db.session.flush()
     return entry
+
+
+def an_assertion(
+    seed_user, *, observed_on=None, balance="1000.00", account=None,
+):
+    """Stage and return one asserted balance, for a row to be RECONCILED to.
+
+    **What the reconcile panel's tick points a row at**, and the thing that
+    makes a settle day a BOUND rather than an observation
+    (:attr:`~app.services.statement_match.CandidateRow.expected_window`).  A
+    fixture cannot fake the link with a bare integer: ``fk_transaction_entries
+    _reconciled_by`` and its transaction twin reference
+    ``account_anchor_history (account_id, id)``, so the assertion has to exist.
+
+    Args:
+        seed_user: The seeded user bundle.
+        observed_on: The civil day this balance is asserted FOR -- the day the
+            panel stamps onto every row ticked against it.  The bootstrap
+            period's start by default.
+        balance: The asserted figure, as a string.  Nothing here reads it; it
+            is stated because the column is NOT NULL.
+        account: The account it is asserted for; the seeded checking one by
+            default.
+
+    Returns:
+        The staged :class:`~app.models.account.AccountAnchorHistory`.
+    """
+    row = AccountAnchorHistory(
+        account_id=(account or seed_user["account"]).id,
+        anchor_balance=Decimal(balance),
+        observed_on=observed_on or seed_user["bootstrap_period"].start_date,
+    )
+    db.session.add(row)
+    db.session.flush()
+    return row
 
 
 def an_import(seed_user, account=None):
@@ -329,3 +404,96 @@ def a_basis(seed_user):
         The :class:`~app.services.cash_ledger.AmountBasis` for that owner.
     """
     return amount_basis(seed_user["user"].id, seed_user["scenario"].id)
+
+
+def a_submission(scope, *, lines=(), transactions=(), entries=()):
+    """Return the submission a screen rendered from *scope* would post back.
+
+    **It reads the reviewed state out of the SCOPE rather than inventing one**,
+    which is what makes these tests exercise the real two-moment flow: the
+    screen renders a candidate, the owner ticks it, and the door reconciles
+    what was ticked with what it finds (finding **N-336**, plan step
+    ``bank_import:X-f6d-3``).  A helper that stamped a figure of its own would
+    make every case agree with itself by construction, and the staleness guard
+    would be untested by every test that uses it.
+
+    A row the scope does NOT offer is carried as the ORM row states it.  That
+    is not a fallback that hides a mistake: those cases are the ones asserting
+    the door refuses a row it never offered, and ``resolve_rows`` refuses them
+    before the reconciliation is reached -- so what the token says about them
+    cannot change the outcome, and a helper that raised here would make the
+    refusal untestable.
+
+    Args:
+        scope: The pass being submitted against
+            (:func:`a_scope`).
+        lines: Bank line rows.
+        transactions: Transaction rows.
+        entries: Purchase rows.
+
+    Returns:
+        The :class:`~app.services.statement_match.MatchSubmission`.
+    """
+    offered = {
+        (row.kind, row.row_id): row for row in scope.candidates.rows
+    }
+    wanted = (
+        [(RowKind.TRANSACTION, txn) for txn in transactions]
+        + [(RowKind.PURCHASE, entry) for entry in entries]
+    )
+    rows = set()
+    for kind, orm_row in wanted:
+        candidate = offered.get((kind, orm_row.id))
+        if candidate is not None:
+            rows.add(as_reviewed(candidate))
+            continue
+        rows.add(ReviewedRow(
+            kind=kind,
+            row_id=orm_row.id,
+            cash_amount=Decimal("0.00"),
+            version_id=orm_row.version_id,
+        ))
+    return MatchSubmission(
+        line_ids=frozenset(line.id for line in lines),
+        rows=frozenset(rows),
+    )
+
+
+def a_reviewed_token(orm_row, kind):
+    """Return the form value the review screen would emit for *orm_row*.
+
+    **Through the real producer, never composed here** -- a helper that spelled
+    the token itself would agree with the schema by construction.
+
+    **What it does NOT grade, stated because a first draft of this docstring
+    claimed it did**: it calls
+    :func:`~app.services.statement_match.as_reviewed` DIRECTLY, so it never
+    touches the ``reviewed_token`` filter and never renders a template.  It
+    grades the service against itself.  The pair that has to agree is a Jinja
+    filter name and a Marshmallow field name, which nothing in the tree fails
+    over, and the only cases that close that loop scrape the rendered page:
+    ``test_statement_matches.TestWhatTheTEMPLATEEmittedIsWhatTheDOORAccepts``,
+    one per emission site.  Named by adversarial financial review 2026-08-23,
+    which measured the hand form's site ungraded at 418 tests green.
+
+    Args:
+        orm_row: A ``Transaction`` or ``TransactionEntry``.
+        kind: Which of the two it is
+            (:class:`~app.services.statement_match.RowKind`).
+
+    Returns:
+        Its ``"<kind>:<row_id>:<cash_amount>:<version_id>"`` token.
+    """
+    account = db.session.get(Account, orm_row.account_id)
+    scope = ReviewScope.build(account.user_id, account.id)
+    for candidate in scope.candidates.rows:
+        if candidate.kind is kind and candidate.row_id == orm_row.id:
+            return as_reviewed(candidate).token
+    # NOT offerable, which several cases stage deliberately.  The door refuses
+    # such a row before it reconciles anything, so the figure here cannot
+    # change an outcome; what must be right is the SHAPE, so the token still
+    # goes through the same value rather than a literal.
+    return ReviewedRow(
+        kind=kind, row_id=orm_row.id, cash_amount=Decimal("0.00"),
+        version_id=orm_row.version_id,
+    ).token

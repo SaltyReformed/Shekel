@@ -47,7 +47,8 @@ The public surface, and what each piece is for:
 * :func:`release_match` -- the undo, which restores the QUESTION rather than
   the days.
 * The value types :class:`MatchProposal`, :class:`MatchSubmission`,
-  :class:`CandidateRow`, :class:`BankLine`, :class:`RowKind`,
+  :class:`ReviewedRow`, :class:`CandidateRow`, :class:`BankLine`,
+  :class:`RowKind`,
   :class:`AcceptedMatch`, :class:`AcceptedGroup`, :class:`AcceptedRow`,
   :class:`ReviewedBatch`, :class:`BatchOutcome` and :class:`ReviewSet`.
 
@@ -82,22 +83,26 @@ from ._candidates import (
     unmatched_destinations,
 )
 from ._create import CreatedPurchase, create_purchase_from_line
-from ._offers import (
+from ._creations import (
     NEW_ENVELOPE,
+    NewEnvelope,
+    PurchaseCreation,
+    PurchaseDestination,
+)
+from ._offers import (
     BankLine,
     CandidateRow,
     Candidates,
     MatchDays,
     MatchProposal,
-    MatchSubmission,
-    NewEnvelope,
-    PurchaseCreation,
-    PurchaseDestination,
     RowKind,
     corrected_purchase_day,
     merchant_label,
 )
-from ._propose import DAY_WINDOW, ProposedMatches, propose
+from ._submission import MatchSubmission, ReviewedRow, as_reviewed
+from ._near import NEAR_MISS_BOUND
+from ._pairing import DAY_WINDOW
+from ._propose import ProposedMatches, propose
 from ._accepted_view import AcceptedGroup, AcceptedRow
 from ._placement import Placement, PlacementKind
 from ._policy import (
@@ -132,6 +137,7 @@ __all__ = [
     "CreatableLine",
     "CreatedPurchase",
     "DAY_WINDOW",
+    "NEAR_MISS_BOUND",
     "MatchDays",
     "MerchantPolicy",
     "MerchantSection",
@@ -151,10 +157,12 @@ __all__ = [
     "ReviewScope",
     "ReviewSet",
     "ReviewedBatch",
+    "ReviewedRow",
     "RowKind",
     "StatedPolicies",
     "accept_match",
     "apply_reviewed",
+    "as_reviewed",
     "awaiting_review_count",
     "candidates_for",
     "corrected_purchase_day",

@@ -33,18 +33,25 @@ from app.utils.dates import display_today
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
     all_periods,
-    make_every_period_rule,
-    settlement_basis_id,
+    an_asserted_day,
+    an_entered_day,
+    an_observed_day,
     cadence_payload,
     create_account_of_type,
     create_loan_account,
     field_is_disabled,
+    make_every_period_rule,
     make_transfer_template,
     net_posted_by_day,
     override_anchor,
+    settlement_basis_id,
 )
 from app.services.row_valuation import owned_contribution
 from app.services.pay_calendar import calendar_for
+from app.services.settle_day import (
+    record_settle_day,
+    recorded_settle_day,
+)
 
 
 def _create_savings_account(seed_user):
@@ -1085,7 +1092,7 @@ class TestTransferInstance:
             settled_at = display_today() - timedelta(days=7)
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                status_id=done_id, settled_on=settled_at,
+                status_id=done_id, settle_day=an_entered_day(settled_at),
             )
             db.session.commit()
 
@@ -1854,7 +1861,7 @@ class TestAdHoc:
             # a genuinely week-old settle is really in.
             settled_a_week_ago = display_today() - timedelta(days=7)
             transfer_service.update_transfer(
-                xfer.id, seed_user["user"].id, settled_on=settled_a_week_ago,
+                xfer.id, seed_user["user"].id, settle_day=an_entered_day(settled_a_week_ago),
             )
             db.session.commit()
 
@@ -1928,7 +1935,7 @@ class TestTransferSettleDayEditDoor:
             status_id=ref_cache.status_id(StatusEnum.DONE),
         )
         transfer_service.update_transfer(
-            xfer.id, seed_user["user"].id, settled_on=day,
+            xfer.id, seed_user["user"].id, settle_day=an_entered_day(day),
         )
         db.session.commit()
         return xfer
@@ -1952,6 +1959,129 @@ class TestTransferSettleDayEditDoor:
             .filter_by(transfer_id=xfer_id, is_deleted=False)
             .all()
         }
+
+    def test_a_RE_SUBMITTED_day_does_not_restate_its_basis(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Plan step **X-az**: the ECHO rule at the TRANSFER PATCH.
+
+        This form prefills the settle-day box and posts it on Save, so an
+        untouched Save re-submits the day the pair already carries.  Stamping
+        that ``entered`` rewrites what the legs knew about their own day -- a
+        reconcile-panel BOUND, or a day the bank stated, becomes the owner's own
+        typing, with the day unchanged so nothing releases the clearing link.
+
+        A transfer carries neither settle column, so the rule needs the pair off
+        the INCOME shadow (``Transfer.settle_day_columns``, ONE read of both).
+        Drop the ``recorded`` argument at this route's ``settle_day_for_status``
+        call and this fails.
+        """
+        with app.app_context():
+            day = display_today() - timedelta(days=6)
+            xfer = self._settled_transfer(
+                seed_user, seed_periods_today, day,
+            )
+            for shadow in db.session.query(Transaction).filter_by(
+                transfer_id=xfer.id, is_deleted=False,
+            ):
+                record_settle_day(shadow, an_asserted_day(day))
+            db.session.commit()
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"settled_on": day.isoformat()},
+            )
+            assert response.status_code == 200, response.get_data(
+                as_text=True,
+            )[:300]
+
+            db.session.expire_all()
+            bases = {
+                recorded_settle_day(shadow)
+                for shadow in db.session.query(Transaction).filter_by(
+                    transfer_id=xfer.id, is_deleted=False,
+                )
+            }
+            assert bases == {an_asserted_day(day)}, (
+                "an untouched Save laundered the pair's BOUND into the owner's "
+                "own day"
+            )
+
+    def test_a_transfer_day_the_owner_MOVED_is_their_own(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """The firing half of the rule above, so it is not "never restate"."""
+        with app.app_context():
+            day = display_today() - timedelta(days=6)
+            corrected = day + timedelta(days=2)
+            xfer = self._settled_transfer(
+                seed_user, seed_periods_today, day,
+            )
+            for shadow in db.session.query(Transaction).filter_by(
+                transfer_id=xfer.id, is_deleted=False,
+            ):
+                record_settle_day(shadow, an_asserted_day(day))
+            db.session.commit()
+
+            response = auth_client.patch(
+                f"/transfers/instance/{xfer.id}",
+                data={"settled_on": corrected.isoformat()},
+            )
+            assert response.status_code == 200, response.get_data(
+                as_text=True,
+            )[:300]
+
+            db.session.expire_all()
+            bases = {
+                recorded_settle_day(shadow)
+                for shadow in db.session.query(Transaction).filter_by(
+                    transfer_id=xfer.id, is_deleted=False,
+                )
+            }
+            assert bases == {an_entered_day(corrected)}
+
+    def test_the_SHADOW_branch_of_the_transaction_PATCH_echoes_too(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """Plan step **X-az**: the ECHO rule at the THIRD status door.
+
+        A transfer shadow PATCHed through ``/transactions/<id>`` branches into
+        ``routes/transactions/_shadow_mutations``, which carries its own call of
+        the shared reading -- and a third spelling of one rule is three chances
+        for one of them to launder.  It reads the SHADOW's own recorded pair,
+        which is the pair for both legs (Transfer Invariant 3).
+
+        Drop the ``recorded`` argument there and this fails while the two doors
+        above stay green, which is the point of grading all three.
+        """
+        with app.app_context():
+            day = display_today() - timedelta(days=6)
+            xfer = self._settled_transfer(
+                seed_user, seed_periods_today, day,
+            )
+            shadows = db.session.query(Transaction).filter_by(
+                transfer_id=xfer.id, is_deleted=False,
+            ).all()
+            for shadow in shadows:
+                record_settle_day(shadow, an_observed_day(day))
+            db.session.commit()
+            shadow_id = shadows[0].id
+
+            response = auth_client.patch(
+                f"/transactions/{shadow_id}",
+                data={"settled_on": day.isoformat()},
+            )
+            assert response.status_code == 200, response.get_data(
+                as_text=True,
+            )[:300]
+
+            db.session.expire_all()
+            assert recorded_settle_day(
+                db.session.get(Transaction, shadow_id),
+            ) == an_observed_day(day), (
+                "the shadow branch laundered a bank OBSERVATION into the "
+                "owner's own day"
+            )
 
     def test_correcting_the_day_moves_both_shadows_and_the_ledger(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -2136,7 +2266,7 @@ class TestTransferSettleDayEditDoor:
                 status_id=ref_cache.status_id(StatusEnum.DONE),
             )
             transfer_service.update_transfer(
-                xfer.id, seed_user["user"].id, settled_on=settled_day,
+                xfer.id, seed_user["user"].id, settle_day=an_entered_day(settled_day),
             )
             db.session.commit()
 
@@ -2203,14 +2333,14 @@ class TestTransferSettleDayEditDoor:
             # the settlement record entirely -- settled status, nothing recorded
             # -- so all three columns are cleared together.  That is narrower
             # than what the schema forbids: only the DAY needs a figure beside
-            # it (``ck_transactions_settle_day_needs_basis``), and a record with
+            # it (``ck_transactions_settle_day_needs_a_record``), and a record with
             # no day is the legal RETAINED state.
             for row in (
                 db.session.query(Transaction)
                 .filter_by(transfer_id=xfer.id, is_deleted=False)
                 .all()
             ):
-                row.settled_on = None
+                record_settle_day(row, None)
                 row.settled_amount = None
                 row.settled_basis_id = None
             db.session.commit()
@@ -3323,7 +3453,7 @@ class TestOneTimeTransfer:
                 transfer_template_id=tmpl.id).one()
             transfer_service.settle_transfer(
                 xfer.id, seed_user["user"].id, submitted=Decimal("412.90"),
-                settled_on=display_today(),
+                settle_day=an_entered_day(display_today()),
             )
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
@@ -4378,7 +4508,7 @@ class TestTransferActualBox:
             status_id=ref_cache.status_id(StatusEnum.DONE),
         )
         transfer_service.update_transfer(
-            xfer.id, seed_user["user"].id, settled_on=day,
+            xfer.id, seed_user["user"].id, settle_day=an_entered_day(day),
         )
         db.session.commit()
         return xfer
@@ -4659,7 +4789,7 @@ class TestTransferActualBox:
         """The legacy shape's repair, and it needs BOTH halves in one save.
 
         A settled row carrying no settlement record predates the record
-        entirely (finding **N-181**).  ``ck_transactions_settle_day_needs_basis``
+        entirely (finding **N-181**).  ``ck_transactions_settle_day_needs_a_record``
         pairs the day with the record, so stating the DAY alone violates it --
         measured: the day-only save returns a designed 400 rather than
         repairing anything.  Stating both is the repair, and the Actual box is
@@ -4676,7 +4806,7 @@ class TestTransferActualBox:
             # The legacy shape, reproduced the only way it can be: straight at
             # the columns, behind the seam's back.
             for leg in self._legs(xfer.id):
-                leg.settled_on = None
+                record_settle_day(leg, None)
                 leg.settled_amount = None
                 leg.settled_basis_id = None
             db.session.commit()

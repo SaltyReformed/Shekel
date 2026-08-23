@@ -24,3 +24,68 @@ stood, and the commits they name are the record.
 | **X-f6a-2** | `267cb75e` | A bank line IS these rows: `budget.statement_matches` and its members hold the correspondence over an exclusive arc, the proposer offers it, and an accepted match writes the bank's posted day onto every member. Closed **N-173**; opened **N-305**, **N-306**, **N-314**. What a later step must obey: no clearing link is written from a match (**R-FV**), an unbalanced group is refused rather than apportioned, and a group's day is its LATEST |
 | **X-f6a-3a** | `140f1f24` + `feb2ea91` | The bank owns BOTH of a purchase's days (**R-FW**): `transaction_on` went NULLABLE, the adapter reads the swipe day SECU states in a card line's description, and a match corrects a purchase's `purchased_on` where the bank refutes it. Forced by X-f6a-3b's premise being measured FALSE. Opened **N-312**. What a later leaf must obey: a purchase day moves only where the bank REFUTES it, and only a line within `DAY_WINDOW` of the day it was MADE may refute it |
 | **X-f6a-3b** | `1f214712` | A bank line BECOMES a purchase (**R-FS**, **R-FX**), against an envelope the owner picks or a NEW one it creates in the period the purchase was MADE in. It also REPAIRED X-f6a-3a, whose `_COST_BEARING_FIELDS` refused `purchased_on` and so killed 13 of the 15 purchase-date corrections the screen offered. Opened **N-315**-**N-321**; **N-306 split off**. What a later leaf must obey: R-FX's two conditions on adding to a settled row, and that a line becomes a PURCHASE, never a row |
+
+## The X-f6a-3c - X-f6a-4 span, condensed 2026-08-22
+
+**Five more shipped leaves, condensed out of `implementation_plan_bank_import.md`
+under `conventions.md` rule 5** when that document reached 197 lines against the
+180 its cap leaves after headroom, which is where ruling **R-GD** and the five
+steps it opens met an entry list of eight shipped leaves.
+
+Rule 5's three conditions hold, and the third is the one that took work.
+**Every finding these steps opened and did not close is live in `ledger.md`** --
+N-323, N-326, N-328, N-330, N-331 -- each naming a live owner there.
+**No live sentence depends on one here**: the rulings are in the arc document's
+own table (**R-FY**, **R-FZ**, **R-GA**, **R-GB**, **R-GC**), and the four
+*"what a LATER leaf must obey"* obligations these entries carried were MOVED
+onto the live steps that inherit them (`X-f6d-1`, `X-f6d-3`, `X-f6e`) in the
+same commit, rather than being archived with the entries that stated them.
+**Nothing below was re-verified in the move.**
+
+    - [x] **X-f6a-4** `9439a5ad` an import can be UNDONE (**R-GB**), a same-day group reconciles as
+          a SET so the ordinal stops deciding (**R-FU** amended), and one press mints one envelope
+          per answer per pay period (**R-GC**). Three commits: `ba7f91d8`, `cc9e8f27`, `9439a5ad`.
+          Closed **N-302**, **N-317**, **N-324**, **N-327**; opened **N-328**, **N-329**.
+          **What a LATER leaf must obey**: a match may not lose its bank lines, the source-account
+          pairing outlives no import that taught it, and a per-request registry is written AFTER.
+
+    - [x] **X-f6a-3c** `46bec314` the DECOMPOSED parent of the review screen's THROUGHPUT, split in
+          two 2026-08-19 (developer) and ticked with its last leaf. What the proposer may OFFER and
+          how many acts one request performs are different subjects: the first is a matching rule
+          over money already in the app, the second is a batch write door, and grading both in one
+          diff is the review surface that let a defect ship at X-f6a-3a.
+
+    - [x] **X-f6a-3c-1** `c25edd96` every candidate row carries the WINDOW the app believes its
+          money moved in (**R-FY**) -- a settle day, a purchase day, or a bill's whole pay period --
+          so no row the matcher OFFERS is unbounded and the global undated pool is DELETED rather
+          than reported. Closed **N-312**, **N-315**, **N-316**; opened **N-322**; RESTORED
+          **N-317**. **What a LATER leaf must obey**: a new candidate KIND owes a window, and the
+          pair test and the group bucket apply the SAME slack or they disagree silently.
+
+    - [x] **X-f6a-3c-2** `46bec314` a whole reviewed pass is ONE request against ONE derivation of
+          the account (**R-FZ**): 215 acts that cost 13.2 minutes of round trips now take 5.80 s in
+          the door and 13.37 s end to end, each item in its own SAVEPOINT so a refusal costs only
+          itself, and the screen answers with its own receipt. Closed **N-306** and **N-322**;
+          opened **N-323**. **What a LATER leaf must obey**: the scope holds what a pass cannot
+          change, and what it DOES change -- the claims, and a row's PRICE -- is re-read per act.
+
+    - [x] **X-f6a-3d** `50fed660` a destination stated ONCE PER MERCHANT and SUGGESTED thereafter
+          (**R-GA**), which turns 91 questions into 21 on a statement whose leftover lines are 21
+          merchants. Closed **N-325**; opened **N-326** and **N-327**.
+          **What a LATER leaf must obey**: a policy is read to SUGGEST and the destination select is
+          still the tick, so nothing here may select one -- and of the 48 lines six answers place,
+          42 file into an envelope that has already CLOSED, which is why the sweep is per class.
+
+### Their `steps.md` index rows, condensed out 2026-08-22
+
+Moved under `conventions.md` rule 5 when `steps.md` reached 243 lines
+against the 240 its cap leaves after headroom. The arc document's own
+entries for these five were condensed in the same commit.
+
+| arc | id | also | what this step does | order | commit | starts |
+|---|---|---|---|---|---|---|
+| bank_import | X-f6a-4 | -- | An import can be UNDONE -- it releases the matches naming its lines, forgets the source-account pairing with the last import from that source, and the database refuses to orphan a match -- while a same-day group reconciles as a SET so the ordinal this app mints stops deciding whether a line is held. Closed **N-302**, **N-317**, **N-324**, **N-327**; opened **N-328**, **N-330**, `balance:N-331`. | SHIPPED | `9439a5ad` | -- |
+| bank_import | X-f6a-3c-2 | -- | A whole reviewed pass is ONE request against ONE derivation of the account: the 215 acts the review screen offers cost 13.2 minutes of round trips and now take 13.37 s end to end, each item in its own SAVEPOINT so a refusal costs only itself, and the screen answers with its own receipt. | SHIPPED | `46bec314` | -- |
+| bank_import | X-f6a-3c | -- | The DECOMPOSED parent of the review screen's THROUGHPUT, ticked with X-f6a-3c-2, its last leaf. | SHIPPED | `46bec314` | -- |
+| bank_import | X-f6a-3d | -- | A destination is stated ONCE PER MERCHANT and SUGGESTED thereafter, never selected: the merchant becomes a column the adapter records, a policy names a template or a new envelope or *never a purchase*, and one sweep ticks what it places -- which turns 91 questions into 21 on a statement whose leftover lines are 21 merchants. Closed **N-325**; opened **N-326** and **N-327**. | SHIPPED | `50fed660` | -- |
+| bank_import | X-f6a-3c-1 | -- | Every candidate row carries the WINDOW the app believes its money moved in -- a settle day, a purchase day, or a bill's whole pay period -- so no row the matcher OFFERS is unbounded, and the global undated pool that switched group matching off is deleted rather than reported. Closed **N-312**, **N-315**, **N-316**; opened **N-322** and restored **N-317** with its diagnosis corrected. | SHIPPED | `c25edd96` | -- |

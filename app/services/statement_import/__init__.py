@@ -55,6 +55,7 @@ from ._integrity import (
 from ._line import (
     GroupPairing,
     KeyedLine,
+    ParsedStatement,
     StatementLine,
     fresh_ordinals,
     group_indexes,
@@ -92,6 +93,7 @@ __all__ = [
     "import_history",
     "opening_balance",
     "pair_by_statement",
+    "ParsedStatement",
     "parse_statement",
     "recent_lines",
     "record_statement",

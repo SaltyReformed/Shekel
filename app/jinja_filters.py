@@ -6,13 +6,20 @@ Registered on the application in :func:`app.create_app` via
 ceiling and so display helpers have a home that is not the
 already-large factory.
 
-Every filter here is a DISPLAY transform: it formats or relabels a
-value the route or service already computed.  None performs financial
-arithmetic -- monetary math lives in the services per the project's
-"templates display, never compute" rule (CLAUDE.md).  The two arithmetic
-helpers below (``to_percent``, ``months_to_years``) operate on rates and
-term lengths, not money, and exist precisely so templates do not inline
-that math.
+Every filter here transforms a value the route or service already
+computed -- most for DISPLAY, and :func:`reviewed_token` for the WIRE.
+None performs financial arithmetic: monetary math lives in the services
+per the project's "templates display, never compute" rule (CLAUDE.md).
+The two arithmetic helpers below (``to_percent``, ``months_to_years``)
+operate on rates and term lengths, not money, and exist precisely so
+templates do not inline that math.
+
+**A wire transform belongs here for the same reason a display one does**,
+and :func:`reviewed_token` is the first: the value it emits is READ BACK
+by :class:`~app.schemas.validation.statements.ReviewedRowField`, so the
+format has to be stated once and reached from both sides.  A template
+composing those fields itself would be the second spelling, and nothing
+in the tree fails when a template and a validator drift apart.
 """
 
 from datetime import datetime
@@ -21,6 +28,7 @@ from decimal import Decimal
 from flask import Flask
 
 from app.services.salary_cockpit_service import clean_raise_label
+from app.services.statement_match import CandidateRow, as_reviewed
 from app.utils.dates import month_name, to_display_tz
 
 # Months in a year -- named so the year conversion is not a bare literal.
@@ -151,6 +159,33 @@ def raise_label(value: str | None) -> str:
     return clean_raise_label(value)
 
 
+def reviewed_token(row: CandidateRow) -> str:
+    """Render one candidate row as the form value a match submits for it.
+
+    Thin filter wrapper over
+    :func:`app.services.statement_match.as_reviewed`, the same shape
+    :func:`raise_label` is, and for a sharper reason: this string is not
+    read by a person, it is read back by
+    :class:`~app.schemas.validation.statements.ReviewedRowField` on the
+    next request.  The statement review screen emits one per row it
+    offers, carrying the row's kind, its id, and the figure and revision
+    the owner is looking at -- which is what lets the accept door refuse
+    an item whose row has MOVED since the page was rendered (finding
+    **N-336**, plan step ``bank_import:X-f6d-3``).
+
+    No arithmetic and no decision: the service builds the value, this
+    hands it to the form.
+
+    Args:
+        row: A :class:`~app.services.statement_match.CandidateRow` the
+            review screen is rendering.
+
+    Returns:
+        Its token, ``"<kind>:<row_id>:<cash_amount>:<version_id>"``.
+    """
+    return as_reviewed(row).token
+
+
 def register_template_filters(app: Flask) -> None:
     """Register every presentation filter on the given Flask app.
 
@@ -167,3 +202,4 @@ def register_template_filters(app: Flask) -> None:
     app.add_template_filter(months_to_years, "months_to_years")
     app.add_template_filter(month_name, "month_name")
     app.add_template_filter(raise_label, "raise_label")
+    app.add_template_filter(reviewed_token, "reviewed_token")

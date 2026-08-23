@@ -97,6 +97,44 @@ class StatementLine:  # pylint: disable=too-many-instance-attributes
 
 
 @dataclass(frozen=True)
+class ParsedStatement:
+    """Everything ONE file states -- its account, its lines, and its own figure.
+
+    **The per-FILE facts, which a list of per-line ones cannot carry.**  Every
+    adapter returned ``(external_account_id, lines)`` until this value existed,
+    and the pair worked only because a file had exactly two things to say.  A
+    source states more than that: SECU's CSV opens with a ``Balance as of``
+    line, and the next adapter will have its own header facts.  Widening a
+    tuple would have made every reader positional at the moment it stopped
+    being obvious what the positions were.
+
+    Attributes:
+        external_account_id: What the FILE calls its own account -- SECU writes
+            its name and masked number.  Ruling **R-FP** makes the mapping from
+            this to a Shekel account a recorded fact rather than a guess.
+        lines: The file's lines in CHRONOLOGICAL order, oldest first.
+        stated_balance: The balance the file's own header CLAIMS, or ``None``
+            for a source that states none.  **It is the bank's claim and not a
+            derivation, and the two are kept apart on purpose**: the recorded
+            import's ``closing_balance`` is computed from the line CHAIN, and
+            that column's docstring records why a header may not be substituted
+            for it -- on the developer's 2026-08-16 export the header read
+            ``$4,747.63``, which was 2026-08-13's closing balance while the same
+            file listed two 2026-08-14 lines worth ``-$1,006.72``.  So this
+            figure may LAG its own file, it is never gated on, and anything
+            reading it owes that caveat to whoever reads the answer.
+        stated_balance_on: The civil day that header names.  ``None`` exactly
+            when :attr:`stated_balance` is -- the two are one fact and a figure
+            without its day asserts nothing.
+    """
+
+    external_account_id: str
+    lines: "list[StatementLine]"
+    stated_balance: "Decimal | None" = None
+    stated_balance_on: "date | None" = None
+
+
+@dataclass(frozen=True)
 class KeyedLine:
     """A :class:`StatementLine` with the ordinal that completes its identity.
 

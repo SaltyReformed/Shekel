@@ -87,7 +87,9 @@ def _settle_one(
         shadow: The leg on this account, still Projected.
         submitted: The figure the panel's amount box posted, or ``None``.
         statement: The statement being reconciled; its day is what both legs
-            record the money as having moved on.
+            record the money as having moved on, on the ``asserted`` basis --
+            the owner asserted a BALANCE for that day, so the day bounds the
+            movement from above rather than naming it (plan step **X-az**).
 
     Returns:
         Whether the verb booked *submitted* as a human's correction -- the
@@ -100,7 +102,7 @@ def _settle_one(
     corrected = transfer_service.settle_transfer(
         shadow.transfer_id, statement.owner_id,
         submitted=submitted,
-        settled_on=statement.observed_on,
+        settle_day=statement.settle_day,
     )
     # WHICH statement showed THIS LEG (ruling **R-FL**), through the transfer
     # service because the row is a SHADOW and ``CLAUDE.md``'s transfer invariant

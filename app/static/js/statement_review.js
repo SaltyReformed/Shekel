@@ -16,9 +16,13 @@
 
   // ── The per-class sweep ────────────────────────────────────────────────
   //
-  // A proposal either CONFIRMS a day the app already had, MOVES one it got
-  // wrong, or MARKS a row as having happened for the first time.  The three
-  // partition (MatchProposal.review_class), and sweeping by class rather than
+  // A proposal either CORRECTS an AMOUNT onto the bank's, CONFIRMS a day the
+  // app already had, MOVES one it got wrong, or MARKS a row as having happened
+  // for the first time.  The four partition (MatchProposal.review_class) --
+  // repricing is the fourth and takes precedence, because it is the only one
+  // that changes what money was SPENT (plan step bank_import:X-f6d-1).  This
+  // function needs no change for it: it reads the class off the markup.
+  // Sweeping by class rather than
   // by one "tick all" is what keeps R-FP's "reviewed before it commits"
   // meaningful at 124 proposals: the review happens once per class, and the
   // riskiest class is never swept by the same click as the safest.

@@ -66,7 +66,7 @@ def settled_figure_clause():
     is the SQL side that writes the ledger.  Dispatching on the basis makes the
     broken row take NO arm and answer ``NULL``, which a fold drops and
     ``posting_service._settle_effective`` refuses -- and
-    ``ck_transactions_settle_day_needs_basis`` is what makes it unstorable in the
+    ``ck_transactions_settle_day_needs_a_record`` is what makes it unstorable in the
     first place, so this arm is the belt to that constraint's braces rather than
     the only guard.
 

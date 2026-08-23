@@ -754,3 +754,44 @@ class SettlementBasis(db.Model):
 
     def __repr__(self):
         return f"<SettlementBasis {self.name}>"
+
+
+class SettledDayBasis(db.Model):
+    """HOW a settled row's settle DAY is known (plan step **X-az**).
+
+    The catalogue behind ``budget.transactions.settled_day_basis_id`` and
+    ``budget.transaction_entries.settled_day_basis_id`` -- BOTH tables, because
+    both carry ``settled_on`` and all three kinds of day are written to each.
+    That is the difference from :class:`SettlementBasis` beside it, which needs
+    only the one table: a purchase carries no figure of its own to have a
+    provenance for, but it carries a day.
+
+    A row that has not settled carries NULL here and no settle day; a row that
+    HAS one carries both, and this column says which of three ways the day was
+    arrived at -- ``observed`` (a bank statement showed the money posting),
+    ``asserted`` (the owner asserted a balance for that day and this money was
+    inside it, so the day is an UPPER BOUND) or ``entered`` (the owner's own
+    record, typed or stamped by the door).
+
+    :class:`app.enums.SettledDayBasisEnum` carries what the inference this
+    replaces cost and why the difference between a bound and a point is a money
+    question rather than a label.
+
+    Application code resolves these via ``ref_cache.settled_day_basis_id`` and
+    compares against the integer ID -- never the string ``name`` -- matching the
+    project-wide ``ref-table: IDs for logic, strings for display only``
+    invariant.
+
+    ``budget.transfers`` carries no such column and needs none, for the reason
+    it carries no :class:`SettlementBasis`: a transfer's money moves on its two
+    shadow ``Transaction`` rows, which each record their own day.
+    """
+
+    __tablename__ = "settled_day_bases"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(20), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<SettledDayBasis {self.name}>"

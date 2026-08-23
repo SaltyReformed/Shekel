@@ -19,11 +19,16 @@ door stores the fact and leaves the derivation alone.  The settle doors it
 calls RELEASE any prior link as they move the day, which is correct: that link
 recorded a statement showing this money on a day the bank has just contradicted.
 
-**RESOLVING and RECORDING are two acts, and splitting them is plan step
-``bank_import:X-f6a-3c-2``.**  :func:`resolve_rows` turns submitted IDS into
-priced rows under the owner's own scope; :func:`record_match` takes rows a
-caller already holds and writes the match.  :func:`accept_match` is the form
-door and does both.  The split is not tidiness: ``_create`` creates a purchase
+**RESOLVING and RECORDING are two acts, split in prose at plan step
+``bank_import:X-f6a-3c-2`` and in the FILE LAYOUT at ``bank_import:X-f6d-3``.**
+:func:`~._resolve.resolve_rows` turns a submission into priced rows under the
+owner's own scope and lives in :mod:`._resolve`; :func:`record_match` takes
+rows a caller already holds and writes the match.  :func:`accept_match` is the
+form door and does both.  Nothing crossed the seam when it became two files --
+the resolution half called nothing here and this half calls nothing there --
+so what moved is the boundary the paragraph already claimed.
+
+**The split is not tidiness**: ``_create`` creates a purchase
 and then records a match naming it, and a row an act has just created cannot be
 in a scope derived before it -- measured, all 91 of the developer's creatable
 lines were refused as "no longer available to match" the first time a whole
@@ -33,8 +38,9 @@ recording.  **There is still exactly ONE function that writes a match**, which
 is what rulings **R-FT** and **R-FV** actually ask for.
 
 **Every refusal fires before anything is written.**  The ids are re-derived
-under the owner's own scope, the group is checked for balance, and only then
-does a settle verb run -- so a refused match leaves the database exactly as it
+under the owner's own scope (:mod:`._resolve`) and reconciled with the state
+the screen showed, the group is checked for balance, and only then does a
+settle verb run -- so a refused match leaves the database exactly as it
 was without depending on the rollback, the same discipline
 ``statement_import.record_statement`` states for itself.
 
@@ -47,7 +53,7 @@ parent/child guard, where there were two queries answering the same question.
 
 **This door applies no DATE bound, and that asymmetry is deliberate.**  The
 proposer refuses to OFFER a pairing outside the row's own window
-(``_propose._within_window``, ruling **R-FY**); the hand-build form on the
+(``_pairing.within_window``, ruling **R-FY**); the hand-build form on the
 review screen exists precisely so an owner may assert a grouping the proposer
 would not guess, so refusing one here on a date would refuse the act ruling
 **R-FP** reserves to them.  What this door does enforce is the SCOPE: every id
@@ -77,6 +83,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
+from app.enums import SettledDayBasisEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.statement_import import BankStatementLine
@@ -88,6 +95,8 @@ from app.services import (
     transaction_service,
     transfer_service,
 )
+from app.services.cash_ledger import off_statement_sum
+from app.services.settle_day import SettleDay
 from app.utils.log_events import (
     BUSINESS,
     EVT_STATEMENT_MATCHED,
@@ -96,27 +105,31 @@ from app.utils.log_events import (
 )
 from app.utils.money import round_money
 
-from ._candidates import (
-    MatchedSubjects,
-    matched_subjects,
-    repriced,
-    unmatched_rows,
-)
+from ._candidates import MatchedSubjects, matched_subjects
 from ._offers import (
     CandidateRow,
     MatchDays,
-    MatchSubmission,
     RowKind,
     corrected_purchase_day,
 )
+from ._resolve import load_lines, resolve_rows
 from ._scope import ReviewScope
+from ._submission import MatchSubmission
 
 _logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
-class AcceptedMatch:
+class AcceptedMatch:  # pylint: disable=too-many-instance-attributes
     """What accepting one match did.
+
+    Pylint: too-many-instance-attributes (8/7) -- **eight because a receipt
+    for this act has eight things to say**, not because the value wants
+    splitting.  The eighth is ``repriced_count``, and it is the one that made
+    the panel say *"Nothing moved."* about a rewritten figure until
+    2026-08-22; dropping a count to satisfy a limit is how that sentence came
+    to be false in the first place.  ``CandidateRow`` carries the same disable
+    for the same reason.
 
     Attributes:
         match_id: The ``budget.statement_matches`` row recording the act.
@@ -132,6 +145,16 @@ class AcceptedMatch:
             correction is in neither, and reporting it as "corrected" would
             claim work that did not happen.
         line_count: How many bank lines the act explains.
+        repriced_count: How many member rows had their FIGURE moved onto the
+            bank's (ruling **R-GD(a)**, plan step ``bank_import:X-f6d-1``).
+            **It cuts ACROSS the day partition exactly as ``redated_count``
+            does, and for a sharper reason**: a repricing whose row already
+            carried the bank's day reports ``unchanged`` on every day count, so
+            without this the receipt said *"confirmed what you already had"*
+            about a request that had just rewritten what a payment cost.  The
+            day counts are silent there and the SENTENCE was false, which is
+            worse than the silence ``redated_count`` was added to fix.  Found
+            by adversarial design review 2026-08-22.
         redated_count: How many member PURCHASES had their purchase day moved
             onto the bank's (ruling **R-FW**).  **It cuts ACROSS the partition
             above rather than joining it**, and it has to: a purchase that was
@@ -151,151 +174,7 @@ class AcceptedMatch:
     corrected_count: int
     line_count: int
     redated_count: int
-
-
-def load_lines(
-    account_id: int, line_ids: "frozenset[int]", matched: MatchedSubjects,
-) -> "list[BankStatementLine]":
-    """Return the submitted bank lines, refusing any this account cannot match.
-
-    **A line ALREADY in a match is refused here, symmetrically with the row
-    side**, and the asymmetry was a real defect rather than an omission.
-    ``uq_statement_match_members_line`` refuses the second act either way, so
-    nothing could be corrupted -- but it arrives as an ``IntegrityError`` AFTER
-    ``_apply_day`` has moved a settle day, which reaches the user as
-    "Something went wrong" and logs a full traceback at ERROR for an ordinary
-    stale page.  The hand-build form makes it easy to reach: its checkboxes
-    render ``review.unmatched``, so one tab submitting a line another tab has
-    just matched is two clicks.  Found by adversarial security review
-    2026-08-17.
-
-    **PUBLIC within the package since plan step X-f6a-3c-2**, because
-    :mod:`._create` needs exactly this refusal for the one line it records and
-    had grown its own copy of it.  Two implementations of "is this line on this
-    account, and has something already claimed it" is two places for the
-    refusal to stop firing.
-
-    Args:
-        account_id: The account the match is for.
-        line_ids: The submitted ids.
-        matched: What this account's matches have already claimed, read by the
-            ACT rather than queried here -- so a batch's fourth item sees the
-            lines its third item claimed.
-
-    Returns:
-        The lines, ascending by posted day then id.
-
-    Raises:
-        ValidationError: When an id names no line on this account, or names one
-            another match already explains.  A REFUSAL rather than a silent
-            skip, unlike the reconcile panel's bulk tick: that door narrows a
-            set the user swept, and this one names specific rows on purpose, so
-            dropping a member would change what the match MEANS while
-            reporting success.
-    """
-    if line_ids & matched.lines:
-        raise ValidationError(
-            "A statement line you picked is already matched to something "
-            "else.  Undo that match first if it is wrong.  Nothing was "
-            "changed."
-        )
-    lines = (
-        db.session.query(BankStatementLine)
-        .filter(
-            BankStatementLine.account_id == account_id,
-            BankStatementLine.id.in_(line_ids),
-        )
-        .order_by(BankStatementLine.posted_on, BankStatementLine.id)
-        .all()
-    )
-    if len(lines) != len(line_ids):
-        raise ValidationError(
-            "A statement line you picked is no longer on this account.  "
-            "Reload the page and try again -- nothing was changed."
-        )
-    return lines
-
-
-def resolve_rows(
-    submission: MatchSubmission,
-    scope: ReviewScope,
-    matched: MatchedSubjects,
-) -> "list[CandidateRow]":
-    """Return the submitted app rows as priced candidates, refusing the rest.
-
-    **Looked up in the pass's own offer set rather than queried directly**, so
-    the set this door may act on is exactly the set the screen may offer.  One
-    scope, shared by the reader and the writer, is the security property
-    ``reconcile_service`` is built on: an id belonging to another user, another
-    account, a non-contributing row, a card purchase or a row already spoken
-    for by another match is not a candidate and cannot be matched by crafting a
-    request.
-
-    **The scope is a PARAMETER, the claims are re-read per act, and the FIGURE
-    is re-derived per act** (plan step X-f6a-3c-2).  This function derived the
-    whole account itself until that step, at 3.593 s a call on the developer's
-    own data, which is 12.88 minutes to work one statement's 215 acts.  What
-    made the derivation shareable is that its parts move at different rates:
-
-    * WHICH rows exist and may be offered cannot change while a pass runs, so
-      that is derived once and arrives on *scope*.  It is also the expensive
-      half -- an 827-row scan -- and the security-bearing one;
-    * WHICH of them are already spoken for changes with every item, so that is
-      the *matched* argument, re-read by every act;
-    * WHAT one is WORTH can be moved by a SIBLING act, so it is re-derived here
-      through :func:`~._candidates.repriced`.
-
-    **That third bullet replaces an argument adversarial financial review
-    measured FALSE on 2026-08-19.**  The claim was that only a parent/child
-    pairing can move a figure another item names, and that
-    :func:`_reject_parent_and_its_own_purchase` refuses it.  But settling a
-    matched purchase runs ``entry_service.update_entry``, which re-derives the
-    envelope's CC Payback through ``sync_entry_payback`` and WRITES its
-    ``estimated_amount`` -- and that payback is a candidate on the same
-    account, a SIBLING of the purchase rather than its parent, invisible to
-    that guard.  Measured: a `$60.00` payback dropping to `$50.00` mid-pass,
-    with the second match accepted against the stale `$60.00` and the ledger
-    booking `$50.00` for a `-$60.00` bank line.  Re-pricing is total where an
-    enumeration of sibling writers is one writer from being wrong again.
-
-    Args:
-        submission: What the owner accepted.
-        scope: The pass's derived offer set.
-        matched: What this account's matches have already claimed, as of this
-            act.
-
-    Returns:
-        The candidates the submission names, transactions first, priced as they
-        stand NOW.
-
-    Raises:
-        ValidationError: When an id names nothing the screen could have
-            offered, names a row another match has since claimed, or names one
-            that can no longer be priced at all.
-    """
-    wanted = {
-        (RowKind.TRANSACTION, row_id) for row_id in submission.transaction_ids
-    } | {
-        (RowKind.PURCHASE, row_id) for row_id in submission.entry_ids
-    }
-    offered = [
-        row for row in unmatched_rows(scope.candidates, matched)
-        if (row.kind, row.row_id) in wanted
-    ]
-    found = [
-        fresh for fresh in (
-            repriced(row, scope.calendar, scope.basis) for row in offered
-        )
-        if fresh is not None
-    ]
-    if len(found) != len(wanted):
-        raise ValidationError(
-            "One of the rows in this match is no longer available to match -- "
-            "it may have been deleted, cancelled, or matched to another "
-            "statement line.  Reload the page and try again; nothing was "
-            "changed."
-        )
-    return found
+    repriced_count: int
 
 
 def _reject_empty_side(
@@ -398,27 +277,52 @@ def _reject_parent_and_its_own_purchase(
         )
 
 
-def _reject_unbalanced(
+def _reject_uncorrectable(
     lines: "list[BankStatementLine]", rows: "list[CandidateRow]",
 ) -> None:
-    """Refuse a match whose two sides do not sum to the same figure.
+    """Refuse a match whose difference this door cannot honestly record.
 
-    **The developer's ruling of 2026-08-17, and the alternative was measured.**
-    On their own 2026-08-16 statement, 6 of 16 payroll deposits sit
-    `$0.05`-`$0.06` above what the app's rows sum to, because the projected
-    paycheck distributes an annual rounding residue (finding **N-239**).
-    Absorbing that into a tolerance would silence the one instrument that can
-    see it; apportioning it across the members would need a rule about which
-    member is wrong, which is a decision about a paycheck and not a matcher's
-    to take.  So the door refuses and NAMES the difference, and the owner
-    corrects a member's amount and matches again.
+    **This REPLACES a blanket refusal, on ruling R-GD(a).**  Until 2026-08-22
+    any match whose two sides did not sum to the same figure was refused and
+    the owner sent away to retype the number the statement already carried.
+    That refusal was not neutral: a line the screen would not explain is the
+    line the merchant policy offers to RECORD, so the cheapest act left was to
+    enter the movement a SECOND time -- measured at `$356.61` booked for one
+    `$178.29` Geico payment, finding **N-335**.  The bank's figure is the
+    record, so where it names ONE row it is simply written to that row.
+
+    What still refuses, and why each is a genuine indeterminacy rather than a
+    tolerance:
+
+    * a GROUP whose sides differ.  Three rows summing to one deposit, with
+      nothing saying WHICH is wrong -- ruling **R-FV**'s reason, undisturbed by
+      R-GD, whose remedy is **R-FN**'s ordinary accepted row rather than a
+      figure this door picks for a member;
+    * a row whose FIGURE IS NOT ITS OWN TO STATE, which the row now SAYS
+      (:attr:`~._offers.CandidateRow.states_own_figure`) rather than this door
+      re-deriving.  A difference on one says a PURCHASE is missing or wrong,
+      which is a different repair on a different row.  **The census that
+      answers it is TWO published predicates and it moved to the candidate
+      constructor at plan step X-f6d-1**, because the PROPOSER has to ask the
+      same question and is pure: a near miss offered on such a row is an
+      Accept button that can never succeed.  Two derivations of one refusal on
+      a money gate is this arc's own root cause 1, and the argument for both
+      members lives where the fact is now built;
+    * a transfer SHADOW.  ``CLAUDE.md`` transfer invariant 3 holds a shadow's
+      amount equal to its parent's, so correcting one means correcting the
+      TRANSFER, which is not this door;
+    * a bank line whose SIGN disagrees with the row's type.  Money leaving an
+      account is not the same movement as money entering it, whatever the
+      magnitudes do, and this is the one arm the old sum test used to catch by
+      accident.
 
     Args:
         lines: The submitted bank lines.
         rows: The submitted app rows, already priced.
 
     Raises:
-        ValidationError: When the sums differ, with the figures in the message.
+        ValidationError: With the figures in the message, and naming which of
+            the four it is, so the sentence says what to do next.
     """
     bank = round_money(sum((line.amount for line in lines), Decimal("0.00")))
     app_side = round_money(
@@ -426,19 +330,109 @@ def _reject_unbalanced(
     )
     if bank == app_side:
         return
-    raise ValidationError(
-        f"These do not add up.  Your bank shows {bank:+,.2f} and the "
-        f"{len(rows)} row(s) you picked come to {app_side:+,.2f}, a difference "
-        f"of {bank - app_side:+,.2f}.  Correct the amount on one of your rows "
-        f"first, then match them -- the bank is the record of what moved.  "
-        f"Nothing was changed."
-    )
+
+    nothing = "  Nothing was changed."
+    if len(lines) != 1 or len(rows) != 1:
+        raise ValidationError(
+            f"These do not add up.  Your bank shows {bank:+,.2f} and the "
+            f"{len(rows)} row(s) you picked come to {app_side:+,.2f}, a "
+            f"difference of {bank - app_side:+,.2f}.  With more than one row "
+            f"on a side nothing says WHICH row the difference belongs to, so "
+            f"correct the one you know is wrong and match them again."
+            + nothing
+        )
+    row = rows[0]
+    if (bank < 0) != (app_side < 0):
+        raise ValidationError(
+            f"Your bank shows {bank:+,.2f} and this row is {app_side:+,.2f}.  "
+            f"One is money leaving the account and the other is money coming "
+            f"in, so they are not the same movement." + nothing
+        )
+    if row.kind is RowKind.TRANSACTION and row.transfer_id is not None:
+        raise ValidationError(
+            f"Your bank shows {bank:+,.2f} and this transfer is "
+            f"{app_side:+,.2f}.  A transfer's two halves must stay equal, so "
+            f"change the transfer itself and then match it." + nothing
+        )
+    if row.kind is RowKind.TRANSACTION and not row.states_own_figure:
+        raise ValidationError(
+            f"These do not add up.  Your bank shows {bank:+,.2f} and this row "
+            f"is {app_side:+,.2f}.  This row is worth whatever its purchases "
+            f"are, so it has no figure of its own to correct -- the difference "
+            f"is a purchase that is missing or wrong, and that is what to "
+            f"fix." + nothing
+        )
+
+
+def bank_cash_for(
+    lines: "list[BankStatementLine]", rows: "list[CandidateRow]",
+) -> "Decimal | None":
+    """Return the cash the bank states for the ONE row this match names.
+
+    **Defined only where the bank's figure names a single row**, which is the
+    whole of ruling **R-GD(a)**'s determinacy: one line against one row is an
+    assertion about that row and nothing has to be apportioned.  A GROUP is a
+    different question -- three rows summing to one deposit, with nothing
+    saying WHICH is the six cents wrong -- and ruling **R-FV** refused to guess
+    at it for reasons R-GD did not disturb.  So this answers ``None`` there and
+    the residual is **R-FN**'s ordinary accepted row, never a figure this door
+    invents for a member.
+
+    Args:
+        lines: The bank lines the match explains.
+        rows: The app rows it names.
+
+    Returns:
+        The single line's signed amount when both sides hold exactly one
+        member, else ``None``.
+    """
+    if len(lines) != 1 or len(rows) != 1:
+        return None
+    return lines[0].amount
+
+
+def corrected_figure(
+    row: CandidateRow, bank_cash: "Decimal | None",
+) -> "Decimal | None":
+    """Return the figure *row* should book to move its cash onto the bank's.
+
+    **The bank constrains the CASH LEG, and the stored figure is GROSS**, so
+    the two are not the same number on a row carrying entries.  Inverting
+    :func:`~app.services.cash_ledger.cash_leg_of` -- *gross, less what never
+    reaches this account, signed by the transaction TYPE* -- gives
+    ``|bank| + off_statement_sum``, which reuses that rule rather than
+    restating it.  The two coincide on every row this arm reaches today (all 8
+    of the developer's transaction near misses carry no entries), and the
+    inversion is written anyway because a row that HAS entries is expressible
+    and would otherwise book its credit purchases twice.
+
+    **A PURCHASE stores its figure directly** -- its cash is the negated stored
+    amount (:func:`~._candidates.purchase_candidate`) -- so its correction is
+    the bare magnitude.
+
+    Args:
+        row: The member the bank's figure is about.
+        bank_cash: What the bank states, signed, or ``None`` for a group.
+
+    Returns:
+        The figure to submit, or ``None`` when nothing should be submitted --
+        a group, an unchanged figure, or a row whose amount is DERIVED from its
+        own purchases and which :func:`_reject_uncorrectable` has already let
+        through only when the two agree.
+    """
+    if bank_cash is None or bank_cash == row.cash_amount:
+        return None
+    if row.kind is RowKind.PURCHASE:
+        return round_money(abs(bank_cash))
+    txn = db.session.get(Transaction, row.row_id)
+    return round_money(abs(bank_cash) + off_statement_sum(txn))
 
 
 def _apply_day(
     row: CandidateRow, owner_id: int, days: "MatchDays",
+    figure: "Decimal | None" = None,
 ) -> str:
-    """Move one member row onto the bank's days through its own settle door.
+    """Move one member row onto the bank's days AND figure through its own door.
 
     The dispatch, and every arm is an existing verb rather than a column write:
 
@@ -459,11 +453,21 @@ def _apply_day(
         row: The member being moved.
         owner_id: The user the route proved owns the account.
         days: The days the bank states for this match.
+        figure: What the bank says this row is worth
+            (:func:`corrected_figure`), or ``None`` where the bank's figure
+            names no single row or already agrees.  **It rides the SAME call
+            as the day** for the reason the purchase's two dates already do:
+            each settle door validates the state it is asked to produce, so
+            submitting the figure separately would offer it an intermediate
+            row the door would rightly refuse.
 
     Returns:
         ``"settled"`` when the row entered the settled band, ``"corrected"``
         when it was already settled on a different day, ``"unchanged"`` when it
-        already carried the bank's own day.
+        already carried the bank's own day.  **``"unchanged"`` is about the DAY
+        and not about whether anything was written** (plan step X-az): a row
+        already carrying the bank's day on a weaker basis has that basis raised
+        to ``observed``, which moves no day and so is not a correction.
 
     Raises:
         ValidationError: From a settle door -- a future day, a posting day
@@ -485,28 +489,53 @@ def _apply_day(
         else "corrected" if row.is_settled
         else "settled"
     )
-    if outcome == "unchanged":
+    # **An "unchanged" row is still written when the bank CONFIRMS a day the app
+    # only had a BOUND for** (plan step **X-az**, finding **N-332**).  The
+    # reconcile panel records the day a BALANCE was asserted for -- the money
+    # moved on or BEFORE it -- and a bank line posted on exactly that day turns
+    # the bound into an observation.  Nothing else in the app can make that
+    # write: no settle door fires when the day does not move, so before this
+    # step such a row kept reporting itself a bound forever.  The DAY is
+    # unchanged, so the outcome the caller counts stays ``"unchanged"`` and
+    # neither the settled nor the corrected tally moves; what changes is the
+    # stored answer to "how is this day known".
+    #
+    # It writes through the row's own settle door rather than assigning the
+    # column, exactly as the other arms do, so the basis keeps the single writer
+    # ``settled_on`` has.  Each door compares the resulting DAY with the stored
+    # one to decide whether to release the clearing link, and the day is equal
+    # here -- so a confirmation strengthens the observation the link records
+    # instead of dropping it.
+    if (
+        outcome == "unchanged"
+        and row.settle_day_basis is SettledDayBasisEnum.OBSERVED
+        and figure is None
+    ):
         return outcome
+
+    settle_day = SettleDay(day=posts_on, basis=SettledDayBasisEnum.OBSERVED)
 
     if row.kind is RowKind.PURCHASE:
         # ONE call, both days, because ``update_entry`` checks the RESULTING
         # pair: submitting them separately would offer the door an intermediate
         # state where the posting day precedes the purchase day, and it would
         # rightly refuse the very correction that fixes it.
-        moves = {"settled_on": posts_on}
+        moves = {"settle_day": settle_day}
         if purchase_day is not None:
             moves["purchased_on"] = purchase_day
+        if figure is not None:
+            moves["amount"] = figure
         entry_service.update_entry(row.row_id, owner_id, **moves)
         return outcome
 
     if row.transfer_id is not None:
         if row.is_settled:
             transfer_service.update_transfer(
-                row.transfer_id, owner_id, settled_on=posts_on,
+                row.transfer_id, owner_id, settle_day=settle_day,
             )
         else:
             transfer_service.settle_transfer(
-                row.transfer_id, owner_id, settled_on=posts_on,
+                row.transfer_id, owner_id, settle_day=settle_day,
             )
         return outcome
 
@@ -516,7 +545,7 @@ def _apply_day(
         else transaction_service.settled_status_id(txn)
     )
     transaction_service.apply_requested_status(
-        txn, target_status_id, settled_on=posts_on,
+        txn, target_status_id, settle_day=settle_day, submitted=figure,
     )
     return outcome
 
@@ -625,7 +654,7 @@ def record_match(
     """
     _reject_empty_side(lines, rows)
     _reject_parent_and_its_own_purchase(rows, matched)
-    _reject_unbalanced(lines, rows)
+    _reject_uncorrectable(lines, rows)
 
     # THE LATEST bank day for the posting, the EARLIEST stated day for the
     # purchase -- derived ONCE for the whole act, so no two members can be moved
@@ -642,7 +671,19 @@ def record_match(
     redated_count = sum(
         1 for row in ordered if corrected_purchase_day(row, days) is not None
     )
-    outcomes = [_apply_day(row, owner_id, days) for row in ordered]
+    # ONE derivation of what the bank says a row is worth, for the whole act:
+    # ``bank_cash_for`` answers only where the figure names a single row, so a
+    # group's members are handed ``None`` and keep their own figures.
+    bank_cash = bank_cash_for(lines, rows)
+    # Read BEFORE the writes, exactly as ``redated_count`` is and for the same
+    # reason: once a settle door has taken the bank's figure the row agrees
+    # with it, so counting afterwards would report zero every time.
+    figures = [corrected_figure(row, bank_cash) for row in ordered]
+    repriced_count = sum(1 for figure in figures if figure is not None)
+    outcomes = [
+        _apply_day(row, owner_id, days, figure)
+        for row, figure in zip(ordered, figures, strict=True)
+    ]
     match = _record(owner_id, account_id, lines, rows)
 
     amount = round_money(sum((line.amount for line in lines), Decimal("0.00")))
@@ -654,6 +695,7 @@ def record_match(
         corrected_count=outcomes.count("corrected"),
         line_count=len(lines),
         redated_count=redated_count,
+        repriced_count=repriced_count,
     )
     log_event(
         _logger, logging.INFO, EVT_STATEMENT_MATCHED, BUSINESS,
@@ -668,6 +710,7 @@ def record_match(
         settled_count=accepted.settled_count,
         corrected_count=accepted.corrected_count,
         redated_count=accepted.redated_count,
+        repriced_count=accepted.repriced_count,
     )
     return accepted
 

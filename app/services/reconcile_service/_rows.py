@@ -54,10 +54,12 @@ from decimal import Decimal
 
 from sqlalchemy.orm import joinedload, selectinload
 
+from app.enums import SettledDayBasisEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services.cash_ledger import AnchorPoint
+from app.services.settle_day import SettleDay
 from app.utils.balance_predicates import (
     balance_contributing_clause,
     is_projected_clause,
@@ -92,7 +94,9 @@ class Statement:
         account_id: The cash account whose balance was asserted.
         anchor: The governing :class:`~app.services.cash_ledger.AnchorPoint` --
             the assertion being reconciled against.  Its ``anchor_id`` is what a
-            tick writes into ``reconciled_by_id``.
+            tick writes into ``reconciled_by_id``, and its ``observed_on`` is the
+            day every tick records -- as a BOUND, which :attr:`settle_day` is
+            what says (plan step **X-az**).
     """
 
     owner_id: int
@@ -112,6 +116,38 @@ class Statement:
             The assertion's ``observed_on``.
         """
         return self.anchor.observed_on
+
+    @property
+    def settle_day(self) -> SettleDay:
+        """Return the day a tick records, and WHAT KIND of day it is.
+
+        **``asserted``, and the basis is the whole point of plan step X-az**
+        (finding **N-332**).  The owner did not observe this money posting on
+        this day; they asserted a BALANCE for this day and this money was inside
+        it, so the true posting day is on or BEFORE it.  That distinction is a
+        money fact rather than a label: the statement matcher bounds a purchase
+        by ``(purchased_on, settled_on)`` when the day is a bound and pins it to
+        a point when it is not, and reading this panel's bound as a point put 59
+        of the developer's 61 reconciled purchases out of reach of their own
+        bank lines -- which the merchant policy then offered to RECORD, for 50
+        duplicates worth ``$3,590.00``.
+
+        **It is a property of the STATEMENT rather than a value each arm
+        builds**, for the reason :attr:`observed_on` is: three arms tick against
+        one assertion, and three constructions of "what kind of day is this" is
+        three chances for one of them to say something the other two do not.
+        The purchase arm cannot use it -- its writer is a bulk ``UPDATE`` with
+        no ORM row to hand -- and it resolves the same member there by name; the
+        two are one sentence apart in this module's own package.
+
+        Returns:
+            A :class:`~app.services.settle_day.SettleDay` over
+            :attr:`observed_on` on the ``asserted`` basis.
+        """
+        return SettleDay(
+            day=self.observed_on,
+            basis=SettledDayBasisEnum.ASSERTED,
+        )
 
 
 @dataclass(frozen=True)

@@ -58,7 +58,10 @@ from app.models.ref import (
 )
 from app.models.transaction import Transaction
 from app.services.row_valuation import owned_contribution
-from tests._test_helpers import settlement_basis_id
+from tests._test_helpers import (
+    settle_day_columns,
+    settlement_basis_id,
+)
 
 
 class TestRefCacheStatuses:
@@ -282,7 +285,7 @@ class TestEffectiveAmount:
                 settled_amount=Decimal("487.00"),
                 settled_basis_id=settlement_basis_id(SettlementBasisEnum.CORRECTED),
                 # A settled row carries the day its money moved.
-                settled_on=seed_periods[0].start_date,
+                **settle_day_columns(seed_periods[0].start_date),
             )
             db.session.add(txn)
             db.session.flush()

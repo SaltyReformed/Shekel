@@ -157,7 +157,9 @@ def _settle_one(
         submitted: The figure the panel's amount box posted, or ``None``.
         statement: The statement being reconciled; its day is what the settle
             records the money as having moved on, rather than the seam's
-            default of the user's today.
+            default of the user's today -- and on the ``asserted`` basis, because
+            what the owner asserted is a BALANCE for that day and the money was
+            inside it (plan step **X-az**).
 
     Returns:
         Whether the verb booked *submitted* as a correction -- **answered by the
@@ -170,7 +172,7 @@ def _settle_one(
         (finding **N-231**), which is the shape they can no longer be.
     """
     corrected = transaction_service.settle_transaction(
-        txn, submitted=submitted, settled_on=statement.observed_on,
+        txn, submitted=submitted, settle_day=statement.settle_day,
     )
     # WHICH statement showed this row (ruling **R-FL**), recorded HERE rather
     # than inside ``settle_transaction`` -- and that placement is the rule.  The

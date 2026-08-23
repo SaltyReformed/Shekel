@@ -16,7 +16,6 @@ Flask-isolated like the rest of the package: plain data in, ORM rows out, no
 """
 
 import logging
-from datetime import date
 from decimal import Decimal
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -47,6 +46,7 @@ from app.services.status_seam import (
     correction_record,
     figure_for_status,
 )
+from app.services.settle_day import SettleDay
 from app.services.transfer_service._status import (
     apply_settle_day_correction,
     apply_status_to_all_three,
@@ -89,10 +89,10 @@ logger = logging.getLogger(__name__)
 # writes nothing, so listing it costs one idempotent no-op round-trip.
 #
 # The remaining kwargs (``category_id`` / ``name`` / ``notes`` / ``is_override``)
-# move none of these, so they raise no reconcile.  ``settled_on`` is deliberately
+# move none of these, so they raise no reconcile.  ``settle_day`` is deliberately
 # NOT here: it moves no leg AMOUNT, and an unsettled transfer has no postings to
 # re-date, so the set stays the cheap always-on pre-filter.  A SETTLED
-# ``settled_on`` edit IS posting-relevant since step E1a -- it moves the day every
+# settle-day edit IS posting-relevant since step E1a -- it moves the day every
 # posting counts from (the ``entry_date``, step C2's one clock) -- and
 # ``_reconcile_postings_after_update`` runs the full reconcile for that case
 # explicitly (the per-(period, date) reconcile re-dates the entries, finding
@@ -124,9 +124,9 @@ _POSTING_RELEVANT_FIELDS = frozenset(
 #: columns itself -- so leaving them in the field-application loop below would
 #: write each of them a second time.  That is not hypothetical tidiness: it is
 #: exactly what this module did until plan step X-f2-c3, where every reconcile
-#: tick stamped ``settled_on`` with the derived day and then rewrote it with the
+#: tick stamped the settle day with the derived one and then rewrote it with the
 #: statement's through ruling **R-ED**'s CORRECTION door.
-_SETTLE_OWNED_FIELDS = frozenset({"status_id", "settled_amount", "settled_on"})
+_SETTLE_OWNED_FIELDS = frozenset({"status_id", "settled_amount", "settle_day"})
 
 
 def _fields_the_settle_left(
@@ -134,7 +134,7 @@ def _fields_the_settle_left(
 ) -> "dict[str, object]":
     """Return the kwargs still owed an application after a settle ran.
 
-    :data:`_SETTLE_OWNED_FIELDS`, minus a ``settled_on`` that arrived as an
+    :data:`_SETTLE_OWNED_FIELDS`, minus a ``settle_day`` that arrived as an
     explicit ``None``.  **A settle consumes a VALUE; that ``None`` is not one --
     it is a request to CLEAR the day**, which is a different act with its own
     door, and a settle that swallowed it would perform neither.  Left here it
@@ -143,7 +143,8 @@ def _fields_the_settle_left(
     which refuses it in a sentence a user can act on; consumed instead, that
     designed refusal would silently become "the settle used today's date".  It
     cannot arrive from a route -- both PATCH schemas declare ``settled_on``
-    non-nullable, so an empty input loads as ABSENT -- but a service caller can
+    non-nullable, so an empty input loads as ABSENT and the route never builds a
+    ``settle_day`` key for it -- but a service caller can
     send it, and the refusal is the reason a settled transfer always carries the
     day its money moved.
 
@@ -164,7 +165,7 @@ def _fields_the_settle_left(
     return {
         key: value for key, value in updates.items()
         if key not in _SETTLE_OWNED_FIELDS or (
-            value is None and key == "settled_on"
+            value is None and key == "settle_day"
         )
     }
 
@@ -267,7 +268,7 @@ def _dispatch_settle(
     return _settle.settle(
         rows, updates["status_id"],
         submitted=updates.get("settled_amount"),
-        settled_on=updates.get("settled_on"),
+        settle_day=updates.get("settle_day"),
     )
 
 
@@ -361,8 +362,8 @@ def _reconcile_postings_after_update(
     # implication is stated here instead, where the set it rests on is three
     # definitions up and visible.
     needs_reconcile = bool(_POSTING_RELEVANT_FIELDS & updates.keys())
-    settled_on_edited = "settled_on" in updates
-    if not (needs_reconcile or settled_on_edited):
+    settle_day_edited = "settle_day" in updates
+    if not (needs_reconcile or settle_day_edited):
         return
     current_status = db.session.get(Status, xfer.status_id)
     # A settled ``settled_on`` edit moves the day the event counts from (step
@@ -370,12 +371,12 @@ def _reconcile_postings_after_update(
     # per-(period, date) reconcile reverses the stale-dated entry and re-posts
     # at the new settle date (finding N-13), and the loan sync's
     # checked-projection assert then verifies the ledger against the walk.
-    if needs_reconcile or (settled_on_edited and current_status.is_settled):
+    if needs_reconcile or (settle_day_edited and current_status.is_settled):
         posting_service.sync_transfer_postings(
             xfer, settled=current_status.is_settled,
         )
         _sync_loan_postings_if_loan(xfer)
-    if settled_on_edited and current_status.is_settled:
+    if settle_day_edited and current_status.is_settled:
         account_posting_service.sync_account_anchor_postings(
             xfer.from_account_id, xfer.scenario_id,
         )
@@ -423,7 +424,7 @@ def _apply_remaining_fields(
 
     :data:`_SETTLE_OWNED_FIELDS` reach it only when this update did NOT settle,
     because a settle writes all three as one act and they are dropped before
-    this runs.  So a ``status_id``, a ``settled_on`` or a ``settled_amount``
+    this runs.  So a ``status_id``, a ``settle_day`` or a ``settled_amount``
     among the arms below belongs to a non-settling change -- a revert, a cancel,
     an archive, or a CORRECTION to what a pair already recorded -- and each arm
     says what that means.
@@ -537,7 +538,7 @@ def _apply_remaining_fields(
         for shadow in rows.shadows:
             shadow.due_date = new_due
 
-    # ── settled_on ────────────────────────────────────────────────
+    # ── settle_day ────────────────────────────────────────────────
     # The ONE caller that legitimately supplies a day is the user CORRECTING
     # it (ruling R-ED).  Both mark-done routes used to pass one and did not
     # mean it: their value overrode the seam's preserve rule and re-dated a
@@ -551,8 +552,8 @@ def _apply_remaining_fields(
     # through the door built for a correction.  The settle takes the day at the
     # status flip now; what is left here is a correction to a row whose money
     # had already moved, which is what this door has always been for.
-    if "settled_on" in updates:
-        apply_settle_day_correction(rows, updates["settled_on"])
+    if "settle_day" in updates:
+        apply_settle_day_correction(rows, updates["settle_day"])
 
 
 def _reject_unowned_references(
@@ -771,7 +772,7 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
         # leaves and which the posting reconcile below then refuses as an
         # undated settle.  What is dropped is the pair that DEGRADED: an
         # ``actual_amount`` that would be written verbatim past the echo rule,
-        # and a ``settled_on`` that would re-date money already recorded.
+        # and a ``settle_day`` that would re-date money already recorded.
         remaining = {"status_id": updates["status_id"]}
     else:
         remaining = updates
@@ -808,7 +809,7 @@ def settle_transfer(
     user_id,
     *,
     submitted: Decimal | None = None,
-    settled_on: date | None = None,
+    settle_day: SettleDay | None = None,
 ) -> bool:
     """Settle a transfer: both legs and the parent, on the day the money moved.
 
@@ -819,7 +820,7 @@ def settle_transfer(
     up to one act.  What settling MEANS is
     :func:`app.services.transfer_service._settle.settle`; this is the door onto
     it, and it exists because the act had no name: its rules were spread over
-    four modules and its ``settled_on`` was written twice per tick, the second
+    four modules and its settle day was written twice per tick, the second
     time through the door ruling **R-ED** built for a user CORRECTING a day.
 
     **Both legs and the parent move in this one call**, which is ``CLAUDE.md``
@@ -840,9 +841,12 @@ def settle_transfer(
         submitted: The figure a HUMAN supplied, when a door collected one --
             the reconcile panel's amount box.  ``None`` means nobody typed one,
             and the settle then books what the row is worth.
-        settled_on: The civil day the money moved, when the caller knows it --
-            the reconcile tick's statement date.  ``None`` leaves the pair-day
-            rule in force (the user's today on a first settle).
+        settle_day: The civil day the money moved and HOW that day is known
+            (:class:`app.services.settle_day.SettleDay`), when the caller knows
+            it -- the reconcile tick's statement day on the ``asserted`` basis,
+            the matcher's bank day on ``observed``.  ``None`` leaves the
+            pair-day rule in force (the user's today, ``entered``, on a first
+            settle).
 
     Returns:
         Whether the settle booked *submitted* as a human's CORRECTION --
@@ -861,8 +865,8 @@ def settle_transfer(
     updates = {"status_id": ref_cache.status_id(StatusEnum.DONE)}
     if submitted is not None:
         updates["settled_amount"] = submitted
-    if settled_on is not None:
-        updates["settled_on"] = settled_on
+    if settle_day is not None:
+        updates["settle_day"] = settle_day
     _, corrected = _apply_transfer_updates(
         transfer_id, user_id, updates, settle_only=True,
     )
@@ -921,8 +925,13 @@ def update_transfer(transfer_id, user_id, **kwargs):
                           states what MOVED, and this pair's money has not.
         due_date       -- Due date for the transfer and both shadows
                           (Date or None).
-        settled_on     -- The civil day the money moved, for both shadows
-                          (DateTime or None).
+        settle_day     -- The civil day the money moved and HOW that day is
+                          known, for both shadows
+                          (:class:`app.services.settle_day.SettleDay` or None).
+                          **The key is not a column name** (plan step X-az):
+                          ``Transfer`` has no ``settled_on`` column, only a
+                          read-only property over its income leg, and the value
+                          carries the day's basis as well as the day.
         is_override    -- Override flag (transfer and both shadows).
 
     Any other kwargs are silently ignored (consistent with the

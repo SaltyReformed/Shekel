@@ -21,7 +21,11 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum
+from app.enums import (
+    SettledDayBasisEnum,
+    SettlementBasisEnum,
+    StatusEnum,
+)
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account
@@ -48,6 +52,8 @@ from app.services.generation_schedule import GenerationSchedule
 from app.services.row_valuation import owned_contribution, settled_figure
 from tests._test_helpers import (
     default_settle_day,
+    settle_day_columns,
+    settled_day_basis_id,
     settlement_basis_id,
     settlement_columns,
 )
@@ -92,7 +98,7 @@ def _create_transaction(seed_user, seed_periods, period_index=0,
         # moved, or it carries neither -- the pair is one fact in three columns
         # (plan step X-au-c3), resolved by the shared helper rather than spelled
         # out here.
-        settled_on=_settle_day,
+        **settle_day_columns(_settle_day),
         **settlement_columns(_settle_day, amount, settled_amount),
         template_id=template_id,
         is_deleted=is_deleted,
@@ -390,7 +396,7 @@ class TestCarryForwardStatusRecheck:
                 # as ``status_id`` because that is what the seam does: the day
                 # the money moved, the figure that moved, and how that figure
                 # is known (plan steps X-f1 / X-au-c3).  A day without the
-                # record is a state ``ck_transactions_settle_day_needs_basis``
+                # record is a state ``ck_transactions_settle_day_needs_a_record``
                 # refuses, so a race simulated with a partial record would fail
                 # on the database rather than on the contract under test.
                 # ``CURRENT_DATE`` rather than an instant: the column is a
@@ -401,6 +407,7 @@ class TestCarryForwardStatusRecheck:
                         "UPDATE budget.transactions "
                         "SET status_id = :paid, "
                         "    settled_on = CURRENT_DATE, "
+                        "    settled_day_basis_id = :day_basis, "
                         "    settled_amount = estimated_amount, "
                         "    settled_basis_id = :basis, "
                         "    version_id = version_id + 1 "
@@ -408,6 +415,16 @@ class TestCarryForwardStatusRecheck:
                     ),
                     {
                         "paid": paid_status_id,
+                        # WHICH KIND of day the race stamped (plan step X-az):
+                        # ``entered``, because a concurrent mark-done is a door
+                        # supplying the owner's today with no bank document
+                        # behind it -- the same basis the seam's own default
+                        # arm writes.  It is in the SAME statement for the same
+                        # reason the figure is: the pair is welded by
+                        # ``ck_transactions_settle_day_basis_pairing``.
+                        "day_basis": settled_day_basis_id(
+                            SettledDayBasisEnum.ENTERED,
+                        ),
                         "basis": settlement_basis_id(SettlementBasisEnum.DERIVED),
                         "tid": loser_id,
                     },
@@ -1365,7 +1382,7 @@ def _create_envelope_txn(
     fixture uses (``_test_helpers.settlement_columns``); *settled_amount* is a
     figure a human typed, which makes it a ``corrected`` record, and with none
     the record is ``derived`` at the row's own plan.  Building the settle DAY
-    without the record is a state ``ck_transactions_settle_day_needs_basis``
+    without the record is a state ``ck_transactions_settle_day_needs_a_record``
     refuses, and building the STATUS without either is one
     ``row_valuation.settled_figure`` refuses to value (plan step X-au-c3).
     """
@@ -1385,7 +1402,7 @@ def _create_envelope_txn(
         category_id=template.category_id,
         transaction_type_id=template.transaction_type_id,
         estimated_amount=planned,
-        settled_on=settled_on,
+        **settle_day_columns(settled_on),
         **settlement_columns(settled_on, planned, submitted=settled_amount),
         is_override=is_override,
     )

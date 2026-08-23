@@ -17,13 +17,13 @@ Flask-isolated: plain data and ORM rows in, mutations applied in place, no
 ``request`` / ``session`` imports, no commit.
 """
 
-from datetime import date
 from decimal import Decimal
 
 from app.exceptions import ValidationError
 from app.services import posting_service
 from app.models.transaction import Transaction
 from app.services.row_valuation import recorded_figure
+from app.services.settle_day import SettleDay
 from app.services.status_seam import (
     Settlement,
     apply_status_change,
@@ -42,7 +42,7 @@ def apply_requested_status(
     txn: Transaction,
     new_status_id: int,
     *,
-    settled_on: date | None = None,
+    settle_day: SettleDay | None = None,
     submitted: Decimal | None = None,
 ) -> None:
     """Apply the status a DOOR requested, and reconcile the ledger to it.
@@ -89,9 +89,13 @@ def apply_requested_status(
         new_status_id: The ``ref.statuses.id`` the door asked for -- the
             SUBMITTED status when the form carried one, else the row's own (an
             edit that changes only the settle day is an identity transition).
-        settled_on: The civil day the money moved, when the door knows it, after
-            the door's own :func:`app.services.status_seam.settle_day_for_status`
-            reading of the submission.  ``None`` leaves the seam's rule in force.
+        settle_day: The civil day the money moved and HOW that day is known
+            (:class:`app.services.settle_day.SettleDay`), when the door knows
+            it, after the door's own
+            :func:`app.services.status_seam.settle_day_for_status` reading of
+            the submission -- which is what stamps the ``entered`` basis on a
+            day that came out of a date box.  ``None`` leaves the seam's rule in
+            force.
         submitted: The figure a HUMAN supplied, when the door collected one.
             Read only by the SETTLE arm, which decides whether it is a
             correction to record; ``None`` means nobody typed one, and the
@@ -114,7 +118,7 @@ def apply_requested_status(
     # second reconcile of the same row.
     if enters_settled_band(txn, new_status_id):
         reject_mismatched_settled_status(txn, new_status_id)
-        settle_transaction(txn, submitted=submitted, settled_on=settled_on)
+        settle_transaction(txn, submitted=submitted, settle_day=settle_day)
         return
     # Everything else is ONE seam pass carrying every fact the door was given:
     # the status, the day, and what the row records as having moved.
@@ -155,7 +159,7 @@ def apply_requested_status(
     # KIND, because nothing here is released at all.
     settlement = _correction_for_status(txn, new_status_id, submitted)
     apply_status_change(
-        txn, new_status_id, settled_on=settled_on, settlement=settlement,
+        txn, new_status_id, settle_day=settle_day, settlement=settlement,
     )
     posting_service.sync_transaction_postings(
         txn, settled=txn.status.is_settled,

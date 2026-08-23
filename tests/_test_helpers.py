@@ -2577,9 +2577,10 @@ def create_settled_transfer(
     # pylint: disable=import-outside-toplevel  -- same lazy-app-import
     # convention every helper in this module follows.
     from app import ref_cache
-    from app.enums import StatusEnum
+    from app.enums import SettledDayBasisEnum, StatusEnum
     from app.extensions import db
     from app.services import transfer_service
+    from app.services.settle_day import SettleDay
 
     transfer = create_transfer(
         seed_user, db_session, from_account, to_account, period,
@@ -2587,7 +2588,17 @@ def create_settled_transfer(
     )
     update_kwargs = {"status_id": ref_cache.status_id(StatusEnum.DONE)}
     if settled_on is not _UNSET_SETTLED_ON:
-        update_kwargs["settled_on"] = settled_on
+        # The service's kwarg is the PAIR, not the column (plan step **X-az**):
+        # a day and the basis that says how it is known.  ``entered`` is what
+        # this builder means -- it stands in for the mark-done route, where the
+        # day is the owner's own and no bank document backs it.  An explicit
+        # ``None`` still reaches ``apply_settle_day_correction`` and is still
+        # refused there, which is the behaviour this parameter's docstring
+        # promises.
+        update_kwargs["settle_day"] = (
+            None if settled_on is None
+            else SettleDay(day=settled_on, basis=SettledDayBasisEnum.ENTERED)
+        )
     if settled_amount is not None:
         update_kwargs["settled_amount"] = settled_amount
     transfer_service.update_transfer(
@@ -2663,9 +2674,10 @@ def create_settled_cash_transaction(
     # pylint: disable=import-outside-toplevel  -- same lazy-app-import
     # convention every helper in this module follows.
     from app import ref_cache
-    from app.enums import StatusEnum, TxnTypeEnum
+    from app.enums import SettledDayBasisEnum, StatusEnum, TxnTypeEnum
     from app.models.transaction import Transaction
     from app.services import posting_service, status_seam
+    from app.services.settle_day import SettleDay, record_settle_day
 
     account = seed_user["account"] if account is None else account
     scenario = seed_user["scenario"] if scenario is None else scenario
@@ -2704,7 +2716,16 @@ def create_settled_cash_transaction(
         ),
     )
     if settled_on is not _UNSET_SETTLED_ON:
-        txn.settled_on = settled_on
+        # Through the app's OWN pair writer (plan step **X-az**), never as a
+        # bare column assignment: the day and its basis are welded by
+        # ``ck_transactions_settle_day_basis_pairing``, and a fixture that moved
+        # one and left the other would build a row the app cannot write.  The
+        # seam above already stamped ``entered``; re-stating it keeps the pair
+        # written in one act whichever day wins.
+        record_settle_day(
+            txn,
+            SettleDay(day=settled_on, basis=SettledDayBasisEnum.ENTERED),
+        )
     posting_service.sync_transaction_postings(txn, settled=True)
     return txn
 
@@ -2896,7 +2917,7 @@ def add_entry(  # pylint: disable=too-many-arguments,too-many-positional-argumen
         amount=amount,
         description=description,
         purchased_on=purchased_on,
-        settled_on=settled_on,
+        **settle_day_columns(settled_on),
         is_credit=is_credit,
     ))
     db_session.flush()
@@ -2991,7 +3012,27 @@ def mark_purchase_settled(db_session, account, entry, settled_on=None):
         f"assertion (and entry id={entry.id}'s dates) back inside the clock "
         f"this suite runs on rather than forward past it."
     )
-    entry.settled_on = settled_on
+    # **The pair, through the app's OWN pair writer** (plan step **X-az**): a day
+    # written without the basis that says how it is known is unstorable, and a
+    # fixture that states half of one builds a row no door could write.
+    #
+    # **``entered``, and NOT ``asserted``, which a first version wrote** (found
+    # by adversarial review 2026-08-22).  The temptation is that this helper's
+    # precondition is about an assertion COVERING the day -- but the app's only
+    # ``asserted`` writer is ``reconcile_service._purchases.record_settled_days``,
+    # which in ONE statement writes the anchor's own ``observed_on`` AND the link
+    # naming it.  This helper writes neither: its day is the caller's and may be
+    # strictly earlier than the assertion, and it sets no link.  Calling that
+    # ``asserted`` builds a row the app cannot reach -- the migration's own
+    # backfill classifies exactly that row ``entered`` -- and the matcher would
+    # then hand it the BOUND branch of ``expected_window``, a span, for a row
+    # production would call a point.  That is finding **N-132**'s shape inside
+    # the helper written to prevent N-132.  A caller that wants the panel's own
+    # state ticks through the panel.
+    # pylint: disable-next=import-outside-toplevel
+    from app.services.settle_day import record_settle_day
+
+    record_settle_day(entry, an_entered_day(settled_on))
     db_session.flush()
     return entry
 
@@ -3119,12 +3160,37 @@ def settlement_basis_id(basis):
     return ref_cache.settlement_basis_id(basis)
 
 
+def settled_day_basis_id(basis):
+    """Return one ``ref.settled_day_bases`` id, for a fixture that states it.
+
+    :func:`settlement_basis_id`'s twin one column over, and it exists for the
+    same reason (plan step **X-az**): the narrow companion of
+    :func:`settle_day_columns`, for a fixture writing the pair through raw SQL
+    -- a simulated concurrent ``UPDATE`` -- where there is no model instance for
+    the pair writer to take.
+
+    Resolved through ``ref_cache`` like every other ref value, so a fixture
+    names the BASIS and never an id.
+
+    Args:
+        basis: The :class:`app.enums.SettledDayBasisEnum` member to resolve.
+
+    Returns:
+        The ``ref.settled_day_bases.id``.
+    """
+    # pylint: disable=import-outside-toplevel  -- the lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+
+    return ref_cache.settled_day_basis_id(basis)
+
+
 def settlement_columns(settled_on, amount, submitted=None):
     """Return the settlement-record kwargs for a DIRECTLY-constructed row.
 
     **The one door a bare-built fixture row goes through** (plan step X-au-c3).
     A row that asserts a settle DAY always records WHAT moved and how the
-    figure is known -- ``ck_transactions_settle_day_needs_basis`` and
+    figure is known -- ``ck_transactions_settle_day_needs_a_record`` and
     ``ck_transactions_settled_amount_needs_basis`` are the two implications that
     make that true of the bare constructor as well as of the seam.  (The reverse
     does NOT hold and must not: a row may carry the record with no day, which is
@@ -3174,6 +3240,124 @@ def settlement_columns(settled_on, amount, submitted=None):
     return {
         "settled_amount": Decimal(str(figure)),
         "settled_basis_id": ref_cache.settlement_basis_id(basis),
+    }
+
+
+def an_entered_day(day):
+    """Return *day* as a settle day the OWNER stated -- the ``entered`` basis.
+
+    The three ``*_day`` builders below are what a test hands a settle door now
+    that the door takes the PAIR rather than a bare ``date`` (plan step
+    **X-az**): the day, and how that day is known.  They exist so a call site
+    reads as the fact it is asserting instead of as a two-line construction, and
+    so the BASIS is visible at the site -- which is the whole subject of the
+    step, and would be invisible if a helper defaulted it.
+
+    ``entered`` is what a manual Mark Paid, a full-edit date box and every
+    fixture standing in for one records: the owner's own day, with no bank
+    document behind it.
+
+    Args:
+        day: The civil ``date``.
+
+    Returns:
+        Its :class:`app.services.settle_day.SettleDay` on the ``entered`` basis.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.enums import SettledDayBasisEnum
+    from app.services.settle_day import SettleDay
+
+    return SettleDay(day=day, basis=SettledDayBasisEnum.ENTERED)
+
+
+def an_asserted_day(day):
+    """Return *day* as the day a BALANCE was asserted for -- an upper BOUND.
+
+    What the reconcile panel records: the owner asserted a balance for this day
+    and this money was inside it, so the true posting day is on or BEFORE it.
+    :func:`an_entered_day` carries why these builders exist.
+
+    Args:
+        day: The civil ``date`` the balance was asserted for.
+
+    Returns:
+        Its :class:`app.services.settle_day.SettleDay` on the ``asserted``
+        basis.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.enums import SettledDayBasisEnum
+    from app.services.settle_day import SettleDay
+
+    return SettleDay(day=day, basis=SettledDayBasisEnum.ASSERTED)
+
+
+def an_observed_day(day):
+    """Return *day* as a day a BANK STATEMENT showed the money post.
+
+    What the statement matcher records.  :func:`an_entered_day` carries why
+    these builders exist.
+
+    Args:
+        day: The civil ``date`` the bank posted the movement.
+
+    Returns:
+        Its :class:`app.services.settle_day.SettleDay` on the ``observed``
+        basis.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app.enums import SettledDayBasisEnum
+    from app.services.settle_day import SettleDay
+
+    return SettleDay(day=day, basis=SettledDayBasisEnum.OBSERVED)
+
+
+def settle_day_columns(settled_on, basis=None):
+    """Return the settle-day COLUMN PAIR a bare-built fixture row owes.
+
+    The DAY's twin of :func:`settlement_columns`, and it exists for the same
+    reason (plan step **X-az**): ``settled_on`` and ``settled_day_basis_id`` are
+    one fact in two columns, welded by each table's
+    ``ck_*_settle_day_basis_pairing`` BICONDITIONAL, so a bare
+    ``Transaction(settled_on=...)`` that names only the day is an
+    ``IntegrityError`` at flush rather than a row.
+
+    Every bare builder goes through this rather than spelling the pair, for the
+    reason the app has ONE writer for it
+    (:func:`app.services.settle_day.record_settle_day`): a fixture that states
+    half of a pair builds a row no door could have written, and every test over
+    that row grades a state the app cannot reach.
+
+    **The default basis is ``entered``**, which is what a bare-built settled row
+    MEANS: nobody imported a statement and nobody reconciled a balance to make
+    it, so the day is the fixture's own assertion -- exactly what a manual Mark
+    Paid records.  A suite grading the matcher's window rule passes
+    ``SettledDayBasisEnum.ASSERTED`` or ``.OBSERVED`` explicitly, because there
+    the KIND of day is the subject.
+
+    Args:
+        settled_on: The civil day, or ``None`` for a row that carries none.
+        basis: The :class:`~app.enums.SettledDayBasisEnum` member, or ``None``
+            for the ``entered`` default.  Ignored when *settled_on* is ``None``,
+            where the pair is both-NULL.
+
+    Returns:
+        ``{"settled_on": ..., "settled_day_basis_id": ...}``, ready to splat
+        into a model constructor.
+    """
+    # pylint: disable=import-outside-toplevel  -- same lazy-app-import
+    # convention every helper in this module follows.
+    from app import ref_cache
+    from app.enums import SettledDayBasisEnum
+
+    if settled_on is None:
+        return {"settled_on": None, "settled_day_basis_id": None}
+    member = SettledDayBasisEnum.ENTERED if basis is None else basis
+    return {
+        "settled_on": settled_on,
+        "settled_day_basis_id": ref_cache.settled_day_basis_id(member),
     }
 
 
@@ -3277,12 +3461,15 @@ def add_txn(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         estimated_amount=Decimal(str(amount)),
         due_date=due_date,
         is_deleted=is_deleted,
-        settled_on=settled_on,
+        # The settle DAY and the basis that says how it is known, as one pair
+        # (plan step **X-az**).  ``entered`` is what a bare-built settled row
+        # means: no statement was imported and no balance reconciled to make it.
+        **settle_day_columns(settled_on),
         # The settlement RECORD, complete or absent (plan step X-au-c3).  A
         # settled row states what moved -- the typed figure when the caller gave
         # one, else the row's own -- and a row built WITHOUT a settle day states
         # nothing here, which keeps every bare-built row on the same side of
-        # ``ck_transactions_settle_day_needs_basis`` as the seam's own writes.
+        # ``ck_transactions_settle_day_needs_a_record`` as the seam's own writes.
         # (A row that carries the record with no day is legal -- it is the
         # RETAINED state -- but no factory MEANS that; a fixture wanting it
         # settles a row and then reverts it, as the app does.)

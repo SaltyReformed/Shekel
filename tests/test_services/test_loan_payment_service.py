@@ -26,7 +26,10 @@ from app.models.loan_params import LoanParams
 from app.models.ref import AccountType
 from app.models.transaction import Transaction
 from app.services.amortization_engine import PaymentRecord
-from tests._test_helpers import settlement_basis_id
+from tests._test_helpers import (
+    an_entered_day,
+    settlement_basis_id,
+)
 from app.services.loan_payment_service import (
     compute_contractual_pi,
     get_payment_history,
@@ -117,7 +120,7 @@ def _create_transfer_to_loan(seed_user, loan_account, period, amount,
             amount=amount,
             status_id=ref_cache.status_id(status_enum),
             category_id=seed_user["categories"]["Rent"].id,
-            settled_on=settled_on,
+            settle_day=None if settled_on is None else an_entered_day(settled_on),
         ),
     )
 

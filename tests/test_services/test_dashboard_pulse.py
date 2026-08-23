@@ -52,11 +52,12 @@ from tests._test_helpers import (
     create_savings_account,
     dashboard_section,
     default_settle_day,
-    settlement_columns,
     make_investment_account,
     make_salary_profile,
     period_window,
     set_default_grid_account,
+    settle_day_columns,
+    settlement_columns,
 )
 
 
@@ -89,7 +90,7 @@ def _add_expense(
         # A settled row must carry the day its money moved AND the record of
         # what moved -- one fact in three columns (plan steps X-f1 / X-au-c3),
         # both resolved by the shared helpers rather than restated.
-        settled_on=default_settle_day(period, status_id),
+        **settle_day_columns(default_settle_day(period, status_id)),
         **settlement_columns(
             default_settle_day(period, status_id), Decimal(str(amount)),
         ),

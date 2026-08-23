@@ -62,7 +62,11 @@ from app.extensions import db
 from app.models.ref import AmountSource, TransactionType
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
-from tests._test_helpers import load_migration_module, settlement_columns
+from tests._test_helpers import (
+    load_migration_module,
+    settle_day_columns,
+    settlement_columns,
+)
 from app.services.cash_ledger import resolve_transfer_amount
 from app.services.row_valuation import owned_contribution
 
@@ -95,6 +99,15 @@ def _make_transaction(seed_user, seed_periods, **overrides):
         "estimated_amount": Decimal("300.00"),
     }
     fields.update(overrides)
+    # **The settle DAY carries its basis unless the caller states one** (plan
+    # step **X-az**).  These builders write bare columns on purpose -- a control
+    # routed through a door would grade the door -- but a row is only bare on
+    # the axis its test is ABOUT: a day with no basis violates
+    # ``ck_*_settle_day_basis_pairing`` before it can reach the constraint the
+    # test is grading, so the pair is completed here and a test that means to
+    # break it says ``settled_day_basis_id`` outright.
+    if "settled_day_basis_id" not in overrides:
+        fields.update(settle_day_columns(fields.get("settled_on")))
     return Transaction(**fields)
 
 

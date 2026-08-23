@@ -41,18 +41,20 @@ from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
     all_periods,
-    settlement_if_settling,
-    settlement_basis_id,
-    settlement_columns,
+    an_entered_day,
     append_balance_assertion,
     create_hysa_account,
+    current_pay_period,
     field_is_disabled,
     freeze_today,
     mark_purchase_settled,
     net_posted_by_day,
     posted_loan_balance_at,
+    settle_day_columns,
     settle_instant_on,
-    current_pay_period,
+    settlement_basis_id,
+    settlement_columns,
+    settlement_if_settling,
 )
 from app.services.row_valuation import owned_contribution, settled_figure
 
@@ -4141,7 +4143,7 @@ class TestTooltipContent:
                 # A settled row carries the day its money moved; this fixture
                 # is bare (no seam), so it states the day the readers would
                 # otherwise refuse to guess (plan step X-f1).
-                settled_on=current.start_date,
+                **settle_day_columns(current.start_date),
                 name="Test Est Comparison",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
@@ -4178,7 +4180,7 @@ class TestTooltipContent:
                 # A settled row carries the day its money moved; this fixture
                 # is bare (no seam), so it states the day the readers would
                 # otherwise refuse to guess (plan step X-f1).
-                settled_on=current.start_date,
+                **settle_day_columns(current.start_date),
                 name="Test Equal Amounts",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
@@ -4216,7 +4218,7 @@ class TestTooltipContent:
                 # A settled row carries the day its money moved; this fixture
                 # is bare (no seam), so it states the day the readers would
                 # otherwise refuse to guess (plan step X-f1).
-                settled_on=current.start_date,
+                **settle_day_columns(current.start_date),
                 name="Test Paid Status",
                 category_id=seed_user["categories"]["Rent"].id,
                 transaction_type_id=expense_type.id,
@@ -4630,7 +4632,7 @@ class TestGridSubtotalsRegressionBaseline:
                 category_id=seed_user["categories"]["Salary"].id,
                 transaction_type_id=income_type.id,
                 estimated_amount=Decimal("500.00"),
-                settled_on=current.start_date,
+                **settle_day_columns(current.start_date),
                 **settlement_columns(
                     current.start_date, Decimal("500.00"),
                     submitted=Decimal("400.00"),
@@ -5604,7 +5606,7 @@ class TestSettleDayLifecycle:
             status_seam.apply_status_change(
                 txn,
                 ref_cache.status_id(StatusEnum.DONE),
-                settled_on=settled_a_week_ago,
+                settle_day=an_entered_day(settled_a_week_ago),
                 settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
             posting_service.sync_transaction_postings(txn, settled=True)
@@ -5688,7 +5690,7 @@ class TestSettleDayLifecycle:
             status_seam.apply_status_change(
                 txn,
                 ref_cache.status_id(StatusEnum.DONE),
-                settled_on=settled_a_week_ago,
+                settle_day=an_entered_day(settled_a_week_ago),
                 settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
             )
             posting_service.sync_transaction_postings(txn, settled=True)
@@ -5753,7 +5755,7 @@ class TestSettleDayLifecycle:
 
         txn = self._create_test_txn(seed_user, seed_periods_today)
         status_seam.apply_status_change(
-            txn, ref_cache.status_id(StatusEnum.DONE), settled_on=day,
+            txn, ref_cache.status_id(StatusEnum.DONE), settle_day=an_entered_day(day),
             settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
         )
         posting_service.sync_transaction_postings(txn, settled=True)
@@ -6788,7 +6790,7 @@ class TestMobileCardActionBar:
                 # A settled row carries the day its money moved and a RECORD
                 # of what moved (plan step X-au-c3); a bare fixture states both
                 # through the one door, ``settlement_columns``.
-                settled_on=current.start_date,
+                **settle_day_columns(current.start_date),
                 **settlement_columns(current.start_date, Decimal("42.00")),
             )
             db.session.add(txn)
@@ -6828,7 +6830,7 @@ class TestMobileCardActionBar:
                 # A settled row carries the day its money moved and a RECORD
                 # of what moved (plan step X-au-c3); a bare fixture states both
                 # through the one door, ``settlement_columns``.
-                settled_on=current.start_date,
+                **settle_day_columns(current.start_date),
                 **settlement_columns(current.start_date, Decimal("42.00")),
             )
             db.session.add(txn)
@@ -6875,7 +6877,7 @@ class TestMobileCardActionBar:
                 # A settled row carries the day its money moved and a RECORD
                 # of what moved (plan step X-au-c3); a bare fixture states both
                 # through the one door, ``settlement_columns``.
-                settled_on=current.start_date,
+                **settle_day_columns(current.start_date),
                 **settlement_columns(current.start_date, Decimal("2500.00")),
             )
             db.session.add(txn)

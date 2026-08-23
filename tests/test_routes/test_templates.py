@@ -48,15 +48,16 @@ from app.services.recurrence import (
 from app.utils.dates import display_today
 from tests._test_helpers import (
     all_periods,
-    settlement_columns,
-    settlement_if_settling,
     cadence_payload,
     create_account_of_type,
     create_loan_account,
+    current_pay_period,
     end_bound_payload,
     make_cadence_rule,
     make_transfer_template,
-    current_pay_period,
+    settle_day_columns,
+    settlement_columns,
+    settlement_if_settling,
 )
 from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
@@ -2259,7 +2260,7 @@ class TestTemplateHardDelete:
                 status_id=received_status.id,
                 # A settled row carries the whole record, resolved through the
                 # one door a bare-built fixture uses (plan step X-au-c3).
-                settled_on=seed_periods_today[0].start_date,
+                **settle_day_columns(seed_periods_today[0].start_date),
                 **settlement_columns(
                     seed_periods_today[0].start_date, Decimal("2000.00"),
                 ),
@@ -2354,7 +2355,7 @@ class TestTemplateHardDelete:
                 status_id=received_status.id,
                 # A settled row carries the whole record, resolved through the
                 # one door a bare-built fixture uses (plan step X-au-c3).
-                settled_on=seed_periods_today[0].start_date,
+                **settle_day_columns(seed_periods_today[0].start_date),
                 **settlement_columns(
                     seed_periods_today[0].start_date, Decimal("1500.00"),
                 ),

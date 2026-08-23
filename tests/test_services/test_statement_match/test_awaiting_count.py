@@ -19,7 +19,13 @@ from decimal import Decimal
 from app.services import account_service, statement_match
 from app.services.statement_match import awaiting_review_count
 
-from ._builders import a_bank_line, a_scope, a_transaction, an_import
+from ._builders import (
+    a_bank_line,
+    a_scope,
+    a_submission,
+    a_transaction,
+    an_import,
+)
 
 
 def _opens(seed_user):
@@ -117,13 +123,10 @@ class TestTheCountTheGridRenders:
         opens = _opens(seed_user)
         assert awaiting_review_count(seed_user["account"].id, opens) == 1
 
+        scope = a_scope(seed_user)
         statement_match.accept_match(
-            statement_match.MatchSubmission(
-                line_ids=frozenset({line.id}),
-                transaction_ids=frozenset({txn.id}),
-                entry_ids=frozenset(),
-            ),
-            a_scope(seed_user),
+            a_submission(scope, lines=[line], transactions=[txn]),
+            scope,
         )
         db.session.flush()
 

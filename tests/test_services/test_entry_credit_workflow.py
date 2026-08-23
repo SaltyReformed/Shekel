@@ -25,6 +25,9 @@ from app.exceptions import NotFoundError, ValidationError
 from app.services import credit_workflow, entry_service, transaction_service
 from app.services.row_valuation import settled_figure
 from app.services.entry_credit_workflow import sync_entry_payback
+from tests._test_helpers import (
+    an_entered_day,
+)
 
 
 class TestSyncEntryPayback:
@@ -1575,7 +1578,7 @@ class TestASettledPaybackWithDRIFTStillAdmitsUnrelatedEdits:
 
             # THE ACT: record the day the bank took that debit purchase.
             entry_service.update_entry(
-                debit.id, user.id, settled_on=date(2026, 1, 11),
+                debit.id, user.id, settle_day=an_entered_day(date(2026, 1, 11)),
             )
             db.session.flush()
 

@@ -28,7 +28,7 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass
 
-from ._offers import NEW_ENVELOPE, NewEnvelope, PurchaseDestination
+from ._creations import NEW_ENVELOPE, NewEnvelope, PurchaseDestination
 from ._policy import MerchantPolicy, PolicyAnswer, PolicyView
 
 
@@ -80,7 +80,7 @@ class Placement:
         kind: Which of the four (:class:`PlacementKind`).
         destination: The budget line to file into, for
             :attr:`PlacementKind.RECORD_IN`.  A
-            :class:`~._offers.PurchaseDestination` drawn from the pass's own
+            :class:`~._creations.PurchaseDestination` drawn from the pass's own
             offer set rather than an id looked up here, so the screen shows the
             label and period span it would show anyway and the write door
             cannot be handed a row the screen may not offer.

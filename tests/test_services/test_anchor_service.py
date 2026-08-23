@@ -58,6 +58,7 @@ from tests._test_helpers import (
     current_pay_period,
     freeze_today,
     insert_origination_rate,
+    settle_day_columns,
 )
 from app.services import cash_ledger
 
@@ -156,7 +157,7 @@ def _make_projected_expense_with_past_dated_entry(seed_user, period, amount):
         description="Past-dated debit",
         purchased_on=date.today() - timedelta(days=1),
         is_credit=False,
-        settled_on=None,
+        **settle_day_columns(None),
     )
     db.session.add(entry)
     db.session.commit()

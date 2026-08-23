@@ -29,13 +29,14 @@ from app.models.transaction import Transaction
 from app.services import balance_at, cash_ledger, dashboard_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
+    add_txn as _add_txn,
     dashboard_section,
     default_settle_day,
-    settlement_columns,
     make_every_period_rule,
-    add_txn as _add_txn,
     make_investment_account,
     set_default_grid_account,
+    settle_day_columns,
+    settlement_columns,
 )
 
 
@@ -97,7 +98,7 @@ class TestBillRowSingleBase:
             due_date=date(2026, 1, 5),
             # The settlement record -- day, figure and basis together, through
             # the one door a bare-built fixture uses (plan step X-au-c3).
-            settled_on=_settle_day,
+            **settle_day_columns(_settle_day),
             **settlement_columns(
                 _settle_day, Decimal(str(estimated)),
                 submitted=Decimal(str(actual)) if actual is not None else None,

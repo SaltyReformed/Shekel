@@ -41,6 +41,7 @@ from app.services.statement_match import MatchSubmission, matched_subjects
 from tests.test_services.test_statement_match._builders import (
     a_bank_line,
     a_scope,
+    a_submission,
     a_transaction,
     an_import,
 )
@@ -108,14 +109,16 @@ def _rows(db, table, column, value):
 
 
 def _match(seed_user, line, txn):
-    """Accept a real match between one line and one row, through the door."""
+    """Accept a real match between one line and one row, through the door.
+
+    ONE scope builds the submission and applies it, which is the two-moment
+    flow the screen has: the reviewed state a tick carries is read off the pass
+    that rendered it (plan step ``bank_import:X-f6d-3``).
+    """
+    scope = a_scope(seed_user)
     return statement_match.accept_match(
-        MatchSubmission(
-            line_ids=frozenset({line.id}),
-            transaction_ids=frozenset({txn.id}),
-            entry_ids=frozenset(),
-        ),
-        a_scope(seed_user),
+        a_submission(scope, lines=[line], transactions=[txn]),
+        scope,
     )
 
 
@@ -259,13 +262,12 @@ class TestItReleasesRatherThanOrphans:
             description="TWO",
         )
         txn = a_transaction(seed_user, amount="180.00")
+        scope = a_scope(seed_user)
         statement_match.accept_match(
-            MatchSubmission(
-                line_ids=frozenset({kept.id, going.id}),
-                transaction_ids=frozenset({txn.id}),
-                entry_ids=frozenset(),
+            a_submission(
+                scope, lines=[kept, going], transactions=[txn],
             ),
-            a_scope(seed_user),
+            scope,
         )
 
         removal = _undo(seed_user, second.id)

@@ -17,30 +17,47 @@ this project has twice measured the absence of.
 * a release restores the QUESTION and leaves the days alone.
 """
 
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 
 import pytest
 
 from app import ref_cache
-from app.enums import StatusEnum
+from app.enums import (
+    SettledDayBasisEnum,
+    SettlementBasisEnum,
+    StatusEnum,
+    TxnTypeEnum,
+)
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.ledger_account import LedgerAccount
+from app.models.transaction import Transaction
 from app.models.statement_match import StatementMatch, StatementMatchMember
 from app.services import balance_at, entry_service, statement_match
 from app.services.balance_at import BalanceContext
 from app.services.statement_match import MatchSubmission
 
-from tests._test_helpers import create_settled_cash_transaction
+from tests._test_helpers import (
+    an_entered_day,
+    create_settled_cash_transaction,
+)
 
 from ._builders import (
     a_bank_line,
     a_purchase,
     a_scope,
+    a_submission,
     a_transaction,
+    an_assertion,
     an_import,
+)
+from app.services.settle_day import (
+    SettleDay,
+    record_settle_day,
+    recorded_settle_day,
 )
 
 
@@ -114,15 +131,17 @@ def _submit(seed_user, lines=(), transactions=(), entries=()):
     Returns:
         The :class:`~app.services.statement_match.AcceptedMatch`.
     """
+    # DERIVED HERE, so every call sees the rows this test has staged.  A
+    # scope built once per test would be a snapshot older than the fixture.
+    # **The SAME scope builds the submission and applies it**, which is the
+    # two-moment flow the screen has: the reviewed state a tick carries is read
+    # off the pass that rendered it (finding **N-336**).
+    scope = a_scope(seed_user)
     return statement_match.accept_match(
-        MatchSubmission(
-            line_ids=frozenset(line.id for line in lines),
-            transaction_ids=frozenset(txn.id for txn in transactions),
-            entry_ids=frozenset(entry.id for entry in entries),
+        a_submission(
+            scope, lines=lines, transactions=transactions, entries=entries,
         ),
-        # DERIVED HERE, so every call sees the rows this test has staged.  A
-        # scope built once per test would be a snapshot older than the fixture.
-        a_scope(seed_user),
+        scope,
     )
 
 
@@ -281,6 +300,163 @@ class TestTheGroupMustSum:
         assert txn.settled_on == last
 
 
+class TestARowThatMOVEDSinceTheReviewIsRefused:
+    """Finding **N-336**, at the door: what commits is what was reviewed.
+
+    Ruling **R-FP** says a match is a PROPOSAL, and the screen states the
+    correction accepting one would write.  Until plan step
+    ``bank_import:X-f6d-3`` nothing compared the two: ``resolve_rows``
+    re-priced the row per act -- correct in itself, finding **N-309** -- and
+    ``corrected_figure`` then wrote the bank's figure whatever that price was.
+    Reproduced on the developer's own data: the screen offered *from
+    ``-178.32`` to ``-178.29``*, the row was edited to ``500.00`` in another
+    tab, and Apply wrote a **``$321.71``** correction under that caption.
+
+    **The exact tier never had this**, which is why it is a regression rather
+    than an old hole: an equal match whose price moved became UNEQUAL and was
+    refused, so staleness failed CLOSED by accident until ``X-f6d-2`` made an
+    unequal one-to-one recordable.
+
+    ``test_submission`` grades the two coordinates as values, one writer at a
+    time.  These grade that the door REACHES them and writes nothing.
+    """
+
+    def test_a_row_whose_FIGURE_moved_is_refused(self, app, db, seed_user):
+        """The reproduced case, through the real door."""
+        line = a_bank_line(seed_user, an_import(seed_user), amount="-178.29")
+        txn = a_transaction(
+            seed_user, name="Geico", amount="178.32",
+            status=StatusEnum.DONE, settled_on=line.posted_on,
+        )
+        scope = a_scope(seed_user)
+        submission = a_submission(scope, lines=[line], transactions=[txn])
+
+        # ...and the row moves after the screen was rendered.
+        txn.settled_amount = Decimal("500.00")
+        txn.estimated_amount = Decimal("500.00")
+        db.session.flush()
+
+        with pytest.raises(ValidationError, match="reviewed against different"):
+            statement_match.accept_match(submission, a_scope(seed_user))
+
+        assert db.session.query(StatementMatch).count() == 0
+        assert txn.settled_amount == Decimal("500.00"), (
+            "the refused act wrote the bank's figure over the edit"
+        )
+
+    def test_a_row_whose_REVISION_moved_is_refused(self, app, db, seed_user):
+        """The coordinate the figure cannot see.
+
+        The row is worth exactly what the screen showed and has still been
+        edited -- here its settle day, which is what decides whether a match
+        re-dates anything.  A guard on the figure alone applies this silently.
+        """
+        line = a_bank_line(seed_user, an_import(seed_user), amount="-180.00")
+        txn = a_transaction(
+            seed_user, amount="180.00",
+            status=StatusEnum.DONE, settled_on=line.posted_on,
+        )
+        scope = a_scope(seed_user)
+        submission = a_submission(scope, lines=[line], transactions=[txn])
+
+        txn.settled_on = line.posted_on - timedelta(days=2)
+        db.session.flush()
+
+        with pytest.raises(ValidationError, match="reviewed against different"):
+            statement_match.accept_match(submission, a_scope(seed_user))
+
+        assert db.session.query(StatementMatch).count() == 0
+
+    def test_a_PURCHASE_whose_revision_moved_is_refused(
+        self, app, db, seed_user,
+    ):
+        """The other candidate kind, and it was uncovered.
+
+        The two rows a match can name are built by DIFFERENT constructors, so a
+        control over transactions alone grades one of them: found by a mutation
+        sweep 2026-08-23, where hardcoding ``purchase_candidate``'s revision
+        left every test passing.  It matters because a purchase is the row
+        ruling **R-GE** newly lets a match re-price -- 2 of the developer's own
+        10 near misses are purchases under a settled envelope.
+
+        **What moves here is neither the figure nor a day**, so this isolates
+        the revision coordinate: only the description changes, which no other
+        guard in this door reads.
+        """
+        line = a_bank_line(seed_user, an_import(seed_user), amount="-25.00")
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="200.00",
+            status=StatusEnum.DONE, settled_on=line.posted_on,
+        )
+        purchase = a_purchase(
+            seed_user, envelope, amount="25.00",
+            purchased_on=line.posted_on, description="Walmart",
+        )
+        scope = a_scope(seed_user)
+        submission = a_submission(scope, lines=[line], entries=[purchase])
+
+        purchase.description = "Walmart, corrected"
+        db.session.flush()
+
+        with pytest.raises(ValidationError, match="reviewed against different"):
+            statement_match.accept_match(submission, a_scope(seed_user))
+
+        assert db.session.query(StatementMatch).count() == 0
+
+    def test_ONE_row_named_TWICE_at_two_figures_is_refused(
+        self, app, db, seed_user,
+    ):
+        """A crafted body may not choose which state the guard checks.
+
+        The screen renders exactly one input per row, so this cannot arrive
+        from it -- but ``MatchSubmission.rows`` is a SET of values rather than
+        of ids, so two entries naming one subject at different figures are two
+        distinct members that collapse to one key in ``subjects``.  Whichever
+        the set iterated last would have become the state the staleness guard
+        compared against, on the door that re-prices rows.
+
+        **A first draft left this to the count below and a docstring claimed
+        it was caught there.**  It was not: that count is taken over the
+        COLLAPSED mapping, so two rows over one subject compares 1 against 1
+        and passes.  Found by re-auditing this step's own diff, 2026-08-23.
+        """
+        line = a_bank_line(seed_user, an_import(seed_user), amount="-180.00")
+        txn = a_transaction(
+            seed_user, amount="180.00",
+            status=StatusEnum.DONE, settled_on=line.posted_on,
+        )
+        scope = a_scope(seed_user)
+        honest = a_submission(scope, lines=[line], transactions=[txn])
+        truthful_row = next(iter(honest.rows))
+
+        crafted = replace(honest, rows=frozenset({
+            truthful_row,
+            replace(truthful_row, cash_amount=Decimal("-999.00")),
+        }))
+
+        with pytest.raises(ValidationError, match="same row more than once"):
+            statement_match.accept_match(crafted, scope)
+
+        assert db.session.query(StatementMatch).count() == 0
+
+    def test_an_UNMOVED_row_still_applies(self, app, db, seed_user):
+        """The control that keeps the two above from grading a broken door.
+
+        Both cases would pass against a door that refused every match, and
+        137 of the developer's own proposals take this arm.
+        """
+        line = a_bank_line(seed_user, an_import(seed_user), amount="-178.29")
+        txn = a_transaction(
+            seed_user, name="Geico", amount="178.32",
+            status=StatusEnum.DONE, settled_on=line.posted_on,
+        )
+
+        accepted = _submit(seed_user, lines=[line], transactions=[txn])
+
+        assert accepted.repriced_count == 1
+        assert txn.settled_amount == Decimal("178.29")
+
+
 class TestEveryOtherRefusalFires:
     """Each of these is reachable from a stale page, and each writes nothing."""
 
@@ -429,14 +605,14 @@ class TestEveryOtherRefusalFires:
         """A refusal rather than a silent skip: this door names rows on purpose."""
         txn = a_transaction(seed_user, amount="180.00")
 
+        scope = a_scope(seed_user)
         with pytest.raises(ValidationError, match="no longer on this account"):
             statement_match.accept_match(
-                MatchSubmission(
-                line_ids=frozenset({999999}),
-                transaction_ids=frozenset({txn.id}),
-                entry_ids=frozenset(),
-            ),
-                a_scope(seed_user),
+                replace(
+                    a_submission(scope, transactions=[txn]),
+                    line_ids=frozenset({999999}),
+                ),
+                scope,
             )
 
     def test_a_second_match_on_one_LINE_is_refused(self, app, db, seed_user):
@@ -653,8 +829,7 @@ class TestATransferShadowIsMatchedThroughItsService:
         if settled:
             transfer_service.settle_transfer(
                 transfer.id, seed_user["user"].id,
-                settled_on=seed_user["bootstrap_period"].start_date
-                + timedelta(days=5),
+                settle_day=an_entered_day(seed_user["bootstrap_period"].start_date + timedelta(days=5)),
             )
         db.session.flush()
         assert isinstance(destination, Account)
@@ -789,7 +964,7 @@ class TestAnAcceptedMatchStopsAgreeingWhenItStopsHolding:
     def test_a_hand_moved_day_stops_it_agreeing(self, app, db, seed_user):
         """The owner contradicted the bank, and the screen says so."""
         salary, _ = self._accepted_pair(db, seed_user)
-        salary.settled_on = salary.settled_on + timedelta(days=1)
+        record_settle_day(salary, an_entered_day(salary.settled_on + timedelta(days=1)))
         db.session.flush()
 
         assert self._groups(seed_user)[0].agrees is False
@@ -1165,7 +1340,7 @@ class TestCorrectingAPurchaseDayMovesNoMoney:
 
         entry_service.update_entry(
             purchase.id, seed_user["user"].id,
-            settled_on=bank_day + timedelta(days=4),
+            settle_day=an_entered_day(bank_day + timedelta(days=4)),
         )
         db.session.flush()
 
@@ -1354,16 +1529,11 @@ class TestTheStoredTransactionDayReachesTheScreen:
         for proposal in review.proposals:
             statement_match.accept_match(
                 MatchSubmission(
-                line_ids=frozenset(l.line_id for l in proposal.lines),
-                transaction_ids=frozenset(
-                    r.row_id for r in proposal.rows
-                    if r.kind is statement_match.RowKind.TRANSACTION
+                    line_ids=frozenset(l.line_id for l in proposal.lines),
+                    rows=frozenset(
+                        statement_match.as_reviewed(r) for r in proposal.rows
+                    ),
                 ),
-                entry_ids=frozenset(
-                    r.row_id for r in proposal.rows
-                    if r.kind is statement_match.RowKind.PURCHASE
-                ),
-            ),
                 a_scope(seed_user),
             )
 
@@ -1621,3 +1791,451 @@ class TestARedatedSettleLeavesNoPostingBehind:
         assert _posted_cash_by_day(db, txn, account) == {
             bank_day: Decimal("-180.00"),
         }
+
+
+class TestTheBankCanCONFIRMADayThePanelOnlyBOUNDED:
+    """Plan step **X-az**: a confirmation writes the basis, not the day.
+
+    **The reverse-direction half of finding N-332.**  The reconcile panel stamps
+    the day the owner asserted a BALANCE for -- the money moved on or BEFORE it.
+    When a bank line then posts on exactly that day the app has learned
+    something: the bound is the true posting day.  Nothing could record it,
+    because ``_apply_day``'s ``"unchanged"`` arm returned early and no settle
+    door fires when the day does not move, so such a row went on reporting
+    itself a bound forever.
+
+    **The DAY is unchanged, so the receipt is unchanged**: neither
+    ``settled_count`` nor ``corrected_count`` moves, because nothing settled and
+    nothing was corrected.  What moves is the stored answer to *how is this day
+    known*, and with it the window the matcher would bound a future line by.
+    """
+
+    @staticmethod
+    def _reconciled_purchase(seed_user, made_on, asserted_for):
+        """Return a purchase ticked on the panel: an ASSERTED day and a link."""
+        assertion = an_assertion(seed_user, observed_on=asserted_for)
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="100.00", is_envelope=True,
+        )
+        return a_purchase(
+            seed_user, envelope, amount="18.64", purchased_on=made_on,
+            settled_on=asserted_for, reconciled_by=assertion,
+            settle_day_basis=SettledDayBasisEnum.ASSERTED,
+        )
+
+    def test_a_line_on_the_bound_itself_raises_the_basis_to_observed(
+        self, app, db, seed_user,
+    ):
+        """The confirmation: same day, stronger evidence, recorded."""
+        with app.app_context():
+            made_on = seed_user["bootstrap_period"].start_date
+            asserted_for = made_on + timedelta(days=20)
+            purchase = self._reconciled_purchase(
+                seed_user, made_on, asserted_for,
+            )
+            statement = an_import(seed_user)
+            line = a_bank_line(
+                seed_user, statement, amount="-18.64", posted_on=asserted_for,
+            )
+            db.session.flush()
+
+            accepted = _submit(seed_user, lines=[line], entries=[purchase])
+            db.session.flush()
+
+            assert recorded_settle_day(purchase) == SettleDay(
+                day=asserted_for, basis=SettledDayBasisEnum.OBSERVED,
+            )
+            # The DAY did not move, so neither tally counts it.
+            assert accepted.settled_count == 0
+            assert accepted.corrected_count == 0
+
+    def test_the_confirmation_KEEPS_the_clearing_link(
+        self, app, db, seed_user,
+    ):
+        """A statement that AGREES does not withdraw the one already seen.
+
+        Every settle door releases ``reconciled_by_id`` when the day MOVES, and
+        the predicate is about the day rather than the pair for exactly this
+        case: an observation the bank confirms strengthens the record the link
+        holds instead of contradicting it.
+        """
+        with app.app_context():
+            made_on = seed_user["bootstrap_period"].start_date
+            asserted_for = made_on + timedelta(days=20)
+            purchase = self._reconciled_purchase(
+                seed_user, made_on, asserted_for,
+            )
+            linked_to = purchase.reconciled_by_id
+            statement = an_import(seed_user)
+            line = a_bank_line(
+                seed_user, statement, amount="-18.64", posted_on=asserted_for,
+            )
+            db.session.flush()
+
+            _submit(seed_user, lines=[line], entries=[purchase])
+            db.session.flush()
+
+            assert purchase.reconciled_by_id == linked_to
+
+    def test_a_row_already_OBSERVED_is_left_entirely_alone(
+        self, app, db, seed_user,
+    ):
+        """The early return survives: only a WEAKER basis is worth writing.
+
+        Without this arm the confirmation runs a full settle door on every
+        already-correct row of every accept -- a posting reconcile, a payback
+        sync and an optimistic-lock bump apiece, for a column that is already
+        right.
+        """
+        with app.app_context():
+            made_on = seed_user["bootstrap_period"].start_date
+            bank_day = made_on + timedelta(days=2)
+            envelope = a_transaction(
+                seed_user, name="Groceries", amount="100.00", is_envelope=True,
+            )
+            purchase = a_purchase(
+                seed_user, envelope, amount="18.64", purchased_on=made_on,
+                settled_on=bank_day,
+                settle_day_basis=SettledDayBasisEnum.OBSERVED,
+            )
+            statement = an_import(seed_user)
+            line = a_bank_line(
+                seed_user, statement, amount="-18.64", posted_on=bank_day,
+            )
+            db.session.flush()
+            before = purchase.version_id
+
+            _submit(seed_user, lines=[line], entries=[purchase])
+            db.session.flush()
+
+            assert purchase.version_id == before, (
+                "an already-observed row was written for nothing"
+            )
+            assert recorded_settle_day(purchase).basis is (
+                SettledDayBasisEnum.OBSERVED
+            )
+
+
+class TestAOneToOneMatchTakesTheBanksFigure:
+    """Ruling **R-GD(a)** and finding **N-335**: the bank's figure IS the record.
+
+    **The defect these exist for, measured on the developer's own dev database
+    2026-08-22.**  Bank line 285 (`ACH DEBIT GEICO PREM COLL`, `-178.29`,
+    posted 07-02) sat THREE CENTS from transaction 2461 (`178.32`, settled
+    07-06).  The exact-amount predicate offered nothing, the accept door would
+    have refused it anyway, and the cheapest act the review screen had left was
+    to record the line as a NEW purchase -- so the ledger booked `-178.29` on
+    07-02 AND `-178.32` on 07-06, `$356.61` for one `$178.29` movement.
+
+    A refusal is not neutral when the screen beside it offers to duplicate.
+    """
+
+    @staticmethod
+    def _geico(seed_user, statement, bank_day, app_day):
+        """Stage the developer's own case: a bill settled three cents off."""
+        txn = a_transaction(
+            seed_user, name="Geico", amount="178.32",
+            status=StatusEnum.DONE, settled_on=app_day,
+        )
+        line = a_bank_line(
+            seed_user, statement, amount="-178.29", posted_on=bank_day,
+        )
+        return txn, line
+
+    def test_the_three_cents_is_a_CORRECTION_not_a_refusal(
+        self, app, db, seed_user,
+    ):
+        """The whole finding, as one accepted match."""
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        txn, line = self._geico(
+            seed_user, statement, bank_day, bank_day + timedelta(days=4),
+        )
+
+        accepted = _submit(seed_user, lines=[line], transactions=[txn])
+
+        assert accepted.match_id is not None, "the match must be RECORDED"
+        assert txn.settled_amount == Decimal("178.29"), (
+            "the row must book what the BANK took, not what the app guessed"
+        )
+        assert txn.settled_on == bank_day
+
+    def test_the_correction_says_it_is_one(self, app, db, seed_user):
+        """A corrected figure is stored as CORRECTED, not as derived.
+
+        The basis is what makes *did the bank disagree with this row* a stored
+        answer instead of one re-derived by comparing against a recomputation
+        that may since have moved.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        txn, line = self._geico(
+            seed_user, statement, bank_day, bank_day + timedelta(days=4),
+        )
+
+        _submit(seed_user, lines=[line], transactions=[txn])
+
+        assert txn.settled_basis_id == ref_cache.settlement_basis_id(
+            SettlementBasisEnum.CORRECTED,
+        )
+
+    def test_an_AGREEING_match_writes_no_correction(self, app, db, seed_user):
+        """The control, and it is what makes the test above mean anything.
+
+        A row the bank agrees with must keep its DERIVED basis: if every match
+        wrote ``corrected``, the basis would say nothing and the assertion
+        above would pass for the wrong reason.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        txn = a_transaction(
+            seed_user, name="Geico", amount="178.32",
+            status=StatusEnum.DONE, settled_on=bank_day,
+        )
+        line = a_bank_line(
+            seed_user, statement, amount="-178.32", posted_on=bank_day,
+        )
+
+        _submit(seed_user, lines=[line], transactions=[txn])
+
+        assert txn.settled_amount == Decimal("178.32")
+        assert txn.settled_basis_id != ref_cache.settlement_basis_id(
+            SettlementBasisEnum.CORRECTED,
+        )
+
+    def test_the_ACCOUNT_reads_the_banks_figure_and_not_both(
+        self, app, db, seed_user,
+    ):
+        """The money assertion: one movement, booked once, at the bank's figure.
+
+        This is the property finding **N-335** measures the loss of -- the app
+        held `$356.61` against a `$178.29` payment because the line became a
+        second row instead of correcting the first.
+
+        **It asserts the POSTED LEG rather than the balance, and that is not
+        laziness.**  The bank day here is the anchor's own day, and until the
+        cutover (`balance:X-f3c`) an assertion RESETS the ledger to the figure
+        it names -- so `balance_at` reads `1000.00` either side of this match
+        whatever the row books, and a balance assertion would grade the anchor
+        instead of the correction.  What the ledger posted for the row is the
+        fact this test is about, and it is exact.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        txn, line = self._geico(
+            seed_user, statement, bank_day, bank_day + timedelta(days=4),
+        )
+        _submit(seed_user, lines=[line], transactions=[txn])
+        db.session.flush()
+
+        posted = _posted_cash_by_day(db, txn, seed_user["account"])
+        assert sum(posted.values()) == Decimal("-178.29"), (
+            "the row must book what the BANK took, exactly once -- the whole "
+            "of what N-335 measures the loss of"
+        )
+
+    def test_a_row_carrying_a_CARD_purchase_corrects_its_GROSS(
+        self, app, db, seed_user,
+    ):
+        """The bank constrains the CASH LEG, and the stored figure is GROSS.
+
+        A row whose card purchase never touches checking is worth
+        ``gross - that purchase`` in cash, so writing the bank's figure
+        STRAIGHT into ``settled_amount`` would book the card spend a second
+        time.  Every one of the developer's own 8 transaction near misses
+        carries no entries, so nothing on that data can tell the two apart --
+        which is exactly why this case is written.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        txn = a_transaction(
+            seed_user, name="Groceries", amount="180.00",
+            status=StatusEnum.DONE, settled_on=bank_day,
+        )
+        a_purchase(
+            seed_user, txn, amount="30.00", is_credit=True,
+            purchased_on=bank_day,
+        )
+        db.session.flush()
+        # Cash leg is 180.00 - 30.00 = 150.00 out; the bank took 149.00.
+        line = a_bank_line(
+            seed_user, statement, amount="-149.00", posted_on=bank_day,
+        )
+
+        _submit(seed_user, lines=[line], transactions=[txn])
+
+        assert txn.settled_amount == Decimal("179.00"), (
+            "the GROSS moves by the difference; the card purchase is still "
+            "subtracted from it"
+        )
+
+
+class TestWhatAOneToOneMatchSTILLRefuses:
+    """The four indeterminacies R-GD(a) did NOT dissolve.
+
+    Each is a FIRING CONTROL: written to fail if its clause were deleted, which
+    is what `docs/plans/verification.md` asks of a refusal on a money door.
+    """
+
+    def test_a_SIGN_disagreement_is_refused(self, app, db, seed_user):
+        """Money leaving is not money arriving, whatever the magnitudes do.
+
+        The old sum test caught this by accident; with the sum test gone it
+        needs its own clause, or a `+180.00` deposit would silently "correct" a
+        `-180.00` bill.
+        """
+        statement = an_import(seed_user)
+        txn = a_transaction(seed_user, name="Electricity", amount="180.00")
+        line = a_bank_line(seed_user, statement, amount="180.00")
+
+        with pytest.raises(ValidationError, match="not the same movement"):
+            _submit(seed_user, lines=[line], transactions=[txn])
+
+        assert txn.settled_on is None
+
+    def test_an_ENVELOPE_is_refused(self, app, db, seed_user):
+        """Its figure IS its purchases, so there is nothing here to correct."""
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="100.00", is_envelope=True,
+        )
+        a_purchase(
+            seed_user, envelope, amount="25.00", purchased_on=bank_day,
+        )
+        db.session.flush()
+        line = a_bank_line(
+            seed_user, statement, amount="-30.00", posted_on=bank_day,
+        )
+
+        with pytest.raises(ValidationError, match="no figure of its own"):
+            _submit(seed_user, lines=[line], transactions=[envelope])
+
+        assert envelope.settled_on is None
+
+    def test_a_CC_PAYBACK_is_refused(self, app, db, seed_user):
+        """Finding **N-252**'s class, and the one a first draft MISSED.
+
+        A payback's figure is a fact about the row it repays, and
+        ``entry_credit_workflow.sync_entry_payback`` re-states it on every entry
+        mutation -- so a ``corrected`` record written here is silently reverted
+        by the next sibling write.  The transaction door's own backstop refuses
+        only the ENVELOPE half of this class (the payback is refused at the
+        PATCH route instead), so without this clause the correction reaches the
+        column.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="100.00", is_envelope=True,
+        )
+        payback = Transaction(
+            account_id=seed_user["account"].id,
+            pay_period_id=seed_user["bootstrap_period"].id,
+            scenario_id=seed_user["scenario"].id,
+            status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+            name="CC Payback: Groceries",
+            category_id=seed_user["categories"]["Groceries"].id,
+            transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+            estimated_amount=Decimal("60.00"),
+            credit_payback_for_id=envelope.id,
+        )
+        db.session.add(payback)
+        db.session.flush()
+        line = a_bank_line(
+            seed_user, statement, amount="-55.00", posted_on=bank_day,
+        )
+
+        with pytest.raises(ValidationError, match="no figure of its own"):
+            _submit(seed_user, lines=[line], transactions=[payback])
+
+        assert payback.settled_on is None
+        assert payback.settled_amount is None
+
+
+class TestASettledPurchaseTakesTheBanksFigure:
+    """Ruling **R-GE** (2026-08-22): the same evidence R-FX already accepted.
+
+    ``entry_service._reject_settled_parent`` refuses a purchase's ``amount``
+    under a settled parent -- finding **N-229**, widened to the settled BAND at
+    `balance:X-au-c3` -- because re-pricing a row whose money has moved would
+    move it again.  That reason holds for the act it was written about: a human
+    typing a different number on their own second thoughts.
+
+    **A bank line is not that act**, which is the argument R-FX accepted one
+    door over when it ruled that the same evidence justifies ADDING a purchase
+    to a settled row.  2 of the developer's own 10 near misses are exactly this
+    -- `Groceries: Walmart`, `$121.12` against the bank's `$121.16`.
+
+    **The BOUND is the door, not the row**, and the second test is its firing
+    control: the permission rides on the settle day's own basis, so a caller
+    without a statement cannot reach it.
+    """
+
+    @staticmethod
+    def _settled_envelope_with_a_purchase(seed_user, day):
+        """Stage a SETTLED envelope holding one purchase the bank will correct."""
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="121.12", is_envelope=True,
+            status=StatusEnum.DONE, settled_on=day,
+        )
+        purchase = a_purchase(
+            seed_user, envelope, amount="121.12", description="Walmart",
+            purchased_on=day,
+        )
+        db.session.flush()
+        return envelope, purchase
+
+    def test_the_purchase_is_RECOSTED_from_a_match(self, app, db, seed_user):
+        """The developer's own Walmart case, four cents out."""
+        statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        _, purchase = self._settled_envelope_with_a_purchase(seed_user, day)
+        line = a_bank_line(
+            seed_user, statement, amount="-121.16", posted_on=day,
+        )
+
+        _submit(seed_user, lines=[line], entries=[purchase])
+
+        assert purchase.amount == Decimal("121.16"), (
+            "the purchase must take the figure the BANK showed"
+        )
+        assert purchase.settled_on == day
+
+    def test_the_HAND_EDIT_door_still_refuses(self, app, db, seed_user):
+        """R-GE's bound, as a firing control.
+
+        Delete the basis test in ``entry_service.update_entry`` and this passes
+        -- which is what makes it worth writing.  The permission must be
+        reachable ONLY with a statement's own ``observed`` day; an owner typing
+        into the popover still meets N-229's refusal, unchanged.
+        """
+        day = seed_user["bootstrap_period"].start_date
+        _, purchase = self._settled_envelope_with_a_purchase(seed_user, day)
+
+        with pytest.raises(ValidationError):
+            entry_service.update_entry(
+                purchase.id, seed_user["user"].id, amount=Decimal("121.16"),
+            )
+
+        assert purchase.amount == Decimal("121.12")
+
+    def test_an_ENTERED_day_does_not_buy_the_permission(
+        self, app, db, seed_user,
+    ):
+        """The narrower control: it is the BASIS that permits, not the pairing.
+
+        A caller submitting a settle day beside the amount must not inherit the
+        permission just for having submitted one -- only an ``observed`` day
+        carries the evidence, and ``entered`` is what every hand door writes.
+        """
+        day = seed_user["bootstrap_period"].start_date
+        _, purchase = self._settled_envelope_with_a_purchase(seed_user, day)
+
+        with pytest.raises(ValidationError):
+            entry_service.update_entry(
+                purchase.id, seed_user["user"].id,
+                amount=Decimal("121.16"), settle_day=an_entered_day(day),
+            )
+
+        assert purchase.amount == Decimal("121.12")

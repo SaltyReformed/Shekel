@@ -94,13 +94,15 @@ from app.services.posting_service import PostingError
 from app.exceptions import ValidationError
 from app.utils.dates import display_today
 from tests._test_helpers import (
-    settlement_if_settling,
     add_txn,
+    an_entered_day,
     create_account_of_type,
     create_envelope_txn,
     create_settled_transfer,
     linked_ledger_account,
+    settlement_if_settling,
 )
+from app.services.settle_day import record_settle_day
 
 
 # ---------------------------------------------------------------------------
@@ -606,7 +608,7 @@ class TestSyncReversal:
             transfer_service.update_transfer(
                 transfer.id, user_id,
                 status_id=ref_cache.status_id(StatusEnum.DONE),
-                settled_on=display_today(),
+                settle_day=an_entered_day(display_today()),
             )
             posting_service.sync_transfer_postings(transfer, settled=True)
             _db.session.commit()
@@ -1449,7 +1451,7 @@ class TestTransactionEntryDate:
                 _db.session, seed_user, period, "Groceries", "50.00",
                 status_enum=StatusEnum.DONE, category_key="Groceries",
             )
-            txn.settled_on = date(2026, 5, 9)
+            record_settle_day(txn, an_entered_day(date(2026, 5, 9)))
             _db.session.commit()
 
             [entry] = posting_service.sync_transaction_postings(
@@ -1526,8 +1528,8 @@ class TestSettledTransactionEffect:
             # anchor and absorb the effects into the opening instead).
             # Server-side now(): the directory conftest freezes the PYTHON
             # clock to 2026-03-20, which would also predate the anchor.
-            expense.settled_on = display_today()
-            income.settled_on = display_today()
+            record_settle_day(expense, an_entered_day(display_today()))
+            record_settle_day(income, an_entered_day(display_today()))
             _db.session.commit()
             posting_service.sync_transaction_postings(expense, settled=True)
             posting_service.sync_transaction_postings(income, settled=True)
@@ -1653,7 +1655,7 @@ class TestPeriodAttribution:
                 _db.session, seed_user, period, "Groceries", "100.00",
                 status_enum=StatusEnum.DONE, category_key="Groceries",
             )
-            txn.settled_on = date(2026, 1, 5)
+            record_settle_day(txn, an_entered_day(date(2026, 1, 5)))
             _db.session.commit()
             cash_ledger = _ledger_id(seed_user["account"])
 

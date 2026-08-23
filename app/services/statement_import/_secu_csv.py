@@ -61,7 +61,7 @@ from decimal import Decimal, InvalidOperation
 from app.exceptions import StatementParseError
 from app.utils.money import round_money
 
-from ._line import StatementLine
+from ._line import ParsedStatement, StatementLine
 
 #: The header names this adapter binds, and whether each is required.  Bound by
 #: NAME (see the module docstring); a header missing a required name is a file
@@ -91,6 +91,25 @@ _TOTALS_MARKER = "Totals:"
 
 #: SECU writes dates as US month/day/year.
 _DATE_FORMAT = "%m/%d/%Y"
+
+#: The PREAMBLE line stating the bank's own balance, above the transaction
+#: header: ``Balance as of 08/20/2026,2501.310000``.  Both of the developer's
+#: exports carry it, one quoted and one not, which ``csv.reader`` levels out
+#: before this pattern sees it.
+#:
+#: **Read, recorded, and never gated on.**  The module docstring above records
+#: the measurement that forbids a gate -- the figure can LAG its own file -- and
+#: nothing here changes that.  What it buys is the only cross-check available
+#: to a file carrying no running-balance column: the bank's claim about the
+#: account, set beside the owner's own asserted anchor.
+#:
+#: **The day is captured LOOSELY and refused by the date parser**, not matched
+#: strictly here.  A strict ``\d{2}/\d{2}/\d{4}`` made the two failure modes
+#: indistinguishable: ``Balance as of 8/2/2026`` -- which ``strptime`` accepts
+#: everywhere else in this adapter -- simply did not match, so a header the file
+#: plainly states was reported as no header at all.  That is the silent drop
+#: this function's own docstring refuses.
+_STATED_BALANCE = re.compile(r"^Balance as of\s+(\S.*?)\s*$")
 
 #: The transaction day SECU states INSIDE a card line's description, as
 #: ``DATE MM-DD``.  It is a delimited token the bank concatenates into a text
@@ -166,7 +185,7 @@ def _money(raw: str, label: str) -> Decimal:
         StatementParseError: When the cell is not a finite number.
     """
     try:
-        value = Decimal(raw.strip().replace("$", ""))
+        value = Decimal(raw.strip().replace("$", "").replace(",", ""))
     except (InvalidOperation, ValueError) as exc:
         raise StatementParseError(
             f"This file has {label} that is not an amount: {raw!r}.  Nothing "
@@ -177,7 +196,19 @@ def _money(raw: str, label: str) -> Decimal:
             f"This file has {label} that is not a real number: {raw!r}.  "
             f"Nothing was imported."
         )
-    return round_money(value)
+    # **The rounding is INSIDE the refusal, and it was not.**  A finite figure
+    # with a large exponent -- ``1E+30`` and up -- passes the check above and
+    # then raises ``InvalidOperation`` from ``quantize``, outside any handler
+    # this module owns, so it reached the app's 500 page rather than the
+    # importer's own message.  Reachable from every cell this function reads.
+    # Found by adversarial robustness review 2026-08-22.
+    try:
+        return round_money(value)
+    except InvalidOperation as exc:
+        raise StatementParseError(
+            f"This file has {label} too large to record: {raw!r}.  Nothing "
+            f"was imported."
+        ) from exc
 
 
 def _bind_columns(header: "list[str]") -> "dict[str, int]":
@@ -528,6 +559,78 @@ def _account_identity(row: "list[str]", columns: "dict[str, int]") -> str:
     return f"{name} {number}"[:64]
 
 
+def _stated_balance(
+    rows: "list[list[str]]", header_index: int,
+) -> "tuple[Decimal | None, date | None]":
+    """Return the balance the file's PREAMBLE claims, and the day it names.
+
+    Searched only ABOVE the transaction header, because that is where SECU
+    writes it and because below it every row is a transaction -- a description
+    reading ``Balance as of ...`` is then the user's text, not the bank's
+    header, and must not be read as the account's balance.
+
+    **An ABSENT header is not an error; an UNREADABLE one is.**  A source may
+    state no balance at all and still import, so nothing here refuses a file
+    for lacking the line.  A line that IS present and whose figure cannot be
+    read is the other case entirely: that is a parse losing a fact the file
+    states, and dropping it silently would retire this cross-check without
+    anyone noticing -- the same distinction
+    :func:`~._integrity.carries_running_balance` draws when it refuses a
+    PARTIAL running-balance column rather than downgrading to "no self-check".
+
+    Args:
+        rows: Every parsed CSV row, in file order.
+        header_index: Where the transaction header sits, bounding the search.
+
+    Returns:
+        ``(balance, day)``, or ``(None, None)`` when the file states none.
+        Never one without the other: a figure with no day asserts nothing about
+        an account, and a day with no figure asserts nothing at all.
+
+    Raises:
+        StatementParseError: When the line is present and its figure is not a
+            number, its day is not a date, or the file states more than one.
+    """
+    found = [
+        (row, stated)
+        for row in rows[:header_index] if row
+        for stated in [_STATED_BALANCE.match(row[0].strip())] if stated
+    ]
+    if not found:
+        return (None, None)
+    if len(found) > 1:
+        # Refused rather than resolved, exactly as the neighbouring rule
+        # refuses a file naming two accounts.  Taking the first silently would
+        # pick whichever the export happened to write first, and the module
+        # docstring's own measurement is that one of these can LAG the file --
+        # so "the first" is not a safe default, it is a coin toss about money.
+        raise StatementParseError(
+            f"This file states its balance {len(found)} times "
+            f"({', '.join(row[0].strip() for row, _ in found)}).  A statement "
+            f"states one balance for one day.  Nothing was imported."
+        )
+    row, stated = found[0]
+    if len(row) < 2 or not row[1].strip():
+        raise StatementParseError(
+            f"This file states {row[0].strip()!r} and then no figure, so "
+            f"its own balance line cannot be read.  Nothing was imported."
+        )
+    try:
+        day = datetime.strptime(stated.group(1), _DATE_FORMAT).date()
+    except ValueError as exc:
+        # **Refused, not dropped.**  ``strptime`` raises a bare ``ValueError``,
+        # which ``run_statement_door`` does not catch -- so ``13/45/2026`` and
+        # Unicode digits alike reached the 500 page instead of this message.
+        # The transaction-date parser five lines up has always guarded its own
+        # ``strptime``; this one did not.  Found by adversarial robustness
+        # review 2026-08-22.
+        raise StatementParseError(
+            f"This file says {row[0].strip()!r}, and that is not a date.  "
+            f"Nothing was imported."
+        ) from exc
+    return (_money(row[1], "the balance the file states"), day)
+
+
 def _decode(payload: bytes) -> str:
     """Return *payload* as text, refusing what cannot be stored.
 
@@ -559,25 +662,98 @@ def _decode(payload: bytes) -> str:
     return text
 
 
-def parse(payload: bytes) -> "tuple[str, list[StatementLine]]":
-    """Return the account SECU calls this file's, and its lines.
+def _read_line(row: "list[str]", columns: "dict[str, int]") -> StatementLine:
+    """Return one transaction row as the normalized line it states.
+
+    Extracted from :func:`parse` when the preamble read pushed that
+    function past pylint's local-variable ceiling.  It is a lift and not a
+    rewrite: every field, every comment and every guard below stood in the
+    loop body unchanged, and the five locals it owns (the posted day, the
+    memo, the description, the running balance and the joined text) belong
+    to building ONE line rather than to walking a file.
+
+    Args:
+        row: The CSV row.
+        columns: The bound header, by name.
+
+    Returns:
+        The :class:`~._line.StatementLine`.
+
+    Raises:
+        StatementParseError: When the row's Date cell is not a date, or a
+            figure on it cannot be read.
+    """
+    try:
+        posted_on = datetime.strptime(
+            _cell(row, columns, "Date"), _DATE_FORMAT,
+        ).date()
+    except ValueError as exc:
+        raise StatementParseError(
+            f"This file has a line dated "
+            f"{_cell(row, columns, 'Date')!r}, which is not a date.  "
+            f"Nothing was imported."
+        ) from exc
+    memo = _cell(row, columns, "Memo")
+    description = _cell(row, columns, "Description")
+    running = _cell(row, columns, _RUNNING_BALANCE)
+    joined = (f"{description} | {memo}" if memo else description)[:200]
+    return StatementLine(
+        posted_on=posted_on,
+        # **The day the bank STATES the swipe happened, or None.**  SECU's
+        # CSV carries one DATE column and states the transaction day inside
+        # the description as ``DATE MM-DD`` (182 of 361 lines); its OFX
+        # carries no second day at all -- ``DTUSER`` equals ``DTPOSTED`` on
+        # 359 of 361.  This field held a COPY of ``posted_on`` until plan
+        # step X-f6a-3a, which is what made it useless: a match writes this
+        # day onto a matched purchase's ``purchased_on``, and a copy would
+        # record every card purchase as made on the day it cleared.
+        # **Read from the DESCRIPTION cell, never the joined text.**  A
+        # first draft parsed ``joined`` so that "what is parsed is what is
+        # stored" -- which is the wrong property: what matters is which
+        # CELL the bank put the token in.  SECU states a transaction day
+        # inside the description of a card line; a MEMO is the user's own
+        # free text, so a ``DATE 08-13`` in a memo alone would have been
+        # read as the bank's word.  The two-token refusal below was written
+        # for exactly that hazard and only caught its two-token form.
+        # Parsing the cell also removes the 200-character truncation from
+        # the guard's reach, where a second token past the cut could turn a
+        # refused line into an accepted one.  Found by adversarial design
+        # and financial review 2026-08-18.
+        transaction_on=_stated_transaction_day(description, posted_on),
+        amount=_row_amount(row, columns),
+        description=joined,
+        # **The merchant the bank NAMES, read from the same cell and for
+        # the same reason** (plan step X-f6a-3d): it is the key a
+        # destination policy is stated against, so a memo's own
+        # parentheses must not be able to reach it.
+        merchant=_stated_merchant(description),
+        source_category=_cell(row, columns, "Category")[:100] or None,
+        external_id=None,
+        running_balance=(
+            _money(running, "a running balance") if running else None
+        ),
+    )
+
+
+def parse(payload: bytes) -> ParsedStatement:
+    """Return everything this file states: its account, its lines, its balance.
 
     Args:
         payload: The uploaded file's raw bytes.  Decoded as UTF-8 with a BOM
             tolerated.
 
     Returns:
-        ``(external_account_id, lines)`` -- what the file calls its account
-        (its name and SECU's masked number) and its lines in CHRONOLOGICAL
-        order, oldest first.  The file itself is newest-first; the reversal
+        The :class:`~._line.ParsedStatement`.  Its lines are in CHRONOLOGICAL
+        order, oldest first; the file itself is newest-first, and the reversal
         here is what lets :func:`~._integrity.verify_running_balance` and
-        :func:`~._line.group_indexes` both take one stated order, and the
-        result is CHECKED rather than assumed.
+        :func:`~._line.group_indexes` both take one stated order, with the
+        result CHECKED rather than assumed.
 
     Raises:
         StatementParseError: When the file is not a SECU transaction export,
             carries no lines or too many, lacks or disagrees with its own
-            summary, names more than one account, or is not in date order.
+            summary, names more than one account, is not in date order, or
+            states a balance line whose figure cannot be read.
     """
     text = _decode(payload)
     try:
@@ -605,6 +781,9 @@ def parse(payload: bytes) -> "tuple[str, list[StatementLine]]":
             "transaction export.  Nothing was imported."
         )
     columns = _bind_columns(rows[header_index])
+    # Read BEFORE the lines are walked, so a file whose balance line is present
+    # but unreadable is refused before any of it is interpreted.
+    stated_balance, stated_balance_on = _stated_balance(rows, header_index)
 
     lines, totals, accounts = [], None, set()
     for row in rows[header_index + 1:]:
@@ -620,57 +799,17 @@ def parse(payload: bytes) -> "tuple[str, list[StatementLine]]":
                 f"This file holds more than {MAX_LINES:,} transactions, which "
                 f"is far beyond any real statement.  Nothing was imported."
             )
-        try:
-            posted_on = datetime.strptime(
-                _cell(row, columns, "Date"), _DATE_FORMAT,
-            ).date()
-        except ValueError as exc:
-            raise StatementParseError(
-                f"This file has a line dated "
-                f"{_cell(row, columns, 'Date')!r}, which is not a date.  "
-                f"Nothing was imported."
-            ) from exc
+        # **Read BEFORE the identity is taken, which is the order this loop
+        # always had.**  Extracting the line build moved ``accounts.add``
+        # ahead of the date parse, so a row with both a blank Account cell and
+        # an unreadable Date reported the account fault where it used to report
+        # the date one.  Both refuse the file and neither writes anything, so
+        # the cost was one sentence -- but the extraction's docstring calls
+        # itself a lift rather than a rewrite, and this is what makes that
+        # true.  Found by adversarial robustness review 2026-08-22.
+        line = _read_line(row, columns)
         accounts.add(_account_identity(row, columns))
-        memo = _cell(row, columns, "Memo")
-        description = _cell(row, columns, "Description")
-        running = _cell(row, columns, _RUNNING_BALANCE)
-        joined = (f"{description} | {memo}" if memo else description)[:200]
-        lines.append(StatementLine(
-            posted_on=posted_on,
-            # **The day the bank STATES the swipe happened, or None.**  SECU's
-            # CSV carries one DATE column and states the transaction day inside
-            # the description as ``DATE MM-DD`` (182 of 361 lines); its OFX
-            # carries no second day at all -- ``DTUSER`` equals ``DTPOSTED`` on
-            # 359 of 361.  This field held a COPY of ``posted_on`` until plan
-            # step X-f6a-3a, which is what made it useless: a match writes this
-            # day onto a matched purchase's ``purchased_on``, and a copy would
-            # record every card purchase as made on the day it cleared.
-            # **Read from the DESCRIPTION cell, never the joined text.**  A
-            # first draft parsed ``joined`` so that "what is parsed is what is
-            # stored" -- which is the wrong property: what matters is which
-            # CELL the bank put the token in.  SECU states a transaction day
-            # inside the description of a card line; a MEMO is the user's own
-            # free text, so a ``DATE 08-13`` in a memo alone would have been
-            # read as the bank's word.  The two-token refusal below was written
-            # for exactly that hazard and only caught its two-token form.
-            # Parsing the cell also removes the 200-character truncation from
-            # the guard's reach, where a second token past the cut could turn a
-            # refused line into an accepted one.  Found by adversarial design
-            # and financial review 2026-08-18.
-            transaction_on=_stated_transaction_day(description, posted_on),
-            amount=_row_amount(row, columns),
-            description=joined,
-            # **The merchant the bank NAMES, read from the same cell and for
-            # the same reason** (plan step X-f6a-3d): it is the key a
-            # destination policy is stated against, so a memo's own
-            # parentheses must not be able to reach it.
-            merchant=_stated_merchant(description),
-            source_category=_cell(row, columns, "Category")[:100] or None,
-            external_id=None,
-            running_balance=(
-                _money(running, "a running balance") if running else None
-            ),
-        ))
+        lines.append(line)
 
     if not lines:
         raise StatementParseError(
@@ -693,7 +832,12 @@ def parse(payload: bytes) -> "tuple[str, list[StatementLine]]":
 
     lines.reverse()
     _refuse_unordered(lines)
-    return accounts.pop(), lines
+    return ParsedStatement(
+        external_account_id=accounts.pop(),
+        lines=lines,
+        stated_balance=stated_balance,
+        stated_balance_on=stated_balance_on,
+    )
 
 
 def _refuse_unordered(lines: "list[StatementLine]") -> None:

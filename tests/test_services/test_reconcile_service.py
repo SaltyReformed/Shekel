@@ -38,12 +38,14 @@ from app.utils.log_events import (
     EVT_TRANSFERS_RECONCILED,
 )
 from tests._test_helpers import (
+    an_entered_day,
     count_amount_bases,
     settlement_basis_id,
     settlement_if_settling,
 )
 from tests._test_helpers import create_transfer
 from app.services.row_valuation import owned_contribution, settled_figure
+from app.services.settle_day import record_settle_day
 
 
 def _make_entry(transaction, user, amount="50.00", description="Kroger",
@@ -220,7 +222,7 @@ class TestTheOutstandingSet:
         with app.app_context():
             txn = seed_entry_template["transaction"]
             entry = _outstanding_debit(txn, seed_user)
-            entry.settled_on = _BEFORE_THE_STATEMENT
+            record_settle_day(entry, an_entered_day(_BEFORE_THE_STATEMENT))
             db.session.commit()
 
             assert self._listed(seed_user) == []

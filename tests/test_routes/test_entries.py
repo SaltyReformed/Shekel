@@ -27,11 +27,18 @@ from app.services import account_service
 from app.utils.dates import display_today
 
 from tests._test_helpers import (
-    make_every_period_rule,
+    an_asserted_day,
+    an_entered_day,
     append_balance_assertion,
     freeze_today,
+    make_every_period_rule,
     settle_instant_on,
 )
+from app.services.settle_day import (
+    record_settle_day,
+    recorded_settle_day,
+)
+from app.services.statement_match._candidates import purchase_candidate
 
 # The three days the derived reconciled indicator turns on.  FIXED rather
 # than today-relative: the indicator compares two STORED days, so nothing
@@ -994,7 +1001,7 @@ class TestTheDerivedPostedIndicator:
                 txn, seed_user, "50.00", "Kroger",
                 purchased_on=_PURCHASED_ON,
             )
-            entry.settled_on = _PURCHASED_ON
+            record_settle_day(entry, an_entered_day(_PURCHASED_ON))
             append_balance_assertion(
                 db.session, seed_user["account"], seed_periods[0],
                 Decimal("1000.00"), settle_instant_on(_ASSERTED_ON),
@@ -1058,7 +1065,7 @@ class TestTheDerivedPostedIndicator:
                 txn, seed_user, "50.00", "Kroger",
                 purchased_on=_PURCHASED_ON,
             )
-            entry.settled_on = _POSTED_AFTER_THE_STATEMENT
+            record_settle_day(entry, an_entered_day(_POSTED_AFTER_THE_STATEMENT))
             append_balance_assertion(
                 db.session, seed_user["account"], seed_periods[0],
                 Decimal("1000.00"), settle_instant_on(_ASSERTED_ON),
@@ -1157,7 +1164,7 @@ class TestTheSettledOnEditPath:
                 txn, seed_user, "50.00", "Kroger",
                 purchased_on=_PURCHASED_ON,
             )
-            entry.settled_on = _PURCHASED_ON
+            record_settle_day(entry, an_entered_day(_PURCHASED_ON))
             statement = append_balance_assertion(
                 db.session, seed_user["account"], seed_periods[0],
                 Decimal("1000.00"), settle_instant_on(_ASSERTED_ON),
@@ -1230,7 +1237,7 @@ class TestTheSettledOnEditPath:
                 txn, seed_user, "50.00", "Kroger",
                 purchased_on=date(2026, 1, 5),
             )
-            entry.settled_on = date(2026, 1, 7)
+            record_settle_day(entry, an_entered_day(date(2026, 1, 7)))
             db.session.commit()
 
             resp = auth_client.patch(
@@ -1966,3 +1973,122 @@ class TestPopoverIntegration:
             resp = auth_client.get(f"/transactions/{txn.id}/full-edit")
             assert resp.status_code == 200
             assert b"Purchases" not in resp.data
+
+
+class TestAnUntouchedSaveDoesNotLaunderTheDaysBASIS:
+    """Plan step **X-az**: the ECHO rule, at the door it was measured on.
+
+    **This is the defect two independent adversarial reviews found in X-az's
+    first build, and it is a REGRESSION they measured rather than reasoned.**
+    The purchase popover renders the Posted date input on every entry, prefilled
+    with the stored day and OUTSIDE the settled-parent guard -- so on a closed
+    envelope it is the only editable control there is.  An owner who opens the
+    row and saves re-submits the day it already carried.
+
+    Wrapping that submission as ``entered`` unconditionally rewrote the
+    reconcile panel's ``asserted`` UPPER BOUND as the owner's own typing, with
+    the day unchanged -- so nothing released the clearing link and nothing
+    signalled it -- and ``CandidateRow.expected_window`` then collapsed the
+    purchase from the span ``(purchased_on, settled_on)`` to a POINT at the
+    assertion day, out of reach of its own bank line.  An unexplained line is
+    what the merchant policy offers to RECORD, which is the duplicate mechanism
+    finding **N-332** prices at 50 purchases and `$3,590.00`.
+
+    Measured on production 2026-08-22: **59 of 66 linked purchases,
+    `$4,173.07`**, one innocuous save each.
+    """
+
+    _MADE_ON = date(2026, 1, 5)
+    _ASSERTED_FOR = date(2026, 2, 20)
+
+    def _ticked_purchase(self, txn, seed_user, seed_periods):
+        """Return a purchase in the state the reconcile panel's tick leaves.
+
+        An ``asserted`` day -- the day a BALANCE was asserted for, which is an
+        upper bound -- plus the link naming that assertion.
+        """
+        entry = _add_entry(
+            txn, seed_user, "18.64", "Food Lion",
+            purchased_on=self._MADE_ON,
+        )
+        anchor = append_balance_assertion(
+            db.session, seed_user["account"], seed_periods[0],
+            Decimal("1000.00"), settle_instant_on(self._ASSERTED_FOR),
+        )
+        record_settle_day(entry, an_asserted_day(self._ASSERTED_FOR))
+        entry.reconciled_by_id = anchor.id
+        db.session.commit()
+        return entry
+
+    def test_re_submitting_the_stored_day_keeps_the_asserted_basis(
+        self, app, db, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The defect itself, through the real PATCH the popover sends."""
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = self._ticked_purchase(txn, seed_user, seed_periods)
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"settled_on": self._ASSERTED_FOR.isoformat()},
+            )
+
+            assert resp.status_code == 200
+            db.session.expire_all()
+            saved = db.session.get(TransactionEntry, entry.id)
+            assert recorded_settle_day(saved) == an_asserted_day(
+                self._ASSERTED_FOR,
+            ), "an untouched save laundered a BOUND into the owner's own day"
+
+    def test_the_window_the_matcher_bounds_by_still_spans(
+        self, app, db, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """What the basis is FOR, asserted at the reader rather than the column.
+
+        The span is the whole cost of the defect: collapse it and the purchase
+        is unreachable from the bank line that explains it.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = self._ticked_purchase(txn, seed_user, seed_periods)
+
+            auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"settled_on": self._ASSERTED_FOR.isoformat()},
+            )
+
+            db.session.expire_all()
+            saved = db.session.get(TransactionEntry, entry.id)
+            assert purchase_candidate(saved).expected_window == (
+                self._MADE_ON, self._ASSERTED_FOR,
+            )
+
+    def test_a_day_the_owner_really_MOVED_is_their_own(
+        self, app, db, auth_client, seed_user, seed_periods,
+        seed_entry_template,
+    ):
+        """The firing half: a genuine correction still records ``entered``.
+
+        Without it the rule is satisfied by one that never restates the basis,
+        which would report a day the owner typed as one a balance bounded --
+        the same laundering in the other direction.
+        """
+        with app.app_context():
+            txn = seed_entry_template["transaction"]
+            entry = self._ticked_purchase(txn, seed_user, seed_periods)
+            corrected = self._ASSERTED_FOR - timedelta(days=3)
+
+            resp = auth_client.patch(
+                f"/transactions/{txn.id}/entries/{entry.id}",
+                data={"settled_on": corrected.isoformat()},
+            )
+
+            assert resp.status_code == 200
+            db.session.expire_all()
+            saved = db.session.get(TransactionEntry, entry.id)
+            assert recorded_settle_day(saved) == an_entered_day(corrected)
+            # A day that MOVED still releases the observation, which is the
+            # rule the echo test above must not have weakened.
+            assert saved.reconciled_by_id is None

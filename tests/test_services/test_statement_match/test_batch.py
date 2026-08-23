@@ -57,6 +57,7 @@ from ._builders import (
     a_later_period,
     a_purchase,
     a_scope,
+    a_submission,
     a_transaction,
     an_import,
 )
@@ -86,11 +87,18 @@ def _batch(seed_user, matches=(), creations=()):
 
 
 def _match(seed_user, lines=(), transactions=(), entries=()):
-    """Return one match item naming exactly these subjects."""
-    return MatchSubmission(
-        line_ids=frozenset(line.id for line in lines),
-        transaction_ids=frozenset(txn.id for txn in transactions),
-        entry_ids=frozenset(entry.id for entry in entries),
+    """Return one match item naming exactly these subjects.
+
+    **The reviewed state comes off a freshly derived pass**, exactly as the
+    screen's would (plan step ``bank_import:X-f6d-3``): a batch item carries
+    the figure and revision the owner was looking at, and the door refuses one
+    whose row has moved since.  Deriving here rather than taking the caller's
+    scope keeps the helper's contract the same as it was -- a case that wants
+    a STALE item builds one deliberately, and several below do.
+    """
+    return a_submission(
+        a_scope(seed_user),
+        lines=lines, transactions=transactions, entries=entries,
     )
 
 
@@ -140,9 +148,17 @@ class TestARefusedItemDoesNotCostTheOthers:
     def _good_and_bad(seed_user):
         """Return (a match that lands, a match that cannot).
 
-        The bad one is UNBALANCED -- the shape finding **N-239** takes on the
-        developer's own payroll, where the bank shows `$0.05` more than the
-        app's rows sum to.
+        The bad one is an UNBALANCED GROUP -- **finding N-239's own shape**,
+        where the bank shows ONE payroll deposit `$0.05` above what the two app
+        rows it splits into sum to.
+
+        **It was a one-to-one match until ruling R-GD (2026-08-22)**, and had
+        to change with it: a one-to-one difference is no longer a refusal but a
+        CORRECTION, because the bank's figure names exactly one row and simply
+        becomes it.  A GROUP is what still refuses, and it is the shape this
+        docstring always claimed -- nothing says WHICH of the two rows is the
+        five cents wrong, which is the indeterminacy R-FV described and R-GD
+        left standing.
         """
         statement = an_import(seed_user)
         day = seed_user["bootstrap_period"].start_date
@@ -157,22 +173,28 @@ class TestARefusedItemDoesNotCostTheOthers:
             seed_user, statement, amount="2573.43", posted_on=day,
             sequence_in_group=1,
         )
-        bad_row = a_transaction(
-            seed_user, name="Salary", amount="2473.38", income=True,
-        )
-        return (good_line, good_row, bad_line, bad_row)
+        bad_rows = [
+            a_transaction(
+                seed_user, name="Salary", amount="2473.38", income=True,
+            ),
+            a_transaction(
+                seed_user, name="Phone Allowance", amount="100.00",
+                income=True,
+            ),
+        ]
+        return (good_line, good_row, bad_line, bad_rows)
 
     def test_the_good_one_lands_and_the_bad_one_is_quoted(
         self, app, db, seed_user,
     ):
         """One pass, two outcomes, and the refusal keeps its own sentence."""
         with app.app_context():
-            good_line, good_row, bad_line, bad_row = self._good_and_bad(
+            good_line, good_row, bad_line, bad_rows = self._good_and_bad(
                 seed_user,
             )
 
             outcome = _batch(seed_user, matches=[
-                _match(seed_user, lines=[bad_line], transactions=[bad_row]),
+                _match(seed_user, lines=[bad_line], transactions=bad_rows),
                 _match(seed_user, lines=[good_line], transactions=[good_row]),
             ])
 
@@ -196,10 +218,10 @@ class TestARefusedItemDoesNotCostTheOthers:
         named here fail.
         """
         with app.app_context():
-            _, good_row, bad_line, bad_row = self._good_and_bad(seed_user)
+            _, good_row, bad_line, bad_rows = self._good_and_bad(seed_user)
 
             _batch(seed_user, matches=[
-                _match(seed_user, lines=[bad_line], transactions=[bad_row]),
+                _match(seed_user, lines=[bad_line], transactions=bad_rows),
                 _match(
                     seed_user,
                     lines=[db.session.query(
@@ -210,7 +232,7 @@ class TestARefusedItemDoesNotCostTheOthers:
             ])
             db.session.flush()
 
-            assert bad_row.settled_on is None
+            assert all(row.settled_on is None for row in bad_rows)
             assert good_row.settled_on is not None
             assert db.session.query(StatementMatch).count() == 1
 
@@ -617,7 +639,21 @@ class TestASIBLINGWriteCannotBookAgainstAStalePrice:
             assert outcome.refused_count == 1
             # The FIGURES, because that is what went wrong: the pass moved the
             # payback to 50.00 and the bank line says 60.00.
-            assert "do not add up" in outcome.refused[0].reason
+            #
+            # **The refusal's VEHICLE moved at plan step
+            # ``bank_import:X-f6d-3`` and the subject did not.**  It used to be
+            # ``_reject_unbalanced`` -- the re-priced row no longer summed to
+            # its line -- and it is now the N-336 guard, which fires first
+            # because the row moved AFTER this item was reviewed.  That is the
+            # better diagnosis of the same fact: the unbalance was the SYMPTOM
+            # and "the row you reviewed at -60.00 now stands at -50.00" is the
+            # cause, named.  ``_reject_unbalanced`` still owns the case where
+            # nothing moved and the two sides simply disagree -- the `$0.05`
+            # payroll shortfall (finding **N-239**), which ``test_accept``'s
+            # own ``test_a_five_cent_shortfall_is_refused`` fires on.
+            assert "reviewed against different figures" in (
+                outcome.refused[0].reason
+            )
             assert "-60.00" in outcome.refused[0].reason
             assert "-50.00" in outcome.refused[0].reason
             assert payback.settled_on is None, (
@@ -710,6 +746,51 @@ class TestTheReceiptSaysWhatHappened:
 
             assert outcome.applied_count == 1
             assert outcome.moved_nothing is True
+
+    def test_a_pass_that_only_REPRICES_does_NOT_say_it_moved_nothing(
+        self, app, db, seed_user,
+    ):
+        """The receipt was not merely silent about an amount -- it was FALSE.
+
+        Plan step **bank_import:X-f6d-1**, found by adversarial design review
+        2026-08-22.  ``_apply_day`` decides its outcome on the DAY, so a
+        repricing whose row ALREADY carries the bank's day reports
+        ``"unchanged"`` and lands in neither the settled nor the corrected
+        tally.  With no count of its own, this pass rewrote what a payment cost
+        and the panel rendered *"Nothing moved. Everything that was applied
+        confirmed a day you already had."*
+
+        The fixture is the case above with ONE difference -- the figures
+        disagree by four cents -- which is what makes it a control on the
+        amount rather than on anything else.
+        """
+        with app.app_context():
+            statement = an_import(seed_user)
+            day = seed_user["bootstrap_period"].start_date
+            line = a_bank_line(
+                seed_user, statement, amount="-180.04", posted_on=day,
+                merchant="Duke",
+            )
+            row = a_transaction(
+                seed_user, name="Duke Energy", amount="180.00",
+                status=StatusEnum.DONE, settled_on=day,
+            )
+
+            outcome = _batch(seed_user, matches=[
+                _match(seed_user, lines=[line], transactions=[row]),
+            ])
+
+            assert outcome.applied_count == 1
+            assert outcome.settled_count == 0
+            assert outcome.corrected_count == 0
+            assert outcome.redated_count == 0
+            assert outcome.repriced_count == 1
+            assert outcome.moved_nothing is False
+            assert "corrected the amount on 1 row(s)" in (
+                outcome.applied[0].summary
+            )
+            db.session.expire_all()
+            assert row.settled_amount == Decimal("180.04")
 
     def test_an_EMPTY_pass_is_not_an_error(self, app, db, seed_user):
         """Ticking nothing and pressing Apply is an ordinary thing to do."""
@@ -834,17 +915,6 @@ class TestTheScopeIsDerivedONCE:
         with app.app_context():
             statement = an_import(seed_user)
             day = seed_user["bootstrap_period"].start_date
-            calls = []
-            real = statement_match._scope.candidates_for
-
-            def _counted(account_id, calendar, basis):
-                calls.append(account_id)
-                return real(account_id, calendar, basis)
-
-            monkeypatch.setattr(
-                statement_match._scope, "candidates_for", _counted,
-            )
-
             items = []
             for index in range(4):
                 line = a_bank_line(
@@ -858,6 +928,24 @@ class TestTheScopeIsDerivedONCE:
                 items.append(_match(
                     seed_user, lines=[line], transactions=[row],
                 ))
+
+            # **The counter goes in AFTER the fixture is staged**, and that is
+            # a property of the subject rather than a convenience: what is
+            # under test is how many times the BATCH derives the account, and
+            # ``_match`` derives one of its own to read the reviewed state a
+            # tick carries (plan step ``bank_import:X-f6d-3``) exactly as the
+            # SCREEN does.  Counting the screen's derivation as the door's
+            # would grade the fixture.
+            calls = []
+            real = statement_match._scope.candidates_for
+
+            def _counted(account_id, calendar, basis):
+                calls.append(account_id)
+                return real(account_id, calendar, basis)
+
+            monkeypatch.setattr(
+                statement_match._scope, "candidates_for", _counted,
+            )
 
             outcome = _batch(seed_user, matches=items)
 
@@ -896,10 +984,9 @@ def test_a_scope_serves_the_screen_and_the_doors_alike(app, db, seed_user):
                 line_ids=frozenset(
                     bank.line_id for bank in proposal.lines
                 ),
-                transaction_ids=frozenset(
-                    row.row_id for row in proposal.rows
+                rows=frozenset(
+                    statement_match.as_reviewed(row) for row in proposal.rows
                 ),
-                entry_ids=frozenset(),
             ),),
             creations=(),
         ), scope)
@@ -1683,7 +1770,10 @@ class TestThePassHoldsONEAmountBasis:
             # ``1 + outcome.applied_count`` and would have gone silently wrong
             # -- while still printing the per-settle rule -- the moment a case
             # gave one match two rows (adversarial review 2026-08-20).
-            settled_rows = sum(len(item.transaction_ids) for item in items)
+            settled_rows = sum(
+                1 for item in items for row in item.rows
+                if row.kind is statement_match.RowKind.TRANSACTION
+            )
             assert settled_rows == 4, "the fixture pins one row per match"
             assert len(built) == 1 + settled_rows, (
                 f"{len(built)} amount bases were built settling "

@@ -81,7 +81,12 @@
         if (!bankDoor) return;
         var bankBadge = bankDoor.querySelector('.grid-bank-badge');
         var waiting = bankBadge ? bankBadge.textContent.trim() : '';
-        var importUrl = bankDoor.href;
+        /* Both from DATA, never from href: the door's href is whichever act is
+           live (the review screen once lines are waiting), so reading it as the
+           import URL sent this action to the wrong screen the moment a badge
+           appeared.  The fallback keeps the action working against a door
+           rendered before data-import-url existed. */
+        var importUrl = bankDoor.dataset.importUrl || bankDoor.href;
         var reviewUrl = bankDoor.dataset.reviewUrl;
         actions.push({
             kind: 'bank',

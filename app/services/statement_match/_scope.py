@@ -24,16 +24,23 @@ so an item cannot be handed a row the item before it has just matched.  A scope
 that had baked the claims in would have offered 15 of the developer's 91
 creatable lines an envelope an earlier proposal in the same pass claims.
 
-**Why a stale PRICE is safe across a pass, stated rather than assumed.**  A
-candidate's figure is ``gross - Sigma(card entries) - Sigma(posted purchases)``
-(:func:`app.services.cash_ledger.cash_leg_of`), so an act can only move another
-row's price by adding a purchase to it or by stamping a posting day on one it
-already holds -- both of which make that row and that purchase a parent and its
-own child, which :func:`~._accept._reject_parent_and_its_own_purchase` refuses
-across matches.  That guard reads the database, so each act flushes before the
-next is validated (:mod:`._batch`).  Measured on the developer's own statement:
-all 124 proposals produce byte-identical outcomes applied against one shared
-scope and against a fresh derivation per act.
+**A stale PRICE is NOT safe across a pass, and this paragraph used to say it
+was.**  The argument was that a candidate's figure is
+``gross - Sigma(card entries) - Sigma(posted purchases)``
+(:func:`app.services.cash_ledger.cash_leg_of`), so only a parent and its own
+child could move each other -- which
+:func:`~._accept._reject_parent_and_its_own_purchase` refuses.  **Measured
+FALSE on 2026-08-19**: settling a matched purchase writes a SIBLING CC
+Payback's ``estimated_amount``, which that guard cannot see.
+
+**So a price is never taken off this scope.**  What the scope holds is WHICH
+rows may be offered, which no act changes;
+:func:`~._candidates.repriced` re-reads and re-values every row an act names,
+and :func:`~._resolve.resolve_rows` then refuses one that has moved since the
+screen described it (finding **N-336**, plan step ``bank_import:X-f6d-3``).
+The 3.593 s this step exists to save belongs to the 827-row SCAN, which is
+still derived once; an act names one to four rows.  This paragraph asserted the
+refuted reason until an adversarial review found it 2026-08-23.
 
 Services-boundary discipline: reads only, plain data in, a frozen dataclass
 out, no Flask import, no clock read.
@@ -47,7 +54,8 @@ from app.services import pay_calendar
 from app.services.cash_ledger import AmountBasis, baseline_amount_basis
 
 from ._candidates import candidates_for, destinations_for
-from ._offers import Candidates, PurchaseDestination
+from ._creations import PurchaseDestination
+from ._offers import Candidates
 
 
 @dataclass(frozen=True)

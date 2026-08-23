@@ -9,9 +9,10 @@ module because the scope being literally shared between the read and the write
 is the security property, not a convenience.
 
 **Its settle is the odd one of the three, and that is why it is first.**
-Settling a purchase writes TWO columns on ONE row (``settled_on`` and the
-statement it names) and moves no status, so this arm's writer is a single bulk
-``UPDATE`` narrowed by the same clauses the reader selected on.  The transaction
+Settling a purchase writes THREE columns on ONE row (``settled_on``, the basis
+that says the day is an upper BOUND, and the statement it names) and moves no
+status, so this arm's writer is a single bulk ``UPDATE`` narrowed by the same
+clauses the reader selected on.  The transaction
 and transfer arms settle through a status seam, so their writers dispatch to a
 service verb per row (ruling **R-FA**).  Nothing here should be generalised
 into a shape those two can share until they exist.
@@ -33,6 +34,8 @@ Architecture (``CLAUDE.md``):
 import logging
 from datetime import date
 
+from app import ref_cache
+from app.enums import SettledDayBasisEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
@@ -313,7 +316,7 @@ def record_settled_days(
     one records WHICH statement showed it (``reconciled_by_id``, ruling
     **R-FL**) and takes that statement's day as its ``settled_on``.
 
-    **Two columns, two facts, and the second is why this step exists.**
+    **Three columns, three facts, and the second is why this step exists.**
     ``settled_on`` is an UPPER BOUND on the true posting day -- the purchase may
     have cleared a day or two earlier, and a user who wants the exact day edits
     the entry.  ``reconciled_by_id`` is not a bound at all: it is the
@@ -321,6 +324,13 @@ def record_settled_days(
     could not carry it -- production holds three days on which Checking has more
     than one assertion, so no rule over ``settled_on`` can name which statement
     a tick was made against.
+
+    **``settled_day_basis_id`` is the third, and it is plan step X-az** (finding
+    **N-332**).  It records that this day is a BOUND, in the row itself, where
+    the sentence above used to be the only statement of it and every reader had
+    to re-derive the fact from ``reconciled_by_id`` being populated.  That
+    inference was exact over the three writers of ``settled_on`` and blind to
+    the third of them, and it is the shape **N-241** deleted one column over.
 
     **Every id is re-scoped through :func:`_outstanding_scope` rather than
     trusted.**  The ids arrive from a form, so an id belonging to another
@@ -369,6 +379,25 @@ def record_settled_days(
     # ``TransactionEntry`` objects, because nothing in the POST loads one before
     # here.  ``'fetch'`` pre-SELECTs primary keys in order to synchronise an
     # empty set.
+    # **THREE columns, and the third says what KIND of day the first is** (plan
+    # step **X-az**, finding **N-332**).  ``asserted`` is not a nicety: this
+    # writer's own docstring calls the day an UPPER BOUND, and until this step
+    # the only way a reader could tell was to test whether ``reconciled_by_id``
+    # was populated -- which is exactly the "infer a fact from a column being
+    # populated" shape ``settled_basis_id`` exists one column over to delete
+    # (finding **N-241**).  The statement matcher is that reader, and reading
+    # the bound as an observation cost 50 duplicate purchases worth
+    # ``$3,590.00`` before ``f633d46a``.
+    #
+    # The pair is written HERE rather than through
+    # ``settle_day.record_settle_day`` because this arm's writer is a bulk
+    # ``UPDATE`` by design (see the module docstring): there is no ORM instance
+    # to hand that function.  ``ck_transaction_entries_settle_day_basis_pairing``
+    # is what makes a statement that wrote one column and not the other fail
+    # loudly rather than leave a day nobody can classify.
+    asserted_basis_id = ref_cache.settled_day_basis_id(
+        SettledDayBasisEnum.ASSERTED,
+    )
     updated = (
         db.session.query(TransactionEntry)
         .filter(
@@ -378,6 +407,7 @@ def record_settled_days(
         .update(
             {
                 TransactionEntry.settled_on: observed_on,
+                TransactionEntry.settled_day_basis_id: asserted_basis_id,
                 TransactionEntry.reconciled_by_id: anchor.anchor_id,
             },
             synchronize_session=False,

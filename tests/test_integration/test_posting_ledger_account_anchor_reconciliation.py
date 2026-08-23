@@ -108,6 +108,7 @@ from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    an_entered_day,
     create_account_of_type,
     create_settled_cash_transaction,
     create_settled_transfer,
@@ -1877,7 +1878,7 @@ class TestSettledTransferAttributionMutation:
             # Move the settle day BEFORE both origination anchors (server-now 2026).
             transfer_service.update_transfer(
                 transfer.id, user_id,
-                settled_on=date(2024, 1, 5),
+                settle_day=an_entered_day(date(2024, 1, 5)),
             )
             db.session.commit()
 

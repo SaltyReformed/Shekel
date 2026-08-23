@@ -22,6 +22,7 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.enums import StatementSourceEnum
 from app.exceptions import StatementAccountMismatch, StatementLineConflict
@@ -170,6 +171,74 @@ class TestItRecordsWhatTheBankSaid:
 
         assert outcome.opening_balance == Decimal("100.00")
         assert outcome.closing_balance == Decimal("1534.19")
+
+    def test_it_records_the_balance_the_FILE_claims_beside_the_derived_ones(
+        self, app, db, seed_user,
+    ):
+        """The bank's own claim, stored apart from the two derivations.
+
+        A CLAIM and not a derivation, which is why it has its own pair of
+        columns: ``closing_balance`` is computed from the line chain, and the
+        model's docstring records the measurement forbidding one to stand in
+        for the other -- the 2026-08-16 export's header read ``$4,747.63``,
+        which was 08-13's closing balance, while that same file listed two
+        08-14 lines.  For a file carrying no running-balance column, which is
+        every export the developer's bank now produces, this is the only
+        balance figure recorded at all.
+        """
+        _record(
+            seed_user,
+            build.build(build.chained("100.00", _ENTRIES),
+                        balance_as_of="08/16/2026",
+                        stated_balance="2501.31"),
+        )
+
+        row = db.session.query(StatementImport).one()
+        assert row.stated_balance == Decimal("2501.31")
+        assert row.stated_balance_on == date(2026, 8, 16)
+        # Still derived from the chain, and still not the header.
+        assert row.closing_balance == Decimal("1534.19")
+
+    def test_a_file_claiming_no_balance_records_NEITHER_column(
+        self, app, db, seed_user,
+    ):
+        """Both-or-neither, which the database also refuses to break.
+
+        ``ck_statement_imports_stated_balance_paired`` makes a half-written
+        pair unstorable; this is the door agreeing with it.
+        """
+        payload = build.build(build.chained("100.00", _ENTRIES))
+        without = b"\n".join(
+            line for line in payload.split(b"\n")
+            if not line.startswith(b"Balance as of")
+        )
+
+        _record(seed_user, without)
+
+        row = db.session.query(StatementImport).one()
+        assert row.stated_balance is None
+        assert row.stated_balance_on is None
+
+    def test_the_DATABASE_refuses_a_half_written_stated_balance(
+        self, app, db, seed_user,
+    ):
+        """One fact in two columns, enforced where a future adapter cannot miss.
+
+        The door writes both or neither today.  A second source adapter is one
+        forgotten field from writing a figure with no day -- which asserts
+        nothing about an account, and which the reader would then use to select
+        an anchor "as of NULL".  Stated structurally so the guarantee does not
+        rest on every adapter remembering.
+        """
+        _record(seed_user, _file())
+        row = db.session.query(StatementImport).one()
+
+        row.stated_balance = Decimal("2501.31")
+        row.stated_balance_on = None
+
+        with pytest.raises(IntegrityError):
+            db.session.flush()
+        db.session.rollback()
 
     def test_every_line_belongs_to_its_import_and_its_account(
         self, app, db, seed_user,

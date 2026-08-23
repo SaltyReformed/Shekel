@@ -60,6 +60,7 @@ from ._builders import (
     a_later_period,
     a_purchase,
     a_scope,
+    a_submission,
     a_transaction,
     an_import,
 )
@@ -882,13 +883,10 @@ class TestWhatTheScreenMayOFFER:
                 seed_user, statement, amount=str(worth),
                 posted_on=seed_user["bootstrap_period"].start_date,
             )
+            scope = a_scope(seed_user)
             statement_match.accept_match(
-                statement_match.MatchSubmission(
-                    line_ids=frozenset({line.id}),
-                    transaction_ids=frozenset({envelope.id}),
-                    entry_ids=frozenset(),
-                ),
-                a_scope(seed_user),
+                a_submission(scope, lines=[line], transactions=[envelope]),
+                scope,
             )
             db.session.flush()
 

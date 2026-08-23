@@ -662,6 +662,7 @@ from tests._test_helpers import (
     make_investment_account,
     posted_loan_balance_at,
     restamp_opening_assertion,
+    settle_day_columns,
 )
 
 
@@ -1737,7 +1738,7 @@ def seed_cross_page_account(app, db, seed_user):
                 # The assertion ``override_anchor`` wrote is observed on this
                 # same day, so a purchase settled on it is INSIDE that balance
                 # -- the state the retired ``settled_on=anchor_period.start_date`` flag named.
-                settled_on=(
+                **settle_day_columns(
                     anchor_period.start_date if is_settled else None
                 ),
                 is_credit=is_credit,

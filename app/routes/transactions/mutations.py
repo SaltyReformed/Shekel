@@ -35,6 +35,7 @@ from app.services import (
     status_seam,
     transaction_service,
 )
+from app.services.settle_day import recorded_settle_day
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import get_accessible_transaction, require_owner
 from app.utils.balance_predicates import is_credit
@@ -385,8 +386,14 @@ def _apply_regular_update(txn, txn_id, data):
         field_error = _apply_field_updates(txn, data)
         if field_error is not None:
             return field_error
+        # ``recorded`` is what makes the reading ECHO-AWARE (plan step X-az):
+        # this form prefills the settle-day box, so an untouched Save re-submits
+        # the day the row already carries -- and without the stored pair the
+        # rule would restamp that day's BASIS as the owner's own typing, which
+        # is finding **N-332**'s own laundering arriving through the edit door.
         settle_day = status_seam.settle_day_for_status(
             current_user.id, new_status_id, data.get("settled_on"),
+            recorded_settle_day(txn),
         )
         # **A submitted FIGURE is a third reason to enter the status arm**, and
         # without it the door never saw one (found by two independent
@@ -408,7 +415,7 @@ def _apply_regular_update(txn, txn_id, data):
             or submitted_figure is not None
         ):
             transaction_service.apply_requested_status(
-                txn, new_status_id, settled_on=settle_day,
+                txn, new_status_id, settle_day=settle_day,
                 submitted=submitted_figure,
             )
         elif _POSTING_RELEVANT_FIELDS & data.keys():

@@ -41,7 +41,10 @@ from app.enums import SettlementBasisEnum
 from app.extensions import db
 from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
-from tests._test_helpers import settlement_basis_id
+from tests._test_helpers import (
+    settle_day_columns,
+    settlement_basis_id,
+)
 
 
 def _make_txn_kwargs(seed_user, seed_periods_today, status_name="Projected"):
@@ -116,7 +119,7 @@ class TestTransactionAmountCheckConstraints:
             txn = Transaction(
                 **kwargs,
                 estimated_amount=Decimal("100.00"),
-                settled_on=seed_periods_today[0].start_date,
+                **settle_day_columns(seed_periods_today[0].start_date),
                 settled_amount=Decimal("-1.00"),
                 settled_basis_id=settlement_basis_id(SettlementBasisEnum.CORRECTED),
             )
@@ -150,7 +153,7 @@ class TestTransactionAmountCheckConstraints:
             txn = Transaction(
                 **kwargs,
                 estimated_amount=Decimal("100.00"),
-                settled_on=seed_periods_today[0].start_date,
+                **settle_day_columns(seed_periods_today[0].start_date),
                 settled_amount=None,
                 settled_basis_id=ref_cache.settlement_basis_id(
                     SettlementBasisEnum.PURCHASES,

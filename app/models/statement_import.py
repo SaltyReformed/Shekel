@@ -164,6 +164,12 @@ class StatementImport(AccountScopedMixin, UserScopedMixin, CreatedAtMixin,
         opening_balance / closing_balance -- the running balance before the
                         first line and after the last, where the source carries
                         one at all (NULLABLE for a source that does not).
+        stated_balance / stated_balance_on -- what the file's OWN header claims
+                        the account held, and the day it names.  A CLAIM, not a
+                        derivation, which is why it sits beside the two above
+                        rather than in them; see the note below.  Both-or-
+                        neither, enforced by
+                        ``ck_statement_imports_stated_balance_paired``.
 
     **``closing_balance`` is derived from the line CHAIN, never from the file's
     own balance header, and that is a measured trap rather than a preference.**
@@ -202,6 +208,17 @@ class StatementImport(AccountScopedMixin, UserScopedMixin, CreatedAtMixin,
             "recorded_count >= 0 AND recorded_count <= line_count",
             name="ck_statement_imports_recorded_within_file",
         ),
+        # The file's own claim is ONE fact in two columns, so the pair is
+        # both-or-neither.  A figure without its day asserts nothing about an
+        # account -- the whole point of it is which day the bank computed it
+        # for -- and a day without a figure asserts nothing at all.  Stated
+        # structurally because the reader compares the figure against an anchor
+        # SELECTED BY that day, and a half-written pair would send it looking
+        # for an anchor as of NULL.
+        db.CheckConstraint(
+            "(stated_balance IS NULL) = (stated_balance_on IS NULL)",
+            name="ck_statement_imports_stated_balance_paired",
+        ),
         db.Index("idx_statement_imports_account", "account_id"),
         {"schema": "budget"},
     )
@@ -220,6 +237,11 @@ class StatementImport(AccountScopedMixin, UserScopedMixin, CreatedAtMixin,
     recorded_count = db.Column(db.Integer, nullable=False)
     opening_balance = db.Column(db.Numeric(12, 2))
     closing_balance = db.Column(db.Numeric(12, 2))
+    # NULLABLE, and for the same reason the two above are: a source may state
+    # no balance header at all.  Both of the developer's SECU exports do state
+    # one; a future adapter need not.
+    stated_balance = db.Column(db.Numeric(12, 2))
+    stated_balance_on = db.Column(db.Date)
 
     source = db.relationship("StatementSource", lazy="joined")
     lines = db.relationship(

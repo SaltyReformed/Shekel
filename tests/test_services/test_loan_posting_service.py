@@ -60,7 +60,9 @@ from app.services import (
     transfer_service,
 )
 from tests._test_helpers import (
+    SPLIT_LOAN,
     add_escrow_line,
+    an_entered_day,
     clear_loan_ledger,
     correction_net_in_period,
     create_loan_account,
@@ -77,7 +79,6 @@ from tests._test_helpers import (
     loan_income_shadow,
     posted_loan_balance_at,
     posted_loan_balance_map,
-    SPLIT_LOAN,
 )
 
 # The shared synthetic split-loan fixture ($250,000 @ 6%, trued up to $100,000 --
@@ -2753,7 +2754,7 @@ class TestCheckedProjection:
             # checked-projection assert; a raise here IS the N-13 regression.
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                settled_on=date(2026, 2, 5),
+                settle_day=an_entered_day(date(2026, 2, 5)),
             )
             db.session.commit()
 
@@ -2794,7 +2795,7 @@ class TestCheckedProjection:
 
             transfer_service.update_transfer(
                 xfer.id, seed_user["user"].id,
-                settled_on=date(2026, 1, 20),
+                settle_day=an_entered_day(date(2026, 1, 20)),
             )
             db.session.commit()
 

@@ -27,6 +27,7 @@ from app.models.user import User, UserSettings
 from app.services import auth_service, statement_match
 from tests._test_helpers import create_settled_cash_transaction
 from tests.test_services.test_statement_import import _csv_builder as build
+from tests.test_services.test_statement_match._builders import a_submission
 
 _ENTRIES = [
     (date(2026, 3, 2), "-25.00", "POINT OF SALE DEBIT L340 COFFEE"),
@@ -481,15 +482,12 @@ class TestTheDeletePost:
             Decimal("25.00"), settled_on=line.posted_on, name="Coffee",
         )
         db.session.flush()
+        scope = statement_match.ReviewScope.build(
+            seed_user["user"].id, seed_user["account"].id,
+        )
         statement_match.accept_match(
-            statement_match.MatchSubmission(
-                line_ids=frozenset({line.id}),
-                transaction_ids=frozenset({txn.id}),
-                entry_ids=frozenset(),
-            ),
-            statement_match.ReviewScope.build(
-                seed_user["user"].id, seed_user["account"].id,
-            ),
+            a_submission(scope, lines=[line], transactions=[txn]),
+            scope,
         )
         db.session.commit()
 

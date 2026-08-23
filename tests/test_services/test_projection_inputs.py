@@ -42,7 +42,12 @@ from app.services.projection_inputs import (
     load_investment_params_for_accounts,
     load_shadow_income_contributions_for_account,
 )
-from tests._test_helpers import basis_for, settlement_columns
+from tests._test_helpers import (
+    an_entered_day,
+    basis_for,
+    settlement_columns,
+)
+from app.services.settle_day import record_settle_day
 
 
 def _flat_id():
@@ -597,12 +602,12 @@ class TestShadowContributionBoundary:
             # *actual* is a figure a HUMAN typed, which makes the record
             # ``corrected``; with none the record is ``derived`` at the row's
             # own plan.  Written together because
-            # ``ck_transactions_settle_day_needs_basis`` refuses a settle day
+            # ``ck_transactions_settle_day_needs_a_record`` refuses a settle day
             # that names no figure.
             settled_id = ref_cache.status_id(StatusEnum.RECEIVED)
             for row in rows:
                 row.status_id = settled_id
-                row.settled_on = period.start_date
+                record_settle_day(row, an_entered_day(period.start_date))
                 for column, value in settlement_columns(
                     period.start_date, row.estimated_amount,
                     submitted=(

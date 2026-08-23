@@ -235,10 +235,14 @@ def _rows_holding_owner_records(existing) -> set[int]:
     ``fk_transactions_reconciled_by`` on the row itself), so a linked row must
     be retained -- and it already is.  Two CHECK constraints chain into an
     implication: ``ck_transactions_cleared_needs_settle_day`` says a link needs
-    a settle day, ``ck_transactions_settle_day_needs_basis`` says a settle day
-    needs a basis, so ``reconciled_by_id IS NOT NULL`` implies
-    ``settled_basis_id IS NOT NULL``.  The ``elif`` that used to follow the
-    settlement arm was therefore reached by no row that exists, which is why
+    a settle day, ``ck_transactions_settle_day_needs_a_record`` says a settle
+    day needs a RECORD OF WHAT MOVED, so ``reconciled_by_id IS NOT NULL`` implies
+    ``settled_basis_id IS NOT NULL``.  **That constraint is about the FIGURE's
+    basis and not the DAY's** -- plan step X-az added the day's own as
+    ``ck_transactions_settle_day_basis_pairing`` and renamed this one, because
+    beside it the old name said the opposite of what its predicate says.  The
+    ``elif`` that used to follow the settlement arm was therefore reached by no
+    row that exists, which is why
     deleting it moved nothing: verified against PostgreSQL, which refuses to
     clear the basis on a linked row.  If either CHECK is ever dropped, this
     paragraph is what says the arm has to come back.

@@ -16,6 +16,7 @@ from app.enums import SettlementBasisEnum
 from tests._test_helpers import (
     default_settle_day,
     freeze_today,
+    settle_day_columns,
     settlement_basis_id,
     settlement_columns,
     settlement_if_settling,
@@ -81,7 +82,7 @@ def _make_transaction(seed_user, seed_periods, *, period_index=0, status_name="P
         category_id=seed_user["categories"][category_key].id,
         transaction_type_id=txn_type.id,
         estimated_amount=planned,
-        settled_on=settled_on,
+        **settle_day_columns(settled_on),
         **settlement_columns(settled_on, planned, submitted=settled_amount),
     )
     db.session.add(txn)

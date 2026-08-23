@@ -37,12 +37,11 @@ from ._candidates import (
     unmatched_destinations,
     unmatched_rows,
 )
+from ._creations import PurchaseDestination, envelope_answer_key
 from ._offers import (
     BankLine,
     CandidateRow,
     MatchProposal,
-    PurchaseDestination,
-    envelope_answer_key,
 )
 from ._placement import Placement, placements_for
 from ._policy import PolicyView
@@ -55,9 +54,9 @@ class ReviewBounds:
     """What the review DID NOT look at, and why.
 
     **A screen that lists what it could explain and says nothing about what it
-    could not reads as a clean sweep.**  These four facts are one subject --
-    the limits of this pass -- and they travel together so a caller cannot
-    render the proposals while forgetting the caveat.
+    could not reads as a clean sweep.**  These facts are one subject -- the
+    limits of this pass -- and they travel together so a caller cannot render
+    the proposals while forgetting the caveat.
 
     Attributes:
         calendar_opens: The first day the owner's pay calendar covers, or
@@ -87,6 +86,16 @@ class ReviewBounds:
             substitution one clock over.  0 of the developer's own 361
             recorded lines are this shape; the OFX adapter's own measurement
             found 2 of 361, so a second source makes it live.
+
+    **The near tier's bound is NOT here, and that is plan step
+    ``bank_import:X-f6d-3``'s one deliberate exception to the paragraph above.**
+    It was ``undecided_near_count``, and a count in this panel names no line:
+    the owner was told that somewhere among a hundred lines one had a near
+    candidate the page would not choose, with no way to find it.  A bound is
+    only a bound if it can be acted on, so it moved onto the LINE
+    (:attr:`ReviewSet.undecided_near_lines`), where the act it should prompt is
+    already offered -- and the panel keeps the four limits that genuinely
+    belong to the PASS rather than to any one line.
     """
 
     calendar_opens: "date | None"
@@ -228,8 +237,19 @@ class MerchantSection:
 
 
 @dataclass(frozen=True)
-class ReviewSet:
+class ReviewSet:  # pylint: disable=too-many-instance-attributes
     """Everything the review screen needs, in one value.
+
+    Pylint: too-many-instance-attributes (8/7) -- **eight because the screen
+    renders eight distinct things**, not because the value wants splitting.
+    Seven are cards the owner reads and acts in; the eighth is
+    :attr:`undecided_near_lines`, which annotates two of them.  The obvious way
+    to satisfy the limit is to fold that one back into :attr:`bounds`, where it
+    lived until plan step ``bank_import:X-f6d-3`` -- and that is exactly what
+    the step measured to be wrong, because a bound reported in a panel names no
+    line and cannot be acted on.  ``AcceptedMatch`` carries the same disable
+    for the same reason, and its docstring says what dropping a field to meet a
+    limit costs: the receipt said *"Nothing moved."* over a rewritten figure.
 
     Attributes:
         proposals: What the app believes goes with what, best first.
@@ -256,6 +276,19 @@ class ReviewSet:
         merchants: The policy control (:class:`MerchantSection`) -- where this
             account's merchants go, and what the owner has already said.
         bounds: What this pass did NOT look at (:class:`ReviewBounds`).
+        undecided_near_lines: The ids of the lines the NEAR tier admitted a
+            candidate for and then declined to choose between
+            (:attr:`~._propose.ProposedMatches.undecided_near_lines`).
+
+            **It rides on the SET rather than in the bounds panel** (plan step
+            ``bank_import:X-f6d-3``).  It was a count under *What this page did
+            not look at*, which named no line -- so the owner was told that
+            somewhere among a hundred lines one had a near candidate, with no
+            way to find it.  The act it should prompt belongs to ONE line and
+            is offered in two cards: build this one by hand, rather than record
+            it a second time from the create arm, which is exactly the
+            duplicate **N-335** measures.  The screen asks membership per line;
+            the count is ``len`` and nothing needs it.
     """
 
     proposals: "tuple[MatchProposal, ...]"
@@ -265,6 +298,7 @@ class ReviewSet:
     creatable: "tuple[CreatableLine, ...]"
     merchants: MerchantSection
     bounds: ReviewBounds
+    undecided_near_lines: "frozenset[int]" = frozenset()
 
     @property
     def placed_by_class(self) -> "dict[str, int]":
@@ -477,7 +511,7 @@ def _creatable_lines(
     bank contradicts itself -- the substitution ruling **R-FW** refused one
     clock over.  The predicate is
     :attr:`~._offers.BankLine.states_impossible_days`, stated once because
-    :func:`~._propose._within_window` asks it too.
+    :func:`~._pairing.within_window` asks it too.
 
     Args:
         calendar: The owner's
@@ -907,4 +941,11 @@ def review_set(scope: ReviewScope) -> ReviewSet:
             unpriceable_count=len(candidates.unpriceable_ids),
             impossible_day_count=leftovers.impossible_day_count,
         ),
+        # **The near tier's own bound, published by the pass that applied it**,
+        # for the reason the crowded days beside it are: a reader re-deriving
+        # it would be scoring a different population.  It sits on the SET
+        # rather than in ``bounds`` because the screen renders it against the
+        # LINE it concerns rather than in the panel of things this page did not
+        # look at (plan step ``bank_import:X-f6d-3``).
+        undecided_near_lines=proposed.undecided_near_lines,
     )

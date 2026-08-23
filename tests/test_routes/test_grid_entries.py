@@ -26,7 +26,11 @@ from app.routes._render_helpers import fragment_amounts
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
 from app.services import transaction_service
 
-from tests._test_helpers import current_pay_period
+from tests._test_helpers import (
+    an_entered_day,
+    current_pay_period,
+)
+from app.services.settle_day import record_settle_day
 
 
 def _sums(rows):
@@ -773,8 +777,8 @@ class TestTheEntryListContextHasOneProducer:
             outside = _add_entry(txn, seed_user, Decimal("80.00"))
             unobserved = _add_entry(txn, seed_user, Decimal("20.00"))
             asserted_on = seed_periods_today[0].start_date
-            inside.settled_on = asserted_on
-            outside.settled_on = asserted_on + timedelta(days=1)
+            record_settle_day(inside, an_entered_day(asserted_on))
+            record_settle_day(outside, an_entered_day(asserted_on + timedelta(days=1)))
             append_balance_assertion(
                 db.session, seed_user["account"], seed_periods_today[0],
                 Decimal("1000.00"), settle_instant_on(asserted_on),

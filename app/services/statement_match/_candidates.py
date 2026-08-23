@@ -48,7 +48,7 @@ from decimal import Decimal
 from sqlalchemy.orm import contains_eager, joinedload, selectinload
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum
+from app.enums import SettledDayBasisEnum, SettlementBasisEnum
 from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app.models.statement_match import StatementMatchMember
@@ -56,12 +56,14 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transaction_entry import TransactionEntry
 from app.services import cash_ledger, transaction_service, transfer_service
+from app.services.settle_day import recorded_settle_day
 from app.utils.balance_predicates import (
     balance_contributing_clause,
     not_archived_clause,
 )
 
-from ._offers import CandidateRow, Candidates, PurchaseDestination, RowKind
+from ._creations import PurchaseDestination
+from ._offers import CandidateRow, Candidates, RowKind
 
 
 @dataclass(frozen=True)
@@ -263,6 +265,44 @@ def _label(txn: Transaction) -> str:
     return f"{txn.name} (transfer leg)"
 
 
+def _day_basis(row) -> SettledDayBasisEnum | None:
+    """Return WHICH KIND of settle day *row* records, or ``None`` for none.
+
+    Plan step **X-az**.  ONE reading for both candidate constructors, because a
+    transaction and a purchase carry the same pair of columns and answering the
+    question twice is two chances to answer it differently -- which is exactly
+    what the two ``reconciled_by_id`` tests this replaced were.
+
+    **It reads the stored basis and derives nothing.**  The basis is what the
+    row's own settle door recorded: ``observed`` for a day the bank posted,
+    ``asserted`` for the day a balance was asserted FOR (an upper bound), and
+    ``entered`` for the owner's own.  Nothing here re-classifies, because a
+    re-classification is the defect finding **N-332** names.
+
+    Its parameter is the two models' shared
+    :class:`~app.models.mixins.SettleDatedMixin`, which is where the pair is
+    declared once for both -- so this reads a column set the schema guarantees
+    rather than one it happens to share.
+
+    Args:
+        row: A :class:`~app.models.transaction.Transaction` or a
+            :class:`~app.models.transaction_entry.TransactionEntry`.
+
+    Returns:
+        Its :class:`~app.enums.SettledDayBasisEnum` member, or ``None`` when the
+        row carries no settle day at all.
+
+    Raises:
+        ValueError: When the row carries a day and no basis, or a basis and no
+            day (propagated from
+            :func:`app.services.settle_day.recorded_settle_day`).  Each table's
+            ``ck_*_settle_day_basis_pairing`` makes both unstorable, so reaching
+            either means something wrote around every door.
+    """
+    recorded = recorded_settle_day(row)
+    return None if recorded is None else recorded.basis
+
+
 def purchase_candidate(entry: TransactionEntry) -> CandidateRow:
     """Return one purchase as the candidate value every consumer here shares.
 
@@ -292,12 +332,36 @@ def purchase_candidate(entry: TransactionEntry) -> CandidateRow:
         cash_amount=-Decimal(str(entry.amount)),
         settled_on=entry.settled_on,
         is_settled=entry.settled_on is not None,
+        # **A purchase always states its own figure.**  The two shapes whose
+        # amount is a fact about another row are both TRANSACTIONS -- an
+        # envelope worth its purchases and a payback worth the spend it repays
+        # -- and a purchase is what those rows are made OF.  Ruling **R-GE** is
+        # what lets a match correct one even under a settled parent, and it
+        # bounds that permission by the DOOR rather than by the row, so nothing
+        # here narrows it further.  See
+        # :attr:`~._offers.CandidateRow.figure_is_correctable`.
+        states_own_figure=True,
         parent_id=entry.transaction_id,
         # A purchase's budget clock is ONE day, so both ends of its window are
         # that day: it is not undated, it is dated on a clock the cash column
         # does not hold (ruling **R-FW**).
         expected_on=entry.purchased_on,
         expected_through=entry.purchased_on,
+        # WHICH KIND of day ``settled_on`` is, READ rather than inferred (plan
+        # step **X-az**, finding **N-332**).  It tested ``reconciled_by_id`` --
+        # a different question, WHICH statement was seen to show this money --
+        # and that inference was exact over the panel's bound and the bank's
+        # observation and blind to the owner's own typed day, which carries no
+        # link and so read as an observation.  ``CandidateRow.expected_window``
+        # is the single reader and states the measurement.
+        # WHICH REVISION the screen is about to show (plan step
+        # ``bank_import:X-f6d-3``, finding **N-336**).  Read here rather than
+        # by the reader that emits it, for the reason every fact beside it is:
+        # the OFFER SET and the ACCEPT DOOR both build a candidate through this
+        # one constructor, so the state a review is checked against and the
+        # state it was taken against come from the same read.
+        version_id=entry.version_id,
+        settle_day_basis=_day_basis(entry),
     )
 
 
@@ -308,7 +372,7 @@ def transaction_candidate(
 
     :func:`purchase_candidate`'s twin, and it exists for the same reason plus
     one more: **an act RE-PRICES the rows it names**
-    (:func:`~._accept.resolve_rows`), so the construction the offer set uses
+    (:func:`~._resolve.resolve_rows`), so the construction the offer set uses
     and the construction a write door uses have to be one.  Two would be two
     answers to what a row is worth and when the app believes it moved, on the
     two sides of a money gate.
@@ -343,9 +407,52 @@ def transaction_candidate(
         cash_amount=amount,
         settled_on=txn.settled_on,
         is_settled=txn.status.is_settled,
+        # **The not-its-own-figure census, stated ONCE and here, because both
+        # members are load-bearing and one of them was missed** (plan step
+        # ``bank_import:X-f6d-1``).  ``transaction_service`` publishes exactly
+        # two predicates for *this figure is not this row's to state* and they
+        # are siblings by that module's own docstring: an ENVELOPE derives its
+        # figure from the purchases recorded against it, and a CC PAYBACK from
+        # the card spend of the row it names.  Correcting either writes a
+        # number the next sibling write silently reverts (finding **N-252**),
+        # and the transaction door's own backstop (``_correction_for_status``)
+        # refuses only the FIRST -- a payback is refused at the PATCH route
+        # instead -- so a door reaching it from here would have written a
+        # ``corrected`` record onto a figure that is a fact about another row.
+        # Measured by the batch suite's own stale-price case, which booked
+        # `-60.00` against a payback re-derived to `50.00`.
+        #
+        # A transfer SHADOW is the third member of that class and is NOT
+        # folded in: ``transfer_id`` beside it already states it, and what the
+        # owner must do about one is different (change the transfer, not a
+        # purchase), which is why the accept door gives it its own sentence.
+        # :attr:`~._offers.CandidateRow.figure_is_correctable` is where the two
+        # facts are read together.
+        #
+        # Neither predicate costs a query: ``_transaction_candidates`` eager
+        # loads both ``entries`` and ``template``, which are all
+        # ``settles_from_entries`` reads, and ``repays_card_spend`` is a plain
+        # column.
+        states_own_figure=not (
+            transaction_service.repays_card_spend(txn)
+            or transaction_service.settles_from_entries(txn)
+        ),
         transfer_id=txn.transfer_id,
         expected_on=period.start_date,
         expected_through=period.end_date,
+        # The same fact its twin carries, from the same column and for the same
+        # reason.  A transaction settled through the reconcile panel takes the
+        # assertion's day (``reconcile_service._transactions`` for a bill,
+        # ``transfer_service._settle`` for a shadow leg), so its window opens at
+        # the period rather than closing on that day.
+        # WHICH REVISION the screen is about to show (plan step
+        # ``bank_import:X-f6d-3``, finding **N-336**).  Read here rather than
+        # by the reader that emits it, for the reason every fact beside it is:
+        # the OFFER SET and the ACCEPT DOOR both build a candidate through this
+        # one constructor, so the state a review is checked against and the
+        # state it was taken against come from the same read.
+        version_id=txn.version_id,
+        settle_day_basis=_day_basis(txn),
     )
 
 
@@ -670,7 +777,7 @@ def destinations_for(
 
     **ONE scope, shared by the screen that offers a destination and the door
     that writes into it** (:func:`~._create._existing_envelope`), which is the
-    property :func:`~._accept.resolve_rows` rests on: a row this does not return
+    property :func:`~._resolve.resolve_rows` rests on: a row this does not return
     cannot be reached by crafting a request, and a row it does return cannot be
     refused by the write door.  Every clause below is one of those doors'.
 
@@ -737,7 +844,7 @@ def destinations_for(
         account_id: The cash account the statement is for.
 
     Returns:
-        One :class:`~._offers.PurchaseDestination` per offerable row, oldest
+        One :class:`~._creations.PurchaseDestination` per offerable row, oldest
         pay period first and then by name -- a deterministic order, so the
         chooser a screen shows does not depend on what the planner returned.
     """

@@ -157,7 +157,7 @@ def _settle_effective(xfer: Transfer) -> Decimal:
             its to-account -- a Transfer-Invariant-1 violation, or a caller
             posting a settled effect for a pair that has not settled -- or if
             that shadow records no settlement, which
-            ``ck_transactions_settle_day_needs_basis`` makes unstorable.
+            ``ck_transactions_settle_day_needs_a_record`` makes unstorable.
     """
     effective = (
         db.session.query(posting_reads.settled_figure_clause())
@@ -177,7 +177,7 @@ def _settle_effective(xfer: Transfer) -> Decimal:
             f"account {xfer.to_account_id} that records what moved; cannot "
             "post its settled effect. Either no such shadow exists (Transfer "
             "Invariant 1), or the one that does carries no settlement record "
-            "-- a state ck_transactions_settle_day_needs_basis refuses to "
+            "-- a state ck_transactions_settle_day_needs_a_record refuses to "
             "store and status_seam.apply_status_change refuses to create."
         )
     return effective

@@ -374,12 +374,13 @@ def record_statement(
         StatementAccountMismatch: The file is for a different account.
         StatementLineConflict: A recorded line is restated.
     """
-    external_account_id, lines = parse_statement(source, payload)
+    parsed = parse_statement(source, payload)
+    lines = parsed.lines
     verify_running_balance(lines)
 
     source_id = ref_cache.statement_source_id(source)
     identity_is_new = verify_identity(
-        account_id, user_id, source_id, external_account_id,
+        account_id, user_id, source_id, parsed.external_account_id,
     )
 
     # MIN/MAX rather than first/last: the span must be total over the file's
@@ -396,7 +397,9 @@ def record_statement(
 
     # Every refusal is now behind us, so this is the first write.
     if identity_is_new:
-        record_identity(account_id, user_id, source_id, external_account_id)
+        record_identity(
+            account_id, user_id, source_id, parsed.external_account_id,
+        )
 
     statement_import = StatementImport(
         account_id=account_id,
@@ -410,6 +413,12 @@ def record_statement(
         recorded_count=len(fresh),
         opening_balance=opening_balance(lines),
         closing_balance=closing_balance(lines),
+        # The bank's OWN claim, kept apart from the two figures above it:
+        # those are derived from the line chain, this is what the file's
+        # header says, and the model's docstring records why one may never
+        # stand in for the other.
+        stated_balance=parsed.stated_balance,
+        stated_balance_on=parsed.stated_balance_on,
     )
     db.session.add(statement_import)
     # The lines carry the import's id in a composite key, so the import row

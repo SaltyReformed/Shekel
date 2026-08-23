@@ -550,12 +550,19 @@ def _rows_holding_owner_records(existing) -> "set[int]":
     (``fk_transactions_reconciled_by`` scopes the link BY ACCOUNT) -- so it
     belongs in this answer.  It is already in it: two CHECK constraints chain
     into an implication.  ``ck_transactions_cleared_needs_settle_day`` says a
-    link needs a settle day and ``ck_transactions_settle_day_needs_basis`` says
-    a settle day needs a basis, so ``reconciled_by_id IS NOT NULL`` implies
-    ``settled_basis_id IS NOT NULL`` and the settlement arm above already
-    catches every linked row.  Verified against PostgreSQL rather than argued:
-    clearing the basis on a linked row is refused with *"violates check
-    constraint ck_transactions_settle_day_needs_basis"*.  A third condition
+    link needs a settle day and ``ck_transactions_settle_day_needs_a_record``
+    says a settle day needs a RECORD OF WHAT MOVED, so ``reconciled_by_id IS
+    NOT NULL`` implies ``settled_basis_id IS NOT NULL`` and the settlement arm
+    above already catches every linked row.  Verified against PostgreSQL rather
+    than argued: clearing the FIGURE's basis on a linked row is refused with
+    *"violates check constraint ck_transactions_settle_day_needs_a_record"*.
+    **That constraint is about the figure and NOT about the day's own basis**,
+    which plan step X-az added one column over as
+    ``ck_transactions_settle_day_basis_pairing``; the constraint's previous
+    name did not say so, which is why X-az renamed it.  The DAY's basis needs no
+    arm of its own here either, and for a stronger reason: its pairing is a
+    BICONDITIONAL over ``settled_on``, so any row this predicate can see
+    carries it.  A third condition
     would be one no row can satisfy alone -- untestable by construction, and
     the kind of guard this project has repeatedly found sitting green over
     nothing.  If either CHECK is ever dropped, this paragraph is what says the

@@ -36,6 +36,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import posting_service
 from app.services import status_seam
+from app.services.settle_day import SettleDay
 from app.services.status_seam import reject_settle_day_without_settled_status
 from app.services.transfer_service._loan_posting import (
     _reject_payment_before_origination,
@@ -149,6 +150,12 @@ def _build_shadow(
         estimated_amount=xfer.amount,
         settled_amount=None,
         settled_basis_id=None,
+        # The settle DAY and its basis are the ASSERTION, and a shadow is
+        # born asserting nothing: a born-SETTLED transfer's day is written
+        # by ``apply_settle_day_to_pair`` below, through the seam, so this
+        # constructor never states one (plan step **X-az**).
+        settled_on=None,
+        settled_day_basis_id=None,
         is_override=False,
         is_deleted=False,
         credit_payback_for_id=None,
@@ -193,14 +200,16 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
             account names.
         due_date: Optional due date stored on the transfer and mirrored
             to both shadow transactions.
-        settled_on: Optional settle DAY for a transfer created ALREADY
-            settled (plan step E1a): mirrored to both shadows exactly as
-            the update path's explicit ``settled_on`` is, with the same
-            default -- a born-settled transfer without one settled TODAY
-            (the F-048 / C-22 rule, on the user's clock).  Meaningless for
-            an unsettled status, so :func:`create_transfer` rejects that
-            combination loudly rather than recording a settle day for a
-            payment that has not happened.
+        settle_day: Optional settle DAY, and HOW that day is known
+            (:class:`app.services.settle_day.SettleDay`), for a transfer
+            created ALREADY settled (plan step E1a): mirrored to both shadows
+            exactly as the update path's explicit day is, with the same
+            default -- a born-settled transfer without one settled TODAY on
+            the ``entered`` basis (the F-048 / C-22 rule, on the user's clock
+            and on nobody's word but theirs).  Meaningless for an unsettled
+            status, so :func:`create_transfer` rejects that combination loudly
+            rather than recording a settle day for a payment that has not
+            happened.
     """
 
     user_id: int
@@ -215,7 +224,7 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
     transfer_template_id: int | None = None
     name: str | None = None
     due_date: date | None = None
-    settled_on: date | None = None
+    settle_day: SettleDay | None = None
 
 
 def create_transfer(spec: TransferSpec) -> Transfer:
@@ -276,7 +285,7 @@ def create_transfer(spec: TransferSpec) -> Transfer:
     # born-settled branch below is gated on the status being settled, so an
     # unsettled create carrying a day never reaches it and the day would be
     # dropped in silence.  One rule, two moments.
-    reject_settle_day_without_settled_status(spec.status_id, spec.settled_on)
+    reject_settle_day_without_settled_status(spec.status_id, spec.settle_day)
 
     # ── Ref data lookups ───────────────────────────────────────────
     expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
@@ -348,7 +357,7 @@ def create_transfer(spec: TransferSpec) -> Transfer:
         # from the row rather than a human correcting what the app booked (plan
         # step X-au-c3).
         apply_settle_day_to_pair(
-            expense_shadow, income_shadow, spec.settled_on,
+            expense_shadow, income_shadow, spec.settle_day,
             settlement=status_seam.Settlement(
                 amount=amount, basis=SettlementBasisEnum.DERIVED,
             ),

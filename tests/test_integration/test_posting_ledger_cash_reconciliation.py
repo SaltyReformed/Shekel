@@ -128,13 +128,14 @@ from app.utils.balance_predicates import (
     settled_status_ids,
 )
 from tests._test_helpers import (
-    settlement_if_settling,
     add_txn,
     create_account_of_type,
     create_envelope_txn,
     create_settled_cash_transaction,
     create_settled_transfer,
     linked_ledger_account,
+    settle_day_columns,
+    settlement_if_settling,
 )
 from app.services import cash_ledger
 from app.services.row_valuation import owned_contribution
@@ -1516,7 +1517,7 @@ class TestAPostedPurchaseReconcilesUnderAnUnsettledParent:
                 amount=Decimal("40.00"),
                 description="Kroger",
                 purchased_on=posted_on,
-                settled_on=posted_on,
+                **settle_day_columns(posted_on),
                 is_credit=False,
             )
             _db.session.add(entry)

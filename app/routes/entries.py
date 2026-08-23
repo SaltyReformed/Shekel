@@ -25,6 +25,10 @@ from app.routes._render_helpers import (
 )
 from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
 from app.services import entry_service
+from app.services.settle_day import (
+    recorded_settle_day,
+    submitted_settle_day,
+)
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import get_accessible_transaction
 from app.utils.dates import display_today
@@ -504,7 +508,66 @@ def update_entry(txn_id, entry_id):
         )
         return _stale_entry_response(txn, host)
 
+    _pair_the_posting_day(data, entry)
     return _execute_entry_update(entry_id, txn, data, host)
+
+
+def _pair_the_posting_day(
+    data: dict[str, Any], entry: TransactionEntry,
+) -> None:
+    """Replace a submitted ``settled_on`` with the PAIR the service takes.
+
+    Plan step **X-az**.  ``entry_service.update_entry`` writes the posting day
+    and the basis that says how that day is known as one
+    :class:`app.services.settle_day.SettleDay`, so a bare date is not something
+    it can accept: the two columns are welded by
+    ``ck_transaction_entries_settle_day_basis_pairing`` and there is one writer
+    for the pair.
+
+    **It is ECHO-AWARE, and that is not a nicety -- it is what stops this door
+    re-opening the defect the step closes.**  The purchase popover renders the
+    Posted date input on EVERY entry, prefilled with the stored day and OUTSIDE
+    the settled-parent guard (``_transaction_entries.html``), so on a closed
+    envelope it is the only editable control there is: an owner who opens the
+    row and saves re-submits the day it already carried.  Wrapping that
+    unconditionally as ``entered`` rewrote the reconcile panel's ``asserted``
+    upper BOUND as the owner's own typing -- with the day unchanged, so the
+    clearing link survived and nothing signalled it -- and
+    ``CandidateRow.expected_window`` then collapsed the purchase to a point at
+    the assertion day, out of reach of its own bank line.  Measured on
+    production 2026-08-22: **59 of 66 linked purchases, ``$4,173.07``**, one
+    innocuous save each.  The rule itself is
+    :func:`app.services.settle_day.submitted_settle_day`, shared with the two
+    status doors so all three read a re-submitted day the same way.
+
+    **A day that MOVED is ``entered``, and this is the only door that can say
+    so.**  It is the owner's own record -- no bank statement showed it and no
+    balance assertion bounds it.  The other two kinds are written elsewhere and
+    neither can reach this handler: the statement matcher passes ``observed``
+    through the same service door, and the reconcile panel's ``asserted`` days
+    go through its own bulk ``UPDATE``.
+
+    An explicit ``None`` is a real user act -- *"I ticked this as posted and the
+    statement does not actually show it"* -- and stays a ``None``, which clears
+    both columns.  **An EMPTY date input IS that ``None``**: the schema declares
+    ``settled_on`` ``allow_none``, and ``_normalize_empty_inputs`` maps ``""`` to
+    ``None`` for exactly such a field rather than dropping the key, which is what
+    ``EntryUpdateSchema``'s own comment says the flag is for.  It reaches here as
+    a present key carrying ``None``, and the echo rule is skipped for it because
+    an emptied box asserts a CHANGE rather than re-stating a day.
+
+    Args:
+        data: The schema-loaded PATCH payload, mutated in place.
+        entry: The purchase being PATCHed, for the pair it ALREADY records --
+            which is what the echo rule compares against.
+    """
+    if "settled_on" not in data:
+        return
+    submitted = data.pop("settled_on")
+    data["settle_day"] = (
+        None if submitted is None
+        else submitted_settle_day(submitted, recorded_settle_day(entry))
+    )
 
 
 @entries_bp.route(

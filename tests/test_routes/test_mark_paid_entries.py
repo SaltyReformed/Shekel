@@ -26,6 +26,7 @@ from app.exceptions import ValidationError
 
 from app.services.row_valuation import settled_figure
 from tests._test_helpers import (
+    an_entered_day,
     freeze_today,
     make_every_period_rule,
     settlement_basis_id,
@@ -436,7 +437,7 @@ class TestPostPaidEntryMutation:
                     amount=Decimal("50.00"),
                     description="Late purchase",
                     purchased_on=date(2026, 1, 10),
-                    settled_on=date(2026, 1, 12),
+                    settle_day=an_entered_day(date(2026, 1, 12)),
                 ),
             )
             db.session.flush()
@@ -477,7 +478,7 @@ class TestPostPaidEntryMutation:
                         amount=Decimal("600.00"),
                         description="Late purchase",
                         purchased_on=date(2026, 1, 10),
-                        settled_on=date(2026, 1, 12),
+                        settle_day=an_entered_day(date(2026, 1, 12)),
                     ),
                 )
 

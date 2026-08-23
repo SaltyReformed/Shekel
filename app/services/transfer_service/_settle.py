@@ -66,7 +66,6 @@ Architecture (``CLAUDE.md``):
 """
 
 import logging
-from datetime import date
 from decimal import Decimal
 
 from app.exceptions import ValidationError
@@ -77,6 +76,7 @@ from app.services.cash_ledger import (
     resolve_transaction_amount,
 )
 from app.services.row_valuation import fixed_contribution
+from app.services.settle_day import SettleDay
 from app.services.status_seam import (
     Settlement,
     honoured_correction,
@@ -301,7 +301,7 @@ def settle(
     new_status_id: int,
     *,
     submitted: Decimal | None,
-    settled_on: date | None,
+    settle_day: SettleDay | None,
 ) -> bool:
     """Settle a transfer -- both legs and the parent -- and say whose figure it booked.
 
@@ -379,8 +379,11 @@ def settle(
             :func:`~app.services.transfer_service._status.apply_status_to_all_three`.
         submitted: The figure a caller supplied, or ``None`` when nobody typed
             one.
-        settled_on: The civil day the money moved, when the caller knows it.
-            ``None`` leaves the pair-day rule in force.
+        settle_day: The civil day the money moved and HOW that day is known
+            (:class:`app.services.settle_day.SettleDay`), when the caller knows
+            it -- the reconcile tick's statement day on the ``asserted`` basis,
+            the matcher's bank day on ``observed``.  ``None`` leaves the
+            pair-day rule in force.
 
     Returns:
         Whether this settle booked a figure the caller supplied NOW -- what the
@@ -439,7 +442,7 @@ def settle(
     # so re-settling a transfer the user reverted in order to edit honours the
     # figure they read off their statement instead of re-deriving over it.
     apply_status_to_all_three(
-        rows, new_status_id, settled_on=settled_on,
+        rows, new_status_id, settle_day=settle_day,
         settlement=Settlement.from_settle(
             booked, correction, recorded_settlement(rows.expense),
         ),

@@ -27,7 +27,11 @@ from app.services import account_service, pay_period_write
 
 from app.utils.dates import display_today
 
-from tests._test_helpers import default_settle_day, settlement_columns
+from tests._test_helpers import (
+    default_settle_day,
+    settle_day_columns,
+    settlement_columns,
+)
 from tests._test_helpers import create_settled_cash_transaction, freeze_today
 
 
@@ -87,7 +91,7 @@ def _create_paid_expense_for_route_test(db, seed_user, seed_periods,
         category_id=cat.id if cat else None,
         # A settled row carries the whole record -- day, figure and basis --
         # through the one door a bare-built fixture uses (plan step X-au-c3).
-        settled_on=seed_periods[0].start_date,
+        **settle_day_columns(seed_periods[0].start_date),
         **settlement_columns(seed_periods[0].start_date, amount),
     )
     db.session.add(txn)
@@ -2066,7 +2070,7 @@ def _settled_spending_txn(db, seed_user, period, name, category_key,
         # moved -- one fact in three columns (plan steps X-f1 / X-au-c3),
         # resolved through the one door a bare-built fixture uses.  *actual* is
         # a figure a HUMAN typed, which makes the record ``corrected``.
-        settled_on=due_date or period.start_date,
+        **settle_day_columns(due_date or period.start_date),
         **settlement_columns(
             due_date or period.start_date, Decimal(estimated),
             submitted=Decimal(actual) if actual is not None else None,

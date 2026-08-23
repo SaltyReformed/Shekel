@@ -19,7 +19,7 @@ what R-FZ removed, and a remembered default would be one.
 **A policy resolves against the pass's own offer set, so it can never widen
 it.**  :func:`placements_for` picks from :func:`~._candidates.destinations_for`
 -- narrowed by what this pass has already matched -- rather than querying for a
-row of its own, which is the property :func:`~._accept.resolve_rows` rests on:
+row of its own, which is the property :func:`~._resolve.resolve_rows` rests on:
 a destination the screen may not offer is one a policy cannot reach either.
 Every way a policy can fail to resolve is REPORTED rather than substituted for,
 because substituting is how a suggestion becomes a guess.
@@ -399,7 +399,7 @@ class PolicyStatement:
     act on money, and the door re-derives everything it checks from the ids.
 
     **It names no OWNER and no ACCOUNT**, for the reason
-    :class:`~._offers.PurchaseCreation` states: whose account this is, is the
+    :class:`~._creations.PurchaseCreation` states: whose account this is, is the
     route's one proved statement, and a submission carrying its own pair would
     be a second one that could disagree with it.
 

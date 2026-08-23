@@ -31,7 +31,11 @@ from app.services import (
 from app.services.row_valuation import purchases_total, settled_figure
 from app.utils.dates import display_today
 from app.models.account import AccountAnchorHistory
-from tests._test_helpers import settlement_if_settling
+from tests._test_helpers import (
+    an_entered_day,
+    settle_day_columns,
+    settlement_if_settling,
+)
 from tests._test_helpers import mark_purchase_settled
 
 
@@ -2134,7 +2138,7 @@ class TestASettledRowsPurchasesAreClosed:
             posted_on = display_today()
 
             entry_service.update_entry(
-                entry.id, seed_user["user"].id, settled_on=posted_on,
+                entry.id, seed_user["user"].id, settle_day=an_entered_day(posted_on),
             )
             db.session.flush()
 
@@ -2146,7 +2150,7 @@ class TestASettledRowsPurchasesAreClosed:
             # And it can be WITHDRAWN again, which is what "the statement does
             # not actually show it" means.
             entry_service.update_entry(
-                entry.id, seed_user["user"].id, settled_on=None,
+                entry.id, seed_user["user"].id, settle_day=None,
             )
             db.session.flush()
             assert entry.settled_on is None
@@ -2172,7 +2176,7 @@ class TestASettledRowsPurchasesAreClosed:
             with pytest.raises(ValidationError, match="has settled"):
                 entry_service.update_entry(
                     entry.id, seed_user["user"].id,
-                    settled_on=display_today(),
+                    settle_day=an_entered_day(display_today()),
                     amount=Decimal("500.00"),
                 )
 
@@ -2338,7 +2342,7 @@ class TestASettledRowMayStillGAINAPurchase:
                     amount=Decimal("30.00"),
                     description="Food Lion",
                     purchased_on=display_today(),
-                    settled_on=display_today(),
+                    settle_day=an_entered_day(display_today()),
                 ),
             )
             db.session.flush()
@@ -2380,7 +2384,7 @@ class TestASettledRowMayStillGAINAPurchase:
                     amount=Decimal("30.00"),
                     description="Food Lion",
                     purchased_on=display_today(),
-                    settled_on=display_today(),
+                    settle_day=an_entered_day(display_today()),
                 ),
             )
             db.session.flush()
@@ -2415,7 +2419,7 @@ class TestASettledRowMayStillGAINAPurchase:
                         amount=Decimal("600.00"),
                         description="BJs",
                         purchased_on=display_today(),
-                        settled_on=display_today(),
+                        settle_day=an_entered_day(display_today()),
                     ),
                 )
 
@@ -2452,7 +2456,7 @@ class TestASettledRowMayStillGAINAPurchase:
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id,
                 amount=Decimal("600.00"), description="BJs",
-                purchased_on=display_today(), settled_on=display_today(),
+                purchased_on=display_today(), **settle_day_columns(display_today()),
                 is_credit=False,
             )
             db.session.add(entry)
@@ -2511,7 +2515,7 @@ class TestASettledRowMayStillGAINAPurchase:
                 transaction_id=txn.id, account_id=txn.account_id,
                 user_id=seed_user["user"].id, amount=Decimal("30.00"),
                 description="Food Lion", purchased_on=display_today(),
-                settled_on=None, is_credit=False,
+                **settle_day_columns(None), is_credit=False,
             ))
             db.session.flush()
             db.session.expire(txn)
@@ -2547,7 +2551,7 @@ class TestASettledRowMayStillGAINAPurchase:
                         amount=Decimal("30.00"),
                         description="Food Lion",
                         purchased_on=display_today(),
-                        settled_on=display_today(),
+                        settle_day=an_entered_day(display_today()),
                     ),
                 )
 
@@ -2591,7 +2595,7 @@ class TestAPurchaseMayBeBornCarryingItsPostingDay:
                     amount=Decimal("30.00"),
                     description="Food Lion",
                     purchased_on=posted - timedelta(days=2),
-                    settled_on=posted,
+                    settle_day=an_entered_day(posted),
                 ),
             )
             db.session.flush()
@@ -2644,7 +2648,7 @@ class TestAPurchaseMayBeBornCarryingItsPostingDay:
                         amount=Decimal("30.00"),
                         description="Food Lion",
                         purchased_on=display_today(),
-                        settled_on=display_today() - timedelta(days=1),
+                        settle_day=an_entered_day(display_today() - timedelta(days=1)),
                     ),
                 )
             assert db.session.query(TransactionEntry).filter_by(
@@ -2671,7 +2675,7 @@ class TestAPurchaseMayBeBornCarryingItsPostingDay:
                         amount=Decimal("30.00"),
                         description="Food Lion",
                         purchased_on=display_today(),
-                        settled_on=display_today() + timedelta(days=1),
+                        settle_day=an_entered_day(display_today() + timedelta(days=1)),
                     ),
                 )
             assert db.session.query(TransactionEntry).filter_by(

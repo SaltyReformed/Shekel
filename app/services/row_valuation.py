@@ -214,7 +214,7 @@ def recorded_figure(row) -> "Decimal | None":
     (measured on the 2026-08-17 clone: 166 settled rows, 0 without a basis).
     But such a row cannot be repaired from a surface that refuses to draw, and
     it cannot be repaired by stating its DAY alone either --
-    ``ck_transactions_settle_day_needs_basis`` pairs the two, so a day written
+    ``ck_transactions_settle_day_needs_a_record`` pairs the two, so a day written
     without a record violates it.  The repair is to state BOTH, which is what
     the Actual box beside the day box is for.
 

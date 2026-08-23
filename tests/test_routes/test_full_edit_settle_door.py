@@ -30,6 +30,7 @@ What these pin, in the order the request runs them:
 # pylint: disable=redefined-outer-name
 # Rationale: ``redefined-outer-name`` is the canonical pytest fixture pattern;
 # test bodies bind fixtures (``auth_client``, ``seed_user``, ...) by name.
+from datetime import timedelta
 from decimal import Decimal
 
 from app import ref_cache
@@ -38,11 +39,14 @@ from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.transaction import Transaction
 from app.services import transaction_service
+from app.services.settle_day import record_settle_day, recorded_settle_day
 from app.services.state_machine import allowed_transitions
 from app.utils.dates import display_today
 from tests._test_helpers import (
     add_entry,
     amount_basis_for,
+    an_asserted_day,
+    an_entered_day,
     create_envelope_txn,
     net_posted_by_day,
     settlement_basis_id,
@@ -1111,3 +1115,88 @@ class TestAChangedFigureBesideARevert:
             # revert / edit / re-settle round trip stays lossless.
             assert after.settled_on is None
             assert after.settled_amount == Decimal("245.32")
+
+
+class TestAReSubmittedDayDoesNotRestateItsBASIS:
+    """Plan step **X-az**: the ECHO rule at the two STATUS doors.
+
+    **The whole form posts on Save**, which is this suite's own premise, and the
+    settle-day box is part of it -- so an untouched Save re-submits the day the
+    row already carries.  Stamping that ``entered`` rewrites what the row knew
+    about its own day: a reconcile-panel UPPER BOUND, or a day the bank stated,
+    becomes the owner's own typing, with the day unchanged so nothing releases
+    the clearing link and nothing tells anyone.
+
+    The entry PATCH has its own controls (``test_entries.py``) and it is where
+    the cost was measured -- **59 of 66 linked purchases, `$4,173.07`** on
+    production.  These are the two doors that share the rule through
+    ``status_seam.settle_day_for_status``: the transaction PATCH here, and the
+    SHADOW branch below, which grades the transfer PATCH's copy of it.
+    """
+
+    @staticmethod
+    def _settled_on_a_bound(auth_client, db, seed_user, period):
+        """Return a Paid row whose day is an ``asserted`` BOUND, as the panel leaves it."""
+        txn = _gas_envelope(seed_user, period)
+        txn_id = txn.id
+        assert auth_client.post(
+            f"/transactions/{txn_id}/mark-done",
+        ).status_code == 200
+        db.session.expire_all()
+        paid = db.session.get(Transaction, txn_id)
+        record_settle_day(paid, an_asserted_day(paid.settled_on))
+        db.session.commit()
+        return db.session.get(Transaction, txn_id)
+
+    def test_an_untouched_save_keeps_the_asserted_basis(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """The defect, at the transaction PATCH.
+
+        Drop the ``recorded`` argument at
+        ``routes/transactions/mutations.py``'s ``settle_day_for_status`` call
+        and this fails: every submission is then a fresh assertion, so the bound
+        is reported as a day the owner typed.
+        """
+        with app.app_context():
+            paid = self._settled_on_a_bound(
+                auth_client, db, seed_user, seed_periods_today[3],
+            )
+            txn_id, day = paid.id, paid.settled_on
+
+            resp = _full_edit_save(
+                auth_client, paid, paid.status_id,
+                settled_on=day.isoformat(),
+            )
+
+            assert resp.status_code == 200
+            db.session.expire_all()
+            saved = db.session.get(Transaction, txn_id)
+            assert saved.settled_on == day
+            assert recorded_settle_day(saved) == an_asserted_day(day)
+
+    def test_a_day_the_owner_really_MOVED_is_their_own(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """The firing half: a genuine correction still records ``entered``.
+
+        Without it the rule is satisfied by one that never restates the basis,
+        which would report a day the owner typed as one a balance bounded --
+        the same laundering in the other direction.
+        """
+        with app.app_context():
+            paid = self._settled_on_a_bound(
+                auth_client, db, seed_user, seed_periods_today[3],
+            )
+            txn_id = paid.id
+            corrected = paid.settled_on - timedelta(days=2)
+
+            resp = _full_edit_save(
+                auth_client, paid, paid.status_id,
+                settled_on=corrected.isoformat(),
+            )
+
+            assert resp.status_code == 200
+            db.session.expire_all()
+            saved = db.session.get(Transaction, txn_id)
+            assert recorded_settle_day(saved) == an_entered_day(corrected)
