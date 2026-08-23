@@ -73,6 +73,7 @@ def _row(  # pylint: disable=too-many-arguments
     consumer but this file.
     """
     return CandidateRow(
+        version_id=1,
         kind=kind, row_id=row_id, label=label,
         cash_amount=Decimal(amount), settled_on=settled_on,
         is_settled=settled_on is not None,
@@ -92,6 +93,7 @@ def _reconciled(row_id, amount, made, asserted):
     2026-08-22.
     """
     return CandidateRow(
+        version_id=1,
         kind=RowKind.PURCHASE, row_id=row_id, label="Groceries: Walmart",
         cash_amount=Decimal(amount), settled_on=asserted, is_settled=True,
         states_own_figure=True, parent_id=900,
@@ -101,7 +103,7 @@ def _reconciled(row_id, amount, made, asserted):
 
 
 def _offered(lines, rows):
-    """Return ``(proposals, undecided line count)`` as a list and an int."""
+    """Return ``(proposals, undecided line ids)`` as a list and a set."""
     proposals, undecided = near_misses(lines, rows)
     return list(proposals), undecided
 
@@ -127,7 +129,7 @@ class TestTheDefectThisTierExists:
         assert proposals[0].difference == Decimal("0.03")
         assert proposals[0].bank_amount == Decimal("-178.29")
         assert proposals[0].app_amount == Decimal("-178.32")
-        assert undecided == 0
+        assert undecided == frozenset()
 
     def test_the_variance_is_what_the_screen_would_SAY(self):
         """*bank `$178.29`, your row `$178.32`* -- the step's own sentence.
@@ -173,7 +175,7 @@ class TestTheBoundIsRELATIVE:
         )
 
         assert proposals == []
-        assert undecided == 0
+        assert undecided == frozenset()
 
     def test_the_bound_is_the_VALUE_the_measurement_fixed(self):
         """`0.005`, named as a literal, because the VALUE is the decision.
@@ -248,7 +250,7 @@ class TestTheROWMustNAMETheMerchant:
         )
 
         assert proposals == []
-        assert undecided == 0
+        assert undecided == frozenset()
 
     def test_a_line_naming_NO_merchant_offers_nothing(self):
         """``None`` means *this source names none* and corroborates nothing.
@@ -351,7 +353,7 @@ class TestItOffersNothingTheDoorWouldREFUSE:
         )
 
         assert proposals == []
-        assert undecided == 0
+        assert undecided == frozenset()
 
     def test_a_TRANSFER_SHADOW_is_not_offered(self):
         """``CLAUDE.md`` transfer invariant 3 holds the two halves equal.
@@ -449,7 +451,7 @@ class TestAContestIsREPORTEDRatherThanSettled:
         )
 
         assert proposals == []
-        assert undecided == 1
+        assert undecided == frozenset({1})
 
     def test_a_TWO_BASIS_POINT_margin_does_not_decide(self):
         """Adversarial design review 2026-08-22, and the module's own proof.
@@ -469,7 +471,7 @@ class TestAContestIsREPORTEDRatherThanSettled:
         )
 
         assert proposals == []
-        assert undecided == 1
+        assert undecided == frozenset({1})
 
     def test_a_RECONCILED_span_does_not_let_the_day_decide(self):
         """Adversarial test-quality review 2026-08-22.
@@ -496,7 +498,7 @@ class TestAContestIsREPORTEDRatherThanSettled:
         proposals, undecided = _offered([line], [old, same_day])
 
         assert proposals == []
-        assert undecided == 1
+        assert undecided == frozenset({1})
 
     def test_ONE_reconciled_purchase_is_still_offered(self):
         """The positive control for the case above.
@@ -516,7 +518,7 @@ class TestAContestIsREPORTEDRatherThanSettled:
 
         assert len(proposals) == 1
         assert proposals[0].rows == (alone,)
-        assert undecided == 0
+        assert undecided == frozenset()
 
     def test_a_row_TWO_lines_admit_goes_to_NEITHER(self):
         """The symmetry, and it is what keeps the offers LEGAL as well.
@@ -533,7 +535,7 @@ class TestAContestIsREPORTEDRatherThanSettled:
         )
 
         assert proposals == []
-        assert undecided == 2
+        assert undecided == frozenset({1, 2})
 
     def test_an_EXACT_pair_is_not_this_tier_s(self):
         """The exact tiers have already had it, and had it better.
@@ -547,7 +549,7 @@ class TestAContestIsREPORTEDRatherThanSettled:
         )
 
         assert proposals == []
-        assert undecided == 0
+        assert undecided == frozenset()
 
 
 class TestTheTiersInPROPOSE:
@@ -628,11 +630,17 @@ class TestTheTiersInPROPOSE:
             "confirm", "correct", "reprice",
         ]
 
-    def test_the_undecided_count_rides_out_on_the_pass(self):
+    def test_the_undecided_LINES_ride_out_on_the_pass(self):
         """A score that withholds is a bound, and a silent bound is a sweep.
 
         This package has twice shipped a bound nobody could see (findings
         **N-315**, **N-322**), so the near tier publishes its own.
+
+        **It publishes the LINE IDS rather than a count** (plan step
+        ``bank_import:X-f6d-3``): the screen renders the warning against the
+        line it concerns, in the card where recording that line a SECOND time
+        is the cheapest act, so a bare number could not be rendered there at
+        all.
         """
         proposed = propose(
             [_line(1, "-178.29")],
@@ -640,7 +648,19 @@ class TestTheTiersInPROPOSE:
         )
 
         assert proposed.proposals == ()
-        assert proposed.undecided_near_count == 1
+        assert proposed.undecided_near_lines == frozenset({1})
+
+    def test_a_line_the_tier_DECIDED_is_not_reported_as_undecided(self):
+        """The control that keeps the assertion above from being a tautology.
+
+        A bound that named every scored line would satisfy "it publishes
+        something" while telling the owner to hand-build the five matches the
+        page had just proposed correctly.
+        """
+        proposed = propose([_line(1, "-178.29")], [_row(1, "-178.32")])
+
+        assert len(proposed.proposals) == 1
+        assert proposed.undecided_near_lines == frozenset()
 
 
 class TestARowNobodyHasSETTLED:

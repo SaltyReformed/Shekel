@@ -17,6 +17,7 @@ this project has twice measured the absence of.
 * a release restores the QUESTION and leaves the days alone.
 """
 
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 
@@ -48,6 +49,7 @@ from ._builders import (
     a_bank_line,
     a_purchase,
     a_scope,
+    a_submission,
     a_transaction,
     an_assertion,
     an_import,
@@ -129,15 +131,17 @@ def _submit(seed_user, lines=(), transactions=(), entries=()):
     Returns:
         The :class:`~app.services.statement_match.AcceptedMatch`.
     """
+    # DERIVED HERE, so every call sees the rows this test has staged.  A
+    # scope built once per test would be a snapshot older than the fixture.
+    # **The SAME scope builds the submission and applies it**, which is the
+    # two-moment flow the screen has: the reviewed state a tick carries is read
+    # off the pass that rendered it (finding **N-336**).
+    scope = a_scope(seed_user)
     return statement_match.accept_match(
-        MatchSubmission(
-            line_ids=frozenset(line.id for line in lines),
-            transaction_ids=frozenset(txn.id for txn in transactions),
-            entry_ids=frozenset(entry.id for entry in entries),
+        a_submission(
+            scope, lines=lines, transactions=transactions, entries=entries,
         ),
-        # DERIVED HERE, so every call sees the rows this test has staged.  A
-        # scope built once per test would be a snapshot older than the fixture.
-        a_scope(seed_user),
+        scope,
     )
 
 
@@ -296,6 +300,163 @@ class TestTheGroupMustSum:
         assert txn.settled_on == last
 
 
+class TestARowThatMOVEDSinceTheReviewIsRefused:
+    """Finding **N-336**, at the door: what commits is what was reviewed.
+
+    Ruling **R-FP** says a match is a PROPOSAL, and the screen states the
+    correction accepting one would write.  Until plan step
+    ``bank_import:X-f6d-3`` nothing compared the two: ``resolve_rows``
+    re-priced the row per act -- correct in itself, finding **N-309** -- and
+    ``corrected_figure`` then wrote the bank's figure whatever that price was.
+    Reproduced on the developer's own data: the screen offered *from
+    ``-178.32`` to ``-178.29``*, the row was edited to ``500.00`` in another
+    tab, and Apply wrote a **``$321.71``** correction under that caption.
+
+    **The exact tier never had this**, which is why it is a regression rather
+    than an old hole: an equal match whose price moved became UNEQUAL and was
+    refused, so staleness failed CLOSED by accident until ``X-f6d-2`` made an
+    unequal one-to-one recordable.
+
+    ``test_submission`` grades the two coordinates as values, one writer at a
+    time.  These grade that the door REACHES them and writes nothing.
+    """
+
+    def test_a_row_whose_FIGURE_moved_is_refused(self, app, db, seed_user):
+        """The reproduced case, through the real door."""
+        line = a_bank_line(seed_user, an_import(seed_user), amount="-178.29")
+        txn = a_transaction(
+            seed_user, name="Geico", amount="178.32",
+            status=StatusEnum.DONE, settled_on=line.posted_on,
+        )
+        scope = a_scope(seed_user)
+        submission = a_submission(scope, lines=[line], transactions=[txn])
+
+        # ...and the row moves after the screen was rendered.
+        txn.settled_amount = Decimal("500.00")
+        txn.estimated_amount = Decimal("500.00")
+        db.session.flush()
+
+        with pytest.raises(ValidationError, match="reviewed against different"):
+            statement_match.accept_match(submission, a_scope(seed_user))
+
+        assert db.session.query(StatementMatch).count() == 0
+        assert txn.settled_amount == Decimal("500.00"), (
+            "the refused act wrote the bank's figure over the edit"
+        )
+
+    def test_a_row_whose_REVISION_moved_is_refused(self, app, db, seed_user):
+        """The coordinate the figure cannot see.
+
+        The row is worth exactly what the screen showed and has still been
+        edited -- here its settle day, which is what decides whether a match
+        re-dates anything.  A guard on the figure alone applies this silently.
+        """
+        line = a_bank_line(seed_user, an_import(seed_user), amount="-180.00")
+        txn = a_transaction(
+            seed_user, amount="180.00",
+            status=StatusEnum.DONE, settled_on=line.posted_on,
+        )
+        scope = a_scope(seed_user)
+        submission = a_submission(scope, lines=[line], transactions=[txn])
+
+        txn.settled_on = line.posted_on - timedelta(days=2)
+        db.session.flush()
+
+        with pytest.raises(ValidationError, match="reviewed against different"):
+            statement_match.accept_match(submission, a_scope(seed_user))
+
+        assert db.session.query(StatementMatch).count() == 0
+
+    def test_a_PURCHASE_whose_revision_moved_is_refused(
+        self, app, db, seed_user,
+    ):
+        """The other candidate kind, and it was uncovered.
+
+        The two rows a match can name are built by DIFFERENT constructors, so a
+        control over transactions alone grades one of them: found by a mutation
+        sweep 2026-08-23, where hardcoding ``purchase_candidate``'s revision
+        left every test passing.  It matters because a purchase is the row
+        ruling **R-GE** newly lets a match re-price -- 2 of the developer's own
+        10 near misses are purchases under a settled envelope.
+
+        **What moves here is neither the figure nor a day**, so this isolates
+        the revision coordinate: only the description changes, which no other
+        guard in this door reads.
+        """
+        line = a_bank_line(seed_user, an_import(seed_user), amount="-25.00")
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="200.00",
+            status=StatusEnum.DONE, settled_on=line.posted_on,
+        )
+        purchase = a_purchase(
+            seed_user, envelope, amount="25.00",
+            purchased_on=line.posted_on, description="Walmart",
+        )
+        scope = a_scope(seed_user)
+        submission = a_submission(scope, lines=[line], entries=[purchase])
+
+        purchase.description = "Walmart, corrected"
+        db.session.flush()
+
+        with pytest.raises(ValidationError, match="reviewed against different"):
+            statement_match.accept_match(submission, a_scope(seed_user))
+
+        assert db.session.query(StatementMatch).count() == 0
+
+    def test_ONE_row_named_TWICE_at_two_figures_is_refused(
+        self, app, db, seed_user,
+    ):
+        """A crafted body may not choose which state the guard checks.
+
+        The screen renders exactly one input per row, so this cannot arrive
+        from it -- but ``MatchSubmission.rows`` is a SET of values rather than
+        of ids, so two entries naming one subject at different figures are two
+        distinct members that collapse to one key in ``subjects``.  Whichever
+        the set iterated last would have become the state the staleness guard
+        compared against, on the door that re-prices rows.
+
+        **A first draft left this to the count below and a docstring claimed
+        it was caught there.**  It was not: that count is taken over the
+        COLLAPSED mapping, so two rows over one subject compares 1 against 1
+        and passes.  Found by re-auditing this step's own diff, 2026-08-23.
+        """
+        line = a_bank_line(seed_user, an_import(seed_user), amount="-180.00")
+        txn = a_transaction(
+            seed_user, amount="180.00",
+            status=StatusEnum.DONE, settled_on=line.posted_on,
+        )
+        scope = a_scope(seed_user)
+        honest = a_submission(scope, lines=[line], transactions=[txn])
+        truthful_row = next(iter(honest.rows))
+
+        crafted = replace(honest, rows=frozenset({
+            truthful_row,
+            replace(truthful_row, cash_amount=Decimal("-999.00")),
+        }))
+
+        with pytest.raises(ValidationError, match="same row more than once"):
+            statement_match.accept_match(crafted, scope)
+
+        assert db.session.query(StatementMatch).count() == 0
+
+    def test_an_UNMOVED_row_still_applies(self, app, db, seed_user):
+        """The control that keeps the two above from grading a broken door.
+
+        Both cases would pass against a door that refused every match, and
+        137 of the developer's own proposals take this arm.
+        """
+        line = a_bank_line(seed_user, an_import(seed_user), amount="-178.29")
+        txn = a_transaction(
+            seed_user, name="Geico", amount="178.32",
+            status=StatusEnum.DONE, settled_on=line.posted_on,
+        )
+
+        accepted = _submit(seed_user, lines=[line], transactions=[txn])
+
+        assert accepted.repriced_count == 1
+        assert txn.settled_amount == Decimal("178.29")
+
+
 class TestEveryOtherRefusalFires:
     """Each of these is reachable from a stale page, and each writes nothing."""
 
@@ -444,14 +605,14 @@ class TestEveryOtherRefusalFires:
         """A refusal rather than a silent skip: this door names rows on purpose."""
         txn = a_transaction(seed_user, amount="180.00")
 
+        scope = a_scope(seed_user)
         with pytest.raises(ValidationError, match="no longer on this account"):
             statement_match.accept_match(
-                MatchSubmission(
-                line_ids=frozenset({999999}),
-                transaction_ids=frozenset({txn.id}),
-                entry_ids=frozenset(),
-            ),
-                a_scope(seed_user),
+                replace(
+                    a_submission(scope, transactions=[txn]),
+                    line_ids=frozenset({999999}),
+                ),
+                scope,
             )
 
     def test_a_second_match_on_one_LINE_is_refused(self, app, db, seed_user):
@@ -1368,16 +1529,11 @@ class TestTheStoredTransactionDayReachesTheScreen:
         for proposal in review.proposals:
             statement_match.accept_match(
                 MatchSubmission(
-                line_ids=frozenset(l.line_id for l in proposal.lines),
-                transaction_ids=frozenset(
-                    r.row_id for r in proposal.rows
-                    if r.kind is statement_match.RowKind.TRANSACTION
+                    line_ids=frozenset(l.line_id for l in proposal.lines),
+                    rows=frozenset(
+                        statement_match.as_reviewed(r) for r in proposal.rows
+                    ),
                 ),
-                entry_ids=frozenset(
-                    r.row_id for r in proposal.rows
-                    if r.kind is statement_match.RowKind.PURCHASE
-                ),
-            ),
                 a_scope(seed_user),
             )
 

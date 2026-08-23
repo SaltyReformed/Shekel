@@ -65,7 +65,8 @@ from app.utils.log_events import (
     log_event,
 )
 
-from ._accept import load_lines, record_match
+from ._accept import record_match
+from ._resolve import load_lines
 from ._candidates import (
     MatchedSubjects,
     matched_subjects,
@@ -229,7 +230,7 @@ def _load_line(
     """Return the submitted line, refusing one this door may not record.
 
     **The account scope and the already-matched refusal are
-    :func:`~._accept.load_lines`', not restated here** (plan step
+    :func:`~._resolve.load_lines`', not restated here** (plan step
     ``bank_import:X-f6a-3c-2``).  This door records a match like every other,
     so *is this line on this account, and has something already claimed it* has
     to be ONE answer; it carried a second copy of both while that function was
@@ -408,7 +409,7 @@ def _existing_envelope(
     **Resolved against the pass's own destination set rather than queried
     directly**, so the set this door may write into is exactly the set the
     screen may offer -- the same one-scope-for-reader-and-writer property
-    :func:`~._accept.resolve_rows` rests on.  An envelope belonging to another
+    :func:`~._resolve.resolve_rows` rests on.  An envelope belonging to another
     user, another account, a cancelled or archived row, a settled row whose
     figure is a stored number, or one already matched to a bank line is not a
     destination and cannot be reached by crafting a request.

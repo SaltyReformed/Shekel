@@ -85,6 +85,7 @@ def _row(row_id, amount, settled_on=_DAY, is_settled=True, label=None,
     financial review 2026-08-19.
     """
     return CandidateRow(
+        version_id=1,
         kind=RowKind.TRANSACTION, row_id=row_id,
         label=label or f"row {row_id}", cash_amount=Decimal(amount),
         settled_on=settled_on, is_settled=is_settled, states_own_figure=True,
@@ -101,6 +102,7 @@ def _bill(row_id, amount, period=_PERIOD, label=None):
     SPAN and not its opening day (plan step ``bank_import:X-f6a-3c``).
     """
     return CandidateRow(
+        version_id=1,
         kind=RowKind.TRANSACTION, row_id=row_id,
         label=label or f"bill {row_id}", cash_amount=Decimal(amount),
         settled_on=None, is_settled=False, states_own_figure=True,
@@ -130,6 +132,7 @@ class TestTheWindowAccessorItself:
         """``transaction_entries.purchased_on`` is NOT NULL, so every purchase
         has one and "undated" is true only of its cash clock."""
         purchase = CandidateRow(
+            version_id=1,
             kind=RowKind.PURCHASE, row_id=1, label="Kroger",
             cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
             states_own_figure=True,
@@ -149,6 +152,7 @@ class TestTheWindowAccessorItself:
         half a window WIDER than one with all of it.
         """
         half = CandidateRow(
+            version_id=1,
             kind=RowKind.TRANSACTION, row_id=1, label="Bill",
             cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
             states_own_figure=True,
@@ -167,6 +171,7 @@ class TestTheWindowAccessorItself:
         cannot disagree about what an undatable row is worth.
         """
         nowhere = CandidateRow(
+            version_id=1,
             kind=RowKind.TRANSACTION, row_id=1, label="Bill",
             cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
             states_own_figure=True,
@@ -315,6 +320,7 @@ class TestAPurchaseIsNotOfferedBeforeItWasMade:
     def _purchase(row_id, amount, purchased_on, settled_on=None):
         """Return one purchase candidate with a purchase day."""
         return CandidateRow(
+            version_id=1,
             kind=RowKind.PURCHASE, row_id=row_id, label="Kroger",
             cash_amount=Decimal(amount), settled_on=settled_on,
             is_settled=settled_on is not None, states_own_figure=True,
@@ -403,6 +409,7 @@ class TestAPurchaseIsNotOfferedBeforeItWasMade:
         proposals = _offers(
             [_line(1, "-25.00", date(2026, 5, 1))],
             [CandidateRow(
+                version_id=1,
                 kind=RowKind.TRANSACTION, row_id=10, label="Bill",
                 cash_amount=Decimal("-25.00"), settled_on=None,
                 is_settled=False,
@@ -746,6 +753,7 @@ class TestTheGroupSearchSaysWhatItSkipped:
         # Made AFTER the line posted, and the line states a transaction day
         # later still, so no correction can legalise it (ruling R-FW).
         unreachable = CandidateRow(
+            version_id=1,
             kind=RowKind.PURCHASE, row_id=600, label="Kroger",
             cash_amount=Decimal("-1000.00"), settled_on=None,
             is_settled=False, states_own_figure=True, parent_id=900,
@@ -822,6 +830,7 @@ class TestTheGroupSearchSaysWhatItSkipped:
         """
         dated = self._binary_rows(2)
         purchase = CandidateRow(
+            version_id=1,
             kind=RowKind.PURCHASE, row_id=600, label="Kroger",
             cash_amount=Decimal("-1000.00"), settled_on=None,
             is_settled=False,
@@ -835,6 +844,7 @@ class TestTheGroupSearchSaysWhatItSkipped:
         )) == 1
         # ...and a purchase made two months later joins nothing on this day.
         elsewhere = CandidateRow(
+            version_id=1,
             kind=RowKind.PURCHASE, row_id=601, label="Kroger",
             cash_amount=Decimal("-1000.00"), settled_on=None,
             is_settled=False, states_own_figure=True, parent_id=900,
@@ -924,6 +934,7 @@ class TestTheFloorIsAppliedPerPAIRAndNotPerAmountGroup:
     def _undated_purchase(made_on):
         """Return an undated purchase made on *made_on*."""
         return CandidateRow(
+            version_id=1,
             kind=RowKind.PURCHASE, row_id=10, label="Kroger",
             cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
             states_own_figure=True,
@@ -986,6 +997,7 @@ class TestAnUndatedPurchaseIsBoundedByTheDayItWasMADE:
     def _undated_purchase(made_on):
         """Return an undated purchase made on *made_on*."""
         return CandidateRow(
+            version_id=1,
             kind=RowKind.PURCHASE, row_id=10, label="Kroger",
             cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
             states_own_figure=True,
@@ -1144,6 +1156,7 @@ class TestAnUnsettledBillIsBoundedByItsPayPeriod:
         2026-08-19.
         """
         made_early = CandidateRow(
+            version_id=1,
             kind=RowKind.PURCHASE, row_id=1, label="Kroger",
             cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
             states_own_figure=True,
@@ -1151,6 +1164,7 @@ class TestAnUnsettledBillIsBoundedByItsPayPeriod:
             expected_through=date(2026, 4, 21),
         )
         made_late = CandidateRow(
+            version_id=1,
             kind=RowKind.PURCHASE, row_id=2, label="Kroger",
             cash_amount=Decimal("-25.00"), settled_on=None, is_settled=False,
             states_own_figure=True,
@@ -1384,6 +1398,7 @@ def _ticked(row_id, amount, made_on, asserted_for, label=None):
     invisible to a suite that built one row at a time.
     """
     return CandidateRow(
+        version_id=1,
         kind=RowKind.PURCHASE, row_id=row_id,
         label=label or f"Groceries: purchase {row_id}",
         cash_amount=Decimal(amount), settled_on=asserted_for, is_settled=True,

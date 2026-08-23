@@ -423,12 +423,25 @@
                 {% for line in proposal.lines %}
                 <input type="hidden" name="match-{{ item }}-line_ids" value="{{ line.line_id }}">
                 {% endfor %}
+                {# ONE input per row, carrying WHICH row and the state it is
+                   being reviewed in -- its figure and its revision (finding
+                   N-336, plan step bank_import:X-f6d-3).  The accept door
+                   refuses the item when either has moved since this render,
+                   which is what makes R-FP's "what commits is what was
+                   reviewed" true of the shipped app rather than of the
+                   intention: the screen offered "from -178.32 to -178.29", the
+                   row was edited to 500.00 in another tab, and Apply wrote a
+                   $321.71 correction under that caption.
+
+                   The format is the SERVICE's and is never composed here --
+                   `reviewed_token` is a thin wrapper over `as_reviewed`, whose
+                   own `from_token` is what the schema reads it back with.  Two
+                   ids in two lists is what this replaced: the reviewed state
+                   would have had to ride a parallel list joined on the row id,
+                   and a crafted body desynchronises those by submitting
+                   different lengths. #}
                 {% for row in proposal.rows %}
-                {% if row.kind.value == 'transaction' %}
-                <input type="hidden" name="match-{{ item }}-transaction_ids" value="{{ row.row_id }}">
-                {% else %}
-                <input type="hidden" name="match-{{ item }}-entry_ids" value="{{ row.row_id }}">
-                {% endif %}
+                <input type="hidden" name="match-{{ item }}-rows" value="{{ row | reviewed_token }}">
                 {% endfor %}
               </td>
               <td>
@@ -626,6 +639,26 @@
                 <span class="small text-body-secondary">(made {{ item.line.transaction_on }})</span>
                 {% endif %}
                 <div class="small text-body-secondary">{{ item.line.description }}</div>
+                {% if item.line.line_id in review.undecided_near_lines %}
+                {# THE WARNING, on the line rather than in a panel at the foot
+                   of the page (plan step bank_import:X-f6d-3).  The near-miss
+                   score WITHHOLDS where it cannot choose -- two of your rows
+                   equally close to this line, or the row it would name fits
+                   another line just as well -- and until this step that was a
+                   COUNT under "what this page did not look at", which named no
+                   line and so could not be acted on.
+
+                   It belongs HERE because this card is where the wrong act is
+                   cheapest: recording a line the app already holds in another
+                   shape is the duplicate finding N-335 measures, at $356.61
+                   for one $178.29 movement. #}
+                <div class="small text-warning-emphasis mt-1">
+                  <i class="bi bi-exclamation-triangle"></i>
+                  One of your rows is very close to this on the amount, but not
+                  one this page would pick for you. Check the match form below
+                  before recording this as new spending.
+                </div>
+                {% endif %}
               </td>
               <td>
                 {% if item.pay_period_id is none %}
@@ -767,7 +800,7 @@
 
   {# ── Build a match by hand ────────────────────────────────────────────── #}
   {# THE HAND-BUILD FORM IS WHAT MAKES THE ACCEPT DOOR'S REFUSALS REACHABLE.
-     Without it, _reject_unbalanced and _reject_parent_and_its_own_purchase fire
+     Without it, _reject_uncorrectable and _reject_parent_and_its_own_purchase fire
      only on a crafted POST -- so the $0.05 payroll gap (finding N-239) is never
      put in front of the person who can fix it, and the proposer's own docstring
      claim that "the owner may still build such a group by hand" is false about
@@ -821,7 +854,21 @@
                     </td>
                     <td class="text-nowrap"><label for="line-{{ line.line_id }}" class="mb-0">{{ line.posted_on }}</label></td>
                     <td class="text-end fw-semibold text-nowrap">{{ money(line.amount) }}</td>
-                    <td class="small text-body-secondary">{{ line.description }}</td>
+                    <td class="small text-body-secondary">
+                      {{ line.description }}
+                      {# The same fact the create card carries, rendered where
+                         the REMEDY is: this form is how an owner asserts a
+                         pairing the score would not guess (ruling R-FP).  One
+                         fact on the review set, two renders -- the danger and
+                         the fix are in different cards, and an inflow reaches
+                         only this one. #}
+                      {% if line.line_id in review.undecided_near_lines %}
+                      <div class="text-warning-emphasis">
+                        <i class="bi bi-exclamation-triangle"></i>
+                        A row of yours is very close to this on the amount.
+                      </div>
+                      {% endif %}
+                    </td>
                   </tr>
                   {% endfor %}
                 </tbody>
@@ -853,10 +900,13 @@
                   {% for row in review.unmatched_rows %}
                   <tr>
                     <td class="align-middle">
+                      {# The SAME token the proposal card ticks with, for the
+                         same reason: a group the owner builds by hand reaches
+                         the same door and is exactly as stale-able. #}
                       <input class="form-check-input" type="checkbox"
                              id="row-{{ row.kind.value }}-{{ row.row_id }}"
-                             name="{% if row.kind.value == 'transaction' %}match-hand-transaction_ids{% else %}match-hand-entry_ids{% endif %}"
-                             value="{{ row.row_id }}">
+                             name="match-hand-rows"
+                             value="{{ row | reviewed_token }}">
                     </td>
                     <td class="text-nowrap">
                       <label for="row-{{ row.kind.value }}-{{ row.row_id }}" class="mb-0">
@@ -884,16 +934,26 @@
     </div>
     {# **The rule stated where the ACT is, not only in the card above it.**  The
        door refuses a group whose two sides do not sum to the same figure
-       (``_accept._reject_unbalanced``, the developer's ruling of 2026-08-17),
+       (``_accept._reject_uncorrectable``, the developer's ruling of 2026-08-17
+       as superseded by R-GD(a)),
        and until now the only warning of that sat in a paragraph two columns and
        one scroll away.  The refusal it produces is exact and useful -- it names
        both sums and the difference -- so what was missing is knowing the rule
        applies BEFORE pressing a button, not after. #}
     <div class="d-flex justify-content-between align-items-center gap-3 mb-3">
+      {# STATED PER SHAPE since ruling R-GD(a), because the rule stopped being
+         one rule. A ONE-TO-ONE match may now disagree -- the bank's figure is
+         written to the row and the difference is the product rather than a
+         refusal -- while a GROUP is still refused, since nothing says WHICH
+         member is wrong. Saying "must come to the same total" of both was
+         true until X-f6d-2 and is now false of the commonest case. Found by
+         adversarial financial review 2026-08-23. #}
       <p class="text-body-secondary small mb-0">
-        The ticked lines and the ticked rows must come to the
-        <strong>same total</strong>. If they do not, nothing is changed and the
-        difference is named at the top of this page.
+        One line against one row may <strong>disagree</strong>: your bank's
+        figure is written to that row and the difference is reported. Several
+        of either must come to the <strong>same total</strong> -- nothing says
+        which member would be wrong -- and if they do not, nothing is changed
+        and the difference is named at the top of this page.
       </p>
       <button type="submit" class="btn btn-outline-primary flex-shrink-0">
         Match the ticked lines and rows
@@ -945,20 +1005,6 @@
         as having been MADE after the day it took the money, so there is no day
         a purchase could have happened on. Money cannot leave before it is
         spent, so they are not offered as purchases here.
-      </li>
-      {% endif %}
-      {% if review.bounds.undecided_near_count %}
-      {# Plan step bank_import:X-f6d-1.  The near-miss score WITHHOLDS where it
-         cannot choose -- two of your rows equally close to one line, or one row
-         that fits another line better -- and a bound that says nothing about
-         what it dropped reads as a clean sweep.  Naming it is what tells you
-         to build the match by hand rather than record the line a second time,
-         which is the duplicate this whole step exists to stop. #}
-      <li>
-        {{ review.bounds.undecided_near_count }} line(s) have a row of yours
-        very close on the amount, but not one this page would pick for you --
-        either two rows are equally close, or the row fits a different line
-        better. Match those by hand if you know which is right.
       </li>
       {% endif %}
     </ul>

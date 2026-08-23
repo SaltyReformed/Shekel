@@ -29,7 +29,7 @@ from app.schemas.validation._helpers import (
     _normalize_empty_inputs,
 )
 from app.services.statement_import import supported_sources
-from app.services.statement_match import NEW_ENVELOPE
+from app.services.statement_match import NEW_ENVELOPE, ReviewedRow
 from app.utils.digit_strings import is_ascii_digits, parse_row_id
 
 
@@ -174,28 +174,87 @@ class PurchaseDestination(fields.Field):
         return row_id
 
 
+class ReviewedRowField(fields.Field):
+    """One app row a match names, AS THE SCREEN SHOWED IT.
+
+    **The format is the service's, read through the service's own reader**
+    (:meth:`~app.services.statement_match.ReviewedRow.from_token`).  The review
+    template WRITES this token and this field READS it, and a second parse
+    living here would be two spellings of one format with nothing in the tree
+    failing when they diverged -- which is this arc's own root cause 1, on the
+    one pair where the halves are a template and a validator.
+
+    **Everything strict about it is strict in there**, so this field is the
+    thin adapter it looks like: the row id and the version counter go through
+    the same :func:`~app.utils.digit_strings.parse_row_id` every other id on
+    this screen does, and the figure is matched against an explicit pattern
+    before it reaches ``Decimal`` -- because a bare ``Decimal(raw)`` accepts
+    ``"NaN"``, and a ``NaN`` figure compares unequal to every row, which would
+    turn the staleness guard into a no-op that always passes.
+
+    What arrives is a value object, not a mapping: the door's parameter type
+    is :class:`~app.services.statement_match.ReviewedRow`, and loading straight
+    into it is what keeps the route from assembling one field by field.
+    """
+
+    default_error_messages = {
+        "invalid": "That is not a row this page could have shown you.",
+    }
+
+    def _deserialize(self, value, attr, data, **kwargs):
+        """Return the reviewed row *value* names.
+
+        Args:
+            value: The submitted token.
+            attr: The field name being loaded (marshmallow's contract).
+            data: The whole payload being loaded (marshmallow's contract).
+            **kwargs: Marshmallow's contract, unused.
+
+        Returns:
+            The :class:`~app.services.statement_match.ReviewedRow`.
+
+        Raises:
+            ValidationError: When *value* is not a token this app emitted.
+        """
+        try:
+            return ReviewedRow.from_token(value)
+        except ValueError as exc:
+            raise self.make_error("invalid") from exc
+
+
 class StatementMatchSchema(BaseSchema):
-    """Validate ONE accepted match's three id lists.
+    """Validate ONE accepted match: its bank lines, and its reviewed rows.
 
-    **Ids only, and that is the design rather than a minimal form.**  The
-    accept door re-derives every figure and every day from the rows the ids
-    name, inside the same transaction, so a stale page cannot commit a number
-    the database no longer holds.  A schema that accepted an amount would be
-    the channel for exactly that.
+    **The door still re-derives everything it WRITES**, inside the same
+    transaction, so a stale page cannot commit a number the database no longer
+    holds.  What :class:`ReviewedRowField` carries is a PRECONDITION -- the
+    figure and the revision the owner was looking at -- and the door refuses an
+    item whose row has moved since (finding **N-336**, plan step
+    ``bank_import:X-f6d-3``).  The distinction is the whole reason this schema
+    may accept an amount at all: nothing here is a value to write, and a field
+    that fed one to a settle verb would still be the channel the old docstring
+    refused.
 
-    Every list is ``required=False`` with an empty default: which of the three
-    is populated depends on R-FS's shape, and the door's own
-    ``_reject_empty_side`` is what refuses a submission naming nothing.  A
-    schema arm refusing it too would be a second statement of one rule -- and
-    the wrong one, because "at least one line AND at least one row" is a
-    relation between two fields rather than a fact about either.
+    **``rows`` REPLACED ``transaction_ids`` and ``entry_ids``.**  Those were one
+    fact discriminated by table, and carrying the reviewed state beside them
+    would have meant a second list joined back on the row id -- a parallel
+    array, whose halves a crafted body desynchronises by submitting different
+    lengths.  One token per row cannot be desynchronised from itself.
 
-    **The members are :class:`~app.schemas.validation._helpers.RowId`, not
-    ``fields.Integer``** (plan step X-ae, finding **N-141**).  Every one of
-    these names a ROW, and ``Integer`` reads ``'١٢'``, ``' 12 '``, ``'+12'``,
-    ``'1_0'``, ``'007'``, ``'-5'`` and ``'0'`` as ids -- two of which name no
-    row at all.  The completeness gate in ``tests/test_schemas`` is what caught
-    the first draft of this schema declaring them the lax way.
+    Both lists are ``required=False`` with an empty default: which is populated
+    depends on R-FS's shape, and the door's own ``_reject_empty_side`` is what
+    refuses a submission naming nothing.  A schema arm refusing it too would be
+    a second statement of one rule -- and the wrong one, because "at least one
+    line AND at least one row" is a relation between two fields rather than a
+    fact about either.
+
+    **``line_ids`` members are :class:`~app.schemas.validation._helpers.RowId`,
+    not ``fields.Integer``** (plan step X-ae, finding **N-141**): ``Integer``
+    reads ``'١٢'``, ``' 12 '``, ``'+12'``, ``'1_0'``, ``'007'``, ``'-5'`` and
+    ``'0'`` as ids -- two of which name no row at all.  The completeness gate
+    in ``tests/test_schemas`` is what caught the first draft of this schema
+    declaring them the lax way, and :class:`ReviewedRowField` reaches the same
+    reader for the two counters inside its token.
 
     **It is NESTED inside :class:`StatementBatchSchema` since plan step
     X-f6a-3c-2**, because one submission now carries many of these: the
@@ -207,12 +266,8 @@ class StatementMatchSchema(BaseSchema):
         RowId(), required=False, load_default=list,
         validate=validate.Length(max=_MAX_MATCH_MEMBERS),
     )
-    transaction_ids = fields.List(
-        RowId(), required=False, load_default=list,
-        validate=validate.Length(max=_MAX_MATCH_MEMBERS),
-    )
-    entry_ids = fields.List(
-        RowId(), required=False, load_default=list,
+    rows = fields.List(
+        ReviewedRowField(), required=False, load_default=list,
         validate=validate.Length(max=_MAX_MATCH_MEMBERS),
     )
 
@@ -593,19 +648,18 @@ def _match_items(form) -> list:
         form: The request's ``MultiDict``.
 
     Returns:
-        One ``{"line_ids": [...], "transaction_ids": [...],
-        "entry_ids": [...]}`` per ticked index, ascending.  Raw strings: the
-        schema is what reads them.
+        One ``{"line_ids": [...], "rows": [...]}`` per ticked index,
+        ascending.  Raw strings: the schema is what reads them, and a ``rows``
+        member is one token carrying a row's kind, id, reviewed figure and
+        reviewed revision together (plan step ``bank_import:X-f6d-3``) rather
+        than two lists a body could submit at different lengths.
     """
     getlist = form.getlist
     items = []
     for raw in sorted(set(getlist("apply")), key=_sort_key):
         items.append({
             "line_ids": getlist(f"{_MATCH_PREFIX}{raw}-line_ids"),
-            "transaction_ids": getlist(
-                f"{_MATCH_PREFIX}{raw}-transaction_ids",
-            ),
-            "entry_ids": getlist(f"{_MATCH_PREFIX}{raw}-entry_ids"),
+            "rows": getlist(f"{_MATCH_PREFIX}{raw}-rows"),
         })
     return items
 

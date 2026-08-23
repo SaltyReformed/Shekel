@@ -19,7 +19,7 @@ from app.enums import (
     TxnTypeEnum,
 )
 from app.extensions import db
-from app.models.account import AccountAnchorHistory
+from app.models.account import Account, AccountAnchorHistory
 from app.models.merchant_destination import MerchantDestination
 from app.models.pay_period import PayPeriod
 from app.models.statement_import import BankStatementLine, StatementImport
@@ -27,7 +27,13 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services.cash_ledger import amount_basis
-from app.services.statement_match import ReviewScope
+from app.services.statement_match import (
+    MatchSubmission,
+    ReviewScope,
+    ReviewedRow,
+    RowKind,
+    as_reviewed,
+)
 from tests._test_helpers import (
     settle_day_columns,
 )
@@ -398,3 +404,96 @@ def a_basis(seed_user):
         The :class:`~app.services.cash_ledger.AmountBasis` for that owner.
     """
     return amount_basis(seed_user["user"].id, seed_user["scenario"].id)
+
+
+def a_submission(scope, *, lines=(), transactions=(), entries=()):
+    """Return the submission a screen rendered from *scope* would post back.
+
+    **It reads the reviewed state out of the SCOPE rather than inventing one**,
+    which is what makes these tests exercise the real two-moment flow: the
+    screen renders a candidate, the owner ticks it, and the door reconciles
+    what was ticked with what it finds (finding **N-336**, plan step
+    ``bank_import:X-f6d-3``).  A helper that stamped a figure of its own would
+    make every case agree with itself by construction, and the staleness guard
+    would be untested by every test that uses it.
+
+    A row the scope does NOT offer is carried as the ORM row states it.  That
+    is not a fallback that hides a mistake: those cases are the ones asserting
+    the door refuses a row it never offered, and ``resolve_rows`` refuses them
+    before the reconciliation is reached -- so what the token says about them
+    cannot change the outcome, and a helper that raised here would make the
+    refusal untestable.
+
+    Args:
+        scope: The pass being submitted against
+            (:func:`a_scope`).
+        lines: Bank line rows.
+        transactions: Transaction rows.
+        entries: Purchase rows.
+
+    Returns:
+        The :class:`~app.services.statement_match.MatchSubmission`.
+    """
+    offered = {
+        (row.kind, row.row_id): row for row in scope.candidates.rows
+    }
+    wanted = (
+        [(RowKind.TRANSACTION, txn) for txn in transactions]
+        + [(RowKind.PURCHASE, entry) for entry in entries]
+    )
+    rows = set()
+    for kind, orm_row in wanted:
+        candidate = offered.get((kind, orm_row.id))
+        if candidate is not None:
+            rows.add(as_reviewed(candidate))
+            continue
+        rows.add(ReviewedRow(
+            kind=kind,
+            row_id=orm_row.id,
+            cash_amount=Decimal("0.00"),
+            version_id=orm_row.version_id,
+        ))
+    return MatchSubmission(
+        line_ids=frozenset(line.id for line in lines),
+        rows=frozenset(rows),
+    )
+
+
+def a_reviewed_token(orm_row, kind):
+    """Return the form value the review screen would emit for *orm_row*.
+
+    **Through the real producer, never composed here** -- a helper that spelled
+    the token itself would agree with the schema by construction.
+
+    **What it does NOT grade, stated because a first draft of this docstring
+    claimed it did**: it calls
+    :func:`~app.services.statement_match.as_reviewed` DIRECTLY, so it never
+    touches the ``reviewed_token`` filter and never renders a template.  It
+    grades the service against itself.  The pair that has to agree is a Jinja
+    filter name and a Marshmallow field name, which nothing in the tree fails
+    over, and the only cases that close that loop scrape the rendered page:
+    ``test_statement_matches.TestWhatTheTEMPLATEEmittedIsWhatTheDOORAccepts``,
+    one per emission site.  Named by adversarial financial review 2026-08-23,
+    which measured the hand form's site ungraded at 418 tests green.
+
+    Args:
+        orm_row: A ``Transaction`` or ``TransactionEntry``.
+        kind: Which of the two it is
+            (:class:`~app.services.statement_match.RowKind`).
+
+    Returns:
+        Its ``"<kind>:<row_id>:<cash_amount>:<version_id>"`` token.
+    """
+    account = db.session.get(Account, orm_row.account_id)
+    scope = ReviewScope.build(account.user_id, account.id)
+    for candidate in scope.candidates.rows:
+        if candidate.kind is kind and candidate.row_id == orm_row.id:
+            return as_reviewed(candidate).token
+    # NOT offerable, which several cases stage deliberately.  The door refuses
+    # such a row before it reconciles anything, so the figure here cannot
+    # change an outcome; what must be right is the SHAPE, so the token still
+    # goes through the same value rather than a literal.
+    return ReviewedRow(
+        kind=kind, row_id=orm_row.id, cash_amount=Decimal("0.00"),
+        version_id=orm_row.version_id,
+    ).token

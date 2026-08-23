@@ -354,6 +354,13 @@ def purchase_candidate(entry: TransactionEntry) -> CandidateRow:
         # observation and blind to the owner's own typed day, which carries no
         # link and so read as an observation.  ``CandidateRow.expected_window``
         # is the single reader and states the measurement.
+        # WHICH REVISION the screen is about to show (plan step
+        # ``bank_import:X-f6d-3``, finding **N-336**).  Read here rather than
+        # by the reader that emits it, for the reason every fact beside it is:
+        # the OFFER SET and the ACCEPT DOOR both build a candidate through this
+        # one constructor, so the state a review is checked against and the
+        # state it was taken against come from the same read.
+        version_id=entry.version_id,
         settle_day_basis=_day_basis(entry),
     )
 
@@ -365,7 +372,7 @@ def transaction_candidate(
 
     :func:`purchase_candidate`'s twin, and it exists for the same reason plus
     one more: **an act RE-PRICES the rows it names**
-    (:func:`~._accept.resolve_rows`), so the construction the offer set uses
+    (:func:`~._resolve.resolve_rows`), so the construction the offer set uses
     and the construction a write door uses have to be one.  Two would be two
     answers to what a row is worth and when the app believes it moved, on the
     two sides of a money gate.
@@ -438,6 +445,13 @@ def transaction_candidate(
         # assertion's day (``reconcile_service._transactions`` for a bill,
         # ``transfer_service._settle`` for a shadow leg), so its window opens at
         # the period rather than closing on that day.
+        # WHICH REVISION the screen is about to show (plan step
+        # ``bank_import:X-f6d-3``, finding **N-336**).  Read here rather than
+        # by the reader that emits it, for the reason every fact beside it is:
+        # the OFFER SET and the ACCEPT DOOR both build a candidate through this
+        # one constructor, so the state a review is checked against and the
+        # state it was taken against come from the same read.
+        version_id=txn.version_id,
         settle_day_basis=_day_basis(txn),
     )
 
@@ -763,7 +777,7 @@ def destinations_for(
 
     **ONE scope, shared by the screen that offers a destination and the door
     that writes into it** (:func:`~._create._existing_envelope`), which is the
-    property :func:`~._accept.resolve_rows` rests on: a row this does not return
+    property :func:`~._resolve.resolve_rows` rests on: a row this does not return
     cannot be reached by crafting a request, and a row it does return cannot be
     refused by the write door.  Every clause below is one of those doors'.
 

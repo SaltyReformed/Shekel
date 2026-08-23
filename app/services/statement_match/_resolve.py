@@ -1,0 +1,253 @@
+"""What a SUBMISSION names, resolved under the pass's own scope.
+
+:mod:`._accept` writes a match; this decides what a match may be written
+ABOUT.  The seam is that module's own, stated there in prose since plan step
+``bank_import:X-f6a-3c-2`` -- *resolving and recording are two acts* -- and
+made structural here at ``bank_import:X-f6d-3``, when the reconciliation
+finding **N-336** asks for took the file past its line cap.  Nothing moved
+across it: :func:`resolve_rows` called nothing in the write half and the write
+half calls nothing here, so the split is the call graph's own shape.
+
+**FIVE refusals live here and they share one subject**: whether what a body
+sent is what this pass could have offered.  Two are about the LINES -- a line
+this account does not hold, and one another match has claimed -- and three
+about the ROWS: a row this pass could not offer or can no longer price, one
+subject named twice, and a row that has MOVED since the screen described it.
+The refusals in :mod:`._accept` are about the WRITE instead -- an empty side,
+a parent matched beside its own child, a figure that is not the row's to
+state.
+
+*(This module's count is stated because this arc has shipped a taxonomy that
+did not add up before; if a sixth refusal is added here, this sentence is what
+has to change with it.  No count is claimed for the other module, which owns
+its own.)*
+
+**The security property is the SCOPE** and it did not change: an id is looked
+up in the pass's own offer set (:class:`~._scope.ReviewScope`), never queried
+directly, so a row belonging to another user, another account, a
+non-contributing row, a card purchase or a row another match has claimed is
+not a candidate and cannot be reached by crafting a request.
+
+Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in,
+frozen dataclasses out, no Flask import.  It READS and never writes.
+"""
+
+from __future__ import annotations
+
+from app.exceptions import ValidationError
+from app.extensions import db
+from app.models.statement_import import BankStatementLine
+
+from ._candidates import MatchedSubjects, repriced, unmatched_rows
+from ._offers import CandidateRow, RowKind
+from ._scope import ReviewScope
+from ._submission import MatchSubmission, ReviewedRow
+
+
+def load_lines(
+    account_id: int, line_ids: "frozenset[int]", matched: MatchedSubjects,
+) -> "list[BankStatementLine]":
+    """Return the submitted bank lines, refusing any this account cannot match.
+
+    **A line ALREADY in a match is refused here, symmetrically with the row
+    side**, and the asymmetry was a real defect rather than an omission.
+    ``uq_statement_match_members_line`` refuses the second act either way, so
+    nothing could be corrupted -- but it arrives as an ``IntegrityError`` AFTER
+    ``_apply_day`` has moved a settle day, which reaches the user as
+    "Something went wrong" and logs a full traceback at ERROR for an ordinary
+    stale page.  The hand-build form makes it easy to reach: its checkboxes
+    render ``review.unmatched``, so one tab submitting a line another tab has
+    just matched is two clicks.  Found by adversarial security review
+    2026-08-17.
+
+    **PUBLIC within the package since plan step X-f6a-3c-2**, because
+    :mod:`._create` needs exactly this refusal for the one line it records and
+    had grown its own copy of it.  Two implementations of "is this line on this
+    account, and has something already claimed it" is two places for the
+    refusal to stop firing.
+
+    Args:
+        account_id: The account the match is for.
+        line_ids: The submitted ids.
+        matched: What this account's matches have already claimed, read by the
+            ACT rather than queried here -- so a batch's fourth item sees the
+            lines its third item claimed.
+
+    Returns:
+        The lines, ascending by posted day then id.
+
+    Raises:
+        ValidationError: When an id names no line on this account, or names one
+            another match already explains.  A REFUSAL rather than a silent
+            skip, unlike the reconcile panel's bulk tick: that door narrows a
+            set the user swept, and this one names specific rows on purpose, so
+            dropping a member would change what the match MEANS while
+            reporting success.
+    """
+    if line_ids & matched.lines:
+        raise ValidationError(
+            "A statement line you picked is already matched to something "
+            "else.  Undo that match first if it is wrong.  Nothing was "
+            "changed."
+        )
+    lines = (
+        db.session.query(BankStatementLine)
+        .filter(
+            BankStatementLine.account_id == account_id,
+            BankStatementLine.id.in_(line_ids),
+        )
+        .order_by(BankStatementLine.posted_on, BankStatementLine.id)
+        .all()
+    )
+    if len(lines) != len(line_ids):
+        raise ValidationError(
+            "A statement line you picked is no longer on this account.  "
+            "Reload the page and try again -- nothing was changed."
+        )
+    return lines
+
+
+def resolve_rows(
+    submission: MatchSubmission,
+    scope: ReviewScope,
+    matched: MatchedSubjects,
+) -> "list[CandidateRow]":
+    """Return the submitted app rows as priced candidates, refusing the rest.
+
+    **Looked up in the pass's own offer set rather than queried directly**, so
+    the set this door may act on is exactly the set the screen may offer.  One
+    scope, shared by the reader and the writer, is the security property
+    ``reconcile_service`` is built on: an id belonging to another user, another
+    account, a non-contributing row, a card purchase or a row already spoken
+    for by another match is not a candidate and cannot be matched by crafting a
+    request.
+
+    **The scope is a PARAMETER, the claims are re-read per act, and the FIGURE
+    is re-derived per act** (plan step X-f6a-3c-2).  This function derived the
+    whole account itself until that step, at 3.593 s a call on the developer's
+    own data, which is 12.88 minutes to work one statement's 215 acts.  What
+    made the derivation shareable is that its parts move at different rates:
+
+    * WHICH rows exist and may be offered cannot change while a pass runs, so
+      that is derived once and arrives on *scope*.  It is also the expensive
+      half -- an 827-row scan -- and the security-bearing one;
+    * WHICH of them are already spoken for changes with every item, so that is
+      the *matched* argument, re-read by every act;
+    * WHAT one is WORTH can be moved by a SIBLING act, so it is re-derived here
+      through :func:`~._candidates.repriced`.
+
+    **That third bullet replaces an argument adversarial financial review
+    measured FALSE on 2026-08-19.**  The claim was that only a parent/child
+    pairing can move a figure another item names, and that
+    :func:`_reject_parent_and_its_own_purchase` refuses it.  But settling a
+    matched purchase runs ``entry_service.update_entry``, which re-derives the
+    envelope's CC Payback through ``sync_entry_payback`` and WRITES its
+    ``estimated_amount`` -- and that payback is a candidate on the same
+    account, a SIBLING of the purchase rather than its parent, invisible to
+    that guard.  Measured: a `$60.00` payback dropping to `$50.00` mid-pass,
+    with the second match accepted against the stale `$60.00` and the ledger
+    booking `$50.00` for a `-$60.00` bank line.  Re-pricing is total where an
+    enumeration of sibling writers is one writer from being wrong again.
+
+    Args:
+        submission: What the owner accepted.
+        scope: The pass's derived offer set.
+        matched: What this account's matches have already claimed, as of this
+            act.
+
+    Returns:
+        The candidates the submission names, transactions first, priced as they
+        stand NOW.
+
+    Raises:
+        ValidationError: When an id names nothing the screen could have
+            offered, names a row another match has since claimed, or names one
+            that can no longer be priced at all.
+    """
+    reviewed = submission.subjects
+    if len(reviewed) != len(submission.rows):
+        # **A body naming one subject twice, refused BY NAME rather than
+        # collapsed** (plan step ``bank_import:X-f6d-3``).  The screen renders
+        # exactly one input per row, so this cannot arrive from it; and
+        # ``subjects`` is a mapping, so two entries with one subject and
+        # different reviewed figures would silently keep whichever the set
+        # iterated last -- letting the SENDER choose which state the staleness
+        # guard checks against, on the door that re-prices rows.  A first draft
+        # left this to the count below and a docstring claimed it was caught
+        # there; it was not, because that count is taken over the collapsed
+        # mapping and 2 rows over 1 subject compares 1 against 1.
+        raise ValidationError(
+            "This match names the same row more than once.  Reload the page "
+            "and try again; nothing was changed."
+        )
+    offered = [
+        row for row in unmatched_rows(scope.candidates, matched)
+        if (row.kind, row.row_id) in reviewed
+    ]
+    found = [
+        fresh for fresh in (
+            repriced(row, scope.calendar, scope.basis) for row in offered
+        )
+        if fresh is not None
+    ]
+    if len(found) != len(reviewed):
+        raise ValidationError(
+            "One of the rows in this match is no longer available to match -- "
+            "it may have been deleted, cancelled, or matched to another "
+            "statement line.  Reload the page and try again; nothing was "
+            "changed."
+        )
+    _reject_moved_since_review(found, reviewed)
+    return found
+
+
+def _reject_moved_since_review(
+    rows: "list[CandidateRow]",
+    reviewed: "dict[tuple[RowKind, int], ReviewedRow]",
+) -> None:
+    """Refuse an item whose row is no longer what the screen described.
+
+    **Finding N-336, and it is the one refusal here that is about the SCREEN
+    rather than about the row.**  Every guard beside it asks whether an act is
+    legal; this asks whether it is the act the owner reviewed.  Ruling
+    **R-FP** -- *a match is a PROPOSAL, never a silent apply* -- is only true
+    of the shipped app if something compares the two moments, and until this
+    step nothing did: the screen offered *from ``-178.32`` to ``-178.29``*, the
+    row was edited to ``500.00`` in another tab, and this door wrote a
+    **``$321.71``** correction under that caption.
+
+    **It runs AFTER the re-pricing rather than instead of it.**  The two answer
+    different questions and both are needed: :func:`~._candidates.repriced`
+    makes the write correct against the database as it stands NOW (finding
+    **N-309**), and this makes the write one the owner agreed to.  A door with
+    only the first writes a correct number nobody saw; a door with only the
+    second writes a reviewed number that is stale.
+
+    **It fails CLOSED, which is what the exact tier used to do by accident.**
+    An equal match whose price moved became UNEQUAL and was refused by
+    :func:`_reject_uncorrectable`'s predecessor (**R-FV**); ``X-f6d-2`` made
+    an unequal one-to-one recordable and that accident stopped protecting
+    anything.  So this refuses on ANY movement, in either direction, on either
+    coordinate -- not only where a correction would be written.  A match whose
+    row silently grew a card purchase between render and Apply is exactly as
+    unreviewed as one whose figure was retyped.
+
+    Args:
+        rows: The submitted rows as they stand now, re-priced.
+        reviewed: What the screen showed for each, by subject
+            (:attr:`~._submission.MatchSubmission.subjects`).
+
+    Raises:
+        ValidationError: Naming the row and both figures, on the first
+            disagreement.  ONE sentence rather than a list: the batch quotes it
+            per item (**R-FZ(a)**) and a reviewer acts on a stale page by
+            reloading it, which fixes every row at once.
+    """
+    for row in rows:
+        moved = reviewed[(row.kind, row.row_id)].disagrees_with(row)
+        if moved is not None:
+            raise ValidationError(
+                f"This match was reviewed against different figures -- {moved}."
+                "  Nothing was changed.  Reload the page to review it against "
+                "what your records hold now."
+            )

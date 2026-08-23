@@ -146,20 +146,28 @@ class ProposedMatches:
             because their bucket held more than :data:`MAX_GROUP_DAY_ROWS`
             candidate rows.  Empty on the developer's own data, where the
             busiest bucket carries 31 against a cap of 32.
-        undecided_near_count: How many lines the NEAR pass scored a candidate
-            for and then declined to choose between -- because two rows tied
-            at the top of that line's ranking, or because the row it would
-            have named ranks another line higher.  **The second bound this
-            pass owes a number for** (plan step ``bank_import:X-f6d-1``): a
+        undecided_near_lines: WHICH lines the NEAR pass admitted a candidate
+            for and then declined to choose between -- because two rows are
+            equally admissible for that line, or because the row it would have
+            named is admissible for another line too.  **The second bound this
+            pass owes an answer for** (plan step ``bank_import:X-f6d-1``): a
             score that withholds is a bound, and this module has now twice
             shipped one that read as a clean sweep (findings **N-315**,
-            **N-322**).  ``0`` on the developer's own data, where all five
+            **N-322**).  Empty on the developer's own data, where all five
             scored lines resolve.
+
+            **It is the LINE IDS rather than a count since plan step
+            ``bank_import:X-f6d-3``.**  A count can only be reported in a panel
+            at the foot of the screen, which names no line -- and the act it
+            should prompt is *build this one by hand rather than record it a
+            second time*, which is offered against one specific line, in two
+            different cards.  A bound the owner cannot act on is barely a
+            bound; the count is still ``len`` of this and nothing needs it.
     """
 
     proposals: "tuple[MatchProposal, ...]"
     crowded_days: "tuple[date, ...]"
-    undecided_near_count: int = 0
+    undecided_near_lines: "frozenset[int]" = frozenset()
 
 
 
@@ -782,5 +790,5 @@ def propose(
             ),
         )),
         crowded_days=tuple(crowded),
-        undecided_near_count=undecided,
+        undecided_near_lines=undecided,
     )

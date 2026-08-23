@@ -35,18 +35,15 @@ def _planted_lineless(db, seed_user):
         The transaction the act still claims.
     """
     from app.services import statement_match
-    from ._builders import a_scope
+    from ._builders import a_scope, a_submission
 
     statement = an_import(seed_user)
     line = a_bank_line(seed_user, statement, amount="-180.00")
     txn = a_transaction(seed_user, amount="180.00")
+    scope = a_scope(seed_user)
     statement_match.accept_match(
-        statement_match.MatchSubmission(
-            line_ids=frozenset({line.id}),
-            transaction_ids=frozenset({txn.id}),
-            entry_ids=frozenset(),
-        ),
-        a_scope(seed_user),
+        a_submission(scope, lines=[line], transactions=[txn]),
+        scope,
     )
     db.session.flush()
     db.session.execute(db.text(

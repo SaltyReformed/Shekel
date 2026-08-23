@@ -22,9 +22,13 @@ halves: the first regroups a flat ``MultiDict`` into acts, and the second is
 the only thing that validates any of it.
 """
 
+from decimal import Decimal
+
 import pytest
 from marshmallow import ValidationError
 from werkzeug.datastructures import MultiDict
+
+from app.services.statement_match import ReviewedRow, RowKind
 
 from app.schemas.validation.statements import (  # pylint: disable=protected-access
     _MAX_POLICY_ITEMS,
@@ -73,14 +77,20 @@ class TestOnlyWhatWasTickedIsAnAct:
             ("csrf_token", "x"),
             ("apply", "0"),
             ("match-0-line_ids", "11"),
-            ("match-0-transaction_ids", "42"),
+            ("match-0-rows", "transaction:42:-180.00:1"),
             # Rendered, submitted, NOT ticked.
             ("match-1-line_ids", "12"),
-            ("match-1-transaction_ids", "43"),
+            ("match-1-rows", "transaction:43:-180.00:1"),
         ]))
 
         assert loaded["matches"] == [
-            {"line_ids": [11], "transaction_ids": [42], "entry_ids": []},
+            {
+                "line_ids": [11],
+                "rows": [ReviewedRow(
+                    kind=RowKind.TRANSACTION, row_id=42,
+                    cash_amount=Decimal("-180.00"), version_id=1,
+                )],
+            },
         ]
 
     def test_a_GROUP_keeps_every_id_it_submitted_twice(self):
@@ -89,17 +99,35 @@ class TestOnlyWhatWasTickedIsAnAct:
         A route handed the raw ``MultiDict`` refuses a two-row group as "not a
         valid list", which is total in a browser and invisible to any test that
         passes a real list.
+
+        **Both KINDS ride ONE repeated field since plan step
+        ``bank_import:X-f6d-3``**, which is what makes that the only place the
+        multi-value bug can hide: the two id lists it replaced could not
+        desynchronise from each other because neither carried the row's
+        reviewed state, and a state carried in a THIRD parallel list could.
         """
         loaded = _load(_form([
             ("apply", "0"),
             ("match-0-line_ids", "11"),
-            ("match-0-transaction_ids", "42"),
-            ("match-0-transaction_ids", "43"),
-            ("match-0-entry_ids", "7"),
+            ("match-0-rows", "transaction:42:-180.00:1"),
+            ("match-0-rows", "transaction:43:-20.00:4"),
+            ("match-0-rows", "purchase:7:-11.50:2"),
         ]))
 
-        assert loaded["matches"][0]["transaction_ids"] == [42, 43]
-        assert loaded["matches"][0]["entry_ids"] == [7]
+        assert loaded["matches"][0]["rows"] == [
+            ReviewedRow(
+                kind=RowKind.TRANSACTION, row_id=42,
+                cash_amount=Decimal("-180.00"), version_id=1,
+            ),
+            ReviewedRow(
+                kind=RowKind.TRANSACTION, row_id=43,
+                cash_amount=Decimal("-20.00"), version_id=4,
+            ),
+            ReviewedRow(
+                kind=RowKind.PURCHASE, row_id=7,
+                cash_amount=Decimal("-11.50"), version_id=2,
+            ),
+        ]
 
     def test_items_arrive_in_the_order_the_screen_rendered_them(self):
         """The receipt reads down the page, so the pass has to run down it.
@@ -130,7 +158,7 @@ class TestOnlyWhatWasTickedIsAnAct:
         loaded = _load(_form([("apply", "not-an-index")]))
 
         assert loaded["matches"] == [
-            {"line_ids": [], "transaction_ids": [], "entry_ids": []},
+            {"line_ids": [], "rows": []},
         ]
 
     @pytest.mark.parametrize("token, why", [
@@ -161,7 +189,7 @@ class TestOnlyWhatWasTickedIsAnAct:
         ]))
 
         assert loaded["matches"] == [
-            {"line_ids": [5], "transaction_ids": [], "entry_ids": []},
+            {"line_ids": [5], "rows": []},
         ], why
 
     def test_a_destination_KEY_that_isdigit_accepts_does_not_raise(self):

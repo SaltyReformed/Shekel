@@ -47,7 +47,8 @@ The public surface, and what each piece is for:
 * :func:`release_match` -- the undo, which restores the QUESTION rather than
   the days.
 * The value types :class:`MatchProposal`, :class:`MatchSubmission`,
-  :class:`CandidateRow`, :class:`BankLine`, :class:`RowKind`,
+  :class:`ReviewedRow`, :class:`CandidateRow`, :class:`BankLine`,
+  :class:`RowKind`,
   :class:`AcceptedMatch`, :class:`AcceptedGroup`, :class:`AcceptedRow`,
   :class:`ReviewedBatch`, :class:`BatchOutcome` and :class:`ReviewSet`.
 
@@ -94,11 +95,11 @@ from ._offers import (
     Candidates,
     MatchDays,
     MatchProposal,
-    MatchSubmission,
     RowKind,
     corrected_purchase_day,
     merchant_label,
 )
+from ._submission import MatchSubmission, ReviewedRow, as_reviewed
 from ._near import NEAR_MISS_BOUND
 from ._pairing import DAY_WINDOW
 from ._propose import ProposedMatches, propose
@@ -156,10 +157,12 @@ __all__ = [
     "ReviewScope",
     "ReviewSet",
     "ReviewedBatch",
+    "ReviewedRow",
     "RowKind",
     "StatedPolicies",
     "accept_match",
     "apply_reviewed",
+    "as_reviewed",
     "awaiting_review_count",
     "candidates_for",
     "corrected_purchase_day",

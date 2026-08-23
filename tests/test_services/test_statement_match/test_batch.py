@@ -57,6 +57,7 @@ from ._builders import (
     a_later_period,
     a_purchase,
     a_scope,
+    a_submission,
     a_transaction,
     an_import,
 )
@@ -86,11 +87,18 @@ def _batch(seed_user, matches=(), creations=()):
 
 
 def _match(seed_user, lines=(), transactions=(), entries=()):
-    """Return one match item naming exactly these subjects."""
-    return MatchSubmission(
-        line_ids=frozenset(line.id for line in lines),
-        transaction_ids=frozenset(txn.id for txn in transactions),
-        entry_ids=frozenset(entry.id for entry in entries),
+    """Return one match item naming exactly these subjects.
+
+    **The reviewed state comes off a freshly derived pass**, exactly as the
+    screen's would (plan step ``bank_import:X-f6d-3``): a batch item carries
+    the figure and revision the owner was looking at, and the door refuses one
+    whose row has moved since.  Deriving here rather than taking the caller's
+    scope keeps the helper's contract the same as it was -- a case that wants
+    a STALE item builds one deliberately, and several below do.
+    """
+    return a_submission(
+        a_scope(seed_user),
+        lines=lines, transactions=transactions, entries=entries,
     )
 
 
@@ -631,7 +639,21 @@ class TestASIBLINGWriteCannotBookAgainstAStalePrice:
             assert outcome.refused_count == 1
             # The FIGURES, because that is what went wrong: the pass moved the
             # payback to 50.00 and the bank line says 60.00.
-            assert "do not add up" in outcome.refused[0].reason
+            #
+            # **The refusal's VEHICLE moved at plan step
+            # ``bank_import:X-f6d-3`` and the subject did not.**  It used to be
+            # ``_reject_unbalanced`` -- the re-priced row no longer summed to
+            # its line -- and it is now the N-336 guard, which fires first
+            # because the row moved AFTER this item was reviewed.  That is the
+            # better diagnosis of the same fact: the unbalance was the SYMPTOM
+            # and "the row you reviewed at -60.00 now stands at -50.00" is the
+            # cause, named.  ``_reject_unbalanced`` still owns the case where
+            # nothing moved and the two sides simply disagree -- the `$0.05`
+            # payroll shortfall (finding **N-239**), which ``test_accept``'s
+            # own ``test_a_five_cent_shortfall_is_refused`` fires on.
+            assert "reviewed against different figures" in (
+                outcome.refused[0].reason
+            )
             assert "-60.00" in outcome.refused[0].reason
             assert "-50.00" in outcome.refused[0].reason
             assert payback.settled_on is None, (
@@ -893,17 +915,6 @@ class TestTheScopeIsDerivedONCE:
         with app.app_context():
             statement = an_import(seed_user)
             day = seed_user["bootstrap_period"].start_date
-            calls = []
-            real = statement_match._scope.candidates_for
-
-            def _counted(account_id, calendar, basis):
-                calls.append(account_id)
-                return real(account_id, calendar, basis)
-
-            monkeypatch.setattr(
-                statement_match._scope, "candidates_for", _counted,
-            )
-
             items = []
             for index in range(4):
                 line = a_bank_line(
@@ -917,6 +928,24 @@ class TestTheScopeIsDerivedONCE:
                 items.append(_match(
                     seed_user, lines=[line], transactions=[row],
                 ))
+
+            # **The counter goes in AFTER the fixture is staged**, and that is
+            # a property of the subject rather than a convenience: what is
+            # under test is how many times the BATCH derives the account, and
+            # ``_match`` derives one of its own to read the reviewed state a
+            # tick carries (plan step ``bank_import:X-f6d-3``) exactly as the
+            # SCREEN does.  Counting the screen's derivation as the door's
+            # would grade the fixture.
+            calls = []
+            real = statement_match._scope.candidates_for
+
+            def _counted(account_id, calendar, basis):
+                calls.append(account_id)
+                return real(account_id, calendar, basis)
+
+            monkeypatch.setattr(
+                statement_match._scope, "candidates_for", _counted,
+            )
 
             outcome = _batch(seed_user, matches=items)
 
@@ -955,10 +984,9 @@ def test_a_scope_serves_the_screen_and_the_doors_alike(app, db, seed_user):
                 line_ids=frozenset(
                     bank.line_id for bank in proposal.lines
                 ),
-                transaction_ids=frozenset(
-                    row.row_id for row in proposal.rows
+                rows=frozenset(
+                    statement_match.as_reviewed(row) for row in proposal.rows
                 ),
-                entry_ids=frozenset(),
             ),),
             creations=(),
         ), scope)
@@ -1742,7 +1770,10 @@ class TestThePassHoldsONEAmountBasis:
             # ``1 + outcome.applied_count`` and would have gone silently wrong
             # -- while still printing the per-settle rule -- the moment a case
             # gave one match two rows (adversarial review 2026-08-20).
-            settled_rows = sum(len(item.transaction_ids) for item in items)
+            settled_rows = sum(
+                1 for item in items for row in item.rows
+                if row.kind is statement_match.RowKind.TRANSACTION
+            )
             assert settled_rows == 4, "the fixture pins one row per match"
             assert len(built) == 1 + settled_rows, (
                 f"{len(built)} amount bases were built settling "

@@ -22,7 +22,12 @@ from app.enums import SettledDayBasisEnum, StatusEnum
 from app.extensions import db
 from app.models.pay_period import PayPeriod
 from app.services import pay_calendar
-from app.services.statement_match import RowKind, candidates_for
+from app.services.statement_match import (
+    ReviewedRow,
+    RowKind,
+    as_reviewed,
+    candidates_for,
+)
 from app.services.statement_match._pairing import DAY_WINDOW
 
 from ._builders import (
@@ -358,6 +363,60 @@ class TestAReconciledDayIsABoundAndNotAnObservation:
             # the span would be inverted; the point stands instead.
             assert later.start_date > asserted_for
             assert row.expected_window == (asserted_for, asserted_for)
+
+
+class TestEveryOFFEREDRowCanCarryItsOwnTokenBack:
+    """The screen must not render a tick the schema will refuse.
+
+    Plan step ``bank_import:X-f6d-3``.  A candidate's reviewed state travels
+    to the browser as one string and comes back through
+    :meth:`~app.services.statement_match.ReviewedRow.from_token`, whose figure
+    pattern bounds what it will read: twelve integer digits and six decimal
+    places.  Every priced candidate descends from ``Numeric(12, 2)`` or from
+    ``round_money`` today, so there is real headroom -- **but nothing in the
+    tree fails if that stops being true**, and the failure would be silent at
+    render time and total at Apply: the token renders, the schema refuses it,
+    and that proposal can never be accepted from a browser at all.
+
+    Named by adversarial security review 2026-08-23, which measured the
+    round trip over 100 emitted tokens and asked for a standing control rather
+    than a one-off measurement.
+    """
+
+    def test_every_priced_candidate_round_trips_through_its_token(
+        self, app, db, seed_user,
+    ):
+        """Over the real offer set, across both row kinds and both signs."""
+        # The WIDEST and NARROWEST figures the schema can hold, plus both
+        # signs: ``Numeric(12, 2)`` tops out at ten integer digits, and a
+        # `$0.01` purchase is the other end.  A fixture of ordinary `$180.00`
+        # rows would round-trip whatever the pattern said.
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="1234567890.12",
+            is_envelope=True,
+        )
+        a_purchase(seed_user, envelope, amount="0.01")
+        a_transaction(seed_user, name="Paycheck", amount="2473.38",
+                      income=True)
+        db.session.flush()
+        calendar = pay_calendar.calendar_for(seed_user["user"].id)
+
+        offered = candidates_for(
+            seed_user["account"].id, calendar, a_basis(seed_user),
+        ).rows
+
+        assert offered, "the fixture offered nothing, so this graded nothing"
+        kinds = {row.kind for row in offered}
+        assert kinds == set(RowKind), (
+            f"only {kinds} were exercised; a kind whose builder forgot the "
+            "revision would not be graded here"
+        )
+        for row in offered:
+            reviewed = as_reviewed(row)
+            assert ReviewedRow.from_token(reviewed.token) == reviewed, (
+                f"{row.label!r} at {row.cash_amount} emits a token its own "
+                "reader refuses, so its tick can never be accepted"
+            )
 
 
 class TestTheCalendarIsTheOwnershipSCOPE:

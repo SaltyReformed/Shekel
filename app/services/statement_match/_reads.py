@@ -54,9 +54,9 @@ class ReviewBounds:
     """What the review DID NOT look at, and why.
 
     **A screen that lists what it could explain and says nothing about what it
-    could not reads as a clean sweep.**  These four facts are one subject --
-    the limits of this pass -- and they travel together so a caller cannot
-    render the proposals while forgetting the caveat.
+    could not reads as a clean sweep.**  These facts are one subject -- the
+    limits of this pass -- and they travel together so a caller cannot render
+    the proposals while forgetting the caveat.
 
     Attributes:
         calendar_opens: The first day the owner's pay calendar covers, or
@@ -86,16 +86,16 @@ class ReviewBounds:
             substitution one clock over.  0 of the developer's own 361
             recorded lines are this shape; the OFX adapter's own measurement
             found 2 of 361, so a second source makes it live.
-        undecided_near_count: How many lines the NEAR pass found a row within
-            :data:`~._near.NEAR_MISS_BOUND` of and then declined to choose --
-            because two rows tied at the top of that line's ranking, or
-            because the row it would have named ranks another line higher
-            (:attr:`~._propose.ProposedMatches.undecided_near_count`).  A
-            SCORE that withholds is a bound like any other here, and this
-            package has twice shipped one that read as a clean sweep (findings
-            **N-315**, **N-322**).  0 on the developer's own data, where all
-            five scored lines resolve; live the moment one merchant's swipes
-            sit near two of their own rows.
+
+    **The near tier's bound is NOT here, and that is plan step
+    ``bank_import:X-f6d-3``'s one deliberate exception to the paragraph above.**
+    It was ``undecided_near_count``, and a count in this panel names no line:
+    the owner was told that somewhere among a hundred lines one had a near
+    candidate the page would not choose, with no way to find it.  A bound is
+    only a bound if it can be acted on, so it moved onto the LINE
+    (:attr:`ReviewSet.undecided_near_lines`), where the act it should prompt is
+    already offered -- and the panel keeps the four limits that genuinely
+    belong to the PASS rather than to any one line.
     """
 
     calendar_opens: "date | None"
@@ -104,13 +104,12 @@ class ReviewBounds:
     crowded_days: "tuple[date, ...]"
     unpriceable_count: int
     impossible_day_count: int = 0
-    undecided_near_count: int = 0
 
     @property
     def any_limit(self) -> bool:
         """Return whether this pass left anything unexamined.
 
-        The one question the template asks, answered here rather than as five
+        The one question the template asks, answered here rather than as four
         ``or``-ed truth tests in a Jinja condition -- where a fifth limit
         added later would silently not appear.
         """
@@ -119,7 +118,6 @@ class ReviewBounds:
             or self.crowded_days
             or self.unpriceable_count
             or self.impossible_day_count
-            or self.undecided_near_count
         )
 
 
@@ -239,8 +237,19 @@ class MerchantSection:
 
 
 @dataclass(frozen=True)
-class ReviewSet:
+class ReviewSet:  # pylint: disable=too-many-instance-attributes
     """Everything the review screen needs, in one value.
+
+    Pylint: too-many-instance-attributes (8/7) -- **eight because the screen
+    renders eight distinct things**, not because the value wants splitting.
+    Seven are cards the owner reads and acts in; the eighth is
+    :attr:`undecided_near_lines`, which annotates two of them.  The obvious way
+    to satisfy the limit is to fold that one back into :attr:`bounds`, where it
+    lived until plan step ``bank_import:X-f6d-3`` -- and that is exactly what
+    the step measured to be wrong, because a bound reported in a panel names no
+    line and cannot be acted on.  ``AcceptedMatch`` carries the same disable
+    for the same reason, and its docstring says what dropping a field to meet a
+    limit costs: the receipt said *"Nothing moved."* over a rewritten figure.
 
     Attributes:
         proposals: What the app believes goes with what, best first.
@@ -267,6 +276,19 @@ class ReviewSet:
         merchants: The policy control (:class:`MerchantSection`) -- where this
             account's merchants go, and what the owner has already said.
         bounds: What this pass did NOT look at (:class:`ReviewBounds`).
+        undecided_near_lines: The ids of the lines the NEAR tier admitted a
+            candidate for and then declined to choose between
+            (:attr:`~._propose.ProposedMatches.undecided_near_lines`).
+
+            **It rides on the SET rather than in the bounds panel** (plan step
+            ``bank_import:X-f6d-3``).  It was a count under *What this page did
+            not look at*, which named no line -- so the owner was told that
+            somewhere among a hundred lines one had a near candidate, with no
+            way to find it.  The act it should prompt belongs to ONE line and
+            is offered in two cards: build this one by hand, rather than record
+            it a second time from the create arm, which is exactly the
+            duplicate **N-335** measures.  The screen asks membership per line;
+            the count is ``len`` and nothing needs it.
     """
 
     proposals: "tuple[MatchProposal, ...]"
@@ -276,6 +298,7 @@ class ReviewSet:
     creatable: "tuple[CreatableLine, ...]"
     merchants: MerchantSection
     bounds: ReviewBounds
+    undecided_near_lines: "frozenset[int]" = frozenset()
 
     @property
     def placed_by_class(self) -> "dict[str, int]":
@@ -917,9 +940,12 @@ def review_set(scope: ReviewScope) -> ReviewSet:
             crowded_days=proposed.crowded_days,
             unpriceable_count=len(candidates.unpriceable_ids),
             impossible_day_count=leftovers.impossible_day_count,
-            # **The near tier's own bound, published by the pass that applied
-            # it**, for the reason the crowded days beside it are: a reader
-            # re-deriving it would be scoring a different population.
-            undecided_near_count=proposed.undecided_near_count,
         ),
+        # **The near tier's own bound, published by the pass that applied it**,
+        # for the reason the crowded days beside it are: a reader re-deriving
+        # it would be scoring a different population.  It sits on the SET
+        # rather than in ``bounds`` because the screen renders it against the
+        # LINE it concerns rather than in the panel of things this page did not
+        # look at (plan step ``bank_import:X-f6d-3``).
+        undecided_near_lines=proposed.undecided_near_lines,
     )

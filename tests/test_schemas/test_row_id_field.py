@@ -16,6 +16,7 @@ stops the 76th declaration from being written with the lax field.
 """
 
 import ast
+from decimal import Decimal
 
 import pytest
 from marshmallow import ValidationError, fields
@@ -23,6 +24,7 @@ from marshmallow import ValidationError, fields
 from app.schemas.validation import _helpers, _recurrence
 from app.schemas.validation._helpers import RowId
 from app.schemas.validation.transactions import TransactionCreateSchema
+from app.services.statement_match import ReviewedRow, RowKind
 
 
 #: Field types that CONTAIN another field rather than declaring one
@@ -289,9 +291,15 @@ _NON_INTEGER_FIELD_FACTORIES = frozenset({"_auth_email_field"})
 #: :meth:`TestNoIdFieldWasMissed
 #: ::test_the_policy_answer_field_is_strict_about_the_id_it_carries` asserts
 #: the strictness directly rather than granting it by listing.
+#: **``ReviewedRowField`` is here on the same terms** (plan step
+#: ``bank_import:X-f6d-3``): it carries a row id AND a version counter AND a
+#: figure in one token, so it returns a value object rather than an integer and
+#: cannot derive from ``RowId`` either.  :meth:`TestNoIdFieldWasMissed
+#: ::test_the_reviewed_row_field_is_strict_about_the_ids_it_carries` asserts
+#: the strictness on BOTH of its counters directly.
 _NON_INTEGER_FIELD_SPELLINGS = frozenset({
     "Boolean", "Date", "Decimal", "Nested", "PolicyAnswerField",
-    "PurchaseDestination", "String",
+    "PurchaseDestination", "ReviewedRowField", "String",
 })
 
 #: Every field-class spelling in the validation package that is STRICT about
@@ -589,6 +597,56 @@ class TestNoIdFieldWasMissed:
         # ...and the two things it DOES accept.
         assert field.deserialize("12") == 12
         assert field.deserialize(NEW_ENVELOPE) == NEW_ENVELOPE
+
+    def test_the_reviewed_row_field_is_strict_about_the_ids_it_carries(self):
+        """``ReviewedRowField`` names a ROW and a REVISION, both graded.
+
+        :meth:`test_the_destination_field_is_strict_about_the_id_it_carries`'s
+        twin on the tick beside it (plan step ``bank_import:X-f6d-3``).  It is
+        listed as a non-integer spelling because one token carries four fields
+        and it returns a value object, so it cannot derive from :class:`RowId`
+        without lying about its return type -- and that listing would be the
+        standing permission :data:`_NON_INTEGER_FIELD_SPELLINGS`' own docstring
+        refuses, so the guarantee is asserted here.
+
+        **BOTH counters, because the id moved INSIDE a token and could have got
+        laxer on the way.**  The row id is where a bank line's money is
+        written; the version is what makes the staleness refusal fire at all,
+        and a lax reading of it (``'007'`` for 7) would let a crafted body
+        match a revision the screen never showed.
+
+        The FIGURE is graded here too, and ``NaN`` is the one that matters: the
+        staleness test compares with ``!=``, which is TRUE against ``NaN`` for
+        every row -- so a token carrying one would refuse everything, and a
+        first draft reading it with a bare ``Decimal()`` would have accepted it.
+        """
+        from app.schemas.validation.statements import (  # pylint: disable=import-outside-toplevel
+            ReviewedRowField,
+        )
+
+        field = ReviewedRowField()
+        for lax in ("\u0661\u0662", " 12 ", "+12", "1_0", "007", "-5", "0"):
+            with pytest.raises(ValidationError):
+                field.deserialize(f"transaction:{lax}:-180.00:1")
+            with pytest.raises(ValidationError):
+                field.deserialize(f"transaction:12:-180.00:{lax}")
+        for figure in ("NaN", "Infinity", "-Infinity", "1E+5", "1_0", "",
+                       "0x10", " -180.00", "-180.00 ", "--1"):
+            with pytest.raises(ValidationError):
+                field.deserialize(f"transaction:12:{figure}:1")
+        for shape in ("transaction:12:-180.00", "transaction:12:-180.00:1:9",
+                      "ledger:12:-180.00:1", "", "::::"):
+            with pytest.raises(ValidationError):
+                field.deserialize(shape)
+        # ...and what it DOES accept, both kinds and both signs.
+        assert field.deserialize("transaction:12:-180.00:3") == ReviewedRow(
+            kind=RowKind.TRANSACTION, row_id=12,
+            cash_amount=Decimal("-180.00"), version_id=3,
+        )
+        assert field.deserialize("purchase:7:2473.38:1") == ReviewedRow(
+            kind=RowKind.PURCHASE, row_id=7,
+            cash_amount=Decimal("2473.38"), version_id=1,
+        )
 
     def test_the_policy_answer_field_is_strict_about_the_id_it_carries(self):
         """``PolicyAnswerField`` names a TEMPLATE and is graded like a row id.

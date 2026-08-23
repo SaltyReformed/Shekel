@@ -220,8 +220,7 @@ def _submitted_batch(submitted) -> ReviewedBatch:
         matches=tuple(
             MatchSubmission(
                 line_ids=frozenset(item["line_ids"]),
-                transaction_ids=frozenset(item["transaction_ids"]),
-                entry_ids=frozenset(item["entry_ids"]),
+                rows=frozenset(item["rows"]),
             )
             for item in submitted["matches"]
         ),

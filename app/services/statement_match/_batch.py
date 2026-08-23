@@ -50,11 +50,19 @@ explains money the records already hold against a line the bank showed, where
 the recorded line can be re-aimed at another envelope on the next pass.
 
 **Each item FLUSHES before the next is validated**, and that is what makes one
-shared derivation safe rather than merely fast.  The guard above reads the
-database, and it is the only way one item can move a figure another item names
-(:class:`~._scope.ReviewScope` carries the argument, and the measurement: all
-124 proposals produce identical outcomes against one shared scope and against a
-fresh derivation per act).
+shared derivation safe rather than merely fast: the guard above reads the
+database.
+
+**It is NOT the only way one item can move a figure another item names, and
+saying so was measured FALSE on 2026-08-19.**  Settling a matched purchase runs
+``entry_service.update_entry``, which re-derives the envelope's CC Payback and
+writes its ``estimated_amount`` -- a SIBLING rather than a child, invisible to
+that guard.  What actually keeps a pass honest is that
+:func:`~._candidates.repriced` re-prices every named row per act, and, since
+plan step ``bank_import:X-f6d-3``, that an item whose row has moved since the
+screen described it is REFUSED rather than written (finding **N-336**).  This
+paragraph asserted the refuted reason until an adversarial review found it
+2026-08-23; ``_reject_parent_and_its_own_purchase`` had already been corrected.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in,
 frozen dataclasses out, no Flask import.  It MUTATES and does NOT commit -- the
@@ -71,18 +79,22 @@ from app.extensions import db
 from ._accept import accept_match
 from ._create import MintedEnvelopes, create_purchase_from_line
 from ._creations import PurchaseCreation
-from ._offers import MatchSubmission
 from ._scope import ReviewScope
+from ._submission import MatchSubmission
 
 
 @dataclass(frozen=True)
 class ReviewedBatch:
     """What the owner ticked, in the order the screen showed it.
 
-    Ids only, exactly as :class:`~._offers.MatchSubmission` and
-    :class:`~._creations.PurchaseCreation` are: every figure and every day is
-    re-derived from the rows the ids name, inside the same transaction, so a
-    stale page cannot commit a number the database no longer holds.
+    Ids and the state each row was REVIEWED in, exactly as
+    :class:`~._submission.MatchSubmission` and
+    :class:`~._creations.PurchaseCreation` are: every figure and every day this
+    door WRITES is re-derived from the rows the ids name, inside the same
+    transaction, so a stale page cannot commit a number the database no longer
+    holds -- and since plan step ``bank_import:X-f6d-3`` an item whose row has
+    MOVED since the screen described it is refused rather than written
+    (finding **N-336**), which is the other half of the same sentence.
 
     **It names no OWNER and no ACCOUNT either**: whose pass this is, is the
     :class:`~._scope.ReviewScope`'s, stated once.  A batch carrying its own

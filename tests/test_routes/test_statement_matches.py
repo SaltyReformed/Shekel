@@ -47,14 +47,17 @@ from app.models.statement_match import StatementMatch, StatementMatchMember
 from app.models.transaction import Transaction
 from app.models.user import User, UserSettings
 from sqlalchemy.exc import OperationalError
+from werkzeug.datastructures import MultiDict
 
 from app.exceptions import ValidationError
 from app.routes.accounts import statement_matches as statement_matches_route
 from app.services import auth_service
+from app.services.statement_match import RowKind
 from app.services.statement_match import _batch as statement_match_batch
 from tests.test_services.test_statement_match._builders import (
     a_bank_line,
     a_purchase,
+    a_reviewed_token,
     a_transaction,
     an_import,
 )
@@ -68,9 +71,15 @@ def _review_url(account_id):
 def _match(index=0, lines=(), transactions=(), entries=()):
     """Return the form fields a TICKED match item submits.
 
-    Exactly what ``_statement_review_body.html`` emits: the tick names the
-    item's rendered position and the hidden inputs beside it carry that item's
-    ids, so what commits is what was reviewed (ruling **R-FP**).
+    The FIELD NAMES ``_statement_review_body.html`` emits: the tick names the
+    item's rendered position, one hidden input carries each bank line, and one
+    carries each ROW as the screen showed it -- kind, id, figure and revision
+    (plan step ``bank_import:X-f6d-3``).  **The row VALUES are built through
+    the service, not scraped**, so this helper cannot show that the template
+    renders them; :class:`TestWhatTheTEMPLATEEmittedIsWhatTheDOORAccepts` is
+    what does, by posting the page's own bytes back.  That last is what makes *what commits
+    is what was reviewed* (ruling **R-FP**) checkable rather than intended:
+    the door refuses an item whose row moved since the render.
 
     Args:
         index: The item's rendered position, or ``"hand"`` for the
@@ -86,8 +95,11 @@ def _match(index=0, lines=(), transactions=(), entries=()):
     return {
         "apply": [str(index)],
         f"match-{index}-line_ids": [str(line.id) for line in lines],
-        f"match-{index}-transaction_ids": [str(txn.id) for txn in transactions],
-        f"match-{index}-entry_ids": [str(entry.id) for entry in entries],
+        f"match-{index}-rows": (
+            [a_reviewed_token(txn, RowKind.TRANSACTION)
+             for txn in transactions]
+            + [a_reviewed_token(entry, RowKind.PURCHASE) for entry in entries]
+        ),
     }
 
 
@@ -247,6 +259,38 @@ def _apply_form_controls(page):
     )
     reader.feed(page)
     return reader.controls
+
+
+class _TickedMatchReader(HTMLParser):
+    """Collect the APPLY form's match controls, keeping REPEATED names.
+
+    :class:`_PolicyFormReader`'s twin for the one field that is submitted more
+    than once per item.  A ``dict`` cannot hold a GROUP -- ``match-0-rows`` is
+    rendered once per member row -- and a group is exactly where the
+    multi-value defect this file's own docstring names would hide.
+
+    It ticks every rendered proposal, because a hidden input is submitted
+    whether or not its checkbox is: what is under test is the VALUE the
+    template emitted, so the tick is supplied rather than scraped.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.fields = []
+
+    def handle_starttag(self, tag, attrs):
+        """Record every ``match-*`` control the page rendered."""
+        attributes = dict(attrs)
+        name = attributes.get("name", "")
+        if tag == "input" and name.startswith("match-"):
+            self.fields.append((name, attributes.get("value", "")))
+
+
+def _rendered_match_fields(page):
+    """Return the ``match-*`` fields a browser would post, verbatim."""
+    reader = _TickedMatchReader()
+    reader.feed(page)
+    return reader.fields
 
 
 class TestTheReviewPage:
@@ -421,6 +465,13 @@ class TestTheReviewPage:
         answer*.  Saying nothing would leave the line looking like one nothing
         could explain, which is the state the merchant policy offers to RECORD
         and the duplicate this whole step exists to stop.
+
+        **It is rendered against the LINE since plan step
+        ``bank_import:X-f6d-3``**, in both cards the line appears in, rather
+        than as a count in the panel at the foot of the page.  A count there
+        named no line, so the owner could not act on it -- and the act it
+        should prompt is offered against one specific line: build this one by
+        hand rather than record it a second time.
         """
         statement = an_import(seed_user)
         bank_day = seed_user["bootstrap_period"].start_date
@@ -437,9 +488,186 @@ class TestTheReviewPage:
 
         body = auth_client.get(_review_url(seed_user["account"].id)).data
 
-        assert b"1 line(s) have a row of yours" in body
-        assert b"not one this page would pick for you" in body
+        # **Whitespace-normalised, because the assertion is about the
+        # SENTENCE and not about where the template wraps it.**  A raw
+        # substring test on the rendered bytes passes or fails on an
+        # indentation change, which is a fact about the file rather than about
+        # what the owner reads.
+        said = " ".join(body.decode().split())
+
+        # ON the line in the create card, where the WRONG act is cheapest...
+        assert "not one this page would pick for you" in said
+        assert "before recording this as new spending" in said
+        # ...and on the line in the hand-build list, where the RIGHT one is.
+        assert "A row of yours is very close to this on the amount." in said
+        # ...and NOT as a bare number in the bounds panel any more.
+        assert "line(s) have a row of yours" not in said
         assert b'data-proposal-class=' not in body
+
+
+class TestWhatTheTEMPLATEEmittedIsWhatTheDOORAccepts:
+    """The loop nothing else in this suite closes.
+
+    Every other case here builds its payload through
+    :func:`~tests.test_services.test_statement_match._builders.a_reviewed_token`,
+    which reaches the same service function the ``reviewed_token`` filter does
+    -- so it grades the SERVICE against itself and says nothing about whether
+    the TEMPLATE renders that value, or renders it under the name the schema
+    reads.  Those two halves have no compile-time relationship at all: a Jinja
+    filter name and a Marshmallow field name.
+
+    This scrapes the rendered page and posts exactly what it found.  It is the
+    project's own lesson -- *a form submits every control it renders, and a
+    hand-picked payload shipped a primary arm that was DEAD in a browser* --
+    applied to the wire format plan step ``bank_import:X-f6d-3`` introduced.
+    Named by adversarial design review 2026-08-23.
+    """
+
+    def test_a_scraped_payload_applies_and_reprices(
+        self, auth_client, db, seed_user,
+    ):
+        """Post the page's own bytes back, and the money moves."""
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        a_bank_line(
+            seed_user, statement, amount="-178.29", posted_on=bank_day,
+            description="ACH DEBIT GEICO PREM COLL", merchant="Geico",
+        )
+        txn = a_transaction(
+            seed_user, name="Geico", amount="178.32",
+            status=StatusEnum.DONE, settled_on=bank_day,
+        )
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id)
+        ).get_data(as_text=True)
+        fields = _rendered_match_fields(page)
+
+        assert any(name.endswith("-rows") for name, _ in fields), (
+            "the page rendered no reviewed-row field, so this graded nothing"
+        )
+        payload = MultiDict(
+            [("apply", "0"), ("csrf_token", "x")] + fields
+        )
+
+        response = auth_client.post(
+            _review_url(seed_user["account"].id), data=payload,
+        )
+
+        assert response.status_code == 200
+        assert db.session.query(StatementMatch).count() == 1
+        db.session.refresh(txn)
+        # The bank's figure, written to the row the PAGE named.
+        assert txn.settled_amount == Decimal("178.29")
+
+    def test_the_SAME_payload_is_refused_once_the_row_MOVES(
+        self, auth_client, db, seed_user,
+    ):
+        """The control that proves the scraped token is load-bearing.
+
+        Without it the case above passes against a door that ignores the
+        token entirely -- which is what the door did before this step.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        a_bank_line(
+            seed_user, statement, amount="-178.29", posted_on=bank_day,
+            description="ACH DEBIT GEICO PREM COLL", merchant="Geico",
+        )
+        txn = a_transaction(
+            seed_user, name="Geico", amount="178.32",
+            status=StatusEnum.DONE, settled_on=bank_day,
+        )
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id)
+        ).get_data(as_text=True)
+        payload = MultiDict(
+            [("apply", "0"), ("csrf_token", "x")]
+            + _rendered_match_fields(page)
+        )
+
+        # ...and the row moves behind the page's back, as another tab would.
+        txn.settled_amount = Decimal("500.00")
+        txn.estimated_amount = Decimal("500.00")
+        db.session.commit()
+
+        response = auth_client.post(
+            _review_url(seed_user["account"].id), data=payload,
+        )
+
+        said = " ".join(response.get_data(as_text=True).split())
+        assert "reviewed against different figures" in said
+        assert db.session.query(StatementMatch).count() == 0
+        db.session.refresh(txn)
+        assert txn.settled_amount == Decimal("500.00")
+
+
+    def test_the_HAND_BUILD_form_s_own_token_is_graded_too(
+        self, auth_client, db, seed_user,
+    ):
+        """The SECOND emission site, and it was ungraded.
+
+        The proposal card and the hand-build form each render a
+        ``match-*-rows`` value through the same filter, and a control over one
+        says nothing about the other.  **Measured 2026-08-23**: fabricating the
+        hand form's value in the template left **418** tests green, while in a
+        browser every hand-built match would refuse -- the token would claim
+        `0.00` for a row worth something else -- so the one door ruling
+        **R-FP** reserves to the owner, *assert a grouping the proposer would
+        not guess*, would be 100% dead with CI green.  On the developer's own
+        data that form offers 61 rows against 109 lines, so it is a populated
+        surface rather than a corner.  Found by adversarial financial review.
+
+        Its index is ``hand`` rather than a number, and the form posts its own
+        ``apply`` as a hidden field, so the payload is scraped whole.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(
+            seed_user, statement, amount="-180.00", posted_on=bank_day,
+            description="ACH DEBIT NOTHING EXPLAINS THIS",
+        )
+        # A row NO tier can reach: not equal (so no 1:1), alone (so no group),
+        # and 2.8% out with no merchant (so no near miss).  The hand form is
+        # the only door to it, which is what that form is FOR.
+        row = a_transaction(
+            seed_user, name="Ghost Payment", amount="175.00",
+            status=StatusEnum.DONE, settled_on=bank_day,
+        )
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id)
+        ).get_data(as_text=True)
+        hand = [
+            (name, value) for name, value in _rendered_match_fields(page)
+            if name.startswith("match-hand-")
+        ]
+
+        assert sum(1 for name, _ in hand if name.endswith("-rows")) == 1, (
+            "the hand form rendered no row token, so this graded nothing"
+        )
+        payload = MultiDict(
+            [("apply", "hand"), ("csrf_token", "x")]
+            + [(name, value) for name, value in hand
+               if name.endswith("-rows")]
+            + [("match-hand-line_ids", str(line.id))]
+        )
+
+        response = auth_client.post(
+            _review_url(seed_user["account"].id), data=payload,
+        )
+
+        assert response.status_code == 200
+        assert db.session.query(StatementMatch).count() == 1, (
+            "the page's own hand-form token was refused by the door"
+        )
+        db.session.refresh(row)
+        # ...and the bank's figure was written to it (R-GD(a)).
+        assert row.settled_amount == Decimal("180.00")
 
 
 class TestTheAcceptPost:
@@ -599,7 +827,14 @@ class TestTheAcceptPost:
             assert db.session.query(StatementMatch).count() == 0
 
     def test_a_lax_id_spelling_is_refused(self, auth_client, db, seed_user):
-        """``RowId``, not ``fields.Integer``: '007' names no row (N-141)."""
+        """A row id inside a reviewed-row token is as strict as any other.
+
+        ``RowId``, not ``fields.Integer``: ``'007'`` names no row (**N-141**).
+        The id moved INSIDE the token at plan step ``bank_import:X-f6d-3``, so
+        this is the control that it did not get laxer on the way: the token's
+        two counters go through the same
+        :func:`~app.utils.digit_strings.parse_row_id` the bare lists did.
+        """
         statement = an_import(seed_user)
         line = a_bank_line(seed_user, statement)
         db.session.commit()
@@ -609,7 +844,7 @@ class TestTheAcceptPost:
             data={
                 "apply": ["0"],
                 "match-0-line_ids": [str(line.id)],
-                "match-0-transaction_ids": ["007"],
+                "match-0-rows": ["transaction:007:-180.00:1"],
             },
         )
 
@@ -619,7 +854,7 @@ class TestTheAcceptPost:
         # test-quality review 2026-08-19.
         assert response.status_code == 400
         assert response.headers.get("Shekel-Designed-Fragment") == "1"
-        assert b"Not a valid id" in response.data
+        assert b"not a row this page could have shown you" in response.data
         assert db.session.query(StatementMatch).count() == 0
         assert b"onto the bank" not in response.data
 
@@ -641,7 +876,7 @@ class TestTheAcceptPost:
         data = {"apply": [str(index) for index in range(6)]}
         for index in range(6):
             data[f"match-{index}-line_ids"] = [str(line.id)]
-            data[f"match-{index}-transaction_ids"] = ["007"]
+            data[f"match-{index}-rows"] = ["transaction:007:-180.00:1"]
 
         response = auth_client.post(
             _review_url(seed_user["account"].id), data=data,
@@ -649,12 +884,12 @@ class TestTheAcceptPost:
 
         assert response.status_code == 400
         body = response.data.decode()
-        assert body.count("Not a valid id.") == 1, (
-            "the same sentence was repeated once per bad value"
-        )
+        assert body.count(
+            "That is not a row this page could have shown you."
+        ) == 1, "the same sentence was repeated once per bad value"
         # ...and it says WHERE, so the owner can find the ticked item.
         assert "matches" in body
-        assert "transaction_ids" in body
+        assert "rows" in body
 
     def test_a_pass_over_the_CEILING_is_refused_on_screen(
         self, auth_client, db, seed_user,
@@ -1089,7 +1324,12 @@ class TestTheHandBuildForm:
         assert b"Ghost Payment" in response.data
         assert b"the bank never showed" in response.data
         assert b'name="match-hand-line_ids"' in response.data
-        assert b'name="match-hand-transaction_ids"' in response.data
+        # The ROW side posts one token per row rather than an id list (plan
+        # step bank_import:X-f6d-3), and the assertion follows the field it is
+        # about: it is here to prove the hand-build form renders BOTH sides to
+        # pick from, which is what makes the accept door's refusals reachable
+        # from a browser at all.
+        assert b'name="match-hand-rows"' in response.data
         # **Its index cannot collide with a rendered proposal's.**  Both forms
         # post to one door; only their separateness as <form> elements keeps
         # proposal 0's hidden ids out of this group today, and that is a

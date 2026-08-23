@@ -1,11 +1,16 @@
 """What a match IS, as values -- the shapes every other module here passes.
 
 Ruling **R-FS** gives a match three shapes and this module gives them one
-type.  A :class:`MatchProposal` is a candidate the app OFFERS; a
-:class:`MatchSubmission` is what the owner sent back.  They are deliberately
-different types rather than one reused both ways: a proposal carries what the
-screen needs to explain itself, and a submission carries only ids, so nothing
-a user posts can smuggle a figure the app computed.
+type.  A :class:`MatchProposal` is a candidate the app OFFERS -- and that is
+now the whole of what lives here.
+
+**What the owner sends BACK lives in** :mod:`._submission` **since plan step
+``bank_import:X-f6d-3``**, and the seam is the DIRECTION rather than the line
+count.  The distinction was always this module's own -- *a proposal carries
+what the screen needs to explain itself, and a submission carries only ids* --
+and finding **N-336** is where the two stopped fitting in one file: a
+submission now carries the STATE each row was reviewed in, which is a value
+read off a hostile request body, and nothing on this side ever is.
 
 **What a CREATION is lives in** :mod:`._creations` **since plan step
 ``bank_import:X-f6d-1``**, and the seam is the subject rather than the line
@@ -51,15 +56,16 @@ class RowKind(enum.Enum):
 class CandidateRow:  # pylint: disable=too-many-instance-attributes
     """One app row a bank line could be, priced and dated as the app holds it.
 
-    Pylint: too-many-instance-attributes -- **twelve fields because the subject
-    genuinely has twelve**, not because the value wants splitting.
-    It describes ONE row drawn from either of two tables, for five consumers
+    Pylint: too-many-instance-attributes -- **thirteen fields because the
+    subject genuinely has thirteen**, not because the value wants splitting.
+    It describes ONE row drawn from either of two tables, for six consumers
     that each read a different subset: the proposer reads the amount, the days
     and whether the bank's own figure could be written here, the assignment
     reads the days, the screen reads the label and the kind, the accept door
-    reads the kind, the id and the routing links, and the unmatched-rows panel
-    reads the projection day.  ``TransferSpec`` carries the same disable for
-    the same reason.  Two fields were MERGED rather than disabled around:
+    reads the kind, the id and the routing links, the unmatched-rows panel
+    reads the projection day, and :func:`~._submission.as_reviewed` reads
+    the figure and the revision together.  ``TransferSpec`` carries the same
+    disable for the same reason.  Two fields were MERGED rather than disabled around:
     ``earliest_day`` and ``expected_on`` were one fact for the only kind that
     has both.
 
@@ -148,6 +154,21 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
             bound and the bank's observation, and BLIND to the third case, so a
             day the owner typed read as a day the bank had shown.  Carrying the
             basis is not a wider boolean, it is the fact itself.
+        version_id: WHICH REVISION of the row this is -- its
+            ``OptimisticLockMixin`` counter, read straight off the column.
+            Both matchable tables carry one, and SQLAlchemy advances it on
+            every ORM-emitted UPDATE of the row.
+
+            **It is carried for the same reason** :attr:`states_own_figure`
+            **is: a second module needs the fact and cannot ask for it.**  A
+            review has two moments -- the screen states a correction, the owner
+            presses Apply later -- and until plan step ``bank_import:X-f6d-3``
+            nothing compared the row the screen described with the row the door
+            was about to write (finding **N-336**).
+            :class:`~._submission.ReviewedRow` is where that comparison lives,
+            and its docstring carries the measurement for why this coordinate
+            and the figure are BOTH needed: neither one sees the other's
+            writers.
     """
 
     kind: RowKind
@@ -157,6 +178,7 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
     settled_on: "date | None"
     is_settled: bool
     states_own_figure: bool
+    version_id: int
     transfer_id: "int | None" = None
     parent_id: "int | None" = None
     expected_on: "date | None" = None
@@ -618,7 +640,8 @@ class MatchProposal:
 
     Ruling **R-FP**: *a match is a PROPOSAL, never a silent apply*.  Nothing
     here is written anywhere; :func:`~._accept.accept_match` takes a
-    :class:`MatchSubmission` built from the owner's own choice.
+    :class:`~._submission.MatchSubmission` built from the owner's own
+    choice.
 
     Attributes:
         lines: The bank lines this proposal explains.  One for R-FS's first
@@ -807,30 +830,3 @@ class MatchProposal:
         prevent.  Found by two adversarial reviews 2026-08-18.
         """
         return self.days.posts_on
-
-
-@dataclass(frozen=True)
-class MatchSubmission:
-    """What the owner accepted: ids only.
-
-    Deliberately carries no amount and no day.  Everything the accept door
-    needs it re-derives from the rows the ids name, inside the same
-    transaction, so a stale screen cannot commit a figure the database no
-    longer holds -- the same reason
-    :func:`~app.services.reconcile_service._rows.record_settled` re-derives its
-    ids through the arm's own scope rather than trusting them.
-
-    **It names no OWNER and no ACCOUNT**, for the reason
-    :class:`PurchaseCreation` states: whose account this is, is the
-    :class:`~._scope.ReviewScope`'s, and a second statement of it could
-    disagree with the scope the rows were priced from.
-
-    Attributes:
-        line_ids: The bank lines to explain.
-        transaction_ids: The transactions that explain them.
-        entry_ids: The purchases that explain them.
-    """
-
-    line_ids: "frozenset[int]"
-    transaction_ids: "frozenset[int]"
-    entry_ids: "frozenset[int]"

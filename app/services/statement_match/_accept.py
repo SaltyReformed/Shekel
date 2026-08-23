@@ -19,11 +19,16 @@ door stores the fact and leaves the derivation alone.  The settle doors it
 calls RELEASE any prior link as they move the day, which is correct: that link
 recorded a statement showing this money on a day the bank has just contradicted.
 
-**RESOLVING and RECORDING are two acts, and splitting them is plan step
-``bank_import:X-f6a-3c-2``.**  :func:`resolve_rows` turns submitted IDS into
-priced rows under the owner's own scope; :func:`record_match` takes rows a
-caller already holds and writes the match.  :func:`accept_match` is the form
-door and does both.  The split is not tidiness: ``_create`` creates a purchase
+**RESOLVING and RECORDING are two acts, split in prose at plan step
+``bank_import:X-f6a-3c-2`` and in the FILE LAYOUT at ``bank_import:X-f6d-3``.**
+:func:`~._resolve.resolve_rows` turns a submission into priced rows under the
+owner's own scope and lives in :mod:`._resolve`; :func:`record_match` takes
+rows a caller already holds and writes the match.  :func:`accept_match` is the
+form door and does both.  Nothing crossed the seam when it became two files --
+the resolution half called nothing here and this half calls nothing there --
+so what moved is the boundary the paragraph already claimed.
+
+**The split is not tidiness**: ``_create`` creates a purchase
 and then records a match naming it, and a row an act has just created cannot be
 in a scope derived before it -- measured, all 91 of the developer's creatable
 lines were refused as "no longer available to match" the first time a whole
@@ -33,8 +38,9 @@ recording.  **There is still exactly ONE function that writes a match**, which
 is what rulings **R-FT** and **R-FV** actually ask for.
 
 **Every refusal fires before anything is written.**  The ids are re-derived
-under the owner's own scope, the group is checked for balance, and only then
-does a settle verb run -- so a refused match leaves the database exactly as it
+under the owner's own scope (:mod:`._resolve`) and reconciled with the state
+the screen showed, the group is checked for balance, and only then does a
+settle verb run -- so a refused match leaves the database exactly as it
 was without depending on the rollback, the same discipline
 ``statement_import.record_statement`` states for itself.
 
@@ -99,20 +105,16 @@ from app.utils.log_events import (
 )
 from app.utils.money import round_money
 
-from ._candidates import (
-    MatchedSubjects,
-    matched_subjects,
-    repriced,
-    unmatched_rows,
-)
+from ._candidates import MatchedSubjects, matched_subjects
 from ._offers import (
     CandidateRow,
     MatchDays,
-    MatchSubmission,
     RowKind,
     corrected_purchase_day,
 )
+from ._resolve import load_lines, resolve_rows
 from ._scope import ReviewScope
+from ._submission import MatchSubmission
 
 _logger = logging.getLogger(__name__)
 
@@ -173,151 +175,6 @@ class AcceptedMatch:  # pylint: disable=too-many-instance-attributes
     line_count: int
     redated_count: int
     repriced_count: int
-
-
-def load_lines(
-    account_id: int, line_ids: "frozenset[int]", matched: MatchedSubjects,
-) -> "list[BankStatementLine]":
-    """Return the submitted bank lines, refusing any this account cannot match.
-
-    **A line ALREADY in a match is refused here, symmetrically with the row
-    side**, and the asymmetry was a real defect rather than an omission.
-    ``uq_statement_match_members_line`` refuses the second act either way, so
-    nothing could be corrupted -- but it arrives as an ``IntegrityError`` AFTER
-    ``_apply_day`` has moved a settle day, which reaches the user as
-    "Something went wrong" and logs a full traceback at ERROR for an ordinary
-    stale page.  The hand-build form makes it easy to reach: its checkboxes
-    render ``review.unmatched``, so one tab submitting a line another tab has
-    just matched is two clicks.  Found by adversarial security review
-    2026-08-17.
-
-    **PUBLIC within the package since plan step X-f6a-3c-2**, because
-    :mod:`._create` needs exactly this refusal for the one line it records and
-    had grown its own copy of it.  Two implementations of "is this line on this
-    account, and has something already claimed it" is two places for the
-    refusal to stop firing.
-
-    Args:
-        account_id: The account the match is for.
-        line_ids: The submitted ids.
-        matched: What this account's matches have already claimed, read by the
-            ACT rather than queried here -- so a batch's fourth item sees the
-            lines its third item claimed.
-
-    Returns:
-        The lines, ascending by posted day then id.
-
-    Raises:
-        ValidationError: When an id names no line on this account, or names one
-            another match already explains.  A REFUSAL rather than a silent
-            skip, unlike the reconcile panel's bulk tick: that door narrows a
-            set the user swept, and this one names specific rows on purpose, so
-            dropping a member would change what the match MEANS while
-            reporting success.
-    """
-    if line_ids & matched.lines:
-        raise ValidationError(
-            "A statement line you picked is already matched to something "
-            "else.  Undo that match first if it is wrong.  Nothing was "
-            "changed."
-        )
-    lines = (
-        db.session.query(BankStatementLine)
-        .filter(
-            BankStatementLine.account_id == account_id,
-            BankStatementLine.id.in_(line_ids),
-        )
-        .order_by(BankStatementLine.posted_on, BankStatementLine.id)
-        .all()
-    )
-    if len(lines) != len(line_ids):
-        raise ValidationError(
-            "A statement line you picked is no longer on this account.  "
-            "Reload the page and try again -- nothing was changed."
-        )
-    return lines
-
-
-def resolve_rows(
-    submission: MatchSubmission,
-    scope: ReviewScope,
-    matched: MatchedSubjects,
-) -> "list[CandidateRow]":
-    """Return the submitted app rows as priced candidates, refusing the rest.
-
-    **Looked up in the pass's own offer set rather than queried directly**, so
-    the set this door may act on is exactly the set the screen may offer.  One
-    scope, shared by the reader and the writer, is the security property
-    ``reconcile_service`` is built on: an id belonging to another user, another
-    account, a non-contributing row, a card purchase or a row already spoken
-    for by another match is not a candidate and cannot be matched by crafting a
-    request.
-
-    **The scope is a PARAMETER, the claims are re-read per act, and the FIGURE
-    is re-derived per act** (plan step X-f6a-3c-2).  This function derived the
-    whole account itself until that step, at 3.593 s a call on the developer's
-    own data, which is 12.88 minutes to work one statement's 215 acts.  What
-    made the derivation shareable is that its parts move at different rates:
-
-    * WHICH rows exist and may be offered cannot change while a pass runs, so
-      that is derived once and arrives on *scope*.  It is also the expensive
-      half -- an 827-row scan -- and the security-bearing one;
-    * WHICH of them are already spoken for changes with every item, so that is
-      the *matched* argument, re-read by every act;
-    * WHAT one is WORTH can be moved by a SIBLING act, so it is re-derived here
-      through :func:`~._candidates.repriced`.
-
-    **That third bullet replaces an argument adversarial financial review
-    measured FALSE on 2026-08-19.**  The claim was that only a parent/child
-    pairing can move a figure another item names, and that
-    :func:`_reject_parent_and_its_own_purchase` refuses it.  But settling a
-    matched purchase runs ``entry_service.update_entry``, which re-derives the
-    envelope's CC Payback through ``sync_entry_payback`` and WRITES its
-    ``estimated_amount`` -- and that payback is a candidate on the same
-    account, a SIBLING of the purchase rather than its parent, invisible to
-    that guard.  Measured: a `$60.00` payback dropping to `$50.00` mid-pass,
-    with the second match accepted against the stale `$60.00` and the ledger
-    booking `$50.00` for a `-$60.00` bank line.  Re-pricing is total where an
-    enumeration of sibling writers is one writer from being wrong again.
-
-    Args:
-        submission: What the owner accepted.
-        scope: The pass's derived offer set.
-        matched: What this account's matches have already claimed, as of this
-            act.
-
-    Returns:
-        The candidates the submission names, transactions first, priced as they
-        stand NOW.
-
-    Raises:
-        ValidationError: When an id names nothing the screen could have
-            offered, names a row another match has since claimed, or names one
-            that can no longer be priced at all.
-    """
-    wanted = {
-        (RowKind.TRANSACTION, row_id) for row_id in submission.transaction_ids
-    } | {
-        (RowKind.PURCHASE, row_id) for row_id in submission.entry_ids
-    }
-    offered = [
-        row for row in unmatched_rows(scope.candidates, matched)
-        if (row.kind, row.row_id) in wanted
-    ]
-    found = [
-        fresh for fresh in (
-            repriced(row, scope.calendar, scope.basis) for row in offered
-        )
-        if fresh is not None
-    ]
-    if len(found) != len(wanted):
-        raise ValidationError(
-            "One of the rows in this match is no longer available to match -- "
-            "it may have been deleted, cancelled, or matched to another "
-            "statement line.  Reload the page and try again; nothing was "
-            "changed."
-        )
-    return found
 
 
 def _reject_empty_side(

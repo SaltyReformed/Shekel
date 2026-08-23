@@ -222,8 +222,8 @@ def _is_a_near_miss(line: BankLine, row: CandidateRow) -> bool:
 
 def near_misses(
     lines: "list[BankLine]", rows: "list[CandidateRow]",
-) -> "tuple[list[MatchProposal], int]":
-    """Return the near-miss proposals, and how many lines went undecided.
+) -> "tuple[list[MatchProposal], frozenset[int]]":
+    """Return the near-miss proposals, and WHICH lines went undecided.
 
     The SECOND tier (plan step ``bank_import:X-f6d-1``, ruling **R-GD(b)**),
     over what the exact tier could not explain.  One line, one row: a GROUP is
@@ -250,11 +250,18 @@ def near_misses(
         rows: The candidate rows no exact proposal claims.
 
     Returns:
-        ``(proposals, undecided line count)`` -- one proposal per line that
-        admits exactly one row which admits only it, and how many lines this
-        pass admitted a candidate for and then declined to choose between.  The
-        second is a BOUND and rides out because a bound that says nothing about
-        what it dropped reads as a clean sweep.
+        ``(proposals, undecided line ids)`` -- one proposal per line that
+        admits exactly one row which admits only it, and the ids of the lines
+        this pass admitted a candidate for and then declined to choose between.
+
+        **The second is a BOUND and rides out** because a bound that says
+        nothing about what it dropped reads as a clean sweep.  It is the LINE
+        IDS rather than a count since plan step ``bank_import:X-f6d-3``: a
+        count can only be reported in a panel at the foot of the page, where it
+        names no line and the owner cannot act on it, and the act it should
+        prompt -- build this one by hand rather than record it a second time --
+        is offered against one specific line in two different cards.  The count
+        is still derivable (``len``) and nothing needs it.
     """
     by_line: "dict[int, list[CandidateRow]]" = defaultdict(list)
     by_row: "dict[tuple[RowKind, int], list[int]]" = defaultdict(list)
@@ -281,4 +288,7 @@ def near_misses(
             # you already had*.
             day_gap=day_distance(row, line.posted_on),
         ))
-    return proposals, len(by_line) - len(proposals)
+    decided = {
+        proposal.lines[0].line_id for proposal in proposals
+    }
+    return proposals, frozenset(by_line) - decided
