@@ -294,10 +294,14 @@ Sized when reached.
 - **Rulings**: P-1 -> **R-GH**, P-2 -> **R-GI**, P-3 -> **R-GJ**, P-4 -> **R-GK**, P-5 -> **R-GL**,
   all in `implementation_plan_bank_import.md`, which also records the amendments in place on
   R-FP, R-FZ, R-GA and R-FX, and moves the arc's manual-entry bound.
-- **Steps**: `X-ga`/`X-gb`/`X-gc` (Phase 0, ranks #2-#4), `X-gd`/`X-ge`/`X-gf` (Phase 2, #7-#9),
-  `X-gg` (the Phase 3 design loop, #13), `X-gh` (Phase 4, #14); `X-f6b` re-scoped per Phase 5 and
-  re-ranked #15 behind the auto-apply door; `X-f6c` re-ranked #12 beside the rules phase. P-6 rides
-  `X-gb`'s session. The Phase 6 retirement leaf is MINTED when `X-gf` ships, sized when reached.
+- **Steps**: `X-ga`/`X-gb`/`X-gc` (Phase 0), `X-gd`/`X-ge`/`X-gf` (Phase 2) and `X-gh` (Phase 4),
+  ranked in `steps.md` (the ranks are its alone); `X-f6b` re-scoped per Phase 5 behind the
+  auto-apply door; `X-f6c` beside the rules phase. P-6 rides `X-gb`'s session. The Phase 6
+  retirement leaf is MINTED when `X-gf` ships. **Corrected 2026-08-24 (developer approval)**:
+  `X-gg`, the Phase 3 design loop, moved BEHIND the card arc's CC3 block with an explicit blocker
+  on `credit_card:CC3c` -- envelope filling is two-source (debit swipes from SECU lines, card
+  swipes from card-side charges), and running the loop over the payback shape the card arc deletes
+  is the mistake that withdrew `balance:X-au-i`.
 - **Findings triage**: the delete-door absence is **N-344** (owner `X-gb`); the undo-disclosure
   asymmetry and the once-observed confirm-bypass race are **N-345** (owner `X-gc`); the "never
   showed" framing rides `X-gc`'s specification; the same-name grid double-render rides `X-gg`'s,

@@ -108,7 +108,9 @@ than a second copy here (rule 16): **N-239** and **N-323**.
         question too). The identity rule does not re-open (R-FU): a positional key serves a JSON
         feed as it serves a CSV, and SimpleFIN's own id joins as corroboration. The scheduler
         decision is ruled toward host cron through a CLI door, matching the no-scheduler,
-        no-exposed-ports deployment posture.
+        no-exposed-ports deployment posture. A CARD-statement adapter (Capital One -- its exports
+        are already measured in R-FP's context) is worth minting once the card ledger exists
+        (`credit_card:CC1`); no step for it exists yet, deliberately.
 
 **The X-ga..X-gh leaves are the standing-consent REDESIGN the developer approved 2026-08-24**
 (**R-GH**..**R-GL**); the argument, option spaces and worked examples are
@@ -144,6 +146,10 @@ when reached.
 - [ ] **X-gg** `docs(plans): the envelope-semantics design loop` -- **R-GK**'s owed loop, run WITH
       the developer: filling, closure on coverage, carry-forward and the grid's row identity (whose
       same-name double-render the review measured); it mints the build steps rather than building.
+      **It waits on `credit_card:CC3c`** (developer ruling 2026-08-24): envelope filling is
+      two-source -- debit swipes from SECU lines, card swipes from card-side charges -- and the
+      card-tender entry shape the loop must design over is what CC3c rewrites. Designing over the
+      payback shape the card arc deletes is the mistake that withdrew `balance:X-au-i`.
 
 - [ ] **X-gh** `feat(balance): the bank's balance asserts the anchor` -- **R-GL**, designed against
       the post-cutover assertion (after `balance:X-f3c`), with the residue surfaced as an exception
