@@ -139,3 +139,15 @@ amended (**R-GD**, **R-GE**) stay in the arc document's own rulings table.
 | bank_import | X-f6d-1 | -- | Make a proposal a SCORE rather than an exact-amount gate, so a near miss is offered with the variance it would write instead of being silently withheld -- the defect that hid a $178.29 Geico line from the $178.32 row it belonged to. | SHIPPED | `dcdb86fe` | -- |
 | bank_import | X-f6d-2 | -- | Let the accept door RECORD an unequal match instead of refusing it, taking the bank's figure as the settled figure and storing the difference as a reported variance. | SHIPPED | `674dcc94` | -- |
 | bank_import | X-f6d-3 | -- | Make a tick carry the FIGURE and the REVISION its row was reviewed against, so the door refuses an item whose row moved since the screen described it, rather than writing a correction nobody saw. Closes **N-336** and **N-335**; opens **N-337** and **N-338**. | SHIPPED | `5aa295bd` | -- |
+
+## Condensed 2026-08-24 under conventions rule 5 (steps.md and the arc document needed headroom)
+
+One line per step: its id, its commit and what it closed. Full records are above and in git.
+
+- **X-f6a** `9439a5ad` -- the importer's CORE (four leaves, 2026-08-16 - 2026-08-20); carried **N-173**.
+- **X-f6d** `9ce01870` -- the matcher's CORRECTION half (**R-GD**, four leaves): near misses offered, a match may disagree, a stale tick refused, a group's difference recorded; carried **N-335** until `X-f6d-3` closed it.
+- **X-f6e** `d74001b3` -- the statement's own self-proof (**R-GF**), two leaves.
+- **X-f6e-1** `d56fce48` -- a stated balance is an OBSERVATION with a solved effective day and a weakest-link EVIDENCE level; `opening_balance`/`closing_balance` dropped; `ref_cache` became a package; opened **N-341**, **N-342**. Obligation kept live in ruling **R-GF**: only the file's own CHAIN may convict it, and every candidate day is bounded by the header's.
+- **X-f6e-2** `d74001b3` -- the bank's balance per day beside the app's, reported and never gated; closed **N-342**; re-pointed **N-337**; opened **N-343**.
+- **X-f6f** `33a16524` -- the create-a-purchase arm's INVERSE (**R-GG**); closed **N-333**, **N-340**; the undo is PROSPECTIVE for the 165 acts recorded before it.
+

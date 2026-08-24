@@ -1,13 +1,13 @@
 # The bank import, rebuilt around standing consent
 
-**STATUS: APPROVED by the developer, 2026-08-24 -- all six rulings (P-1..P-6), as recommended.**
+**STATUS: APPROVED by the developer, 2026-08-24 -- all six rulings (P-1..P-6), as recommended --
+and TRANSCRIBED into the gated registries the same day** (rulings **R-GH**..**R-GL**, steps
+`bank_import:X-ga`..`X-gh`, findings **N-344** / **N-345**).
 This is the design record of the 2026-08-24 adversarial review (published as the "Bank Import
 Verdict" artifact) turned into a concrete path: what to rule, what to ship, in what order, from
-today until the import is what it would be if designed from scratch. Next: a planning session
-transcribes its rulings into `docs/plans/implementation_plan_bank_import.md`, its steps into
-`docs/plans/steps.md`, and its findings into `docs/plans/ledger.md` -- all under the plan gate --
-and the P-6 operator session repairs the dev books. Until that transcription lands, the gated
-registries remain the plan of record and this file is the approved design they will state.
+today until the import is what it would be if designed from scratch. The gated registries are the
+plan of record and now state this design; section 5 records the mapping. What remains of this
+document's own obligations is the P-6 operator repair, which rides step `X-gb`'s session.
 
 **The goal, in the developer's words (2026-08-24):** "In a perfect world the app would hold every
 real transaction the bank saw and automatically assign it to the appropriate line item in the
@@ -289,15 +289,23 @@ Sized when reached.
 - **It does not decide the card arc's payback model.** P-3 parks the question with N-337/CC3b where
   the developer already put it.
 
-## 5. Bookkeeping on approval
+## 5. Bookkeeping (transcribed 2026-08-24, plan gate 204/204)
 
-- Rulings P-1..P-5 recorded in `implementation_plan_bank_import.md` (P-4 may belong in the balance
-  README -- the planning session decides), with the amended rulings named in place.
-- New steps added to `steps.md` per phase; X-f6b re-scoped per Phase 5; X-f6c absorbed into Phase 2;
-  ranks reconciled with the gate on the merged tree.
-- Ledger candidates from the review, subject to the ledger's line cap: the delete-door absence, the
-  undo-disclosure asymmetry, the confirm-bypass race, the same-name grid double-render, the
-  "never showed" framing. The planning session owns the triage.
+- **Rulings**: P-1 -> **R-GH**, P-2 -> **R-GI**, P-3 -> **R-GJ**, P-4 -> **R-GK**, P-5 -> **R-GL**,
+  all in `implementation_plan_bank_import.md`, which also records the amendments in place on
+  R-FP, R-FZ, R-GA and R-FX, and moves the arc's manual-entry bound.
+- **Steps**: `X-ga`/`X-gb`/`X-gc` (Phase 0, ranks #2-#4), `X-gd`/`X-ge`/`X-gf` (Phase 2, #7-#9),
+  `X-gg` (the Phase 3 design loop, #13), `X-gh` (Phase 4, #14); `X-f6b` re-scoped per Phase 5 and
+  re-ranked #15 behind the auto-apply door; `X-f6c` re-ranked #12 beside the rules phase. P-6 rides
+  `X-gb`'s session. The Phase 6 retirement leaf is MINTED when `X-gf` ships, sized when reached.
+- **Findings triage**: the delete-door absence is **N-344** (owner `X-gb`); the undo-disclosure
+  asymmetry and the once-observed confirm-bypass race are **N-345** (owner `X-gc`); the "never
+  showed" framing rides `X-gc`'s specification; the same-name grid double-render rides `X-gg`'s,
+  because its remedy is the row-identity decision that loop owns. The card-payment path note was
+  added to **N-337**, whose owner stays `CC3b`.
+- Headroom for the transcription came from conventions rule 5: the six SHIPPED bank_import rows
+  (X-f6a, X-f6d, X-f6e and leaves, X-f6f) were condensed into
+  `docs/plans/historical/bank_import_x_f6a_core_as_built_2026-08-19.md`.
 - The review's full evidence stays in the "Bank Import Verdict" artifact
   (https://claude.ai/code/artifact/4f6f6a50-7146-4263-bf63-5af5d3ad5e2b) and the session's measured
   figures above; this document is the plan-facing summary.
