@@ -16,6 +16,7 @@ one of them being right proves nothing about the other.
 
 from datetime import date
 from decimal import Decimal
+import re
 from io import BytesIO
 
 import pytest
@@ -38,6 +39,36 @@ _ENTRIES = [
 def _payload(entries=None, start="100.00", **kwargs):
     """Return a well-formed SECU CSV payload."""
     return build.build(build.chained(start, entries or _ENTRIES, **kwargs))
+
+
+def _flash_toasts(body):
+    """Return ``(category, message)`` for every flash toast the page rendered.
+
+    **An assertion about the RECEIPT has to read the receipt**, which
+    :func:`_delete_form` next door already says about forms and which this file
+    then went on to get wrong anyway: the imports table renders each evidence
+    sentence in a ``title`` attribute, so ``sentence in response.data`` passed
+    against a receipt that said nothing at all.  Proven by isolation --
+    dropping the receipt sentence alone left 3 of 4 balance tests green, and
+    dropping the table attribute alone left all 4 green.  Found by adversarial
+    review of this step's own tests, 2026-08-23.
+
+    **It returns the CATEGORY as well, because the colour is half the
+    message.**  ``_import_flash`` exists to say that a green tick over an
+    unconfirmed balance tells the owner the opposite of what happened, and the
+    same review measured that flipping every category to ``success`` -- or to
+    ``warning`` -- left all 32 tests in this file passing.
+
+    Args:
+        body: The rendered page.
+
+    Returns:
+        One ``(category, message)`` pair per toast, in render order.
+    """
+    return re.findall(
+        r'class="toast text-bg-(\w+)".*?<div class="toast-body">(.*?)</div>',
+        body, re.S,
+    )
 
 
 def _delete_form(body):
@@ -360,31 +391,236 @@ class TestTheAccountPageLinksHere:
             auth_client, loan.id, _payload(),
         ).status_code == 404
 
-    def test_an_unverifiable_file_is_flagged_rather_than_ticked(
+    def test_a_first_import_says_its_balance_is_UNCORROBORATED(
         self, auth_client, db, seed_user,
     ):
-        """A 10-column export carries no chain, and the user must be told.
+        """Nothing can check the first file's stated balance, and it says so.
 
-        The page asks for the running-balance column precisely because
-        "without it a missing line cannot be detected" -- so reporting success
-        in green over a statement nothing could check tells the user the
-        opposite of what happened.
+        **The signal used to be the running-balance chain, and that was
+        measured WRONG** (plan step ``bank_import:X-f6e-1``): SECU stopped
+        exporting that column, so the old warning fired on every modern import
+        while the file's ``Totals:`` row had already checked the line list.
+        What is genuinely unconfirmed on a first import is the BALANCE.
         """
         payload = build.build(build.chained(
             "100.00", _ENTRIES, with_running=False,
         ))
 
         response = _upload(auth_client, seed_user["account"].id, payload)
+        toasts = _flash_toasts(response.get_data(as_text=True))
 
-        assert b"could not be checked against itself" in response.data
+        assert len(toasts) == 1
+        category, message = toasts[0]
+        assert "Nothing has confirmed its stated balance" in message
+        # The COLOUR is half the message: a green tick over an unconfirmed
+        # balance tells the owner the opposite of what happened.
+        assert category == "warning"
 
-    def test_a_verified_file_is_NOT_flagged(
+    def test_a_CHAINED_file_is_PROVED_by_itself_and_ticked_green(
         self, auth_client, db, seed_user,
     ):
-        """The warning must not fire on the ordinary case."""
-        response = _upload(auth_client, seed_user["account"].id, _payload())
+        """A per-line running balance states the opening, so nothing is assumed.
 
-        assert b"could not be checked against itself" not in response.data
+        The firing half of the pair above: this asserts the warning's ABSENCE
+        on a file that carries its own proof, so a receipt that warned
+        unconditionally would fail here and one that never warned would fail
+        there -- and the same for the colour.
+        """
+        response = _upload(auth_client, seed_user["account"].id, _payload())
+        toasts = _flash_toasts(response.get_data(as_text=True))
+
+        assert len(toasts) == 1
+        category, message = toasts[0]
+        assert "proved by the file" in message
+        assert "per-line running balance" in message
+        assert "Nothing has confirmed" not in message
+        assert category == "success"
+
+    def test_a_re_import_that_adds_NO_LINES_still_reports_its_balance(
+        self, auth_client, db, seed_user,
+    ):
+        """A line is not the only thing an import can learn.
+
+        **Found by driving the real app rather than by a green test**: on the
+        developer's dev database, re-importing his 2026-08-16 export added 0 of
+        its 361 lines and yet RECORDED an anchor -- its stated `$4,747.63`
+        placed at 2026-08-13 -- while the receipt said "Nothing new" and
+        nothing else.  The idempotent no-op path had never carried the balance
+        sentence, because until this step there was no balance fact for it to
+        carry.
+        """
+        _upload(auth_client, seed_user["account"].id, _payload())
+
+        response = _upload(auth_client, seed_user["account"].id, _payload())
+        toasts = _flash_toasts(response.get_data(as_text=True))
+
+        assert len(toasts) == 1
+        _, message = toasts[0]
+        assert "Nothing new" in message
+        assert "proved by the file" in message
+        assert "per-line running balance" in message
+
+    def test_a_RE_UPLOAD_cannot_promote_an_UNCORROBORATED_balance(
+        self, auth_client, db, seed_user,
+    ):
+        """The assumption may not check itself.
+
+        **Reproduced in two clicks by adversarial review, 2026-08-23**: the
+        first import of a chainless file was recorded as unconfirmed, and
+        re-uploading the IDENTICAL BYTES made the app walk back to its own
+        assumption, find that the file agreed with it, and record the result as
+        corroborated -- with the receipt turning from a warning to a green
+        tick.  Nothing had reconciled.  The weakest-link rule makes that
+        unreachable: the chain behind the second answer still contains the
+        first one's assumption.
+        """
+        payload = build.build(build.chained(
+            "100.00", _ENTRIES, with_running=False,
+        ))
+        _upload(auth_client, seed_user["account"].id, payload)
+
+        response = _upload(auth_client, seed_user["account"].id, payload)
+        toasts = _flash_toasts(response.get_data(as_text=True))
+
+        assert len(toasts) == 1
+        category, message = toasts[0]
+        assert "Nothing has confirmed its stated balance" in message
+        assert "agrees with the statements already recorded" not in message
+        assert category == "warning"
+
+    def test_a_SECOND_import_is_CORROBORATED_against_a_proved_anchor(
+        self, auth_client, db, seed_user,
+    ):
+        """Two statements agreeing, rooted in one that proved itself.
+
+        The first file carries a chain, so it is ``file_chain``; the second
+        does not, and is checked against what the first left behind.  That is
+        the only route to ``corroborated``, which is the point of the
+        weakest-link rule and is why this fixture pays for a chained first
+        file rather than reusing the chainless one above.
+
+        The arithmetic: the first file opens at `$100.00` and its two lines
+        move `-25.00` then `+1500.00`, so it closes at `$1,575.00` on 03-03.
+        The second covers 03-03..03-05 with `+1500.00` and `-30.00`, so the
+        balance before its first line is `1575.00 - 1500.00 = 75.00` and its
+        own closing is `75.00 + 1500.00 - 30.00 = 1545.00`.
+        """
+        _upload(auth_client, seed_user["account"].id, _payload())
+
+        later = build.build(
+            build.chained(
+                "0.00",
+                [(date(2026, 3, 3), "1500.00",
+                  "ACH DEPOSIT TOWN OF CLAYTON  PAYROLL"),
+                 (date(2026, 3, 5), "-30.00",
+                  "POINT OF SALE DEBIT L340 FUEL")],
+                with_running=False,
+            ),
+            stated_balance="1545.00",
+        )
+        response = _upload(auth_client, seed_user["account"].id, later)
+        toasts = _flash_toasts(response.get_data(as_text=True))
+
+        assert len(toasts) == 1
+        category, message = toasts[0]
+        assert "agrees with the statements already recorded" in message
+        assert category == "success"
+
+    def test_a_DATE_RANGE_export_records_its_claim_and_no_anchor(
+        self, auth_client, db, seed_user,
+    ):
+        """The measured shape a refusal would have rejected.
+
+        The developer exported 2026-01-02..2026-03-31 on 2026-08-23 and its
+        header states TODAY's balance -- 145 days past its last line and
+        `$255.41` from what its own 139 lines imply.  Its claim is real and its
+        placement is undeterminable, and the receipt says exactly that rather
+        than refusing an honest file or inventing a day for it.
+
+        **A prior anchor has to exist for this arm to be reachable at all**,
+        and that is the design rather than fixture convenience: "cannot be
+        placed" is a statement about a KNOWN opening the figure fails to
+        reconcile with.  A first import has no opening to fail against, so the
+        same file would be taken at face value -- which is exactly what
+        finding **N-342** records, and it is why the first upload here carries
+        a chain.
+        """
+        _upload(auth_client, seed_user["account"].id, _payload())
+
+        response = _upload(
+            auth_client, seed_user["account"].id,
+            build.build(build.chained("100.00", _ENTRIES, with_running=False),
+                        balance_as_of="08/23/2026", stated_balance="2459.60"),
+        )
+        toasts = _flash_toasts(response.get_data(as_text=True))
+
+        assert len(toasts) == 1
+        category, message = toasts[0]
+        assert "which its own lines do not reach" in message
+        assert "no balance was recorded from it" in message
+        assert category == "warning"
+
+    def test_a_file_stating_NO_balance_says_there_was_none_to_check(
+        self, auth_client, db, seed_user,
+    ):
+        """The fourth receipt arm, which had no test at all."""
+        payload = build.build(build.chained("100.00", _ENTRIES))
+        without = b"\n".join(
+            line for line in payload.split(b"\n")
+            if not line.startswith(b"Balance as of")
+        )
+
+        response = _upload(auth_client, seed_user["account"].id, without)
+        toasts = _flash_toasts(response.get_data(as_text=True))
+
+        assert len(toasts) == 1
+        category, message = toasts[0]
+        assert "It states no balance, so there was none to check." in message
+        assert category == "warning"
+
+    def test_the_receipt_names_BOTH_days_when_they_differ(
+        self, auth_client, db, seed_user,
+    ):
+        """The gap is the number the owner has to judge.
+
+        An ordinary export's header sits a day past its last line; the
+        developer's date-range one sat **145 days** past it and `$255.41` out.
+        The days are asserted rather than the sentence's prefix, because
+        swapping them left the old assertion green.
+        """
+        response = _upload(
+            auth_client, seed_user["account"].id,
+            build.build(build.chained("100.00", _ENTRIES, with_running=False),
+                        balance_as_of="03/09/2026"),
+        )
+        _, message = _flash_toasts(response.get_data(as_text=True))[0]
+
+        # Placed at its last line (03-03); the file states it as of 03-09.
+        assert "placed at 2026-03-03" in message
+        assert "states it as of 2026-03-09" in message
+
+    def test_the_imports_table_shows_what_the_bank_said(
+        self, auth_client, db, seed_user,
+    ):
+        """The RECORD, where the receipt is transient.
+
+        ``_reads.ImportedBalance``'s own docstring argues this table matters
+        because an anchor the import only assumed has to stay readable after
+        the flash is gone -- and the whole column had no test, so forcing
+        ``_imported_balance`` to return ``None`` left 233 tests passing.
+        """
+        _upload(
+            auth_client, seed_user["account"].id,
+            build.build(build.chained("100.00", _ENTRIES, with_running=False)),
+        )
+
+        body = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements"
+        ).get_data(as_text=True)
+
+        assert "Bank said" in body
+        assert "uncorroborated" in body
+        assert "as of 2026-03-03" in body
 
     def test_the_cash_detail_page_offers_the_statements_link(
         self, auth_client, seed_user,

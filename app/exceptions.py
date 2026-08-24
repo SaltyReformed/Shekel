@@ -495,6 +495,51 @@ class StatementIntegrityError(StatementImportError):
         )
 
 
+class StatementBalanceUnexplained(StatementImportError):
+    """The file's own running-balance CHAIN reaches its header figure on no day.
+
+    :class:`StatementIntegrityError`'s sibling, and separate from it because
+    the two name different defects in the same chain and a shared message would
+    state the wrong cause.  That one is a BREAK -- one line's balance does not
+    follow from the line before it -- and points at the pair.  This one is a
+    chain that is internally sound and still cannot produce the figure the
+    file's own header states.
+
+    A statement claims a balance and lists lines.  Where the file states a
+    balance beside every line it states its own opening, so the claim is
+    reconciled by the day ``d`` where ``stated - sum(lines up to d) == opening``
+    (plan step ``bank_import:X-f6e-1``, ruling **R-GF**).  Real exports need
+    that flexibility: the developer's 2026-08-16 file states 2026-08-13's
+    closing over a list containing two 2026-08-14 lines, and it reconciles at
+    08-13.  When NO day does, the file disagrees with itself, and a re-export
+    is the answer.
+
+    **It fires ONLY against the file's own chain, never against what the app
+    has recorded**, and that bound is the whole of its honesty.  A mismatch
+    with recorded history has innocent explanations the file cannot be blamed
+    for -- a date-range export states the CURRENT balance, so the movements
+    explaining it are simply not in the file -- and an earlier draft refused on
+    that too.  An adversarial review reproduced it rejecting an honest export
+    and telling the owner to delete an import, with a figure the bank's file
+    had never asserted (2026-08-23).  An unplaceable claim is recorded
+    unanchored instead.
+
+    Attributes:
+        stated: What the file's header claims the account held.
+        implied: What its own chain puts the account at after its last line.
+        detail: The sentence naming both, for the person who uploaded it.
+    """
+
+    def __init__(self, stated, implied, detail):
+        self.stated = stated
+        self.implied = implied
+        self.detail = detail
+        super().__init__(
+            f"This statement disagrees with itself: {detail}.  Nothing was "
+            f"imported.  Re-export the full span from your bank."
+        )
+
+
 class StatementAccountMismatch(StatementImportError):
     """The file names an account other than the one it is being imported into.
 

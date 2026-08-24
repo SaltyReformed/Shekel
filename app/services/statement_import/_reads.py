@@ -14,12 +14,14 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
+from app import ref_cache
 from app.extensions import db
 from app.models.ref import StatementSource
 from app.models.statement_import import BankStatementLine, StatementImport
 from app.models.statement_match import StatementMatchMember
 
 from ._adapters import supported_sources
+from ._anchor import ImportedBalance
 
 
 @dataclass(frozen=True)
@@ -183,6 +185,12 @@ class ImportRecord:  # pylint: disable=too-many-instance-attributes
         matches_affected: Accepted matches naming at least one of those lines.
             Each would be RELEASED by a delete, so the control says so before
             it is pressed.
+        balance: What the file said the account held and how firmly, or
+            ``None`` when it stated no balance.  A RECEIPT is transient and
+            this table is the record, so an anchor the import only ASSUMED has
+            to stay readable after the flash is gone -- otherwise the basis is
+            a fact written and never seen, which is the shape this arc keeps
+            finding.
     """
 
     import_id: int
@@ -193,6 +201,7 @@ class ImportRecord:  # pylint: disable=too-many-instance-attributes
     line_count: int
     recorded_count: int
     matches_affected: int
+    balance: "ImportedBalance | None"
 
 
 def import_history(account_id: int, limit: int = 20) -> "list[ImportRecord]":
@@ -242,9 +251,34 @@ def import_history(account_id: int, limit: int = 20) -> "list[ImportRecord]":
             line_count=row.line_count,
             recorded_count=row.recorded_count,
             matches_affected=len(by_import.get(row.id, ())),
+            balance=_imported_balance(row),
         )
         for row in imports
     ]
+
+
+def _imported_balance(row: StatementImport) -> "ImportedBalance | None":
+    """Return one import's balance facts as a value, or ``None``.
+
+    Args:
+        row: The :class:`~app.models.statement_import.StatementImport`.
+
+    Returns:
+        Its :class:`ImportedBalance`, or ``None`` when the file stated no
+        balance.  ``stated_balance`` alone is tested, and that is exact rather
+        than economical: ``ck_statement_imports_stated_balance_paired`` holds
+        it and its day NULL together.
+    """
+    if row.stated_balance is None:
+        return None
+    return ImportedBalance(
+        stated=row.stated_balance,
+        stated_on=row.stated_balance_on,
+        effective_on=row.balance_effective_on,
+        evidence=ref_cache.statement_balance_evidence_member(
+            row.balance_evidence_id,
+        ),
+    )
 
 
 def recent_lines(

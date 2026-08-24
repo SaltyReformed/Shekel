@@ -44,11 +44,12 @@ write to :mod:`app.services.statement_import`.
 """
 
 import logging
+from dataclasses import dataclass
 
 from flask import flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
-from app.enums import StatementSourceEnum
+from app.enums import StatementBalanceEvidenceEnum, StatementSourceEnum
 from app.exceptions import StatementImportError, ValidationError
 from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts._statement_doors import (
@@ -111,20 +112,126 @@ def statements(account_id):
         span=recorded_span(account_id),
         imports=import_history(account_id),
         lines=recent_lines(account_id),
+        evidence_copy=_EVIDENCE_COPY,
+    )
+
+
+@dataclass(frozen=True)
+class _EvidenceCopy:
+    """What a screen says about one way a stated balance was pinned.
+
+    Attributes:
+        label: The short form, for a table cell.
+        sentence: The full form, for the import receipt and the cell's title.
+        badge: The Bootstrap class the label wears.  **It lives here rather
+            than in a template conditional** so no surface has to ask which
+            basis it is holding: a template testing
+            ``basis == ASSUMED_LAST_DAY`` would be one more place to update
+            when a fourth way to pin a day exists, and the display decision is
+            the display layer's to make once.
+    """
+
+    label: str
+    sentence: str
+    badge: str
+
+
+#: What the screens say about each way a file's stated balance was pinned.
+#: **Keyed by the enum MEMBER, not by its ``name`` string**, so the
+#: project-wide IDs-for-logic rule holds here exactly as it does in a query --
+#: the template subscripts this map with the member the service handed it and
+#: compares no string at all.  ONE map rather than one per surface: the receipt
+#: and the imports table say the same thing about the same fact, and two
+#: spellings would be two places for a fourth basis to be forgotten.
+_EVIDENCE_COPY = {
+    StatementBalanceEvidenceEnum.FILE_CHAIN: _EvidenceCopy(
+        label="proved by the file",
+        sentence=(
+            "Its stated balance is proved by the file's own per-line running "
+            "balance, so nothing outside it was needed."
+        ),
+        badge="text-bg-secondary",
+    ),
+    StatementBalanceEvidenceEnum.CORROBORATED: _EvidenceCopy(
+        label="corroborated",
+        sentence=(
+            "Its stated balance agrees with the statements already recorded "
+            "for this account, so two of them say the same thing."
+        ),
+        badge="text-bg-secondary",
+    ),
+    StatementBalanceEvidenceEnum.UNCORROBORATED: _EvidenceCopy(
+        label="uncorroborated",
+        sentence=(
+            "Nothing has confirmed its stated balance.  Export once with your "
+            "bank's running-balance option ticked and every statement after "
+            "it can be checked against that one."
+        ),
+        badge="text-bg-warning",
+    ),
+}
+
+
+def _balance_sentence(outcome):
+    """Return what the receipt says about the file's own stated balance.
+
+    Args:
+        outcome: The :class:`~app.services.statement_import.ImportOutcome`.
+
+    Returns:
+        One sentence, plus the PLACEMENT whenever the day the figure is placed
+        at differs from the day the file names.
+
+    **The gap between those two days is the number the owner has to judge**,
+    and it is stated for every evidence level rather than only the weakest.  An
+    ordinary export's header sits a day past its last line; the developer's
+    2026-01-02..2026-03-31 export, pulled 2026-08-23, sits **145 days** past it
+    and `$255.41` out.  A gap the owner can see is a gap the owner can judge.
+    An earlier draft said *"that assumes nothing moved between"* those days,
+    which stopped being true when the weakest-link rule made ``uncorroborated``
+    cover solved days too -- a solved day assumes nothing about the span; it is
+    the OPENING behind it that is unconfirmed.
+    """
+    if outcome.balance is None:
+        return "It states no balance, so there was none to check."
+    if not outcome.balance.is_anchored:
+        return (
+            f"It states {outcome.balance.stated} as of "
+            f"{outcome.balance.stated_on}, which its own lines do not reach, "
+            f"so nothing here could place that figure and no balance was "
+            f"recorded from it."
+        )
+    copy = _EVIDENCE_COPY[outcome.balance.evidence]
+    if outcome.balance.effective_on == outcome.balance.stated_on:
+        return copy.sentence
+    return (
+        f"{copy.sentence}  The figure is placed at "
+        f"{outcome.balance.effective_on}, where the file states it as of "
+        f"{outcome.balance.stated_on}."
     )
 
 
 def _import_flash(outcome):
     """Return the flash text and category for a successful import.
 
-    **A file the importer could not cross-check gets a WARNING, not a green
-    tick**, and that is an honest report rather than a nicety.  The
-    running-balance column is an export OPTION, so a statement can arrive with
-    no per-line chain to verify -- and the page asks for that option precisely
-    because "without it a missing line cannot be detected".  Saying "Recorded
-    361 new lines" in green over a statement nothing could check would tell the
-    user the opposite of what happened.  ``opening_balance is None`` is exactly
-    that signal, because it is derived from the chain.
+    **A file whose stated balance nothing could CHECK gets a warning, not a
+    green tick**, and that is an honest report rather than a nicety: an
+    unchecked anchor propagates, because every later import reconciles against
+    it and inherits its error.  Saying "Recorded 361 new lines" in green over
+    one would tell the user the opposite of what happened.  All three unproven
+    states share the warning -- no balance stated, a balance the file's own
+    lines cannot reach, and one merely assumed -- because what they have in
+    common is the thing the owner needs to know: nothing here confirmed it.
+
+    **The signal used to be ``opening_balance is None`` and that was measured
+    WRONG** (plan step ``bank_import:X-f6e-1``).  That column was derived from
+    the per-line running-balance chain, which SECU stopped exporting between
+    the developer's 2026-07-19 and 2026-08-16 pulls -- so the warning fired on
+    every modern import, claiming "a missing line would not have been
+    detected" while ``_secu_csv._verify_against_totals`` had already checked
+    the line list against the file's own ``Totals:`` row and would have
+    detected exactly that.  Both dev imports carry that NULL.  What is
+    genuinely unchecked is the BALANCE, and the basis is what says so.
 
     Args:
         outcome: The :class:`~app.services.statement_import.ImportOutcome`.
@@ -132,25 +239,32 @@ def _import_flash(outcome):
     Returns:
         ``(message, category)``.
     """
+    unproven = outcome.balance is None or (
+        not outcome.balance.is_anchored
+        or outcome.balance.evidence
+        is StatementBalanceEvidenceEnum.UNCORROBORATED
+    )
+    balance = f"  {_balance_sentence(outcome)}"
     if not outcome.recorded_count:
+        # **The balance sentence belongs on THIS branch too**, and leaving it
+        # off was a defect only driving the real app exposed: re-importing the
+        # developer's own 2026-08-16 export added 0 of its 361 lines and yet
+        # RECORDED an anchor -- its stated `$4,747.63` placed at 2026-08-13 --
+        # while the receipt said "Nothing new" and nothing else.  A line is not
+        # the only thing an import can learn.
         return (
             f"Nothing new: all {outcome.line_count} line(s) in this file were "
-            f"already recorded.",
-            "info",
+            f"already recorded.{balance}",
+            "warning" if unproven else "info",
         )
-    unchecked = (
-        "  This file carried no running balance, so it could not be checked "
-        "against itself -- a missing line would not have been detected."
-        if outcome.opening_balance is None else ""
-    )
     known = (
         f", and {outcome.already_known} were already known."
         if outcome.already_known else "."
     )
     return (
         f"Recorded {outcome.recorded_count} new line(s) from "
-        f"{outcome.period_start} to {outcome.period_end}{known}{unchecked}",
-        "warning" if unchecked else "success",
+        f"{outcome.period_start} to {outcome.period_end}{known}{balance}",
+        "warning" if unproven else "success",
     )
 
 

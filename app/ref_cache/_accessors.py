@@ -1,42 +1,28 @@
+"""One function per "what id is this enum member", and nothing else.
+
+Split out of the flat ``app/ref_cache.py`` at plan step
+**bank_import:X-f6e-1** (see :mod:`._state` for why).  **The move is pure**:
+every function below stands exactly as it stood, comments and pragmas
+included.  The one addition is that step's own
+:func:`statement_balance_evidence_id`, the twenty-sixth of them.
+:mod:`app.ref_cache` re-exports all of them, so no caller changed.
+
+**Every one of them returns an ID and never a ``name``**, which is the
+project-wide invariant these exist to serve: reference tables drive logic by
+their integer key, and their strings are for display.  The custom checker
+``shekel-refname-compare`` is the gate; this module is the door it points at.
+
+**The cache is read through :func:`._state.cache` rather than bound by value**,
+which is the one thing the split had to be careful about and is argued where
+that function is defined.  It is the single mechanical difference between these
+bodies and the ones the flat module carried: ``_cache.X`` became ``cache().X``
+and ``_require_init()`` became ``require_init()``, uniformly, thirty-one times.
 """
-Shekel Budget App -- Reference Table Cache
-
-Loads reference table IDs once at application startup so that service
-and route code can resolve enum members to integer IDs without hitting
-the database on every request.
-
-Usage::
-
-    from app import ref_cache
-    from app.enums import StatusEnum, AcctTypeEnum
-
-    projected_id = ref_cache.status_id(StatusEnum.PROJECTED)
-    checking_id = ref_cache.acct_type_id(AcctTypeEnum.CHECKING)
-
-The cache is initialized by ``create_app()`` after reference tables
-are seeded.  If any enum member has no corresponding database row,
-``init()`` raises ``RuntimeError`` -- the app refuses to start with
-an incomplete reference schema.
-
-Thread safety is NOT provided.  This is a single-user, single-process
-Flask application; the cache is written once at startup and read-only
-thereafter.
-"""
-
-import functools
-import logging
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import TypedDict
-
-import sqlalchemy.exc
 
 from app.enums import (
     AcctCategoryEnum,
     AcctTypeEnum,
     AmountSourceEnum,
-    SettledDayBasisEnum,
-    SettlementBasisEnum,
     BusinessDayShiftEnum,
     CalcMethodEnum,
     CompoundingFrequencyEnum,
@@ -53,300 +39,16 @@ from app.enums import (
     RaiseTypeEnum,
     RecurrenceUnitEnum,
     RoleEnum,
+    SettledDayBasisEnum,
+    SettlementBasisEnum,
+    StatementBalanceEvidenceEnum,
     StatementSourceEnum,
     StatusEnum,
     TaxTypeEnum,
     TxnTypeEnum,
 )
 
-_logger = logging.getLogger(__name__)
-
-
-class _AcctTypeMeta(TypedDict):
-    """Cached presentation metadata for a built-in account type."""
-
-    icon_class: str | None
-    max_term_months: int | None
-
-
-@dataclass
-class _RefState:
-    """Process-lifetime reference-cache state.
-
-    A single module-level instance (``_cache``) holds every cached map.
-    ``init()`` mutates this object's dicts in place and never rebinds it
-    or the module name, so no ``global`` statement is required.
-
-    ``enum_ids`` maps each reference enum class to its ``{member: database
-    PK}`` lookup; ``acct_type_meta`` maps an account-type PK to its
-    presentation metadata; ``ledger_class_debit_normal`` maps a
-    ledger-account-class PK to its natural-balance side (TRUE =
-    debit-normal); ``acct_category_members`` is the INVERSE of
-    ``enum_ids[AcctCategoryEnum]``, so a reader holding an account type's
-    ``category_id`` resolves its member in one lookup rather than scanning
-    the enum.  Written once at startup (re-written in tests) and
-    read-only thereafter via the accessor functions below.
-    """
-
-    enum_ids: dict[type[Enum], dict[Enum, int]] = field(default_factory=dict)
-    acct_type_meta: dict[int, _AcctTypeMeta] = field(default_factory=dict)
-    ledger_class_debit_normal: dict[int, bool] = field(default_factory=dict)
-    acct_category_members: dict[int, Enum] = field(default_factory=dict)
-    initialized: bool = False
-
-
-_cache = _RefState()
-
-
-@dataclass(frozen=True)
-class _RefSpec:
-    """Declarative description of one reference table for ``init()`` to load.
-
-    ``label`` (the warning text and ``unavailable`` key) and ``error_prefix``
-    (the missing-row error prefix) are derived from the model so there is a
-    single source of truth: ``label`` is the table name and ``error_prefix``
-    the model class name (e.g. the ``RoleEnum`` table's model is ``UserRole``,
-    so its errors read ``UserRole.<member>``).
-    """
-
-    enum: type[Enum]
-    model: type
-    # Filter the query to seeded built-ins (``user_id IS NULL``); set only for
-    # account_types.  After commit C-28 / F-044 owners can register custom
-    # types whose names collide with built-ins (a user's own "HYSA" alongside
-    # the seeded "HYSA").  The cache promises a single stable ID per
-    # ``AcctTypeEnum`` member, so it must see only the built-in rows; custom
-    # types resolve via the ORM relationship in templates, never this cache.
-    builtin_only: bool = False
-
-    @property
-    def label(self) -> str:
-        """Return the reference table name (warning text / unavailable key)."""
-        return self.model.__tablename__
-
-    @property
-    def error_prefix(self) -> str:
-        """Return the model class name used to prefix missing-row errors."""
-        return self.model.__name__
-
-    def query(self, db_session) -> dict[str, int]:
-        """Return a ``{row.name: row.id}`` lookup for this table's rows.
-
-        Args:
-            db_session: An active SQLAlchemy session.
-
-        Returns:
-            dict[str, int]: Row name mapped to its integer primary key.
-        """
-        model_query = db_session.query(self.model)
-        if self.builtin_only:
-            model_query = model_query.filter(self.model.user_id.is_(None))
-        return {row.name: row.id for row in model_query.all()}
-
-
-def _load_rows(db_session, label, query_callable):
-    """Run a ref-table query, tolerating a missing table.
-
-    A ``ProgrammingError`` here almost always means the ref table does
-    not exist yet -- the bootstrap window during ``flask db upgrade``
-    when a migration that creates a new ref table is pending.  Catch
-    it, roll the session back (a failed query poisons the transaction
-    so subsequent queries would otherwise fail with "current
-    transaction is aborted"), log loud, and return ``None`` so the
-    caller can record the table as unavailable.
-
-    All other database errors propagate -- a misconfigured DSN or a
-    corrupted ref row is a real failure that must surface, not a
-    bootstrap quirk to swallow.
-
-    Args:
-        db_session: SQLAlchemy session for rollback on failure.
-        label: Short table label for the warning message.
-        query_callable: Zero-arg callable that runs the query and
-            returns the name->id dict.
-
-    Returns:
-        dict[str, int] on success, ``None`` if the table is missing.
-    """
-    try:
-        return query_callable()
-    except sqlalchemy.exc.ProgrammingError:
-        db_session.rollback()
-        _logger.warning(
-            "ref_cache: ref table %s not available "
-            "(likely pre-migration bootstrap); enums for this table will "
-            "not be cached until the next app start after migrations run.",
-            label,
-        )
-        return None
-
-
-def _build_ref_specs(ref_models) -> list[_RefSpec]:
-    """Return the ordered reference-table specs for ``init()`` to load.
-
-    Built here (not at module scope) because the ORM models are imported
-    lazily inside ``init()`` to break the import cycle.  The order matches
-    the historical load order, which fixes the order of the ``unavailable``
-    list and of the missing-row error message.
-
-    Args:
-        ref_models: The lazily-imported ``app.models.ref`` module.
-
-    Returns:
-        list[_RefSpec]: One spec per cached reference table.
-    """
-    return [
-        _RefSpec(StatusEnum, ref_models.Status),
-        _RefSpec(TxnTypeEnum, ref_models.TransactionType),
-        _RefSpec(AcctTypeEnum, ref_models.AccountType, builtin_only=True),
-        _RefSpec(AcctCategoryEnum, ref_models.AccountTypeCategory),
-        _RefSpec(DeductionTimingEnum, ref_models.DeductionTiming),
-        _RefSpec(CalcMethodEnum, ref_models.CalcMethod),
-        _RefSpec(TaxTypeEnum, ref_models.TaxType),
-        _RefSpec(RaiseTypeEnum, ref_models.RaiseType),
-        _RefSpec(GoalModeEnum, ref_models.GoalMode),
-        _RefSpec(IncomeUnitEnum, ref_models.IncomeUnit),
-        _RefSpec(RoleEnum, ref_models.UserRole),
-        _RefSpec(LoanAnchorSourceEnum, ref_models.LoanAnchorSource),
-        _RefSpec(
-            EmployerContributionTypeEnum, ref_models.EmployerContributionType
-        ),
-        _RefSpec(CompoundingFrequencyEnum, ref_models.CompoundingFrequency),
-        _RefSpec(LedgerAccountClassEnum, ref_models.LedgerAccountClass),
-        _RefSpec(PostingKindEnum, ref_models.PostingKind),
-        _RefSpec(PostingSourceEnum, ref_models.PostingSource),
-        _RefSpec(LedgerAccountKindEnum, ref_models.LedgerAccountKind),
-        _RefSpec(RecurrenceUnitEnum, ref_models.RecurrenceUnit),
-        _RefSpec(PeriodPlacementEnum, ref_models.PeriodPlacement),
-        _RefSpec(BusinessDayShiftEnum, ref_models.BusinessDayShift),
-        _RefSpec(AmountSourceEnum, ref_models.AmountSource),
-        _RefSpec(StatementSourceEnum, ref_models.StatementSource),
-        _RefSpec(SettlementBasisEnum, ref_models.SettlementBasis),
-        _RefSpec(SettledDayBasisEnum, ref_models.SettledDayBasis),
-    ]
-
-
-def init(db_session):
-    """Load all reference table IDs into the in-memory cache.
-
-    Must be called once during ``create_app()`` after reference data
-    has been seeded and committed.  Safe to call multiple times (e.g.
-    in tests that create fresh app instances) -- clears and reloads.
-
-    Resilient to missing ref tables during the bootstrap window when
-    ``flask db upgrade`` is mid-flight: a ref table that does not
-    exist yet is logged as a warning and its enum members are left
-    out of the cache, but the cache is still marked initialized so
-    accessors for unrelated tables work.  A ref table that EXISTS but
-    is missing a seeded enum row is still a fatal ``RuntimeError`` --
-    that is a genuine data error, not a bootstrap quirk.
-
-    Args:
-        db_session: An active SQLAlchemy session (typically ``db.session``).
-
-    Returns:
-        list[str]: Labels of ref tables that were unavailable at init
-        time (empty list in a healthy production app).  Callers can
-        use this to decide whether to skip downstream work that
-        depends on the complete cache (e.g. Jinja globals).
-
-    Raises:
-        RuntimeError: If any ref table EXISTS but is missing rows for
-            one or more of its enum members.
-    """
-    # Pylint: ``import-outside-toplevel`` -- deferred import to avoid circular
-    # dependencies.  The models module imports from extensions, which must be
-    # initialized before the cache loads.
-    import app.models.ref as ref_models  # pylint: disable=import-outside-toplevel
-
-    specs = _build_ref_specs(ref_models)
-
-    # Reset prior state (supports re-initialization in tests).  Mutate the
-    # _cache dicts in place; do NOT reset ``initialized`` here -- a failed
-    # re-init leaves the previous flag value, matching the original behavior.
-    _cache.enum_ids.clear()
-    _cache.acct_type_meta.clear()
-    _cache.ledger_class_debit_normal.clear()
-    _cache.acct_category_members.clear()
-    for spec in specs:
-        _cache.enum_ids[spec.enum] = {}
-
-    # Load each ref table and map its enum members to database IDs.  Each
-    # query is wrapped in ``_load_rows`` so a missing ref table (the
-    # pre-migration bootstrap window) is recorded as unavailable rather than
-    # poisoning the whole cache; that table's enum sweep is then skipped.  A
-    # missing row in a table that EXISTS is fatal -- a genuine seed/data error.
-    unavailable = []
-    missing = []
-    for spec in specs:
-        rows = _load_rows(db_session, spec.label, functools.partial(spec.query, db_session))
-        if rows is None:
-            unavailable.append(spec.label)
-            continue
-        target = _cache.enum_ids[spec.enum]
-        for member in spec.enum:
-            db_id = rows.get(member.value)
-            if db_id is None:
-                missing.append(
-                    f"{spec.error_prefix}.{member.name} (expected name={member.value!r})"
-                )
-            else:
-                target[member] = db_id
-
-    if missing:
-        raise RuntimeError(
-            "ref_cache.init() failed -- the following enum members have no "
-            "matching database row:\n  " + "\n  ".join(missing)
-        )
-
-    # Build the account type metadata cache for icon/term-limit lookups.
-    # Same built-in-only filter as the account_types map -- the cache is
-    # loaded once at startup and only knows about seeded built-ins.  Skipped
-    # when that table is unavailable (already warned during loading).
-    # Owner-scoped custom types still resolve their icon/max_term via the ORM
-    # relationship in templates (``account.account_type.icon_class``).
-    if "account_types" not in unavailable:
-        for row in (
-            db_session.query(ref_models.AccountType)
-            .filter(ref_models.AccountType.user_id.is_(None))
-            .all()
-        ):
-            _cache.acct_type_meta[row.id] = {
-                "icon_class": row.icon_class,
-                "max_term_months": row.max_term_months,
-            }
-
-    # Build the ledger-account-class natural-balance map.  Mirrors the
-    # account-type metadata block above: a dedicated query keyed by class
-    # PK (the spec loop only captures name->id), so a reader holding a
-    # ``budget.ledger_accounts.class_id`` can branch on the debit-normal
-    # side without a name compare.  Skipped when the table is unavailable
-    # (the pre-migration bootstrap window already warned during loading).
-    if "ledger_account_classes" not in unavailable:
-        for row in db_session.query(ref_models.LedgerAccountClass).all():
-            _cache.ledger_class_debit_normal[row.id] = row.is_debit_normal
-
-    # Invert the account-category map so a reader holding an account type's
-    # ``category_id`` resolves its member in ONE lookup.  Built here rather
-    # than derived per call because the classifier every net-worth surface
-    # reaches (``app.services.account_category.account_category``) would
-    # otherwise scan the enum, asking this cache once per member.  Empty when
-    # the table was unavailable in the bootstrap window, which the accessor
-    # answers as "no modelled category" -- the same answer it gives for a
-    # category row this application does not model.
-    _cache.acct_category_members.update({
-        db_id: member
-        for member, db_id in _cache.enum_ids.get(AcctCategoryEnum, {}).items()
-    })
-
-    _cache.initialized = True
-    return unavailable
-
-
-def _require_init():
-    """Raise if the cache has not been initialized via ``init()``."""
-    if not _cache.initialized:
-        raise RuntimeError("ref_cache not initialized -- call init() first.")
+from ._state import cache, require_init
 
 
 def status_id(member):
@@ -362,8 +64,8 @@ def status_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid StatusEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[StatusEnum][member]
+    require_init()
+    return cache().enum_ids[StatusEnum][member]
 
 
 def txn_type_id(member):
@@ -379,8 +81,8 @@ def txn_type_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid TxnTypeEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[TxnTypeEnum][member]
+    require_init()
+    return cache().enum_ids[TxnTypeEnum][member]
 
 
 def transaction_type_is_income(transaction_type_id):
@@ -405,8 +107,8 @@ def transaction_type_is_income(transaction_type_id):
     Raises:
         RuntimeError: If the cache has not been initialized.
     """
-    _require_init()
-    return transaction_type_id == _cache.enum_ids[TxnTypeEnum][TxnTypeEnum.INCOME]
+    require_init()
+    return transaction_type_id == cache().enum_ids[TxnTypeEnum][TxnTypeEnum.INCOME]
 
 
 def acct_type_id(member):
@@ -422,8 +124,8 @@ def acct_type_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid AcctTypeEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[AcctTypeEnum][member]
+    require_init()
+    return cache().enum_ids[AcctTypeEnum][member]
 
 
 def acct_category_id(member):
@@ -439,8 +141,8 @@ def acct_category_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid AcctCategoryEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[AcctCategoryEnum][member]
+    require_init()
+    return cache().enum_ids[AcctCategoryEnum][member]
 
 
 def acct_category_member(category_id):
@@ -476,8 +178,8 @@ def acct_category_member(category_id):
     Raises:
         RuntimeError: If the cache has not been initialized.
     """
-    _require_init()
-    return _cache.acct_category_members.get(category_id)
+    require_init()
+    return cache().enum_members[AcctCategoryEnum].get(category_id)
 
 
 def recurrence_unit_id(member):
@@ -500,8 +202,8 @@ def recurrence_unit_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid RecurrenceUnitEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[RecurrenceUnitEnum][member]
+    require_init()
+    return cache().enum_ids[RecurrenceUnitEnum][member]
 
 
 def period_placement_id(member):
@@ -524,8 +226,8 @@ def period_placement_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid PeriodPlacementEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[PeriodPlacementEnum][member]
+    require_init()
+    return cache().enum_ids[PeriodPlacementEnum][member]
 
 
 def business_day_shift_id(member):
@@ -547,8 +249,8 @@ def business_day_shift_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid BusinessDayShiftEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[BusinessDayShiftEnum][member]
+    require_init()
+    return cache().enum_ids[BusinessDayShiftEnum][member]
 
 
 def acct_type_icon(type_id):
@@ -563,8 +265,8 @@ def acct_type_icon(type_id):
     Raises:
         RuntimeError: If the cache has not been initialized.
     """
-    _require_init()
-    meta = _cache.acct_type_meta.get(type_id, {})
+    require_init()
+    meta = cache().acct_type_meta.get(type_id, {})
     return meta.get("icon_class") or "bi-bank"
 
 
@@ -580,27 +282,27 @@ def acct_type_max_term(type_id):
     Raises:
         RuntimeError: If the cache has not been initialized.
     """
-    _require_init()
-    meta = _cache.acct_type_meta.get(type_id, {})
+    require_init()
+    meta = cache().acct_type_meta.get(type_id, {})
     return meta.get("max_term_months")
 
 
 def deduction_timing_id(member):
     """Return the integer primary key for a DeductionTimingEnum member."""
-    _require_init()
-    return _cache.enum_ids[DeductionTimingEnum][member]
+    require_init()
+    return cache().enum_ids[DeductionTimingEnum][member]
 
 
 def calc_method_id(member):
     """Return the integer primary key for a CalcMethodEnum member."""
-    _require_init()
-    return _cache.enum_ids[CalcMethodEnum][member]
+    require_init()
+    return cache().enum_ids[CalcMethodEnum][member]
 
 
 def tax_type_id(member):
     """Return the integer primary key for a TaxTypeEnum member."""
-    _require_init()
-    return _cache.enum_ids[TaxTypeEnum][member]
+    require_init()
+    return cache().enum_ids[TaxTypeEnum][member]
 
 
 def raise_type_id(member):
@@ -622,8 +324,8 @@ def raise_type_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid RaiseTypeEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[RaiseTypeEnum][member]
+    require_init()
+    return cache().enum_ids[RaiseTypeEnum][member]
 
 
 def goal_mode_id(member):
@@ -639,8 +341,8 @@ def goal_mode_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid GoalModeEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[GoalModeEnum][member]
+    require_init()
+    return cache().enum_ids[GoalModeEnum][member]
 
 
 def income_unit_id(member):
@@ -656,8 +358,8 @@ def income_unit_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid IncomeUnitEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[IncomeUnitEnum][member]
+    require_init()
+    return cache().enum_ids[IncomeUnitEnum][member]
 
 
 def role_id(member):
@@ -673,8 +375,8 @@ def role_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid RoleEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[RoleEnum][member]
+    require_init()
+    return cache().enum_ids[RoleEnum][member]
 
 
 def loan_anchor_source_id(member):
@@ -696,8 +398,8 @@ def loan_anchor_source_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid LoanAnchorSourceEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[LoanAnchorSourceEnum][member]
+    require_init()
+    return cache().enum_ids[LoanAnchorSourceEnum][member]
 
 
 def employer_contribution_type_id(member):
@@ -720,8 +422,8 @@ def employer_contribution_type_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid EmployerContributionTypeEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[EmployerContributionTypeEnum][member]
+    require_init()
+    return cache().enum_ids[EmployerContributionTypeEnum][member]
 
 
 def compounding_frequency_id(member):
@@ -743,8 +445,8 @@ def compounding_frequency_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid CompoundingFrequencyEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[CompoundingFrequencyEnum][member]
+    require_init()
+    return cache().enum_ids[CompoundingFrequencyEnum][member]
 
 
 def ledger_account_class_id(member):
@@ -767,8 +469,8 @@ def ledger_account_class_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid LedgerAccountClassEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[LedgerAccountClassEnum][member]
+    require_init()
+    return cache().enum_ids[LedgerAccountClassEnum][member]
 
 
 def ledger_class_is_debit_normal(class_id):
@@ -799,8 +501,8 @@ def ledger_class_is_debit_normal(class_id):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *class_id* is not a known ledger-account-class PK.
     """
-    _require_init()
-    return _cache.ledger_class_debit_normal[class_id]
+    require_init()
+    return cache().ledger_class_debit_normal[class_id]
 
 
 def ledger_account_kind_id(member):
@@ -824,8 +526,8 @@ def ledger_account_kind_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid LedgerAccountKindEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[LedgerAccountKindEnum][member]
+    require_init()
+    return cache().enum_ids[LedgerAccountKindEnum][member]
 
 
 def posting_kind_id(member):
@@ -847,8 +549,8 @@ def posting_kind_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid PostingKindEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[PostingKindEnum][member]
+    require_init()
+    return cache().enum_ids[PostingKindEnum][member]
 
 
 def posting_source_id(member):
@@ -870,8 +572,8 @@ def posting_source_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid PostingSourceEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[PostingSourceEnum][member]
+    require_init()
+    return cache().enum_ids[PostingSourceEnum][member]
 
 
 def amount_source_id(member):
@@ -902,8 +604,8 @@ def amount_source_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid AmountSourceEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[AmountSourceEnum][member]
+    require_init()
+    return cache().enum_ids[AmountSourceEnum][member]
 
 
 def statement_source_id(member):
@@ -926,8 +628,8 @@ def statement_source_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid StatementSourceEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[StatementSourceEnum][member]
+    require_init()
+    return cache().enum_ids[StatementSourceEnum][member]
 def settlement_basis_id(member):
     """Return the integer primary key for a SettlementBasisEnum member.
 
@@ -957,8 +659,8 @@ def settlement_basis_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid SettlementBasisEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[SettlementBasisEnum][member]
+    require_init()
+    return cache().enum_ids[SettlementBasisEnum][member]
 
 
 def settled_day_basis_id(member):
@@ -992,5 +694,44 @@ def settled_day_basis_id(member):
         RuntimeError: If the cache has not been initialized.
         KeyError: If *member* is not a valid SettledDayBasisEnum member.
     """
-    _require_init()
-    return _cache.enum_ids[SettledDayBasisEnum][member]
+    require_init()
+    return cache().enum_ids[SettledDayBasisEnum][member]
+
+
+def statement_balance_evidence_member(evidence_id):
+    """Return the StatementBalanceEvidenceEnum member for a stored id, or None.
+
+    :func:`statement_balance_evidence_id`'s inverse, and the reason it exists
+    is the project's own rule rather than convenience: a reader holding
+    ``budget.statement_imports.balance_evidence_id`` needs the MEMBER to
+    dispatch on, and the only other way to get one is
+    ``StatementBalanceEvidenceEnum(row.balance_evidence.name)`` -- constructing
+    logic out of a column whose strings are for display.  That is the subtler
+    half of the IDs-for-logic rule, the half ``shekel-refname-compare`` cannot
+    see because it is a constructor rather than a comparison, and it moves
+    reference drift from a ``ValueError`` on every render of the statements
+    page to the ``RuntimeError`` at boot where this project makes it fail.
+
+    Args:
+        evidence_id: A ``ref.statement_balance_evidence`` primary key.
+
+    Returns:
+        The member, or ``None`` when no row carries that id -- the answer
+        :func:`acct_category_member` gives for the same shape.
+    """
+    require_init()
+    return cache().enum_members[StatementBalanceEvidenceEnum].get(evidence_id)
+
+
+def statement_balance_evidence_id(member):
+    """Return the integer primary key for a StatementBalanceEvidenceEnum member.
+
+    An imported statement's opening-balance discriminator (plan step
+    **X-f6e-1**, ruling **R-GF**).  Stamped on
+    ``budget.statement_imports.balance_evidence_id`` by the one import door, via
+    the integer ID and never the string ``name``.  What the three members MEAN
+    is :class:`app.enums.StatementBalanceEvidenceEnum`'s to say and is not
+    restated here.
+    """
+    require_init()
+    return cache().enum_ids[StatementBalanceEvidenceEnum][member]

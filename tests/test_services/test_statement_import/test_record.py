@@ -24,8 +24,16 @@ from decimal import Decimal
 import pytest
 from sqlalchemy.exc import IntegrityError
 
-from app.enums import StatementSourceEnum
-from app.exceptions import StatementAccountMismatch, StatementLineConflict
+from app import ref_cache
+from app.enums import (
+    StatementBalanceEvidenceEnum,
+    StatementSourceEnum,
+)
+from app.exceptions import (
+    StatementAccountMismatch,
+    StatementBalanceUnexplained,
+    StatementLineConflict,
+)
 from app.models.statement_import import (
     AccountExternalIdentity,
     BankStatementLine,
@@ -163,41 +171,154 @@ class TestItRecordsWhatTheBankSaid:
         assert row.period_end == date(2026, 3, 4)
         assert row.user_id == seed_user["user"].id
 
-    def test_it_derives_the_opening_and_closing_from_the_chain(
+    def test_a_chained_file_is_PROVED_by_itself_and_the_ROW_says_so(
         self, app, db, seed_user,
     ):
-        """Never from the file's own header, which was measured to lag."""
+        """The stored columns, not just the value the door returned.
+
+        **The row itself had no assertion for an ANCHORED import**, so forcing
+        ``balance_effective_on`` to ``period_end`` or the evidence to a
+        constant left the whole suite green -- the column this step exists to
+        add could have stored the wrong thing forever.  Found by adversarial
+        review 2026-08-23.
+
+        The fixture chains from `$100.00` through -25.00, +1500.00 and -40.81,
+        so it closes at `$1,534.19` on 03-04 and its header states exactly
+        that.
+        """
         outcome = _record(seed_user, _file())
 
-        assert outcome.opening_balance == Decimal("100.00")
-        assert outcome.closing_balance == Decimal("1534.19")
+        row = db.session.query(StatementImport).one()
+        assert row.stated_balance == Decimal("1534.19")
+        assert row.balance_effective_on == date(2026, 3, 4)
+        assert ref_cache.statement_balance_evidence_member(
+            row.balance_evidence_id
+        ) is StatementBalanceEvidenceEnum.FILE_CHAIN
+        # The receipt and the row say ONE thing.
+        assert outcome.balance.effective_on == row.balance_effective_on
+        assert outcome.balance.evidence is StatementBalanceEvidenceEnum.FILE_CHAIN
 
-    def test_it_records_the_balance_the_FILE_claims_beside_the_derived_ones(
+    def test_the_stored_day_is_NOT_the_day_the_header_names(
         self, app, db, seed_user,
     ):
-        """The bank's own claim, stored apart from the two derivations.
+        """The 2026-08-16 LAG shape, end to end through the door.
 
-        A CLAIM and not a derivation, which is why it has its own pair of
-        columns: ``closing_balance`` is computed from the line chain, and the
-        model's docstring records the measurement forbidding one to stand in
-        for the other -- the 2026-08-16 export's header read ``$4,747.63``,
-        which was 08-13's closing balance, while that same file listed two
-        08-14 lines.  For a file carrying no running-balance column, which is
-        every export the developer's bank now produces, this is the only
-        balance figure recorded at all.
+        **Measured on the developer's own export**: its header reads
+        ``$4,747.63`` as of 08-16 over a file listing two 08-14 lines worth
+        ``-$1,006.72``, and the figure is 08-13's closing.  Until this test the
+        shape reached only a pure unit -- no door-level case ever produced an
+        ``effective_on`` DIFFERENT from ``period_end``, which is why mutating
+        the stored day to ``period_end`` survived.  Found by adversarial review
+        2026-08-23.
+
+        Here the chain closes at `$1,534.19` on 03-04 and the header states
+        `$1,559.19` -- the 03-03 cumulative -- as of 03-09, so the figure is
+        placed at 03-03 while the row's span ends 03-04.
         """
         _record(
             seed_user,
             build.build(build.chained("100.00", _ENTRIES),
-                        balance_as_of="08/16/2026",
-                        stated_balance="2501.31"),
+                        balance_as_of="03/09/2026",
+                        stated_balance="1575.00"),
         )
 
         row = db.session.query(StatementImport).one()
+        assert row.period_end == date(2026, 3, 4)
+        assert row.stated_balance_on == date(2026, 3, 9)
+        assert row.balance_effective_on == date(2026, 3, 3)
+
+    def test_a_header_the_files_lines_CANNOT_REACH_records_no_anchor(
+        self, app, db, seed_user,
+    ):
+        """A date-range export states TODAY's balance, not the range's closing.
+
+        **Measured on the developer's own file**: he exported
+        2026-01-02..2026-03-31 on 2026-08-23 and its header reads
+        ``Balance as of 08/23/2026,2459.600000`` -- 145 days past its last line
+        and `$255.41` from the `$2,715.01` its own 139 lines imply.  The
+        movements explaining that difference are simply not in the file, so no
+        day inside it can place the figure and refusing it would reject an
+        honest export.  The CLAIM is recorded; the anchor is not.
+
+        A PRIOR import supplies the opening, because "cannot be placed" is a
+        statement about a known opening the figure fails to reconcile with --
+        and it OVERLAPS, as a real consecutive export does, or the walk stops
+        at the uncovered day between them and falls back to taking the figure
+        at face value.
+        """
+        _record(seed_user, _file())
+
+        _record(
+            seed_user,
+            build.build(
+                build.chained(
+                    "0.00",
+                    [_ENTRIES[2],
+                     (date(2026, 3, 6), "-10.00",
+                      "POINT OF SALE DEBIT L340 FUEL")],
+                    with_running=False,
+                ),
+                balance_as_of="08/16/2026", stated_balance="2501.31",
+            ),
+            file_name="range.csv",
+        )
+
+        row = (
+            db.session.query(StatementImport)
+            .filter_by(file_name="range.csv").one()
+        )
         assert row.stated_balance == Decimal("2501.31")
         assert row.stated_balance_on == date(2026, 8, 16)
-        # Still derived from the chain, and still not the header.
-        assert row.closing_balance == Decimal("1534.19")
+        assert row.balance_effective_on is None
+        assert row.balance_evidence_id is None
+
+    def test_a_chained_file_CONTRADICTING_itself_is_REFUSED(
+        self, app, db, seed_user,
+    ):
+        """The only refusal: the file's own chain against its own header."""
+        with pytest.raises(StatementBalanceUnexplained) as raised:
+            _record(
+                seed_user,
+                build.build(build.chained("100.00", _ENTRIES),
+                            balance_as_of="03/09/2026",
+                            stated_balance="9999.99"),
+            )
+
+        assert raised.value.stated == Decimal("9999.99")
+        assert raised.value.implied == Decimal("1534.19")
+        assert db.session.query(StatementImport).count() == 0
+
+    def test_recording_a_line_RELEASES_an_anchor_it_undercuts(
+        self, app, db, seed_user,
+    ):
+        """The door's half of the release, through the door.
+
+        A second export inserting a line into a day the first anchor had
+        already priced means that anchor was solved without it.  Reproduced as
+        a stored day two days early under a *corroborated* badge before the
+        release existed.
+        """
+        _record(seed_user, _file())
+        first = db.session.query(StatementImport).one()
+        assert first.balance_effective_on == date(2026, 3, 4)
+
+        # A later export the bank has INSERTED a line into, on a day the first
+        # anchor already covers.
+        _record(
+            seed_user,
+            build.build(build.chained(
+                "100.00",
+                _ENTRIES[:2] + [
+                    (date(2026, 3, 3), "-5.00", "POINT OF SALE DEBIT L340 X"),
+                    _ENTRIES[2],
+                ],
+            )),
+            file_name="inserted.csv",
+        )
+
+        db.session.refresh(first)
+        assert first.balance_effective_on is None
+        assert first.balance_evidence_id is None
 
     def test_a_file_claiming_no_balance_records_NEITHER_column(
         self, app, db, seed_user,

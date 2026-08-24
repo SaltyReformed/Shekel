@@ -141,6 +141,7 @@
                 <th scope="col">When</th>
                 <th scope="col">File</th>
                 <th scope="col">Covers</th>
+                <th scope="col">Bank said</th>
                 <th scope="col" class="text-end">New</th>
                 <th scope="col" class="text-end">In file</th>
                 <th scope="col"><span class="visually-hidden">Delete</span></th>
@@ -152,6 +153,31 @@
                 <td class="text-nowrap">{{ row.created_at | local_datetime }}</td>
                 <td class="text-truncate stmt-file-name">{{ row.file_name }}</td>
                 <td class="text-nowrap font-mono small">{{ row.period_start }} .. {{ row.period_end }}</td>
+                {# The bank's claim, and how firmly the app holds it. The
+                   caption is looked up by the ENUM MEMBER the service handed
+                   us -- no name string is compared here, which is the
+                   ref-table rule. An ASSUMED anchor is the one worth seeing
+                   later: it propagates into every import that reconciles
+                   against it, so the flash alone would not be enough. #}
+                <td class="text-nowrap small">
+                  {% if row.balance is not none %}
+                  <span class="font-mono">{{ money(row.balance.stated) }}</span>
+                  {% if row.balance.is_anchored %}
+                  {% set copy = evidence_copy[row.balance.evidence] %}
+                  <span class="text-muted">as of {{ row.balance.effective_on }}</span>
+                  <br>
+                  <span class="badge {{ copy.badge }}"
+                        title="{{ copy.sentence }}">{{ copy.label }}</span>
+                  {% else %}
+                  <span class="text-muted">as of {{ row.balance.stated_on }}</span>
+                  <br>
+                  <span class="badge text-bg-warning"
+                        title="This file's lines stop at {{ row.period_end }}, so they cannot reach the day it states this figure for. Nothing here could place it.">not placed</span>
+                  {% endif %}
+                  {% else %}
+                  <span class="text-muted">no balance stated</span>
+                  {% endif %}
+                </td>
                 <td class="text-end font-mono">{{ row.recorded_count }}</td>
                 <td class="text-end font-mono text-muted">{{ row.line_count }}</td>
                 {# `data-confirm` is the project's own destructive-action

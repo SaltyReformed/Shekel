@@ -65,13 +65,21 @@ from app.extensions import db
 from app.models.statement_import import BankStatementLine, StatementImport
 from app.services.statement_match import release_match
 
+from ._anchor import release_anchors_from
 from ._identity import forget_identity_if_last
 from ._reads import matches_by_import
 
 
 @dataclass(frozen=True)
-class ImportRemoval:
+class ImportRemoval:  # pylint: disable=too-many-instance-attributes
     """What undoing one import actually removed.
+
+    Pylint: ``too-many-instance-attributes`` (8/7) -- eight because a delete
+    undoes eight distinct things, not because the value wants splitting.
+    ``ImportRecord`` in :mod:`._reads` carries the identical disable for the
+    identical reason: a receipt that genuinely states N facts is not improved
+    by hiding ``N - 7`` of them from the person who pressed a destructive
+    button.
 
     Every field is COUNTED as the act ran rather than read back afterwards,
     because afterwards the rows are gone.  The page reports these, and the
@@ -90,6 +98,10 @@ class ImportRemoval:
         matches_released: Accepted matches that named at least one of those
             lines.  Each is released whole, so a match spanning two imports
             frees the other import's lines back to unexplained as well.
+        anchors_released: Balance anchors this delete invalidated by removing
+            the lines they rested on.  Reported rather than silent because an
+            account that had a checked bank balance and now has none is a
+            change the owner should see stated, not discover later.
         identity_forgotten: Whether the source-account pairing went too, which
             happens exactly when this was the account's LAST import from that
             source.
@@ -101,6 +113,7 @@ class ImportRemoval:
     period_end: date
     lines_removed: int
     matches_released: int
+    anchors_released: int
     identity_forgotten: bool
 
 
@@ -173,13 +186,23 @@ def delete_import(
     period_start = statement_import.period_start
     period_end = statement_import.period_end
 
-    lines_removed = (
-        db.session.query(db.func.count(BankStatementLine.id))
+    # Counted, and the EARLIEST day among them taken, before the cascade
+    # removes them: what an anchor rests on is the lines themselves, so the
+    # release below is keyed on the days that actually go rather than on this
+    # import's declared span.  An import that recorded NOTHING removes nothing
+    # and must therefore release nothing -- measured on the developer's own
+    # database, where undoing a re-import of his 2026-08-16 export took a good
+    # anchor with it while deleting 0 lines.
+    lines_removed, earliest_removed = (
+        db.session.query(
+            db.func.count(BankStatementLine.id),
+            db.func.min(BankStatementLine.posted_on),
+        )
         .filter(
             BankStatementLine.import_id == import_id,
             BankStatementLine.account_id == account_id,
         )
-        .scalar()
+        .one()
     )
     # The SAME read the page previews with, so a confirmation cannot count
     # differently from the act it confirms.
@@ -195,6 +218,19 @@ def delete_import(
     db.session.delete(statement_import)
     db.session.flush()
 
+    # **Every anchor this delete undercut goes with the lines**, because an
+    # anchor is a conclusion drawn from lines at or before its own day and
+    # those lines have just gone.  Before this, a later overlapping import kept
+    # its span and its anchor while the evidence beneath it vanished, so the
+    # coverage test reported "covered" over a `$150.00` hole -- reproduced
+    # through these very doors by an adversarial review, 2026-08-23.  Run
+    # AFTER the delete so the released set is measured against what survives.
+    anchors_released = (
+        0 if earliest_removed is None
+        else release_anchors_from(account_id, earliest_removed)
+    )
+    db.session.flush()
+
     identity_forgotten = forget_identity_if_last(account_id, source_id)
     db.session.flush()
 
@@ -206,4 +242,5 @@ def delete_import(
         lines_removed=lines_removed,
         matches_released=len(match_ids),
         identity_forgotten=identity_forgotten,
+        anchors_released=anchors_released,
     )

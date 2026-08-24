@@ -47,7 +47,7 @@ checkers, CI); fix what a gate flags at the root, never with a bare disable.
 IDs and enums drive logic; `.name` strings are display only. Never compare a
 `.name` against a string literal in Python or Jinja (gate: `shekel-refname-compare`
 in Python; the template hook in Jinja). Enums in `app/enums.py`, cached in
-`app/ref_cache.py`.
+`app/ref_cache/`.
 
 ## HTML / Jinja2
 

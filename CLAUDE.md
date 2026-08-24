@@ -144,7 +144,7 @@ Structured logging via `log_event()`. Dependencies pinned in `requirements.txt` 
 without approval.
 
 **Reference tables: IDs for logic, strings for display only.** Enums in `app/enums.py`, cached in
-`app/ref_cache.py`. NEVER compare against string `name` columns in Python or Jinja (gate:
+`app/ref_cache/`. NEVER compare against string `name` columns in Python or Jinja (gate:
 `shekel-refname-compare` for Python; the template hook for Jinja).
 
 ## Definition of Done

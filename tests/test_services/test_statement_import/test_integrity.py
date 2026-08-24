@@ -22,7 +22,6 @@ from app.exceptions import StatementIntegrityError, StatementParseError
 from app.services.statement_import import (
     StatementLine,
     carries_running_balance,
-    closing_balance,
     opening_balance,
     verify_running_balance,
 )
@@ -186,7 +185,7 @@ class TestAPartialBalanceColumnIsAParseFailure:
             verify_running_balance(lines)
 
 
-class TestTheOpeningAndClosingAreDerivedFromTheLines:
+class TestTheOpeningIsDerivedFromTheLines:
     """Never from the file's own header, which was measured to lag."""
 
     def test_the_opening_is_the_first_balance_minus_its_own_move(self):
@@ -195,20 +194,12 @@ class TestTheOpeningAndClosingAreDerivedFromTheLines:
 
         assert opening_balance(lines) == Decimal("100.00")
 
-    def test_the_closing_is_the_last_running_balance(self):
-        """What the account held after the last line."""
-        lines = _chain("100.00", ["-25.00", "50.00"])
-
-        assert closing_balance(lines) == Decimal("125.00")
-
-    def test_both_are_none_without_a_running_balance(self):
-        """A source that does not state balances does not get invented ones."""
+    def test_it_is_none_without_a_running_balance(self):
+        """A source that does not state balances does not get an invented one."""
         lines = [_line(date(2026, 3, 1), "-25.00", None)]
 
         assert opening_balance(lines) is None
-        assert closing_balance(lines) is None
 
-    def test_both_are_none_for_an_empty_file(self):
+    def test_it_is_none_for_an_empty_file(self):
         """Total rather than raising."""
         assert opening_balance([]) is None
-        assert closing_balance([]) is None

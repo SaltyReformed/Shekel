@@ -267,6 +267,28 @@ _REF_TABLE_SEEDS = (
     # settlement-record, amount-model, posting and recurrence refs use.  Names
     # match the enum ``.value`` strings in ``app/enums.py`` exactly.
     ("SettledDayBasis", ["observed", "asserted", "entered"]),
+    # How strongly an imported statement's balance is EVIDENCED (bank_import
+    # arc, plan step X-f6e-1, ruling R-GF): ``file_chain`` is a file stating a
+    # balance beside every line, so it proves itself; ``corroborated`` is that
+    # figure agreeing with a balance the app already holds which is itself
+    # evidenced; ``uncorroborated`` is nothing confirming it.  It is the
+    # WEAKEST LINK in the chain behind the figure -- a day solved against an
+    # uncorroborated opening is uncorroborated -- which is what stops a
+    # re-upload of one file from checking an assumption against itself.
+    # An import that placed no figure on a day carries no evidence, so there
+    # is deliberately no ``unknown`` row here; the pairing CHECK is a
+    # BICONDITIONAL over the two NULL-nesses -- see
+    # :class:`app.enums.StatementBalanceEvidenceEnum`.  **Their ORDER here
+    # carries no meaning**: the ladder is stated once, on the enum, and an
+    # early draft that read it off these row ids was measured backwards.  The
+    # migration ``4c1f8b7e2a90`` inline-seeds the identical rows so a freshly
+    # upgraded DB resolves the enum before this idempotent reseed runs -- the
+    # same dual-seed pattern every ref above uses.  Names match the enum
+    # ``.value`` strings in ``app/enums.py`` exactly.
+    (
+        "StatementBalanceEvidence",
+        ["file_chain", "corroborated", "uncorroborated"],
+    ),
 )
 # pylint: enable=line-too-long
 # fmt: on

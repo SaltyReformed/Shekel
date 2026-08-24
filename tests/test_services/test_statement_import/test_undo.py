@@ -169,6 +169,86 @@ class TestItRemovesWhatThatImportRecorded:
         assert removal.matches_released == 0
 
 
+class TestItReleasesTheANCHORSItsLinesSupported:
+    """A balance anchor rests on lines, and this door takes lines away.
+
+    **Reproduced through these very doors by adversarial review, 2026-08-23**:
+    a later overlapping import kept its span and its anchor while the earlier
+    import's lines were deleted beneath it, so the coverage test reported
+    "covered" over a `$150.00` hole and the walk returned a confident wrong
+    opening.
+    """
+
+    def test_deleting_an_import_releases_an_anchor_over_its_span(
+        self, app, db, seed_user,
+    ):
+        """The anchor goes with the evidence it rested on."""
+        outcome = _import(seed_user)
+        row = db.session.get(StatementImport, outcome.import_id)
+        assert row.balance_effective_on is not None
+
+        second = _import(
+            seed_user,
+            payload=build.build(build.chained(
+                "1534.19",
+                [(date(2026, 3, 5), "-10.00", "POINT OF SALE DEBIT L340 X")],
+            )),
+            file_name="later.csv",
+        )
+        later = db.session.get(StatementImport, second.import_id)
+        assert later.balance_effective_on is not None
+
+        removal = _undo(seed_user, outcome.import_id)
+
+        db.session.refresh(later)
+        assert removal.anchors_released == 1
+        assert later.balance_effective_on is None
+        assert later.balance_evidence_id is None
+
+    def test_a_delete_that_removes_NO_LINES_releases_nothing(
+        self, app, db, seed_user,
+    ):
+        """An idempotent re-import owns no lines, so undoing it changes none.
+
+        **Measured on the developer's own database**: undoing a re-import of
+        his 2026-08-16 export removed 0 of that file's 361 lines and yet took a
+        good anchor with it, because the release was keyed on the import's
+        declared SPAN rather than on the days whose lines actually went.
+        """
+        first = _import(seed_user)
+        again = _import(seed_user, file_name="again.csv")
+        early = db.session.get(StatementImport, first.import_id)
+        assert early.balance_effective_on == date(2026, 3, 4)
+
+        removal = _undo(seed_user, again.import_id)
+
+        db.session.refresh(early)
+        assert removal.lines_removed == 0
+        assert removal.anchors_released == 0
+        assert early.balance_effective_on == date(2026, 3, 4)
+
+    def test_it_LEAVES_an_anchor_that_predates_the_deleted_span(
+        self, app, db, seed_user,
+    ):
+        """A delete of later days says nothing about an earlier anchor."""
+        first = _import(seed_user)
+        second = _import(
+            seed_user,
+            payload=build.build(build.chained(
+                "1534.19",
+                [(date(2026, 3, 5), "-10.00", "POINT OF SALE DEBIT L340 X")],
+            )),
+            file_name="later.csv",
+        )
+        early = db.session.get(StatementImport, first.import_id)
+
+        removal = _undo(seed_user, second.import_id)
+
+        db.session.refresh(early)
+        assert removal.anchors_released == 0
+        assert early.balance_effective_on == date(2026, 3, 4)
+
+
 class TestItReleasesRatherThanOrphans:
     """A match may not lose its bank lines, and the days it wrote stay."""
 

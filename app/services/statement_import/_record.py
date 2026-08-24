@@ -43,8 +43,14 @@ from app.extensions import db
 from app.models.statement_import import BankStatementLine, StatementImport
 
 from ._adapters import parse_statement
+from ._anchor import (
+    ImportedBalance,
+    recorded_opening_before,
+    release_anchors_from,
+    resolve_anchor,
+)
 from ._identity import record_identity, verify_identity
-from ._integrity import closing_balance, opening_balance, verify_running_balance
+from ._integrity import verify_running_balance
 from ._line import (
     KeyedLine,
     StatementLine,
@@ -65,9 +71,9 @@ class ImportOutcome:
         recorded_count: Lines this import wrote.
         period_start: The earliest day the file covers.
         period_end: The latest.
-        opening_balance: The balance before the first line, where the source
-            carries a running balance.
-        closing_balance: The balance after the last, likewise.
+        balance: What the file claimed the account held and what this import
+            made of it, or ``None`` when the file states no balance.  The same
+            value the row stores, so the receipt and the page say one thing.
     """
 
     import_id: int
@@ -75,8 +81,7 @@ class ImportOutcome:
     recorded_count: int
     period_start: date
     period_end: date
-    opening_balance: Decimal | None
-    closing_balance: Decimal | None
+    balance: ImportedBalance | None
 
     @property
     def already_known(self) -> int:
@@ -371,6 +376,8 @@ def record_statement(
         StatementParseError: The file is not the shape the adapter reads.
         StatementIntegrityError: The file's running balances do not follow
             from its own lines.
+        StatementBalanceUnexplained: The file states a balance that no day it
+            covers reconciles with what is already known.
         StatementAccountMismatch: The file is for a different account.
         StatementLineConflict: A recorded line is restated.
     """
@@ -394,6 +401,16 @@ def record_statement(
     already = _recorded_groups(account_id, period_start, period_end)
 
     fresh = _fresh_lines(lines, already)
+    # Read BEFORE the import row exists, so the walk sees only what was
+    # recorded before this act -- and resolve the anchor here, with the other
+    # refusals, because an unexplained balance must refuse the file rather
+    # than be discovered after its lines are staged.
+    balance = resolve_anchor(
+        lines,
+        parsed.stated_balance,
+        parsed.stated_balance_on,
+        recorded_opening_before(account_id, period_start),
+    )
 
     # Every refusal is now behind us, so this is the first write.
     if identity_is_new:
@@ -411,14 +428,18 @@ def record_statement(
         period_end=period_end,
         line_count=len(lines),
         recorded_count=len(fresh),
-        opening_balance=opening_balance(lines),
-        closing_balance=closing_balance(lines),
-        # The bank's OWN claim, kept apart from the two figures above it:
-        # those are derived from the line chain, this is what the file's
-        # header says, and the model's docstring records why one may never
-        # stand in for the other.
+        # The bank's OWN claim, verbatim, beside what this import worked out
+        # about it.  The claim and the day it is FOR are two facts (ruling
+        # **R-GF**): SECU writes the figure as of the export INSTANT and
+        # labels it with the export's day, so on the developer's 2026-08-16
+        # file these two columns read 08-16 and the anchor reads 08-13.
         stated_balance=parsed.stated_balance,
         stated_balance_on=parsed.stated_balance_on,
+        balance_effective_on=balance.effective_on if balance else None,
+        balance_evidence_id=(
+            ref_cache.statement_balance_evidence_id(balance.evidence)
+            if balance is not None and balance.is_anchored else None
+        ),
     )
     db.session.add(statement_import)
     # The lines carry the import's id in a composite key, so the import row
@@ -426,6 +447,19 @@ def record_statement(
     db.session.flush()
 
     _stage_lines(account_id, statement_import.id, fresh)
+    # **Every anchor these fresh lines undercut is RELEASED**, and it happens
+    # after the staging so the earliest fresh day is known.  An anchor solved
+    # before a line at or before its own day was recorded was solved without
+    # that line, and an adversarial review reproduced one storing a day two
+    # days early under a *corroborated* badge because of it.  This import's
+    # OWN anchor is not among them: it was solved against its own complete
+    # line list, so it accounts for every line staged here.
+    if fresh:
+        release_anchors_from(
+            account_id,
+            min(keyed.line.posted_on for keyed in fresh),
+            except_import_id=statement_import.id,
+        )
     db.session.flush()
 
     return ImportOutcome(
@@ -434,6 +468,5 @@ def record_statement(
         recorded_count=len(fresh),
         period_start=period_start,
         period_end=period_end,
-        opening_balance=statement_import.opening_balance,
-        closing_balance=statement_import.closing_balance,
+        balance=balance,
     )

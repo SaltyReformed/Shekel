@@ -907,6 +907,25 @@ hides.
   table's `.name` whose `__eq__` against a `str` RAISES, retiring W9902 and its two module sets. The
   Jinja half needs its own answer.
 
+* [ ] **X-ba** `refactor(ref): one lookup, not twenty-six copies of it` -- collapse
+  `app/ref_cache/_accessors.py`'s twenty-six near-identical functions into one
+  `enum_id(member)` reading `type(member)`, and migrate the call sites. Finding **N-341**.
+  Each is `require_init(); return cache().enum_ids[Enum][member]` under a docstring running 1 to 35
+  lines, and the repetition is what took the module past pylint's 1,000-line ceiling with four
+  lines of headroom -- `bank_import:X-f6e-1` SPLIT it into a package to buy room without touching a
+  public name, which is a floor rather than the fix.
+  **The census, measured 2026-08-23 and not to be re-taken**: 26 canonical accessors plus five that
+  are not (`transaction_type_is_income`, `acct_category_member`, `acct_type_icon`,
+  `acct_type_max_term`, `ledger_class_is_debit_normal`); **`acct_type_icon` and
+  `acct_type_max_term` have 0 references in `app/`, `tests/`, `scripts/` or `tools/`** and are
+  candidates for DELETION rather than folding -- with them the `_cache.acct_type_meta` map
+  `init()` populates to feed them. 98 modules `from app import ref_cache`; none reaches a private
+  name through it, and none uses the `from app.ref_cache import <name>` form.
+  **What the migration owes**: the per-accessor rationale several docstrings carry is not noise --
+  `raise_type_id` names the producer it serves and the ruling behind it -- so the census decides
+  per function whether its prose moves to the ENUM, where the meaning belongs. It rewrites a
+  surface 98 modules import, so it takes its own PR.
+
 * [x] **X-az** `488e8dd2` a settle day says HOW it is known, closing **N-332**, opening **N-334**.
   `settled_day_basis_id` on BOTH tables carrying `settled_on`, a `SettleDay(day, basis)` through
   every door, `ck_transactions_settle_day_needs_basis` renamed `..._needs_a_record` (it is the

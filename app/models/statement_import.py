@@ -161,23 +161,43 @@ class StatementImport(AccountScopedMixin, UserScopedMixin, CreatedAtMixin,
                         between the two is the overlap with what was already
                         known, and showing it is what makes idempotency
                         VISIBLE rather than merely true.
-        opening_balance / closing_balance -- the running balance before the
-                        first line and after the last, where the source carries
-                        one at all (NULLABLE for a source that does not).
         stated_balance / stated_balance_on -- what the file's OWN header claims
-                        the account held, and the day it names.  A CLAIM, not a
-                        derivation, which is why it sits beside the two above
-                        rather than in them; see the note below.  Both-or-
-                        neither, enforced by
+                        the account held, and the day it names.  A CLAIM, kept
+                        verbatim and never rewritten.  Both-or-neither,
+                        enforced by
                         ``ck_statement_imports_stated_balance_paired``.
+        balance_effective_on -- the day that claimed figure is actually the
+                        balance FOR, solved from the file's own lines (plan
+                        step ``bank_import:X-f6e-1``, ruling **R-GF**).  NULL
+                        where the file's own lines cannot reach the day it
+                        claims, which a DATE-RANGE export always is.
+        balance_evidence_id -- how strongly that figure is HELD
+                        (``ref.statement_balance_evidence``): proved by the
+                        file's own chain, corroborated by other recorded
+                        statements, or confirmed by nothing.  It is the
+                        WEAKEST link in the chain behind the figure, so an
+                        anchor solved against an unconfirmed opening is itself
+                        unconfirmed.  See
+                        :class:`app.enums.StatementBalanceEvidenceEnum`.
 
-    **``closing_balance`` is derived from the line CHAIN, never from the file's
-    own balance header, and that is a measured trap rather than a preference.**
-    SECU's OFX reports ``LEDGERBAL`` as of the export instant, and on the
-    2026-08-16 export that figure (``$4,747.63``) was 2026-08-13's closing
-    balance while the same file listed two 2026-08-14 lines worth
-    ``-$1,006.72``.  An importer that had anchored a running balance on the
-    header would have been wrong by exactly the unposted tail, on every day.
+    **The stated day is NOT the day the figure is for, and that is measured
+    rather than defensive.**  SECU writes the balance as of the EXPORT INSTANT
+    and labels it with the export's own day.  On the developer's 2026-08-21
+    export the header reads ``Balance as of 08/21/2026,2501.310000`` while the
+    file's last line is 08-18 and ``2501.31`` is 08-18's closing; on the
+    2026-08-16 export it reads ``$4,747.63``, which is 2026-08-13's closing,
+    over a file listing two 2026-08-14 lines worth ``-$1,006.72``.  The claim
+    and the day it is FOR are therefore two facts, so the file's own words stay
+    in ``stated_balance_on`` and the solved day stands in
+    ``balance_effective_on`` beside it.
+
+    **``opening_balance`` and ``closing_balance`` were DROPPED at that step**,
+    and dropping them is the point rather than a tidy-up: ``closing`` is
+    ``opening + Sigma(lines)`` and ``opening`` is
+    ``stated - Sigma(lines up to the effective day)``, so both were derived
+    values stored beside their own source with nothing reconciling the three --
+    the root cause several of this project's arcs exist to remove.  What is
+    stored is the observation and how firmly it is held; every balance derives.
     """
 
     __tablename__ = "statement_imports"
@@ -208,16 +228,47 @@ class StatementImport(AccountScopedMixin, UserScopedMixin, CreatedAtMixin,
             "recorded_count >= 0 AND recorded_count <= line_count",
             name="ck_statement_imports_recorded_within_file",
         ),
-        # The file's own claim is ONE fact in two columns, so the pair is
-        # both-or-neither.  A figure without its day asserts nothing about an
-        # account -- the whole point of it is which day the bank computed it
-        # for -- and a day without a figure asserts nothing at all.  Stated
-        # structurally because the reader compares the figure against an anchor
-        # SELECTED BY that day, and a half-written pair would send it looking
-        # for an anchor as of NULL.
+        # The file's CLAIM is one fact in two columns, and what the import
+        # made of it is a SECOND fact in two more.  A figure without its day
+        # asserts nothing about an account, a day without a figure asserts
+        # nothing at all, and a solved effective day without a basis is the
+        # inference finding **N-241** deleted one table over: a fact whose
+        # provenance a reader would have to guess from which other column
+        # happens to be populated.
         db.CheckConstraint(
             "(stated_balance IS NULL) = (stated_balance_on IS NULL)",
             name="ck_statement_imports_stated_balance_paired",
+        ),
+        db.CheckConstraint(
+            "(balance_effective_on IS NULL) = (balance_evidence_id IS NULL)",
+            name="ck_statement_imports_balance_evidence_paired",
+        ),
+        # An anchor comes FROM a claim, so it cannot outlive one -- an
+        # implication rather than a biconditional, and the asymmetry is
+        # MEASURED.  A date-range export states the CURRENT balance rather
+        # than the range's closing: the developer's 2026-01-02..2026-03-31
+        # file, pulled 2026-08-23, states `$2,459.60` as of 08-23, which is
+        # 145 days past its last line and `$255.41` from the `$2,715.01` its
+        # own 139 lines imply.  Its claim is real and its anchor is
+        # undeterminable, so a claim with no anchor is the honest state.
+        db.CheckConstraint(
+            "balance_effective_on IS NULL OR stated_balance IS NOT NULL",
+            name="ck_statement_imports_anchor_needs_a_claim",
+        ),
+        # The solved day is one the FILE could have pinned, and both bounds are
+        # structural truths about the solve rather than tolerances.  It ranges
+        # over {the day before the first line} + {every day the file covers},
+        # so ``period_start - 1`` is its floor and ``period_end`` its ceiling;
+        # and a bank cannot state a balance for a day after the one it wrote on
+        # the header, so the claimed day is its other ceiling.  Measured on the
+        # developer's exports: 08-22 solves at 08-21 under a header dated
+        # 08-22, and 08-16 at 08-13 under one dated 08-16.
+        db.CheckConstraint(
+            "balance_effective_on IS NULL OR ("
+            "balance_effective_on >= period_start - 1 "
+            "AND balance_effective_on <= period_end "
+            "AND balance_effective_on <= stated_balance_on)",
+            name="ck_statement_imports_effective_day_within_file",
         ),
         db.Index("idx_statement_imports_account", "account_id"),
         {"schema": "budget"},
@@ -235,15 +286,23 @@ class StatementImport(AccountScopedMixin, UserScopedMixin, CreatedAtMixin,
     period_end = db.Column(db.Date, nullable=False)
     line_count = db.Column(db.Integer, nullable=False)
     recorded_count = db.Column(db.Integer, nullable=False)
-    opening_balance = db.Column(db.Numeric(12, 2))
-    closing_balance = db.Column(db.Numeric(12, 2))
-    # NULLABLE, and for the same reason the two above are: a source may state
-    # no balance header at all.  Both of the developer's SECU exports do state
-    # one; a future adapter need not.
+    # NULLABLE, because a source may state no balance at all -- and then this
+    # import determines no opening and the three columns below are NULL with
+    # it.  Every SECU export the developer holds states one.
     stated_balance = db.Column(db.Numeric(12, 2))
     stated_balance_on = db.Column(db.Date)
+    # The day :attr:`stated_balance` is the balance FOR, solved from the lines
+    # (plan step ``bank_import:X-f6e-1``).  NOT a copy of
+    # :attr:`stated_balance_on`: on the developer's own 2026-08-16 export the
+    # two are three days apart.
+    balance_effective_on = db.Column(db.Date)
+    balance_evidence_id = db.Column(
+        db.Integer,
+        db.ForeignKey("ref.statement_balance_evidence.id", ondelete="RESTRICT"),
+    )
 
     source = db.relationship("StatementSource", lazy="joined")
+    balance_evidence = db.relationship("StatementBalanceEvidence", lazy="joined")
     lines = db.relationship(
         "BankStatementLine", back_populates="statement_import",
         cascade="all, delete-orphan", passive_deletes=True,

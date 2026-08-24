@@ -22,7 +22,10 @@ from decimal import Decimal
 
 import pytest
 
-from app.enums import StatementSourceEnum
+from app.enums import (
+    StatementBalanceEvidenceEnum,
+    StatementSourceEnum,
+)
 from app.models.ref import AccountType
 from app.services import account_service
 from app.services.statement_import import (
@@ -148,6 +151,53 @@ class TestEveryReaderIsScopedToItsOwnAccount:
         assert [row.file_name for row in import_history(mine.id)] == [
             "mine.csv",
         ]
+
+
+class TestTheImportRowCarriesWhatTheBankSaid:
+    """The RECORD, where the receipt is transient.
+
+    ``ImportedBalance``'s own docstring argues this matters because an anchor
+    the import only assumed has to stay readable after the flash is gone -- and
+    the field had no test at all, so forcing ``_imported_balance`` to return
+    ``None`` left 233 tests passing.  Found by adversarial review 2026-08-23.
+    """
+
+    def test_it_carries_the_claim_the_day_and_the_evidence(
+        self, app, db, seed_user, two_accounts,
+    ):
+        """All four facts, because the schema holds them as one.
+
+        The fixture chains from `$100.00`, so its header states the closing its
+        own lines imply and the file proves itself.
+        """
+        mine, _ = two_accounts
+        _record(seed_user, mine, _ENTRIES)
+
+        balance = import_history(mine.id)[0].balance
+
+        assert balance is not None
+        assert balance.stated == Decimal("1534.19")
+        assert balance.effective_on == date(2026, 3, 4)
+        assert balance.evidence is StatementBalanceEvidenceEnum.FILE_CHAIN
+        assert balance.is_anchored
+
+    def test_a_file_stating_NO_balance_carries_none(
+        self, app, db, seed_user, two_accounts,
+    ):
+        """The absence is a value the page branches on, so it is asserted."""
+        mine, _ = two_accounts
+        payload = build.build(build.chained("100.00", _ENTRIES))
+        without = b"\n".join(
+            line for line in payload.split(b"\n")
+            if not line.startswith(b"Balance as of")
+        )
+        record_statement(
+            account_id=mine.id, user_id=seed_user["user"].id,
+            source=StatementSourceEnum.SECU_CHECKING_CSV,
+            file_name="nobalance.csv", payload=without,
+        )
+
+        assert import_history(mine.id)[0].balance is None
 
 
 class TestTheSpanIsArithmeticallyTrue:

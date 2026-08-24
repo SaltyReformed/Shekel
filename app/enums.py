@@ -715,3 +715,82 @@ class SettledDayBasisEnum(enum.Enum):
     OBSERVED = "observed"
     ASSERTED = "asserted"
     ENTERED = "entered"
+
+
+class StatementBalanceEvidenceEnum(enum.Enum):
+    """How strongly an imported statement's balance is EVIDENCED (**X-f6e-1**).
+
+    A statement states a balance (``Balance as of 08/22/2026,2459.600000``) and
+    a list of lines.  What the app needs from it is an ANCHOR -- the account
+    held this much at the end of this day -- and what this says is how much
+    that anchor can be trusted.  Ruling **R-GF**.
+
+        file_chain     -- the file states a balance beside EVERY line, so it
+                          proves itself and needs nothing outside.  The only
+                          level that rests on this file alone.
+        corroborated   -- the figure agrees with a balance the app already
+                          holds which is ITSELF evidenced, so two independent
+                          statements say the same thing.
+        uncorroborated -- nothing confirms it.  The figure is taken at face
+                          value, which is what a FIRST import is and what any
+                          anchor rooted in one remains.
+
+    **It is the WEAKEST LINK in the chain behind the figure, and that is the
+    whole design rather than a caution.**  An anchor's day is often SOLVED
+    rather than stated -- ``stated - sum(lines up to d) == opening`` picks the
+    day out of the file's own lines -- and it is tempting to record that the
+    day was worked out and call the result corroborated.  It is not: a solved
+    day is only as good as the opening it was solved against, so an anchor
+    solved against an uncorroborated opening is uncorroborated too.  Recording
+    the minimum makes that true BY CONSTRUCTION.
+
+    **What it removes is a defect an adversarial review reproduced in two
+    clicks** (2026-08-23): re-uploading the identical file made the app walk
+    back from its own assumption, find that the file agreed with it, and record
+    the result as corroborated -- the assumption checking itself, with the
+    receipt turning from a warning to a green tick.  Under a weakest link no
+    re-upload can strengthen anything, because the chain still contains the
+    assumption.
+
+    **The partition is over EVIDENCE, which is what makes it exhaustive.**  A
+    figure is evidenced by its own file, by other files, or by nothing; there
+    is no fourth kind, so every import lands in exactly one member.
+
+    **There is deliberately no member meaning "this file states no balance"**,
+    for the reason :class:`SettledDayBasisEnum` has none meaning *not settled*:
+    that is the ABSENCE of a member rather than one of them, so it is a NULL
+    welded to ``balance_effective_on``'s by
+    ``ck_statement_imports_balance_evidence_paired`` and no ref id is frozen
+    into the schema.
+
+    Application code resolves these via ``ref_cache.statement_balance_evidence_id``
+    and ``ref_cache.statement_balance_evidence_member`` and compares against the
+    integer ID -- never the string ``name`` -- matching the project-wide
+    ``ref-table: IDs for logic, strings for display only`` invariant.
+    """
+
+    FILE_CHAIN = "file_chain"
+    CORROBORATED = "corroborated"
+    UNCORROBORATED = "uncorroborated"
+
+    @property
+    def strength(self) -> int:
+        """Return where this member sits on the evidence ladder, 0 the weakest.
+
+        **Declared once, here, because the ORDER is the meaning.**  A caller
+        that compared members by writing its own mapping would be a second
+        statement of the ladder, and the two would drift; the weakest-link rule
+        (:func:`app.services.statement_import.weaker_of`) is the only consumer
+        and it reads this.
+        """
+        return _EVIDENCE_STRENGTH[self]
+
+
+#: The evidence ladder, weakest first.  A module-level map rather than a body
+#: inside :attr:`StatementBalanceEvidenceEnum.strength` so the ORDER is
+#: readable as a list at a glance, which is what a ladder is.
+_EVIDENCE_STRENGTH = {
+    StatementBalanceEvidenceEnum.UNCORROBORATED: 0,
+    StatementBalanceEvidenceEnum.CORROBORATED: 1,
+    StatementBalanceEvidenceEnum.FILE_CHAIN: 2,
+}

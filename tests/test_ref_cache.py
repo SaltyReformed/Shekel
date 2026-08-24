@@ -25,6 +25,7 @@ import sqlalchemy.exc
 
 from app.extensions import db
 from app import create_app, ref_cache
+from app.ref_cache import _accessors, _state
 from app.enums import (
     AcctCategoryEnum,
     AmountSourceEnum,
@@ -1109,8 +1110,13 @@ class TestAcctCategoryMemberRefCache:
         the net-worth hero would report every liability as an asset.
         """
         with app.app_context():
+            # The cache itself lives in the package's ``_state`` module since
+            # plan step ``bank_import:X-f6e-1`` split ``ref_cache`` in two.
+            # Reached directly rather than re-exported: it is private, and a
+            # public alias for it would be a second name for the one thing the
+            # split exists to keep behind a door.
             # pylint: disable=protected-access
-            ref_cache._cache.initialized = False
+            _state._cache.initialized = False
             try:
                 with pytest.raises(RuntimeError):
                     ref_cache.acct_category_member(1)
@@ -1192,3 +1198,63 @@ class TestAmountSourceRefCache:
             # Roll back so other tests aren't affected, then re-init clean.
             db.session.rollback()
             ref_cache.init(db.session)
+
+
+class TestThePackageReExportsItsWholeSurface:
+    """``app.ref_cache`` is a PACKAGE, and ``__all__`` is what callers get.
+
+    Plan step **bank_import:X-f6e-1** split the flat module in two when a
+    twenty-sixth reference table took it past pylint's 1,000-line ceiling.
+    The split's whole guarantee is that no caller changed, and that rests on
+    one hand-written re-export block in ``__init__.py``.
+
+    **Nothing pinned that block, and two of the names it carries have no
+    caller anywhere to raise an alarm** -- ``acct_type_icon`` and
+    ``acct_type_max_term`` are measurably dead, 0 references in ``app/``,
+    ``tests/``, ``scripts/`` or ``tools/``.  Dropping either from the block
+    would leave the whole ~5,500-test suite green and ship the hole.  Found by
+    an adversarial review of the split, 2026-08-23.
+    """
+
+    def test_every_accessor_the_package_defines_is_re_exported(self):
+        """Derived from the module, never a hand-kept list.
+
+        A hardcoded roster would catch a DROPPED name and miss an ADDED one --
+        a twenty-seventh accessor written and never re-exported is exactly the
+        same hole, arriving from the other direction.
+        """
+        defined = {
+            name for name, value in vars(_accessors).items()
+            if not name.startswith("_")
+            and getattr(value, "__module__", None) == _accessors.__name__
+        }
+
+        assert defined, "no accessors found -- the reflection is wrong"
+        assert defined | {"init"} == set(ref_cache.__all__)
+        for name in defined:
+            assert hasattr(ref_cache, name), f"{name} is not re-exported"
+
+    def test_the_two_dead_accessors_are_reachable(self):
+        """Named because reflection would not miss them and a human would.
+
+        These are the two the class docstring calls out.  They are asserted
+        BY NAME so that the day someone deletes one -- which finding
+        **N-341**'s step may well do -- this test says so out loud instead of
+        adjusting silently along with the reflection above.
+        """
+        assert hasattr(ref_cache, "acct_type_icon")
+        assert hasattr(ref_cache, "acct_type_max_term")
+
+    def test_the_package_INTERNAL_seam_is_not_re_exported(self):
+        """``cache`` and ``require_init`` are public to the package only.
+
+        They are public names in a PRIVATE module: that is what lets
+        ``_accessors`` read the cache by name without thirty-one
+        ``protected-access`` disables, and ``shekel-private-module-import`` is
+        what stops the world reaching them.  Exporting either here would undo
+        that and hand callers a door onto the cache object itself.
+        """
+        assert "cache" not in ref_cache.__all__
+        assert "require_init" not in ref_cache.__all__
+        assert not hasattr(ref_cache, "cache")
+        assert not hasattr(ref_cache, "require_init")

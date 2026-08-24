@@ -7,14 +7,23 @@ did not author, and it is worth more than it looks: it catches a missing line, a
 mis-ordered parse and an edited file, none of which any later stage could
 distinguish from the truth.
 
-**This is also why the CSV was chosen over the OFX** (ruling **R-FP**'s adapter
-question, decided by measurement 2026-08-16).  The OFX carries no per-line
-balance, and its file-level ``LEDGERBAL`` cannot substitute: on the developer's
-own 2026-08-16 export that header read ``$4,747.63``, which is 2026-08-13's
-closing balance, while the same file listed two 2026-08-14 lines worth
-``-$1,006.72``.  An importer that had trusted the header would have been wrong
-by exactly the unposted tail, on every day, and nothing in the file would have
-said so.
+**The chain is an EXPORT OPTION, so most files arrive without it**, and what
+stands in its place is two other self-checks rather than nothing: the adapter
+refuses a file that disagrees with its own ``Totals:`` summary
+(``_secu_csv._verify_against_totals``), which catches a dropped line, and
+:mod:`._anchor` solves the file's stated balance against a known opening, which
+catches a file whose header and lines cannot both be true.  SECU stopped
+offering the running-balance column on its standard download between the
+2026-07-19 and 2026-08-16 exports, so every file the app sees today takes that
+path.
+
+**The header is not a substitute for this chain and never was** (ruling
+**R-FP**'s adapter question, 2026-08-16): a bank writes it as of the export
+INSTANT, so the developer's 2026-08-16 export reads ``$4,747.63`` -- 2026-08-13's
+closing -- while listing two 2026-08-14 lines worth ``-$1,006.72``.  What
+:mod:`._anchor` does with it is solve WHICH DAY it is the balance for rather
+than assume it is the last one, which is the difference between reading a
+header as a closing balance and reading it as an observation.
 
 Services-boundary discipline: plain data in, nothing written, no clock read.
 """
@@ -116,18 +125,3 @@ def opening_balance(lines: list) -> Decimal | None:
     if not lines or lines[0].running_balance is None:
         return None
     return lines[0].running_balance - lines[0].amount
-
-
-def closing_balance(lines: list) -> Decimal | None:
-    """Return the balance AFTER the last line, or ``None``.
-
-    Args:
-        lines: :class:`~._line.StatementLine` values in chronological order.
-
-    Returns:
-        The last line's running balance, or ``None`` when the source carries
-        none.
-    """
-    if not lines:
-        return None
-    return lines[-1].running_balance

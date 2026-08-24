@@ -46,9 +46,17 @@ difference at the cash cutover (``balance:X-f3c``).
 """
 
 from ._adapters import parse_statement, supported_sources
+from ._anchor import (
+    ImportedBalance,
+    KnownOpening,
+    recorded_opening_before,
+    release_anchors_from,
+    resolve_anchor,
+    solve_effective_day,
+    weaker_of,
+)
 from ._integrity import (
     carries_running_balance,
-    closing_balance,
     opening_balance,
     verify_running_balance,
 )
@@ -77,6 +85,8 @@ from ._undo import ImportRemoval, delete_import
 __all__ = [
     "GroupPairing",
     "ImportOutcome",
+    "ImportedBalance",
+    "KnownOpening",
     "ImportRecord",
     "ImportRemoval",
     "KeyedLine",
@@ -85,7 +95,6 @@ __all__ = [
     "StatementLine",
     "available_sources",
     "carries_running_balance",
-    "closing_balance",
     "delete_import",
     "fresh_ordinals",
     "group_indexes",
@@ -97,7 +106,12 @@ __all__ = [
     "parse_statement",
     "recent_lines",
     "record_statement",
+    "recorded_opening_before",
     "recorded_span",
+    "release_anchors_from",
+    "resolve_anchor",
+    "solve_effective_day",
     "supported_sources",
     "verify_running_balance",
+    "weaker_of",
 ]

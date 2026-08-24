@@ -795,3 +795,44 @@ class SettledDayBasis(db.Model):
 
     def __repr__(self):
         return f"<SettledDayBasis {self.name}>"
+
+
+class StatementBalanceEvidence(db.Model):
+    """How strongly an imported statement's balance is EVIDENCED (**X-f6e-1**).
+
+    The catalogue behind ``budget.statement_imports.balance_evidence_id``.  An
+    import that placed no figure on a day carries NULL here and no
+    ``balance_effective_on``; one that DID carries both, and this says how much
+    that placement can be trusted -- ``file_chain`` (the file states a balance
+    beside every line, so it proves itself), ``corroborated`` (the figure
+    agrees with a balance the app already holds which is itself evidenced) or
+    ``uncorroborated`` (nothing confirms it).
+
+    :class:`app.enums.StatementBalanceEvidenceEnum` carries why it is the
+    WEAKEST LINK in the chain rather than a description of how the day was
+    worked out: a solved day is only as good as the opening it was solved
+    against, so an anchor solved against an uncorroborated one is
+    uncorroborated too -- which is what stops a re-upload of the same file from
+    checking an assumption against itself and calling the result confirmed.
+
+    **Its row ORDER carries no meaning and no reader may assume it does.**  The
+    ladder is stated once, on the enum
+    (:attr:`~app.enums.StatementBalanceEvidenceEnum.strength`); an early draft
+    ordered a query by this table's id and was measured to return the weakest
+    anchor rather than the strongest.
+
+    Application code resolves these via
+    ``ref_cache.statement_balance_evidence_id`` and its inverse
+    ``ref_cache.statement_balance_evidence_member``, and compares against the
+    integer ID -- never the string ``name`` -- matching the project-wide
+    ``ref-table: IDs for logic, strings for display only`` invariant.
+    """
+
+    __tablename__ = "statement_balance_evidence"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(20), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<StatementBalanceEvidence {self.name}>"

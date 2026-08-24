@@ -100,6 +100,7 @@ from functools import lru_cache
 from app.enums import (
     AmountSourceEnum,
     SettledDayBasisEnum,
+    StatementBalanceEvidenceEnum,
     SettlementBasisEnum,
     BusinessDayShiftEnum,
     LedgerAccountClassEnum,
@@ -135,6 +136,7 @@ _INLINE_SEEDED_REF_ENUMS: tuple[tuple[type[Enum], str], ...] = (
     (StatementSourceEnum, "ref.statement_sources"),
     (SettlementBasisEnum, "ref.settlement_bases"),
     (SettledDayBasisEnum, "ref.settled_day_bases"),
+    (StatementBalanceEvidenceEnum, "ref.statement_balance_evidence"),
 )
 
 
@@ -154,6 +156,7 @@ _SEED_LIST_REF_ENUMS: tuple[tuple[type[Enum], str], ...] = (
     (StatementSourceEnum, "StatementSource"),
     (SettlementBasisEnum, "SettlementBasis"),
     (SettledDayBasisEnum, "SettledDayBasis"),
+    (StatementBalanceEvidenceEnum, "StatementBalanceEvidence"),
 )
 
 
