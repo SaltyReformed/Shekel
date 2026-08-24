@@ -108,18 +108,12 @@ than a second copy here (rule 16): **N-239** and **N-323**.
         matcher only because a control over a matcher that writes duplicates would refuse honest
         files for a defect the matcher is about to stop making.
 
-    - [ ] **X-f6e-1** `feat(import): a statement says what the account held, and how firmly` -- the
-          stated balance becomes an OBSERVATION with a solved EFFECTIVE DAY and a recorded BASIS
-          (**R-GF**): `balance_effective_on` and `balance_basis_id`, over the new
-          `ref.statement_balance_bases`, land on `budget.statement_imports`; `opening_balance` and
-          `closing_balance` are DROPPED as derived values stored beside their source; and a file
-          where no day solves is refused.
-          **The solve is proven on all five real exports, one hit each**, and the 2026-08-16 header
-          that R-GD(c) would have refused resolves to `2026-08-13` instead.
-          **It also fixes a live false sentence**: `_import_flash` warns
-          *"could not be checked against itself"* on every modern import, keyed on the
-          running-balance chain SECU stopped exporting, while `_verify_against_totals` had already
-          checked the line list.
+    - [x] **X-f6e-1** `d56fce48` a stated balance is an OBSERVATION with a SOLVED effective day and
+          a recorded EVIDENCE level (**R-GF**) that is the WEAKEST LINK behind it, so no re-upload
+          can strengthen one, and the doors that change LINES release the anchors they undercut.
+          `opening_balance` and `closing_balance` DROPPED; `ref_cache` became a package. Opened
+          **N-341**, **N-342**. **Later leaves**: only the file's own CHAIN may convict it, and
+          every candidate day is bounded by the header's.
 
     - [ ] **X-f6e-2** `feat(import): the app's books beside the bank's` -- `bank_balance_on` derives
           the bank's balance for any day from the anchor `X-f6e-1` records plus the recorded lines,
