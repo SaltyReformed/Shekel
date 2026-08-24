@@ -89,3 +89,53 @@ entries for these five were condensed in the same commit.
 | bank_import | X-f6a-3c | -- | The DECOMPOSED parent of the review screen's THROUGHPUT, ticked with X-f6a-3c-2, its last leaf. | SHIPPED | `46bec314` | -- |
 | bank_import | X-f6a-3d | -- | A destination is stated ONCE PER MERCHANT and SUGGESTED thereafter, never selected: the merchant becomes a column the adapter records, a policy names a template or a new envelope or *never a purchase*, and one sweep ticks what it places -- which turns 91 questions into 21 on a statement whose leftover lines are 21 merchants. Closed **N-325**; opened **N-326** and **N-327**. | SHIPPED | `50fed660` | -- |
 | bank_import | X-f6a-3c-1 | -- | Every candidate row carries the WINDOW the app believes its money moved in -- a settle day, a purchase day, or a bill's whole pay period -- so no row the matcher OFFERS is unbounded, and the global undated pool that switched group matching off is deleted rather than reported. Closed **N-312**, **N-315**, **N-316**; opened **N-322** and restored **N-317** with its diagnosis corrected. | SHIPPED | `c25edd96` | -- |
+
+## The X-f6d span, condensed 2026-08-23
+
+**Four shipped leaves, condensed out of `implementation_plan_bank_import.md`
+and `steps.md` under `conventions.md` rule 5** when decomposing `X-f6e` put
+both documents under their headroom on the same commit.
+
+Rule 5's three conditions hold. **Every finding these steps opened and did
+not close is still live in `ledger.md`** -- N-337, N-338, N-340 and
+`balance:N-339` -- each naming a live owner there. **No live sentence
+depends on a sentence here**: the rulings these steps established and
+amended (**R-GD**, **R-GE**) stay in the arc document's own rulings table.
+**Nothing below was re-verified in the move.**
+
+    - [x] **X-f6d-2** `674dcc94` a match UPDATES the row to what the bank took (**R-GD(a)**,
+          **R-GE**), superseding **R-FV**'s refusal: where the bank's figure names ONE row it is
+          written to that row through the correction seam, so a one-to-one match has no residual
+          left to book. **What a LATER leaf must obey**: the not-its-own-figure census is TWO
+          predicates (`settles_from_entries` AND `repays_card_spend`) because the transaction door's
+          own backstop refuses only the first. Carries **N-335** with `X-f6d-1`.
+
+    - [x] **X-f6d-4** `9ce01870` a group's difference is the MEMBER it was missing (**R-FN**), so
+          `Sigma(lines) = Sigma(members)` holds by construction -- and the door re-derives its
+          members AFTER its own writes, because settling a purchase moves a SIBLING payback.
+          **N-239** passed: 7 deposits, `+$0.35`, the income statement NAMES the bucket.
+          **Later leaves**: the total is SERVER-rendered because JS may not compute money, and
+          `created_version_id` says what an act CREATED, so `X-f6f` widens that WRITER not this.
+
+    - [x] **X-f6d-1** `dcdb86fe` a proposal is SCORED and a near miss is offered, the near tier
+          running LAST over what the exact ones leave (**R-GD(b)**, twice amended by this step's own
+          measurements). **What a LATER leaf must obey**: a candidate is 1:1 and
+          merchant-corroborated and must be the ONLY one, so `X-f6d-3`'s warn cannot see what this
+          tier withheld and owes that decision; and **N-336** opens with it, because this is the
+          first proposal that STATES a correction and nothing reconciles it with the write.
+
+    - [x] **X-f6d-3** `5aa295bd` a tick carries the FIGURE and the REVISION its row was reviewed
+          against, and the door refuses one that MOVED since -- finding **N-336**, reproduced at
+          `$321.71` under a `$0.03` caption. Neither coordinate sees the other's writers. The warn
+          and the candidate list it was specified around were WITHDRAWN on measurement, and
+          **R-GD(b)**'s third amendment is why. Closes **N-335**; opens **N-337**-**N-339**. Later
+          leaves: `rows` is ONE collection, and the guard refuses ANY movement, a batch item's too.
+
+### Their `steps.md` index rows, condensed out 2026-08-23
+
+| arc | id | also | what this step does | order | commit | starts |
+|---|---|---|---|---|---|---|
+| bank_import | X-f6d-4 | -- | Make a group's residual an ordinary uncategorized row the owner accepts, rather than a difference the door refuses outright or an invisible plug to anchor equity. Closes nothing and opens nothing: the residue it makes visible is **N-239**, whose cause is `balance:X-aw`'s. | SHIPPED | `9ce01870` | -- |
+| bank_import | X-f6d-1 | -- | Make a proposal a SCORE rather than an exact-amount gate, so a near miss is offered with the variance it would write instead of being silently withheld -- the defect that hid a $178.29 Geico line from the $178.32 row it belonged to. | SHIPPED | `dcdb86fe` | -- |
+| bank_import | X-f6d-2 | -- | Let the accept door RECORD an unequal match instead of refusing it, taking the bank's figure as the settled figure and storing the difference as a reported variance. | SHIPPED | `674dcc94` | -- |
+| bank_import | X-f6d-3 | -- | Make a tick carry the FIGURE and the REVISION its row was reviewed against, so the door refuses an item whose row moved since the screen described it, rather than writing a correction nobody saw. Closes **N-336** and **N-335**; opens **N-337** and **N-338**. | SHIPPED | `5aa295bd` | -- |
