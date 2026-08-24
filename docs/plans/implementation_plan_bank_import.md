@@ -100,13 +100,9 @@ than a second copy here (rule 16): **N-239** and **N-323**.
         **N-335** until `X-f6d-3` closed it, and what it owes a later leaf is stated on the steps
         below.
 
-  - [ ] **X-f6e** `feat(import): a statement proves itself` -- the DECOMPOSED parent of the
-        statement's own self-proof, split into TWO leaves 2026-08-23 when **R-GF** replaced
-        **R-GD(c)** on measurement and the step's two halves stopped sharing a commit: one RECORDS
-        what the bank said and how firmly, the other COMPARES it against the app's own books, and
-        the second reads what the first writes. **It waits on nothing** and is ranked after the
-        matcher only because a control over a matcher that writes duplicates would refuse honest
-        files for a defect the matcher is about to stop making.
+  - [x] **X-f6e** `d74001b3` the statement's own self-proof (**R-GF**): two leaves 2026-08-23 -
+        2026-08-24, one RECORDING what the bank said and how firmly, the other COMPARING it against
+        the app's own books.
 
     - [x] **X-f6e-1** `d56fce48` a stated balance is an OBSERVATION with a SOLVED effective day and
           a recorded EVIDENCE level (**R-GF**) that is the WEAKEST LINK behind it, so no re-upload
@@ -115,15 +111,12 @@ than a second copy here (rule 16): **N-239** and **N-323**.
           **N-341**, **N-342**. **Later leaves**: only the file's own CHAIN may convict it, and
           every candidate day is bounded by the header's.
 
-    - [ ] **X-f6e-2** `feat(import): the app's books beside the bank's` -- `bank_balance_on` derives
-          the bank's balance for any day from the anchor `X-f6e-1` records plus the recorded lines,
-          and the difference against the app's own cash balance is REPORTED per day (**R-GF**),
-          never gated. **It is the control that makes every other leaf here checkable**: the
-          `$356.61` Geico double-count is arithmetic a balance identity sees and no reviewer has to.
-          **It must say which side rests on an assumption**, because a first import's anchor is
-          `assumed_last_day` and a constant offset across the whole span is that assumption's
-          signature rather than the app's error. Carries **N-337**, which it detects and does not
-          dissolve: the card arc's locked ruling 1 is what removes the class.
+    - [x] **X-f6e-2** `d74001b3` the bank's balance per day beside the app's, REPORTED and never
+          gated (**R-GF**). A day carries THREE numbers, because the balance difference alone reads
+          a real disagreement as agreement wherever a same-day true-up cancels it -- 11 of his 35,
+          N-337's `$943.41` among them. Closed **N-342** (remedy shipped; the residue is an operator
+          export -- developer 2026-08-24); **N-337** re-pointed at the card arc; opened **N-343**.
+          Also fixed an INHERITED coverage defect feeding the anchor solve.
 
   - [ ] **X-f6f** `fix(import): a purchase the pass created can be UNDONE` -- the create-a-purchase
         arm gets the inverse it never had (**N-333**): `release_match` deliberately keeps the app's
