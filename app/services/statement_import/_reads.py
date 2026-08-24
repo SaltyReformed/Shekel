@@ -19,6 +19,7 @@ from app.extensions import db
 from app.models.ref import StatementSource
 from app.models.statement_import import BankStatementLine, StatementImport
 from app.models.statement_match import StatementMatchMember
+from app.services.statement_match import removals_by_match
 
 from ._adapters import supported_sources
 from ._anchor import ImportedBalance
@@ -151,11 +152,77 @@ def matches_by_import(account_id: int) -> "dict[int, list[int]]":
 
 
 @dataclass(frozen=True)
+class ImportRemovalPreview:
+    """What deleting one import would take back, and what stops it.
+
+    Plan step ``bank_import:X-f6f``, ruling **R-GG**.  A delete releases every
+    match naming one of this import's lines, and a release removes the rows
+    its act CREATED -- so the destructive control has to say how many and how
+    much before it is pressed.
+
+    **A BLOCKED delete is the most important thing this value carries**, and a
+    first version left it out: a release that refuses takes the whole import
+    delete down with it, so the page went on printing *"DESTROYS 2 row(s) ...
+    worth -$57.96"* over a press that destroys nothing and cannot succeed,
+    which is a money figure attached to a no-op and an import the owner cannot
+    delete until they find the row by hand.  Reproduced by adversarial security
+    review 2026-08-24 in one ordinary edit of a created purchase.
+
+    Attributes:
+        rows: How many rows the delete would destroy.
+        cash: The signed money the account would stop recording, positive INTO
+            the account.  Beside the count for the reason ruling **R-GD(a)**
+            gives one door over: a consent naming a count and no figure is a
+            consent to an amount nobody stated.
+        blocked: The sentence explaining why the delete would be REFUSED, or
+            ``None``.  When it is set, :attr:`rows` and :attr:`cash` describe a
+            removal that cannot happen yet, and the page says the refusal
+            instead of the figure.
+    """
+
+    rows: int
+    cash: Decimal
+    blocked: "str | None"
+
+
+def _removal_preview(match_ids, removals) -> ImportRemovalPreview:
+    """Fold one import's acts into what deleting it would do.
+
+    Args:
+        match_ids: The acts naming a line this import owns.
+        removals: ``{match_id: PlannedRemovals}`` from
+            ``statement_match.removals_by_match``.
+
+    Returns:
+        Its :class:`ImportRemovalPreview`.
+    """
+    planned = [
+        removals[match_id] for match_id in match_ids if match_id in removals
+    ]
+    return ImportRemovalPreview(
+        rows=sum(len(one.rows) for one in planned),
+        cash=sum((one.cash_amount for one in planned), Decimal("0.00")),
+        # The FIRST refusal, because one is enough to stop the whole delete and
+        # the owner fixes them one at a time anyway.
+        blocked=next(
+            (one.refusal for one in planned if one.refusal is not None), None,
+        ),
+    )
+
+
+@dataclass(frozen=True)
 class ImportRecord:  # pylint: disable=too-many-instance-attributes
     """One import as the page shows it: what it DID, and what undoing it costs.
 
-    Pylint: too-many-instance-attributes -- **eight because the page's import
-    row shows eight things** (8/7), not because the value wants splitting.
+    Pylint: too-many-instance-attributes -- **nine because the page's import
+    row shows nine things** (9/7), not because the value wants splitting.  The
+    ninth arrived with plan step ``bank_import:X-f6f``: a delete now destroys
+    rows the review CREATED from these lines, and a destructive control that
+    does not name them is the one thing this class exists to prevent.  It is
+    ONE field rather than three because the three are read together and only
+    together -- what would go, what it is worth, and whether it can go at all
+    -- and a template branching on one of them while printing another is
+    exactly the defect that shape prevents.
     ``StatementLine``, ``CandidateRow``, ``CreatedPurchase`` and
     ``PurchaseDestination`` carry the same disable for the same reason: a row
     that genuinely states N things is not improved by hiding ``N - 7`` of them.
@@ -185,6 +252,8 @@ class ImportRecord:  # pylint: disable=too-many-instance-attributes
         matches_affected: Accepted matches naming at least one of those lines.
             Each would be RELEASED by a delete, so the control says so before
             it is pressed.
+        removes: What deleting this import would take back, and what stops it
+            (:class:`ImportRemovalPreview`, ruling **R-GG**).
         balance: What the file said the account held and how firmly, or
             ``None`` when it stated no balance.  A RECEIPT is transient and
             this table is the record, so an anchor the import only ASSUMED has
@@ -201,13 +270,21 @@ class ImportRecord:  # pylint: disable=too-many-instance-attributes
     line_count: int
     recorded_count: int
     matches_affected: int
+    removes: "ImportRemovalPreview"
     balance: "ImportedBalance | None"
 
 
-def import_history(account_id: int, limit: int = 20) -> "list[ImportRecord]":
+def import_history(
+    owner_id: int, account_id: int, limit: int = 20,
+) -> "list[ImportRecord]":
     """Return *account_id*'s most recent imports, newest first.
 
     Args:
+        owner_id: The user the route proved owns the account.  **Taken
+            since plan step ``bank_import:X-f6f``**, because this page now
+            offers a control that DESTROYS rows and the reader feeding its
+            confirmation narrows by the same two columns the write door
+            itself uses.
         account_id: The account whose imports to list.
         limit: How many to return.  Bounded rather than unbounded because this
             feeds a page section, and an account imported weekly for years
@@ -241,6 +318,16 @@ def import_history(account_id: int, limit: int = 20) -> "list[ImportRecord]":
     if not imports:
         return []
     by_import = matches_by_import(account_id)
+    # ONE derivation, shared with the act: the delete releases every match
+    # naming one of this import's lines, and what each release removes is that
+    # door's answer rather than this page's guess.  **Bounded to the acts the
+    # rendered imports actually name**, because this page shows at most
+    # *limit* of them and an unbounded fold cost 475 queries on a 230-act
+    # account (adversarial security review 2026-08-24).
+    removals = removals_by_match(
+        owner_id, account_id,
+        {match_id for ids in by_import.values() for match_id in ids},
+    )
     return [
         ImportRecord(
             import_id=row.id,
@@ -251,6 +338,7 @@ def import_history(account_id: int, limit: int = 20) -> "list[ImportRecord]":
             line_count=row.line_count,
             recorded_count=row.recorded_count,
             matches_affected=len(by_import.get(row.id, ())),
+            removes=_removal_preview(by_import.get(row.id, ()), removals),
             balance=_imported_balance(row),
         )
         for row in imports

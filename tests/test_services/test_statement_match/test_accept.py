@@ -714,7 +714,15 @@ class TestReleasingAMatch:
     """The repair door finding **N-302** says a refusal owes."""
 
     def test_it_deletes_the_act_and_its_members(self, app, db, seed_user):
-        """The bank lines become unexplained again."""
+        """The bank lines become unexplained again.
+
+        **The receipt is a value rather than a count since plan step
+        ``bank_import:X-f6f``** (ruling **R-GG**), because the door can now
+        destroy rows and a receipt that said only "2" could not tell an undo
+        that moved nothing from one that removed a `$213.49` purchase.  This
+        act created nothing, so all three removal facts are zero -- which is
+        the control for the ones below that are not.
+        """
         statement = an_import(seed_user)
         line = a_bank_line(seed_user, statement)
         txn = a_transaction(seed_user, amount="180.00")
@@ -724,9 +732,15 @@ class TestReleasingAMatch:
             accepted.match_id, seed_user["user"].id, seed_user["account"].id,
         )
 
-        assert released == 2
+        assert released.released_count == 2
+        assert released.removed_rows == 0
+        assert released.removed_cash == Decimal("0.00")
+        assert released.kept_containers == 0
         assert db.session.query(StatementMatch).count() == 0
         assert db.session.query(StatementMatchMember).count() == 0
+        # A match between rows that already existed leaves the row standing:
+        # the release removes what the act CREATED, never what it named.
+        assert db.session.get(Transaction, txn.id) is not None
 
     def test_it_does_NOT_put_the_day_back(self, app, db, seed_user):
         """The bank is still the best record of when that money moved.

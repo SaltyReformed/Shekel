@@ -3,10 +3,15 @@
 Ruling **R-FS**'s THIRD shape, split out of :mod:`._offers` at plan step
 ``bank_import:X-f6d-1``.  That module answers *what a MATCH is* -- a
 correspondence between lines the bank recorded and rows the app already holds
--- and these five names answer a different question: *what the owner may ask
+-- and these six names answer a different question: *what the owner may ask
 this import to CREATE*, and where.  Two subjects, two reasons to change, and
 the package already draws that seam one tier up in :mod:`._accept` against
 :mod:`._create`.
+
+**The sixth is :class:`CreatedSubject`** (plan step ``bank_import:X-f6f``,
+ruling **R-GG**), which is the other end of the same subject: the five values
+above are what the owner may ASK for, and that one is what an act DID create,
+carried to the write door so an undo can take it back.
 
 **The split is a line cap made useful rather than worked around.**  Adding the
 fact a scored near miss needs (:attr:`~._offers.CandidateRow.states_own_figure`)
@@ -29,6 +34,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+
+from ._offers import CandidateRow, RowKind
 
 
 @dataclass(frozen=True)
@@ -210,3 +217,55 @@ class PurchaseCreation:
     line_id: int
     transaction_id: "int | None" = None
     new_envelope: "NewEnvelope | None" = None
+
+
+@dataclass(frozen=True)
+class CreatedSubject:
+    """One app row an act BROUGHT INTO EXISTENCE, and at which revision.
+
+    Plan step ``bank_import:X-f6f``, ruling **R-GG**.  What a match act NAMES
+    and what it MAKES are two relations
+    (:class:`app.models.statement_match.StatementMatchCreation`), and this is
+    the value the write door carries the second one in.
+
+    **It is not a :class:`~._offers.CandidateRow`, and it cannot be.**  A
+    candidate is a row a bank line could BE -- priced, dated and offerable --
+    and the container this door may also create is none of those: an envelope
+    holding one purchase that already carries its own posting day is worth
+    ``0.00``, which is exactly the answer
+    :func:`~._candidates.transaction_candidate` returns ``None`` for.  So the
+    creation record takes the three facts it actually needs and no more.
+
+    Attributes:
+        kind: Which table the subject is in.
+        row_id: Its primary key within that table.
+        version_id: The subject's ``version_id`` as this act LEFT it, which is
+            what lets the undo tell a row nobody has touched from one the
+            owner has since made their own.  **As the act left it, not as the
+            act found it**: a door that creates a row and then settles it has
+            written twice, and recording the first revision would report its
+            own second write as somebody else's edit.
+    """
+
+    kind: "RowKind"
+    row_id: int
+    version_id: int
+
+    @classmethod
+    def of(cls, row: "CandidateRow") -> "CreatedSubject":
+        """Return the creation record for a subject the act also NAMES.
+
+        Both created MEMBERS -- a group's residual and a purchase recorded
+        from a bank line -- reach the write door as a priced candidate
+        already, so their three facts are read from it rather than from the
+        ORM row a second time.
+
+        Args:
+            row: The candidate the act created and is about to name.
+
+        Returns:
+            Its :class:`CreatedSubject`.
+        """
+        return cls(
+            kind=row.kind, row_id=row.row_id, version_id=row.version_id,
+        )

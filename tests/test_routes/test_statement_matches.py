@@ -46,13 +46,14 @@ from app.models.account import Account
 from app.models.statement_import import BankStatementLine
 from app.models.statement_match import StatementMatch, StatementMatchMember
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.user import User, UserSettings
 from sqlalchemy.exc import OperationalError
 from werkzeug.datastructures import MultiDict
 
 from app.exceptions import ValidationError
 from app.routes.accounts import statement_matches as statement_matches_route
-from app.services import auth_service
+from app.services import auth_service, entry_service
 from app.services.statement_match import RowKind
 from app.services.statement_match import _batch as statement_match_batch
 from app.utils.money import round_money
@@ -1823,6 +1824,128 @@ class TestTheReleasePost:
         db.session.expire_all()
         assert db.session.query(StatementMatch).count() == 0
         assert txn.settled_on == bank_day
+        # A match between rows that already existed removes nothing, so the
+        # receipt says nothing about removals -- the control for the case
+        # below, which does.
+        assert b"row(s) that match had created" not in response.data
+
+    def test_it_removes_what_the_act_CREATED_and_says_so(
+        self, auth_client, db, seed_user,
+    ):
+        """Plan step **bank_import:X-f6f**, ruling **R-GG**.
+
+        The create arm's inverse, driven through the two real POSTs: record a
+        `-$57.96` swipe as a purchase in a new envelope, then undo it.  Both
+        rows go, and the flash NAMES them and the money -- a destructive act
+        whose receipt says only "done" leaves the owner unable to tell a no-op
+        from a much larger removal than they meant.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date + timedelta(days=5)
+        line = a_bank_line(
+            seed_user, statement, amount="-57.96", posted_on=bank_day,
+            description="POINT OF SALE DEBIT L340 WAL-MART",
+        )
+        db.session.commit()
+        auth_client.post(
+            _review_url(seed_user["account"].id),
+            data=_record_line(
+                line, destination="new", name="Walmart",
+                category_id=seed_user["categories"]["Groceries"].id,
+            ),
+        )
+        db.session.expire_all()
+        assert db.session.query(TransactionEntry).count() == 1, (
+            "the recording must really have happened, or the undo below "
+            "proves nothing"
+        )
+        match_id = db.session.query(StatementMatch.id).scalar()
+
+        response = auth_client.post(
+            f"{_review_url(seed_user['account'].id)}/release",
+            data={"match_id": match_id},
+            follow_redirects=True,
+        )
+
+        assert b"Match undone" in response.data
+        assert b"removed the 2 row(s) that match had created" in response.data
+        assert b"-57.96" in response.data
+        db.session.expire_all()
+        assert db.session.query(TransactionEntry).count() == 0
+        assert db.session.query(Transaction).filter(
+            Transaction.name == "Walmart",
+        ).count() == 0
+
+    def test_the_page_NAMES_what_the_undo_would_remove(
+        self, auth_client, db, seed_user,
+    ):
+        """The Undo control carries the confirmation and the figure.
+
+        ``data-confirm`` is this project's destructive-action pattern, and it
+        is attached only where the undo would destroy a record: a dialog on
+        every Undo trains the owner to click through the one that matters.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date + timedelta(days=5)
+        line = a_bank_line(
+            seed_user, statement, amount="-57.96", posted_on=bank_day,
+            description="POINT OF SALE DEBIT L340 WAL-MART",
+        )
+        db.session.commit()
+        auth_client.post(
+            _review_url(seed_user["account"].id),
+            data=_record_line(
+                line, destination="new", name="Walmart",
+                category_id=seed_user["categories"]["Groceries"].id,
+            ),
+        )
+
+        page = auth_client.get(_review_url(seed_user["account"].id)).data
+
+        assert b"data-confirm=" in page
+        assert b"it REMOVES the 2 row(s) this match created" in page
+        assert b"Undo removes 2 row(s) this" in page
+        # The macro's own spelling: the sign goes BEFORE the dollar symbol.
+        assert b"-$57.96" in page
+
+    def test_the_page_says_REFUSED_where_the_undo_would_be(
+        self, auth_client, db, seed_user,
+    ):
+        """A panel promising a removal the button refuses is the defect.
+
+        The owner has edited the purchase the act created, so the undo stops.
+        The row must say THAT rather than go on listing rows it will not
+        remove -- the screen and the door read one derivation
+        (``planned_removals``), and this is the arm that proves the TEMPLATE
+        reads it too.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date + timedelta(days=5)
+        line = a_bank_line(
+            seed_user, statement, amount="-57.96", posted_on=bank_day,
+            description="POINT OF SALE DEBIT L340 WAL-MART",
+        )
+        db.session.commit()
+        auth_client.post(
+            _review_url(seed_user["account"].id),
+            data=_record_line(
+                line, destination="new", name="Walmart",
+                category_id=seed_user["categories"]["Groceries"].id,
+            ),
+        )
+        db.session.expire_all()
+        entry = db.session.query(TransactionEntry).one()
+        entry_service.update_entry(
+            entry.id, seed_user["user"].id, description="Walmart -- hose",
+        )
+        db.session.commit()
+
+        page = auth_client.get(_review_url(seed_user["account"].id)).data
+
+        assert b"Undo is refused:" in page
+        assert b"you have edited that row since" in page
+        assert b"Undo removes" not in page
+        assert b"data-confirm=" not in page
 
 
 class TestItRefusesAnotherUsersAccount:

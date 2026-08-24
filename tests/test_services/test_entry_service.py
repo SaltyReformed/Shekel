@@ -2048,7 +2048,15 @@ class TestASettledRowsPurchasesAreClosed:
             assert entry.amount == Decimal("50.00")
 
     def test_delete_is_refused(self, app, db, seed_user, seed_entry_template):
-        """A purchase cannot be removed from an archived row."""
+        """A purchase cannot be removed from an archived row.
+
+        **The refusal is unchanged and its SENTENCE moved** (plan step
+        ``bank_import:X-f6f``): the archive now has its own, because the one it
+        shared said the row *records a fixed figure* -- false for an archived
+        ``purchases`` row -- and told the owner to set it back to Projected,
+        which the state machine refuses for the terminal status.  This test
+        pinned the borrowed sentence and so could not see either.
+        """
         with app.app_context():
             txn = db.session.get(
                 Transaction, seed_entry_template["transaction"].id,
@@ -2057,7 +2065,7 @@ class TestASettledRowsPurchasesAreClosed:
             self._archive(txn)
             entry_id = entry.id
 
-            with pytest.raises(ValidationError, match="has settled"):
+            with pytest.raises(ValidationError, match="is archived"):
                 entry_service.delete_entry(entry_id, seed_user["user"].id)
 
             # No rollback: the guard runs BEFORE ``db.session.delete``, so a

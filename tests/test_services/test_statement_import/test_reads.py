@@ -148,7 +148,7 @@ class TestEveryReaderIsScopedToItsOwnAccount:
             file_name="theirs.csv",
         )
 
-        assert [row.file_name for row in import_history(mine.id)] == [
+        assert [row.file_name for row in import_history(seed_user["user"].id, mine.id)] == [
             "mine.csv",
         ]
 
@@ -173,7 +173,7 @@ class TestTheImportRowCarriesWhatTheBankSaid:
         mine, _ = two_accounts
         _record(seed_user, mine, _ENTRIES)
 
-        balance = import_history(mine.id)[0].balance
+        balance = import_history(seed_user["user"].id, mine.id)[0].balance
 
         assert balance is not None
         assert balance.stated == Decimal("1534.19")
@@ -197,7 +197,7 @@ class TestTheImportRowCarriesWhatTheBankSaid:
             file_name="nobalance.csv", payload=without,
         )
 
-        assert import_history(mine.id)[0].balance is None
+        assert import_history(seed_user["user"].id, mine.id)[0].balance is None
 
 
 class TestTheSpanIsArithmeticallyTrue:
@@ -265,7 +265,7 @@ class TestTheLineListIsOrderedAndBounded:
         _record(seed_user, seed_user["account"], _ENTRIES, file_name="two.csv")
 
         assert [row.file_name for row in
-                import_history(seed_user["account"].id)][0] == "two.csv"
+                import_history(seed_user["user"].id, seed_user["account"].id)][0] == "two.csv"
 
 
 class TestTheOfferedSourcesAreTheUSABLEOnes:

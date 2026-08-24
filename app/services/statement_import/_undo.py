@@ -9,14 +9,39 @@ first import that named the wrong Shekel account -- ended that account's ability
 to import for good, while the refusal's own message promised a repair the app
 could not perform.  This is that repair.
 
-**It is BALANCE-NEUTRAL, and that is a property rather than a hope.**  Deleting
-an import destroys what the BANK said.  The days an accepted match wrote are the
-APP's own record and they stay, which is exactly
+**It is balance-neutral EXCEPT for what the review CREATED from these lines**
+(plan step ``bank_import:X-f6f``, ruling **R-GG**, which amends **R-GB**).
+Deleting an import destroys what the BANK said.  The days an accepted match
+wrote are the APP's own record and they stay, which is exactly
 :func:`~app.services.statement_match.release_match`'s rule: the bank is still
 the best evidence the app has about when that money moved, so reverting a
 correction in order to tidy a relation would throw away the fact and keep the
 bookkeeping.  What comes back is the QUESTION -- those app rows are matchable
 again, and the lines are gone.
+
+**A row the review pass CREATED from one of these lines is not the app's own
+record**: it exists only because that line did, and destroying the line while
+keeping it leaves a movement in the books that nothing accounts for.  So it
+goes with the line, through the same release door, and this act therefore MOVES
+MONEY where R-GB said it could not.  The receipt says how many rows and how
+much (:class:`ImportRemoval`), and the confirmation names them before the
+button is pressed -- a destructive act whose report is a single word leaves the
+owner unable to tell a no-op from a much larger removal than they meant.
+
+**It reaches only what was recorded AFTER the marker existed, and saying so is
+the point.**  An act carries a creation record because the door that made the
+row wrote one; the 230 acts already on the developer's database predate that
+and carry none, so deleting those imports removes 0 rows rather than the 103
+purchases and 47 budget lines the pass built.  **A backfill was considered and
+is measured UNSAFE**: the tightest signature available -- one line member, one
+entry member, an ``observed`` posting day equal to the line's, and the line's
+own figure -- matches **62 purchases the app already had** alongside the 103,
+because an accepted match writes exactly those facts onto a row it merely
+re-dates and may re-price.  A marker inferred from it would arm this door to
+delete the owner's own records, which is the guess ``created_version_id``
+exists to replace.  What those 165 rows have instead is the door
+``entry_service`` gained in the same step: measured on that database, all 103
+are removable by hand and 0 are refused.
 
 **A match is RELEASED before its lines are removed, never orphaned.**  A match
 act with no bank line left asserts nothing about a bank:
@@ -59,6 +84,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 
 from app.exceptions import ValidationError
 from app.extensions import db
@@ -74,8 +100,11 @@ from ._reads import matches_by_import
 class ImportRemoval:  # pylint: disable=too-many-instance-attributes
     """What undoing one import actually removed.
 
-    Pylint: ``too-many-instance-attributes`` (8/7) -- eight because a delete
-    undoes eight distinct things, not because the value wants splitting.
+    Pylint: ``too-many-instance-attributes`` (10/7) -- ten because a delete
+    undoes ten distinct things, not because the value wants splitting.  The
+    ninth and tenth arrived with plan step ``bank_import:X-f6f`` and they are
+    the two that say this act MOVES MONEY; hiding either to satisfy a limit is
+    how a destructive receipt comes to under-report what it destroyed.
     ``ImportRecord`` in :mod:`._reads` carries the identical disable for the
     identical reason: a receipt that genuinely states N facts is not improved
     by hiding ``N - 7`` of them from the person who pressed a destructive
@@ -98,6 +127,14 @@ class ImportRemoval:  # pylint: disable=too-many-instance-attributes
         matches_released: Accepted matches that named at least one of those
             lines.  Each is released whole, so a match spanning two imports
             frees the other import's lines back to unexplained as well.
+        rows_removed: Rows the review pass had CREATED from those lines and
+            which went with them (ruling **R-GG**) -- a purchase a bank line
+            became, a recorded difference, or a budget line minted to hold a
+            purchase and now holding nothing.
+        cash_removed: The signed money the account has stopped recording as a
+            result, positive INTO the account.  **A figure and not only a
+            count**, because this is the one field on this receipt that says
+            the act moved money at all.
         anchors_released: Balance anchors this delete invalidated by removing
             the lines they rested on.  Reported rather than silent because an
             account that had a checked bank balance and now has none is a
@@ -115,6 +152,8 @@ class ImportRemoval:  # pylint: disable=too-many-instance-attributes
     matches_released: int
     anchors_released: int
     identity_forgotten: bool
+    rows_removed: int
+    cash_removed: Decimal
 
 
 def _owned_import(
@@ -153,6 +192,45 @@ def _owned_import(
     return statement_import
 
 
+def _release_matches(
+    import_id: int, owner_id: int, account_id: int,
+) -> "tuple[int, int, Decimal]":
+    """Release every accepted match naming a line this import owns, and tally.
+
+    **Each goes through the ONE door that releases a match**, which is why this
+    package calls up into its sibling at all (see the module docstring).  What
+    that door removes is what this function counts: it decides which created
+    rows go and which containers stay, and a tally re-derived here would be a
+    second answer to a question the act has already answered.
+
+    Args:
+        import_id: The import being undone.
+        owner_id: The user the route proved owns the account.
+        account_id: The account.
+
+    Returns:
+        ``(matches_released, rows_removed, cash_removed)``.
+
+    Raises:
+        ValidationError: From a release -- a match gone since it was read, or
+            one whose created row the owner has edited.  It takes the whole
+            delete with it rather than leaving an import half undone.
+        PostingError: From reversing a created row's postings.
+    """
+    # The SAME read the page previews with, so a confirmation cannot count
+    # differently from the act it confirms.
+    match_ids = matches_by_import(account_id).get(import_id, [])
+    released = [
+        release_match(match_id, owner_id, account_id)
+        for match_id in match_ids
+    ]
+    return (
+        len(match_ids),
+        sum(one.removed_rows for one in released),
+        sum((one.removed_cash for one in released), Decimal("0.00")),
+    )
+
+
 def delete_import(
     import_id: int, owner_id: int, account_id: int,
 ) -> ImportRemoval:
@@ -177,8 +255,10 @@ def delete_import(
 
     Raises:
         ValidationError: When *import_id* names no import on this owner's
-            account, or when a match naming its lines has gone since it was
-            read.
+            account, when a match naming its lines has gone since it was read,
+            or when one of those matches created a row the owner has EDITED
+            since -- that release refuses, and the refusal takes the whole
+            delete with it rather than leaving an import half undone.
     """
     statement_import = _owned_import(import_id, owner_id, account_id)
     source_id = statement_import.source_id
@@ -204,11 +284,9 @@ def delete_import(
         )
         .one()
     )
-    # The SAME read the page previews with, so a confirmation cannot count
-    # differently from the act it confirms.
-    match_ids = matches_by_import(account_id).get(import_id, [])
-    for match_id in match_ids:
-        release_match(match_id, owner_id, account_id)
+    matches_released, rows_removed, cash_removed = _release_matches(
+        import_id, owner_id, account_id,
+    )
 
     # The lines go with the import at the database tier
     # (``fk_bank_statement_lines_import_account``), which is also what makes
@@ -240,7 +318,9 @@ def delete_import(
         period_start=period_start,
         period_end=period_end,
         lines_removed=lines_removed,
-        matches_released=len(match_ids),
+        matches_released=matches_released,
         identity_forgotten=identity_forgotten,
         anchors_released=anchors_released,
+        rows_removed=rows_removed,
+        cash_removed=cash_removed,
     )

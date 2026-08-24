@@ -1,13 +1,16 @@
 """
 Shekel Budget App -- Statement Match Models (budget schema)
 
-WHICH of the app's own rows a recorded bank line IS.  Two tables, one subject
+WHICH of the app's own rows a recorded bank line IS.  Three tables, one subject
 (plan step ``bank_import:X-f6a-2``, rulings **R-FS** and **R-FV**):
 
   * :class:`StatementMatch` -- one act of matching, reviewed and accepted by
     the owner.
   * :class:`StatementMatchMember` -- one thing that act names: a bank line, a
     transaction, or a purchase.
+  * :class:`StatementMatchCreation` -- one thing that act brought into
+    EXISTENCE, which is not the same set (plan step ``bank_import:X-f6f``,
+    ruling **R-GG**).
 
 **The relation is IDENTITY, and identity is the fact this arc was missing.**
 ``transactions.reconciled_by_id`` (ruling **R-FL**) answers a different
@@ -115,6 +118,10 @@ class StatementMatch(AccountScopedMixin, UserScopedMixin, CreatedAtMixin,
         "StatementMatchMember", back_populates="match",
         cascade="all, delete-orphan", passive_deletes=True,
     )
+    creations = db.relationship(
+        "StatementMatchCreation", back_populates="match",
+        cascade="all, delete-orphan", passive_deletes=True,
+    )
 
     def __repr__(self):
         return f"<StatementMatch account={self.account_id} ({self.id})>"
@@ -142,35 +149,18 @@ class StatementMatchMember(db.Model):
         bank_statement_line_id -- the bank's line, when this member is one.
         transaction_id -- the app's row, when this member is one.
         transaction_entry_id -- the app's purchase, when this member is one.
-        created_version_id -- the subject's ``version_id`` at the moment THIS
-            ACT created it, or NULL for a subject that already existed.
 
-    **``created_version_id`` says two things in one column, and that is why it
-    is a version rather than a flag** (plan step ``bank_import:X-f6d-4``,
-    developer ruling 2026-08-23).  Its PRESENCE says this act brought the
-    subject into existence; its VALUE says at which revision, so a release can
-    tell a row nobody has touched from one the owner has since made their own.
-    A boolean would have needed a second column to answer the second question,
-    and answering it by re-deriving "does this still look minted" would be a
-    guess about columns that move for other reasons.
-
-    **What it is FOR is the undo.**  A group's difference is recorded as a row
-    (ruling **R-FN**), and unlike a purchase created from a bank line, that row
-    means nothing once the grouping is released: the bank line goes back to
-    unexplained, and re-accepting the same group would record the difference a
-    SECOND time.  Measured by adversarial security review 2026-08-23 in two
-    ordinary clicks -- two `$0.05` rows for one `$0.05` difference, with the
-    balance reading high and nothing naming it.  So
-    :func:`~app.services.statement_match.release_match` removes what the act
-    created, and refuses when the row has moved since.
-
-    **The create-a-purchase arm does NOT set it yet, and that is a ruling
-    rather than an omission.**  ``create_purchase_from_line`` also brings its
-    subject into existence, but whether releasing that match should delete the
-    purchase -- and the envelope it may have minted, and any purchases added
-    to it since -- is plan step ``X-f6f``'s question, which exists to give
-    that arm the inverse it never had.  Widening the writer is that step's;
-    the column is shaped to take it.
+    **What an act CREATED is a DIFFERENT relation and lives in
+    :class:`StatementMatchCreation`** (plan step ``bank_import:X-f6f``,
+    developer ruling **R-GG**).  It was a ``created_version_id`` column here
+    until then, which worked while the only created subject was a group's
+    residual -- a row the act also NAMES.  The create-a-purchase arm creates
+    two things, a purchase it names and often the budget line that HOLDS the
+    purchase, and a container is not a member: naming it would claim the same
+    money twice (:func:`~app.services.statement_match._accept
+    ._reject_parent_and_its_own_purchase`) and would break
+    ``Sigma(lines) = Sigma(members)``.  A column on this table therefore had
+    nowhere to put the one subject the undo most needed to reach.
 
     **Each subject belongs to at most ONE match, and that is structural.**  The
     three partial unique indexes below are what make "already matched" a
@@ -277,19 +267,6 @@ class StatementMatchMember(db.Model):
         ),
         # The reader loads a whole act at once.
         db.Index("idx_statement_match_members_match", "match_id"),
-        # A CREATED subject is an app row, never a bank line: this act cannot
-        # bring a line into existence -- an import does that, and the line is
-        # what the act is ABOUT.  Stated as a CHECK because it is the column's
-        # meaning rather than a habit of its writers.
-        db.CheckConstraint(
-            "created_version_id IS NULL "
-            "OR bank_statement_line_id IS NULL",
-            name="ck_statement_match_members_created_is_an_app_row",
-        ),
-        db.CheckConstraint(
-            "created_version_id IS NULL OR created_version_id > 0",
-            name="ck_statement_match_members_created_version_positive",
-        ),
         {"schema": "budget"},
     )
 
@@ -302,10 +279,6 @@ class StatementMatchMember(db.Model):
     bank_statement_line_id = db.Column(db.Integer)
     transaction_id = db.Column(db.Integer)
     transaction_entry_id = db.Column(db.Integer)
-    # NULL means "this subject already existed"; a number means this act
-    # created it, at that revision.  See the class docstring for why one column
-    # carries both facts and what the undo does with them.
-    created_version_id = db.Column(db.Integer)
 
     match = db.relationship(
         "StatementMatch", back_populates="members",
@@ -321,3 +294,157 @@ class StatementMatchMember(db.Model):
             else f"entry={self.transaction_entry_id}"
         )
         return f"<StatementMatchMember match={self.match_id} {subject}>"
+
+
+class StatementMatchCreation(db.Model):
+    """One app row a match act brought into EXISTENCE, and at which revision.
+
+    Plan step ``bank_import:X-f6f``, developer ruling **R-GG** (2026-08-24).
+    **What an act NAMES and what an act MAKES are two relations**, and
+    conflating them is what left the create-a-purchase arm without an inverse
+    (findings **N-333** and **N-340**).  A match's MEMBERS are the things it
+    asserts are one movement, so their signed amounts must add up; the rows it
+    CREATED are what an undo has to take back, and they are not the same set in
+    either direction:
+
+    * a group's residual is BOTH -- created, and named, so it closes the gap
+      (ruling **R-FN**);
+    * a purchase recorded from a bank line is BOTH;
+    * the ENVELOPE that purchase went into, when the act minted one, is
+      created and NOT named -- naming an envelope beside its own purchase
+      counts the same money twice (ruling **R-FM**), which
+      :func:`~app.services.statement_match._accept
+      ._reject_parent_and_its_own_purchase` refuses outright.
+
+    So the fact lived on ``statement_match_members.created_version_id`` while
+    the residual was the only created subject, and had nowhere to put the
+    container.  It is its own table now, and the member column is dropped.
+
+    Columns:
+        match_id -- the act that created this row.
+        account_id -- the account, held equal to the act's by
+            ``fk_statement_match_creations_match_account`` and to the SUBJECT's
+            by whichever of the two composite keys applies.  The same
+            construction, for the same reason, as
+            :class:`StatementMatchMember`'s.
+        transaction_id -- the budget row, when the subject is one.
+        transaction_entry_id -- the purchase, when the subject is one.
+        created_version_id -- the subject's ``version_id`` as this act left it.
+            NOT NULL: a row here IS a creation, so there is no "already
+            existed" state left for a NULL to mean.
+
+    **The revision is the whole predicate, and that is why it is a version
+    rather than a flag.**  "Still has no category and still holds the figure we
+    recorded and still has no purchases" is three guesses about which edits
+    matter; a counter that moves on every ORM update is the fact itself.  It
+    also covers what nothing else would: a row nothing edited cannot have grown
+    a CC payback either, because ``mark_as_credit`` writes the source row's own
+    status.
+
+    **A SUBJECT and a CONTAINER are told apart by MEMBERSHIP, not by a column
+    here.**  A creation whose subject is also a member of the same act is what
+    the act is ABOUT, so an undo removes it and REFUSES where the owner has
+    edited it since; a creation that is not a member is a container, so an undo
+    removes it only when nothing is left in it and nothing has touched it, and
+    otherwise leaves it standing without refusing.  Deriving that from the
+    members is exact -- they are the one statement of what the act names -- and
+    a stored copy of it would be a second answer to a question this schema
+    already answers.
+
+    **There is no BANK LINE arm, and its absence is the constraint.**  A match
+    act cannot bring a line into existence: an import does that, and the line
+    is what the act is ABOUT.  The old column needed a CHECK to say so; here it
+    is unspellable.
+
+    **A subject is created by at most ONE act**, which the two partial unique
+    indexes make structural.  Two acts each claiming to have minted one row
+    would each offer to remove it, and the second would find it gone.
+
+    **The subject keys CASCADE**, exactly as the member keys do and with the
+    same consequence stated rather than hidden: a row the owner deletes
+    themselves takes its creation record with it, so an undo has nothing to
+    remove and nothing to refuse.  Refusing an ordinary delete because of a
+    record the user cannot see from the row they are deleting is the dead end
+    finding **N-302** records one table over.
+    """
+
+    __tablename__ = "statement_match_creations"
+    __table_args__ = (
+        # THE EXCLUSIVE ARC: exactly one subject.  Summing the NULL tests is
+        # the spelling ``ck_statement_match_members_one_subject`` uses.
+        db.CheckConstraint(
+            "(transaction_id IS NOT NULL)::int "
+            "+ (transaction_entry_id IS NOT NULL)::int = 1",
+            name="ck_statement_match_creations_one_subject",
+        ),
+        db.CheckConstraint(
+            "created_version_id > 0",
+            name="ck_statement_match_creations_version_positive",
+        ),
+        # This creation's account IS its act's.
+        db.ForeignKeyConstraint(
+            ["match_id", "account_id"],
+            ["budget.statement_matches.id",
+             "budget.statement_matches.account_id"],
+            name="fk_statement_match_creations_match_account",
+            ondelete="CASCADE",
+        ),
+        # ...and IS its subject's.  ``MATCH SIMPLE`` (PostgreSQL's default) is
+        # what lets the two sit beside one another: a creation whose
+        # ``transaction_id`` is NULL satisfies that key whatever
+        # ``account_id`` says.
+        db.ForeignKeyConstraint(
+            ["transaction_id", "account_id"],
+            ["budget.transactions.id", "budget.transactions.account_id"],
+            name="fk_statement_match_creations_transaction_account",
+            ondelete="CASCADE",
+        ),
+        db.ForeignKeyConstraint(
+            ["transaction_entry_id", "account_id"],
+            ["budget.transaction_entries.id",
+             "budget.transaction_entries.account_id"],
+            name="fk_statement_match_creations_entry_account",
+            ondelete="CASCADE",
+        ),
+        # One subject, at most one act that made it.  Partial, because one of
+        # the two columns is NULL on every row and a NULL is not a claim.
+        db.Index(
+            "uq_statement_match_creations_transaction", "transaction_id",
+            unique=True,
+            postgresql_where=db.text("transaction_id IS NOT NULL"),
+        ),
+        db.Index(
+            "uq_statement_match_creations_entry", "transaction_entry_id",
+            unique=True,
+            postgresql_where=db.text("transaction_entry_id IS NOT NULL"),
+        ),
+        # The reader loads a whole act at once.
+        db.Index("idx_statement_match_creations_match", "match_id"),
+        {"schema": "budget"},
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    # No direct single-column keys: every relationship above is reached through
+    # a composite key that also holds the account equal.  Same shape, same
+    # reason, as ``statement_match_members``'.
+    match_id = db.Column(db.Integer, nullable=False)
+    account_id = db.Column(db.Integer, nullable=False)
+    transaction_id = db.Column(db.Integer)
+    transaction_entry_id = db.Column(db.Integer)
+    created_version_id = db.Column(db.Integer, nullable=False)
+
+    match = db.relationship(
+        "StatementMatch", back_populates="creations",
+        foreign_keys=[match_id, account_id],
+    )
+
+    def __repr__(self):
+        subject = (
+            f"txn={self.transaction_id}"
+            if self.transaction_id is not None
+            else f"entry={self.transaction_entry_id}"
+        )
+        return (
+            f"<StatementMatchCreation match={self.match_id} {subject} "
+            f"v{self.created_version_id}>"
+        )

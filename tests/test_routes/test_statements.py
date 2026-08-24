@@ -14,7 +14,7 @@ second user's account, because the two decorators are applied independently and
 one of them being right proves nothing about the other.
 """
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 import re
 from io import BytesIO
@@ -24,8 +24,10 @@ import pytest
 from app.models.account import Account
 from app.models.ref import AccountType
 from app.models.statement_import import BankStatementLine, StatementImport
+from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.user import User, UserSettings
-from app.services import auth_service, statement_match
+from app.services import auth_service, entry_service, statement_match
 from tests._test_helpers import create_settled_cash_transaction
 from tests.test_services.test_statement_import import _csv_builder as build
 from tests.test_services.test_statement_match._builders import a_submission
@@ -732,6 +734,144 @@ class TestTheDeletePost:
         ).get_data(as_text=True)
 
         assert "undoes 1 accepted match(es)" in body
+
+    def test_it_DESTROYS_what_the_review_created_and_says_so(
+        self, auth_client, db, seed_user,
+    ):
+        """Plan step **bank_import:X-f6f**, ruling **R-GG**, amending R-GB.
+
+        A row the review pass created from one of these lines exists only
+        because that line did, so destroying the line while keeping it leaves
+        a movement in the books that nothing accounts for.  It goes with the
+        line -- which means this act MOVES MONEY where R-GB said it could not,
+        and both the confirmation and the receipt have to say so.
+
+        Driven through the two real POSTs: import, record the `-$25.00` coffee
+        line as a purchase in a new envelope, then delete the import.
+        """
+        # **Dated INSIDE the owner's own calendar**, unlike the module's
+        # default fixture: recording a line as a purchase resolves the pay
+        # period it is BUDGETED in, so a line outside every saved period is
+        # never offered as creatable and this case would silently test nothing.
+        inside = seed_user["bootstrap_period"].start_date + timedelta(days=2)
+        _upload(auth_client, seed_user["account"].id, _payload(entries=[
+            (inside, "-25.00", "POINT OF SALE DEBIT L340 COFFEE"),
+            (inside + timedelta(days=1), "1500.00",
+             "ACH DEPOSIT TOWN OF CLAYTON  PAYROLL"),
+        ]))
+        line = db.session.query(BankStatementLine).filter(
+            BankStatementLine.amount < 0,
+        ).one()
+        auth_client.post(
+            f"/accounts/{seed_user['account'].id}/statements/review",
+            data={
+                f"destination-{line.id}": "new",
+                f"envelope_name-{line.id}": "Coffee",
+                f"category_id-{line.id}": str(
+                    seed_user["categories"]["Groceries"].id,
+                ),
+            },
+        )
+        db.session.expire_all()
+        assert db.session.query(TransactionEntry).count() == 1, (
+            "the recording must really have happened, or the delete below "
+            "proves nothing"
+        )
+
+        # The CONFIRMATION says it first, on the page that offers the button.
+        listing = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements"
+        ).get_data(as_text=True)
+        assert "DESTROYS 2 row(s) the review created" in listing
+        assert "-$25.00" in listing
+
+        recorded = db.session.query(StatementImport).one()
+        response = self._delete(
+            auth_client, seed_user["account"].id, recorded.id,
+        )
+
+        body = response.get_data(as_text=True)
+        assert "2 row(s) the review had created" in body
+        assert "-25.00" in body
+        db.session.expire_all()
+        assert db.session.query(TransactionEntry).count() == 0
+        assert db.session.query(Transaction).filter(
+            Transaction.name == "Coffee",
+        ).count() == 0
+
+    def test_a_BLOCKED_delete_says_so_instead_of_naming_a_destruction(
+        self, auth_client, db, seed_user,
+    ):
+        """Found by adversarial security review 2026-08-24, in one edit.
+
+        One refusing release takes the WHOLE import delete down
+        (``_release_matches``), so an import holding a created row the owner
+        has since edited cannot be deleted at all.  A first version of this
+        page went on printing *"DESTROYS 2 row(s) ... worth -$25.00"* over a
+        press that destroys nothing and cannot succeed -- a money figure
+        attached to a no-op, and an import the owner cannot delete until they
+        find the row by hand, which is finding **N-302**'s shape with a
+        confirmation that lies on top of it.
+        """
+        inside = seed_user["bootstrap_period"].start_date + timedelta(days=2)
+        _upload(auth_client, seed_user["account"].id, _payload(entries=[
+            (inside, "-25.00", "POINT OF SALE DEBIT L340 COFFEE"),
+        ]))
+        line = db.session.query(BankStatementLine).one()
+        auth_client.post(
+            f"/accounts/{seed_user['account'].id}/statements/review",
+            data={
+                f"destination-{line.id}": "new",
+                f"envelope_name-{line.id}": "Coffee",
+                f"category_id-{line.id}": str(
+                    seed_user["categories"]["Groceries"].id,
+                ),
+            },
+        )
+        db.session.expire_all()
+        entry_service.update_entry(
+            db.session.query(TransactionEntry).one().id,
+            seed_user["user"].id, description="Coffee -- the good beans",
+        )
+        db.session.commit()
+
+        listing = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements"
+        ).get_data(as_text=True)
+
+        assert "This delete is REFUSED right now" in listing
+        assert "you have edited that row since" in listing
+        assert "DESTROYS" not in listing
+        # ...and the press really is refused, so the page was not being
+        # pessimistic about an act that would have worked.
+        recorded = db.session.query(StatementImport).one()
+        body = self._delete(
+            auth_client, seed_user["account"].id, recorded.id,
+        ).get_data(as_text=True)
+        assert "you have edited that row since" in body
+        db.session.expire_all()
+        assert db.session.query(StatementImport).count() == 1
+
+    def test_an_import_whose_review_created_NOTHING_says_nothing(
+        self, auth_client, db, seed_user,
+    ):
+        """The control: no warning where the delete destroys no record.
+
+        A dialog that always threatened destruction would train the owner to
+        click through the one that means it.
+        """
+        _upload(auth_client, seed_user["account"].id, _payload())
+
+        listing = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements"
+        ).get_data(as_text=True)
+        recorded = db.session.query(StatementImport).one()
+        body = self._delete(
+            auth_client, seed_user["account"].id, recorded.id,
+        ).get_data(as_text=True)
+
+        assert "DESTROYS" not in listing
+        assert "the review had created" not in body
 
     def test_the_flash_names_the_matches_and_the_pairing_it_removed(
         self, auth_client, db, seed_user,

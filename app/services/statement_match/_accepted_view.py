@@ -25,12 +25,9 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy.orm import selectinload
-
 from app.exceptions import AmountUnresolvable
 from app.extensions import db
 from app.models.statement_import import BankStatementLine
-from app.models.statement_match import StatementMatch
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import cash_ledger
@@ -41,6 +38,7 @@ from app.utils.log_events import (
     log_event,
 )
 
+from ._release import PlannedRemovals, acts_of, planned_removals
 from ._sides import MatchSides
 
 _logger = logging.getLogger(__name__)
@@ -80,6 +78,15 @@ class AcceptedGroup:
         amount: The signed total its bank lines state.
         descriptions: What the bank called each line.
         rows: Its app rows.
+        removes: What an Undo would take back
+            (:class:`~._release.PlannedRemovals`) -- the rows this act CREATED
+            and the money the account would stop recording.  **From the release
+            door's OWN derivation** (:func:`~._release.planned_removals`),
+            which is the shape :func:`~._preview.preview_hand_build` already
+            has for the accept door: two spellings would let the screen promise
+            one thing and the button do another, and this button destroys
+            records.  It is empty for every match between rows that already
+            existed, which is most of them.
         agrees: Whether the match still HOLDS -- which is three questions, not
             one, and a first draft asked only the first.  Every row still
             carries ``posts_on``; the act still names at least one row; and the
@@ -98,6 +105,7 @@ class AcceptedGroup:
     descriptions: "tuple[str, ...]"
     rows: "tuple[AcceptedRow, ...]"
     agrees: bool
+    removes: PlannedRemovals
 
 
 def accepted_groups(
@@ -114,16 +122,13 @@ def accepted_groups(
         the day it asserted is flagged rather than hidden: it is the shape a
         later hand edit produces, and the screen is where it can be re-reviewed.
     """
-    matches = (
-        db.session.query(StatementMatch)
-        .options(selectinload(StatementMatch.members))
-        .filter(
-            StatementMatch.account_id == account_id,
-            StatementMatch.user_id == owner_id,
-        )
-        .order_by(StatementMatch.created_at.desc(), StatementMatch.id.desc())
-        .all()
-    )
+    # ONE loader, shared with the import page's delete preview
+    # (:func:`~._release.acts_of`): an act is only readable with BOTH its
+    # relations -- what it names decides whether it still holds, and what it
+    # created decides what the Undo control would take back.  It narrows by
+    # the owner as well as the account, which is the pair the write door
+    # itself uses.
+    matches = acts_of(owner_id, account_id)
     if not matches:
         return []
 
@@ -201,6 +206,7 @@ def accepted_groups(
             descriptions=tuple(line.description for line in match_lines),
             rows=tuple(rows),
             agrees=_still_holds(rows, match_lines, posts_on),
+            removes=planned_removals(match),
         ))
     return groups
 

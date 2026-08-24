@@ -79,6 +79,7 @@ from ._line import (
 )
 from ._reads import (
     ImportRecord,
+    ImportRemovalPreview,
     RecordedSpan,
     SourceOption,
     available_sources,
@@ -97,6 +98,7 @@ __all__ = [
     "ImportedBalance",
     "KnownOpening",
     "ImportRecord",
+    "ImportRemovalPreview",
     "ImportRemoval",
     "KeyedLine",
     "RecordedSpan",

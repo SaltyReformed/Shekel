@@ -93,6 +93,7 @@ AUDITED_TABLES: tuple[tuple[str, str], ...] = (
     ("budget", "savings_goals"),
     ("budget", "scenarios"),
     ("budget", "statement_imports"),
+    ("budget", "statement_match_creations"),
     ("budget", "statement_match_members"),
     ("budget", "statement_matches"),
     ("budget", "template_amount_versions"),

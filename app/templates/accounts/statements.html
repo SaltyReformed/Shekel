@@ -193,11 +193,30 @@
                    The line count is `recorded_count`: nothing removes a bank
                    line except its import's cascade or its account's, so a
                    "live" count beside it could never differ -- see
-                   ImportRecord. The MATCH count is genuinely live. #}
+                   ImportRecord. The MATCH count is genuinely live, and so is
+                   the ROW count: a delete now destroys what the review created
+                   from these lines (X-f6f, R-GG), and both the count and the
+                   figure come from the release door's own derivation so the
+                   sentence cannot promise what the act will not do.
+                   A BLOCKED delete says so INSTEAD of naming a destruction:
+                   one refusing release takes the whole delete down, so the
+                   figure would be attached to a press that changes nothing --
+                   which is what a first version of this line did. #}
                 <td class="text-end">
+                  {% if row.removes.blocked %}
+                  <div class="small text-warning-emphasis mb-1">
+                    Deleting this import is refused: {{ row.removes.blocked }}
+                  </div>
+                  {% elif row.removes.rows %}
+                  <div class="small text-warning-emphasis mb-1">
+                    Deleting it also removes {{ row.removes.rows }} row(s) the
+                    review created from those lines,
+                    {{ money(row.removes.cash) }}.
+                  </div>
+                  {% endif %}
                   <form method="post" class="d-inline"
                         action="{{ url_for('accounts.delete_statement_import', account_id=account.id) }}"
-                        data-confirm="Delete the import of &quot;{{ row.file_name }}&quot;? This removes {{ row.recorded_count }} bank line(s) the app has on record{% if row.matches_affected %}, and undoes {{ row.matches_affected }} accepted match(es) so their rows can be matched again{% endif %}. Settle dates a match already corrected are NOT changed. To get the lines back you would import the file again.">
+                        data-confirm="{% if row.removes.blocked %}This delete is REFUSED right now and will change nothing: {{ row.removes.blocked }}{% else %}Delete the import of &quot;{{ row.file_name }}&quot;? This removes {{ row.recorded_count }} bank line(s) the app has on record{% if row.matches_affected %}, and undoes {{ row.matches_affected }} accepted match(es) so their rows can be matched again{% endif %}{% if row.removes.rows %}. It also DESTROYS {{ row.removes.rows }} row(s) the review created from those lines, worth {{ money(row.removes.cash) }} of money the app currently records{% endif %}. Settle dates a match already corrected are NOT changed. To get the lines back you would import the file again.{% endif %}">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <input type="hidden" name="import_id" value="{{ row.import_id }}">
                     <button type="submit" class="btn btn-sm btn-outline-danger"

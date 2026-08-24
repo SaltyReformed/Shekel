@@ -49,8 +49,13 @@ The public surface, and what each piece is for:
   accepts* has a figure to accept.  It runs the accept door's own reads and
   refusals without the writes, so the screen and the door cannot state
   different totals (plan step ``bank_import:X-f6d-4``).
-* :func:`release_match` -- the undo, which restores the QUESTION rather than
-  the days.
+* :func:`release_match` -- the undo.  It restores the QUESTION rather than
+  the days, and removes what the act CREATED: the purchase a bank line became,
+  a group's recorded difference, and the budget line minted to hold a purchase
+  where nothing is left in it (plan step ``bank_import:X-f6f``, ruling
+  **R-GG**).  :class:`PlannedRemoval` is what the screen prints beside the
+  Undo button, from the door's own derivation, so the control names the money
+  it is about to destroy.
 * The value types :class:`MatchProposal`, :class:`MatchSubmission`,
   :class:`ReviewedRow`, :class:`CandidateRow`, :class:`BankLine`,
   :class:`RowKind`,
@@ -79,7 +84,14 @@ The public surface, and what each piece is for:
 owner has not accepted, and :mod:`._propose` cannot write at all.
 """
 
-from ._accept import AcceptedMatch, accept_match, release_match
+from ._accept import AcceptedMatch, accept_match
+from ._release import (
+    PlannedRemoval,
+    PlannedRemovals,
+    ReleasedMatch,
+    release_match,
+    removals_by_match,
+)
 from ._batch import BatchOutcome, ReviewedBatch, apply_reviewed
 from ._candidates import (
     candidates_for,
@@ -159,12 +171,15 @@ __all__ = [
     "NewEnvelope",
     "Placement",
     "PlacementKind",
+    "PlannedRemoval",
+    "PlannedRemovals",
     "PolicyAnswer",
     "PolicyStatement",
     "PolicyView",
     "ProposedMatches",
     "PurchaseCreation",
     "PurchaseDestination",
+    "ReleasedMatch",
     "ReviewBounds",
     "ReviewScope",
     "ReviewSet",
@@ -186,6 +201,7 @@ __all__ = [
     "preview_hand_build",
     "propose",
     "release_match",
+    "removals_by_match",
     "review_set",
     "statable_merchants",
     "state_policies",

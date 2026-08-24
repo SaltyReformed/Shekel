@@ -592,18 +592,56 @@ def statement_review_totals(account_id):
     return render_template(_HAND_TOTALS, totals=totals)
 
 
+def _release_report(released) -> "tuple[str, str]":
+    """Return the flash for one released match: what came back, and what went.
+
+    **The removal half is not an aside**, which is why it names a figure and
+    not only a count (plan step ``bank_import:X-f6f``): this act destroys the
+    app's record of money that moved, and a receipt saying "1 row" over a
+    `$213.49` swipe is the *"Nothing moved."* sentence ruling **R-GD** has
+    already had to correct once, one door over.
+
+    Args:
+        released: The :class:`~app.services.statement_match.ReleasedMatch`.
+
+    Returns:
+        ``(message, category)``.
+    """
+    removed = (
+        f"  It also removed the {released.removed_rows} row(s) that match had "
+        f"created, worth {released.removed_cash:+,.2f}."
+        if released.removed_rows else ""
+    )
+    kept = (
+        f"  {released.kept_containers} budget line(s) it created were kept: "
+        f"something is still filed under them, or you have edited them since."
+        if released.kept_containers else ""
+    )
+    return (
+        "Match undone.  Those statement lines are unexplained again; the days "
+        f"they corrected are unchanged.{removed}{kept}",
+        "info",
+    )
+
+
 @accounts_bp.route(
     "/accounts/<int:account_id>/statements/review/release", methods=["POST"],
 )
 @login_required
 @require_owner
 def release_statement_match(account_id):
-    """Undo one match, putting its bank lines back among the unexplained.
+    """Undo one match: put its bank lines back, and take back what it created.
 
     **It does NOT put the settle days back**, and the page says so: the bank is
     still the best evidence the app has about when that money moved, so
     reverting a correction in order to tidy a relation would throw away the
     fact and keep the bookkeeping.  What comes back is the QUESTION.
+
+    **It DOES remove the rows the act created** (plan step
+    ``bank_import:X-f6f``, ruling **R-GG**), which is why the button carries a
+    ``data-confirm`` naming them and their figure: a purchase a bank line
+    became is money the app records only because this act recorded it, and the
+    control that withdraws it is the one place the owner can see how much.
 
     **It stays a plain POST-redirect-GET** where its sibling became an htmx
     swap, and the difference is the subject rather than an inconsistency: this
@@ -639,9 +677,5 @@ def release_statement_match(account_id):
             target=target,
         ),
         lambda: release_match(match_id, current_user.id, account.id),
-        lambda _released: (
-            "Match undone.  Those statement lines are unexplained again; the "
-            "days they corrected are unchanged.",
-            "info",
-        ),
+        _release_report,
     )

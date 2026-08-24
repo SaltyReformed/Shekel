@@ -122,13 +122,16 @@ def _reject_settled_parent(
     removing one would move it again -- so both refuse, on Paid and Received as
     well as on the terminal ``Settled``.
 
-    **ADDING one is a separate rule since plan step ``bank_import:X-f6a-3b``,
-    and it lives in :func:`_reject_settled_addition`.**  The two are not the
-    same question: removing a purchase shrinks a recorded cost with no evidence
-    but the user's own second thoughts, where ADDING one on a row whose figure
-    IS its purchases raises that cost by exactly the figure a bank statement
-    just showed.  Keeping them in one function meant the optimistic direction
-    and the evidenced one shared a refusal.
+    **ADDING one is a separate rule since plan step ``bank_import:X-f6a-3b``
+    and REMOVING one since ``bank_import:X-f6f``**, in
+    :func:`_reject_settled_addition` and :func:`_reject_settled_removal`.  The
+    three are not the same question, and this one is now only about an EDIT:
+    re-pricing a purchase, or flipping which side of the card it sat on, is a
+    figure the user supplies with nothing behind it but their own second
+    thoughts.  What the other two weigh is whether the write can move what the
+    row's own close BOOKED, which is arithmetic rather than evidence, and
+    keeping all three in one function meant an optimistic direction and two
+    neutral ones shared a refusal.
 
     **The reason it is the BAND and not the archive is carry-forward, and it is
     the argument that decides this.**  ``carry_forward_service`` rolls an
@@ -192,12 +195,15 @@ def _reject_settled_parent(
     Args:
         txn: The parent transaction the entry belongs (or would belong) to.
             Its ``status`` relationship is read (``lazy="joined"``).
-        changing: The purchase facts this act writes.  The DELETE door passes
-            :data:`_COST_BEARING_FIELDS` -- a purchase vanishing changes every
-            one of them -- and the update door passes the fields it was
-            actually given, which is what lets a posting-day or purchase-day
-            edit through where a re-price is refused.  The CREATE door does not
-            call this at all; :func:`_reject_settled_addition` is its rule.
+        changing: The purchase facts this act writes.  The UPDATE door is its
+            only caller and passes the fields it was actually given, which is
+            what lets a posting-day or purchase-day edit through where a
+            re-price is refused.  The CREATE and DELETE doors do not call this
+            at all: :func:`_reject_settled_addition` and
+            :func:`_reject_settled_removal` are their rules, and the DELETE
+            door passed :data:`_COST_BEARING_FIELDS` here until plan step
+            ``bank_import:X-f6f`` -- which refused every removal, including the
+            exact inverse of an addition the ADD rule admits.
 
     Raises:
         ValidationError: When *txn* is in a settled status and *changing*
@@ -319,6 +325,157 @@ def _reject_settled_addition(
         "the purchase, and mark it paid again -- that restates what it cost "
         "from the purchases themselves."
     )
+
+def removal_refusal(txn: Transaction, entry) -> "str | None":
+    """Return why *entry* may not be REMOVED from *txn*, or ``None``.
+
+    :func:`_reject_settled_addition`'s mirror, and it exists because the door
+    it replaces had no mirror at all (plan step ``bank_import:X-f6f``, ruling
+    **R-GG**).  ``delete_entry`` asked :func:`_reject_settled_parent` with
+    every cost-bearing field at once, so a settled parent refused every
+    removal -- including the exact inverse of an addition ruling **R-FX**
+    already ADMITS on the same row.  A door that can only go one way is what
+    finding **N-333** measures: 103 purchases a statement pass created in
+    error, every one under a settled ``purchases``-basis parent, and no door
+    in ``app/`` that removes one.
+
+    **The rule is the ARITHMETIC, and it was measured before it was written.**
+    ``cash_ledger.settled_cash_leg`` is ``settled figure - Sigma(credit
+    entries) - Sigma(posted debit purchases)``, and for a ``purchases``
+    settlement the figure IS ``Sigma(entries)``.  So a purchase that is CREDIT
+    or POSTED sits in the figure AND in a subtracted term, and removing it
+    moves both by the same amount: the row's own close books exactly what it
+    booked before, and what goes is the leg the purchase itself booked on its
+    own day.  Measured on an envelope closed at ``$120.00 + $57.96``, both
+    posted: the row's leg reads ``0.00`` before and ``0.00`` after, and the
+    account's posted total moves ``822.04 -> 880.00`` -- the removed purchase's
+    own ``$57.96``, reversed on its own day, and nothing else.
+
+    **An UNPOSTED DEBIT purchase is the case that stays refused**, and the same
+    measurement is why: it is in the figure and in no subtracted term, so the
+    close books it.  On the same fixture with the ``$57.96`` left unposted the
+    row's leg reads ``-57.96`` before and ``0.00`` after -- the envelope's
+    recorded close shrinking on a past day with no external evidence, which is
+    already-spent money handed back to the projection.  That is exactly what
+    :func:`_reject_settled_parent` was written about.
+
+    **The ARCHIVE is refused whatever the purchase is**, and a settled row
+    recording a STORED figure likewise, both for
+    :func:`_reject_settled_addition`'s own reasons: an archived row's purchases
+    are history, and a ``derived`` or ``corrected`` settlement stores a figure
+    fixed before this purchase was weighed, so ``settled_cash_leg``'s third
+    term would stop subtracting money the total never contained.  **They are
+    two sentences rather than one** because the archive records no fixed figure
+    and cannot be set back to Projected, so the other message's reason and its
+    remedy are both false for it.
+
+    **It does NOT answer the carry-forward staleness** (finding **N-249**,
+    owner ``balance:X-ax``), and it WIDENS the door that reaches it -- which is
+    exactly what plan step ``bank_import:X-f6a-3b`` did to the same row from
+    the other side, and the row records that widening rather than changing its
+    remedy.  **The direction is the OPTIMISTIC one and a first version of this
+    paragraph had it backwards**, which matters because the inverted claim was
+    being offered as the safety argument.  A rollover writes ``max(0, budget -
+    Sigma(entries))`` into the NEXT period's row as an EXPENSE
+    (``carry_forward_service._execute._settle_source_and_roll_leftover``).
+    Removing a purchase RAISES the true leftover, so the already-written target
+    is too SMALL -- less spending projected, and the balance reads HIGH.
+    Measured on a `$500.00` envelope carried forward at `$442.04` after one
+    `$57.96` purchase: removing that purchase leaves `$0.00` recorded in the
+    source period and `$442.04` in the target, against `$500.00` budgeted, so
+    `$57.96` of budget has left the projection.  The ADDITION direction is the
+    conservative one, which is why N-249 tolerated it.
+    **What the developer already ruled stands**: RECONCILE the rollover, and
+    *refusing late purchases on a rolled-forward source* is rejected, because
+    it also refuses a genuinely forgotten one -- and here it would refuse
+    exactly the errant rows this step exists to remove.  Found by adversarial
+    financial review 2026-08-24.
+
+    **It ANSWERS where its sibling refusals RAISE, and that shape is what a
+    second reader needs** (plan step ``bank_import:X-f6f``).  The statement
+    matcher's undo removes purchases it created, and it must know BEFORE it
+    writes anything whether each removal will be admitted -- the package's own
+    promise is that a refused act leaves the database exactly as it was without
+    depending on the rollback, and a door that discovered the refusal halfway
+    through would break it and would let the review screen promise a removal
+    the button then refuses.  Measured on that build: the panel offered *"Undo
+    removes 1 row"* over an archived container and the release raised with the
+    act already deleted from the session.  So the rule ANSWERS, one place, and
+    :func:`_reject_settled_removal` is the arm that raises it.
+
+    Args:
+        txn: The parent transaction the entry belongs to.  Its ``status``
+            relationship is read (``lazy="joined"``) and then its settlement
+            record.
+        entry: The purchase being removed.  Its ``is_credit`` flag and its
+            posting day are the two facts that decide, because they are the two
+            terms ``settled_cash_leg`` subtracts.
+
+    Returns:
+        The sentence explaining the refusal, or ``None`` where the removal is
+        admitted.
+    """
+    if txn.status is None or not txn.status.is_settled:
+        return None
+    purchases_basis = ref_cache.settlement_basis_id(
+        SettlementBasisEnum.PURCHASES,
+    )
+    # **The ARCHIVE gets its own sentence, because the other one's reason is
+    # false for it and its remedy is impossible.**  An archived
+    # ``purchases``-basis envelope records no fixed figure, and the state
+    # machine gives the terminal ``Settled`` status no outgoing edge but
+    # identity (``state_machine._transition_map``: ``settled: {settled}``), so
+    # *set the row back to Projected* is a transition the seam refuses -- a
+    # refusal naming a repair the app cannot perform is finding **N-302**'s
+    # shape, and this one is now quoted onto the review panel.  Found by
+    # adversarial financial review 2026-08-24.
+    if is_archived(txn):
+        return (
+            f"Transaction {txn.id} is archived, so its purchases are history "
+            "and none of them can be removed. Nothing changes an archived "
+            "row: it is the record of a period that is closed."
+        )
+    if txn.settled_basis_id != purchases_basis:
+        return (
+            f"Transaction {txn.id} has settled and records a fixed figure, so "
+            "a purchase cannot be removed from it: the row's cost would not "
+            "fall by the purchase, and the purchase's own cash would stop "
+            "being subtracted from a total that still contains it. Set the "
+            "row back to Projected, remove the purchase, and mark it paid "
+            "again -- that restates what it cost from the purchases "
+            "themselves."
+        )
+    if entry.is_credit or entry.settled_on is not None:
+        return None
+    return (
+        f"Transaction {txn.id} has settled, so a purchase removed from it has "
+        "to say when your bank took the money -- without that day its amount "
+        "comes out of this row on the day the row closed, which shrinks what "
+        "the row records as having cost on a day you may already have checked "
+        "against a statement. Record the day your bank took it first, or set "
+        "the row back to Projected, remove the purchase, and mark it paid "
+        "again."
+    )
+
+
+def _reject_settled_removal(txn: Transaction, entry) -> None:
+    """Raise :func:`removal_refusal`'s answer, for the door that writes.
+
+    The two are split so one rule can serve a caller that must ASK before it
+    writes and a caller that simply refuses; see :func:`removal_refusal` for
+    the rule and for what the split is worth.
+
+    Args:
+        txn: The parent transaction the entry belongs to.
+        entry: The purchase being removed.
+
+    Raises:
+        ValidationError: When :func:`removal_refusal` names a reason.
+    """
+    refusal = removal_refusal(txn, entry)
+    if refusal is not None:
+        raise ValidationError(refusal)
+
 
 def _reject_future_purchase_date(purchased_on: date) -> None:
     """Refuse a purchase dated after the user's today (ruling R-M).

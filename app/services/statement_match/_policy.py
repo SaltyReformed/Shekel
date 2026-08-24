@@ -672,7 +672,7 @@ def state_policies(
     is read to suggest; a purchase is recorded only by an explicit destination
     on one line.  Keeping the two apart is what lets the money door's ceiling,
     its receipt and its refusal vocabulary stay about money -- and it is the
-    same boundary :func:`~._accept.release_match` is a separate door for.
+    same boundary :func:`~._release.release_match` is a separate door for.
 
     **Each statement is its own SAVEPOINT**, which is the ruled per-item
     isolation applied one door over.  Its value here is different: a refused
@@ -684,7 +684,7 @@ def state_policies(
     package, and the reason is that it reaches nothing the scope holds: no
     candidate, no price, no calendar.  Requiring one would make a preference
     write pay the pass's 3.6 s derivation.  The ownership statement is still
-    the route's one statement, exactly as :func:`~._accept.release_match`
+    the route's one statement, exactly as :func:`~._release.release_match`
     takes it.
 
     **It reads the offerable templates for ITSELF rather than taking a

@@ -35,12 +35,12 @@ from app.services.settle_day import (
     recorded_settle_day,
 )
 from app.services.entry_service._refusals import (
-    _COST_BEARING_FIELDS,
     _reject_future_posting_day,
     _reject_future_purchase_date,
     _reject_settled_addition,
     _reject_settled_before_purchase,
     _reject_settled_parent,
+    _reject_settled_removal,
     cost_fields_changing,
 )
 from app.utils.balance_predicates import is_cancelled
@@ -90,9 +90,13 @@ def _resync_after_entry_change(txn: Transaction) -> None:
 
       * deleting the LAST purchase from a settled envelope left the previous
         figure standing -- deliberately, because rewriting the close to ``$0.00``
-        looked worse than a stale number.  Neither state is reachable now: the
-        delete is refused, and a ``purchases`` row that was closed empty answers
-        ``$0.00`` because that is what its records say;
+        looked worse than a stale number.  That state is unreachable now for a
+        different reason than when this was written: it said *the delete is
+        refused*, and plan step ``bank_import:X-f6f`` admits one where removing
+        the purchase cannot change what the row's own close booked.  What makes
+        the stale figure impossible is that there is no stored figure left to go
+        stale -- a ``purchases`` row answers ``Sigma(entries)``, so one closed
+        empty answers ``$0.00`` because that is what its records say;
       * adding a purchase to a settled row whose figure was a HUMAN's correction
         overwrote that correction with the entry sum.  That cannot happen now
         for two independent reasons: the hook is gone, and
@@ -626,8 +630,10 @@ def delete_entry(entry_id: int, user_id: int) -> int:
 
     Raises:
         NotFoundError: Entry not found or not accessible.
-        ValidationError: If the parent row has settled
-            (:func:`_reject_settled_parent`).
+        ValidationError: If removing this purchase would change what a settled
+            parent's own close BOOKED (:func:`_reject_settled_removal`) -- an
+            undated debit under a settled row, a row recording a stored figure,
+            or an archived one.
     """
     entry = db.session.get(TransactionEntry, entry_id)
     if entry is None:
@@ -638,10 +644,16 @@ def delete_entry(entry_id: int, user_id: int) -> int:
     if entry.transaction.pay_period.user_id != owner_id:
         raise NotFoundError(f"Entry {entry_id} not found.")
 
-    # A settled row's purchases are history (finding **N-229**), and removing
-    # one would rewrite what the books already say the row cost -- every
-    # cost-bearing fact of it at once, which is the set passed here.
-    _reject_settled_parent(entry.transaction, _COST_BEARING_FIELDS)
+    # **A settled row's close may not be re-priced by a removal, and whether
+    # this removal would re-price it is arithmetic** (plan step
+    # ``bank_import:X-f6f``, ruling **R-GG**).  This passed
+    # ``_COST_BEARING_FIELDS`` to ``_reject_settled_parent`` until then, which
+    # refused EVERY removal from a settled row -- the exact inverse of an
+    # addition ruling **R-FX** admits on the same row, and the reason 103
+    # purchases a statement pass created in error had no door that removes
+    # one (finding **N-333**).  ``_reject_settled_removal`` weighs what the
+    # close actually booked instead.
+    _reject_settled_removal(entry.transaction, entry)
 
     txn = entry.transaction
     transaction_id = entry.transaction_id

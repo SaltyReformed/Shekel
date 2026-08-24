@@ -65,7 +65,7 @@ from app.utils.log_events import (
     log_event,
 )
 
-from ._accept import record_match
+from ._accept import MatchContent, record_match
 from ._resolve import load_lines
 from ._candidates import (
     MatchedSubjects,
@@ -74,11 +74,12 @@ from ._candidates import (
     unmatched_destinations,
 )
 from ._creations import (
+    CreatedSubject,
     NewEnvelope,
     PurchaseCreation,
     envelope_answer_key,
 )
-from ._offers import merchant_label
+from ._offers import CandidateRow, RowKind, merchant_label
 from ._scope import ReviewScope
 
 _logger = logging.getLogger(__name__)
@@ -640,6 +641,87 @@ def _observed(line: BankStatementLine) -> SettleDay:
     )
 
 
+def _made_by_this_act(
+    candidate: CandidateRow, envelope: Transaction, container_created: bool,
+) -> "tuple[CreatedSubject, ...]":
+    """Return what this act BROUGHT INTO EXISTENCE, which is not what it names.
+
+    Ruling **R-GG**, plan step ``bank_import:X-f6f``.  The purchase is both --
+    created, and named, because it is what the bank line IS.  The envelope is
+    created and never named: naming a container beside its own purchase counts
+    the same money twice, which
+    :func:`~._accept._reject_parent_and_its_own_purchase` refuses outright.
+    That asymmetry is exactly why the record is its own relation rather than a
+    column on the membership, and it is why this function exists rather than
+    the door passing its own rows through.
+
+    **The envelope's revision is read AFTER the act's writes are flushed**, by
+    the caller: a container is written twice here -- born Projected, then
+    closed on the bank's day -- so the revision this act LEFT is the only one
+    an undo can compare against without reporting the door's own second write
+    as somebody else's edit.
+
+    Args:
+        candidate: The purchase this act created, already priced.
+        envelope: The budget line it went into.
+        container_created: Whether THIS act made that budget line.
+
+    Returns:
+        One :class:`~._creations.CreatedSubject` per row, purchase first.
+    """
+    purchase = CreatedSubject.of(candidate)
+    if not container_created:
+        return (purchase,)
+    return (
+        purchase,
+        CreatedSubject(
+            kind=RowKind.TRANSACTION,
+            row_id=envelope.id,
+            version_id=envelope.version_id,
+        ),
+    )
+
+
+def _destination(
+    creation: PurchaseCreation,
+    pay_period_id: int,
+    scope: ReviewScope,
+    matched: MatchedSubjects,
+    minted: MintedEnvelopes,
+) -> "tuple[Transaction, bool]":
+    """Return the budget line this purchase goes in, and whether we made it.
+
+    The two arms of ruling **R-FX**, resolved in one place: an envelope the
+    owner picked from the set the screen offers, or one this door creates for
+    the line.  :func:`_reject_ambiguous_destination` has already refused a
+    submission naming both or neither, so the branch below is a dispatch
+    rather than a preference.
+
+    Args:
+        creation: What the owner submitted.
+        pay_period_id: The period holding the day the purchase was made.
+        scope: The pass's derived offer set.
+        matched: What this account's matches have already claimed, as of this
+            act.
+        minted: What this REQUEST has already created.
+
+    Returns:
+        ``(envelope, created)`` -- the row, and whether this act made it.
+
+    Raises:
+        ValidationError: When the named envelope is not one the screen could
+            have offered, or the named category is not this owner's.
+    """
+    if creation.transaction_id is not None:
+        return (
+            _existing_envelope(creation, pay_period_id, scope, matched), False,
+        )
+    return _minted_or_new(
+        creation, _owned_category(creation, scope), pay_period_id, scope,
+        minted,
+    )
+
+
 def create_purchase_from_line(
     creation: PurchaseCreation,
     scope: ReviewScope,
@@ -719,14 +801,9 @@ def create_purchase_from_line(
     # would raise ``check_purchase_date_in_period``'s out-of-period
     # warning on a row this door had just built.
     pay_period_id = scope.period_holding(made_on, "this purchase")
-    if creation.transaction_id is not None:
-        envelope = _existing_envelope(creation, pay_period_id, scope, matched)
-        created = False
-    else:
-        category = _owned_category(creation, scope)
-        envelope, created = _minted_or_new(
-            creation, category, pay_period_id, scope, minted,
-        )
+    envelope, created = _destination(
+        creation, pay_period_id, scope, matched, minted,
+    )
 
     amount = -Decimal(str(line.amount))
     entry = entry_service.create_entry(
@@ -802,14 +879,26 @@ def create_purchase_from_line(
             envelope, settled=envelope.status.is_settled,
         )
 
+    # **The act's own writes are FLUSHED before its creation records are
+    # read** (plan step ``bank_import:X-f6f``).  A container this door creates
+    # is written TWICE -- born Projected, then closed on the bank's day -- and
+    # ``version_id`` only reaches the instance when the UPDATE is emitted, so
+    # reading it before the flush would record the revision this act found
+    # rather than the one it left, and the undo would then report its own
+    # second write as somebody else's edit.
+    db.session.flush()
+    candidate = purchase_candidate(entry)
+
     # **No residual, and it can never have one**: this door built the purchase
     # at the line's own figure, so the two sides agree to the cent by
     # construction and there is no difference for ruling **R-FN**'s row to
     # record (plan step ``bank_import:X-f6d-4``).
     accepted = record_match(
         scope,
-        [line],
-        [purchase_candidate(entry)],
+        MatchContent(
+            lines=[line], rows=[candidate],
+            created=_made_by_this_act(candidate, envelope, created),
+        ),
         matched,
     )
 

@@ -4,6 +4,9 @@ Plan step **bank_import:X-f6a-2**, rulings **R-FS** and **R-FV**.  Migration
 ``c1e7d4b3a850`` lands two tables whose whole job is to say that a set of bank
 lines and a set of the app's own rows are ONE movement -- a claim the accept
 door checks in Python and the schema must be able to hold independently.
+Migration ``d1a4f7c9e620`` lands the THIRD (plan step ``bank_import:X-f6f``,
+ruling **R-GG**): what an act brought into EXISTENCE, which is not the same set
+as what it names, and which the undo has to be able to find.
 
 **Every test here is a FIRING CONTROL** (``docs/plans/verification.md``
 standard 4).  The door refuses each of these states before it writes, so
@@ -22,7 +25,11 @@ The shapes under test, and what each would cost if writable:
 * **a member whose account disagrees with its act's, or with its subject's** --
   a match spanning two accounts, which is money booked against a statement that
   never showed it;
-* **an act whose owner is not its account's owner**.
+* **an act whose owner is not its account's owner**;
+* **a creation naming two subjects, or none, or a subject a second act also
+  claims to have made** -- the same three shapes on the creations relation,
+  where a subject minted twice would be offered for removal twice and the
+  second undo would find it gone.
 
 It also pins the two SUPERKEYS the composite keys target: they constrain
 nothing on their own, so an arm that only tested a rejection could not see one
@@ -41,8 +48,13 @@ from app.enums import StatementSourceEnum, StatusEnum, TxnTypeEnum
 from app.models.account import Account
 from app.models.ref import AccountType
 from app.models.statement_import import BankStatementLine, StatementImport
-from app.models.statement_match import StatementMatch, StatementMatchMember
+from app.models.statement_match import (
+    StatementMatch,
+    StatementMatchCreation,
+    StatementMatchMember,
+)
 from app.models.transaction import Transaction
+from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services import account_service
 from app.services.statement_match import matched_subjects
@@ -634,3 +646,280 @@ class TestTheMigrationRepairsWhatTheConstraintCannotSee:
         assert txn.id not in matched_subjects(
             seed_user["account"].id,
         ).transactions
+
+
+def _an_entry(db, seed_user, transaction, amount="25.00"):
+    """Stage and return one purchase under *transaction*.
+
+    Args:
+        db: The session fixture.
+        seed_user: The seeded user bundle.
+        transaction: The parent budget row.
+        amount: Its figure, as a string.
+
+    Returns:
+        The staged
+        :class:`~app.models.transaction_entry.TransactionEntry`.  A SCHEMA
+        fixture: it exists so a creation record has a second KIND of subject
+        to name, not to be worth anything.
+    """
+    entry = TransactionEntry(
+        transaction_id=transaction.id,
+        account_id=transaction.account_id,
+        user_id=seed_user["user"].id,
+        amount=Decimal(amount),
+        description="Kroger",
+        purchased_on=seed_user["bootstrap_period"].start_date,
+    )
+    db.session.add(entry)
+    db.session.flush()
+    return entry
+
+
+def _a_creation(db, match, **overrides):
+    """Stage and return one creation record of *match*.
+
+    Args:
+        db: The session fixture.
+        match: The act that made the subject.
+        **overrides: Creation fields to replace.
+
+    Returns:
+        The staged
+        :class:`~app.models.statement_match.StatementMatchCreation`.
+    """
+    fields = {
+        "match_id": match.id,
+        "account_id": match.account_id,
+        "transaction_id": None,
+        "transaction_entry_id": None,
+        "created_version_id": 1,
+    }
+    fields.update(overrides)
+    creation = StatementMatchCreation(**fields)
+    db.session.add(creation)
+    db.session.flush()
+    return creation
+
+
+class TestACreationNamesExactlyOneAppRow:
+    """``ck_statement_match_creations_one_subject`` -- the exclusive arc.
+
+    **There is no bank-line arm and its ABSENCE is the constraint** (ruling
+    **R-GG**): a match act cannot bring a line into existence -- an import does
+    that, and the line is what the act is ABOUT.  The column this table
+    replaced needed a CHECK to say so; here it is unspellable, which is why no
+    test below asserts it.
+    """
+
+    def test_naming_no_subject_is_refused(self, app, db, seed_user):
+        """A creation of nothing is a row the undo would have to skip."""
+        match = _a_match(db, seed_user)
+
+        with pytest.raises(sqlalchemy.exc.IntegrityError) as caught:
+            _a_creation(db, match)
+
+        assert "ck_statement_match_creations_one_subject" in str(caught.value)
+
+    def test_naming_two_subjects_is_refused(self, app, db, seed_user):
+        """One record cannot say two rows were created by one act."""
+        match = _a_match(db, seed_user)
+        transaction = _a_transaction(db, seed_user)
+        entry = _an_entry(db, seed_user, transaction)
+
+        with pytest.raises(sqlalchemy.exc.IntegrityError) as caught:
+            _a_creation(
+                db, match,
+                transaction_id=transaction.id,
+                transaction_entry_id=entry.id,
+            )
+
+        assert "ck_statement_match_creations_one_subject" in str(caught.value)
+
+    def test_a_zero_revision_is_refused(self, app, db, seed_user):
+        """``OptimisticLockMixin`` starts every counter at 1.
+
+        A zero would compare equal to nothing the row could ever carry, so an
+        undo would silently decline to remove a row it created -- the failure
+        mode a NOT NULL alone cannot see.
+        """
+        match = _a_match(db, seed_user)
+        transaction = _a_transaction(db, seed_user)
+
+        with pytest.raises(sqlalchemy.exc.IntegrityError) as caught:
+            _a_creation(
+                db, match, transaction_id=transaction.id,
+                created_version_id=0,
+            )
+
+        assert (
+            "ck_statement_match_creations_version_positive" in str(caught.value)
+        )
+
+    def test_naming_one_subject_is_accepted(self, app, db, seed_user):
+        """The control: the arm admits the only shape a creation may take."""
+        match = _a_match(db, seed_user)
+        transaction = _a_transaction(db, seed_user)
+
+        _a_creation(db, match, transaction_id=transaction.id)
+
+        assert db.session.query(StatementMatchCreation).count() == 1
+
+
+class TestASubjectIsCreatedByAtMostOneAct:
+    """``uq_statement_match_creations_transaction`` / ``..._entry``.
+
+    Two acts each claiming to have minted one row would each offer to remove
+    it, and the second undo would find it gone.
+    """
+
+    def test_one_transaction_created_by_two_acts_is_refused(
+        self, app, db, seed_user,
+    ):
+        """The partial unique index, shown to fire."""
+        transaction = _a_transaction(db, seed_user)
+        _a_creation(db, _a_match(db, seed_user), transaction_id=transaction.id)
+
+        with pytest.raises(sqlalchemy.exc.IntegrityError) as caught:
+            _a_creation(
+                db, _a_match(db, seed_user), transaction_id=transaction.id,
+            )
+
+        assert "uq_statement_match_creations_transaction" in str(caught.value)
+
+    def test_two_creations_naming_no_entry_do_not_collide(
+        self, app, db, seed_user,
+    ):
+        """The index is PARTIAL: a NULL is not a claim.
+
+        Without the ``WHERE`` clause the second transaction-creation here
+        would collide on ``transaction_entry_id IS NULL``, and the table could
+        hold exactly one creation of each kind for the whole database.
+        """
+        first = _a_transaction(db, seed_user, name="Water")
+        second = _a_transaction(db, seed_user, name="Gas")
+
+        _a_creation(db, _a_match(db, seed_user), transaction_id=first.id)
+        _a_creation(db, _a_match(db, seed_user), transaction_id=second.id)
+
+        assert db.session.query(StatementMatchCreation).count() == 2
+
+
+class TestACreationCannotSpanTwoAccounts:
+    """``fk_statement_match_creations_transaction_account``.
+
+    A creation naming another account's row would let one account's undo
+    delete a budget line belonging to another -- the composite key is what
+    makes that unwritable rather than merely unwritten.
+    """
+
+    def test_a_creation_naming_another_accounts_row_is_refused(
+        self, app, db, seed_user,
+    ):
+        """Shown to fire against a row that really exists."""
+        other = _another_account(db, seed_user)
+        match = _a_match(db, seed_user)
+        foreign = _a_transaction(db, seed_user, name="Elsewhere")
+        foreign.account_id = other.id
+        db.session.flush()
+
+        with pytest.raises(sqlalchemy.exc.IntegrityError) as caught:
+            _a_creation(db, match, transaction_id=foreign.id)
+
+        assert (
+            "fk_statement_match_creations_transaction_account"
+            in str(caught.value)
+        )
+
+
+class TestASubjectTakesItsCreationRecordWithIt:
+    """``ON DELETE CASCADE`` on both subject keys, and it is deliberate.
+
+    A row the owner deletes themselves takes its creation record with it, so
+    an undo has nothing to remove and nothing to refuse.  Refusing an ordinary
+    delete because of a record the user cannot see from the row they are
+    deleting is the dead end finding **N-302** records one table over.
+    """
+
+    def test_deleting_the_created_row_removes_the_record(
+        self, app, db, seed_user,
+    ):
+        """Read from the DATABASE, not the identity map."""
+        match = _a_match(db, seed_user)
+        transaction = _a_transaction(db, seed_user, name="Vanishing")
+        creation = _a_creation(db, match, transaction_id=transaction.id)
+        creation_id = creation.id
+
+        db.session.execute(
+            db.text("DELETE FROM budget.transactions WHERE id = :id"),
+            {"id": transaction.id},
+        )
+        db.session.flush()
+
+        assert _rows(
+            db, "budget.statement_match_creations", creation_id,
+        ) == 0
+
+    def test_deleting_the_ACT_removes_the_record(self, app, db, seed_user):
+        """The act's own key cascades too, so a release leaves nothing."""
+        match = _a_match(db, seed_user)
+        transaction = _a_transaction(db, seed_user, name="Kept")
+        creation = _a_creation(db, match, transaction_id=transaction.id)
+        creation_id = creation.id
+
+        db.session.execute(
+            db.text("DELETE FROM budget.statement_matches WHERE id = :id"),
+            {"id": match.id},
+        )
+        db.session.flush()
+
+        assert _rows(
+            db, "budget.statement_match_creations", creation_id,
+        ) == 0
+        assert _rows(db, "budget.transactions", transaction.id) == 1, (
+            "the CASCADE runs from the act to its record, never on to the row "
+            "the record names -- removing that is the release DOOR's decision"
+        )
+
+
+class TestTheCreationsTableIsAudited:
+    """Every new table in ``budget`` carries the audit trigger."""
+
+    def test_it_is_on_the_audited_list(self, app, db):
+        """``app.audit_infrastructure.AUDITED_TABLES`` names it."""
+        assert ("budget", "statement_match_creations") in AUDITED_TABLES
+
+    def test_it_carries_its_trigger(self, app, db):
+        """Under the name the entrypoint health check enumerates."""
+        found = db.session.execute(
+            db.text(
+                "SELECT 1 FROM pg_trigger g "
+                "JOIN pg_class t ON t.oid = g.tgrelid "
+                "JOIN pg_namespace n ON n.oid = t.relnamespace "
+                "WHERE n.nspname = 'budget' "
+                "AND t.relname = 'statement_match_creations' "
+                "AND g.tgname = 'audit_statement_match_creations'"
+            ),
+        ).scalar()
+        assert found == 1
+
+
+class TestTheOldMarkerIsGone:
+    """``statement_match_members.created_version_id`` was DROPPED.
+
+    Two relations in one column is what left the create-a-purchase arm's
+    container unrecordable; a column left behind would be a second place for a
+    writer to put the fact and for a reader to miss it.
+    """
+
+    def test_the_column_no_longer_exists(self, app, db):
+        """Asked of the catalogue, which is the only tier that can see it."""
+        found = db.session.execute(
+            db.text(
+                "SELECT count(*) FROM information_schema.columns "
+                "WHERE table_schema = 'budget' "
+                "AND table_name = 'statement_match_members' "
+                "AND column_name = 'created_version_id'"
+            ),
+        ).scalar()
+        assert found == 0

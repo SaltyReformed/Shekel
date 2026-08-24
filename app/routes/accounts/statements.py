@@ -110,7 +110,7 @@ def statements(account_id):
         account=account,
         sources=available_sources(),
         span=recorded_span(account_id),
-        imports=import_history(account_id),
+        imports=import_history(current_user.id, account_id),
         lines=recent_lines(account_id),
         evidence_copy=EVIDENCE_COPY,
     )
@@ -405,6 +405,8 @@ def _removal_flash(account_id: int, removal) -> tuple:
         period_end=removal.period_end.isoformat(),
         lines_removed=removal.lines_removed,
         matches_released=removal.matches_released,
+        rows_removed=removal.rows_removed,
+        cash_removed=str(removal.cash_removed),
         identity_forgotten=removal.identity_forgotten,
     )
     released = (
@@ -412,6 +414,16 @@ def _removal_flash(account_id: int, removal) -> tuple:
         f"their rows can be matched again -- the days those matches corrected "
         f"are unchanged."
         if removal.matches_released else ""
+    )
+    # **The one sentence on this receipt that reports MONEY** (plan step
+    # ``bank_import:X-f6f``, ruling **R-GG**): a row the review created from
+    # one of these lines goes with the line, so this act is no longer
+    # balance-neutral and a report that said only "N matches undone" would
+    # hide it.
+    removed_rows = (
+        f"  {removal.rows_removed} row(s) the review had created from those "
+        f"lines were removed with them, worth {removal.cash_removed:+,.2f}."
+        if removal.rows_removed else ""
     )
     forgotten = (
         "  This was the last import for this account from that source, so the "
@@ -423,7 +435,7 @@ def _removal_flash(account_id: int, removal) -> tuple:
         f"Deleted the import of '{removal.file_name}' covering "
         f"{removal.period_start} to {removal.period_end}, and the "
         f"{removal.lines_removed} bank line(s) it had recorded."
-        f"{released}{forgotten}",
+        f"{released}{removed_rows}{forgotten}",
         "info",
     )
 

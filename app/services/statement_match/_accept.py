@@ -10,6 +10,14 @@ does both:
   an undo has something to delete, and plan steps ``balance:X-f3a-2`` and
   ``balance:X-f3c`` have the provenance ruling **R-FT** promised them.
 
+**It writes TWO relations, and they are not the same set** (plan step
+``bank_import:X-f6f``, ruling **R-GG**): the MEMBERS this act asserts are one
+movement, and the rows it brought into EXISTENCE.  A group's residual is both;
+so is a purchase recorded from a bank line; the budget line that purchase was
+created to sit in is created and never named, because naming an envelope
+beside its own purchase counts the same money twice.  :mod:`._release` is what
+reads the second relation.
+
 **It does NOT write ``reconciled_by_id``, and that is ruling R-FV.**  That
 column names an ``account_anchor_history`` row -- a balance the owner asserted
 by hand -- and a bank line is not one.  What it records, *which declared
@@ -47,15 +55,16 @@ was missing).  The third file is plan step ``bank_import:X-f6d-4``'s, and the
 seam is a subject rather than a line count: every function there reads the two
 SUMS, and nothing here does.
 
-**FOUR refusals live in this module.**  Two are about the submission's SHAPE
--- a side with nothing in it, and an envelope named beside a purchase inside
-it -- and neither reads a figure.  The third is
-:func:`_reject_drifted_under_the_act`, which is about what the act's OWN
-writes did to a member's price.  The fourth belongs to :func:`release_match`:
-an id naming no act of this owner's, and a created row the owner has edited
-since.  *(The count is stated because this arc has shipped a taxonomy that did
-not add up before; a fifth added here is what has to change this sentence.
-:mod:`._resolve` and :mod:`._variance` each state their own.)*
+**THREE refusals live in this module.**  Two are about the submission's
+SHAPE -- a side with nothing in it, and an envelope named beside a purchase
+inside it -- and neither reads a figure.  The third is
+:func:`_reject_drifted_under_the_act`, which is about what the act's OWN writes
+did to a member's price.  *(The count is stated because this arc has shipped a
+taxonomy that did not add up before; a fourth added here is what has to change
+this sentence.  It was FOUR until plan step ``bank_import:X-f6f``, and the one
+that left is the UNDO's -- :mod:`._release` states its own now, beside the
+rest of that subject.  :mod:`._resolve` and :mod:`._variance` each state
+theirs.)*
 
 **Every refusal fires before anything is written.**  The ids are re-derived
 under the owner's own scope (:mod:`._resolve`) and reconciled with the state
@@ -107,12 +116,15 @@ from app.enums import SettledDayBasisEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.statement_import import BankStatementLine
-from app.models.statement_match import StatementMatch, StatementMatchMember
+from app.models.statement_match import (
+    StatementMatch,
+    StatementMatchCreation,
+    StatementMatchMember,
+)
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import (
     entry_service,
-    posting_service,
     transaction_service,
     transfer_service,
 )
@@ -120,11 +132,11 @@ from app.services.settle_day import SettleDay
 from app.utils.log_events import (
     BUSINESS,
     EVT_STATEMENT_MATCHED,
-    EVT_STATEMENT_MATCH_RELEASED,
     log_event,
 )
 
 from ._candidates import MatchedSubjects, matched_subjects, repriced
+from ._creations import CreatedSubject
 from ._offers import (
     CandidateRow,
     MatchDays,
@@ -596,29 +608,37 @@ def _record(
     account_id: int,
     lines: "list[BankStatementLine]",
     rows: "list[CandidateRow]",
-    created: "CandidateRow | None" = None,
+    created: "tuple[CreatedSubject, ...]" = (),
 ) -> StatementMatch:
-    """Stage the match act and one member per subject.
+    """Stage the match act, one member per subject, one creation per new row.
+
+    **The two relations are written together and they are not the same set**
+    (plan step ``bank_import:X-f6f``, ruling **R-GG**).  The MEMBERS are what
+    this act asserts are one movement, so their amounts have to add up; the
+    CREATIONS are what it brought into existence, and the create-a-purchase
+    arm's container is one of those without being a member -- naming an
+    envelope beside its own purchase counts the same money twice, which
+    :func:`_reject_parent_and_its_own_purchase` refuses outright.
 
     Args:
         owner_id: The user the act belongs to.
         account_id: The account both sides belong to.
         lines: The bank lines it explains.
         rows: The app rows it names.
-        created: The one member THIS ACT brought into existence, or ``None``
-            where every subject already existed.  Its member records the
-            subject's revision as it stands now
-            (``statement_match_members.created_version_id``), which is what
-            lets :func:`release_match` remove a row nobody has touched and
-            refuse one the owner has since made their own.
+        created: Every app row THIS ACT brought into existence, whether or not
+            it is also a member.  Each records the subject's revision as this
+            act leaves it
+            (``budget.statement_match_creations.created_version_id``), which is
+            what lets :func:`~._release.release_match` remove a row nobody has
+            touched and refuse one the owner has since made their own.
 
     Returns:
         The staged, flushed :class:`~app.models.statement_match.StatementMatch`.
     """
     match = StatementMatch(account_id=account_id, user_id=owner_id)
     db.session.add(match)
-    # The members carry the act's id in a composite key, so the act must exist
-    # before they are staged.
+    # The members and creations carry the act's id in a composite key, so the
+    # act must exist before they are staged.
     db.session.flush()
     for line in lines:
         db.session.add(StatementMatchMember(
@@ -635,25 +655,64 @@ def _record(
             transaction_entry_id=(
                 row.row_id if row.kind is RowKind.PURCHASE else None
             ),
-            # Compared by IDENTITY rather than by id, because a created
-            # subject is the same VALUE the caller minted and no id
-            # comparison could tell it from a submitted row of the same kind
-            # that happened to share one.
-            created_version_id=(
-                row.version_id if created is not None and row is created
-                else None
+        ))
+    for subject in created:
+        db.session.add(StatementMatchCreation(
+            match_id=match.id,
+            account_id=account_id,
+            transaction_id=(
+                subject.row_id if subject.kind is RowKind.TRANSACTION else None
             ),
+            transaction_entry_id=(
+                subject.row_id if subject.kind is RowKind.PURCHASE else None
+            ),
+            created_version_id=subject.version_id,
         ))
     db.session.flush()
     return match
 
 
+@dataclass(frozen=True)
+class MatchContent:
+    """What ONE act is MADE OF, as the writer takes it.
+
+    A parameter object rather than four more positional arguments (plan step
+    ``bank_import:X-f6f``): :func:`record_match` reached six when the created
+    rows joined it, and this project's rule for a public function past the
+    bound is to name what the arguments are collectively rather than to
+    disable the check.  They are collectively one thing -- the two sides of a
+    correspondence, plus what the caller made and what the owner agreed to --
+    where *scope* is whose pass this is and *matched* is what the ACCOUNT has
+    already claimed, neither of which is content.
+
+    Attributes:
+        lines: The bank lines this match explains, already scoped by
+            :func:`~._resolve.load_lines`.
+        rows: The app rows that explain them, already priced -- resolved by
+            :func:`~._resolve.resolve_rows` or built by the door that created
+            one.
+        created: Every app row the CALLER brought into existence for this act,
+            at the revision it left them (ruling **R-GG**).  A residual
+            :func:`record_match` mints itself is added to this rather than
+            expected in it, which is why the field is what the caller made and
+            not what the act made.  ``()`` is what the form door passes: a
+            submission names rows that already existed.
+        residual: The difference the owner reviewed and agreed to record, or
+            ``None`` -- which is what every caller but the form door passes,
+            because a door that BUILT its row built it at the bank's own figure
+            and has no difference to explain.
+    """
+
+    lines: "list[BankStatementLine]"
+    rows: "list[CandidateRow]"
+    created: "tuple[CreatedSubject, ...]" = ()
+    residual: "Decimal | None" = None
+
+
 def record_match(
     scope: ReviewScope,
-    lines: "list[BankStatementLine]",
-    rows: "list[CandidateRow]",
+    content: MatchContent,
     matched: MatchedSubjects,
-    residual: "Decimal | None" = None,
 ) -> AcceptedMatch:
     """Record that these bank lines ARE these app rows, and move the day.
 
@@ -699,16 +758,11 @@ def record_match(
             step X-f6d-4**: both callers already held a scope and passed its
             two fields, so the pair was a second spelling of it that a caller
             could get out of step with the rows it priced.
-        lines: The bank lines this match explains, already scoped by
-            :func:`load_lines`.
-        rows: The app rows that explain them, already priced -- resolved by
-            :func:`resolve_rows` or built by the door that created one.
+        content: What this act is made of (:class:`MatchContent`) -- the two
+            sides, what the caller created, and the difference the owner
+            agreed to.
         matched: What this account's matches have already claimed, as of this
             act.
-        residual: The difference the owner reviewed and agreed to record, or
-            ``None`` -- which is what every caller but the form door passes,
-            because a door that BUILT its row built it at the bank's own
-            figure and has no difference to explain.
 
     Returns:
         The :class:`AcceptedMatch`.
@@ -721,6 +775,7 @@ def record_match(
             loud rather than rendering as a designed refusal, and in a batch it
             fails the WHOLE request rather than one item (:mod:`._batch`).
     """
+    lines, rows = content.lines, content.rows
     _reject_empty_side(lines, rows)
     _reject_parent_and_its_own_purchase(rows, matched)
     # ONE derivation of what the two halves come to, for the whole act -- the
@@ -728,7 +783,7 @@ def record_match(
     # subtraction, and summing money twice on the two sides of a gate is this
     # arc's own root cause 1.
     sides = MatchSides.of(lines, rows)
-    reject_unrecordable(rows, sides, residual)
+    reject_unrecordable(rows, sides, content.residual)
 
     # THE LATEST bank day for the posting, the EARLIEST stated day for the
     # purchase -- derived ONCE for the whole act, so no two members can be moved
@@ -782,7 +837,11 @@ def record_match(
     members = rows if minted is None else [*rows, minted]
     _reject_drifted_under_the_act(scope, lines, members, sides)
     match = _record(
-        scope.owner_id, scope.account_id, lines, members, created=minted,
+        scope.owner_id, scope.account_id, lines, members,
+        created=(
+            content.created if minted is None
+            else (*content.created, CreatedSubject.of(minted))
+        ),
     )
 
     accepted = AcceptedMatch(
@@ -849,148 +908,16 @@ def accept_match(
     matched = matched_subjects(scope.account_id)
     return record_match(
         scope,
-        load_lines(scope.account_id, submission.line_ids, matched),
-        resolve_rows(submission, scope, matched),
-        matched,
-        submission.accepted_difference,
-    )
-
-
-def _created_rows(match: StatementMatch) -> "list[Transaction]":
-    """Return the rows THIS ACT created, refusing if the owner has touched one.
-
-    Plan step ``bank_import:X-f6d-4``, developer ruling 2026-08-23.  A group's
-    difference is recorded as a row (**R-FN**), and that row means nothing
-    once the grouping is released: the bank lines go back to unexplained, and
-    re-accepting the same group records the difference a SECOND time.
-    Reproduced by adversarial security review in two ordinary clicks -- two
-    `$0.05` rows for one `$0.05` difference, the balance reading high and
-    nothing naming it.
-
-    **A row the owner has since made their own is NOT this act's to remove.**
-    ``created_version_id`` is the subject's revision at the moment it was
-    created, so a counter that has moved says somebody edited it -- gave it a
-    category, corrected its figure, moved its day.  Deleting that would throw
-    away their record in order to tidy a relation, which is the direction
-    :func:`release_match` already refuses to go for a settle day.
-
-    **The revision is the whole predicate, and that is why it is a version
-    rather than a list of columns.**  "Still has no category and still holds
-    the figure we recorded and still has no purchases" is three guesses about
-    which edits matter; a counter that moves on every ORM update is the fact
-    itself.  It also covers what nothing else would: a row nothing edited
-    cannot have grown a CC payback either, because ``mark_as_credit`` writes
-    the source row's own status.
-
-    Args:
-        match: The act being released, with its members loaded.
-
-    Returns:
-        The transactions to remove, in id order.
-
-    Raises:
-        ValidationError: When a created row has moved since, naming it.
-    """
-    created = sorted(
-        (
-            (member, db.session.get(Transaction, member.transaction_id))
-            for member in match.members
-            if member.created_version_id is not None
+        MatchContent(
+            lines=load_lines(
+                scope.account_id, submission.line_ids, matched,
+            ),
+            rows=resolve_rows(submission, scope, matched),
+            # **Nothing, and that is the form door's whole character**: it
+            # names rows the owner already had.  The one row this act can
+            # bring into existence is a GROUP's residual, and
+            # :func:`record_match` mints that itself.
+            residual=submission.accepted_difference,
         ),
-        key=lambda pair: pair[0].transaction_id,
+        matched,
     )
-    for member, row in created:
-        if row is not None and row.version_id != member.created_version_id:
-            raise ValidationError(
-                f'Undoing this match would remove "{row.name}", which it '
-                f"created -- but you have edited that row since, so it is "
-                f"your record now.  Delete it yourself if you want it gone, "
-                f"then undo the match.  Nothing was changed."
-            )
-    # A subject the database has already taken cascades its member away, so a
-    # ``None`` here means the row went between the read and now -- nothing to
-    # remove and nothing to refuse.
-    return [row for _, row in created if row is not None]
-
-
-def release_match(match_id: int, owner_id: int, account_id: int) -> int:
-    """Undo one match: restore the question, and remove what the act CREATED.
-
-    **Deleting the record does NOT put the days back, and that is the honest
-    direction.**  A settle day is what the app knows about when money moved,
-    and the bank is still the best evidence it has; reverting one because the
-    owner unlinked a record would throw away a correction in order to tidy a
-    relation.  What the release restores is the QUESTION -- the bank lines
-    become unexplained again and the rows become matchable again -- which is
-    the repair door finding **N-302** says a refusal owes.
-
-    **A row this act CREATED is the exception, and it is the same argument
-    rather than a departure from it** (plan step ``bank_import:X-f6d-4``,
-    developer ruling 2026-08-23).  A settle day is a fact about money that
-    moved and survives the unlinking; a group's recorded DIFFERENCE is a fact
-    about the grouping, and once the grouping is released it states nothing.
-    Keeping it is not conservative, it double-counts: the bank line goes back
-    to unexplained and re-accepting the same group records the difference
-    again.  Reproduced in two ordinary clicks by adversarial security review.
-    :func:`_created_rows` is what decides, and it refuses rather than deletes
-    where the owner has edited the row since.
-
-    **The create-a-purchase arm creates one too and is NOT removed here.**
-    Whether releasing that match should take the purchase -- and the envelope
-    it may have minted, and any purchases added to it since -- is plan step
-    ``X-f6f``'s question, which exists to give that arm the inverse it never
-    had.  It sets no ``created_version_id``, so nothing here reaches it.
-
-    Does NOT commit -- the route owns the session boundary.
-
-    Args:
-        match_id: The act to release.
-        owner_id: The user the route proved owns the account.
-        account_id: The account it must belong to.
-
-    Returns:
-        How many member rows were deleted.
-
-    Raises:
-        ValidationError: When *match_id* names no act on this owner's account
-            -- the set-operation form of the project's "404 for both not-found
-            and not-yours" rule, raised rather than ignored because this door
-            names ONE act on purpose -- or when a row this act created has
-            been edited since (:func:`_created_rows`).
-        PostingError: From reversing a created row's postings, on a broken
-            ledger invariant.
-    """
-    match = (
-        db.session.query(StatementMatch)
-        .filter(
-            StatementMatch.id == match_id,
-            StatementMatch.account_id == account_id,
-            StatementMatch.user_id == owner_id,
-        )
-        .one_or_none()
-    )
-    if match is None:
-        raise ValidationError(
-            "That match is no longer there.  Reload the page; nothing was "
-            "changed."
-        )
-    # BEFORE anything is deleted, so a refusal leaves the act standing.
-    created = _created_rows(match)
-    released = len(match.members)
-    db.session.delete(match)
-    for row in created:
-        # The ROUTE's own delete sequence, as a service: reverse the postings
-        # while ``journal_entries.transaction_id`` still links them, then
-        # remove the row.  A residual is always ad-hoc (it names no template),
-        # so the hard delete is the arm ``delete_transaction`` takes for one.
-        posting_service.reverse_postings_before_delete(row)
-        db.session.delete(row)
-    db.session.flush()
-    log_event(
-        _logger, logging.INFO, EVT_STATEMENT_MATCH_RELEASED, BUSINESS,
-        "A statement match was released; its lines are unexplained again.",
-        user_id=owner_id, account_id=account_id, match_id=match_id,
-        released_count=released,
-        removed_count=len(created),
-    )
-    return released
