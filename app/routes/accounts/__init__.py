@@ -57,6 +57,12 @@ Module map:
   is the one ``reconcile`` cuts against ``anchor``: a read of an outside record
   against the door that acts on it.  **It MOVES MONEY** -- an accepted match
   writes the bank's posted day onto every row it names.
+* :mod:`app.routes.accounts.bank_agreement` -- The two records SIDE BY SIDE
+  (plan step ``bank_import:X-f6e-2``, ruling R-GF): a per-day comparison of
+  what the app's own rows moved against what the bank's lines did, and of the
+  two running balances.  It reports and never gates.  Its boundary against
+  ``statements`` is ``difference``'s against ``anchor`` -- a read-only
+  comparison of what a write door wrote is not that door's subject.
 * :mod:`app.routes.accounts.types` -- Account-type CRUD for the
   per-user custom catalogue (commit C-28 / F-044).
 * :mod:`app.routes.accounts.detail` -- Per-account detail pages.  The
@@ -97,6 +103,7 @@ from app.routes.accounts import types  # noqa: F401, E402
 from app.routes.accounts import detail  # noqa: F401, E402
 from app.routes.accounts import statements  # noqa: F401, E402
 from app.routes.accounts import statement_matches  # noqa: F401, E402
+from app.routes.accounts import bank_agreement  # noqa: F401, E402
 
 
 __all__ = ["accounts_bp"]

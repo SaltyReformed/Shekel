@@ -9,7 +9,7 @@ only, so they import cleanly into any service or test without the app
 stack.
 """
 import calendar
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -312,6 +312,32 @@ def utc_instant(instant: datetime) -> datetime:
     if instant.tzinfo is None:
         return instant.replace(tzinfo=timezone.utc)
     return instant.astimezone(timezone.utc)
+
+
+def days_in_range(first_day: date, last_day: date) -> "list[date]":
+    """Return every civil day in an inclusive range, ascending.
+
+    Args:
+        first_day: The first day.
+        last_day: The last day.
+
+    Returns:
+        The days, or ``[]`` when *last_day* precedes *first_day* -- an inverted
+        range is an empty range rather than an error, because callers that
+        clamp one end (a report bounded at the reader's NOW) reach it
+        legitimately.
+
+    **One statement of a five-line loop three callers had written separately**
+    -- twice in ``balance_at._cash_flow`` sixty lines apart, where cross-module
+    ``duplicate-code`` cannot see them, and once in ``services.bank_agreement``.
+    Found by adversarial review 2026-08-24.
+    """
+    days: "list[date]" = []
+    day = first_day
+    while day <= last_day:
+        days.append(day)
+        day += timedelta(days=1)
+    return days
 
 
 def add_months(start: date, months: int) -> date:

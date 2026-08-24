@@ -360,6 +360,18 @@ class StatementMatchReleaseSchema(BaseSchema):
     )
 
 
+class AgreementDaySchema(BaseSchema):
+    """The one day the books-vs-bank drill-down is asked about.
+
+    A GET fragment's only argument, declared as a schema rather than parsed
+    inline so the day it reads is a ``fields.Date`` under the project's one set
+    of rules -- and so a second reader of this URL cannot invent a second
+    spelling of what a day is.
+    """
+
+    day = fields.Date(required=True)
+
+
 class StatementImportDeleteSchema(BaseSchema):
     """Validate the id of the import being deleted (plan step X-f6a-4).
 

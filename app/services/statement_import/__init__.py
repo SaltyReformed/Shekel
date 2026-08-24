@@ -55,6 +55,13 @@ from ._anchor import (
     solve_effective_day,
     weaker_of,
 )
+from ._balance import (
+    BankAnchor,
+    BankBalances,
+    bank_balance_on,
+    bank_daily_movements,
+    fold_bank_balances,
+)
 from ._integrity import (
     carries_running_balance,
     opening_balance,
@@ -83,6 +90,8 @@ from ._record import ImportOutcome, record_statement
 from ._undo import ImportRemoval, delete_import
 
 __all__ = [
+    "BankAnchor",
+    "BankBalances",
     "GroupPairing",
     "ImportOutcome",
     "ImportedBalance",
@@ -94,8 +103,11 @@ __all__ = [
     "SourceOption",
     "StatementLine",
     "available_sources",
+    "bank_balance_on",
+    "bank_daily_movements",
     "carries_running_balance",
     "delete_import",
+    "fold_bank_balances",
     "fresh_ordinals",
     "group_indexes",
     "group_key",

@@ -48,6 +48,14 @@ Releasing rather than re-solving is deliberate: the next import re-establishes
 an anchor from evidence that is present, where a re-solve would be the app
 inferring its way around facts that moved underneath it.
 
+**Deriving a balance from a recorded anchor is :mod:`._balance`'s**, not this
+module's, and the split is the walk/fold one the cash side already pays for: a
+FOLD is a balance, a walk is a fact.  This module decides which DAY a claimed
+figure is for; that one turns a settled anchor plus the recorded lines into a
+balance for any day, and :func:`recorded_opening_before` is one of its two
+readers.  Keeping the arithmetic there is what stops the report added at plan
+step ``bank_import:X-f6e-2`` becoming a second statement of it.
+
 Services-boundary discipline: no Flask import, no clock read.  It DOES query,
 which is :mod:`._identity`'s shape in this package and for the same reason: the
 recorded-history half of one subject is not a different subject.
@@ -62,8 +70,9 @@ from decimal import Decimal
 from app.enums import StatementBalanceEvidenceEnum
 from app.exceptions import StatementBalanceUnexplained
 from app.extensions import db
-from app.models.statement_import import BankStatementLine, StatementImport
+from app.models.statement_import import StatementImport
 
+from ._balance import fold_bank_balances
 from ._integrity import opening_balance
 
 
@@ -250,144 +259,18 @@ def _refuse_self_contradiction(
     )
 
 
-def _anchor_evidence(
-    anchor: StatementImport,
-) -> StatementBalanceEvidenceEnum:
-    """Return one anchored import's own evidence level.
-
-    Args:
-        anchor: The import, which carries a non-NULL ``balance_evidence_id``.
-
-    Returns:
-        Its :class:`~app.enums.StatementBalanceEvidenceEnum` member.
-
-    **Resolved from the ID and never from the ref row's ``name``**, which is
-    the project-wide IDs-for-logic rule at the one place it is easiest to
-    break: ``StatementBalanceEvidenceEnum(row.balance_evidence.name)`` reads
-    naturally and turns a display string into a dispatch, where
-    ``shekel-refname-compare`` cannot see it because it is a constructor rather
-    than a comparison.  Found by adversarial review 2026-08-23.
-    """
-    # Imported inside the call because ``ref_cache`` imports the models this
-    # module imports, so a module-scope import would close a cycle at start.
-    # Pylint: ``import-outside-toplevel`` (1/0) -- a real import cycle, not a
-    # cost dodge; ``app/models/transaction.py`` takes the same shape.
-    from app import ref_cache  # pylint: disable=import-outside-toplevel
-
-    return ref_cache.statement_balance_evidence_member(
-        anchor.balance_evidence_id,
-    )
-
-
-def _usable_anchor(account_id: int) -> "StatementImport | None":
-    """Return the anchored import this account's history should be walked from.
-
-    Args:
-        account_id: The account whose imports to read.
-
-    Returns:
-        The import to walk from, or ``None`` when the account holds no
-        anchored import.
-
-    **Chosen by EVIDENCE first, with recency only as a tie-break.**  That is
-    the correction of a comment claiming any anchor would serve because they
-    are "mutually consistent by construction", which was false twice over: a
-    ``file_chain`` anchor is solved against the file's own chain and an
-    uncorroborated one against nothing, so neither consults a prior anchor and
-    two can disagree freely; and ``created_at`` is the IMPORT ACT's time, not
-    the statement's, so an unrelated later import would otherwise displace a
-    nearer, stronger anchor.  Refuted by adversarial review 2026-08-23.
-
-    **The strength ORDER is read from the enum, never from the ref row's id.**
-    Sorting by ``balance_evidence_id`` would work only while the seed happens
-    to INSERT the ladder in order -- a second statement of the ladder, in a
-    migration, that nothing reconciles against
-    :attr:`~app.enums.StatementBalanceEvidenceEnum.strength`.  It was written
-    that way first and was measured BACKWARDS: the seed writes
-    ``file_chain, corroborated, uncorroborated``, so ``id DESC`` returned the
-    WEAKEST anchor.  An account holds a handful of imports, so the ordering
-    that matters is done here over the enum and the query orders only the
-    tie-break.
-    """
-    anchored = (
-        db.session.query(StatementImport)
-        .filter(
-            StatementImport.account_id == account_id,
-            StatementImport.balance_effective_on.isnot(None),
-        )
-        # The TIE-BREAK, already applied: ``max`` below returns the FIRST
-        # maximal element, so the strongest anchor with the most recent
-        # effective day wins without a second sort.
-        .order_by(
-            StatementImport.balance_effective_on.desc(),
-            StatementImport.id.desc(),
-        )
-        .all()
-    )
-    if not anchored:
-        return None
-    return max(anchored, key=lambda row: _anchor_evidence(row).strength)
-
-
-def _coverage_reaches(account_id: int, anchor_day: date, day: date) -> bool:
-    """Return whether recorded imports cover every day between the two.
-
-    Args:
-        account_id: The account whose imports to read.
-        anchor_day: The anchored import's effective day.
-        day: The day :func:`recorded_opening_before` is answering for.
-
-    Returns:
-        True when the days strictly between the anchor and *day* all fall
-        inside some import's recorded span.  An empty range is covered
-        vacuously, which is the honest answer rather than a special case: there
-        is nothing between them to have missed.
-
-    **The spans it reads are trustworthy only because deletion releases
-    anchors.**  An import's span is a claim about days its lines covered, and
-    ``delete_import`` takes those lines away while a later overlapping import
-    keeps its own span -- so before :func:`release_anchors_from` existed this
-    reported "covered" over a `$150.00` hole.  It does not test that itself:
-    the door that removes the evidence removes the conclusion, so every anchor
-    reaching here is one no delete has undercut.
-    """
-    if day > anchor_day:
-        needed_from = anchor_day + timedelta(days=1)
-        needed_to = day - timedelta(days=1)
-    else:
-        needed_from, needed_to = day, anchor_day
-    if needed_from > needed_to:
-        return True
-    spans = (
-        db.session.query(
-            StatementImport.period_start, StatementImport.period_end,
-        )
-        .filter(StatementImport.account_id == account_id)
-        .order_by(StatementImport.period_start)
-        .all()
-    )
-    reached = needed_from
-    for start, end in spans:
-        if start > reached:
-            break
-        reached = max(reached, end + timedelta(days=1))
-    return reached > needed_to
-
-
 def recorded_opening_before(
     account_id: int, day: date,
 ) -> "KnownOpening | None":
     """Return what this account's RECORDED statements say it held before *day*.
 
-    Walks out from an anchored import over the recorded lines::
-
-        balance_before(D) = stated_balance
-                          + sum(lines posted before D)
-                          - sum(lines posted on or before the anchor's day)
-
-    which is total in both directions: the two sums cancel to the lines BETWEEN
-    the anchor and *D*, with the sign falling out of which comes first, so no
-    branch decides it.
+    **The balance before any line posted on *day* is the balance at the END of
+    the day before it**, so this asks :func:`~._balance.fold_bank_balances` for
+    that one day rather than restating the walk.  That is not tidiness: this
+    function and the report added at plan step ``bank_import:X-f6e-2`` both
+    answer "what does the bank's own record say this account held", and two
+    spellings of one quantity is the shape that put ``$15.96`` between the cash
+    scalar and the cash series on the real Checking account.
 
     Args:
         account_id: The account to walk.
@@ -403,53 +286,31 @@ def recorded_opening_before(
     ``corroborated``.**  Reaching an answer here means two statements agree,
     which is exactly what that level means -- and :func:`weaker_of` caps it at
     the anchor's own strength, so an anchor the app merely assumed yields an
-    assumption rather than laundering itself into a determination.
+    assumption rather than laundering itself into a determination.  **The cap
+    is applied HERE and not in the fold**, because it states what THIS reader
+    learned: a report displaying the same figure learns nothing new and carries
+    the anchor's own strength unchanged.
 
-    **The coverage test is why this can answer ``None`` on an account that HAS
-    an anchor**, and the direction it fails in is deliberate.  The walk is only
+    **Coverage is why this can answer ``None`` on an account that HAS an
+    anchor**, and the direction it fails in is deliberate.  The walk is only
     exact if every line between the anchor and *day* is recorded; a gap between
     two imports means lines nobody has imported, and summing across one yields
-    a confident wrong number.  Answering ``None`` instead sends the caller to
-    ``uncorroborated``, which the receipt SAYS -- an unchecked anchor the owner
-    is told about beats a checked one that is false.
+    a confident wrong number.  The fold leaves such a day out of its result, and
+    answering ``None`` here sends the caller to ``uncorroborated``, which the
+    receipt SAYS -- an unchecked anchor the owner is told about beats a checked
+    one that is false.
     """
-    anchor = _usable_anchor(account_id)
-    if anchor is None or not _coverage_reaches(
-        account_id, anchor.balance_effective_on, day,
-    ):
+    folded = fold_bank_balances(account_id, [day - timedelta(days=1)])
+    if folded is None:
         return None
-    before_day, through_anchor = (
-        db.session.query(
-            db.func.coalesce(
-                db.func.sum(
-                    db.case(
-                        (BankStatementLine.posted_on < day,
-                         BankStatementLine.amount),
-                        else_=0,
-                    )
-                ),
-                0,
-            ),
-            db.func.coalesce(
-                db.func.sum(
-                    db.case(
-                        (BankStatementLine.posted_on
-                         <= anchor.balance_effective_on,
-                         BankStatementLine.amount),
-                        else_=0,
-                    )
-                ),
-                0,
-            ),
-        )
-        .filter(BankStatementLine.account_id == account_id)
-        .one()
-    )
+    balance = folded.balances.get(day - timedelta(days=1))
+    if balance is None:
+        return None
     return KnownOpening(
-        amount=anchor.stated_balance + before_day - through_anchor,
+        amount=balance,
         evidence=weaker_of(
             StatementBalanceEvidenceEnum.CORROBORATED,
-            _anchor_evidence(anchor),
+            folded.anchor.evidence,
         ),
     )
 

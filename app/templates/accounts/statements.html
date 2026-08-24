@@ -29,6 +29,13 @@
        href="{{ url_for('accounts.review_statements', account_id=account.id) }}">
       <i class="bi bi-link-45deg"></i> Review matches
     </a>
+    {# The two records side by side (plan step bank_import:X-f6e-2).  It
+       reports and never gates, so it is an ordinary link rather than a step
+       in a flow. #}
+    <a class="btn btn-sm btn-outline-secondary"
+       href="{{ url_for('accounts.statement_agreement', account_id=account.id) }}">
+      <i class="bi bi-clipboard-data"></i> Books vs bank
+    </a>
     {{ back_link(url_for('accounts.cash_detail', account_id=account.id), 'Account') }}
   </div>
 </div>

@@ -191,6 +191,7 @@ same ``abs`` convention.  All three classify asset-vs-liability through the one
 ``account_category.is_liability_account`` home.
 """
 
+from ._cash_fold import CashDayFacts, CashDaySeries
 from ._cash_flow import (
     CashAnchorHistory,
     CashAnchorRow,
@@ -198,6 +199,7 @@ from ._cash_flow import (
     cash_balance_at,
     cash_balance_map,
     cash_daily_balance_series,
+    cash_daily_facts_series,
     records_balance_at,
 )
 from ._confirmed_view import confirmed_view
@@ -284,6 +286,8 @@ __all__ = [
     "BalanceContext",
     "CashAnchorHistory",
     "CashAnchorRow",
+    "CashDayFacts",
+    "CashDaySeries",
     "GridBalanceView",
     "GridColumn",
     "GridRowFlags",
@@ -301,6 +305,7 @@ __all__ = [
     "cash_balance_at",
     "cash_balance_map",
     "cash_daily_balance_series",
+    "cash_daily_facts_series",
     "confirmed_view",
     "debt_schedule_rows",
     "empty_grid_view",

@@ -253,6 +253,155 @@ def fold_cash_balances(
     return sample_cumulative(folded.seed, folded.steps, dates)
 
 
+@dataclass(frozen=True)
+class CashDayFacts:
+    """One day's folded balance, and the THREE things that moved it.
+
+    **The decomposition lives here, beside :func:`_running_steps`, because it
+    is that assembly read back.**  A consumer deriving it -- "whatever the
+    balance moved by, less the rows I can see, must be a true-up" -- would be
+    correct today and silently WRONG the day a fourth tier joins the running
+    total, labelling it as something it is not.  Stating the split where the
+    steps are built means a new tier is a change to this class rather than a
+    mislabelled number on a report.
+
+    Attributes:
+        balance: The account's cash-flow balance at the END of the day, cent
+            quantized -- the same figure :func:`fold_cash_balances` samples,
+            from the same running total.
+        recorded: What the account's OWN settled rows moved that day
+            (:attr:`~app.services.cash_ledger.CashSourceFact.delta`, summed).
+            The only one of the three that is money the app believes actually
+            changed hands on that day.
+        asserted: What BALANCE ASSERTIONS moved that day -- the jump each reset
+            booked.  **The account's OPENING assertion contributes nothing**,
+            and that is ruling R-I read back rather than an exclusion: the fold
+            moves its correction into the SEED and books an equal-and-opposite
+            step on its own day, so its net contribution there is zero and the
+            figure it established is part of the level every later day is
+            measured from.
+        planned: What still-Projected rows contribute that day, each landing at
+            ``max(its attribution date, as_of + 1)`` (ruling R-G).  Zero for
+            every day at or before *as_of*, which is what lets a reader
+            comparing PAST days against an outside record ignore it.
+    """
+
+    balance: Decimal
+    recorded: Decimal
+    asserted: Decimal
+    planned: Decimal
+
+
+@dataclass(frozen=True)
+class CashDaySeries:
+    """A day-grain reading of one account's fold, and where its records START.
+
+    Attributes:
+        facts: One :class:`CashDayFacts` per requested day.
+        first_event_on: The earliest day this account has ANY cash fact -- a
+            settled row or a balance assertion -- or ``None`` for an account
+            with neither.
+
+    **``first_event_on`` travels with the facts because the walk already knows
+    it and every other way of learning it is worse.**  A reader comparing the
+    app against an outside record has to tell "we disagree here" from "the app
+    has no records this far back", and the developer's own Checking account is
+    the case: his bank statement starts 2026-01-02 where his records start
+    2026-03-26, so 83 days would otherwise read as 83 defects.  Inferring it
+    from a flat PREFIX of the requested range would misread a quiet opening
+    week as unrecorded and drop real disagreements out of the totals; asking a
+    second walk for it would be the redundant derivation the read pass exists
+    to prevent.
+    """
+
+    facts: "dict[date, CashDayFacts]"
+    first_event_on: "date | None"
+
+
+def _day_sums(
+    pairs: "list[tuple[date, Decimal]]",
+) -> "dict[date, Decimal]":
+    """Return ``{day: total}`` for ``(day, amount)`` pairs.
+
+    Args:
+        pairs: The dated amounts to reduce.
+
+    Returns:
+        One entry per DISTINCT day present, summed.
+    """
+    sums: "dict[date, Decimal]" = {}
+    for day, amount in pairs:
+        sums[day] = sums.get(day, _ZERO_MONEY) + amount
+    return sums
+
+
+def fold_cash_day_facts(
+    account: Account,
+    basis: AmountBasis,
+    as_of: date,
+    days: list[date],
+) -> "CashDaySeries":
+    """Return each day's folded balance beside the three tiers that moved it.
+
+    The fourth reader of the ONE assembled row set (plan step
+    ``bank_import:X-f6e-2``), and a reading rather than a second producer: the
+    balance it reports is :func:`sample_cumulative` over the very
+    ``(seed, steps)`` :func:`fold_cash_balances` samples, so the two cannot
+    disagree about a day's balance.  What it adds is the SPLIT of that day's
+    movement, which no other reader needs and a consumer must not re-derive
+    (see :class:`CashDayFacts`).
+
+    Args:
+        account: The account to value (see :func:`assemble`).
+        basis: The read pass's amount basis, carrying the scenario.
+        as_of: The reader's NOW (ruling R-G's clamp floor).
+        days: The days to answer, in any order.  Duplicates collapse.
+
+    Returns:
+        The :class:`CashDaySeries` -- one :class:`CashDayFacts` per distinct
+        requested day, and the account's first recorded day.
+
+    **The three components sum to the day's change in the running total**, and
+    that is arithmetic rather than a claim: ``_running_steps`` assembles
+    exactly ``dated_deltas`` (the source facts and the corrections) plus the
+    opening's compensator plus the planned nets, so a day's steps ARE these
+    three sums.  ``balance`` is quantized where the components are exact, so a
+    reader wanting the identity to the cent must compare the components rather
+    than differencing two rounded balances.
+    """
+    folded = assemble(account, basis, as_of)
+    balances = sample_cumulative(folded.seed, folded.steps, days)
+    recorded = _day_sums(
+        [(fact.settled_on, fact.delta) for fact in folded.walk.source_facts]
+    )
+    # The opening's own correction is the SEED (:func:`_actual_steps`), and the
+    # compensator cancels it on its day, so it is not a movement there.
+    asserted = _day_sums(
+        [
+            (correction.observed_on, correction.delta)
+            for correction in folded.walk.anchor_corrections[1:]
+        ]
+    )
+    starts = [
+        events[0] for events in (
+            [fact.settled_on for fact in folded.walk.source_facts],
+            [c.observed_on for c in folded.walk.anchor_corrections],
+        ) if events
+    ]
+    return CashDaySeries(
+        facts={
+            day: CashDayFacts(
+                balance=balance,
+                recorded=recorded.get(day, _ZERO_MONEY),
+                asserted=asserted.get(day, _ZERO_MONEY),
+                planned=folded.day_nets.get(day, _ZERO_MONEY),
+            )
+            for day, balance in balances.items()
+        },
+        first_event_on=min(starts) if starts else None,
+    )
+
+
 def cash_period_balances(
     account: Account,
     basis: AmountBasis,

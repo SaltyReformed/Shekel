@@ -732,3 +732,25 @@ a.acct-cell__link:focus-visible {
   max-height: 22rem;
   overflow-y: auto;
 }
+
+/* The books-vs-bank page's day table (plan step bank_import:X-f6e-2, ruling
+   R-GF).  It shows EVERY day the statement covers -- 232 of them on the
+   developer's own account -- because hiding a day the bank describes would be
+   the report deciding what may be seen.  So the table scrolls inside a bounded
+   box with its header pinned, or the column meanings leave the screen four
+   rows in and every figure below reads as an unlabelled number.
+
+   A class rather than an inline style for the reason `.stmt-pick-list` above
+   is one: the CSP is `style-src 'self'` with no `unsafe-inline`, so a
+   `style="..."` attribute is BLOCKED and the box would silently not scroll. */
+.stmt-agreement-scroll {
+  max-height: 34rem;
+  overflow-y: auto;
+}
+
+.stmt-agreement-head th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bs-body-bg);
+}

@@ -31,7 +31,7 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.utils.dates import to_display_date
+from app.utils.dates import days_in_range, to_display_date
 
 from ._context import BalanceContext
 
@@ -273,16 +273,78 @@ def cash_daily_balance_series(
     if last_day < first_day:
         return OrderedDict()
 
-    days: list[date] = []
-    day = first_day
-    while day <= last_day:
-        days.append(day)
-        day += _ONE_DAY
+    days = days_in_range(first_day, last_day)
 
     folded = _cash_fold.fold_cash_balances(
         account, ctx.amounts(), ctx.as_of, days,
     )
     return OrderedDict((day, folded[day]) for day in days)
+
+
+def cash_daily_facts_series(
+    account: Account,
+    ctx: BalanceContext,
+    first_day: date,
+    last_day: date,
+) -> "_cash_fold.CashDaySeries":
+    """Return each day's cash-flow balance beside the three tiers that moved it.
+
+    :func:`cash_daily_balance_series` with the day's MOVEMENT split out, for a
+    reader comparing the account against a record kept OUTSIDE the app -- the
+    bank's own statement (plan step ``bank_import:X-f6e-2``).  Such a reader
+    needs the split because a balance difference alone cannot tell the three
+    apart, and they mean different things: money the app's rows say moved, a
+    balance the owner ASSERTED, and a plan that has not happened.
+
+    **Measured, which is why it exists rather than a difference column**: on
+    the developer's own Checking account, over the 149 days his statement and
+    his records both cover, 35 days carry a real disagreement between his rows
+    and the bank's lines -- and 11 of those read as EXACT agreement in the
+    balance difference, because a same-day assertion cancels the error to the
+    cent.  One of the eleven is the ``$943.41`` of card paybacks finding
+    **N-337** names.
+
+    ``balance`` here is the same figure :func:`cash_daily_balance_series`
+    reports for the same day, off the same running total, so a surface may show
+    both without qualifying either.
+
+    Args:
+        account: The account to project.  Its kind is NOT consulted (see
+            :func:`cash_daily_balance_series`); must be session-attached.
+        ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`.
+        first_day: Inclusive first calendar day of the range.
+        last_day: Inclusive last calendar day of the range.
+
+    Returns:
+        The :class:`~app.services.balance_at.CashDaySeries`, whose ``facts`` is
+        an ``OrderedDict`` mapping each calendar ``date`` in the inclusive
+        range (ascending) to its
+        :class:`~app.services.balance_at.CashDayFacts`, and whose
+        ``first_event_on`` is the day this account's records begin.  An
+        inverted range yields an empty map and that same day.
+
+    Raises:
+        BaselineMissingError: When ``ctx`` carries no scenario.
+        TypeError: When ``first_day`` / ``last_day`` are not civil
+            :class:`datetime.date` values -- a ``datetime`` INCLUDED.
+    """
+    _require_scenario(ctx)
+    _require_civil_date(
+        "cash_daily_facts_series", first_day=first_day, last_day=last_day,
+    )
+    days = days_in_range(first_day, last_day)
+
+    series = _cash_fold.fold_cash_day_facts(
+        account, ctx.amounts(), ctx.as_of, days,
+    )
+    # Re-keyed into range order, which a dict comprehension over an unordered
+    # sample list does not promise.  An inverted range yields no days and still
+    # reports where the records begin -- the account HAS a first event whether
+    # or not the caller asked about a day it falls in.
+    return _cash_fold.CashDaySeries(
+        facts=OrderedDict((day, series.facts[day]) for day in days),
+        first_event_on=series.first_event_on,
+    )
 
 
 def records_balance_at(

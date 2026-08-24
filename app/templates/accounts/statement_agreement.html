@@ -1,0 +1,267 @@
+{% extends "base.html" %}
+{% from "_acct_macros.html" import acct_glyph %}
+{% from "_money_macros.html" import money %}
+{% from "_nav_macros.html" import back_link %}
+{% block title %}{{ account.name }} -- Books vs bank -- Shekel{% endblock title %}
+
+{# The app's books beside the BANK's own record -- plan step
+   bank_import:X-f6e-2, ruling R-GF.
+
+   It REPORTS and never gates.  Nothing on this page moves a figure, refuses an
+   import, or blocks a match: R-GF settled that on the measurement that a
+   refusal here deadlocks, because importing is what fixes the disagreement.
+
+   THREE numbers per day, not one.  A balance difference alone cannot see a
+   defect the owner's own true-up has already absorbed -- measured on the
+   developer's own account, 11 of 35 real disagreements read as exact agreement
+   in the balance column, one of them the $943.41 of card paybacks finding
+   N-337 names.  So each row carries what the bank moved, what the app's own
+   rows moved, and what a balance correction moved, and the DIFFERENCE column
+   is the first two subtracted.
+
+   Context (accounts.statement_agreement): account, agreement (BankAgreement or
+   None). #}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center gap-2 mb-3 flex-wrap">
+  <div class="d-flex align-items-center gap-2">
+    <h4 class="mb-0"><i class="bi {{ acct_glyph(account) }}"></i> {{ account.name }}</h4>
+    <span class="acctd-type-tag">Books vs bank</span>
+  </div>
+  {{ back_link(url_for('accounts.statements', account_id=account.id), 'Bank statements') }}
+</div>
+
+{% if agreement is none %}
+<div class="alert alert-info mb-0" role="alert">
+  <strong>Nothing to compare yet.</strong>
+  This account has no recorded bank lines, so there is no outside record to put
+  beside its own. Import a statement on the
+  <a href="{{ url_for('accounts.statements', account_id=account.id) }}">bank statements</a>
+  page first.
+</div>
+{% else %}
+
+<div class="alert alert-info d-flex gap-2 align-items-start" role="alert">
+  <i class="bi bi-info-circle mt-1"></i>
+  <div>
+    <strong>This compares. It changes nothing.</strong>
+    Every figure here is read from records you already have -- your own rows on
+    one side, the lines your bank sent on the other. Nothing on this page marks
+    a row paid, corrects a date or moves a balance.
+  </div>
+</div>
+
+{# ── What the two records say, in total ──────────────────────────── #}
+{% if not agreement.days %}
+{# The lines exist and NONE of them is in the past yet.  A different fact from
+   holding no statement, and the page must not report it as one. #}
+<div class="alert alert-warning mb-0" role="alert">
+  <strong>Nothing to compare yet -- but not because there is nothing recorded.</strong>
+  Every line your bank sent is dated
+  {{ agreement.span.recorded_through }}, after today. Past today your own balance is
+  a projection rather than a record, so setting one beside a bank line would
+  say nothing true. This page will fill in as those days arrive.
+</div>
+{% else %}
+<div class="card mb-3">
+  <div class="card-header"><i class="bi bi-clipboard-data"></i> Over
+    {{ agreement.span.first_day }} to {{ agreement.span.last_day }}
+    {# Never a SILENT truncation.  Past today the app's balance carries plan
+       rather than record, and setting a plan beside a bank line would report
+       agreement where the app has merely predicted what the bank did. #}
+    {% if agreement.span.ends_early %}
+    <span class="badge text-bg-secondary ms-1"
+          title="Your bank's lines run to {{ agreement.span.recorded_through }}, but past today your balance is a projection rather than a record -- comparing one against a bank line would say nothing true.">lines run to {{ agreement.span.recorded_through }}</span>
+    {% endif %}
+    {% if agreement.span.starts_late %}
+    <span class="badge text-bg-secondary ms-1"
+          title="Your earliest recorded line is dated {{ agreement.span.recorded_from }}. This page draws the most recent two years; if that date looks wrong, one line in an imported file is probably mis-dated.">lines start {{ agreement.span.recorded_from }}</span>
+    {% endif %}
+  </div>
+  <div class="card-body">
+    <div class="row text-center g-3 row-cols-2 row-cols-lg-5">
+      <div class="col">
+        <div class="fs-4 font-mono">{{ agreement.disagreeing | length }}</div>
+        <div class="text-muted small">days that disagree,
+          of {{ agreement.compared | length }} compared</div>
+      </div>
+      {# The two directions of the residue, captioned by which balance ends
+         HIGHER rather than by whose record holds the missing item.  A positive
+         residue has two causes on opposite sides of the books -- income the
+         app recorded that the bank did not, and spending the BANK recorded
+         that the app did not -- so "money you show and your bank does not"
+         would be false of the commoner one. #}
+      <div class="col">
+        <div class="fs-4 font-mono">{{ money(agreement.bank_ahead) }}</div>
+        <div class="text-muted small">your bank's total ran ahead of yours</div>
+      </div>
+      <div class="col">
+        <div class="fs-4 font-mono">{{ money(agreement.app_ahead) }}</div>
+        <div class="text-muted small">your total ran ahead of your bank's</div>
+      </div>
+      <div class="col">
+        <div class="fs-4 font-mono">{{ money(agreement.asserted_total) }}</div>
+        <div class="text-muted small">your balance corrections moved,
+          {{ money(agreement.asserted_gross) }} gross</div>
+      </div>
+      {# THE LEVEL.  The residue is per day and cannot answer "how far apart are
+         my books and my bank right now"; that is the running totals, and a
+         reader should be given it rather than subtracting two columns by eye
+         across every row. #}
+      <div class="col">
+        <div class="fs-4 font-mono">
+          {% if agreement.standing_gap is none %}--
+          {% else %}{{ money(agreement.standing_gap) }}{% endif %}
+        </div>
+        <div class="text-muted small">your books against your bank's on
+          {{ agreement.span.last_day }}</div>
+      </div>
+    </div>
+
+    {# WHICH SIDE RESTS ON AN ASSUMPTION.  A first import seats its figure by
+       assumption (finding N-342), and the signature of a wrong one is a
+       CONSTANT offset across the whole span -- an anchor is one number, so an
+       error in it shifts every day equally while leaving every movement
+       right.  A difference that VARIES cannot be that.  Ruling R-GF. #}
+    <hr>
+    {% if agreement.anchor is none %}
+    <p class="mb-0 small text-muted">
+      <i class="bi bi-question-circle"></i>
+      <strong>No statement here places a balance on a day</strong>, so the two
+      running balances cannot be levelled against each other and the last two
+      columns are empty. The day-by-day comparison does not need one -- it
+      compares what moved, which your lines say on their own. To get the
+      balance columns, export once with your bank's running-balance option
+      ticked.
+    </p>
+    {% else %}
+    <p class="mb-0 small text-muted">
+      <i class="bi bi-flag"></i>
+      {% set copy = evidence_copy[agreement.anchor.evidence] %}
+      The bank's balances below are walked from
+      <span class="font-mono">{{ money(agreement.anchor.balance) }}</span> on
+      {{ agreement.anchor.day }} --
+      <span class="badge {{ copy.badge }}" title="{{ copy.sentence }}">{{ copy.label }}</span>.
+      {% if agreement.unpriced_days %}
+      <br>
+      <span class="badge text-bg-warning">{{ agreement.unpriced_days }} day(s) not priced</span>
+      Those days show <span class="font-mono">--</span> in the bank column: the
+      recorded lines do not reach them from that figure, because your imports
+      leave a gap between it and them. Import the missing span and they fill in.
+      {% endif %}
+      {% if anchor_assumed %}
+      <strong>Nothing has confirmed that figure</strong>, so the whole bank
+      column could be uniformly wrong by however much it is out. Export once
+      with your bank's running-balance option ticked and it can be checked.
+      {% endif %}
+      {% if agreement.constant_offset is not none and agreement.constant_offset != 0 %}
+      <br>
+      <span class="badge text-bg-warning">the offset is constant</span>
+      Every compared day is out by exactly
+      <span class="font-mono">{{ money(agreement.constant_offset) }}</span>.
+      That is the signature of a wrong starting figure rather than of anything
+      in your records: an anchor is one number, so an error in it shifts every
+      day equally.
+      {% endif %}
+    </p>
+    {% endif %}
+  </div>
+</div>
+
+{# ── Day by day ──────────────────────────────────────────────────── #}
+<div class="card">
+  <div class="card-header"><i class="bi bi-calendar3"></i> Day by day</div>
+  <div class="table-responsive stmt-agreement-scroll">
+    <table class="table table-sm align-middle mb-0">
+      <thead class="stmt-agreement-head">
+        <tr>
+          <th scope="col">Day</th>
+          <th scope="col" class="text-end">Bank moved</th>
+          <th scope="col" class="text-end">You recorded</th>
+          <th scope="col" class="text-end">Difference</th>
+          <th scope="col" class="text-end">You corrected</th>
+          <th scope="col" class="text-end">Bank balance</th>
+          <th scope="col" class="text-end">Your balance</th>
+          <th scope="col" class="text-end">Apart</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in agreement.days %}
+        <tr {% if row.in_records and not row.agrees %}class="table-warning"{% endif %}>
+          <td class="text-nowrap font-mono small">
+            {% if row.bank_lines != 0 or row.recorded != 0 %}
+            {# The drill-down, offered on any day either record describes --
+               NOT only the disagreeing ones.  Gating it on `not row.agrees`
+               made the 83 days of bank movement against no app records
+               unopenable, which are the days this page spends a paragraph
+               explaining.  Every line and every row on the day is listed, not
+               only the unmatched ones: a row matched to a line the bank posted
+               on a DIFFERENT day contributes to both days' differences while
+               being unmatched on neither. #}
+            <button type="button"
+                    class="btn btn-link btn-sm p-0 font-mono"
+                    hx-get="{{ url_for('accounts.statement_agreement_day', account_id=account.id, day=row.day) }}"
+                    hx-target="#agreement-day-{{ loop.index }}"
+                    hx-swap="innerHTML">
+              <i class="bi bi-chevron-down"></i> {{ row.day }}
+            </button>
+            {% else %}
+            {{ row.day }}
+            {% endif %}
+          </td>
+          {% if row.in_records %}
+          <td class="text-end font-mono small">{{ money(row.bank_lines) }}</td>
+          <td class="text-end font-mono small">{{ money(row.recorded) }}</td>
+          <td class="text-end font-mono small {% if not row.agrees %}fw-bold{% endif %}">
+            {% if row.agrees %}<span class="text-muted">--</span>
+            {% else %}{{ money(row.residue) }}{% endif %}
+          </td>
+          <td class="text-end font-mono small">
+            {% if row.asserted != 0 %}{{ money(row.asserted) }}
+            {% else %}<span class="text-muted">--</span>{% endif %}
+          </td>
+          {% else %}
+          {# Before this account's records begin.  Shown because hiding a day
+             the bank describes would be the report deciding what may be seen,
+             and excluded from every total because it is finding N-314 -- owned
+             by the balance arc's cutover -- and not a disagreement this page
+             can act on. #}
+          <td class="text-end font-mono small">{{ money(row.bank_lines) }}</td>
+          <td colspan="3" class="small text-muted">
+            {# Two different facts, and "before your records begin" is false of
+               the second: an account with NO records has no beginning to be
+               before. #}
+            {% if agreement.records_begin is none %}this account has no records at all
+            {% else %}before your records begin{% if loop.first %}
+            ({{ agreement.records_begin }}){% endif %}{% endif %}
+          </td>
+          {% endif %}
+          <td class="text-end font-mono small">
+            {% if row.bank_balance is none %}<span class="text-muted">--</span>
+            {% else %}{{ money(row.bank_balance) }}{% endif %}
+          </td>
+          <td class="text-end font-mono small">{{ money(row.app_balance) }}</td>
+          {# The two balances' difference, GIVEN rather than left to the eye.
+             It is not the verdict -- `agrees` is decided on the movement
+             residue, because a same-day true-up can cancel a real error to
+             the cent -- so it is rendered plainly and never flagged. #}
+          <td class="text-end font-mono small">
+            {% if row.gap is none %}<span class="text-muted">--</span>
+            {% elif row.gap == 0 %}<span class="text-muted">0.00</span>
+            {% else %}{{ money(row.gap) }}{% endif %}
+          </td>
+        </tr>
+        {# The drill-down's landing row, emitted ONLY where a button can fill
+           it: an empty <tr> on every one of 232 days is markup nothing can
+           ever target. #}
+        {% if row.bank_lines != 0 or row.recorded != 0 %}
+        <tr id="agreement-day-{{ loop.index }}"></tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endif %}
+{% endblock content %}

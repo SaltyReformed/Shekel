@@ -112,7 +112,7 @@ def statements(account_id):
         span=recorded_span(account_id),
         imports=import_history(account_id),
         lines=recent_lines(account_id),
-        evidence_copy=_EVIDENCE_COPY,
+        evidence_copy=EVIDENCE_COPY,
     )
 
 
@@ -143,7 +143,13 @@ class _EvidenceCopy:
 #: compares no string at all.  ONE map rather than one per surface: the receipt
 #: and the imports table say the same thing about the same fact, and two
 #: spellings would be two places for a fourth basis to be forgotten.
-_EVIDENCE_COPY = {
+#: **PUBLIC because it has readers in two route modules** -- this page's
+#: receipt and imports table, and the books-vs-bank page, which names the
+#: same fact about the same anchor.  A message with two readers is part of
+#: the interface, which is finding **N-33**'s shape stated rather than left
+#: to a convention (:mod:`app.routes.accounts.difference` imports
+#: ``LOAN_ANCHOR_REFUSAL`` from ``anchor`` for the same reason).
+EVIDENCE_COPY = {
     StatementBalanceEvidenceEnum.FILE_CHAIN: _EvidenceCopy(
         label="proved by the file",
         sentence=(
@@ -201,7 +207,7 @@ def _balance_sentence(outcome):
             f"so nothing here could place that figure and no balance was "
             f"recorded from it."
         )
-    copy = _EVIDENCE_COPY[outcome.balance.evidence]
+    copy = EVIDENCE_COPY[outcome.balance.evidence]
     if outcome.balance.effective_on == outcome.balance.stated_on:
         return copy.sentence
     return (

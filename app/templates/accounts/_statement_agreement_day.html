@@ -1,0 +1,69 @@
+{% from "_money_macros.html" import money %}
+{# What makes up ONE day's difference, on both sides -- plan step
+   bank_import:X-f6e-2.
+
+   EVERY line and EVERY row on the day, not only the unmatched ones.  A row
+   matched to a line the bank posted on a different day contributes to both
+   days' differences while being unmatched on neither, so a list filtered to
+   "unexplained" would omit exactly the timing case a reader is here to
+   understand.  The match state is shown per item instead.
+
+   It replaces the whole <tr>, so it renders its own cells.
+
+   Context (accounts.statement_agreement_day): account, detail (DayDetail). #}
+<td colspan="8" class="bg-body-tertiary">
+  <div class="row g-3 py-2">
+    <div class="col-12 col-lg-6">
+      <h6 class="text-muted text-uppercase small mb-2">
+        What your bank posted on {{ detail.day }}
+      </h6>
+      {% if detail.lines %}
+      <ul class="list-unstyled mb-0 small">
+        {% for line in detail.lines %}
+        <li class="d-flex justify-content-between gap-2">
+          {# The TITLE carries the full text, because a description is 200
+             characters and this is the one surface whose whole job is
+             explaining a difference. Autoescaped like any other
+             interpolation. #}
+          <span class="text-truncate" title="{{ line.description }}">
+            {% if line.matched %}
+            <i class="bi bi-link-45deg text-success"></i>
+            {% else %}
+            <i class="bi bi-dash-circle text-warning"></i>
+            {% endif %}
+            {{ line.merchant or line.description }}
+          </span>
+          <span class="font-mono text-nowrap">{{ money(line.amount) }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="text-muted small mb-0">Nothing. Your bank posted no line this day.</p>
+      {% endif %}
+    </div>
+    <div class="col-12 col-lg-6">
+      <h6 class="text-muted text-uppercase small mb-2">
+        What you recorded on {{ detail.day }}
+      </h6>
+      {% if detail.rows %}
+      <ul class="list-unstyled mb-0 small">
+        {% for row in detail.rows %}
+        <li class="d-flex justify-content-between gap-2">
+          <span class="text-truncate" title="{{ row.description }}">
+            {% if row.matched %}
+            <i class="bi bi-link-45deg text-success"></i>
+            {% else %}
+            <i class="bi bi-dash-circle text-warning"></i>
+            {% endif %}
+            {{ row.description }}
+          </span>
+          <span class="font-mono text-nowrap">{{ money(row.amount) }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="text-muted small mb-0">Nothing. You recorded no money moving this day.</p>
+      {% endif %}
+    </div>
+  </div>
+</td>

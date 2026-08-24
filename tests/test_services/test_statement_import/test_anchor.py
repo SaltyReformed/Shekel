@@ -370,7 +370,7 @@ class TestTheWeakestLinkRule:
     def test_the_ladder_is_strictly_ordered(self):
         """Proved by the file beats corroborated beats nothing.
 
-        Asserted here rather than trusted because ``_usable_anchor`` picks the
+        Asserted here rather than trusted because ``usable_anchor`` picks the
         strongest anchor by this order, and an early draft read the order off
         the ref table's row ids instead -- which was measured BACKWARDS, since
         the seed writes ``file_chain`` first.
@@ -481,9 +481,12 @@ class TestTheRecordedHistoryWalk:
     ):
         """The filter that stops a date-range export becoming the anchor.
 
-        Without it the walk selects a row whose ``balance_effective_on`` is
-        ``None`` and the coverage test raises ``TypeError`` comparing a date
-        against it -- a 500.  Found by adversarial review 2026-08-23.
+        Without it the anchor selection returns a row whose
+        ``balance_effective_on`` is ``None`` and the coverage test raises
+        ``TypeError`` comparing a date against it -- a 500.  Found by
+        adversarial review 2026-08-23.  (The selection moved to
+        ``_balance.usable_anchor`` at plan step ``bank_import:X-f6e-2``;
+        this reaches it through the public reader that consumes it.)
         """
         _seed_import(
             db, seed_user["account"], stated="2459.60", effective_on=None,
