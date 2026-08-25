@@ -71,6 +71,61 @@ def _review_url(account_id):
     return f"/accounts/{account_id}/statements/review"
 
 
+def _never_showed_panel(body):
+    """Return just the "rows no line explains" card's markup.
+
+    **An assertion about ONE panel has to read that panel.**  This page renders
+    five cards and hundreds of badges, so "the words are somewhere in the body"
+    is satisfied by any of them -- the failure mode ``_delete_form`` in
+    ``test_statements.py`` records and which that file then went on to make
+    anyway.
+
+    **It is bounded by the NEXT CARD, not by the next ``</table>``, and a first
+    version was bounded by the table.**  When this card lists nothing it
+    renders ``<p>None.</p>`` and holds no table at all, so that cut ran past
+    the card, past the hand-build totals and into the keyboard-help modal --
+    4,605 characters, ending in ``<kbd>Esc</kbd>``.  Every negative assertion
+    made against that region was then graded by markup from a different
+    feature, and :func:`_never_showed_rows`' own empty-guard was satisfied by
+    the help modal's ``<tbody>``.  Found by adversarial review of this step's
+    own tests, 2026-08-25.
+
+    Args:
+        body: The rendered review page, as text.
+
+    The card carries an ``id`` for exactly this reason, and the totals panel
+    below it carries the one that bounds the far end.
+
+    Args:
+        body: The rendered review page, as text.
+
+    Returns:
+        The card's markup, from its own id to the hand-totals panel below it.
+    """
+    start = body.index('id="rows-no-line-explains"')
+    return body[start:body.index('id="hand-totals"', start)]
+
+
+def _never_showed_rows(body):
+    """Return just the ROW LIST of that card, without its caption.
+
+    The caption names the tag in order to explain it, so a search for the tag
+    across the whole card is satisfied by the paragraph that describes it and
+    says nothing about which rows wear one.  Every assertion about a ROW reads
+    this instead.
+
+    Args:
+        body: The rendered review page, as text.
+
+    Returns:
+        The card's ``<tbody>`` markup, or ``""`` when it lists nothing.
+    """
+    panel = _never_showed_panel(body)
+    if "<tbody>" not in panel:
+        return ""
+    return panel[panel.index("<tbody>"):]
+
+
 def _match(index=0, lines=(), transactions=(), entries=(), residual=None):
     """Return the form fields a TICKED match item submits.
 
@@ -1431,7 +1486,10 @@ class TestTheHandBuildForm:
 
         assert b"ACH DEBIT NOTHING EXPLAINS THIS" in response.data
         assert b"Ghost Payment" in response.data
-        assert b"the bank never showed" in response.data
+        # The card's HEADER names what it LISTS since plan step X-gc -- rows no
+        # line explains -- because its badge counts all of them while the
+        # caption now says the bank-failed-to-pay reading holds for only some.
+        assert b"Rows you recorded that no line explains" in response.data
         assert b'name="match-hand-line_ids"' in response.data
         # The ROW side posts one token per row rather than an id list (plan
         # step bank_import:X-f6d-3), and the assertion follows the field it is
@@ -1444,6 +1502,122 @@ class TestTheHandBuildForm:
         # proposal 0's hidden ids out of this group today, and that is a
         # property of the document rather than of the form.
         assert b'name="apply" value="hand"' in response.data
+
+    def test_a_CC_PAYBACK_is_still_offered_and_is_TAGGED_not_a_line(
+        self, auth_client, db, seed_user,
+    ):
+        """Plan step X-gc: the panel keeps the row and withdraws the claim.
+
+        **The membership assertion is the regression guard, and it is the
+        important half.**  X-gc's plan text said the panel should "stop listing
+        rows the bank could never show".  Taken literally that removes the CC
+        paybacks -- and they are the ONLY thing a parked card-payment line can
+        be grouped against, which ruling **R-GJ** leaves as that line's one
+        remaining arm.  Measured on the developer's dev database 2026-08-25:
+        18 paybacks in this panel against 10 unexplained ``ACH DEBIT CAPITAL
+        ONE ... PMT`` lines in the panel beside it.  So the row is listed, its
+        tick token is rendered, and only the CAPTION is corrected.
+
+        The tag is asserted INSIDE the panel rather than page-wide: this page
+        renders many badges, and a body-wide search would be graded by whatever
+        else happened to say the same words.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        a_bank_line(
+            seed_user, statement, amount="-500.00", posted_on=bank_day,
+            description="ACH DEBIT CAPITAL ONE      MOBILE PMT",
+        )
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="100.00", is_envelope=True,
+        )
+        db.session.flush()
+        payback = a_transaction(
+            seed_user, name="CC Payback: Groceries", amount="60.00",
+            template=False, status=StatusEnum.DONE, settled_on=bank_day,
+        )
+        payback.credit_payback_for_id = envelope.id
+        db.session.commit()
+
+        body = auth_client.get(
+            _review_url(seed_user["account"].id)
+        ).get_data(as_text=True)
+        rows = _never_showed_rows(body)
+
+        # It is LISTED, and it is TICKABLE -- the group arm R-GJ leaves open.
+        assert "CC Payback: Groceries" in rows
+        assert f'id="row-transaction-{payback.id}"' in rows
+        # ...and the alarm is withdrawn for it, in as many words.
+        assert "not a line of its own" in rows
+        assert "never shows it as a line by itself" in rows
+
+    def test_the_panel_does_NOT_tag_a_row_the_bank_would_have_shown(
+        self, auth_client, db, seed_user,
+    ):
+        """The discriminating half of the pair above.
+
+        A tag on every row would withdraw the panel's alarm from the payments
+        the bank really did fail to make, which is the half of ruling **R-FP**
+        this panel exists for.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        a_bank_line(
+            seed_user, statement, amount="-11.11", posted_on=bank_day,
+            description="ACH DEBIT NOTHING EXPLAINS THIS",
+        )
+        a_transaction(
+            seed_user, name="Ghost Payment", amount="22.22",
+            status=StatusEnum.DONE, settled_on=bank_day,
+        )
+        db.session.commit()
+
+        rows = _never_showed_rows(
+            auth_client.get(
+                _review_url(seed_user["account"].id)
+            ).get_data(as_text=True)
+        )
+
+        assert "Ghost Payment" in rows
+        assert "not a line of its own" not in rows
+        assert "never shows it as a line by itself" not in rows
+
+    def test_the_panel_CAPTION_no_longer_claims_it_of_every_row(
+        self, auth_client, db, seed_user,
+    ):
+        """Plan step X-gc: the sentence that was false for 18 of 67 rows.
+
+        It read *"A row here that you expected the bank to show is a payment
+        your records claim happened and your bank did not make"* -- of every
+        row, unconditionally.  What replaces it makes the alarm conditional on
+        the owner's own expectation and names the other case.
+        """
+        statement = an_import(seed_user)
+        a_bank_line(
+            seed_user, statement, amount="-11.11",
+            posted_on=seed_user["bootstrap_period"].start_date,
+            description="ACH DEBIT NOTHING EXPLAINS THIS",
+        )
+        db.session.commit()
+
+        panel = _never_showed_panel(
+            auth_client.get(
+                _review_url(seed_user["account"].id)
+            ).get_data(as_text=True)
+        )
+
+        assert "A row here that you expected the bank to show is" not in panel
+        # Whitespace-normalised: the sentence wraps across template lines, and
+        # an assertion carrying the indentation would be graded by the editor.
+        flat = " ".join(panel.split())
+        assert (
+            "One you expected the bank to show is a payment your records "
+            "claim happened and your bank did not make." in flat
+        )
+        assert (
+            "One marked <em>not a line of its own</em> is not: tick it with "
+            "the line that carries its money." in flat
+        )
 
     def test_a_hand_built_group_that_does_not_add_up_is_REFUSED_on_screen(
         self, auth_client, db, seed_user,

@@ -566,7 +566,7 @@ class StatementSourceEnum(enum.Enum):
     and a new parser, never a second path through the importer.
 
         secu_checking_csv -- State Employees' Credit Union's own transaction
-                             export, with the running-balance column included.
+                             export, as CSV.
 
     **A member names a FORMAT at an INSTITUTION, not an institution**, because
     one bank publishes one statement several ways and the ways do not carry the

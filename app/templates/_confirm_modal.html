@@ -1,6 +1,8 @@
 {# Reusable confirmation modal -- replaces browser confirm() dialogs.
 
-   TWO ways in, both handled by the one block in app.js:
+   TWO ways in, both handled by the one block in confirm.js, which
+   base.html loads in <head> so it binds before the controls exist
+   (plan step bank_import:X-gc):
 
      <form method="POST" action="..." data-confirm="Are you sure?">
        <button type="submit">Delete</button>
