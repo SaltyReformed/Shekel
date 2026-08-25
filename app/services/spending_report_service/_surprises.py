@@ -63,5 +63,14 @@ def _build_surprises(txns: list[Transaction]) -> Surprises:
         ))
         net += delta
 
-    surprises.sort(key=lambda s: abs(s.delta), reverse=True)
+    # **The worst of the three unstable ranks, because a CAP follows it**
+    # (finding **P74**, developer ruling 2026-08-25).  Keyed on ``abs(delta)``
+    # alone, two rows that missed their estimate by the same amount were
+    # separated only by the order ``query_settled_expenses`` happened to
+    # return them in -- which carries no ``ORDER BY`` -- so at the boundary the
+    # database decided WHICH ROW IS ON THE SCREEN, not merely in what order.
+    # ``transaction_id`` is the row's identity, so the five shown are now a
+    # function of the data.  ``net`` is unaffected either way: it sums every
+    # surprise, not the shown ones.
+    surprises.sort(key=lambda s: (-abs(s.delta), s.transaction_id))
     return Surprises(rows=surprises[:_MAX_SURPRISES], net=net)

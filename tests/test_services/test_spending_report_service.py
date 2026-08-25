@@ -45,7 +45,9 @@ from app.services.spending_report_service import (
 from app.services.spending_report_service._hero import (
     _TRAILING_WINDOW_COUNT,
 )
-from app.services.spending_report_service._surprises import _MAX_SURPRISES
+from app.services.spending_report_service._surprises import (
+    _MAX_SURPRISES, _build_surprises,
+)
 from app.services.spending_report_service._types import _ScopeIds
 from app.services.spending_report_service._window import (
     _CHART_WINDOW_COUNT,
@@ -224,6 +226,49 @@ class TestBreakdown:
             assert [i.item_name for i in auto.items] == ["Car Payment", "Gas"]
             assert auto.items[0].amount == Decimal("300.00")
             assert auto.items[1].amount == Decimal("100.00")
+
+    def test_tied_items_in_one_group_order_by_name_not_by_insertion(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Two categories that spent the SAME are ordered by the data (**P74**).
+
+        The item list starts in the query's row order -- ``current_by_cat`` is
+        a dict built by iterating it, and ``list.sort`` is stable -- so before
+        this ruling a tie was decided by the plan.
+
+        **The two are created in REVERSE alphabetical order on purpose**, so
+        the insertion order and the correct order disagree: a rank keyed on
+        ``amount`` alone leaves ``Zephyr`` first, and the total key puts
+        ``Awning`` there.  ``item_name`` is unique within a group by the
+        ``(user_id, group_name, item_name)`` constraint, so it totally orders
+        this list while also reading alphabetically to a person.
+        """
+        with app.app_context():
+            for name in ("Zephyr", "Awning"):
+                cat = Category(
+                    user_id=seed_user["user"].id,
+                    group_name="Home", item_name=name,
+                )
+                db.session.add(cat)
+                db.session.flush()
+                seed_user["categories"][name] = cat
+                _txn(
+                    db, seed_user, seed_periods[0], f"T{name}", name, "75.00",
+                )
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(seed_periods[0]),
+            )
+            home = _group(report, "Home")
+            tied = [
+                i.item_name for i in home.items
+                if i.amount == Decimal("75.00")
+            ]
+            assert tied == ["Awning", "Zephyr"], (
+                "a tied item ranking must be a function of the data, not of "
+                "the order the rows happened to be inserted in"
+            )
 
     def test_window_filters_non_measured_rows(self, app, seed_user, seed_periods, db):
         """Only settled expenses in the window count.
@@ -1180,6 +1225,81 @@ class TestDeltas:
             assert [r.item_name for r in report.changes] == [
                 "Car Payment", "Rent",
             ]
+
+    def test_tied_groups_order_by_name_not_by_the_query_plan(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """Two groups that spent the SAME are ordered by the data (**P74**).
+
+        Neither settled-expense query carries an ``ORDER BY``; the per-category
+        totals land in a dict in whatever order the database returned them,
+        ``items_by_group`` is built by iterating that dict, and ``list.sort``
+        is stable -- so before this ruling a tie was broken by the query plan,
+        and an edit to either SELECT list could silently reorder the screen.
+
+        ``Home`` and ``Auto`` both spend ``$100.00``.  ``Auto`` sorts first
+        because ``A`` precedes ``H``, not because of anything the planner did.
+        """
+        with app.app_context():
+            _txn(db, seed_user, seed_periods[0], "R", "Rent", "100.00")
+            _txn(db, seed_user, seed_periods[0], "C", "Car Payment", "100.00")
+            db.session.commit()
+
+            report = compute_spending_report(
+                seed_user["user"].id, _pp_window(seed_periods[0]),
+            )
+            tied = [
+                row.group_name for row in report.breakdown
+                if row.amount == Decimal("100.00")
+            ]
+            assert tied == ["Auto", "Home"], (
+                "a tied group ranking must be a function of the data"
+            )
+
+    def test_tied_surprises_order_by_id_so_the_CAP_is_deterministic(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """The five shown surprises are chosen by the data, not the plan (**P74**).
+
+        This is the worst of the three unstable ranks because a CAP follows it:
+        keyed on ``abs(delta)`` alone, two rows that missed their estimate by
+        the same amount were separated only by the order the query happened to
+        return them in, so at the boundary the DATABASE decided which row is on
+        the screen rather than merely in what order.
+
+        **The reducer is fed a REVERSED list on purpose, and the first version
+        of this test did not do that and was a tautology**: driven through
+        ``compute_spending_report`` the rows arrive in id order anyway, so a
+        stable sort with no tiebreaker produced the same answer as a total one
+        and the test passed against the defect it names.  Reversing the input
+        is what makes the two orderings distinguishable -- an unstable rank
+        drops the LOWEST id, a total one drops the highest.
+        """
+        with app.app_context():
+            for n in range(6):
+                _txn(
+                    db, seed_user, seed_periods[0], f"S{n}", "Groceries",
+                    "50.00", actual="60.00",
+                )
+            db.session.commit()
+
+            rows = (
+                db.session.query(Transaction)
+                .filter_by(pay_period_id=seed_periods[0].id)
+                .order_by(Transaction.id.desc())
+                .all()
+            )
+            surprises = _build_surprises(rows)
+
+            ids = [row.transaction_id for row in surprises.rows]
+            assert len(ids) == _MAX_SURPRISES, "the cap is five"
+            assert ids == sorted(ids), (
+                "tied surprises must rank by a total key: fed in reverse, an "
+                "unstable rank keeps reverse order and drops the wrong row"
+            )
+            assert surprises.net == Decimal("60.00"), (
+                "the net sums EVERY surprise, not the shown five"
+            )
 
 
 # ── Scope facts, empty window, and the None contract ────────────────

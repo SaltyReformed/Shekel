@@ -103,7 +103,15 @@ def _build_breakdown(
         )
         for group_name, items in items_by_group.items()
     ]
-    rows.sort(key=lambda row: row.amount, reverse=True)
+    # **A ranking's key must TOTALLY order its input** (finding **P74**,
+    # developer ruling 2026-08-25).  Keyed on ``amount`` alone, two groups that
+    # spent the same are separated by nothing: ``items_by_group`` is built in
+    # the query's row order, dicts preserve insertion order, and ``list.sort``
+    # is stable -- so the database's arbitrary order decided the screen, and an
+    # edit to either SELECT list could silently reorder it.  ``group_name`` is
+    # unique across groups by construction (it is the dict key above), so
+    # appending it makes the order a function of the DATA.
+    rows.sort(key=lambda row: (-row.amount, row.group_name))
     return rows
 
 
@@ -125,7 +133,21 @@ def _group_row(
     Returns:
         The :class:`SpendingGroupRow`.
     """
-    items.sort(key=lambda row: row.amount, reverse=True)
+    # Total order, for the reason stated on the group sort above (**P74**),
+    # and it ends in the row's IDENTITY rather than its name.
+    #
+    # **A first version of this ended at ``item_name`` on the argument that
+    # ``uq_categories_user_group_item`` makes it unique within a group and the
+    # Uncategorized bucket is alone in its own. The second half is enforced
+    # NOWHERE**: that bucket is synthesised by
+    # ``spending_analysis.category_names`` for a null-category row and is not a
+    # table row at all, so the constraint cannot see it -- and
+    # ``CategoryCreateSchema`` bounds ``group_name`` only by length, so an owner
+    # may create a real ``Uncategorized: Uncategorized`` and sit two rows with
+    # one key in one group. ``category_id`` is the identity and closes it
+    # outright; ``item_name`` stays ahead of it so the visible order is still
+    # alphabetical, which is what a reader wants from a tie.
+    items.sort(key=lambda row: (-row.amount, row.item_name.lower(), row.category_id))
     group_amount = sum((row.amount for row in items), ZERO)
     return SpendingGroupRow(
         group_name=group_name,
@@ -189,5 +211,15 @@ def _build_changes(
             delta=current_amount - prior_amount,
             is_new=prior_amount == ZERO and current_amount > ZERO,
         ))
-    rows.sort(key=lambda r: (-abs(r.delta), -r.current, r.item_name.lower()))
+    # **This key was cited as the immune exemplar and it was not immune**
+    # (**P74**, found by adversarial review 2026-08-25). It carries neither the
+    # group nor the id, and this list is FLAT across every category in both
+    # windows -- so ``Home: Insurance`` and ``Auto: Insurance``, which
+    # ``uq_categories_user_group_item`` permits by design, collide outright
+    # whenever they share a current and a delta. That is MORE reachable than
+    # the two cases this pass set out to fix: it needs no name collision, only
+    # one label used under two groups. ``category_id`` is the identity.
+    rows.sort(key=lambda r: (
+        -abs(r.delta), -r.current, r.item_name.lower(), r.category_id,
+    ))
     return rows
