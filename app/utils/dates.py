@@ -574,22 +574,37 @@ def pay_period_range_label(start_date: date, end_date: date) -> str:
     :class:`~app.services.pay_calendar.DerivedPeriod`), neither of their
     modules may import the other, and both already depend on this one.
 
-    **The year is the END's, and on a period that STRADDLES one that
-    misleads** -- ``"Dec 26 - Jan 08, 2027"`` reads as a December in 2027.  All
-    three copies did exactly that and this reproduces it BYTE FOR BYTE, so the
-    collapse is provably display-neutral and a rendering change is not smuggled
-    in behind a DRY fix.  The defect is recorded as ledger row **P67**, whose
-    remedy is the rule :func:`pay_period_label` already applies to this very
-    case: carry the year on both halves when the period crosses one.
+    **The year is carried on BOTH halves when the period straddles one**, and
+    on the END alone when it does not -- ledger row **P67**, developer ruling
+    2026-08-25.  It printed ``"Dec 26 - Jan 08, 2027"`` until then, which reads
+    as a December in 2027 and is a December in 2026; the three copies C2-f3a
+    collapsed all did that, and the collapse reproduced it byte for byte on
+    purpose so a rendering change was not smuggled in behind a DRY fix.  This
+    is that change, made on its own.
+
+    **The rule is :func:`pay_period_label`'s, one function up**, so the two
+    registers differ in WIDTH and not in when a year disambiguates: the narrow
+    one answers ``"12/26/26 - 01/08/27"`` for this period and ``"02/21 -
+    03/06"`` for one inside a single year.  Two registers was always the
+    deliberate part; two RULES would be the drift.
+
+    The month name comes from ``strftime`` and is therefore LC_TIME-dependent,
+    which is finding **F-15**'s subject rather than this function's.
 
     Args:
         start_date: The payday that opens the period.
         end_date: The last day the period covers.
 
     Returns:
-        The label -- abbreviated month name, zero-padded day, and the END
-        date's four-digit year.
+        The label -- abbreviated month name and zero-padded day on both halves,
+        with a four-digit year on each half when the period crosses a year
+        boundary and on the end alone when it does not.
     """
+    if start_date.year != end_date.year:
+        return (
+            f"{start_date.strftime('%b %d')}, {start_date.year} - "
+            f"{end_date.strftime('%b %d')}, {end_date.year}"
+        )
     return (
         f"{start_date.strftime('%b %d')} - "
         f"{end_date.strftime('%b %d')}, {end_date.year}"

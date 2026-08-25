@@ -307,9 +307,12 @@ class TestPayPeriodRangeLabel:
     showed the two service functions were the same three-arm dispatch.  Ledger
     row **P47**'s duplicate half.
 
-    **These are BYTE-EXACT pins of what all three copies produced**, which is
-    what makes the collapse provably display-neutral rather than a rendering
-    change smuggled in behind a DRY fix.
+    **These were BYTE-EXACT pins of what all three copies produced**, which is
+    what made the collapse provably display-neutral rather than a rendering
+    change smuggled in behind a DRY fix.  **One of them has since moved**: the
+    developer ruled ledger row **P67** on 2026-08-25 and a straddling period
+    now names both years, which is the rendering change the collapse
+    deliberately did not make.
     """
 
     def test_it_reproduces_the_register_the_three_copies_produced(self):
@@ -324,20 +327,38 @@ class TestPayPeriodRangeLabel:
             date(2026, 3, 13), date(2026, 3, 26),
         ) == "Mar 13 - Mar 26, 2026"
 
-    def test_a_STRADDLING_period_shows_only_the_END_year(self):
-        """The known defect, pinned as the behaviour that was preserved.
+    def test_a_STRADDLING_period_names_BOTH_years(self):
+        """P67's remedy: the year is carried on both halves across a straddle.
 
-        ``"Dec 26 - Jan 08, 2027"`` reads as a December in 2027, and it is a
-        December in 2026.  All three collapsed copies did this and this
-        reproduces it deliberately: the collapse is a DRY fix and changing what
-        a screen renders is a separate decision.  Ledger row **P67** carries
-        the remedy, which is the rule the NARROW register beside it already
-        applies to the same case -- see
-        :meth:`test_the_narrow_register_already_carries_both_years`.
+        **This test pinned the DEFECT until 2026-08-25**, deliberately and with
+        its reason stated: C2-f3a collapsed three copies of this register and
+        reproduced their output byte for byte, so that a rendering change was
+        not smuggled in behind a DRY fix.  ``"Dec 26 - Jan 08, 2027"`` reads as
+        a December in 2027 and is a December in 2026.
+
+        The developer ruled ledger row **P67** on 2026-08-25 (option A of four:
+        both years on a straddle, the end year alone otherwise), so the pinned
+        behaviour is no longer the intended one and the pin moves with it.  The
+        rule is the NARROW register's, unchanged -- see
+        :meth:`test_the_narrow_register_already_carries_both_years` -- which is
+        the whole point: two registers differ in WIDTH, not in when a year
+        disambiguates.
         """
         assert pay_period_range_label(
             date(2026, 12, 26), date(2027, 1, 8),
-        ) == "Dec 26 - Jan 08, 2027"
+        ) == "Dec 26, 2026 - Jan 08, 2027"
+
+    def test_a_period_inside_one_year_still_names_only_the_END_year(self):
+        """The non-vacuity control for the straddle rule above.
+
+        A year is carried on both halves ONLY where it disambiguates.  Without
+        this, a change that always printed both years would pass the straddle
+        test while making every other label noisier -- and 25 of a year's 26
+        periods do not straddle.
+        """
+        assert pay_period_range_label(
+            date(2026, 2, 21), date(2026, 3, 6),
+        ) == "Feb 21 - Mar 06, 2026"
 
     def test_the_narrow_register_already_carries_both_years(self):
         """:func:`pay_period_label` disambiguates the straddle; this one does not.
