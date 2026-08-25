@@ -475,6 +475,18 @@ EVT_STATEMENT_MATCH_RELEASED = _register(
     "bank_import:X-f6d-4).  ``removed_count`` is how many such rows went.",
 )
 
+EVT_STATEMENT_MATCH_WITHDRAWN = _register(
+    "statement_match_withdrawn", BUSINESS,
+    "A row left the books, so the accepted matches naming it (or one of its "
+    "purchases) were withdrawn and their bank lines are unexplained again.  "
+    "The SIBLING of statement_match_released and not the same act: a release "
+    "is the owner undoing a decision, and this is the decision losing its "
+    "subject.  It moves NO money of its own -- the door that removed the row "
+    "reversed its postings -- and rows the withdrawn acts had CREATED are "
+    "LEFT standing, which kept_row_count reports (plan step "
+    "bank_import:X-gb).",
+)
+
 EVT_STATEMENT_MATCH_LINELESS = _register(
     "statement_match_lineless", ERROR,
     "An accepted match names NO bank line, which the schema forbids: it "

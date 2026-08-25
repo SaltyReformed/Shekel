@@ -116,9 +116,24 @@
       </span>
       <span class="fw-semibold font-mono">{{ "{:,.0f}".format(recorded) }}</span>
     {% else %}
-      {% if est_display != 0 %}
-        <span class="font-mono">{{ "{:,.0f}".format(est_display) }}</span>
-      {% endif %}
+      {# **A ZERO renders, and until plan step ``bank_import:X-gb`` it did
+         not** -- finding **N-344**'s second limb.  The suppression came from a
+         2026-06 layout commit with no rationale beyond tidiness, and its cost
+         is that a `$0.00` row draws NOTHING inside ``.txn-open``: an
+         inline-flex element with no content is zero pixels wide, so the row is
+         unclickable and its action card unreachable.  Rendered and MEASURED,
+         not read: ``GET /transactions/<id>/cell`` for a `$0.00` Projected
+         envelope returned a ``.txn-open`` span containing only whitespace,
+         while its ``aria-label`` said ``$0.00 -- Projected`` -- so a screen
+         reader could find the row and a mouse could not.
+
+         An EMPTY cell is a different partial (``_transaction_empty_cell.html``,
+         which draws a clickable em-dash), so nothing here is competing with it
+         for the "there is nothing in this cell" reading, and the mobile card
+         has always printed ``money(display_amount)`` unconditionally -- so
+         this is the desktop cell agreeing with its own mobile twin rather than
+         a new decision about zeros. #}
+      <span class="font-mono">{{ "{:,.0f}".format(est_display) }}</span>
     {% endif %}
     {{ retained_badge(will_book) }}
 

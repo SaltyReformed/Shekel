@@ -160,6 +160,82 @@ class TestTheCopyNamesTheRepairTHISPaybackHas:
             assert "Undo" not in body
 
 
+class TestTheDeleteRefusalNamesTheRepairTHISPaybackHas:
+    """The SAME fork, on the delete control the card grew at ``X-gb``.
+
+    A payback may not be deleted on its own: its source stays Credit and out of
+    the balance, so the spending it repays would sit in the books with nothing
+    paying it off.  Which REPAIR the refusal names is
+    ``transaction_service.repays_tracked_purchases`` again -- and *Undo CC* is
+    a control on a row whose OWN status is Credit, so it does not exist for an
+    entry-backed payback at all.  A first draft named it for both, and the
+    class above is what caught it.
+    """
+
+    def test_a_row_backed_payback_is_sent_to_Undo_CC(
+        self, app, auth_client, payback_pair,
+    ):
+        """Its source IS a Credit row, so the button is on that row's card."""
+        _, payback_id = payback_pair
+        with app.app_context():
+            body = auth_client.get(
+                f"/transactions/{payback_id}/full-edit",
+            ).get_data(as_text=True)
+
+            assert "Delete this row" not in body
+            assert "Press Undo CC on the row it repays" in body
+
+    def test_an_entry_backed_payback_is_sent_to_its_card_purchases(
+        self, app, auth_client, seed_user, seed_periods,
+    ):
+        """Its source is an ordinary envelope, which has NO Undo CC button.
+
+        The envelope's own ``status_id`` is Projected -- credit is per ENTRY on
+        a tracked row -- so the card renders no Undo CC control for it, and a
+        refusal naming one would send the owner to a button that is not on the
+        screen.
+        """
+        with app.app_context():
+            envelope = Transaction(
+                account_id=seed_user["account"].id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="Card envelope",
+                estimated_amount=Decimal("500.00"),
+                is_envelope=True,
+            )
+            _db.session.add(envelope)
+            _db.session.flush()
+            _db.session.add(TransactionEntry(
+                transaction_id=envelope.id, account_id=envelope.account_id,
+                user_id=seed_user["user"].id, description="Card purchase",
+                amount=Decimal("181.58"), is_credit=True,
+            ))
+            _db.session.flush()
+            payback_id = sync_entry_payback(
+                envelope.id, seed_user["user"].id,
+            ).id
+            _db.session.commit()
+
+            body = auth_client.get(
+                f"/transactions/{payback_id}/full-edit",
+            ).get_data(as_text=True)
+
+            assert "Delete this row" not in body
+            assert "Remove the card purchases it repays" in body
+            assert "Press Undo CC" not in body
+
+            source = auth_client.get(
+                f"/transactions/{envelope.id}/full-edit",
+            ).get_data(as_text=True)
+            assert "Undo CC" not in source, (
+                "the repair named must be one the source's own card offers"
+            )
+
+
 class TestThePatchDoorRefusesATypedFigure:
     """The crafted-request and stale-form backstop behind the popover."""
 

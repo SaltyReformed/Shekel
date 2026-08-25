@@ -559,9 +559,39 @@ document.addEventListener('change', function(e) {
 });
 
 // --- Confirmation Modal (replaces browser confirm()) ---
-// Forms with data-confirm="message" show a Bootstrap modal instead of confirm().
+// TWO kinds of destructive control reach one dialog, because the project has
+// one destructive-action surface and a control should not look different for
+// being wired with htmx:
+//
+//   * a <form data-confirm="message">, intercepted on submit;
+//   * any element with hx-confirm="question", intercepted on htmx:confirm.
+//
+// The htmx half arrived with the grid's Delete control (plan step
+// bank_import:X-gb).  Before it, an hx-confirm fell through to the browser's
+// own confirm() -- so the entries list's "Delete this entry?" and the
+// statement screen's Undo, two destructive controls one click apart, drew two
+// different dialogs and only one of them could carry a disclosure worth
+// reading.  htmx fires htmx:confirm for EVERY request and sets detail.question
+// only where hx-confirm is present, so the guard below is what keeps this
+// listener out of the way of everything else.
 (function() {
   var pendingForm = null;
+  var pendingRequest = null;
+
+  // Show the dialog, or -- in a document that has no modal, e.g. a bare
+  // partial render -- fall back to the browser's own rather than letting a
+  // destructive act through unasked.  It OWNS the pending state, so a caller
+  // cannot arm a request and then take the fallback path with it still armed.
+  function ask(message, arm, proceedWithoutModal) {
+    var modal = document.getElementById('confirmModal');
+    if (!modal) {
+      if (window.confirm(message)) proceedWithoutModal();
+      return;
+    }
+    arm();
+    document.getElementById('confirmModalBody').textContent = message;
+    new bootstrap.Modal(modal).show();
+  }
 
   document.addEventListener('submit', function(e) {
     var form = e.target;
@@ -569,22 +599,54 @@ document.addEventListener('change', function(e) {
     if (!message) return;
 
     e.preventDefault();
-    pendingForm = form;
+    ask(
+      message,
+      function() { pendingForm = form; },
+      function() { form.removeAttribute('data-confirm'); form.submit(); }
+    );
+  });
 
-    var modal = document.getElementById('confirmModal');
-    if (!modal) { if (confirm(message)) form.submit(); return; }
+  document.body.addEventListener('htmx:confirm', function(e) {
+    var question = e.detail.question;
+    if (!question) return;
 
-    document.getElementById('confirmModalBody').textContent = message;
-    new bootstrap.Modal(modal).show();
+    // Hold the request: htmx re-issues it with skipConfirmation, so the
+    // question is asked exactly once however the element was activated.
+    e.preventDefault();
+    ask(
+      question,
+      function() { pendingRequest = e.detail; },
+      function() { e.detail.issueRequest(true); }
+    );
   });
 
   document.addEventListener('click', function(e) {
-    if (e.target.id === 'confirmModalYes' && pendingForm) {
-      bootstrap.Modal.getInstance(document.getElementById('confirmModal')).hide();
+    if (e.target.id !== 'confirmModalYes') return;
+    // Guard the instance: the button lives inside a modal that is normally
+    // shown through bootstrap.Modal, but a click reaching it with no instance
+    // (a partial render, a hand-driven DOM) would throw on null.hide().
+    var instance = bootstrap.Modal.getInstance(
+      document.getElementById('confirmModal'),
+    );
+    if (instance) instance.hide();
+    if (pendingForm) {
       // Remove the data-confirm to avoid re-triggering on submit.
       pendingForm.removeAttribute('data-confirm');
       pendingForm.submit();
       pendingForm = null;
+    } else if (pendingRequest) {
+      pendingRequest.issueRequest(true);
+      pendingRequest = null;
+    }
+  });
+
+  // A dismissed dialog must not leave a request armed for the NEXT dialog's
+  // Confirm to fire.  Bootstrap emits hidden.bs.modal for every close path --
+  // the Cancel button, the X, Escape and a backdrop click alike.
+  document.addEventListener('hidden.bs.modal', function(e) {
+    if (e.target && e.target.id === 'confirmModal') {
+      pendingForm = null;
+      pendingRequest = null;
     }
   });
 })();

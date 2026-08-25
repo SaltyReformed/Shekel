@@ -20,7 +20,7 @@ from decimal import Decimal
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
-from app.services import posting_service
+from app.services import match_withdrawal, posting_service
 from app.services.row_valuation import settled_figure
 from app.services.pay_calendar import calendar_for
 from app.services.credit_workflow import (
@@ -235,6 +235,12 @@ def sync_entry_payback(
         for entry in txn.entries:
             if entry.credit_payback_id == existing_payback.id:
                 entry.credit_payback_id = None
+        # A match naming this payback stops being true when the row goes, so
+        # it is withdrawn and its bank line is unexplained again (developer
+        # ruling 2026-08-25, plan step ``bank_import:X-gb``).  BEFORE the
+        # delete: the member rows CASCADE, so afterwards nothing says which
+        # lines were freed.
+        match_withdrawal.withdraw_for_rows([existing_payback], owner_id)
         # Reverse the payback's own ledger postings before deleting it
         # (Build-Order Step 3 reverse-before-delete): an entry-level payback that
         # was settled -- and therefore posted -- before its source's credit

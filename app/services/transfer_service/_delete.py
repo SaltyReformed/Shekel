@@ -17,7 +17,7 @@ import logging
 
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.services import posting_service
+from app.services import match_withdrawal, posting_service
 from app.services.transfer_service._loan_posting import (
     _resync_loan_after_payment_left,
     _reverse_loan_payment_before_it_leaves,
@@ -78,15 +78,34 @@ def delete_transfer(transfer_id, user_id, soft=False):
     loan_account_id = xfer.to_account_id
     scenario_id = xfer.scenario_id
 
+    # ── Statement matches (developer ruling 2026-08-25, bank_import:X-gb) ──
+    # A shadow a bank line was matched to stops existing on the HARD path, so
+    # an act it was the last app row of is withdrawn and that line is
+    # unexplained again.  Read BEFORE the branch: the member foreign keys are
+    # ON DELETE CASCADE, so after the delete nothing says which lines were
+    # freed.  Measured on the developer's own dev database at 16 matched
+    # shadows.
+    #
+    # **A SOFT delete withdraws nothing, and that falls out of the rule rather
+    # than being excepted from it**: the member survives a flag change, so the
+    # act still names its row and there is nothing to withdraw.  It is also the
+    # answer this path needs -- ``routes/transfers/templates`` archives with
+    # ``soft=True`` and UN-archives with ``restore_transfer``, and
+    # ``transfer_recurrence`` restores soft-deleted shadows during a maintain
+    # pass, so a withdrawal here would destroy an accepted act that a shipped
+    # button puts the rows back for (adversarial review, 2026-08-25).
+    shadows = (
+        db.session.query(Transaction)
+        .filter_by(transfer_id=transfer_id)
+        .all()
+    )
+    if not soft:
+        match_withdrawal.withdraw_for_rows(shadows, user_id)
+
     if soft:
         xfer.is_deleted = True
         # Soft-delete must explicitly mark both shadows.  The database
         # CASCADE only fires on physical deletes, not flag changes.
-        shadows = (
-            db.session.query(Transaction)
-            .filter_by(transfer_id=transfer_id)
-            .all()
-        )
         for shadow in shadows:
             shadow.is_deleted = True
         db.session.flush()

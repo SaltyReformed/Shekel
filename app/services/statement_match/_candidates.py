@@ -45,7 +45,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 
-from sqlalchemy.orm import contains_eager, joinedload, selectinload
+from sqlalchemy.orm import aliased, contains_eager, joinedload, selectinload
 
 from app import ref_cache
 from app.enums import SettledDayBasisEnum, SettlementBasisEnum
@@ -91,12 +91,61 @@ class MatchedSubjects:
     entries: "frozenset[int]"
 
 
+def act_still_names_a_row():
+    """Return the EXISTS that makes a membership a live CLAIM.
+
+    **A match asserts that these bank lines ARE these app rows, and the app-row
+    keys CASCADE** (``fk_statement_match_members_transaction_account`` /
+    ``_entry_account``, ``ondelete="CASCADE"``).  So destroying the last app row
+    an act names leaves the act holding its LINE alone -- and the line went on
+    reading as explained, permanently, because "explained" was membership and
+    nothing else.  It could then never be offered or matched again, whatever
+    the review screen showed.
+
+    **This is the invariant, and the writer beside it is the cleanup.**
+    :mod:`app.services.match_withdrawal` deletes such an act at the five doors
+    an owner presses, so the false record goes and the press can say which
+    lines it freed.  It cannot cover them all: ``routes/templates/crud``
+    hard-deletes and archives in BULK SQL, ``pay_period_write.retire_paydays``
+    removes transactions through a database cascade, and a sixth door written
+    next year will not know to call it.  A rule enforced by enumeration is a
+    rule the next door forgets; a predicate in the one query that decides is
+    not (adversarial review, 2026-08-25, which measured the template
+    hard-delete reaching the state from a shipped button).
+
+    **Applying it to the WHOLE member scan is exact rather than convenient.**
+    The EXISTS is true for every member of an act that holds an app row, so
+    filtering the scan changes only the LINE set -- an act with no app-side
+    member has no transaction or entry membership left to filter.
+
+    Returns:
+        A correlated ``EXISTS`` over the outer
+        :class:`~app.models.statement_match.StatementMatchMember`.
+    """
+    sibling = aliased(StatementMatchMember)
+    return (
+        db.session.query(sibling)
+        .filter(
+            sibling.match_id == StatementMatchMember.match_id,
+            db.or_(
+                sibling.transaction_id.isnot(None),
+                sibling.transaction_entry_id.isnot(None),
+            ),
+        )
+        .exists()
+    )
+
+
 def matched_subjects(account_id: int) -> MatchedSubjects:
     """Return every subject *account_id* has already matched, by kind.
 
     One statement over ``statement_match_members`` rather than three: the
     table's rows are an exclusive arc, so a single scan of the account's
     members partitions itself.
+
+    **A member of an act that no longer names any app row is NOT a claim** --
+    see :func:`act_still_names_a_row` for the whole argument and what it costs
+    without.
 
     Args:
         account_id: The account whose matches to read.
@@ -110,7 +159,10 @@ def matched_subjects(account_id: int) -> MatchedSubjects:
             StatementMatchMember.transaction_id,
             StatementMatchMember.transaction_entry_id,
         )
-        .filter(StatementMatchMember.account_id == account_id)
+        .filter(
+            StatementMatchMember.account_id == account_id,
+            act_still_names_a_row(),
+        )
         .all()
     )
     return MatchedSubjects(

@@ -33,6 +33,7 @@ from app.models.statement_match import StatementMatchMember
 
 from ._accepted_view import AcceptedGroup, accepted_groups
 from ._candidates import (
+    act_still_names_a_row,
     matched_subjects,
     unmatched_destinations,
     unmatched_rows,
@@ -354,6 +355,13 @@ def _spoken_for(account_id: int):
         .filter(
             StatementMatchMember.account_id == account_id,
             StatementMatchMember.bank_statement_line_id.isnot(None),
+            # ...and the act still names an app row, or the membership is not a
+            # claim about anything (:func:`~._candidates.act_still_names_a_row`,
+            # which carries the argument and the measurement).  The SAME clause
+            # ``matched_subjects`` applies, so the screen's list, the grid's
+            # count and the offer set cannot disagree about what "explained"
+            # means.
+            act_still_names_a_row(),
         )
     )
 

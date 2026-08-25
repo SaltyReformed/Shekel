@@ -27,7 +27,7 @@ from app.models.user import User
 from app import ref_cache
 from app.enums import RoleEnum
 from app.exceptions import NotFoundError, ValidationError
-from app.services import posting_service
+from app.services import match_withdrawal, posting_service
 from app.services.entry_credit_workflow import sync_entry_payback
 from app.services.settle_day import (
     SettleDay,
@@ -662,6 +662,15 @@ def delete_entry(entry_id: int, user_id: int) -> int:
     # carrying money was ever IN that sum, so deleting a debit one cannot move
     # it.
     removed_credit = bool(entry.is_credit and entry.amount)
+    # A bank line matched to this purchase is no longer explained by it once
+    # it goes, so the match is withdrawn and the line is unexplained again
+    # (developer ruling 2026-08-25, plan step ``bank_import:X-gb``).  Its
+    # PARENT is untouched: removing one purchase leaves the envelope and every
+    # other purchase in it asserting exactly what they did.  BEFORE the delete
+    # for the same reason the posting reversal below is -- the member's foreign
+    # key is ON DELETE CASCADE, so afterwards nothing says which line was
+    # freed.
+    match_withdrawal.withdraw_for_purchase(entry, owner_id)
     # Reverse the purchase's OWN cash leg while the row still exists (ruling
     # **R-FM**, plan step X-f3b).  ``journal_entries.transaction_entry_id`` is
     # ON DELETE SET NULL, so reversing afterwards is impossible: the link is

@@ -101,9 +101,8 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import (
     cash_ledger,
-    credit_workflow,
     entry_service,
-    posting_service,
+    transaction_service,
 )
 from app.utils.balance_predicates import is_balance_contributing
 from app.utils.log_events import (
@@ -532,22 +531,24 @@ def _remove(row: PlannedRemoval, owner_id: int) -> None:
     matcher that deleted around that refusal would have been a second
     purchase-delete door restating a money rule.
 
-    A TRANSACTION -- a group's residual, or an emptied container -- takes the
-    transaction delete sequence WHOLE: take down any live CC Payback, reverse
-    the postings while ``journal_entries.transaction_id`` still links them,
-    then remove the row.  Both are always ad-hoc (a residual names no
-    template, and a created envelope is built without one), so the hard delete
-    is the arm the transaction route takes for one.
+    A TRANSACTION -- a group's residual, or an emptied container -- goes
+    through ``transaction_service.delete_transaction``, for exactly the reason
+    the purchase arm goes through ``entry_service``.  **It SPELLED that verb's
+    sequence itself until plan step ``bank_import:X-gb``**, saying it "takes
+    the transaction delete sequence WHOLE" beside the delete route that spelled
+    the same four steps -- and each step's ORDER is a money rule, so two copies
+    was two places for that order to drift.  Both created kinds are always
+    ad-hoc (a residual names no template, and a created envelope is built
+    without one), so the verb's soft arm is unreachable from here and its hard
+    delete is what runs.
 
-    **The payback teardown is here because the route has it and the reason it
-    gives is about the SCHEMA rather than about the route**: without it a
-    projected payback survives its source (``credit_payback_for_id`` is ``SET
-    NULL``) and silently inflates the next period with no offsetting credit
-    row.  It is a no-op for everything this door can reach today -- a
-    container holding a live payback still holds the credit purchase that
-    minted it, so it is not empty and does not go -- and it is called anyway,
-    because *unreachable today* is what a second creation kind would quietly
-    make false.  Found by adversarial security review 2026-08-24.
+    **Its match WITHDRAWAL is provably a no-op on this path, which is why
+    calling the shared verb is safe here.**  A subject belongs to at most one
+    act (``uq_statement_match_members_transaction``), and :func:`release_match`
+    has already deleted and flushed the only act that could name this row, so
+    the withdrawal's own query finds nothing.  Asserted rather than assumed at
+    ``TestReleasingAnActDoesNotWithdrawTwice``, whose first version released an
+    act that had CREATED nothing and so never reached this function at all.
 
     Args:
         row: The planned removal.
@@ -557,15 +558,15 @@ def _remove(row: PlannedRemoval, owner_id: int) -> None:
         PostingError: From a ledger reconcile, on a broken invariant.
         ValidationError: From the purchase door, which this step's own rule
             has already been asked (:func:`planned_removals` reads the same
-            state) -- reachable only if the row moved between the two.
+            state) -- reachable only if the row moved between the two.  The
+            transaction verb's own refusals (a transfer shadow, a CC payback)
+            cannot fire: an act creates neither shape.
     """
     if row.kind is RowKind.PURCHASE:
         entry_service.delete_entry(row.row_id, owner_id)
         return
     subject = db.session.get(Transaction, row.row_id)
-    credit_workflow.delete_payback_on_source_delete(subject, owner_id)
-    posting_service.reverse_postings_before_delete(subject)
-    db.session.delete(subject)
+    transaction_service.delete_transaction(subject, owner_id)
 
 
 def release_match(
@@ -620,6 +621,13 @@ def release_match(
 
     released = len(match.members)
     db.session.delete(match)
+    # FLUSHED before the removals, so the act and its members are really gone
+    # before :func:`_remove` reaches the shared transaction delete verb -- whose
+    # own match withdrawal would otherwise depend on autoflush ordering to find
+    # nothing.  A subject belongs to at most one act, so there is nothing else
+    # for it to find; this makes that a property of the code rather than of
+    # SQLAlchemy's flush policy.
+    db.session.flush()
     for row in planned.rows:
         _remove(row, owner_id)
     db.session.flush()

@@ -15,11 +15,15 @@ structural answer is a package with one private leaf per verb"*.  A first
 attempt at this step trimmed docstrings to 999 lines before taking that
 sentence at its word.
 
-Two of the three are consumed by ROUTES, which is why they are published on the
-package: a screen decides whether to render an amount box from
-:func:`settles_from_entries` and :func:`repays_card_spend`, and the PATCH
-handler refuses a figure submitted against either anyway.  The third,
-:func:`reject_unsettleable`, is the settle doors' shared guard.
+THREE of the five are consumed by ROUTES, which is why they are published on
+the package: a screen decides whether to render an amount box from
+:func:`settles_from_entries` and :func:`repays_card_spend` and whether to
+render a delete control from :func:`deletion_refusal`, and the door behind each
+re-asks the same question anyway.  :func:`repays_tracked_purchases` decides
+which repair a withdrawn box should name.  The fifth,
+:func:`reject_unsettleable`, is the settle doors' shared guard -- the one
+refusal here that RAISES rather than returning its sentence, because no screen
+asks it.
 
 Boundary discipline (``CLAUDE.md`` Architecture): ORM rows in, a bool or a
 raise out; no Flask import, no writes.
@@ -139,6 +143,87 @@ def repays_tracked_purchases(txn: Transaction) -> bool:
     """
     source = txn.credit_payback_for
     return source is not None and source.tracks_purchases
+
+
+def deletion_refusal(txn: Transaction) -> "str | None":
+    """Return why *txn* may not be deleted on its own, or ``None``.
+
+    **A REFUSAL that returns its own sentence**, the shape
+    ``entry_service.removal_refusal`` already has one table over and for the
+    same reason: two readers ask it and one of them is a SCREEN.  The full-edit
+    card renders the delete control exactly when this is ``None`` and prints
+    this sentence when it is not, and the route re-asks it as the
+    crafted-request and stale-form backstop -- so what the card withholds and
+    what the door refuses are one rule rather than two spellings that can
+    drift.  Its sibling :func:`reject_unsettleable` raises instead, because no
+    screen asks that one.
+
+    **Two rows may not be deleted by themselves, and both are rows that are
+    half of something else.**
+
+    * **A transfer shadow.**  Every transfer has exactly two, and neither is
+      ever orphaned (``CLAUDE.md`` transfer invariants 1 and 2), so a delete
+      goes through ``transfer_service.delete_transfer``, which takes the parent
+      and both legs together.  The grid never renders this card for a shadow --
+      ``transactions.get_full_edit`` returns the transfer's own card instead --
+      so the sentence is reached by a crafted request rather than by a control.
+    * **A CC PAYBACK.**  A payback exists only because its source is marked
+      Credit, and the source stays Credit and out of the balance
+      (``ref.statuses.excludes_from_balance``) when the payback goes -- so
+      deleting one alone does not remove a plan, it removes the repayment of
+      spending the books still hold, silently.  It is the same rule, one column
+      over, as :func:`repays_card_spend`'s refusal of a hand-typed figure: a
+      payback's facts are not its own to state, and its EXISTENCE is one of
+      them.
+
+    **The payback refusal FORKS on which repair actually exists**, through
+    :func:`repays_tracked_purchases` -- the same fork the withdrawn Estimated
+    box already names, and it is a real one rather than a wording choice.
+    *Undo CC* is a control on a row whose OWN status is Credit, so it exists
+    for a ROW-backed payback and NOT for an entry-backed one, whose source is
+    an ordinary envelope carrying ``is_credit`` purchases.  Naming it there
+    would send the owner to a button that is not on the screen, which is
+    exactly the dead end :func:`repays_tracked_purchases`' docstring records in
+    the other direction.  **A first draft of this function named *Undo CC* for
+    both**, and the control that caught it was already in the suite --
+    ``TestTheCopyNamesTheRepairTHISPaybackHas``, written for the Estimated box
+    one step earlier.
+
+    **Deleting a payback WITH its source stays legal**, and that is the
+    distinction the word "on its own" carries: ``delete_payback_on_source_delete``
+    takes the whole live chain down inside the source's own delete, which
+    leaves nothing unrepaid.  Nothing here is asked on that path.
+
+    Args:
+        txn: The row a door or a screen is asking about.  Reads ``transfer_id``
+            and ``credit_payback_for_id``, and -- only for a payback -- the
+            source relationship the repair fork needs.  Two column reads for
+            every ordinary row, so a card render pays nothing for asking.
+
+    Returns:
+        The sentence to show the owner, or ``None`` when the row may go.
+    """
+    if txn.transfer_id is not None:
+        return (
+            "This row is one leg of a transfer, and a transfer's two legs "
+            "always move together. Delete the transfer itself and both legs "
+            "go with it."
+        )
+    if not repays_card_spend(txn):
+        return None
+    if repays_tracked_purchases(txn):
+        return (
+            "This row repays what went on the card, so it cannot be deleted "
+            "on its own -- the spending it repays would stay in your books "
+            "with nothing paying it off. Remove the card purchases it repays "
+            "instead, or take them off the card; this row follows them."
+        )
+    return (
+        "This row repays what went on the card, so it cannot be deleted on "
+        "its own -- the spending it repays would stay in your books with "
+        "nothing paying it off. Press Undo CC on the row it repays instead, "
+        "which removes this one with it."
+    )
 
 
 def reject_unsettleable(txn: Transaction) -> None:

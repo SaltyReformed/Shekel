@@ -46,7 +46,7 @@ X-f2-c3 is the change that had to buy the room -- it publishes
 cannot show and book two different numbers (**N-231**) -- so it
 makes the shape rather than shaving prose a fifth time.
 
-Four leaves, cut by what each DECIDES rather than by size:
+FIVE leaves, cut by what each DECIDES rather than by size:
 
 * :mod:`._status_rules` -- which settled status a row's TYPE takes, and what a
   dropdown may therefore offer;
@@ -58,15 +58,24 @@ Four leaves, cut by what each DECIDES rather than by size:
 * :mod:`._settle` -- what settling a row means: the amount, the verb, and the
   envelope primitive;
 * :mod:`._door` -- what a DOOR's requested status means, which is a settle for
-  one direction and the mechanics alone for every other.
+  one direction and the mechanics alone for every other;
+* :mod:`._delete` -- what REMOVING a row means: the four-step sequence and its
+  order, which existed twice until plan step ``bank_import:X-gb`` gave the
+  delete route and ``statement_match``'s undo one verb to share.
 
 **The public surface is this module and ``__all__`` is it.**
 """
 
+from app.services.transaction_service._delete import (
+    RowDeletion,
+    delete_transaction,
+    preview_deletion,
+)
 from app.services.transaction_service._door import (
     apply_requested_status,
 )
 from app.services.transaction_service._row_rules import (
+    deletion_refusal,
     reject_unsettleable,
     repays_card_spend,
     repays_tracked_purchases,
@@ -87,7 +96,11 @@ from app.services.transaction_service._status_rules import (
 )
 
 __all__ = [
+    "RowDeletion",
     "apply_requested_status",
+    "delete_transaction",
+    "deletion_refusal",
+    "preview_deletion",
     "fixed_settle_amount",
     "offerable_status_ids",
     "reject_mismatched_settled_status",

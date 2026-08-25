@@ -216,6 +216,27 @@ def get_full_edit(txn_id):
         # docstring carries the fork.  Resolved here rather than in the
         # template, which displays a decision and never takes one.
         budget_from_purchases=transaction_service.repays_tracked_purchases(txn),
+        # **Why this row may NOT be deleted, or ``None``** (plan step
+        # ``bank_import:X-gb``).  The card renders the delete control exactly
+        # when this is ``None`` and prints the sentence when it is not, and
+        # ``delete_transaction`` re-asks the same function as the
+        # crafted-request backstop -- the layering every guard in
+        # ``_gates`` uses, with the rule in the service and the screen
+        # displaying its answer.
+        delete_refusal=transaction_service.deletion_refusal(txn),
+        # **What deleting it would take back besides the row itself**
+        # (:class:`~app.services.transaction_service.RowDeletion`): the CC
+        # payback rows that go down with it, and the bank lines whose matches
+        # it would empty.  The dialog NAMES them rather than counting them,
+        # because the control destroys records and *"1 bank line"* over a
+        # `$793.23` ACH payment is the *"Nothing moved."* sentence this arc has
+        # already shipped once.
+        #
+        # It is the SAME function the door's own verb calls over the SAME row
+        # set -- a draft read the row alone while the press also tore down its
+        # payback chain, and an adversarial review measured a `$200.00` card
+        # payment silently un-explained over a dialog naming no line at all.
+        delete_preview=transaction_service.preview_deletion(txn),
     )
 
 

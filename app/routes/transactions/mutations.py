@@ -576,65 +576,56 @@ def update_transaction(txn_id):
 @login_required
 @require_owner
 def delete_transaction(txn_id):
-    """Soft-delete a transaction (or hard-delete if it's ad-hoc).
+    """Remove a transaction from the books, soft or hard.
 
-    Shadow transactions cannot be directly deleted -- the user must
-    delete the parent transfer instead.
+    **The HTTP shape only.**  What a delete MEANS -- which matches it
+    withdraws, which payback it takes down, which postings it reverses and
+    whether the row leaves the table at all -- is
+    :func:`transaction_service.delete_transaction`, the verb this route and
+    ``statement_match``'s undo now share (plan step ``bank_import:X-gb``).
+    The sequence was spelled here and again there, and each of its four steps
+    has an ORDER that is load-bearing.
 
-    A source with a live CC payback (transaction-level Credit or
-    entry-level credit) takes the payback down with it in the same
-    commit via ``credit_workflow.delete_payback_on_source_delete`` --
-    otherwise the ``SET NULL`` FK leaves the payback inflating the
-    next period with no offsetting credit row.
+    **This door has a SURFACE since X-gb** -- the delete control on the
+    full-edit action card -- and finding **N-344** is that it did not: the
+    route existed with full teardown logic and a census of every template and
+    script found zero callers, so the 46 envelope shells one YTD statement pass
+    minted could not be removed from the app at all.
 
-    Optimistic locking (commit C-18 / F-010): both the soft-delete
-    UPDATE and the hard-delete DELETE are version-pinned by
-    SQLAlchemy.  A concurrent commit that bumps the row's version
-    raises ``StaleDataError`` which the handler converts to a 409 +
-    conflict cell so the user can retry against fresh state.
+    Responds with ``gridRefresh`` rather than ``balanceChanged`` because the
+    row LEAVES the grid, which an in-place cell swap cannot express -- the same
+    reason ``cancel_transaction`` and ``unmark_credit`` keep it.  The body is
+    empty: there is no cell left to render.
+
+    Refusals (``deletion_refusal``) come back as the designed error fragment
+    the card's other controls use, so a crafted request or a stale card is told
+    why rather than swapping a bare string.
+
+    Optimistic locking (commit C-18 / F-010): the soft-delete UPDATE and the
+    hard-delete DELETE are both version-pinned by SQLAlchemy.  A concurrent
+    commit that bumps the row's version raises ``StaleDataError``, which the
+    handler converts to a 409 + conflict cell so the user can retry against
+    fresh state.
     """
     txn = _get_owned_transaction(txn_id)
     if txn is None:
         return "Not found", 404
 
-    # --- Transfer detection guard: block direct shadow deletion ---
-    if txn.transfer_id is not None:
-        return "Cannot delete a transfer shadow directly. Delete the parent transfer instead.", 400
-
     try:
-        # Delete the live payback (if any) before the source goes.  Runs for
-        # both branches below: a hard-deleted ad-hoc source would otherwise
-        # leave the payback with its link NULLed, a soft-deleted template row
-        # would leave it linked to an invisible source.  Each payback level
-        # reverses its own postings first (Step 3 reverse-before-delete).
-        credit_workflow.delete_payback_on_source_delete(txn, current_user.id)
-
-        # Posting ledger reconcile (Build-Order Step 3): reverse THIS row's own
-        # postings before it leaves the table, so a settled, posted row's
-        # double-entry nets to zero while journal_entries.transaction_id still
-        # links it (the FK SET-NULLs on the hard delete, leaving the net-zero
-        # pair as history; reversing afterward would strand the original legs).
-        # Idempotent no-op for a Projected (never-posted) row.  Inside the
-        # StaleDataError net with the payback teardown and the delete: these
-        # reconcile flushes autoflush version-pinned rows, so a concurrent
-        # commit surfaces as a 409 conflict cell, not a 500.
-        posting_service.reverse_postings_before_delete(txn)
-
-        if txn.template_id:
-            # Template-linked: soft-delete so the recurrence engine knows.
-            txn.is_deleted = True
-        else:
-            # Ad-hoc: hard delete.
-            db.session.delete(txn)
-
+        outcome = transaction_service.delete_transaction(txn, current_user.id)
         db.session.commit()
+    except ValidationError as exc:
+        return _error_transaction_response(txn_id, str(exc))
     except StaleDataError:
         logger.info(
             "Stale-data conflict on delete_transaction id=%d", txn_id,
         )
         return _stale_transaction_response(txn_id)
-    logger.info("user_id=%d deleted transaction %d", current_user.id, txn_id)
-    return "", 200, {"HX-Trigger": "balanceChanged"}
+    logger.info(
+        "user_id=%d deleted transaction %d (soft=%s, matches_withdrawn=%d)",
+        current_user.id, txn_id, outcome.soft, outcome.withdrawn.matches,
+    )
+    return "", 200, {"HX-Trigger": "gridRefresh"}
 
 
 def _mark_done_regular(txn, txn_id, submitted, target):

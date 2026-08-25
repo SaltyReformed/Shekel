@@ -14,7 +14,7 @@ from app.models.transaction import Transaction
 from app.models.category import Category
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
-from app.services import posting_service, status_seam
+from app.services import match_withdrawal, posting_service, status_seam
 from app.services.cash_ledger import (
     amount_basis,
     resolve_transaction_amount,
@@ -168,6 +168,14 @@ def delete_payback_on_credit_revert(txn: Transaction, user_id: int) -> None:
     deleted_payback_id = None
     if payback:
         deleted_payback_id = payback.id
+        # A payback a bank line was matched to stops existing here, so an act
+        # it was the last app row of is withdrawn and that line is unexplained
+        # again (developer ruling 2026-08-25, plan step ``bank_import:X-gb``).
+        # FIRST, while the member rows still exist to be read: their foreign
+        # keys CASCADE.  Measured on the developer's own dev database at 4
+        # matched paybacks, every one of them reachable from the Undo CC button
+        # on the grid card -- which is why that button now asks first.
+        match_withdrawal.withdraw_for_rows([payback], user_id)
         # Reverse the payback's own ledger postings before it is deleted
         # (Build-Order Step 3 reverse-before-delete): a payback that was settled
         # -- and therefore posted -- before its source's Credit status is
@@ -185,8 +193,49 @@ def delete_payback_on_credit_revert(txn: Transaction, user_id: int) -> None:
     )
 
 
+def live_payback_chain(txn: Transaction) -> "list[Transaction]":
+    """Return every live payback that goes down with *txn*, nearest first.
+
+    **The walk, published, because THREE things need it and one of them may not
+    write** (plan step ``bank_import:X-gb``).  A payback can itself be marked
+    Credit, so a source can carry a chain rather than a single row:
+    :func:`delete_payback_on_source_delete` takes the whole chain down, the
+    delete verb withdraws the statement matches naming every row in it, and the
+    confirm dialog on the delete control has to NAME them before the owner
+    presses anything.  A read that could not see the chain would print a dialog
+    the press then exceeds, which is the one thing a destructive dialog may not
+    do.
+
+    **It replaced a RECURSION inside the teardown**, which was the same walk
+    expressed where nothing else could reach it.
+
+    **Bounded against a cycle** by the ids it has already seen.  ``ck_transactions
+    _one_pricing_link`` does not forbid one and the FK points at this same
+    table, so a corrupt ``A repays B repays A`` is expressible; the recursion
+    this replaced would have exhausted the stack on it.
+
+    Args:
+        txn: The row whose live paybacks to walk.
+
+    Returns:
+        The chain, nearest first -- ``[]`` for the ordinary row that has none.
+        A soft-deleted prior payback is not in it (the
+        :func:`get_active_payback` contract).
+    """
+    chain: "list[Transaction]" = []
+    seen = {txn.id}
+    current = txn
+    while True:
+        payback = get_active_payback(current.id)
+        if payback is None or payback.id in seen:
+            return chain
+        chain.append(payback)
+        seen.add(payback.id)
+        current = payback
+
+
 def delete_payback_on_source_delete(txn: Transaction, user_id: int) -> None:
-    """Delete the live auto-generated payback when its source is deleted.
+    """Delete the live auto-generated payback chain when its source is deleted.
 
     The deletion-side sibling of :func:`delete_payback_on_credit_revert`:
     where that helper cleans up after a Credit row returning to
@@ -201,12 +250,27 @@ def delete_payback_on_source_delete(txn: Transaction, user_id: int) -> None:
     own ``status_id`` is NOT Credit -- a status guard would miss them.
     Entry links (``TransactionEntry.credit_payback_id``) are severed
     before the delete: a template-linked source soft-deletes, so its
-    entries outlive it and must not point at a vanished payback.  A
-    payback can itself be marked Credit, so the helper recurses to take
-    the whole live chain down with the source.  No-op (and no log event)
-    when no live payback exists -- the common case for every ordinary
-    delete.  A soft-deleted prior payback stays in place for the audit
-    trail (the :func:`get_active_payback` contract).
+    entries outlive it and must not point at a vanished payback.  No-op
+    (and no log event) when no live payback exists -- the common case for
+    every ordinary delete.
+
+    **It walks :func:`live_payback_chain` where it used to RECURSE**, and
+    the order is unchanged: DEEPEST FIRST, so each level reverses and
+    deletes before the level above it does and every ledger account is
+    net-zero before a ``transaction_id`` link SET-NULLs on the delete.
+    The walk is published because the delete verb and its confirm dialog
+    need the same chain and neither may write to get it (plan step
+    ``bank_import:X-gb``).
+
+    **It does NOT withdraw the statement matches naming the chain**, and
+    that is the caller's job on purpose: ``transaction_service
+    .delete_transaction`` withdraws for the source AND its whole chain in
+    ONE act, so the figure its confirm dialog printed and the figure its
+    receipt reports are one derivation.  Withdrawing here as well would
+    make the verb's own report exclude the chain it took down -- measured
+    at a ``$200.00`` card payment silently un-explained while the dialog
+    said nothing and the log line read ``matches_withdrawn=0`` (adversarial
+    review, 2026-08-25).
 
     This helper does not commit -- the deletions join the caller's
     transaction so the source delete and the payback removal land
@@ -214,40 +278,32 @@ def delete_payback_on_source_delete(txn: Transaction, user_id: int) -> None:
 
     Args:
         txn: The source transaction about to be deleted.
-        user_id: The owning user's ID, recorded on the audit event.
+        user_id: The owning user's ID, recorded on the audit events.
     """
-    payback = get_active_payback(txn.id)
-    if payback is None:
-        return
+    chain = live_payback_chain(txn)
+    for depth in range(len(chain) - 1, -1, -1):
+        payback = chain[depth]
+        parent = txn if depth == 0 else chain[depth - 1]
+        # Sever entry links before the delete.  On a hard-deleted ad-hoc
+        # source the entries cascade away anyway; on a soft-deleted
+        # template-linked source they survive as rows and must not keep a
+        # pointer to the deleted payback (mirrors sync_entry_payback's
+        # delete branch).
+        for entry in parent.entries:
+            if entry.credit_payback_id == payback.id:
+                entry.credit_payback_id = None
+        # Reverse this level's postings while ``journal_entries.transaction_id``
+        # still links them.  Idempotent no-op for a still-Projected payback.
+        posting_service.reverse_postings_before_delete(payback)
+        db.session.delete(payback)
 
-    # Sever entry links before the delete.  On a hard-deleted ad-hoc
-    # source the entries cascade away anyway; on a soft-deleted
-    # template-linked source they survive as rows and must not keep a
-    # pointer to the deleted payback (mirrors sync_entry_payback's
-    # delete branch).
-    for entry in txn.entries:
-        if entry.credit_payback_id == payback.id:
-            entry.credit_payback_id = None
-
-    # The payback may itself be a credit source (a projected expense
-    # can be marked Credit); its own live payback dies with it under
-    # the same invariant.
-    delete_payback_on_source_delete(payback, user_id)
-    # Reverse the payback's own ledger postings before deleting it (Build-Order
-    # Step 3 reverse-before-delete).  The recursion above runs FIRST, so each
-    # deeper level of the chain reverses-then-deletes before this one does --
-    # every ledger account is net-zero before the row's transaction_id link
-    # SET-NULLs on the delete.  Idempotent no-op for a still-Projected payback.
-    posting_service.reverse_postings_before_delete(payback)
-    db.session.delete(payback)
-
-    log_event(
-        logger, logging.INFO, EVT_PAYBACK_DELETED_WITH_SOURCE, BUSINESS,
-        "Source transaction deleted; live payback deleted with it",
-        user_id=user_id,
-        transaction_id=txn.id,
-        deleted_payback_id=payback.id,
-    )
+        log_event(
+            logger, logging.INFO, EVT_PAYBACK_DELETED_WITH_SOURCE, BUSINESS,
+            "Source transaction deleted; live payback deleted with it",
+            user_id=user_id,
+            transaction_id=parent.id,
+            deleted_payback_id=payback.id,
+        )
 
 
 def mark_as_credit(transaction_id, user_id):

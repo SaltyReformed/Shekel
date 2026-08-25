@@ -963,6 +963,193 @@ class TestTransactionCRUD:
             # Ad-hoc transaction should be fully deleted.
             assert db.session.get(Transaction, txn_id) is None
 
+    def test_a_zero_row_still_draws_a_click_target(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """Finding **N-344**'s second limb, MEASURED rather than read.
+
+        The cell suppressed a zero figure, so a `$0.00` Projected row rendered
+        a ``.txn-open`` span containing only whitespace -- an inline-flex
+        element with no content is zero pixels wide, so the row could not be
+        clicked and its action card could not be opened.  That is the exact
+        population this step's delete control has to reach: an envelope emptied
+        of its purchases and set back to Projected prices at `$0.00`.
+
+        The ``aria-label`` was always right, which is why the defect was
+        visual-only and why asserting on it would have proved nothing -- the
+        assertion is on the SPAN'S CONTENT.
+        """
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+            txn.estimated_amount = Decimal("0.00")
+            txn.is_envelope = True
+            db.session.commit()
+
+            html = auth_client.get(f"/transactions/{txn.id}/cell").data.decode()
+
+            start = html.index('<span class="txn-open"')
+            inner = html[html.index(">", start) + 1:html.index("<button", start)]
+            visible = re.sub(r"<[^>]*>", "", inner).strip()
+
+            assert visible != "", (
+                "a row with nothing inside .txn-open cannot be clicked"
+            )
+            assert visible == "0", (
+                f"the chip should read the row's own figure, got {visible!r}"
+            )
+
+    def test_the_delete_response_reloads_the_grid(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A delete takes a ROW off the grid, which no cell swap can express.
+
+        ``balanceChanged`` refreshes the balance row and the subtotals in
+        place; the row itself would stay on screen with an emptied cell.
+        ``gridRefresh`` is what ``cancel_transaction`` and ``unmark_credit``
+        already return for the same reason -- they add or remove rows -- and
+        this route returned ``balanceChanged`` for as long as it had no caller
+        to be wrong for (finding **N-344**, plan step ``bank_import:X-gb``).
+        """
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+
+            response = auth_client.delete(f"/transactions/{txn.id}")
+
+            assert response.status_code == 200
+            assert response.headers["HX-Trigger"] == "gridRefresh"
+            assert response.data == b"", (
+                "there is no cell left to render"
+            )
+
+    def test_the_action_card_offers_the_delete_with_its_consequences(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The control exists AND its dialog names what goes.
+
+        Finding **N-344** is that ``DELETE /transactions/<id>`` shipped with
+        full teardown logic and zero UI callers.  A test that only asserted the
+        button renders would pass over a dialog reading *"Are you sure?"*, which
+        is the disclosure shape **N-345** records one screen over -- so this
+        asserts the figures too.
+        """
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+
+            response = auth_client.get(f"/transactions/{txn.id}/full-edit")
+
+            assert response.status_code == 200
+            html = response.data.decode()
+            assert f'hx-delete="/transactions/{txn.id}"' in html
+            assert "Delete this row" in html
+            assert 'hx-target="#txn-cell-' in html
+            # The dialog: what it is, what it is worth, and that it is final.
+            assert "Delete &quot;Test Expense&quot;?" in html
+            assert "$123.45" in html, "the dialog must name the figure"
+            assert "still expects" in html, "a projected row has no record yet"
+            assert "This cannot be undone." in html
+
+    def test_a_quote_in_the_row_name_does_not_break_the_dialog(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """The whole question survives a name the owner typed.
+
+        **A firing control over a defect this step shipped and caught.**  The
+        first draft wrote the name between LITERAL quotes, and a ``{% set %}``
+        block is Markup -- so those quotes reached the attribute unescaped and
+        CLOSED it: ``hx-confirm="Delete "`` with the rest of the sentence
+        parsed as three more attributes on the button.  The dialog then asked
+        "Delete" over a row worth `$123.45` and named neither the figure nor
+        the bank lines, which is the disclosure failure the control exists to
+        avoid.  A name carrying its own quote is the case that would have made
+        it permanent.
+        """
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+            txn.name = 'Kayla\'s "Fun" Money'
+            db.session.commit()
+
+            html = auth_client.get(
+                f"/transactions/{txn.id}/full-edit",
+            ).data.decode()
+
+            confirm = re.search(r'hx-confirm="([^"]*)"', html)
+            assert confirm is not None
+            question = confirm.group(1)
+            assert "&#34;Fun&#34;" in question, (
+                "the owner's own quotes are escaped, not dropped"
+            )
+            assert "$123.45" in question, (
+                "the attribute must not end before the figure"
+            )
+            assert "This cannot be undone." in question, (
+                "the attribute must not end before the last sentence"
+            )
+
+    def test_the_card_says_a_generated_row_will_not_come_back(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A template row soft-deletes, and *undoable* would be a lie.
+
+        The two arms of the route's own fork are two different promises to the
+        owner, so the dialog states whichever one applies rather than one
+        sentence that is true of neither.
+        """
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+            expense_type = (
+                db.session.query(TransactionType).filter_by(name="Expense").one()
+            )
+            template = TransactionTemplate(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                category_id=seed_user["categories"]["Groceries"].id,
+                transaction_type_id=expense_type.id,
+                name="Template",
+                default_amount=Decimal("100.00"),
+            )
+            db.session.add(template)
+            db.session.flush()
+            txn.template_id = template.id
+            db.session.commit()
+
+            html = auth_client.get(
+                f"/transactions/{txn.id}/full-edit",
+            ).data.decode()
+
+            assert "This occurrence will not come back" in html
+            assert "This cannot be undone." not in html
+
+    def test_the_card_withholds_the_delete_from_a_CC_payback(
+        self, app, auth_client, seed_user, seed_periods_today,
+    ):
+        """A payback is half of a credit assertion, so it does not leave alone.
+
+        The card renders the SERVICE's sentence
+        (``transaction_service.deletion_refusal``) and the route re-asks the
+        same function, so what the screen withholds and what the door refuses
+        cannot drift.
+        """
+        with app.app_context():
+            txn = self._create_test_txn(seed_user, seed_periods_today)
+            auth_client.post(f"/transactions/{txn.id}/mark-credit")
+            payback = (
+                db.session.query(Transaction)
+                .filter_by(credit_payback_for_id=txn.id, is_deleted=False)
+                .one()
+            )
+
+            html = auth_client.get(
+                f"/transactions/{payback.id}/full-edit",
+            ).data.decode()
+            assert "Delete this row" not in html
+            assert "Undo CC" in html
+
+            refused = auth_client.delete(f"/transactions/{payback.id}")
+
+            assert refused.status_code == 400
+            assert refused.headers.get(DESIGNED_FRAGMENT_HEADER) == "1"
+            assert db.session.get(Transaction, payback.id) is not None
+
     def test_mark_done_without_a_correction_records_the_derived_figure(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
