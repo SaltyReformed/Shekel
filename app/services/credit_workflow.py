@@ -155,6 +155,21 @@ def delete_payback_on_credit_revert(txn: Transaction, user_id: int) -> None:
     prior payback stays in place for the audit trail (the
     :func:`get_active_payback` contract).
 
+    **It deletes ONE level where its sibling walks the whole chain, and that
+    asymmetry is UNFIXED** (plan step ``bank_import:X-gb``, 2026-08-25).  A
+    payback can itself be marked Credit -- :func:`live_payback_chain` is the
+    walk :func:`delete_payback_on_source_delete` uses -- and this door takes
+    only the direct level, so a deeper payback outlives its source with
+    ``credit_payback_for_id`` SET NULL: the exact state that helper's own
+    docstring says inflates the next period with no offsetting credit row.
+    ``$0.00`` and 0 rows on the developer's database (no payback is itself
+    Credit today), one Undo CC on a chained pair away.  **Reported rather than
+    fixed** (``CLAUDE.md`` rule 6): X-gb wired the match withdrawal into this
+    door and did not re-shape what it deletes, and ``credit_card:CC3c`` deletes
+    this module whole.  **It has no `ledger.md` row because that registry is AT
+    its cap** -- 240 lines of the 260 the gate requires 20 lines of headroom in
+    -- which is the archival ruling `X-ga` already recorded as owed.
+
     The caller owns the status flip itself and must already have
     verified ownership and the transition's legality; this helper does
     not commit -- the deletion joins the caller's transaction so the
