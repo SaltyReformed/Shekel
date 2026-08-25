@@ -6,14 +6,12 @@
 ticked at `C2-f3e` (`4f134bf4`). Built: **C1**, **C2** whole, **C3**. Section 4 carries each commit;
 what reached `main` is a MEASUREMENT (`git log --oneline origin/main..dev`).
 
-**`C4` is IN FLIGHT and is the deepest cut in the arc** -- it drops `end_date` and `period_index`.
-Its FIRST commit has landed (the rolling top-up's counter) and its reader census was RE-MEASURED
-2026-08-25: the four ORM-relationship readers section 3 named were **two stale and two moved**, and
-**five more were named by no step at all**, which row **P70**'s query-position census structurally
-could not see.
-**What remains does not fit one commit and section 4 asks the developer to decompose it** --
-eighteen-to-nineteen signature changes across five packages is the shape ruling "`C2-f2`'s shape"
-already refused once.
+**`C4` is IN FLIGHT, is the deepest cut in the arc, and was DECOMPOSED into seven leaves on
+2026-08-25** (developer) once its reader census was re-measured: the four ORM-relationship readers
+section 3 named were two stale and two moved, and five more were named by no step at all, which row
+**P70**'s query-position census structurally could not see. The leaves ARE that census: five take
+the readers off the columns one PACKAGE at a time, one makes an owner's recorded cadence a foreign
+key, and the last drops the columns. **`C4-a-1` is next.**
 
 **`C10`-`C12` came OUT of `C2-f3`** on 2026-08-19 for gating C4 on work it does not depend on: the
 salary package's clock (**P49**, which `C2-f3a` wrongly closed), the layer predicate (**P56**) and
@@ -52,6 +50,9 @@ registries are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
 | **What `/` renders for an owner with no PROJECTABLE account** | **The setup card AND the position tracks, and the card names the KIND that is missing. Ruled 2026-08-18 (developer)**, ledger row **P65**. `has_account` is `resolve_grid_account`, which refuses an amortizing account by design (ruling D4) because this page renders a cash-flow balance -- so an owner who had entered a mortgage and nothing else was told to "set up an account" while `compute_tracks_section` computed a `$200,000.00` `DebtSummary` the template discarded. The tracks tier reads no grid account and no pay period, which is what lets it render beside the card rather than instead of it. Measured on both sides of `C2-f2e`, so it was this page's defect rather than that step's. Rejected: changing only the copy (the owner still cannot see a position they have entered), and leaving it (rule 8 -- a `$0.00` finding is a defect waiting for the data to change) |
 | **The Spending producer's unexposed window arms** | **KEEP them, and retire the ordinal WALK inside them. Ruled 2026-08-19 (developer)** at `C2-f3d`, against deleting the pay-period arm outright. It is unreachable -- `/analytics/spending` builds only month windows and `analytics_view.serialize_spending_chart` has only a month branch -- which `CLAUDE.md` rule 13 would ordinarily refuse. Two things outweigh it: the S-P1 gate ruling DEFERRED the pay-period and year pickers rather than cancelling them, so the arm is unshipped UI and not dead logic; and `C4` drops the `period_index` column every "which paycheck precedes this one" answer reads, so an arm that reads it owes that conversion whichever surface reaches it -- deleting it moves the same work to `C4` under another name. Recorded at `compute_spending_report` so the next reader meets it. Rejected: deleting the arm (it would take `query_settled_expenses`, ten unit cases and the harness's 62-window probe, which is this step's best regression coverage) |
 | **The day the destructive doors decide on** | **The OWNER's civil day (`utils.dates.display_today`), and the lock classifier's `as_of` becomes REQUIRED. Ruled 2026-08-19 (developer)** at `C2-f3b`, on finding `balance:N-191` -- which named `classify_periods_bulk` and `top_up_rolling_window` as the two sites deciding something against the user's CALENDAR on the PROCESS clock, and said each owed its own ruling. "Has this paycheck ended" and "has it started yet" are questions about the owner's schedule, so the owner's day is what answers them; `date.today()` is the container's, and both compose files pin `TZ: America/New_York` so the two agree THERE and nowhere else -- CI, a script and a bare `flask run` are where a truncate refusal turns on the deployment. The REQUIRED half is the same ruling one level down: `regenerate_pay_periods` read the clock THREE times for one decision, benign only because a period cannot become historical between two statements of one transaction, which is an argument from timing rather than from construction. Rejected: keeping `date.today()` (it leaves a destructive door's refusal resting on a deployment setting, which is N-191's own sentence), and resolving the day in the ROUTE and threading it (the same value, at the cost of a parameter on three public service doors, one of which is already at `max-args`) |
+| **`C4`'s shape** | **DECOMPOSED into SEVEN leaves. Ruled 2026-08-25 (developer)**, on the census re-measured that day: five reader leaves split by PACKAGE (`C4-a-1` .. `C4-a-5`), a schedule-row foreign key (`C4-b`), and the drop (`C4-c`). Eighteen-to-nineteen signature changes across five packages, plus a destructive migration, plus 63 `PayPeriod(...)` constructions in 35 test files that pass a dropped column, is the shape ruling "`C2-f2`'s shape" refused as one commit at a smaller size. The readers come off the columns first with NO schema change, each leaf ending at a package that names neither column; then the schedule row becomes guaranteed and the inferred cadence dies; then the columns drop. Rejected: three commits (`C4-a` whole is the five-package diff this ruling exists to refuse, and it cannot be reverted precisely), and folding `C4-b` into `C4-c` (an additive guarantee and a destructive drop would revert together, and `resolve_cadence`'s fallback death would land inside a schema migration rather than in front of one) |
+| **How an owner's schedule row is guaranteed** | **A FOREIGN KEY, not a write-door discipline. Ruled 2026-08-25 (developer)**, row **P8**. `budget.pay_periods.user_id` gains a second FK to `budget.pay_schedule (user_id)` -- already UNIQUE as `uq_pay_schedule_user` -- `ON DELETE CASCADE`, beside the CASCADE to `auth.users` it already carries. A payday for an owner whose cadence is not recorded becomes UNCONSTRUCTIBLE rather than merely unwritten, which is what lets `resolve_cadence`'s inferring fallback be DELETED rather than left as a branch no state can reach. Measured 2026-08-25 on both databases: 0 owners hold paydays without a schedule row, so the backfill writes nothing and the constraint takes clean. Rejected: leaving the invariant on `pay_period_write` and `auth_service.register_user`, where a violation surfaces as a `PayCalendarError` on a bare 500 (row **P35**) -- a symptom, at read time, on whichever money screen the owner opened first |
+| **Where the attribution CLAMP lives** | **On the value: `DerivedPeriod.attribution_day`, and `utils.dates.attribution_date` is DELETED. Ruled 2026-08-25 (developer)**, landing at `C4-a-2`. Its three live callers each pass one period's two bounds as separate arguments, which is a pairing a caller can get wrong -- "an argument a caller can get wrong is a defect, not a contract", which `_cash_fold`'s own docstring already cites -- and after `C4-a-1` and `C4-a-2` every one of them holds a `DerivedPeriod`, so the free function's signature outlives its last reason to exist. `DerivedPeriod.covers` lands with it, for the three sites that open-code `start_date <= day <= end_date`. **The rule's BODY moves rather than being wrapped**: `app.utils.dates` cannot import `pay_calendar` (`_derive` imports `app.utils.dates`, so a delegating free function would close a cycle), so a method beside a surviving function would be two independent implementations of one clamp. Rejected: keeping the free function and changing only where its bounds come from (the mis-pairable signature survives with no caller that needs it), and adding the method BESIDE it (two spellings of one rule, which is the denormalization this arc exists to remove) |
 | **What holds a `tests/manual/` harness to the code it measures** | **The lint gate, at `E,F` only. Ruled 2026-08-18 (developer)**, ledger row **P66**. These are the proof instruments every cutover here is verified with, and nothing checked them: pytest does not collect the directory, CI linted only `app/`, and each probe's `_guard` records a raise AS DATA -- so a signature change makes a harness dump `{"RAISED": ...}` where a figure belongs, and a before/after diff of two such runs reads BYTE-IDENTICAL over a region never measured. FOUR sites were already dead when this was found, one since `C2-f2d-3`. `E,F` and NOT the 10.00/10 floor the other three trees hold: these scripts legitimately duplicate one another and branch wide, and what is gated is the class that rotted them. A both-sides harness naming a HEAD-only API carries a scoped disable with a `Pylint:` rationale. Rejected: a pytest smoke test that runs each harness (stronger, but it needs a seeded owner rich enough to reach every probe and the both-sides files would need skips), and leaving it recorded |
 
 ---
@@ -239,38 +240,18 @@ and `start + cadence - 1` coincide there, which made C2-a's first P14 test vacuo
 payday set is re-indexed from 0 in SILENCE, where the stored ordinal used to survive a slice (row
 **P26**).
 
-**The `C1`-`C2` span is CONDENSED under rule 5** (2026-08-25), to buy the room `C4`'s re-measured
-census needs. One line each, the COMMIT is the record, and the as-built detail is in
-`historical/pay_calendar_as_built_2026-08-16.md`, `..._c2a_c2e_as_built_2026-08-18.md`,
-`..._c2f2_as_built_2026-08-18.md` and `..._c2f3_as_built_2026-08-20.md`. What these OPENED is a live
-`ledger.md` row; what they **CLOSED** is stated here, because rule 1 takes a closed finding out of
-the ledger and rule 5 therefore keeps it in the record: **P2** (= recurrence **F-10**), **P6**,
-**P12**-**P14**, **P17**, **P19**-**P25**, **P29**, **P32**, **P36**-**P37**, **P43**, **P45**,
-**P47**'s duplicate half, **P48**, **P51**-**P52**, **P55**, **P57**-**P59**, **P61**, **P64**'s
-calendar half, **P65**-**P66**, **P68**, **N-127**, **N-169**, `balance:D42`, `balance:N-128`; the
-span also ticked recurrence **R-F10** and **R-F12**. *Stated for the SPAN rather than per entry,
-which is what makes it fit: an adversarial review of C4 measured a first cut of this condensation
-dropping the clause outright, orphaning thirteen ids that `app/` docstrings still cite.*
+**Ten of the `C1`-`C2` span's entries are ARCHIVED under rule 5** (2026-08-25) to
+`historical/pay_calendar_c1_c2_index_2026-08-25.md`, which carries them one line each, what the span
+CLOSED, the three below that stayed and why, and the live `starts` cell that had to move for the
+archive to be legal. They had been condensed the same day and that was not enough room; the COMMIT
+is the record for every one of them.
+**`C1` and `C2-f1` are held for the GATE rather than for the arc** -- three of its controls derive
+their only live specimen from them, which both `_staging` docstrings predict and call temporary.
 
 - [x] **C1 -- the derivation, proven equal to what is stored.** `f9d148fe`.
 - [x] **C2 -- one calendar value answers every "which period" question.** `4f134bf4`. The DECOMPOSED
       parent, ticked at `C2-f3e`; that tick is also `balance:X-l` and `recurrence:R-F12`.
-- [x] **C2-a -- the calendar VALUE, with nothing calling it.** `3cb3082f`.
-- [x] **C2-b -- the recurrence cutover.** `fe365de1`. The parent, ticked with C2-b2.
-- [x] **C2-b1 -- the last two questions, the cadence rule, one door.** `90f2fbb7`.
-- [x] **C2-b2 -- the recurrence engine answers from the ONE calendar.** `fe365de1`.
-- [x] **C2-c -- the cash-view cutover.** `b8a72f6c`.
-- [x] **C2-d -- the filing cutover.** `3e6cd4ec`.
-- [x] **C2-e -- the projection axis is the OWNER's paychecks.** `8143c6fe`.
-- [x] **C2-f -- the readers answer from the calendar.** `4f134bf4`. The DECOMPOSED parent, split by
-      READER over 60 call sites; all six `get_*` readers are gone and `earliest_recordable_day`
-      stays, because it asks no "which period" question, only `min(first payday, today)`.
 - [x] **C2-f1 -- the three the calendar already answered.** `792e3b21`.
-- [x] **C2-f2 -- the readers at a surface already holding a read pass.** `531c1402`. Five leaves.
-- [x] **C2-f3 -- the rest, and the module's last two readers.** `4f134bf4`. Five leaves.
-      **`C11` and `C12` were promoted OUT of it 2026-08-19**: neither removes a reader of a column
-      **C4** drops, so leaving them here gated C4 -- and `C6`, `C7`, `C8` behind it -- on work C4
-      does not need.
 - [ ] **C10 -- the salary package reads the OWNER's day.** Five sites answer "which paycheck am I
       in" as `period_containing(date.today())` -- `routes/salary/_helpers.py:175` and `:256`,
       `profiles.py:253`, `views.py:63`, `cockpit.py:284` -- having taken the derivation at
@@ -296,65 +277,69 @@ dropping the clause outright, orphaning thirteen ids that `app/` docstrings stil
       `historical/pay_calendar_as_built_2026-08-16.md`. **Must not be undone**: `pay_period_write`
       is the ONE place in `app/` that constructs or deletes a pay period, and R-PC1's coverage half
       is DELETED.
-- [ ] **C4 -- drop the derived columns.**
+- [ ] **C4 -- drop the derived columns.** The DECOMPOSED parent, split into SEVEN leaves 2026-08-25
+      (developer); it ticks with `C4-c`. Its FIRST commit landed before the split (row **P70**): the
+      rolling top-up's remaining-paycheck count moved onto `PayCalendar.current_and_future` and the
+      top-up itself left for `pay_period_rolling`, `pay_period_admin` having had nine lines under
+      its ceiling (row **P31**). Closes **P1**, **P4**, **P5**, **P8**, **P9**.
 
-**Its FIRST commit is done; row **P70** carries what it measured.** The rolling top-up's
-remaining-paycheck count moved onto `PayCalendar.current_and_future`, and the top-up itself left for
-`pay_period_rolling` -- `pay_period_admin` had nine lines under its ceiling (row **P31**).
+**THE READER CENSUS is now the leaf list**, re-measured by AST over `app/` on 2026-08-25: the four
+sites section 3 named were two stale and two moved, and a census keyed on QUERY position cannot see
+a RELATIONSHIP read. 118 accesses over 52 files, of which every one but the leaves below survives
+untouched; each survivor is an `AttributeError` or a `ProgrammingError` the day the columns go.
+**Three sites a reader would expect in it are NOT, checked one at a time**: `calendar_service`
+(`:939`) and `pay_period_locks` (`:215`) read `DerivedPeriod` values, and
+`settings/_pay_periods_manage.html` has since `C2-f3b`.
 
-**THE READER CENSUS, re-measured by AST over `app/` on 2026-08-25** -- the four sites section 3
-named were two stale and two moved, and a census keyed on QUERY position cannot see a RELATIONSHIP
-read. Each is an `AttributeError` or a `ProgrammingError` the day the columns go; the `signatures`
-column is a DESIGN estimate of the threading, not part of the measurement:
+- [ ] **C4-a-1 -- the balance seam's attribution clamp.** `balance_at/_cash_fold._cash_plan` reads
+      `txn.pay_period` per planned row (`:675-677`). It and `assemble` take a REQUIRED `PayCalendar`
+      and resolve each row through `period_by_id`, which is the shape ruling "How the CONTRIBUTION
+      tier learns its periods" already gave `_asset_fold.resolve` one module over -- a calendar
+      carries neither a scenario nor a clock, so passing one reintroduces nothing. All four
+      `assemble` call sites hold a `BalanceContext` and pass `ctx.calendar()`; `fold_cash_balances`,
+      `fold_cash_day_facts` and `cash_period_balances` reach FIVE arguments, which is the ceiling
+      and not past it.
+- [ ] **C4-a-2 -- the reconcile panel, and the clamp moves onto the value.** `_rows.attributed_on`
+      reads `txn.pay_period` (`:271-273`) and `_assemble._block_headings` SELECTS
+      `PayPeriod.end_date` (`:106`); `lands_on_or_before` and `outstanding_rows` thread between
+      them, and the panel holds no read pass, so its calendar comes from the route.
+      **This leaf is where `utils.dates.attribution_date` is DELETED** and
+      `DerivedPeriod.attribution_day` becomes the rule: its last mis-pairable caller leaves here,
+      and shipping a state where every caller holds a `DerivedPeriod` while the three-argument
+      signature survives is a signature with no remaining reason. Blocked by `C4-a-1`, which moves
+      the other caller.
+- [ ] **C4-a-3 -- the purchase-date warning.** `entry_service/_sums` (`:344-345`) plus four route
+      call sites, and the containment test becomes `DerivedPeriod.covers`, which also retires the
+      open-coded pair at `recurrence_engine/_plan.py:317` and `pay_calendar/_searches.py:77`. This
+      leaf owes its own decision: `grid/page._build_grid_row_data` is already at pylint's
+      five-argument ceiling, so the calendar needs either a rationale-carrying disable or the
+      `entry_lists` build hoisted into its two callers.
+- [ ] **C4-a-4 -- the merchant-destination picker.** `statement_match/_candidates.destinations_for`
+      (`:923-924`) is the one relationship read left in that package, and `_scope` is its only
+      caller. `transaction_candidate` in the same module already resolves through
+      `calendar.period_by_id`, so this leaf makes one module answer one way.
+- [ ] **C4-a-5 -- the two LABEL readers, and the model accessor goes.**
+      `routes/_recurrence_conflict_chooser` (`:193`) renders `period.label` off the ORM row and
+      `grid/_transaction_full_edit.html` (`:42`) renders `txn.pay_period.label`. Both move onto
+      `DerivedPeriod.label`, which is the SAME rule through `utils.dates.pay_period_label`, and the
+      leaf ENDS by deleting `PayPeriod.label` -- so one paycheck can no longer be labelled two ways
+      on two screens.
+- [ ] **C4-b -- an owner with paydays HAS a recorded cadence.** One additive migration: backfill a
+      `budget.pay_schedule` row for every owner holding paydays (0 rows on both databases, measured
+      2026-08-25), then
+      `FOREIGN KEY (user_id) REFERENCES budget.pay_schedule (user_id) ON DELETE CASCADE` on
+      `budget.pay_periods`. `resolve_cadence`'s inferring fallback is then DELETED rather than left
+      unreachable, and `MIN_MATERIALISABLE_CADENCE_DAYS`'s subject narrows to the stored end alone.
+      Closes **P8** and **P35**. **The double CASCADE is the thing to verify**:
+      `pay_periods.user_id` and `pay_schedule.user_id` both cascade from `auth.users`, so deleting
+      an owner must not deadlock or fail on ordering, and the migration test drives a real user
+      delete rather than arguing from the DDL.
 
-| what | where | signatures |
-|---|---|---|
-| the balance seam's attribution clamp | `balance_at/_cash_fold._cash_plan` | 6 |
-| the reconcile panel | `reconcile_service/_rows.attributed_on` and `_assemble._block_headings` | 6 |
-| the purchase-date warning | `entry_service/_sums` + four route call sites | 3 |
-| the merchant-destination picker | `statement_match/_candidates.destinations_for` | 1 |
-| the two LABEL readers | `routes/_recurrence_conflict_chooser` and `grid/_transaction_full_edit.html` | 2-3 |
-| the legacy cadence fallback | `pay_schedule_service.resolve_cadence` (row **P8**) | -- |
-| the WRITER | `pay_period_write._write_derivation` authors both columns | -- |
-
-**`C4` SHOULD BE DECOMPOSED and that is the developer's ruling to take.** The eighteen-to-nineteen
-signature changes the table counts, across five packages, plus a destructive migration, plus
-**51 `PayPeriod(...)` constructions in 26 test files** that pass a dropped column, is the shape
-ruling "`C2-f2`'s shape" refused as one commit at a smaller size. The proposed split is expand /
-migrate / contract: **`C4-a`** the readers come off the columns with no schema change, itself split
-by PACKAGE into the six rows above, of which the first has shipped; **`C4-b`** every owner with a
-payday gets a schedule row and the inferred cadence dies; **`C4-c`** the drop. One `C4-a` leaf owes
-its own decision: `grid/page._build_grid_row_data` is already at pylint's five-argument ceiling, so
-the purchase-date warning's calendar needs either a rationale-carrying disable or the `entry_lists`
-build hoisted into its two callers.
-
-**`C4-b` opens a question worth ruling rather than rebuilding the fence.** The target model says
-"every OWNER with a payday has one, enforced at the WRITE DOOR". `budget.pay_schedule.user_id` is
-already UNIQUE (`uq_pay_schedule_user`), so a composite FK from `pay_periods.user_id` to it makes a
-payday without a schedule row UNCONSTRUCTIBLE rather than merely unwritten, which is what this arc
-does everywhere else. Measured 2026-08-25: **0 owners hold paydays without a schedule row** on
-either database, so the backfill writes nothing and the FK takes clean.
-
-**P8's write-door half is DONE** (`balance:X-ad-a`), so the backfill below is no longer reopened by
-the next signup. What remains: the readers above take their bounds from the calendar rather than
-from `txn.pay_period`, and `models/pay_period`'s `MIN_MATERIALISABLE_CADENCE_DAYS` drops -- its
-whole subject is the authored `end_date` this step deletes. Then ONE migration: backfill the
-schedule row for every owner with paydays, `DROP COLUMN end_date`, `DROP COLUMN period_index`, and
-drop **three** constraints with them -- `ck_pay_periods_date_order`, `ck_pay_periods_positive_index`
-(`models/pay_period.py:30`, which the first draft omitted) and `uq_pay_periods_user_index`.
-Destructive, so it carries the `Review:` line.
-**The downgrade is NOT unconditionally lossless and must say so**: re-adding
-`CHECK (start_date < end_date)` fails outright on any one-day period C4 legalises (row P9), and the
-LAST row's rebuilt end is a projection off `cadence_days` as it reads at downgrade time. Deletes the
-four surviving fences of section 1, including BA-03/BA-04 and `_pp_assert_structure`'s invariants 1,
-2, 3a and 3b. Closes **P1**, **P4**, **P5**, **P8**, **P9**.
-**This step needs its own review pass**; it is the deepest cut into the spine.
-
-**What deleting the fallback stops raising, which is row P35's blast radius and belongs here rather
-than in a ledger cell** (`conventions.md` rule 4). `resolve_cadence` infers an owner's cadence from
-their last period's LENGTH when they have no `budget.pay_schedule` row, `derive_periods` refuses
-anything outside 1..365, and `app/error_handlers.py` leaves the raise on a bare 500. Four steps have
-joined renders to the blast radius since C2-c widened it to every balance page:
+**What deleting that fallback stops raising is row P35's blast radius, and it belongs to `C4-b`
+rather than to a ledger cell** (`conventions.md` rule 4). `resolve_cadence` infers an owner's
+cadence from their last period's LENGTH when they have no `budget.pay_schedule` row,
+`derive_periods` refuses anything outside 1..365, and `app/error_handlers.py` leaves the raise on a
+bare 500. Four steps joined renders to it after C2-c widened it to every balance page:
 
 - **`C2-f2b`** -- `/grid` derives the calendar BEFORE it looks at an account, so the zero-ACCOUNT
   render, which used to reach `empty_grid_view()` without one, raises with the rest.
@@ -375,8 +360,24 @@ joined renders to the blast radius since C2-c widened it to every balance page:
   can reach these doors has a calendar that derives -- and because htmx does not swap a 500, the
   failure there is a click that silently does nothing rather than a visible error page.
 
-Zero affected owners on either database (re-measured 2026-08-19: one owner, a schedule row, a widest
-period of 14 days), so this is a state the fallback can produce rather than one it does.
+Zero affected owners on either database (re-measured 2026-08-25: one owner with paydays, a schedule
+row, cadence 14 on 62 of 62 rows), so this is a state the fallback can produce rather than one it
+does.
+
+- [ ] **C4-c -- the drop.**
+
+`pay_period_write._write_derivation` stops authoring the two columns and `PayPeriodOverlapStored`
+goes with the stored-versus-derived comparison it raises from; `MIN_MATERIALISABLE_CADENCE_DAYS` and
+`PayPeriod.__repr__`'s ordinal go with them. Then ONE destructive migration: `DROP COLUMN end_date`,
+`DROP COLUMN period_index`, and **three** constraints with them -- `ck_pay_periods_date_order`,
+`ck_pay_periods_positive_index` and `uq_pay_periods_user_index`. It carries the `Review:` line.
+**The downgrade is NOT unconditionally lossless and must say so**: re-adding
+`CHECK (start_date < end_date)` fails outright on any one-day period this legalises (row **P9**),
+and the LAST row's rebuilt end is a projection off `cadence_days` as it reads at downgrade time.
+Deletes the four surviving fences of section 1, including `integrity_check` BA-03 / BA-04 / BA-07
+and `_pp_assert_structure`'s invariants 1, 2, 3a and 3b, and re-bases the 63 `PayPeriod(...)`
+constructions in 35 test files that pass a dropped column. **This leaf needs its own review pass**;
+it is the deepest cut into the spine.
 
 - [ ] **C5 -- the gap machinery goes, and a paycheck may owe one template twice.**
 
