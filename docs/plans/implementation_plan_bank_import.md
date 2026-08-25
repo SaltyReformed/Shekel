@@ -130,9 +130,12 @@ when reached.
       `AcceptedGroup.agrees`' case; and the balance did NOT move, because 60 hand true-ups were
       absorbing the double count -- the residue `balance:X-f3c` records rather than plugs.
 
-- [ ] **X-gc** `fix(import): the screens stop prescribing the impossible` -- the corroboration
-      advice, the never-showed panel's framing and the undo's silent residue (**N-345**), each
-      measured false or misleading by the 2026-08-24 review.
+- [x] **X-gc** `0452eef3` -- the screens stop stating what is false: **R-GN**, **R-GO**, **R-GP**.
+      Dead corroboration advice gone from four surfaces (migration `a1f4c7e0b839`); a GUESSED
+      placement stops reading like a proven one; the never-showed panel marks the 18 rows it can
+      prove and keeps every one TICKABLE, because that list is the hand-build picker and **R-GJ**
+      leaves the group match as a parked card payment's only act; the dialog binds in `<head>`.
+      **N-345 is NOT closed**: its disclosure half is dev DATA (**R-GQ**), at `operator`.
 
 - [ ] **X-gd** `feat(import): a merchant answer is a standing rule` -- the rule STORE (**R-GI**):
       scope, revocation and the application receipt, shipped one leaf before the door that acts on
