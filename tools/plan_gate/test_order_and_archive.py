@@ -10,6 +10,8 @@ grading, which is the denormalization these registries exist to remove.
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 
 import _archive as archive
@@ -532,22 +534,51 @@ class TestTheLedgerStatesItsBACKLOG:
         """The live file."""
         assert registry.stated_arc_counts_violation() is None
 
+    @staticmethod
+    def _live_split():
+        """Return the by-arc sentence's ``[(arc, count)]``, read off the file.
+
+        **DERIVED, because a control that NAMES a volatile value is a second
+        copy of it.**  These three planted their defect with the arc and the
+        number written out -- ``"By arc: balance 156"`` -- so the control went
+        stale on any tree whose ledger differed by one finding, which is every
+        concurrent branch that opens or closes one.  Measured 2026-08-25: the
+        `recurrence:R7d-a` gate run against the `bank_import:X-gc` branch's
+        plan documents failed three of these and NOTHING else, purely on the
+        anchors.  Two branches editing an anchor also collide where the same
+        control derived from the file cannot.  Same move
+        `pay_calendar:C2-f3e` made for a sibling control, closing row D42.
+
+        Uses the parser's own whitespace collapse so a formatter's line wrap
+        does not change what the control anchors on -- the very property the
+        third test below grades.
+        """
+        text = registry.LEDGER.read_text()
+        sentence = " ".join(text.split("By arc:", 1)[-1].split(".", 1)[0].split())
+        pairs = [(arc, int(n)) for arc, n in re.findall(r"([a-z_]+) (\d+)", sentence)]
+        assert len(pairs) >= 2, "ledger.md states no by-arc split to plant in"
+        return pairs
+
     def test_the_control_fires_on_a_stale_split(self, stage):
         """A number nobody grades is a number that goes stale.
 
         Staged on the REAL file, so the control exercises the same parser on
         the same shape the live document uses.
         """
-        stage("ledger", "By arc: balance 156", "By arc: balance 155")
+        arc, count = self._live_split()[0]
+        stage("ledger", f"By arc: {arc} {count}", f"By arc: {arc} {count - 1}")
 
         violation = registry.stated_arc_counts_violation()
 
         assert violation is not None
-        assert "155" in violation and "156" in violation
+        assert str(count) in violation and str(count - 1) in violation
 
     def test_the_control_fires_when_the_split_is_deleted(self, stage):
         """Deleting the sentence must fail loudly, not read as agreement."""
-        stage("ledger", "By arc: balance 156", "By nothing at all: balance 156")
+        arc, count = self._live_split()[0]
+        stage(
+            "ledger", f"By arc: {arc} {count}", f"By nothing at all: {arc} {count}",
+        )
 
         assert registry.stated_arc_counts_violation() is not None
 
@@ -559,8 +590,30 @@ class TestTheLedgerStatesItsBACKLOG:
         read as that arc having gone missing, on a sentence that was true.  A
         gate whose answer depends on where a formatter broke a line is a gate
         that fails for the wrong reason.
+
+        Planted at the first arc boundary that is still on ONE line, derived,
+        because naming the arc would re-introduce the staleness
+        :meth:`_live_split` exists to remove -- and because the sentence is
+        ALREADY wrapped somewhere by the time it is 100 characters long. On
+        2026-08-25 that live wrap sat between ``bank_import`` and its number,
+        which is the exact defect this grades, so a control that planted its
+        own wrap at the last boundary could not find an anchor at all.
         """
-        stage("ledger", "recurrence 22, bank_import", "recurrence 22,\nbank_import")
+        text = registry.LEDGER.read_text()
+        pairs = self._live_split()
+        planted = False
+        for (arc, count), (nxt, _) in zip(pairs, pairs[1:]):
+            anchor = f"{arc} {count}, {nxt}"
+            if anchor not in text:
+                continue
+            stage("ledger", anchor, f"{arc} {count},\n{nxt}")
+            planted = True
+            break
+        assert planted, (
+            "no arc boundary in the by-arc sentence sits on one line, so this "
+            "control planted nothing -- a check that can pass by producing "
+            "nothing is not a check"
+        )
 
         assert registry.stated_arc_counts_violation() is None
 
