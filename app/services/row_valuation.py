@@ -18,8 +18,9 @@ moving a figure the bank had already taken.
 **It is a LEAF because the loan stack may not NAME the cash-ledger package,
 and the gate that forbids it is pylint's** (plan step X-au-c2).
 :mod:`~app.services.cash_ledger._amount_source` reaches UP into
-``loan_payment_service`` for amount rule 4's producer
-(``LoanPricing``, ``loan_payment_config``).  Both of those
+``loan_payment_service`` for amount rule 4's producer (``LoanPricing``) and into
+``recurring_transfer_query`` for the MODE that selects its arm
+(``loan_payment_config``, moved there at plan step R7d-a).  Both of those
 imports are DEFERRED to call time, so the RUNTIME module graph is acyclic and
 importing :mod:`app.services.cash_ledger` pulls in no loan service at all --
 that much an adversarial review measured, correcting an earlier draft of this

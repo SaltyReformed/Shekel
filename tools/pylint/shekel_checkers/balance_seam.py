@@ -257,6 +257,17 @@ _KIND_CLASSIFIER_MODULES = frozenset({
 _ROW_VALUATION_MODULES = frozenset({
     "app.services.row_valuation",
 })
+# The recurring DEFINITION reader (plan step R7d-a).  It held one loan figure
+# already -- the standing overpayment threaded into every payoff projection --
+# and that step moved the loan-payment SETTINGS reads here off
+# ``loan_payment_service``, whose 1000-line ceiling was what the move paid for.
+# Two of the moved names answer a MONEY question ("what does this loan's own
+# definition say one installment costs"), so the scope follows them rather than
+# letting a fenced module's contents leave the fence by changing address --
+# which is the loosening-bundled-with-a-move shape the D1b lesson names.
+_RECURRING_DEFINITION_MODULES = frozenset({
+    "app.services.recurring_transfer_query",
+})
 
 # Per-module rulings: {module: (producer set, non-producer set)}.  Every PUBLIC
 # top-level function defined in one of these modules must appear in one of its
@@ -764,12 +775,36 @@ _FENCED_MODULE_RULINGS = {
         # nothing when it is called.
         "config_by_transfer",
         "loan_pricing",
+    })),
+    # The recurring DEFINITION reader (:data:`_RECURRING_DEFINITION_MODULES`).
+    # An EMPTY producer set, and it is a strong claim rather than a weak one:
+    # nothing here loads a loan, a schedule or a payment history, so no name
+    # defined in this module can answer what an account is WORTH.  What it
+    # answers is what a repeating definition SAYS.
+    "app.services.recurring_transfer_query": (frozenset(), frozenset({
+        # The query itself: which template pays into this account.  A row, not
+        # a figure.
+        "active_recurring_transfer_template",
         # Two BOOLEAN-and-a-Decimal settings off a transfer template: does this
         # payment's cash derive from the loan, and what standing extra rides on
         # it.  Public since plan step X-au-b, whose amount resolver has to know
         # the MODE before it can price a payment; a configuration read, and the
-        # furthest thing here from a balance-at-T.
+        # furthest thing here from a balance-at-T.  It moved from
+        # ``loan_payment_service`` at plan step R7d-a and keeps its ruling.
         "loan_payment_config",
+        # The standing monthly overpayment, in its two scopings.  A single
+        # stored parameter of the definition; the payoff projection THREADS it,
+        # which is a different thing from this answering one.
+        "loan_standing_extra",
+        "loan_standing_extra_for_account",
+        # What the definition says one installment costs -- the whole value and
+        # the rule that reads it.  A PAYMENT amount, ruled on exactly the ground
+        # ``compute_contractual_pi`` is above: what one payment moves, never
+        # what an account owes.  The rule is PURE and takes the loan's own
+        # contribution (the contractual P&I, the installment's escrow) as
+        # arguments precisely so it needs no producer to answer.
+        "standing_payment",
+        "standing_installment_cash",
     })),
     # The PURE loan-resolver tier (:data:`_LOAN_RESOLVER_ENGINE_MODULES`,
     # closing finding B-12).  Package-scoped, so a new submodule is covered the

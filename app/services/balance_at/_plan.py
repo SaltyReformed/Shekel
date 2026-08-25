@@ -12,10 +12,39 @@ future balance is a fold over the payments it is going to make, in two tiers:
   forward to ``as_of + 1d`` -- "a plan cannot have already happened" (ruling D1).
 * **ESTIMATED** -- for every FUTURE contractual installment slot no projected
   record covers (a loan with no recurring transfer, or the tail beyond the
-  materialized ~2-year pay-period window), the contractual P&I synthesized from
-  :func:`app.services.balance_at._resolution.contractual_schedule_from_origination` (the
-  producer already shared with the property-equity back-projection) -- its
+  materialized ~2-year pay-period window), what the loan's own STANDING PAYMENT
+  says that installment costs
+  (:func:`app.services.recurring_transfer_query.standing_installment_cash`), dated
+  and rated by the contractual schedule
+  (:func:`app.services.balance_at._resolution.contractual_schedule_from_origination`,
+  the producer already shared with the property-equity back-projection) -- its
   installment DATE and P&I, never its ``remaining_balance``, which this re-folds.
+
+**Why the DEFINITION and not the contract** (plan step **R7d-a**).  This tier
+priced every uncovered slot at the contract's P&I, whatever the loan's own
+recurring payment said it would pay, so "what will this loan be paid in month
+M" had two answers and which one the fold used depended on whether the row had
+been WRITTEN yet.  Two consequences, both measured on a production clone with a
+PLANTED underpayment -- the Van Loan's definition moved to ``$300.00`` against
+its ``$531.94`` contractual installment, rolled back after each probe:
+
+* the plan SWITCHED figures at the materialized horizon, projecting a payoff of
+  ``2030-02-22`` with rows to 2028-07 and ``2030-04-22`` with rows to 2029-01 --
+  the owner's figure inside the horizon and the servicer's past it;
+* and the payoff moved with materialization.  ``regenerate_pay_periods`` deletes
+  the rebuildable tail of pay periods (``budget.transfers.pay_period_id``
+  CASCADEs) and repopulates, and the payoff read AT that moment was
+  ``2029-02-22`` against ``2030-02-22`` before and after -- twelve months early,
+  on the very figure the recurrence's closing bound is derived from.
+
+One rule for both tiers closes both: the loan is modelled as paying what the
+owner has told it to pay, resolved AS OF each installment, materialised or not.
+**Unplanted, on the developer's own data, it moves ``$0.00``** -- 776 forward
+figures byte-identical -- and the reason is worth stating, because it is a
+precondition rather than a general result: both templates state exactly P&I plus
+an escrow that is CONSTANT across the whole horizon, so ``stated price - escrow``
+equals the contractual P&I at every installment.  A future-dated escrow version
+would break that equality, and there is none to measure against.
 
 **Why this replaces the schedule walk (finding B-9).**  The retired forward walk
 (``account_projection.forward_balance_at_date``, deleted at step C6b) amortized
@@ -50,6 +79,10 @@ from app.services.loan_ledger import (
 )
 from app.services.loan_loaders import loan_payment_due_date
 from app.services.rate_period_engine import period_for_date
+from app.services.recurring_transfer_query import (
+    StandingPayment,
+    standing_installment_cash,
+)
 from app.utils.dates import add_months
 
 from ._context import BalanceContext, _memoize_once, require_scenario
@@ -117,11 +150,17 @@ class PlannedPayment:
             ``max(due_date, as_of + 1d)`` (ruling D1: a plan cannot have already
             happened).  For a normal future installment this is its due date; for
             an overdue-but-still-projected one it is tomorrow.
-        cash: The cash this payment moves -- the PLANNED tier's live D3 amount, or
-            the ESTIMATED tier's contractual P&I.
-        escrow: The monthly escrow embedded in ``cash`` (``0.00`` for an ESTIMATED
-            payment, whose contractual P&I carries no escrow), backed out so
-            ``principal = cash - interest - escrow``.
+        cash: The cash this payment moves -- the PLANNED tier's live D3 amount,
+            or what the ESTIMATED tier's standing-payment rule says this
+            installment costs
+            (:func:`~app.services.recurring_transfer_query.standing_installment_cash`).
+        escrow: The monthly escrow embedded in ``cash``, backed out so
+            ``principal = cash - interest - escrow``.  **Both tiers state it,
+            since plan step R7d-a.**  It read ``0.00`` for an ESTIMATED payment
+            while that tier priced the escrow-free contractual P&I, so the two
+            tiers meant different things by these two field names; a stated
+            price is escrow-INCLUSIVE, and a tier calling its escrow zero would
+            route the escrow into principal every month.
         annual_rate: The annual rate governing this installment's interest accrual
             (resolved at the payment's rate period).
         is_estimated: ``True`` for a synthesized contractual installment, ``False``
@@ -152,14 +191,18 @@ class _ForwardInputs:
             (:func:`app.services.loan_resolver.resolve_periods`).
         escrow_lines: The loan's escrow lines with their full version history.
         payment_day: The loan's contractual due day (the due-date fallback).
-        extra_principal: The loan's standing monthly overpayment
-            (:attr:`~app.services.balance_at._resolution.ResolvedLoan.extra_principal`),
-            added to each ESTIMATED installment's cash so the fold folds the SAME
-            extra past the materialized-shadow horizon that the resolver's
-            committed schedule applies for the whole term (finding N-15).  The
-            PLANNED tier does NOT read it -- its live D3 cash already carries the
-            extra -- so it lands exactly once.  ``0.00`` when the loan has no
-            standing extra.
+        standing: What the loan's own recurring payment says one installment
+            costs
+            (:attr:`~app.services.balance_at._resolution.ResolvedLoan.standing`),
+            which prices every ESTIMATED installment
+            (:func:`~app.services.recurring_transfer_query.standing_installment_cash`).
+            Its standing extra lands there too, so the fold folds the SAME extra
+            past the materialized-shadow horizon that the resolver's committed
+            schedule applies for the whole term (finding N-15).  The PLANNED
+            tier does NOT read this -- its live D3 cash already carries both the
+            base and the extra -- so each lands exactly once.  ``None`` when the
+            loan has no recurring payment, and the contract is then the only
+            estimate there is.
         as_of: The read pass's as-of; the clamp floor is ``as_of + 1d`` and the
             past/future boundary is ``as_of`` itself.
     """
@@ -167,7 +210,7 @@ class _ForwardInputs:
     periods: list
     escrow_lines: list
     payment_day: int
-    extra_principal: Decimal
+    standing: StandingPayment | None
     as_of: date
 
 
@@ -263,17 +306,31 @@ def _estimated_from_contract(
       its principal a SECOND time (understating the debt by one installment).
 
     The contractual row supplies the installment DATE and its P&I (``row.payment``,
-    escrow-free by construction -- the schedule is fed no payments), on top of
-    which the loan's standing ``extra_principal`` (``fwd.extra_principal``) is
-    added: the SAME overpayment the resolver's committed schedule applies to every
-    forward month and the PLANNED tier folds into its live cash, so a loan paying
-    extra keeps paying it PAST the materialized-shadow horizon rather than
-    reverting to bare contractual here (finding N-15).  The extra lands exactly
+    escrow-free by construction -- the schedule is fed no payments); what the
+    installment COSTS is then the loan's own standing payment's answer
+    (:func:`~app.services.recurring_transfer_query.standing_installment_cash`, plan
+    step **R7d-a**), which is the contract's P&I plus escrow plus the standing
+    extra for a DERIVE-mode payment or for a loan with none, and the definition's
+    stated base plus the extra where the owner has stated one.  The extra is the
+    SAME overpayment the resolver's committed schedule applies to every forward
+    month and the PLANNED tier folds into its live cash, so a loan paying extra
+    keeps paying it PAST the materialized-shadow horizon rather than reverting to
+    bare contractual here (finding N-15); the BASE now carries the same way, which
+    is what stops the plan switching figures at the horizon.  Each lands exactly
     once -- the PLANNED tier owns the covered slots, this tier the rest.  The
     balance is re-folded by :func:`fold_forward`, never read off
-    ``row.remaining_balance``.  Escrow is ``0.00`` because the contractual P&I
-    carries none and the standing extra is pure principal (and escrow is a wash for
-    the balance either way).
+    ``row.remaining_balance``.
+
+    **The escrow is STATED beside the cash rather than left at ``0.00``**, which
+    is the pairing :func:`~app.services.loan_ledger.split_payment_cash` takes and
+    the one the PLANNED tier already passes.  It has to be: a stated base is
+    escrow-INCLUSIVE (an owner types the whole mortgage payment), so a tier that
+    called its escrow zero would route the escrow into principal and pay the loan
+    down by it every month.  For the contractual arm the pair moves together --
+    ``principal = cash - interest - escrow`` -- so adding escrow to both sides
+    changes no balance, which is measured rather than argued
+    (``tests/manual/verify_r7d_estimate_equality.py``).  Before this step the two
+    tiers meant different things by the same two field names.
 
     **Past the contractual last row it keeps synthesizing** the level monthly
     payment for up to :data:`_PAYOFF_EXTENSION_MONTHS` more months (finding N-16):
@@ -290,8 +347,9 @@ def _estimated_from_contract(
             seed-included settled payment already covers -- excluded here so a slot
             is folded exactly once.
         fwd: The resolved :class:`_ForwardInputs` (its rate periods govern each
-            installment's rate; its ``extra_principal`` is added to every
-            synthesized installment; its ``as_of`` is the past/future boundary).
+            installment's rate; its ``standing`` payment and its escrow lines
+            price every synthesized installment; its ``as_of`` is the
+            past/future boundary).
 
     Returns:
         One :class:`PlannedPayment` per uncovered future contractual installment
@@ -300,18 +358,25 @@ def _estimated_from_contract(
     estimated: list[PlannedPayment] = []
     clamp_floor = fwd.as_of + _ONE_DAY
 
-    def _synthesize(due: date, cash: Decimal) -> None:
+    def _synthesize(due: date, contractual_pi: Decimal) -> None:
         """Append one uncovered future ESTIMATED installment."""
         if due < fwd.as_of or _month_slot(due) in covered_slots:
             # The past is ACTUAL-only (an overdue installment with no record pays
             # nothing, B-9 / D1); a covered slot the PLANNED tier or the seed
             # already folds would double-count here.
             return
+        # The installment's OWN escrow, on its OWN due date -- ruling D5's
+        # contract time, the same date and function the PLANNED tier and the
+        # genesis split read (``_shadow_live_amount``), so an escrow version
+        # effective mid-horizon reaches every tier alike.
+        escrow = escrow_calculator.escrow_monthly_as_of(fwd.escrow_lines, due)
         estimated.append(PlannedPayment(
             due_date=due,
             effective_date=max(due, clamp_floor),
-            cash=cash + fwd.extra_principal,
-            escrow=_ZERO_MONEY,
+            cash=standing_installment_cash(
+                fwd.standing, contractual_pi, escrow, due,
+            ),
+            escrow=escrow,
             annual_rate=period_for_date(fwd.periods, due).annual_rate,
             is_estimated=True,
         ))
@@ -320,9 +385,13 @@ def _estimated_from_contract(
         _synthesize(row.payment_date, row.payment)
 
     # Extend past the contractual payoff so an underpaying loan clears a few months
-    # late instead of reporting no payoff (N-16).  The level payment is the last
-    # rate period's P&I (period_for_date returns it for any date past the periods);
-    # the fold caps a healthy loan's extra installments to no-ops.
+    # late instead of reporting no payoff (N-16).  The contractual P&I past the
+    # schedule is the last rate period's (period_for_date returns it for any date
+    # past the periods), and ``_synthesize`` applies the SAME standing-payment
+    # rule to it -- so a loan the owner underpays extends at what the owner
+    # actually pays, which is the whole point of the extension: extending at the
+    # contract's figure would clear the very loan the extension exists to model.
+    # The fold caps a healthy loan's extra installments to no-ops.
     if contractual:
         last_due = contractual[-1].payment_date
         for months_out in range(1, _PAYOFF_EXTENSION_MONTHS + 1):
@@ -367,7 +436,7 @@ def loan_plan(account: Account, ctx: BalanceContext) -> list[PlannedPayment]:
         periods=loan_resolver.resolve_periods(params, rate_changes),
         escrow_lines=loan_loaders.load_escrow_lines(account.id),
         payment_day=params.payment_day,
-        extra_principal=resolved.extra_principal,
+        standing=resolved.standing,
         as_of=ctx.as_of,
     )
 
