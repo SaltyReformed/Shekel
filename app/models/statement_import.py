@@ -362,11 +362,22 @@ class BankStatementLine(db.Model):
                         owner states once.  That is why it is a column the
                         ADAPTER writes rather than a token a reader parses out
                         of :attr:`description` -- see below.
-        source_category -- the bank's OWN category string, kept as provenance
-                        and never read as logic.  It is the bank's opinion
-                        about a merchant, not a Shekel category, and treating
-                        it as one would be a reference value that no
-                        ``ref`` table governs.
+        source_category -- the bank's OWN category string, kept as provenance.
+                        It is the bank's opinion about a merchant, not a Shekel
+                        category, and treating it as one would be a reference
+                        value that no ``ref`` table governs.  **It may never
+                        SUPPLY an answer, and since ruling R-GJ it may REQUIRE
+                        one** (plan step ``bank_import:X-ga``): a merchant a
+                        source files under a card-payment category has no
+                        create-a-purchase arm until the owner says where it
+                        goes -- whichever answer they give.  That is the whole
+                        of the exception, and it is narrow because the opinion
+                        is measurably wrong: SECU files the developer's Van
+                        Loan car payment under the same words as the Capital
+                        One card payments, 7 of the 22 lines carrying it.  The
+                        vocabulary is keyed by ADAPTER in
+                        ``statement_match._bars``; nothing reads this column to
+                        decide a destination, a figure or a day.
         external_id  -- the source's own id for the line (OFX ``FITID``) where
                         it has one.  CORROBORATION, not identity -- see below.
         sequence_in_group -- the ordinal that completes the identity key.

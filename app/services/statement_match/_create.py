@@ -33,6 +33,20 @@ the app's shape does not depend on whether a category happened to be budgeted.
 picking is what makes this a review rather than an import that rewrites a
 budget.
 
+**...but some lines have no answer at all, and this door refuses them** (ruling
+**R-GJ**, plan step ``bank_import:X-ga``).  A merchant the owner has answered
+*never a purchase* for, and one a SOURCE files as a payment to a credit card
+that they have not answered for, are BARRED: no destination makes such a line
+legal, because the money it moved is already in the budget in another shape.
+The screen renders no create control for one (:attr:`~._reads.ReviewSet.parked`)
+and :func:`~._bars.reject_barred_line` refuses it at this door, which is the
+half a crafted body or a stale page reaches.  Measured on the developer's own
+dev database: nine Capital One ACH payments became `$7,412.94` of purchases in
+eight new envelopes, beside 22 ``CC Payback`` rows RECORDING `$6,286.46` of the
+same card's spending, in one pass, past a warning paragraph.  **Those rows are
+still standing**; closing this door repairs nothing behind it, which is
+``bank_import:X-gb``'s.
+
 Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in, a
 frozen dataclass out, no Flask import.  It MUTATES and does NOT commit -- the
 route owns the unit of work.
@@ -66,6 +80,7 @@ from app.utils.log_events import (
 )
 
 from ._accept import MatchContent, record_match
+from ._bars import CreationBars, reject_barred_line
 from ._resolve import load_lines
 from ._candidates import (
     MatchedSubjects,
@@ -641,6 +656,73 @@ def _observed(line: BankStatementLine) -> SettleDay:
     )
 
 
+def _close_container(
+    creation: PurchaseCreation,
+    line: BankStatementLine,
+    envelope: Transaction,
+    created: bool,
+) -> None:
+    """Close the container on the day the bank took the money it now holds.
+
+    :func:`_close_day` decides WHETHER and WHICH day; this applies it, through
+    whichever verb the container's own state calls for.  Extracted from
+    :func:`create_purchase_from_line` at plan step ``bank_import:X-ga``, when
+    ruling **R-GJ**'s bar took that function past ``max-locals``: the two
+    honest answers to a design limit are to decompose or to disable, and this
+    block was already one coherent act with one subject -- everything a
+    container's CLOSE needs, and nothing the purchase needs.
+
+    Args:
+        creation: What the owner submitted, which says which arm this is.
+        line: The bank line being recorded.
+        envelope: The container the purchase went in.
+        created: Whether THIS act created it.
+    """
+    close_on = _close_day(creation, line, envelope, created)
+    if close_on is not None and not created:
+        # **A container an EARLIER LINE OF THIS PRESS made, closing again on a
+        # later day.**  ``settle_from_entries`` refuses an already-settled row
+        # by design -- "the seam owns the day, and a caller that genuinely
+        # means *this settled on a different day* corrects it on the row
+        # afterwards" (ruling **R-ED**) -- so the correction goes through the
+        # same identity transition ``_accept._apply_day`` uses for a settled
+        # row a match re-dates: the row's OWN status, a new day.  One verb for
+        # "a settled row's day moved", not a second one here.
+        transaction_service.apply_requested_status(
+            envelope, envelope.status_id, settle_day=close_on,
+        )
+    elif close_on is not None:
+        # **A row created to hold something that has already happened says
+        # so.**  A first version justified this by calling a Projected `$0.00`
+        # row "carry-forward bait that would roll a NEGATIVE leftover", which is
+        # measurably FALSE -- ``carry_forward_service`` clamps its leftover with
+        # ``max(Decimal("0"), budget - entries)`` in both its preview and its
+        # execute arm.  Found by adversarial design review 2026-08-19.
+        #
+        # The real reason is narrower and holds: this row records money that has
+        # ALREADY left the account, and the app's vocabulary for that is the
+        # settled band -- left Projected it would read on the grid as an unpaid
+        # item for money already gone.  Carry-forward would settle it through
+        # this very verb anyway; doing it here dates the close on the day the
+        # bank posted, where carry-forward would date it whenever it next ran.
+        transaction_service.settle_from_entries(
+            envelope, settle_day=close_on,
+        )
+        # **``settle_from_entries`` does NOT reconcile the ledger** -- it is the
+        # envelope PRIMITIVE, and its docstring says carry-forward owes that
+        # reconcile a different moment.  Both of its other callers pair it with
+        # this line (`transaction_service._settle.settle_transaction`,
+        # `carry_forward_service._execute`), and so does this one.  It is a
+        # no-op on today's arithmetic -- `create_entry` already reconciled the
+        # family while the row was Projected, and a close whose every purchase
+        # is posted targets `0.00` -- but a contract kept by a cancellation
+        # nobody asserts is finding **N-318**'s shape, one module over.  Found
+        # by adversarial security review 2026-08-19.
+        posting_service.sync_transaction_postings(
+            envelope, settled=envelope.status.is_settled,
+        )
+
+
 def _made_by_this_act(
     candidate: CandidateRow, envelope: Transaction, container_created: bool,
 ) -> "tuple[CreatedSubject, ...]":
@@ -726,12 +808,14 @@ def create_purchase_from_line(
     creation: PurchaseCreation,
     scope: ReviewScope,
     minted: MintedEnvelopes,
+    bars: CreationBars,
 ) -> CreatedPurchase:
     """Record one bank line as a purchase, and match the line to it.
 
     The whole act, in the order its refusals have to happen: the line is
-    checked, the destination is resolved against the set the screen may offer,
-    and only then is anything staged.  The match itself goes through
+    checked, the merchant is checked against ruling **R-GJ**'s bars, the
+    destination is resolved against the set the screen may offer, and only then
+    is anything staged.  The match itself goes through
     :func:`~._accept.record_match`, so the correspondence is written by the same
     function that writes every other one -- ruling **R-FT**'s table, ruling
     **R-FV**'s identity-only rule, and every guard those already carry.
@@ -769,6 +853,15 @@ def create_purchase_from_line(
             *scope* is**: a default would silently mean *converge with
             nothing*, and the caller that forgot it would mint the fragments
             this parameter exists to stop.
+        bars: Which of this account's merchants may not become purchases at
+            all, and why (:class:`~._bars.CreationBars`, ruling **R-GJ**).
+            **Required rather than defaulted for a sharper version of the same
+            reason**: a default would mean *nothing is barred*, so the one
+            caller that forgot it would re-open the exact door this parameter
+            closes -- the one a YTD pass took `$7,412.94` through.  Derived
+            once per REQUEST by :func:`~._batch.apply_reviewed`, beside
+            *minted*, because nothing inside a batch can restate a policy and
+            re-reading it per act would be 90 queries for one statement.
 
     Returns:
         The :class:`CreatedPurchase`.
@@ -785,6 +878,11 @@ def create_purchase_from_line(
     # inside ``record_match`` all narrow with it, so they cannot disagree.
     matched = matched_subjects(scope.account_id)
     line = _load_line(creation, matched, scope)
+    # **Before anything is staged**, and before the destination is even looked
+    # at: for a barred line there is no destination that would make it legal,
+    # so resolving one first would answer a request that may not be made with a
+    # sentence about the answer it gave (ruling **R-GJ**).
+    reject_barred_line(line, bars)
     made_on = _made_on(line)
 
     # ONE period for both arms, resolved once: it is where the purchase is
@@ -835,49 +933,7 @@ def create_purchase_from_line(
             settle_day=_observed(line),
         ),
     )
-    close_on = _close_day(creation, line, envelope, created)
-    if close_on is not None and not created:
-        # **A container an EARLIER LINE OF THIS PRESS made, closing again on a
-        # later day.**  ``settle_from_entries`` refuses an already-settled row
-        # by design -- "the seam owns the day, and a caller that genuinely
-        # means *this settled on a different day* corrects it on the row
-        # afterwards" (ruling **R-ED**) -- so the correction goes through the
-        # same identity transition ``_accept._apply_day`` uses for a settled
-        # row a match re-dates: the row's OWN status, a new day.  One verb for
-        # "a settled row's day moved", not a second one here.
-        transaction_service.apply_requested_status(
-            envelope, envelope.status_id, settle_day=close_on,
-        )
-    elif close_on is not None:
-        # **A row created to hold something that has already happened says
-        # so.**  A first version justified this by calling a Projected `$0.00`
-        # row "carry-forward bait that would roll a NEGATIVE leftover", which is
-        # measurably FALSE -- ``carry_forward_service`` clamps its leftover with
-        # ``max(Decimal("0"), budget - entries)`` in both its preview and its
-        # execute arm.  Found by adversarial design review 2026-08-19.
-        #
-        # The real reason is narrower and holds: this row records money that has
-        # ALREADY left the account, and the app's vocabulary for that is the
-        # settled band -- left Projected it would read on the grid as an unpaid
-        # item for money already gone.  Carry-forward would settle it through
-        # this very verb anyway; doing it here dates the close on the day the
-        # bank posted, where carry-forward would date it whenever it next ran.
-        transaction_service.settle_from_entries(
-            envelope, settle_day=close_on,
-        )
-        # **``settle_from_entries`` does NOT reconcile the ledger** -- it is the
-        # envelope PRIMITIVE, and its docstring says carry-forward owes that
-        # reconcile a different moment.  Both of its other callers pair it with
-        # this line (`transaction_service._settle.settle_transaction`,
-        # `carry_forward_service._execute`), and so does this one.  It is a
-        # no-op on today's arithmetic -- `create_entry` already reconciled the
-        # family while the row was Projected, and a close whose every purchase
-        # is posted targets `0.00` -- but a contract kept by a cancellation
-        # nobody asserts is finding **N-318**'s shape, one module over.  Found
-        # by adversarial security review 2026-08-19.
-        posting_service.sync_transaction_postings(
-            envelope, settled=envelope.status.is_settled,
-        )
+    _close_container(creation, line, envelope, created)
 
     # **The act's own writes are FLUSHED before its creation records are
     # read** (plan step ``bank_import:X-f6f``).  A container this door creates

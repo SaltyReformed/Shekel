@@ -43,10 +43,12 @@ from ._offers import (
     CandidateRow,
     MatchProposal,
 )
+from ._bars import CreationBars, ParkedLine
 from ._placement import Placement, placements_for
 from ._policy import PolicyView
 from ._propose import propose
 from ._scope import ReviewScope
+from ._section import MerchantSection, merchant_section
 
 
 @dataclass(frozen=True)
@@ -167,89 +169,25 @@ class CreatableLine:
 
 
 @dataclass(frozen=True)
-class MerchantSummary:
-    """One merchant the policy section asks the owner about.
-
-    Attributes:
-        merchant: The bank's own merchant string, which is the policy key.
-        policy: What the owner has said, or ``None`` for *not said yet*.
-        line_count: How many of THIS pass's unexplained outflows it names.
-            Zero for a merchant whose lines are all explained today and whose
-            policy the owner may still want to see or withdraw.
-        stale_template_label: What to call the recurring definition this
-            merchant's stored answer names, when that definition is no longer
-            offerable -- else ``None``.  The screen renders it as an option of
-            its own, because a select with no selected option submits its
-            FIRST, which here means *I have not said*: without it the screen
-            reported such a policy as unanswered and the next Save silently
-            withdrew it (:attr:`~._policy.PolicyView.stale_templates`).
-        total: What those lines come to, signed.  **The section is where a
-            decision is made about several lines at once, so it has to say how
-            much money it is a decision about**: on the developer's own
-            statement one row of it covers `-$7,412.94`.
-    """
-
-    merchant: str
-    policy: "MerchantPolicy | None"
-    line_count: int
-    total: Decimal
-    stale_template_label: "str | None" = None
-
-
-@dataclass(frozen=True)
-class MerchantSection:
-    """The policy control: where this account's merchants go.
-
-    Plan step ``bank_import:X-f6a-3d``.  **It is the screen's shape matching
-    the model's.**  The leftover list asks 91 questions on the developer's own
-    statement and the real question is asked 21 times, so a screen with 91
-    selects and no per-merchant control is rendering a decision the owner does
-    not actually make one line at a time.
-
-    **Stating a policy here MOVES NO MONEY**, which is why it is a separate
-    control posting to a separate door: the placements it produces are
-    suggestions, and the destination select on each line still opens on *leave
-    this line alone* (ruling **R-FZ**).
-
-    Attributes:
-        merchants: One row per merchant this pass has an unexplained outflow
-            for, PLUS every merchant the owner has already answered for --
-            ascending.  The second half is what makes a policy visible and
-            withdrawable once its lines are all explained; without it an answer
-            could only be changed while there was work outstanding.  It is
-            NARROWER than what a statement may legitimately name
-            (:func:`~._policy.merchants_on`, every merchant the account has
-            ever recorded), and deliberately: a merchant with neither pending
-            work nor an answer is not a question anyone is asking today.
-        templates: The recurring definitions a policy on this account may name
-            (:func:`~._policy.offerable_templates`), as ``(id, name)``
-            ascending by name.  The option list, and the same set
-            :func:`~._policy.state_policies` checks a submission against.
-    """
-
-    merchants: "tuple[MerchantSummary, ...]"
-    templates: "tuple[tuple[int, str], ...]"
-
-    @property
-    def answered_count(self) -> int:
-        """Return how many of these merchants the owner has answered for."""
-        return sum(1 for row in self.merchants if row.policy is not None)
-
-
-@dataclass(frozen=True)
 class ReviewSet:  # pylint: disable=too-many-instance-attributes
     """Everything the review screen needs, in one value.
 
-    Pylint: too-many-instance-attributes (8/7) -- **eight because the screen
-    renders eight distinct things**, not because the value wants splitting.
-    Seven are cards the owner reads and acts in; the eighth is
-    :attr:`undecided_near_lines`, which annotates two of them.  The obvious way
-    to satisfy the limit is to fold that one back into :attr:`bounds`, where it
-    lived until plan step ``bank_import:X-f6d-3`` -- and that is exactly what
-    the step measured to be wrong, because a bound reported in a panel names no
-    line and cannot be acted on.  ``AcceptedMatch`` carries the same disable
-    for the same reason, and its docstring says what dropping a field to meet a
-    limit costs: the receipt said *"Nothing moved."* over a rewritten figure.
+    Pylint: too-many-instance-attributes (9/7) -- **nine because the screen
+    renders nine distinct things**, not because the value wants splitting.
+    Eight are cards the owner reads and acts in; the ninth is
+    :attr:`undecided_near_lines`, which annotates two of them.
+
+    The obvious way to satisfy the limit is to fold ``undecided_near_lines``
+    back into :attr:`bounds`, where it lived until plan step
+    ``bank_import:X-f6d-3`` -- and that is exactly what the step measured to be
+    wrong, because a bound reported in a panel names no line and cannot be
+    acted on.  The other obvious way is to fold :attr:`parked` back into
+    :attr:`creatable` and let a Jinja condition withhold the control, and that
+    is what ruling **R-GJ** exists because of: a sentence saying *nothing here
+    records it* sat over a working select for as long as those two were one
+    list.  ``AcceptedMatch`` carries the same disable for the same reason, and
+    its docstring says what dropping a field to meet a limit costs: the receipt
+    said *"Nothing moved."* over a rewritten figure.
 
     Attributes:
         proposals: What the app believes goes with what, best first.
@@ -272,9 +210,22 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             are different acts on the same fact and the owner is the one who
             knows which it is.  Inflows are absent -- a purchase is an expense
             (``ck_transaction_entries_positive_amount``), so a deposit or a
-            card refund can only ever be matched to a row.
-        merchants: The policy control (:class:`MerchantSection`) -- where this
-            account's merchants go, and what the owner has already said.
+            card refund can only ever be matched to a row.  **A line that
+            ruling R-GJ bars is not here** -- it is in :attr:`parked` -- so this
+            list is exactly the lines a create control may be rendered for,
+            and the screen cannot render one for a line the door would refuse.
+        parked: The unmatched OUTFLOW lines that may NOT become purchases, with
+            the reason each may not (:class:`~._bars.ParkedLine`, ruling
+            **R-GJ**).  Its two arms are a merchant the owner answered *never a
+            purchase* and a merchant a source files as a payment to a credit
+            card that they have not answered for at all.  They are still in
+            ``unmatched``, so the group-match arm the ruling leaves open is
+            reached exactly as it was.
+        merchants: The policy control (:class:`~._section.MerchantSection`) --
+            where this account's merchants go, and what the owner has already
+            said.  **It counts** ``parked`` **beside** ``creatable``, because
+            the parked half is parked for want of an answer and this is the
+            control that gives one.
         bounds: What this pass did NOT look at (:class:`ReviewBounds`).
         undecided_near_lines: The ids of the lines the NEAR tier admitted a
             candidate for and then declined to choose between
@@ -296,6 +247,7 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
     unmatched_rows: "tuple[CandidateRow, ...]"
     accepted: "tuple[AcceptedGroup, ...]"
     creatable: "tuple[CreatableLine, ...]"
+    parked: "tuple[ParkedLine, ...]"
     merchants: MerchantSection
     bounds: ReviewBounds
     undecided_near_lines: "frozenset[int]" = frozenset()
@@ -307,9 +259,9 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
         **Counted where the sweep's own rule is**
         (:attr:`~._policy.Placement.sweep_class`) rather than as a Jinja
         expression, so a caption cannot promise a number the control does not
-        deliver.  A placement that is not an act -- *never a purchase*, or a
-        policy that does not reach this line -- has no class and is not
-        counted.
+        deliver.  A placement that is not an act -- a policy that does not
+        reach this line's pay period -- has no class and is not counted, and a
+        line ruling **R-GJ** bars is not in :attr:`creatable` at all.
 
         The three partition, for the reason
         :attr:`~._offers.MatchProposal.review_class`'s three do: filing into an
@@ -498,8 +450,9 @@ def _creatable_lines(
     calendar, unmatched: "list[BankLine]",
     destinations: "list[PurchaseDestination]",
     view: PolicyView,
-) -> "tuple[CreatableLine, ...]":
-    """Return the unmatched OUTFLOWS with the destinations open to each.
+    bars: CreationBars,
+) -> "tuple[tuple[CreatableLine, ...], tuple[ParkedLine, ...], int]":
+    """Split the unmatched OUTFLOWS into what may be recorded and what may not.
 
     **A line the bank dates MADE after it POSTED is not one of them** (finding
     **N-325**, developer ruling 2026-08-19).  ``entry_service.create_entry``
@@ -527,20 +480,28 @@ def _creatable_lines(
             is this project's DRY violation rather than a cost.
         view: What the owner has said and what it can resolve against
             (:class:`~._policy.PolicyView`).
+        bars: Which of this account's merchants may not become purchases, and
+            why (:class:`~._bars.CreationBars`, ruling **R-GJ**).  **Asked
+            BEFORE a destination is resolved**, because a barred line has no
+            destination to resolve one against: the placement machinery answers
+            *which budget line would this go in*, and for these the answer is
+            that none may, which is a refusal rather than a suggestion.
 
     Returns:
-        ``(lines, impossible_day_count)`` -- one :class:`CreatableLine` per
-        offerable outflow in the order the lines were given, and how many were
-        declined for dating their own purchase after their own posting.  The
-        per-period destination tuple is SHARED by every line in that period, so
-        a statement with 91 outflows over 11 periods builds 11 tuples rather
-        than 91.
+        ``(creatable, parked, impossible_day_count)`` -- one
+        :class:`CreatableLine` per offerable outflow a create control may be
+        rendered for, one :class:`~._bars.ParkedLine` per outflow ruling
+        **R-GJ** bars, both in the order the lines were given, and how many
+        were declined for dating their own purchase after their own posting.
+        The per-period destination tuple is SHARED by every line in that
+        period, so a statement with 91 outflows over 11 periods builds 11
+        tuples rather than 91.
     """
     outflows = [line for line in unmatched if line.amount < 0]
     impossible = [line for line in outflows if line.states_impossible_days]
     offerable = [line for line in outflows if not line.states_impossible_days]
     if not offerable:
-        return (), len(impossible)
+        return (), (), len(impossible)
     # ONE pass over the destinations, and ONE placement per line.  Both were
     # asked twice: the grouping rescanned every destination once per period,
     # and each line placed itself once for its id and again for its lookup --
@@ -549,14 +510,20 @@ def _creatable_lines(
     by_period: "dict[int, list[PurchaseDestination]]" = {}
     for destination in destinations:
         by_period.setdefault(destination.pay_period_id, []).append(destination)
-    placed = [
-        (line, _period_id_for(calendar, line.happened_on))
-        for line in offerable
-    ]
-    return _marked_joining([
-        _one_creatable(line, period_id, by_period, view)
-        for line, period_id in placed
-    ]), len(impossible)
+    creatable: "list[CreatableLine]" = []
+    parked: "list[ParkedLine]" = []
+    for line in offerable:
+        # ONE ask of the bar per line, and its answer is what routes the line:
+        # a second ask -- once to partition and once to word the sentence -- is
+        # the redundant producer call this module already refuses above.
+        barred_by = bars.bar_for(line.merchant)
+        if barred_by is not None:
+            parked.append(ParkedLine(line=line, barred_by=barred_by))
+            continue
+        creatable.append(_one_creatable(
+            line, _period_id_for(calendar, line.happened_on), by_period, view,
+        ))
+    return _marked_joining(creatable), tuple(parked), len(impossible)
 
 
 def _marked_joining(
@@ -637,80 +604,6 @@ def _one_creatable(
         placement=(
             None if period_id is None
             else placements_for(line.merchant, view, offered)
-        ),
-    )
-
-
-def _merchant_summary(
-    merchant: str, view: PolicyView, line_count: int, total: Decimal,
-) -> MerchantSummary:
-    """Return one row of the policy control.
-
-    Args:
-        merchant: The bank's own merchant string.
-        view: What the owner has said and what it can resolve against.
-        line_count: How many of this pass's unexplained outflows it names.
-        total: What those lines come to, signed.
-
-    Returns:
-        Its :class:`MerchantSummary`, carrying a label for a stored template
-        that has stopped being offerable so the control can show the answer it
-        holds.
-    """
-    policy = view.policies.get(merchant)
-    stale = (
-        policy is not None
-        and policy.template_id is not None
-        and policy.template_id in view.stale_templates
-    )
-    return MerchantSummary(
-        merchant=merchant,
-        policy=policy,
-        line_count=line_count,
-        total=total,
-        stale_template_label=(
-            view.stale_templates[policy.template_id] if stale else None
-        ),
-    )
-
-
-def _merchant_section(
-    creatable: "tuple[CreatableLine, ...]", view: PolicyView,
-) -> MerchantSection:
-    """Return the policy control's rows and its option list.
-
-    Args:
-        creatable: This pass's offerable unexplained outflows, which is what
-            each row counts and totals.
-        view: What the owner has said and what it can resolve against.
-
-    Returns:
-        The :class:`MerchantSection`.  Every merchant with pending work, plus
-        every merchant already answered for, ascending -- so an answer stays
-        visible and withdrawable after the lines that prompted it are gone.
-    """
-    counts: "dict[str, int]" = {}
-    totals: "dict[str, Decimal]" = {}
-    for item in creatable:
-        merchant = item.line.merchant
-        if merchant is None:
-            # A source naming no merchant keys no policy, so there is nothing
-            # to ask about it -- the same NULL that makes a placement
-            # impossible makes a row here meaningless.
-            continue
-        counts[merchant] = counts.get(merchant, 0) + 1
-        totals[merchant] = totals.get(merchant, Decimal("0.00")) + item.line.amount
-    return MerchantSection(
-        merchants=tuple(
-            _merchant_summary(
-                merchant, view,
-                counts.get(merchant, 0),
-                totals.get(merchant, Decimal("0.00")),
-            )
-            for merchant in sorted(set(counts) | set(view.policies))
-        ),
-        templates=tuple(
-            sorted(view.template_names.items(), key=lambda pair: pair[1]),
         ),
     )
 
@@ -804,7 +697,7 @@ def _rows_the_bank_never_showed(
 class _Leftovers:
     """What this pass could not explain, placed against the owner's policy.
 
-    Three facts one derivation produces that travel together, which is the
+    Four facts one derivation produces that travel together, which is the
     argument :class:`~._offers.Candidates` and
     :class:`~._propose.ProposedMatches` already make in this package: a caller
     holding the offerable lines without the count of the ones declined would
@@ -813,13 +706,17 @@ class _Leftovers:
     Private, because what leaves this module is :class:`ReviewSet`.
 
     Attributes:
-        creatable: The offerable unexplained outflows, each with its placement.
+        creatable: The offerable unexplained outflows a create control may be
+            rendered for, each with its placement.
+        parked: The offerable unexplained outflows ruling **R-GJ** bars, each
+            with the reason (:class:`~._bars.ParkedLine`).
         merchants: The policy control's rows and option list.
         impossible_day_count: How many outflows were declined for being dated
             MADE after they POSTED (finding **N-325**).
     """
 
     creatable: "tuple[CreatableLine, ...]"
+    parked: "tuple[ParkedLine, ...]"
     merchants: MerchantSection
     impossible_day_count: int
 
@@ -835,7 +732,10 @@ def _leftovers(
     same reason the claims are (plan step ``bank_import:X-f6a-3d``): a pass can
     restate a policy, and this screen is re-rendered after the door that does,
     so a reader taking it off the scope would show the answers the pass had
-    just replaced.
+    just replaced.  Ruling **R-GJ**'s bars are read at the same instant and for
+    the same reason -- one of them IS an answer, and the other is the absence
+    of one -- and from the answers this view has already read, so one request
+    asks ``merchant_destinations`` once.
 
     Args:
         scope: The pass's derived offer set.
@@ -846,12 +746,23 @@ def _leftovers(
         The :class:`_Leftovers`.
     """
     view = PolicyView.build(scope.owner_id, scope.account_id)
-    creatable, impossible_days = _creatable_lines(
-        scope.calendar, unmatched, destinations, view,
+    bars = CreationBars.build(
+        scope.owner_id, scope.account_id, policies=view.policies,
+    )
+    creatable, parked, impossible_days = _creatable_lines(
+        scope.calendar, unmatched, destinations, view, bars,
     )
     return _Leftovers(
         creatable=creatable,
-        merchants=_merchant_section(creatable, view),
+        parked=parked,
+        # **Both halves**, because a merchant is parked for want of an answer
+        # and this control is the only place one is given: counting only the
+        # creatable half would refuse the act and hide the door that permits
+        # it.
+        merchants=merchant_section(
+            [item.line for item in creatable] + [item.line for item in parked],
+            view, bars,
+        ),
         impossible_day_count=impossible_days,
     )
 
@@ -925,6 +836,7 @@ def review_set(scope: ReviewScope) -> ReviewSet:
         ),
         accepted=tuple(accepted_groups(scope.owner_id, account_id)),
         creatable=leftovers.creatable,
+        parked=leftovers.parked,
         merchants=leftovers.merchants,
         bounds=ReviewBounds(
             calendar_opens=opens,

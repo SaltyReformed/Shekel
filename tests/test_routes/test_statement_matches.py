@@ -2303,7 +2303,8 @@ def _an_envelope(seed_user, name="Groceries"):
     )
 
 
-def _a_line(seed_user, merchant="Amazon", amount="-57.96", sequence=0):
+def _a_line(seed_user, merchant="Amazon", amount="-57.96", sequence=0,
+            source_category=None):
     """Record one unexplained outflow from *merchant*.
 
     Args:
@@ -2311,6 +2312,10 @@ def _a_line(seed_user, merchant="Amazon", amount="-57.96", sequence=0):
         merchant: What the bank names the merchant, which is the policy key.
         amount: Signed, negative OUT of the account.
         sequence: The ordinal completing the line's identity.
+        source_category: The BANK's own category string, verbatim, or ``None``
+            for a source stating none.  Ruling **R-GJ** reads it for one narrow
+            purpose: a merchant a source files as a payment to a credit card
+            has no create arm until the owner answers for it.
 
     Returns:
         The staged
@@ -2322,6 +2327,7 @@ def _a_line(seed_user, merchant="Amazon", amount="-57.96", sequence=0):
         posted_on=seed_user["bootstrap_period"].start_date,
         description=f"POINT OF SALE DEBIT L340 THING ({merchant})",
         merchant=merchant, sequence_in_group=sequence,
+        source_category=source_category,
     )
 
 
@@ -2510,7 +2516,7 @@ class TestTheMerchantPolicySection:
         assert b"Recorded $57.96" in response.data
         assert len(db.session.get(Transaction, envelope.id).entries) == 1
 
-    def test_a_NEVER_answer_says_so_on_every_line_and_offers_nothing(
+    def test_a_NEVER_answer_TAKES_THE_CONTROL_AWAY_from_every_line(
         self, auth_client, db, seed_user,
     ):
         """The answer that is worth the most money on the developer's own data.
@@ -2518,8 +2524,17 @@ class TestTheMerchantPolicySection:
         Capital One Credit Card is 9 of their 91 unexplained outflows and
         `-$7,412.94` of the `-$11,336.36` in that list, all of which the app
         already holds as CC Payback rows.  Saying it once has to stop the
-        screen asking again -- and must place nothing, so the sweep passes over
-        it.
+        screen asking again -- and, since ruling **R-GJ** (plan step
+        ``bank_import:X-ga``), has to leave the page with no control that could
+        record them.  Until then this answer only withheld a sweep VALUE: the
+        line's own destination select was still rendered, still offered every
+        envelope in the period and "-- a new envelope --", and one YTD pass put
+        all nine through it.
+
+        **The controls are read the way a BROWSER would submit them**
+        (:func:`_apply_form_controls`), not grepped out of the markup, because
+        the defect was never a missing sentence -- the sentence was there.  It
+        was a control underneath it.
         """
         _an_envelope(seed_user)
         _a_line(seed_user, merchant="Capital One Credit Card")
@@ -2536,8 +2551,17 @@ class TestTheMerchantPolicySection:
         body = " ".join(response.data.decode().split())
 
         assert "Capital One Credit Card is never a purchase" in body
-        # It places nothing, so the sweep has nothing to offer and passes over
-        # the line entirely.
+        assert "Payments waiting for their home" in body
+        # THE CONTROLS THEMSELVES, gone: no destination select, no envelope
+        # name box and no category select for this line, so a browser has
+        # nothing to submit for it.  **The APPLY form's controls, not the
+        # page's text**: "-- a new envelope --" still appears on the page as an
+        # ANSWER the policy section offers, which is a different control on a
+        # different form posting to a door that moves no money.
+        assert _apply_form_controls(response.data.decode()) == {
+            "apply": "hand",
+        }
+        # It places nothing either, so the sweep has nothing to offer.
         assert "data-placement=" not in body
         assert "data-tick-placed" not in body
 
@@ -3048,3 +3072,229 @@ class TestTheScreenSaysWhichLineWouldCREATE:
 
         assert "One is created per pay period" in body
         assert "an earlier line here already creates it" in body
+
+
+#: SECU's own category string for a payment to a credit card, verbatim.  22 of
+#: the developer's 378 recorded lines carry it -- the 15 Capital One payments,
+#: and 7 Van Loan car payments the bank files under the same words.
+_CARD_PAYMENT = "Financial Services/Credit Card Payment"
+
+
+class TestALineThatMayNeverBecomeAPurchase:
+    """Ruling **R-GJ**, plan step **bank_import:X-ga**, at the route tier.
+
+    The service test grades the bar; this grades the thing the service test
+    cannot see and the thing that actually failed: **what a browser is handed.**
+
+    The measured failure is not a missing warning.  The warning was there.  The
+    create card said "a card payment your app records as payback rows would be
+    counted twice"; the line's own placement said "you have said this is never
+    a purchase, so nothing here records it" -- and directly beneath that
+    sentence sat a working ``<select name="destination-N">`` whose options
+    included "-- a new envelope --".  One YTD pass took `$7,412.94` of Capital
+    One ACH payments through it, into eight `$0.00`-budget envelopes, beside 22
+    of the owner's own ``CC Payback`` rows recording `$6,286.46`.  So every
+    case here reads the CONTROLS a browser would submit rather than the prose
+    beside them.
+    """
+
+    @staticmethod
+    def _destinations_offered(page):
+        """Return the destination controls a browser would submit from *page*."""
+        return [
+            name for name in _apply_form_controls(page)
+            if name.startswith("destination-")
+        ]
+
+    def test_a_line_that_PAYS_AN_ACCOUNT_is_offered_no_control_at_all(
+        self, auth_client, db, seed_user,
+    ):
+        """The bar that asks nothing, on a rendered page.
+
+        A card the owner has never answered for is the case a merchant-keyed
+        answer cannot reach -- there is no answer yet to key on -- and it is
+        exactly the case a first statement brings.  The line is parked, the
+        page says why, and the policy row says which two of its own options are
+        refused so that refusal is not the first the owner hears of it.
+        """
+        _an_envelope(seed_user)
+        _a_line(
+            seed_user, merchant="Capital One Credit Card", amount="-793.23",
+            source_category=_CARD_PAYMENT,
+        )
+        db.session.commit()
+
+        response = auth_client.get(_review_url(seed_user["account"].id))
+        body = " ".join(response.data.decode().split())
+
+        assert self._destinations_offered(response.data.decode()) == []
+        assert "Payments waiting for their home" in body
+        assert "payment to an account you hold" in body
+        # ...and the row where an answer is given says which ones will not be
+        # taken, and which one fits.
+        assert "not as spending, so its lines cannot be recorded" in body
+        assert "<em>Never a purchase</em> is the answer that fits." in body
+
+    def test_an_ORDINARY_swipe_on_the_same_page_keeps_its_control(
+        self, auth_client, db, seed_user,
+    ):
+        """THE FIRING CONTROL for the case above, on one render.
+
+        74 of the developer's 91 unexplained outflows are ordinary card swipes
+        worth `$3,383.49`, and ruling **R-FS**'s whole point is that they can be
+        recorded.  A page that offered nothing to anybody would satisfy the
+        assertions above just as well.
+        """
+        _an_envelope(seed_user)
+        barred = _a_line(
+            seed_user, merchant="Capital One Credit Card", amount="-793.23",
+            source_category=_CARD_PAYMENT,
+        )
+        ordinary = _a_line(
+            seed_user, merchant="Walmart", amount="-57.96", sequence=1,
+        )
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+
+        assert self._destinations_offered(page) == [
+            f"destination-{ordinary.id}",
+        ]
+        assert f"destination-{barred.id}" not in page
+
+    def test_ANSWERING_it_into_a_budget_line_is_REFUSED_on_screen(
+        self, auth_client, db, seed_user,
+    ):
+        """No answer opens the create arm, and the door says so out loud.
+
+        This is the hole two adversarial reviews measured on 2026-08-24 and the
+        correction that closed it.  A first version made this bar an
+        *unanswered* state that any answer lifted -- and the answer that lifts
+        it is "a new envelope", which is the answer the developer had actually
+        saved for this merchant and the one that booked `$7,412.94` through a
+        single sweep click.
+
+        Refused rather than stored-and-ignored: the same words meaning
+        something different on the screen is worse than the refusal, because
+        the owner would read *Capital One goes in a new envelope* and be right
+        about nothing.
+        """
+        envelope = _an_envelope(seed_user)
+        line = _a_line(
+            seed_user, merchant="Capital One Credit Card", amount="-793.23",
+            source_category=_CARD_PAYMENT,
+        )
+        db.session.commit()
+
+        response = auth_client.post(
+            _merchants_url(seed_user["account"].id),
+            data=_policy(
+                0, "Capital One Credit Card",
+                answer=f"t:{envelope.template_id}",
+            ),
+        )
+        body = " ".join(response.data.decode().split())
+
+        assert "cannot be filed in a budget line" in body
+        from app.models.merchant_destination import (  # pylint: disable=import-outside-toplevel
+            MerchantDestination,
+        )
+        assert db.session.query(MerchantDestination).count() == 0
+        # ...and the line is still parked, with no control anywhere.
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+        assert self._destinations_offered(page) == []
+        assert f"destination-{line.id}" not in page
+
+    def test_ANSWERING_it_NEVER_A_PURCHASE_is_accepted(
+        self, auth_client, db, seed_user,
+    ):
+        """THE FIRING CONTROL for the refusal above.
+
+        The door refuses two of the four answers and takes the other two, so a
+        door that refused every answer would satisfy the case above just as
+        well.  *Never a purchase* is true of such a merchant and is what the
+        row tells the owner to pick.
+        """
+        _an_envelope(seed_user)
+        _a_line(
+            seed_user, merchant="Capital One Credit Card", amount="-793.23",
+            source_category=_CARD_PAYMENT,
+        )
+        db.session.commit()
+
+        response = auth_client.post(
+            _merchants_url(seed_user["account"].id),
+            data=_policy(0, "Capital One Credit Card", answer="never"),
+        )
+        body = " ".join(response.data.decode().split())
+
+        assert "Capital One Credit Card is never a purchase." in body
+        from app.models.merchant_destination import (  # pylint: disable=import-outside-toplevel
+            MerchantDestination,
+        )
+        stored = db.session.query(MerchantDestination).one()
+        assert stored.merchant == "Capital One Credit Card"
+        assert stored.template_id is None
+        assert stored.envelope_name is None
+
+    def test_the_SCRAPED_payload_cannot_record_a_barred_line(
+        self, auth_client, db, seed_user,
+    ):
+        """The stale page, end to end, with the page's OWN bytes.
+
+        The controls are scraped BEFORE the answer is stated and posted AFTER,
+        which is what an owner with two tabs does.  The door refuses the item
+        and nothing is written -- the half that has to hold once the screen
+        stops rendering the control, because a guard that lived only in the
+        reader would be a control removed and a route left open.
+        """
+        envelope = _an_envelope(seed_user)
+        line = _a_line(seed_user, merchant="Capital One Credit Card")
+        db.session.commit()
+        stale = _apply_form_controls(auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode())
+        stale[f"destination-{line.id}"] = str(envelope.id)
+        auth_client.post(
+            _merchants_url(seed_user["account"].id),
+            data=_policy(0, "Capital One Credit Card", answer="never"),
+        )
+
+        response = auth_client.post(
+            _review_url(seed_user["account"].id), data=stale,
+        )
+        body = " ".join(response.data.decode().split())
+
+        assert "never a purchase" in body
+        assert db.session.query(TransactionEntry).count() == 0
+        assert db.session.query(StatementMatch).count() == 0
+
+    def test_a_parked_line_is_still_tickable_in_the_HAND_MATCH_form(
+        self, auth_client, db, seed_user,
+    ):
+        """The arm ruling R-GJ leaves open, reachable from the rendered page.
+
+        A card payment meets the payback rows it repays by being ticked beside
+        them and matched, with any difference NAMED (**R-FN**).  On the
+        developer's own data the one Capital One line handled that way --
+        `-$466.47` on 2026-06-17 -- is grouped with four ``CC Payback`` rows
+        whose recorded figures sum to exactly `$466.47`.  Take the line out of
+        that form and the ruling's only remaining arm is unreachable.
+        """
+        _an_envelope(seed_user)
+        line = _a_line(seed_user, merchant="Capital One Credit Card")
+        db.session.commit()
+        auth_client.post(
+            _merchants_url(seed_user["account"].id),
+            data=_policy(0, "Capital One Credit Card", answer="never"),
+        )
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+
+        assert f'name="match-hand-line_ids" value="{line.id}"' in page

@@ -241,7 +241,10 @@
           period holds, so the answer keeps working next month. Pick
           <em>never a purchase</em> for anything your budget already holds in
           another shape -- a card payment your app records as payback rows would
-          be counted twice if you recorded it here.
+          be counted twice if you recorded it here. That answer is not advice:
+          once you have given it, no control on this page can record those lines
+          as purchases, and they move to <em>Payments waiting for their
+          home</em> below.
         </p>
       </div>
       <div class="table-responsive">
@@ -261,6 +264,22 @@
                 <span class="fw-semibold">{{ row.merchant }}</span>
                 <input type="hidden" name="policy_merchant-{{ idx }}"
                        value="{{ row.merchant }}">
+                {# WHY TWO OF THIS ROW'S OPTIONS ARE REFUSED (ruling R-GJ, plan
+                   step bank_import:X-ga).  A merchant a source files as a
+                   payment to an account the owner holds has no create-a-purchase
+                   arm and no answer opens one, so a recurring envelope or a new
+                   one is refused by the door.  Saying so HERE is what keeps that
+                   refusal from being the first they hear of it -- the "chooser
+                   whose submission can never succeed" shape this package has now
+                   closed four times. #}
+                {% if row.pays_an_account %}
+                <div class="small text-body-secondary">
+                  <i class="bi bi-arrow-left-right"></i>
+                  Your bank files this as a payment to an account you hold, not
+                  as spending, so its lines cannot be recorded as purchases.
+                  <em>Never a purchase</em> is the answer that fits.
+                </div>
+                {% endif %}
               </td>
               <td class="text-end text-nowrap">
                 {% if row.line_count %}
@@ -586,11 +605,21 @@
           envelope you file it under: one that had already reserved for this
           spending absorbs it, and one that had not does not.
         </p>
+        {# THE CARD-PAYMENT EXAMPLE STAYS, and an adversarial review of X-ga is
+           why. A first version of this step deleted it, on the premise that "a
+           recognised card payment is no longer in this list at all" -- which is
+           FALSE for a merchant the owner has answered: any answer but "never a
+           purchase" lifts the bar and puts those lines back in this card
+           (ruling R-GJ leaves the decision with the owner, because the bank's
+           own label is measurably wrong about 7 of the 22 lines it applies to).
+           So this card is exactly where an answered card merchant's warning has
+           to live, and deleting it removed the last one on that path. #}
         <p class="text-body-secondary small mb-0">
           <strong>Some of these may already be in your budget in another shape</strong>
           -- a card payment your app records as payback rows, an insurance premium
-          recorded as a bill. Recording one of those here would count that money a
-          second time; those belong in the match form below, not in this list.
+          you record as a bill, a subscription inside a bigger envelope. Recording
+          one of those here would count that money a second time; those belong in
+          the match form below, not in this list.
         </p>
       </div>
       {% if review.placed_by_class %}
@@ -611,9 +640,10 @@
          so this is a convenience over a form that works without it and never
          the only way to reach a control.
 
-         Nothing is swept for a merchant answered "never a purchase" or for a
-         policy that cannot reach this line's period: neither has a value to
-         set, so neither is counted here. #}
+         Nothing is swept for a policy that cannot reach this line's pay
+         period: it has no value to set, so it is not counted here. A merchant
+         the owner answered "never a purchase" is not in this card at all since
+         ruling R-GJ -- it is parked below. #}
       <div class="card-body border-top border-bottom py-2">
         <div class="d-flex flex-wrap gap-3 small">
           {% for group, label in [
@@ -771,13 +801,6 @@
                       lines in the same period go in beside this one.
                       {% endif %}
                     </span>
-                    {% elif item.placement.is_not_a_purchase %}
-                    <span class="text-body-secondary">
-                      <i class="bi bi-slash-circle"></i>
-                      You have said {{ item.placement.merchant }} is never a
-                      purchase, so nothing here records it. Your budget holds
-                      this money in another shape.
-                    </span>
                     {% else %}
                     <span class="text-warning-emphasis">
                       <i class="bi bi-exclamation-triangle"></i>
@@ -811,6 +834,81 @@
       </button>
     </div>
   </form>
+
+  {# ── Payments waiting for their home ──────────────────────────────────── #}
+  {# RULING R-GJ, plan step bank_import:X-ga.  THIS CARD MOVES NO MONEY AND
+     RENDERS NO CONTROL, which is the whole of it: these are the lines the
+     create door is CLOSED for, and the closure is structural rather than
+     advisory.
+
+     What stood here before was a paragraph.  The card above told the owner
+     that "a card payment your app records as payback rows would be counted
+     twice", the line's own placement said "you have said this is never a
+     purchase, so nothing here records it" -- and directly beneath that
+     sentence sat a working destination select including "a new envelope".  One
+     YTD pass took $7,412.94 of Capital One ACH payments through it, into eight
+     $0.00-budget envelopes, while the app was already holding $6,286.46 of CC
+     Payback rows for the same card spending.  A missing door needs no
+     vigilance; a warning paragraph did not survive one contact with a 215-item
+     session.
+
+     IT IS DELIBERATELY ABOVE THE HAND-MATCH FORM, because that form is the
+     remedy: a card payment meets the payback rows it repays by being ticked
+     beside them and matched, with any difference NAMED (ruling R-FN).  The one
+     Capital One line handled that way -- -$466.47 on 2026-06-17 -- is grouped
+     with four CC Payback rows whose recorded figures sum to exactly $466.47.
+
+     THE REAL HOME IS THE CARD ARC's.  A payment to a credit card is a transfer
+     between two accounts the owner holds, and finding N-337 (owner
+     credit_card:CC3b) carries it.  This card, and everything behind it, is
+     meant to be deleted when that ships. #}
+  {% if review.parked %}
+  <div class="card mb-3">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-slash-circle"></i> Payments waiting for their home</span>
+      <span class="badge text-bg-secondary">{{ review.parked | length }}</span>
+    </div>
+    <div class="card-body">
+      <p class="text-body-secondary small mb-0">
+        These left your account, and none of them can be recorded as a purchase:
+        there is no control here that would do it. The reason is beside each
+        one. Where some of your own rows are what the money paid for, tick them
+        together below and match them.
+      </p>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <thead>
+          <tr>
+            <th scope="col">Your bank says</th>
+            <th scope="col">Why it is not offered</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in review.parked %}
+          <tr>
+            <td>
+              <span class="fw-semibold">{{ money(item.line.amount) }}</span>
+              <span class="text-body-secondary">{{ item.line.posted_on }}</span>
+              {% if item.line.transaction_on %}
+              <span class="small text-body-secondary">(made {{ item.line.transaction_on }})</span>
+              {% endif %}
+              <div class="small text-body-secondary">{{ item.line.description }}</div>
+            </td>
+            <td class="small text-body-secondary">
+              {# SERVER-DERIVED, never a Jinja branch on the bar: the two arms
+                 say opposite things about whether the owner has already
+                 decided, and a template restating that partition is a second
+                 place for it to be wrong. #}
+              {{ item.reason }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
 
   {# ── Build a match by hand ────────────────────────────────────────────── #}
   {# THE HAND-BUILD FORM IS WHAT MAKES THE ACCEPT DOOR'S REFUSALS REACHABLE.

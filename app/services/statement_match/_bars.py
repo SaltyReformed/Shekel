@@ -1,0 +1,400 @@
+"""Why a bank line may NOT become a purchase, and the lines that may not.
+
+Ruling **R-GJ**, plan step ``bank_import:X-ga``.  :mod:`._create` is the door
+that turns a bank line into a purchase; this is the one statement of which
+lines it may not be opened for at all.
+
+**A warning paragraph is not a door, and the difference is measured.**  The
+review screen already told the owner that a card payment "would be counted
+twice", and beside that sentence it rendered a working destination select.  On
+the developer's own dev database, nine Capital One ACH payments became purchases
+in EIGHT `$0.00`-budget envelopes holding **`$7,412.94`** -- eight and not nine
+because two of the nine fell in one pay period -- while the app was already
+holding 22 ``CC Payback`` rows RECORDING **`$6,286.46`** of that same card's
+spending -- one YTD pass, past the paragraph.  (`$6,343.58` is what those rows
+BUDGETED; the settled figures are what they say the money was, which is the
+column the double count is against.)  A tenth line (`-$466.47`, 2026-06-17) was
+correctly group-matched to four of those payback rows instead, which is the arm
+this module leaves open.  R-GJ's answer is structural: for a barred line the
+create arm does not exist -- not on the screen, not in the sweep, and not at
+the door for a crafted request.
+
+**Two bars, and the second is the developer's ruling of 2026-08-24 about who
+may decide.**
+
+* :attr:`CreationBar.NEVER_A_PURCHASE` -- the owner has answered *never a
+  purchase* for this merchant (:class:`~._policy.PolicyAnswer`'s third
+  answer).  Until this step that answer was a CAPTION: it withheld a sweep
+  value, and the line's own select went on offering every envelope in the
+  period while :func:`~._create.create_purchase_from_line` read no policy at
+  all.  A stated decision the money door ignores is the defect, and this is
+  the whole of its repair.
+* :attr:`CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD` -- the SOURCE files this
+  merchant's lines as a payment to an account the owner holds.  **No answer
+  lifts it**, because there is no answer that would make such a line spending.
+
+**What the source's opinion is read FOR, and the correction that got it
+right.**  ``source_category`` is the bank's own words, and
+:class:`~app.models.statement_import.BankStatementLine` keeps it as provenance.
+Measured on the developer's own 378 recorded lines, SECU files 22 of them under
+``Financial Services/Credit Card Payment`` -- the 15 Capital One payments, and
+**7 "Bank Of America Online Pmt" lines at `$531.94` which are the Van Loan car
+payment**, four already matched to ``Transfer to Van Loan`` shadow rows.
+
+A first version read that as *the label is WRONG about 7 of its own 22* and
+built a permissive arm around it: the label would only REQUIRE an answer, and
+any answer would lift the bar.  **That inference was false and the arm it
+justified is what left the measured hole open.**  The label is imprecise about
+WHICH account -- a card, a car loan -- and the app does not act on which: it
+acts on *is this spending*, and the answer is NO for all 22.  Only the wording
+was ever wrong, and the wording is fixed here rather than the refusal being
+weakened.  What the permissive arm bought was worth zero lines: of the 7 Van
+Loan lines, 4 are matched and 3 fall before the pay calendar opens, so not one
+has ever been offered a create arm.
+
+**The merchant is the grain, because the merchant is the policy's grain.**  A
+bar per LINE would offer a create arm on some of one merchant's lines and
+withhold it on others, which is incoherent on a screen whose answers are stated
+once per merchant.  It costs nothing measurable: all 15 Capital One lines and
+all 7 Van Loan lines carry the category, and of the 62 merchants across the
+developer's 378 recorded lines exactly ONE carries two different categories at
+all -- ``Member Deposit``, which SECU spells ``Income/Other Income`` on some
+lines and ``Uncategorized Income`` on others, neither an account payment.
+
+**The known cost, stated rather than discovered.**  If a source ever files
+genuine SPENDING under one of these categories, that merchant has no create arm
+and no answer opens one -- a dead end until the vocabulary is corrected.  It is
+0 of 378 lines today (all 22 are a card payment or a car payment), and it is
+the deliberate trade: a loud dead end on an unmeasured case against a silent
+one-click double count on a measured one, on a screen whose whole subject is
+money.
+
+**Where the vocabulary lives, and where it belongs.**  Which of a source's own
+category strings name a payment to an account the owner holds is the SOURCE ADAPTER's
+knowledge (ruling **R-FP**), and it would sit beside
+:mod:`app.services.statement_import` if it could: that package imports this one
+(``_reads`` takes ``removals_by_match``), so the edge back would be a cycle.
+It is keyed by :class:`~app.enums.StatementSourceEnum` here so that the second
+adapter costs one entry rather than a rewrite, which is the whole of what
+``statement_import._adapters`` buys with its single row.
+
+**THE SECOND BAR IS INTERIM AND THE SEAM IS CLEAN.**  Paying a credit card is a
+transfer between two accounts the owner holds, and from scratch there is no
+card-payment code in this layer at all: the card account exists, the payment is
+a transfer, and the checking line matches the transfer's checking-side shadow
+1:1 on the ordinary exact tier like any other transfer.  That is the card arc's
+ruled model -- finding **N-337**, owner ``credit_card:CC3b`` -- and when it
+ships such a line is MATCHED before it ever reaches the creatable list, at
+which point :attr:`CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD`,
+:data:`~._vocabulary.ACCOUNT_PAYMENT_CATEGORIES` and
+:func:`~._vocabulary.account_payment_merchants` delete whole.  **R-GJ closes
+nothing of N-337**; it removes the wrong answer until the right one ships, and
+it writes no data and teaches the owner no decision that has to be un-taught on
+the way out.
+
+:attr:`CreationBar.NEVER_A_PURCHASE` is NOT interim and does not go with it: a
+stated decision the money door honours is correct whatever the card arc does.
+
+Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in,
+frozen dataclasses out, no Flask import, no clock read.  It READS and never
+writes; :func:`reject_barred_line` raises, which is the only thing here with a
+consequence, and it lives beside the bar it enforces so a refusal and the
+sentence the screen prints for the same line cannot drift apart.
+"""
+
+from __future__ import annotations
+
+import enum
+from dataclasses import dataclass
+
+from app.exceptions import ValidationError
+from app.models.statement_import import BankStatementLine
+
+from ._offers import BankLine
+from ._policy import MerchantPolicy, policies_for
+from ._vocabulary import account_payment_merchants
+
+class CreationBar(enum.Enum):
+    """Why one merchant's lines may not become purchases.
+
+    Two, and they are not the same kind of fact: the first is a DECISION the
+    owner made, and the second is an OBSERVATION about what the money did.  A
+    screen that collapsed them would tell someone who answered *never* that
+    their bank had decided for them, and someone whose bank filed a transfer
+    that they had once said something they never said.
+
+    Neither is a question.  A first version made the second one an
+    *unanswered* state that any answer lifted, and an adversarial review
+    2026-08-24 measured what that left open: the answer that lifts it is
+    ``a new envelope``, which is the answer the developer had actually saved
+    and which booked `$7,412.94`.  Paying an account you hold is not spending
+    whoever is asked, so nothing here asks.
+    """
+
+    NEVER_A_PURCHASE = "never_a_purchase"
+    PAYS_AN_ACCOUNT_YOU_HOLD = "pays_an_account_you_hold"
+
+
+def _core_sentence(barred_by: CreationBar, merchant: str) -> str:
+    """Return the sentence both the screen and the door say about a bar.
+
+    **One wording, two registers.**  The screen adds what to do instead and the
+    door adds *nothing was changed*, but what the two claim about the line is
+    written once -- a control and the refusal behind it stating different
+    reasons is how an owner learns to distrust both.
+
+    Args:
+        barred_by: Which bar applies.
+        merchant: The bank's own merchant string, which is the policy key.
+
+    Returns:
+        The shared sentence.
+    """
+    if barred_by is CreationBar.NEVER_A_PURCHASE:
+        return (
+            f"You have said {merchant} is never a purchase, so nothing can "
+            f"record it as one."
+        )
+    return (
+        f"Your bank files {merchant} as a payment to an account you hold "
+        f"rather than as spending.  Money that moves between your own accounts "
+        f"was spent somewhere else, and your budget already holds it there, so "
+        f"recording it here would count it twice."
+    )
+
+
+def _refusal_for(barred_by: CreationBar, merchant: str) -> str:
+    """Return what the DOOR says when it refuses a line for *merchant*.
+
+    Private, and beside :func:`reject_barred_line` which is its only caller:
+    the wording of a refusal and the refusal itself are one fact, and the last
+    time this package let a sentence about a line live apart from the control
+    that acted on it, the sentence said *nothing here records it* over a select
+    that did.
+
+    Args:
+        barred_by: The bar the caller established.
+        merchant: The bank's own merchant string, which is the policy key.
+
+    Returns:
+        The refusal sentence, ending in the phrase every designed refusal in
+        this package ends in, because the door leaves nothing behind.
+    """
+    return (
+        f"{_core_sentence(barred_by, merchant)}  Match it to rows you already "
+        f"hold instead, or leave it where it is.  Nothing was changed."
+    )
+
+
+@dataclass(frozen=True)
+class CreationBars:
+    """Which of one account's merchants may not become purchases, and why.
+
+    **ONE derivation at one instant**, which is the argument
+    :class:`~._policy.PolicyView` makes beside it: what the owner has answered
+    and what the bank has filed are read from the same moment, so the screen
+    and the door cannot disagree about whether a merchant has been answered
+    for.
+
+    **It is NOT carried on the** :class:`~._scope.ReviewScope`, for the reason
+    :func:`~._reads._leftovers` states about the policies themselves: the
+    policy-stating route derives its scope ONCE, BEFORE its write, and a reader
+    taking these off the scope would show the answers that pass had just
+    replaced.  The batch door builds one per REQUEST instead, exactly as it
+    builds one :class:`~._create.MintedEnvelopes`.
+
+    Attributes:
+        never: The merchants answered *never a purchase*.
+        account_payments: The merchants whose lines this account's sources file
+            as a payment to an account the owner holds.
+
+    **There is no set of merchants ANSWERED-FOR here, and a first version had
+    one.**  It served the arm that let any answer lift the second bar, which is
+    the hole an adversarial review measured; with that arm gone the field had
+    no reader, and a stored fact nothing reads is the denormalization these
+    registries exist to remove.
+    """
+
+    never: "frozenset[str]"
+    account_payments: "frozenset[str]"
+
+    @classmethod
+    def build(
+        cls,
+        owner_id: int,
+        account_id: int,
+        policies: dict[str, MerchantPolicy] | None = None,
+    ) -> "CreationBars":
+        """Derive the bars for one pass over one account.
+
+        Args:
+            owner_id: The user the caller proved owns the account.
+            account_id: The account being reviewed.
+            policies: What the owner has answered, where the caller has already
+                read them (:attr:`~._policy.PolicyView.policies` has), else
+                ``None`` to read them here.  The same shape -- and the same
+                reason -- as :func:`~._policy.statable_merchants`' *stored*:
+                one request that has the answers must not ask for them twice.
+
+        Returns:
+            The :class:`CreationBars`.  Two indexed reads, or one when the
+            answers arrive with the call.
+        """
+        if policies is None:
+            policies = policies_for(owner_id, account_id)
+        return cls(
+            never=frozenset(
+                merchant for merchant, policy in policies.items()
+                if policy.is_never
+            ),
+            account_payments=account_payment_merchants(account_id),
+        )
+
+    def bar_for(self, merchant: "str | None") -> "CreationBar | None":
+        """Return why *merchant* may not become a purchase, or ``None``.
+
+        **Total over ``None`` without a branch for it**, and an adversarial
+        review 2026-08-24 is why there is no branch: a first version opened
+        with ``if merchant is None: return None``, which no mutation could ever
+        reach.  None of the three sets can hold ``NULL`` --
+        :func:`~._vocabulary.account_payment_merchants` filters ``merchant.isnot(None)``, and
+        the other two are keyed on ``merchant_destinations.merchant``, which is
+        ``NOT NULL`` -- so ``None`` is absent from all three and falls through
+        to the same answer the branch gave.  Two guards for one fact meant
+        neither could fail while the other stood, and the case written to grade
+        it asserted ``None is None``.  The surviving guard is the QUERY's,
+        which is also the one that has to hold: a set claiming ``NULL`` is a
+        merchant would be false about the data as well as dangerous here.
+
+        Args:
+            merchant: The line's merchant, or ``None`` where the source names
+                none -- which keys no policy and is filed under no category
+                this account can be asked about, so it is never barred.  The
+                same total :func:`~._placement.placements_for` gives it.
+
+        Returns:
+            The :class:`CreationBar`, or ``None`` when this merchant's lines
+            may be recorded as purchases.  **The owner's own answer is asked
+            FIRST**, so a merchant they have answered *never* is told they
+            decided rather than told what their bank filed -- and that ordering
+            is the whole of the difference between the two, because both
+            refuse.
+
+            **No answer lifts the second bar**, and a first version's
+            ``if merchant in self.answered: return None`` between the two arms
+            is what an adversarial review 2026-08-24 measured as the step's own
+            hole: the answer that lifted it was ``a new envelope``, which is
+            the answer the developer had saved for Capital One and the one that
+            booked `$7,412.94` through the sweep.  :func:`~._policy.
+            state_policies` refuses that answer outright for such a merchant
+            now, so a stored one cannot sit inert either.
+        """
+        if merchant in self.never:
+            return CreationBar.NEVER_A_PURCHASE
+        if merchant in self.account_payments:
+            return CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD
+        return None
+
+    def pays_an_account(self, merchant: "str | None") -> bool:
+        """Return whether a source files *merchant* as paying an account.
+
+        **The POLICY door's question, and the control's** -- not the line's,
+        which asks :meth:`bar_for` instead.  The door refuses an answer that
+        would file such a merchant's money as spending
+        (:func:`~._policy.state_policies`), and the control says why before the
+        answer is attempted, so the refusal is not the first the owner hears of
+        it.
+
+        Args:
+            merchant: The line's merchant, or ``None``, which is never one --
+                for the reason :meth:`bar_for` states, and through the same
+                single guard rather than a second one here.
+
+        Returns:
+            Whether it is one.
+        """
+        return merchant in self.account_payments
+
+
+@dataclass(frozen=True)
+class ParkedLine:
+    """One unexplained OUTFLOW that may not become a purchase.
+
+    Ruling **R-GJ**'s other arm: a line the create door is closed for is not
+    hidden, it is PARKED -- listed with the reason, and still tickable in the
+    hand-build form below, which is where a card payment meets the payback rows
+    it repays.  Measured: the one Capital One line handled that way
+    (`-$466.47`, 2026-06-17) is grouped with four ``CC Payback`` rows whose
+    RECORDED figures sum to exactly `$466.47`, so that one needed no difference
+    at all.  Naming one where a group does leave it is ruling **R-FN**'s
+    machinery, already built at ``X-f6d-4``.
+
+    **It is NOT a** :class:`~._reads.CreatableLine` **with the controls turned
+    off.**  That value carries the destinations a line may be recorded into and
+    the placement suggesting one of them, and a parked line has neither -- a
+    record that carried empty versions of both would be a control one Jinja
+    condition away from rendering again.
+
+    Attributes:
+        line: The bank's own record of the movement.
+        barred_by: Why the create door is closed for it.
+    """
+
+    line: BankLine
+    barred_by: CreationBar
+
+    @property
+    def reason(self) -> str:
+        """Return the sentence the screen prints beside this line.
+
+        Server-derived rather than a Jinja branch on :attr:`barred_by`, for the
+        reason :attr:`~._placement.Placement.sweep_class` is: a template
+        restating a partition is a second place for it to be wrong, and here
+        the two arms say opposite things about whether the owner has already
+        decided.
+        """
+        return (
+            f"{_core_sentence(self.barred_by, self.line.merchant)}  If some of "
+            f"your own rows are what this paid, tick them together below and "
+            f"match them."
+        )
+
+
+def reject_barred_line(
+    line: BankStatementLine, bars: CreationBars,
+) -> None:
+    """Refuse a line ruling **R-GJ** says may never become a purchase.
+
+    **The door's half of a structural refusal**, plan step
+    ``bank_import:X-ga``.  The screen does not render a create control for such
+    a line at all (:attr:`~._reads.ReviewSet.parked`), so this fires only on a
+    stale page or a crafted body -- and it has to exist for exactly that
+    reason: the last version of this rule was a paragraph on the screen with a
+    working select underneath it, and one YTD pass booked
+    **`$7,412.94`** of Capital One payments the app already held as ``CC
+    Payback`` rows straight past it.  A refusal a browser can walk around is
+    not a refusal.
+
+    **It reads the bars the PASS derived rather than deriving its own**, which
+    is the rule :class:`~._create.MintedEnvelopes` states beside it: a door that read
+    ``merchant_destinations`` per act would ask it 90 times for the
+    developer's own statement, and a redundant producer call inside one request
+    is this project's DRY violation rather than a cost.
+
+    It fires AFTER :func:`_load_line`, so a line this account does not hold, or
+    one another match already claims, is answered by the sentence about THAT
+    rather than by one about a merchant the caller may not even be entitled to
+    hear named.
+
+    Args:
+        line: The recorded line, already proved reachable by this pass.
+        bars: Which of this account's merchants may not become purchases, and
+            why.
+
+    Raises:
+        ValidationError: When a bar applies.  A 400: an owner working from a
+            page rendered before they answered for the merchant reaches it.
+    """
+    barred_by = bars.bar_for(line.merchant)
+    if barred_by is not None:
+        raise ValidationError(_refusal_for(barred_by, line.merchant))

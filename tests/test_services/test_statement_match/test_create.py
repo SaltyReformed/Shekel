@@ -56,6 +56,7 @@ from app.services.statement_match import _create  # pylint: disable=protected-ac
 
 from ._builders import (
     a_bank_line,
+    a_bars,
     a_basis,
     a_later_period,
     a_purchase,
@@ -157,6 +158,10 @@ def _record(seed_user, line, minted=None, **destination):
         # DERIVED HERE, so every call sees the rows this test has staged.
         a_scope(seed_user),
         minted if minted is not None else _create.MintedEnvelopes.none_yet(),
+        # ...and the ANSWERS this test has staged, for the same reason: a
+        # helper handing the door an empty ``CreationBars`` would make every
+        # case below blind to ruling R-GJ's refusal.
+        a_bars(seed_user),
     )
 
 

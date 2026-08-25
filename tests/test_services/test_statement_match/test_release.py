@@ -66,6 +66,7 @@ from app.services.statement_match import _create  # pylint: disable=protected-ac
 
 from ._builders import (
     a_bank_line,
+    a_bars,
     a_later_period,
     a_purchase,
     a_scope,
@@ -93,6 +94,7 @@ def _record(seed_user, line, minted=None, **destination):
         PurchaseCreation(line_id=line.id, **destination),
         a_scope(seed_user),
         minted if minted is not None else _create.MintedEnvelopes.none_yet(),
+        a_bars(seed_user),
     )
 
 

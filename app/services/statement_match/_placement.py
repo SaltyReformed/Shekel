@@ -35,8 +35,8 @@ from ._policy import MerchantPolicy, PolicyAnswer, PolicyView
 class PlacementKind(enum.Enum):
     """What a policy comes to for ONE creatable line.
 
-    Four, because a policy that cannot be applied HERE is a different thing to
-    say than one that says do nothing:
+    Three, because a policy that cannot be applied HERE is a different thing to
+    say than one that names a row:
 
     * ``RECORD_IN`` -- an existing budget line in this line's own pay period;
     * ``CREATE_NEW`` -- an envelope this line's recording would create, and
@@ -51,23 +51,30 @@ class PlacementKind(enum.Enum):
       placement is PRINTED beside the line's own destination select, which
       still opens on *leave this line alone*, so the owner sees which envelope
       it would reuse and may pick another;
-    * ``NOT_A_PURCHASE`` -- the owner said never;
     * ``UNRESOLVED`` -- a policy exists and does not reach this line, with the
       reason it does not.  **Reported rather than substituted for**: the
       obvious substitution, falling back to a new envelope when the named
       template has no row in this period, would file money somewhere the owner
       never named.
+
+    **There was a fourth, ``NOT_A_PURCHASE``, and ruling R-GJ deleted it** (plan
+    step ``bank_import:X-ga``).  *Never a purchase* stopped being something a
+    policy PLACES and became something that BARS: it is a
+    :class:`~._bars.CreationBar` now, resolved before a destination is looked
+    for, so the line never reaches this module at all.  Keeping a kind here for
+    it would be a second statement of a refusal -- and what that second
+    statement bought while it existed was a sentence saying "nothing here
+    records it" printed directly beneath a select that did.
     """
 
     RECORD_IN = "record_in"
     CREATE_NEW = "create_new"
-    NOT_A_PURCHASE = "not_a_purchase"
     UNRESOLVED = "unresolved"
 
     # The screen asks :class:`Placement`'s own questions rather than comparing
     # these strings: a Jinja condition restating a partition is a second place
-    # for it to be wrong, and a typo in one of four literals falls through to
-    # the arm that prints an unresolved reason -- ``None`` for the other three.
+    # for it to be wrong, and a typo in one of three literals falls through to
+    # the arm that prints an unresolved reason -- ``None`` for the other two.
     # Named by adversarial financial review 2026-08-19.
 
 
@@ -77,7 +84,7 @@ class Placement:
 
     Attributes:
         merchant: The line's merchant, which is the policy's key.
-        kind: Which of the four (:class:`PlacementKind`).
+        kind: Which of the three (:class:`PlacementKind`).
         destination: The budget line to file into, for
             :attr:`PlacementKind.RECORD_IN`.  A
             :class:`~._creations.PurchaseDestination` drawn from the pass's own
@@ -116,18 +123,14 @@ class Placement:
         return self.kind is PlacementKind.CREATE_NEW
 
     @property
-    def is_not_a_purchase(self) -> bool:
-        """Return whether the owner said this merchant is never a purchase."""
-        return self.kind is PlacementKind.NOT_A_PURCHASE
-
-    @property
     def sweep_class(self) -> "str | None":
         """Return which RISK class ticking this line would fall in.
 
         ``"into_open"`` files into a budget line that has not closed, which a
         reservation absorbs; ``"into_closed"`` raises what a CLOSED row records
         as its cost; ``"creates"`` mints a budget line the account did not
-        have.  ``None`` for a placement that is not an act at all.
+        have.  ``None`` for an UNRESOLVED placement, which names no row to act
+        on.
 
         **A PARTITION, and it exists because ruling R-FZ(c) already demanded
         one.** That ruling swept proposals per CLASS rather than by one "tick
@@ -157,10 +160,9 @@ class Placement:
 
         **The ONE place the sweep's target value is decided**, so the control
         that ticks a line and the door that writes it cannot disagree about
-        which option a policy means.  ``None`` for a placement that is not an
-        act -- there is nothing to tick for *never a purchase* or for a policy
-        that does not reach here, and rendering a value for either would be a
-        tick the owner never stated.
+        which option a policy means.  ``None`` for an UNRESOLVED placement --
+        there is nothing to tick for a policy that does not reach here, and
+        rendering a value for it would be a tick the owner never stated.
         """
         if self.kind is PlacementKind.RECORD_IN:
             return str(self.destination.transaction_id)
@@ -340,10 +342,16 @@ def placements_for(
         offered: The destinations open to this line, in its own pay period.
 
     Returns:
-        The :class:`Placement`, or ``None`` when the owner has not stated one
-        for this merchant.  ``None`` and
-        :attr:`PlacementKind.NOT_A_PURCHASE` are different answers and the
-        screen says them differently.
+        The :class:`Placement`, or ``None`` when nothing is placed -- which is
+        two facts this function deliberately does not distinguish, because
+        neither puts anything beside the line's own control: the owner has not
+        stated a policy for this merchant, or they have stated *never a
+        purchase*.  **The second is a BAR, not a placement** (ruling **R-GJ**):
+        it is answered by :meth:`~._bars.CreationBars.bar_for`, which
+        :func:`~._reads._creatable_lines` asks first, so a line carrying that
+        answer never reaches here at all.  The arm below stands anyway, because
+        a total function may not fall through a stored answer into
+        :func:`_template_placement` with a ``NULL`` template id.
     """
     if merchant is None:
         return None
@@ -351,7 +359,7 @@ def placements_for(
     if policy is None:
         return None
     if policy.answer is PolicyAnswer.NEVER:
-        return Placement(merchant=merchant, kind=PlacementKind.NOT_A_PURCHASE)
+        return None
     if policy.answer is PolicyAnswer.NEW_ENVELOPE:
         return _new_envelope_placement(policy, merchant, offered, view)
     return _template_placement(policy, merchant, offered, view.template_names)

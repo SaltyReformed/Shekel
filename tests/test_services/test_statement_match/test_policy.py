@@ -327,46 +327,60 @@ class TestWhatAPolicyResolvesTo:
         assert archived.id not in active
         assert seed_user["categories"]["Rent"].id in active
 
-    def test_a_NEVER_answer_places_nothing_and_ticks_nothing(
+    def test_a_NEVER_answer_PLACES_NOTHING_because_it_is_a_bar(
         self, app, db, seed_user,
     ):
-        """The answer a derivation from history could never have expressed.
+        """Ruling **R-GJ**: *never a purchase* stopped being a suggestion.
 
-        Capital One Credit Card is 9 of the developer's 91 unexplained
-        outflows and `-$7,412.94` of the `-$11,336.36` in that list, and every
-        one of them must never become a purchase -- the app holds that money as
-        CC Payback rows already.  ``select_value`` is ``None``, so the sweep
-        passes over it: saying "never" can never tick anything.
+        Capital One Credit Card is 9 of the developer's 91 unexplained outflows
+        and `-$7,412.94` of the `-$11,336.36` in that list, and every one of
+        them must never become a purchase -- the app holds that money as CC
+        Payback rows already.  Until plan step ``bank_import:X-ga`` this answer
+        produced a ``NOT_A_PURCHASE`` placement, which withheld a sweep value
+        and printed a sentence -- beside a destination select that still
+        offered every envelope in the period, and above a create door that read
+        no policy at all.  One YTD pass recorded all nine through it.
+
+        **A placement is a suggested DESTINATION, and for this answer there is
+        none**, so the honest return is nothing: what the answer now produces
+        is a :class:`~app.services.statement_match.CreationBar`, graded in
+        ``test_bars``.  This case pins that the placement seam no longer speaks
+        for it -- a second statement of a refusal is what the last one cost.
+
+        It is a FIRING CONTROL for the arm that returns early: delete it and
+        this stored answer falls through into ``_template_placement`` with a
+        ``NULL`` template id, which names every offerable row in the period.
         """
         policy = MerchantPolicy(
             merchant="Capital One Credit Card", answer=PolicyAnswer.NEVER,
         )
 
-        placement = placements_for(
+        assert placements_for(
             "Capital One Credit Card", _view(policy), [],
-        )
+        ) is None
 
-        assert placement.kind is PlacementKind.NOT_A_PURCHASE
-        assert placement.select_value is None
-
-    def test_NOT_SAID_and_NEVER_are_different_answers(
+    def test_a_stored_NEVER_does_not_fall_through_to_a_TEMPLATE_placement(
         self, app, db, seed_user,
     ):
-        """The distinction the whole table exists to hold.
+        """The same arm, shown against a period that HAS offerable rows.
 
-        Without a stored NEVER the screen cannot tell "I have not decided about
-        Capital One" from "I have decided: no", so it re-asks nine questions on
-        every pass forever.  ``None`` here and a ``NOT_A_PURCHASE`` placement
-        are the two answers, and they are not equal.
+        The case above passes an empty offer set, so an early return and a
+        fall-through are indistinguishable in it: ``_template_placement`` would
+        find no match either way.  This one hands the resolver a real
+        destination, which a fall-through WOULD name -- and one whose
+        ``template_id`` is ``None``, exactly what a ``NULL`` policy template
+        would compare equal to.
         """
-        assert placements_for("Amazon", _view(), []) is None
-
-        policy = MerchantPolicy(merchant="Amazon", answer=PolicyAnswer.NEVER)
-        assert placements_for("Amazon", _view(policy), []) == (
-            Placement(
-                merchant="Amazon", kind=PlacementKind.NOT_A_PURCHASE,
-            )
+        envelope = a_transaction(seed_user, name="Groceries", is_envelope=True)
+        envelope.template_id = None
+        db.session.flush()
+        policy = MerchantPolicy(
+            merchant="Capital One Credit Card", answer=PolicyAnswer.NEVER,
         )
+
+        assert placements_for(
+            "Capital One Credit Card", _view(policy), [_destination(envelope)],
+        ) is None
 
     def test_a_line_naming_NO_merchant_reaches_no_policy_at_all(
         self, app, db, seed_user,
@@ -847,14 +861,22 @@ class TestTheSectionTheScreenRenders:
         assert row.line_count == 2
         assert row.total == Decimal("-55.00")
 
-    def test_the_sweep_counts_only_what_it_would_TICK(
+    def test_a_NEVER_line_leaves_the_creatable_list_ENTIRELY(
         self, app, db, seed_user,
     ):
-        """The caption cannot promise a number the control does not deliver.
+        """Ruling **R-GJ**, end to end through the reader.
 
-        A "never a purchase" answer places nothing, and so does a policy that
-        does not reach this line's pay period -- both have no select value, so
-        both are outside the count and outside the sweep.
+        The caption cannot promise a number the control does not deliver -- and
+        since plan step ``bank_import:X-ga`` it cannot render a control either.
+        A merchant answered *never a purchase* is not one line of the create
+        card with its select disabled: it is not in that card at all, and it is
+        listed among the parked lines instead, where the only act offered is
+        the hand-built group match ruling R-GJ leaves open.
+
+        The other half of the old sweep rule -- a policy that does not reach
+        this line's pay period places nothing either -- is graded by
+        ``TestWhatAPolicyResolvesTo``'s two UNRESOLVED cases, which is where
+        that partition lives.
         """
         envelope = a_transaction(
             seed_user, name="Groceries", is_envelope=True,
@@ -871,8 +893,15 @@ class TestTheSectionTheScreenRenders:
 
         review = review_set(a_scope(seed_user))
 
-        assert len(review.creatable) == 2
+        assert [item.line.merchant for item in review.creatable] == ["Amazon"]
+        assert [item.line.merchant for item in review.parked] == ["Capital One"]
         assert review.placed_by_class == {"into_open": 1}
+        # ...and the merchant control still asks about BOTH, because the
+        # parked one is parked for want of an answer and this is where an
+        # answer is given.
+        assert {row.merchant for row in review.merchants.merchants} == {
+            "Amazon", "Capital One",
+        }
 
 
 class TestALineDatedMadeAfterItPosted:

@@ -54,6 +54,7 @@ from tests._test_helpers import count_amount_bases
 
 from ._builders import (
     a_bank_line,
+    a_bars,
     a_later_period,
     a_purchase,
     a_scope,
@@ -1200,7 +1201,7 @@ class TestABatchBooksWhatTheSameActsBookOneAtATime:
                 # SUPPOSED to change.
                 singly_did.append(statement_match.create_purchase_from_line(
                     creation, a_scope(seed_user),
-                    _create.MintedEnvelopes.none_yet(),
+                    _create.MintedEnvelopes.none_yet(), a_bars(seed_user),
                 ))
                 _db.session.flush()
             singly = self._money(db, seed_user, account)
@@ -1650,7 +1651,7 @@ class TestConvergingMovesTheSameMoneyAsNotConverging:
         for creation in creations:
             statement_match.create_purchase_from_line(
                 creation, a_scope(seed_user),
-                _create.MintedEnvelopes.none_yet(),
+                _create.MintedEnvelopes.none_yet(), a_bars(seed_user),
             )
             _db.session.flush()
         assert _db.session.execute(_db.text(

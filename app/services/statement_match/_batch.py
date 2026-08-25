@@ -78,6 +78,7 @@ from app.exceptions import NotFoundError, ValidationError
 from app.extensions import db
 
 from ._accept import accept_match
+from ._bars import CreationBars
 from ._create import MintedEnvelopes, create_purchase_from_line
 from ._creations import PurchaseCreation
 from ._scope import ReviewScope
@@ -464,6 +465,26 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
     # the scope is built by the route: a door that made its own would be a door
     # that converges with nothing, one line at a time, which is the defect.
     minted = MintedEnvelopes.none_yet()
+    # **One derivation per DOOR, and that is the precise claim** -- an
+    # adversarial review 2026-08-24 measured a first version of this comment
+    # saying "per REQUEST", which is false: this route re-renders after the
+    # write, and ``_leftovers`` builds its own bars for the screen, so
+    # ``merchant_destinations`` is read once here and once there.  That is the
+    # shape ``state_policies`` already argues for and ships -- a door reads for
+    # ITSELF across a write boundary, because sharing one read across it would
+    # rest on an enumeration of what cannot have changed.
+    #
+    # What this DOES remove is the per-ACT read: ruling **R-GJ** bars a
+    # merchant from becoming a purchase, nothing inside a batch can restate a
+    # policy, and a door that re-read the table per act would ask it 90 times
+    # for the developer's own statement.  Built HERE rather than on the
+    # :class:`~._scope.ReviewScope` because the policy-stating route derives
+    # its scope BEFORE its write, so a scope-carried answer would be the one
+    # that pass had just replaced.  It is built unconditionally, including for
+    # a pass carrying no creations at all: two indexed reads, measured at
+    # 0.14 ms over the developer's 378 lines, against a value whose only
+    # cheaper form would be one that means *nothing is barred*.
+    bars = CreationBars.build(scope.owner_id, scope.account_id)
 
     for submission in batch.matches:
         line_ids = tuple(sorted(submission.line_ids))
@@ -488,7 +509,7 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
         recorded = _run(
             tally, line_ids,
             lambda c=creation: create_purchase_from_line(
-                c, scope, minted,
+                c, scope, minted, bars,
             ),
         )
         if recorded is None:

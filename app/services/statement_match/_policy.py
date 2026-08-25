@@ -49,6 +49,8 @@ from app.utils.log_events import (
     log_event,
 )
 
+from ._vocabulary import account_payment_merchants
+
 
 _logger = logging.getLogger(__name__)
 
@@ -548,6 +550,53 @@ def _reject_incomplete_new_envelope(statement: PolicyStatement) -> None:
         )
 
 
+def _reject_spending_answer(
+    statement: PolicyStatement, account_payments: "frozenset[str]",
+) -> None:
+    """Refuse filing a merchant's money as spending when it pays an ACCOUNT.
+
+    Ruling **R-GJ**, plan step ``bank_import:X-ga``.  A merchant whose lines a
+    SOURCE files as a payment to an account the owner holds has no
+    create-a-purchase arm and no answer opens one
+    (:meth:`~._bars.CreationBars.bar_for`) -- so a stored *template* or *new
+    envelope* answer for one would be an answer nothing could ever apply.
+
+    **Refused rather than left inert**, and an adversarial review 2026-08-24 is
+    why: while any answer LIFTED the bar, ``a new envelope`` was the answer the
+    developer had actually saved for ``Capital One Credit Card`` and the one
+    that booked `$7,412.94` through the sweep.  Silently keeping such a row
+    would leave the same words on the screen meaning something different, which
+    is worse than the refusal -- the owner would read *Capital One goes in a
+    new envelope* and be right about nothing.
+
+    *Never a purchase* and the withdrawal are both still legal, because both
+    are TRUE of such a merchant.
+
+    Args:
+        statement: What the owner submitted for one merchant.
+        account_payments: The merchants a source files as paying an account
+            (:attr:`~._bars.CreationBars.account_payments`).
+
+    Raises:
+        ValidationError: When a spending answer is stated for one of them.
+            Refuses THIS statement only -- the pass's other answers land, which
+            is what the per-item savepoint is for.
+    """
+    if statement.merchant not in account_payments:
+        return
+    if statement.answer not in (
+        PolicyAnswer.TEMPLATE, PolicyAnswer.NEW_ENVELOPE,
+    ):
+        return
+    raise ValidationError(
+        f"Your bank files {statement.merchant} as a payment to an account you "
+        f"hold rather than as spending, so it cannot be filed in a budget "
+        f"line -- the money it moved was spent somewhere else and your budget "
+        f"already holds it there.  \"Never a purchase\" is the answer that "
+        f"fits.  Nothing was changed for it."
+    )
+
+
 def _checked_category(statement: PolicyStatement, owner_id: int) -> Category:
     """Return the category the new-envelope answer names, refusing another's.
 
@@ -723,6 +772,12 @@ def state_policies(
     # cost.  Found by adversarial design review 2026-08-19.
     _refuse_unknown_merchants(statements, account_id, stored)
     templates = offerable_templates(account_id)
+    # **Read HERE rather than taken from a caller**, for the reason the
+    # templates beside it are: this door reaches nothing a read pass holds, and
+    # a fact threaded in across a write boundary would rest on an enumeration
+    # of what cannot have changed.  One indexed statement over the account's
+    # recorded lines (ruling **R-GJ**, plan step ``bank_import:X-ga``).
+    account_payments = account_payment_merchants(account_id)
     said, refused, unchanged = [], [], 0
     for statement in statements:
         if statement.answer is None and statement.merchant not in stored:
@@ -734,6 +789,16 @@ def state_policies(
             continue
         savepoint = db.session.begin_nested()
         try:
+            # **BEFORE ``_apply_one``, so it fires ahead of that function's
+            # unchanged short-circuit** (ruling **R-GJ**).  An answer this
+            # refuses may ALREADY be stored -- the developer's own
+            # ``Capital One Credit Card -> a new envelope`` was -- and a bank
+            # may start filing a merchant as an account payment after an answer
+            # was given, so restating one has to be refused rather than
+            # reported as no change.  It costs a standing refusal on that one
+            # merchant until it is corrected, which is the loud end of a choice
+            # whose quiet end is an illegal answer stored forever.
+            _reject_spending_answer(statement, account_payments)
             sentence = _apply_one(
                 statement, owner_id, account_id, stored, templates,
             )

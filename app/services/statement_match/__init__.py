@@ -37,6 +37,16 @@ The public surface, and what each piece is for:
   it did.  It records the correspondence through the same function
   :func:`accept_match` does, so there is still exactly one place a match is
   written.
+* :class:`CreationBars` -- which of an account's merchants may NOT become
+  purchases at all, and why (ruling **R-GJ**, plan step ``bank_import:X-ga``).
+  Two bars: the owner answered *never a purchase*, or a SOURCE files the
+  merchant as a payment to a credit card and they have not answered for it at
+  all.  A barred line is not offered a create control and is refused at the
+  door; it is listed as a :class:`ParkedLine` beside the hand-build form, where
+  the group match this ruling leaves open is made.  Until this step *never a
+  purchase* only withheld a sweep value, and one YTD pass recorded
+  **`$7,412.94`** of card payments the app already held as ``CC Payback`` rows
+  through the select printed beneath the warning.
 * :func:`destinations_for` -- the budget lines that door may write into, which
   is the SAME set the screen offers, and :func:`matched_subjects` /
   :func:`unmatched_destinations`, which are the one statement of what an
@@ -85,6 +95,7 @@ owner has not accepted, and :mod:`._propose` cannot write at all.
 """
 
 from ._accept import AcceptedMatch, accept_match
+from ._bars import CreationBar, CreationBars, ParkedLine
 from ._release import (
     PlannedRemoval,
     PlannedRemovals,
@@ -139,13 +150,12 @@ from ._policy import (
 )
 from ._reads import (
     CreatableLine,
-    MerchantSection,
-    MerchantSummary,
     ReviewBounds,
     ReviewSet,
     awaiting_review_count,
     review_set,
 )
+from ._section import MerchantSection, MerchantSummary
 from ._scope import ReviewScope
 
 __all__ = [
@@ -159,6 +169,8 @@ __all__ = [
     "Candidates",
     "CreatableLine",
     "CreatedPurchase",
+    "CreationBar",
+    "CreationBars",
     "HandTotals",
     "DAY_WINDOW",
     "NEAR_MISS_BOUND",
@@ -169,6 +181,7 @@ __all__ = [
     "MatchProposal",
     "MatchSubmission",
     "NewEnvelope",
+    "ParkedLine",
     "Placement",
     "PlacementKind",
     "PlannedRemoval",

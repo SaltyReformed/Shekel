@@ -28,6 +28,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services.cash_ledger import amount_basis
 from app.services.statement_match import (
+    CreationBars,
     MatchSubmission,
     ReviewScope,
     ReviewedRow,
@@ -251,7 +252,7 @@ def an_import(seed_user, account=None):
 def a_bank_line(
     seed_user, statement, *, amount="-180.00", posted_on=None,
     description="ACH DEBIT DUKEENERGY", sequence_in_group=0,
-    transaction_on=None, merchant=None,
+    transaction_on=None, merchant=None, source_category=None,
 ):
     """Stage and return one recorded bank line under *statement*.
 
@@ -280,6 +281,15 @@ def a_bank_line(
             default because it is the state every guard here has to survive: a
             line with no merchant joins no destination policy, and the label
             readers fall back to *description*.
+        source_category: The BANK's own category string, or ``None`` for a
+            source stating none -- which is the DEFAULT, because it is
+            provenance and almost nothing reads it.  Ruling **R-GJ** is the one
+            thing that does: a merchant whose lines the source files under a
+            card-payment category has no create arm until the owner answers for
+            it (:class:`~app.services.statement_match.CreationBars`).  Stated
+            here VERBATIM as the source spells it, never mapped, for the reason
+            *merchant* is not derived from *description*: a builder that
+            re-ran a translation would move with it and grade nothing.
 
     Returns:
         The staged
@@ -294,6 +304,7 @@ def a_bank_line(
         amount=Decimal(amount),
         description=description,
         merchant=merchant,
+        source_category=source_category,
         sequence_in_group=sequence_in_group,
     )
     db.session.add(line)
@@ -384,6 +395,35 @@ def a_scope(seed_user, account=None):
         The :class:`~app.services.statement_match.ReviewScope`.
     """
     return ReviewScope.build(
+        seed_user["user"].id, (account or seed_user["account"]).id,
+    )
+
+
+def a_bars(seed_user, account=None):
+    """Return the pass's creation BARS, for a test calling the door directly.
+
+    Ruling **R-GJ**, plan step ``bank_import:X-ga``.
+    :func:`~app.services.statement_match.apply_reviewed` derives one per
+    REQUEST and threads it, so a case calling
+    :func:`~app.services.statement_match.create_purchase_from_line` on its own
+    is standing in for that caller and must supply the same thing.
+
+    **DERIVED rather than an empty value**, and that is the property under test
+    as much as a convenience: a helper that handed the door a
+    ``CreationBars`` with nothing in it would make every case here blind to the
+    refusal the step exists to add, which is exactly the *fixture that bypasses
+    the production door* shape this suite has been burned by before.  Built at
+    the point of USE, for the reason :func:`a_scope` is.
+
+    Args:
+        seed_user: The seeded user bundle.
+        account: The account being reviewed; the seeded checking one by
+            default.
+
+    Returns:
+        The :class:`~app.services.statement_match.CreationBars`.
+    """
+    return CreationBars.build(
         seed_user["user"].id, (account or seed_user["account"]).id,
     )
 
