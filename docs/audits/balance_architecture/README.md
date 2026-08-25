@@ -899,10 +899,21 @@ hides.
   action is a trace**, because the two halves are different sizes and only one is obviously worth it.
   **The money half:** `Money`, a value type over `Decimal` that cannot be constructed from a `float`
   and whose rounding is a method carrying the app's rule, retiring W9901 and W9904 together.
-  **Measured: 44 `Numeric(12, 2)` money columns and 37 `.quantize(` call sites**, so this is the
-  largest refactor in the inventory and its trace must decide whether it lands at the ORM boundary (a
-  `TypeDecorator`, so the blast radius is the type rather than the call sites) or as a hand
-  conversion. The `TypeDecorator` route is the one that makes the checkers redundant BY CONSTRUCTION.
+  **Re-measured 2026-08-25 (was "44 and 37"): 47 `Numeric(12, 2)` columns, 36 `.quantize(` sites,
+  17 bare.** Its trace must decide whether it lands at the ORM boundary (a `TypeDecorator`, so the
+  blast radius is the type rather than the call sites) or as a hand conversion -- the
+  `TypeDecorator` route is the one that makes the checkers redundant BY CONSTRUCTION.
+  **The SCHEMA layer is the third surface and the only live money today** -- the corrected census
+  **N-212** cites, by AST parse of `app/schemas/` on 2026-08-25: **103 of 103 `fields.Decimal` carry
+  `places=` and NOT ONE passes `rounding=`**, so every one quantizes against `ROUND_HALF_EVEN` and
+  disagrees with `round_money` at every half-cent boundary (marshmallow 4.3.0: `0.005 -> 0.00`,
+  `4.345 -> 4.34`). It was **104 of 104** at `afbf3b3e`, the tree N-212 was written against, so its
+  five were a line-based grep rather than a stale count. **The same type answers N-256**: 47 carry
+  no upper bound (salary 14, loans 11, savings 6, transfers 4, transactions 3, 9 elsewhere) and
+  `accounts.py:62` / `:82`, both halves of a balance assertion, carry no validator at all, so
+  `10 ** 10` passes the schema and 500s at flush. One `Money` field type stating the mode and the
+  `numeric(12,2)` domain ONCE closes both, where 150 hand-added arguments would be the same rule
+  maintained by remembering.
   **The label half is small and should not wait for it:** `DisplayLabel`, a type returned by a ref
   table's `.name` whose `__eq__` against a `str` RAISES, retiring W9902 and its two module sets. The
   Jinja half needs its own answer.
