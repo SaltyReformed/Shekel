@@ -9339,9 +9339,15 @@ class TestTheBalanceHistoryCard:
     ):
         """The non-vacuity control for the caption above.
 
-        A same-day true-up leaves the two clocks equal, so the caption must be
-        absent -- one that fired on every row would stop distinguishing
-        anything.
+        A same-day true-up records one civil day under both names, so the
+        caption must be absent -- one that fired on every row would stop
+        distinguishing anything.
+
+        **It said "leaves the two CLOCKS equal" until finding N-299**, and that
+        was the defect in one sentence: the entered day was PostgreSQL's and
+        the observed day the application's, so a same-day true-up left them
+        equal only where the two clocks agreed.  Under the calendar sweep they
+        do not, and this control was red on every matrix date from 2026-08-10.
         """
         with app.app_context():
             acct_id = seed_user["account"].id
@@ -9355,6 +9361,58 @@ class TestTheBalanceHistoryCard:
 
             assert "$1,500.00" in html
             assert "entered" not in html
+
+    def test_the_entered_day_is_stored_not_read_back_off_created_at(
+        self, app, auth_client, db, seed_user, seed_periods_today,
+    ):
+        """The caption's day is the app's, and moving ``created_at`` cannot move it.
+
+        **The regression control for finding N-299**, and it is what makes the
+        two sweep tests above non-vacuous on an ordinary clock: they only
+        distinguish a stored day from a derived one on a calendar position
+        where the Python and PostgreSQL clocks disagree, which is exactly the
+        position the sweep runs at and the ordinary suite never reaches.
+
+        This reaches it directly instead.  A same-day true-up is recorded
+        through the real door, and then the row's ``created_at`` alone is moved
+        three days -- the state the midnight race produces in production, where
+        ``display_today()`` answers one civil day and PostgreSQL's ``now()``
+        the next.  The caption must stay ABSENT: the day the card compares is
+        stored, not read back off the instant.  A revert to the derived
+        property fails here with an ``entered`` caption naming the moved day.
+
+        ``created_at`` keeps its own job either way, and this test does not
+        touch it: it orders assertions that share an ``observed_on``.
+        """
+        with app.app_context():
+            acct_id = seed_user["account"].id
+            today = display_today()
+            self._assert_balance(
+                auth_client, acct_id, "1500.00", observed_on=today,
+            )
+
+            row = (
+                db.session.query(AccountAnchorHistory)
+                .filter_by(account_id=acct_id)
+                .order_by(AccountAnchorHistory.id.desc())
+                .first()
+            )
+            assert row.recorded_on == today, (
+                "the write door must record the APPLICATION's civil day"
+            )
+            # Move ONLY the recording instant, leaving the stored entered day.
+            row.created_at = row.created_at + timedelta(days=3)
+            db.session.commit()
+
+            html = auth_client.get(
+                f"/accounts/{acct_id}/balance-history",
+            ).data.decode()
+
+            assert "$1,500.00" in html
+            assert "entered" not in html, (
+                "the entered day is a stored fact; deriving it from "
+                "created_at is what made the caption compare two clocks"
+            )
 
     def test_a_modelled_account_shows_no_reconciliation_columns(
         self, app, auth_client, seed_user, db, seed_periods_today,

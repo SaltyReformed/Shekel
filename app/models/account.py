@@ -15,6 +15,7 @@ from app.models.mixins import (
     TimestampMixin,
     UserScopedMixin,
 )
+from app.utils.dates import display_today
 
 
 class Account(
@@ -274,6 +275,54 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
     # ``(created_at AT TIME ZONE 'America/New_York')::date``, the derivation it
     # replaces, so no rendered figure moved on the day the column shipped.
     observed_on = db.Column(db.Date, nullable=False)
+    # The civil day this assertion was ENTERED, in the user's timezone --
+    # STORED and APPLICATION-supplied, which is finding **N-299** (developer
+    # ruling 2026-08-25).
+    #
+    # It was derived from ``created_at`` until this column shipped, and the
+    # backfill is that derivation verbatim
+    # (``(created_at AT TIME ZONE 'America/New_York')::date``), so no rendered
+    # caption moved on the day it landed.  What the derivation could not do is
+    # be RIGHT: ``created_at`` is ``server_default=db.func.now()``, stamped by
+    # PostgreSQL, while ``observed_on`` defaults to the APPLICATION's
+    # ``display_today()``.  The balance-history card captions a row as
+    # back-dated when the two differ, so the caption compared two clocks --
+    # which made the weekly calendar sweep red on every matrix date from
+    # 2026-08-10 (``time_machine`` fakes the Python clock and cannot fake
+    # Postgres), and which in production mis-captions any true-up submitted
+    # in the last second of a civil day as back-dated.
+    #
+    # **The split is a responsibility split, not a duplicate.**  ``created_at``
+    # keeps the job this table's own docstring gives it -- ordering two
+    # assertions that share an ``observed_on`` -- because a DAY has no
+    # resolution to rank a bookkeeping session with.  This column is what a
+    # reader SHOWS.  That is the distinction
+    # :class:`~app.services.balance_at.CashAnchorRow` already stated between
+    # ranking and showing; it stopped one step short of giving the shown value
+    # its own clock.
+    #
+    # The default is a plain callable on the APPLICATION's clock, and every
+    # caller that means something else states its own value.
+    #
+    # **A first version made this default CONTEXT-SENSITIVE**: it inspected the
+    # INSERT's parameters and, where a caller had pinned ``created_at``,
+    # derived the day from that instant instead.  Two independent adversarial
+    # reviews killed it on 2026-08-25, on measurement rather than taste.
+    # **1,807 tests passed with its pinned branch deleted**, so the branch was
+    # ungraded.  ``Insert.from_select`` renders a Python-side default with no
+    # row context, so a future backfill of this table would have stamped every
+    # row with the deploy date and raised nothing.  And its only beneficiaries
+    # were three test fixtures -- test-shaped logic living in a production
+    # model, which is rule 13.
+    #
+    # The three fixtures state the value themselves now
+    # (``_test_helpers.add_anchor_history`` / ``override_anchor`` /
+    # ``_restamp_assertion``), so the rule sits where the fixture author reads
+    # it.  A bulk ``UPDATE`` reaches no column default at all, which is why
+    # ``tests/conftest.py``'s re-anchoring step writes both columns.
+    recorded_on = db.Column(
+        db.Date, nullable=False, default=display_today,
+    )
 
     # Relationships
     account = db.relationship("Account", back_populates="anchor_history")

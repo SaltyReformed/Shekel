@@ -172,6 +172,19 @@ class CashAnchorFact:
             business date and one is a tie-break over assertions about the same
             business date.  It was the partition key until ruling R-DH, which is
             what cost production ``$4,001.42`` (see the module docstring).
+        recorded_on: The civil day the assertion was ENTERED, in the user's
+            timezone.  **Read from the stored
+            ``account_anchor_history.recorded_on``, not derived from
+            :attr:`asserted_at`** (finding **N-299**, developer ruling
+            2026-08-25).  It partitions nothing and orders nothing; its one
+            reader is the balance-history card, which captions a row as
+            back-dated when it differs from :attr:`observed_on`.  Deriving it
+            put that comparison across two clocks -- this column is the
+            APPLICATION's ``display_today()`` and :attr:`asserted_at` is
+            PostgreSQL's ``now()`` -- so an ordinary same-day true-up read as
+            back-dated wherever the two could disagree.  Nothing else in the
+            walk may read it: an assertion's effect on a balance is a function
+            of :attr:`observed_on` alone.
         is_opening: True for the account's first history row; False for a
             true-up.  **A LABEL, not a partition input** (finding N-133 / F1):
             the walk treats both kinds identically -- an assertion closes its
@@ -189,6 +202,7 @@ class CashAnchorFact:
     anchor_balance: Decimal
     observed_on: date
     asserted_at: datetime
+    recorded_on: date
     is_opening: bool
 
     @property
@@ -420,6 +434,11 @@ def cash_anchor_facts(account_id: int) -> list[CashAnchorFact]:
             # figure and every row keeps the day the engine already gave it.
             observed_on=row.observed_on,
             asserted_at=utc_instant(row.created_at),
+            # The day it was TYPED, stored rather than converted out of
+            # ``created_at`` -- finding N-299.  See the attribute's docstring:
+            # the caption that reads it compares against ``observed_on``, and
+            # the two must come off one clock.
+            recorded_on=row.recorded_on,
             is_opening=(index == 0),
         )
         for index, row in enumerate(rows)

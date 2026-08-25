@@ -3588,6 +3588,10 @@ def add_anchor_history(db_session, account, period, balance, days_ago=0):
         anchor_balance=Decimal(str(balance)),
         created_at=created,
         observed_on=observed_day_of(created),
+        # The entered day is the pinned instant's, not today's (**N-299**):
+        # the column default is a plain ``display_today`` and a historical row
+        # must say what it means rather than inherit the wall clock.
+        recorded_on=observed_day_of(created),
     )
     db_session.add(entry)
     db_session.flush()
@@ -3665,6 +3669,8 @@ def override_anchor(db_session, account, period, balance, *, at=None):
         anchor_balance=balance,
         created_at=asserted_at,
         observed_on=observed_day_of(asserted_at),
+        # The entered day is the pinned instant's (**N-299**), as above.
+        recorded_on=observed_day_of(asserted_at),
     )
     db_session.add(history)
     db_session.flush()
@@ -3763,6 +3769,15 @@ def _restamp_assertion(db_session, account, at, *, newest):
     # column since plan step 2), and it is not what any caller of a *restamp*
     # helper means: they are placing the whole assertion, not editing its date.
     row.observed_on = observed_day_of(at)
+    # And so does the ENTERED day (finding **N-299**).  It is a stored column
+    # since 2026-08-25 and its default answered ``display_today()`` when the
+    # row was INSERTed by ``create_account``; a restamp is an UPDATE, which no
+    # column default reaches.  Leaving it behind builds a row asserting a
+    # balance was true on a day it was typed BEFORE -- measured at three days
+    # on the ``seed_periods`` fixture -- which is unreachable in production
+    # (``resolve_observation_day`` refuses a future ``observed_on``) and would
+    # put a spurious "entered" caption on a row that is not back-dated.
+    row.recorded_on = observed_day_of(at)
     db_session.flush()
     return row
 
@@ -3818,7 +3833,16 @@ def append_balance_assertion(
     )
     db_session.add(row)
     db_session.flush()
-    row.created_at = at if recorded_at is None else recorded_at
+    typed_at = at if recorded_at is None else recorded_at
+    row.created_at = typed_at
+    # **Both stored halves of the recording clock move together** (finding
+    # **N-299**).  ``recorded_on`` is a stored column since 2026-08-25 whose
+    # default is the wall clock, and this helper inserts first and re-stamps
+    # after -- so the default has already answered ``display_today()`` by the
+    # time the instant is pinned.  Restamping only the instant would build the
+    # row this helper exists to make impossible: one whose ordering says it was
+    # typed in June and whose card caption says today.
+    row.recorded_on = observed_day_of(typed_at)
     db_session.flush()
     return row
 

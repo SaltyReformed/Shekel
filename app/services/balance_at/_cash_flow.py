@@ -31,7 +31,7 @@ from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.utils.dates import days_in_range, to_display_date
+from app.utils.dates import days_in_range
 
 from ._context import BalanceContext
 
@@ -474,6 +474,31 @@ class CashAnchorRow:
             twelve" degenerated to "the twelve newest ``observed_on``" and
             buried the back-dated row the pair exists to surface.  That is not
             a rare tie -- it is what a bookkeeping session looks like.
+        recorded_on: The civil day this assertion was ENTERED, in the user's
+            zone.  **A stored fact carried through from
+            :attr:`~app.services.cash_ledger.CashAnchorFact.recorded_on`, not
+            derived from :attr:`recorded_at`** (finding **N-299**, developer
+            ruling 2026-08-25).
+
+            It exists so a BACK-DATED row identifies itself.  Sorted by
+            :attr:`observed_on` a balance recorded today for a past day lands
+            at that past day's position -- 40 rows down on the real Checking
+            account -- so ordering alone does not give a back-dated write the
+            retrieval path finding **N-205** is about.  It equals
+            :attr:`observed_on` for the ordinary same-day true-up, which is why
+            the card shows the caption only when the two differ.
+
+            **Splitting rank from show was right and stopped one step short.**
+            Both halves were still computed from ``created_at``, which
+            PostgreSQL stamps (``server_default=db.func.now()``), while
+            :attr:`observed_on` comes from the application's
+            ``display_today()``.  So the caption gated on
+            ``recorded_on != observed_on`` compared two clocks: red on every
+            calendar-sweep matrix date since 2026-08-10, because
+            ``time_machine`` fakes one of them and cannot fake the other, and
+            wrong in production for a true-up submitted in a civil day's last
+            second.  The shown value now has its own application-written
+            column and :attr:`recorded_at` keeps the ranking job alone.
         recorded: The balance the user asserted, cent-quantized.  A fact for
             every account kind, which is why it is never ``None``.
         ledger: What the running balance held immediately before this assertion
@@ -509,52 +534,11 @@ class CashAnchorRow:
 
     observed_on: date
     recorded_at: datetime
+    recorded_on: date
     recorded: Decimal
     ledger: "Decimal | None"
     correction: "Decimal | None"
     is_opening: bool
-
-    @property
-    def recorded_on(self) -> date:
-        """Return the civil day this assertion was ENTERED, in the user's zone.
-
-        DERIVED rather than stored, so the pair cannot be constructed
-        inconsistent: a frozen row carrying both an instant and a hand-supplied
-        day for it is a state where the two can disagree, and this record is
-        public.
-
-        It exists so a BACK-DATED row identifies itself.  Sorted by
-        :attr:`observed_on` a balance recorded today for a past day lands at
-        that past day's position -- 40 rows down on the real Checking account
-        -- so ordering alone does not give a back-dated write the retrieval
-        path finding **N-205** is about.  It equals :attr:`observed_on` for the
-        ordinary same-day true-up, which is why the card shows the caption only
-        when the two differ.
-
-        **The conversion is here rather than in the template because the
-        template needs a DATE to compare, not a rendering.**
-        :mod:`app.jinja_filters` does carry a ``local_datetime`` filter, so "a
-        template cannot convert a timezone" would be false; what a formatting
-        filter cannot give is the ``recorded_on != observed_on`` test the
-        caption is gated on.
-
-        Returns:
-            The display-timezone civil day of :attr:`recorded_at`.
-
-        Raises:
-            ValueError: If the row carries no recording instant, which
-                ``account_anchor_history.created_at`` being NOT NULL with a
-                server default makes unreachable.  Raised rather than passed
-                through, because the alternative is a ``None`` reaching a
-                template that formats it.
-        """
-        day = to_display_date(self.recorded_at)
-        if day is None:
-            raise ValueError(
-                "an assertion carries no recording instant; "
-                "account_anchor_history.created_at is NOT NULL"
-            )
-        return day
 
 
 @dataclass(frozen=True)
@@ -652,6 +636,7 @@ def cash_anchor_history(
         CashAnchorRow(
             observed_on=booked.observed_on,
             recorded_at=booked.anchor.asserted_at,
+            recorded_on=booked.anchor.recorded_on,
             recorded=booked.anchor.anchor_balance,
             # One condition, both cases: the pair is published only where it
             # has an agreed meaning (see :class:`CashAnchorRow`).

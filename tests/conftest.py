@@ -1258,6 +1258,13 @@ def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
         "created_at": datetime.combine(
             new_anchor_period.start_date, dt_time.min, tzinfo=DISPLAY_TIMEZONE,
         ).astimezone(timezone.utc),
+        # The ENTERED day moves with the instant, for the same reason
+        # ``observed_on`` does (finding **N-299**).  A bulk UPDATE bypasses the
+        # column default that derives this on INSERT, so it is spelled here:
+        # leaving it behind would build the row this fixture exists to avoid --
+        # an opening asserted and typed on its period's first day, claiming on
+        # the balance-history card to have been entered months later.
+        "recorded_on": new_anchor_period.start_date,
     })
     db.session.flush()
     # Step 2: delete the bootstrap row.
