@@ -164,6 +164,11 @@ def _true_up(account, balance, days_after_opening=None):
         observed_on=opening.observed_on + timedelta(
             days=days_after_opening or _TRUE_UP_DAYS_AFTER_OPENING,
         ),
+        # The ENTERED day moves with the observed one (**N-299**): the column
+        # defaults to the wall clock, which a historical row must not inherit.
+        recorded_on=opening.observed_on + timedelta(
+            days=days_after_opening or _TRUE_UP_DAYS_AFTER_OPENING,
+        ),
     ))
     _db.session.flush()
     account_posting_service.sync_account_anchor_postings_all_scenarios(

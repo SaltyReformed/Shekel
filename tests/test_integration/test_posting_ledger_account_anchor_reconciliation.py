@@ -503,6 +503,10 @@ def _assert_balance_at(account, balance, created_at) -> AccountAnchorHistory:
         # The civil day this assertion is the closing balance FOR, kept in step
         # with the pinned instant by the shared rule (ruling R-DH, plan step 2).
         observed_on=observed_day_of(created_at),
+        # The ENTERED day, in step with the pinned instant (**N-299**).
+        # The column's default is the wall clock, which a row built to sit in
+        # the PAST must not inherit: it would claim to have been typed today.
+        recorded_on=observed_day_of(created_at),
     )
     _db.session.add(row)
     _db.session.flush()
