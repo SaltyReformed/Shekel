@@ -150,6 +150,126 @@ class TestEachRowSaysWhetherItsFigureIsItsOwn:
         assert row.figure_is_correctable is True
 
 
+class TestWhichRowsTheBankNeverShowsByThemselves:
+    """``not_shown_alone``, the caveat the review panel prints per row.
+
+    Plan step **bank_import:X-gc**, finding **N-345**'s design half.  The panel
+    headed *Rows you recorded and the bank never showed* asserts that each of
+    its rows is *a payment your records claim happened and your bank did not
+    make*.  That inference needs the row's money to have been a bank line of
+    its OWN, and for two shapes it never is: a CC payback leaves inside one
+    lump payment to the card, and an envelope holding purchases is what the
+    bank showed the purchases of.
+
+    **The rows stay in the panel and only the CLAIM is withdrawn**, which the
+    render tests in ``tests/test_routes/test_statement_matches.py`` pin: that
+    panel is also the hand-build form's row-picker, and ruling **R-GJ** leaves
+    the group match as a parked card payment's only arm.
+
+    The class above grades ``states_own_figure`` itself; this grades that the
+    caveat is derived from it and from nothing else, so the two cannot drift.
+    """
+
+    def test_a_CC_PAYBACK_carries_the_caveat(self, app, db, seed_user):
+        """18 of the developer's own 67 panel rows, measured 2026-08-25."""
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="100.00", is_envelope=True,
+        )
+        db.session.flush()
+        payback = a_transaction(
+            seed_user, name="CC Payback: Groceries", amount="60.00",
+            template=False,
+        )
+        payback.credit_payback_for_id = envelope.id
+        db.session.flush()
+
+        row = _candidate(seed_user, payback.id, RowKind.TRANSACTION)
+
+        assert row.not_shown_alone is not None
+        assert row.not_shown_alone.label == "not a line of its own"
+        assert "never shows it as a line by itself" in (
+            row.not_shown_alone.sentence
+        )
+        # It ends in the ACT, not the diagnosis: this row is what a parked
+        # Capital One line is grouped against, and the panel is where that
+        # group is built.
+        assert "Tick it here together with the line" in (
+            row.not_shown_alone.sentence
+        )
+
+    def test_an_ENVELOPE_HOLDING_PURCHASES_carries_it_too(
+        self, app, db, seed_user,
+    ):
+        """The other member, which has zero live instances and one rule.
+
+        The bank showed the purchases inside this row, not the row.  It is
+        graded here rather than left to the payback case because the two reach
+        the caveat through DIFFERENT published predicates
+        (``settles_from_entries`` and ``repays_card_spend``), and a caveat that
+        happened to cover only one of them would read as covering both.
+        """
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="100.00", is_envelope=True,
+        )
+        a_purchase(seed_user, envelope, amount="25.00")
+        db.session.flush()
+
+        row = _candidate(seed_user, envelope.id, RowKind.TRANSACTION)
+
+        assert row.not_shown_alone is not None
+
+    def test_an_ORDINARY_bill_carries_NONE(self, app, db, seed_user):
+        """The discriminating half: a bill IS a line of its own.
+
+        Without this the caveat could be returned unconditionally and every
+        assertion above would still pass -- which would withdraw the panel's
+        alarm from every row on it, including the payments the bank really did
+        fail to make.
+        """
+        txn = a_transaction(seed_user, name="Electricity", amount="180.00")
+        db.session.flush()
+
+        row = _candidate(seed_user, txn.id, RowKind.TRANSACTION)
+
+        assert row.not_shown_alone is None
+
+    def test_a_PURCHASE_carries_NONE(self, app, db, seed_user):
+        """A debit swipe is exactly what the statement shows line by line."""
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="100.00", is_envelope=True,
+        )
+        purchase = a_purchase(seed_user, envelope, amount="25.00")
+        db.session.flush()
+
+        row = _candidate(seed_user, purchase.id, RowKind.PURCHASE)
+
+        assert row.not_shown_alone is None
+
+    def test_an_INCOME_ALLOWANCE_carries_NONE_and_that_is_deliberate(
+        self, app, db, seed_user,
+    ):
+        """The KNOWN GAP, pinned so it is a decision rather than a surprise.
+
+        The developer's ``Phone Allowance`` (`$39.54`) and ``Health Insurance
+        Allowance`` (`$100.00`) arrive INSIDE one payroll deposit, so the bank
+        never shows them separately either -- and no fact on the row says so.
+        The app therefore cannot prove it, and the caveat is not claimed: the
+        alternative was a list of row names, which is the allowlist this
+        project removes rather than writes.  They stay under the panel's alarm
+        caption, and the exception queue (``bank_import:X-gf``) is where being
+        buried among 67 rows is answered.
+        """
+        allowance = a_transaction(
+            seed_user, name="Phone Allowance", amount="39.54", income=True,
+        )
+        db.session.flush()
+
+        row = _candidate(seed_user, allowance.id, RowKind.TRANSACTION)
+
+        assert row.states_own_figure is True
+        assert row.not_shown_alone is None
+
+
 class TestTheWindowEachRowCarries:
     """Every candidate says which days the app believes its money moved."""
 

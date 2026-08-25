@@ -1017,16 +1017,32 @@
       </div>
 
       <div class="col-12 col-lg-6">
-        <div class="card h-100">
+        {# The id is a TEST ANCHOR and it earns its place: this card's own end
+           cannot be found from generic markup -- it renders no table when it
+           lists nothing, so a cut at the next `</table>` ran into the keyboard
+           help modal and graded four assertions against another feature's
+           markup (adversarial review of this step's tests, 2026-08-25). #}
+        <div class="card h-100" id="rows-no-line-explains">
           <div class="card-header d-flex justify-content-between align-items-center">
-            <span><i class="bi bi-journal-text"></i> Rows you recorded and the bank never showed</span>
+            <span><i class="bi bi-journal-text"></i> Rows you recorded that no line explains</span>
             <span class="badge text-bg-secondary">{{ review.unmatched_rows | length }}</span>
           </div>
           <div class="card-body">
+            {# **The alarm is stated where it can be TRUE, and withdrawn per
+               row where it cannot** (plan step bank_import:X-gc).  The caption
+               claimed of all 67 rows that the bank had failed to make a
+               payment; 18 of them are CC Paybacks, whose money leaves inside
+               one payment to the card, and they are exactly what the 9
+               unexplained Capital One lines on the left must be grouped
+               against.  The chip is `row.not_shown_alone`, decided in the
+               service on a fact the row already carries -- no name list, and
+               no Jinja reasoning about money. #}
             <p class="text-body-secondary small mb-2">
-              These fall inside the span your statement covers, and no line on it
-              explains them. A row here that you expected the bank to show is a
-              payment your records claim happened and your bank did not make.
+              These fall inside the span your statements cover and no line
+              explains them. One you expected the bank to show is a payment
+              your records claim happened and your bank did not make. One
+              marked <em>not a line of its own</em> is not: tick it with the
+              line that carries its money.
             </p>
             {% if review.unmatched_rows %}
             <div class="table-responsive stmt-pick-list">
@@ -1054,7 +1070,14 @@
                       {% endif %}
                     </td>
                     <td class="text-end fw-semibold text-nowrap">{{ money(row.cash_amount) }}</td>
-                    <td class="small">{{ row.label }}</td>
+                    <td class="small">
+                      {{ row.label }}
+                      {% set caveat = row.not_shown_alone %}
+                      {% if caveat %}
+                      <span class="badge text-bg-secondary fw-normal"
+                            title="{{ caveat.sentence }}">{{ caveat.label }}</span>
+                      {% endif %}
+                    </td>
                   </tr>
                   {% endfor %}
                 </tbody>
@@ -1172,9 +1195,9 @@
               </div>
               {% endif %}
               {# `data-confirm` is the project's own destructive-action
-                 pattern; base.html includes the modal and app.js sets the body
-                 with textContent, so a row LABEL taken from a bank line cannot
-                 inject. It is attached only where the undo would destroy a
+                 pattern; base.html includes the modal and confirm.js sets the
+                 body with textContent, so a row LABEL taken from a bank line
+                 cannot inject. It is attached only where the undo would destroy a
                  record -- a match between rows that already existed removes
                  nothing, and a confirmation on a reversible act trains the
                  owner to click through the one that is not. The figure is the

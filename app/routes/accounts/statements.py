@@ -125,10 +125,14 @@ class _EvidenceCopy:
         sentence: The full form, for the import receipt and the cell's title.
         badge: The Bootstrap class the label wears.  **It lives here rather
             than in a template conditional** so no surface has to ask which
-            basis it is holding: a template testing
-            ``basis == ASSUMED_LAST_DAY`` would be one more place to update
-            when a fourth way to pin a day exists, and the display decision is
-            the display layer's to make once.
+            level it is holding: a template testing
+            ``evidence is StatementBalanceEvidenceEnum.UNCORROBORATED`` would
+            be one more place to update when a fourth rung exists, and the
+            display decision is the display layer's to make once.  (This named
+            an ``ASSUMED_LAST_DAY`` member until plan step
+            ``bank_import:X-gc``; no such member has existed since X-f6e-1
+            replaced that enum with
+            :class:`~app.enums.StatementBalanceEvidenceEnum`.)
     """
 
     label: str
@@ -166,14 +170,34 @@ EVIDENCE_COPY = {
         ),
         badge="text-bg-secondary",
     ),
+    # **The badge is neutral like its two siblings, and the sentence
+    # prescribes nothing** (plan step ``bank_import:X-gc``).  It said "Export
+    # once with your bank's running-balance option ticked" -- an option SECU
+    # dropped between the developer's 2026-07-19 and 2026-08-16 pulls, so
+    # every export he can take today carries no balance column and the
+    # instruction names an act he cannot perform.
+    #
+    # **What replaces it states the RULE and diagnoses nothing**, because the
+    # cause is per-import and this map is per-LEVEL: an import lands here
+    # either because the record cannot reach back to its own first day (a
+    # COVERAGE gap) or because the chain behind it is itself unconfirmed.  A
+    # first draft said *nothing can confirm it until a self-proving statement
+    # is recorded for this account*, which was measured FALSE twice over on
+    # 2026-08-25 -- the developer HAS a chained 2026-07-19 export on disk, it
+    # reaches ``file_chain`` when imported (306 lines, `$2,229.73` at
+    # 07-17, measured), and a statement opening 2026-07-18 then reads
+    # ``corroborated``.  What actually holds his imports at this rung is a
+    # 17-day gap between 2026-07-17 and 2026-08-03.
     StatementBalanceEvidenceEnum.UNCORROBORATED: _EvidenceCopy(
         label="uncorroborated",
         sentence=(
-            "Nothing has confirmed its stated balance.  Export once with your "
-            "bank's running-balance option ticked and every statement after "
-            "it can be checked against that one."
+            "Nothing has confirmed its stated balance, so it is taken at face "
+            "value.  It is checked against what this account has already "
+            "recorded, and stays unconfirmed when that record cannot reach "
+            "back to this file's first day, or is itself unconfirmed -- a "
+            "figure is only ever as firm as the weakest one behind it."
         ),
-        badge="text-bg-warning",
+        badge="text-bg-secondary",
     ),
 }
 
@@ -208,36 +232,74 @@ def _balance_sentence(outcome):
             f"recorded from it."
         )
     copy = EVIDENCE_COPY[outcome.balance.evidence]
-    if outcome.balance.effective_on == outcome.balance.stated_on:
-        return copy.sentence
-    return (
-        f"{copy.sentence}  The figure is placed at "
-        f"{outcome.balance.effective_on}, where the file states it as of "
-        f"{outcome.balance.stated_on}."
+    placement = (
+        ""
+        if outcome.balance.effective_on == outcome.balance.stated_on
+        else (
+            f"  The figure is placed at {outcome.balance.effective_on}, where "
+            f"the file states it as of {outcome.balance.stated_on}."
+        )
     )
+    # **A GUESSED day is said out loud** (plan step ``bank_import:X-gc``,
+    # ruling **R-GN**).  The evidence level cannot carry it: the
+    # solve-against-an-unconfirmed-opening arm and the assume-the-last-line arm
+    # both mint ``uncorroborated``, so a receipt reading the level alone
+    # reports a proven placement and a guess in identical words.
+    guessed = (
+        ""
+        if outcome.balance.day_is_solved
+        else (
+            "  Its day was taken from its last line rather than worked out: "
+            "nothing already recorded for this account reaches back to this "
+            "file's first day."
+        )
+    )
+    return f"{copy.sentence}{placement}{guessed}"
 
 
 def _import_flash(outcome):
     """Return the flash text and category for a successful import.
 
-    **A file whose stated balance nothing could CHECK gets a warning, not a
-    green tick**, and that is an honest report rather than a nicety: an
-    unchecked anchor propagates, because every later import reconciles against
-    it and inherits its error.  Saying "Recorded 361 new lines" in green over
-    one would tell the user the opposite of what happened.  All three unproven
-    states share the warning -- no balance stated, a balance the file's own
-    lines cannot reach, and one merely assumed -- because what they have in
-    common is the thing the owner needs to know: nothing here confirmed it.
+    **A file whose figure the app could not CHECK gets a warning, not a green
+    tick**, and there are three such states.  Two are absences: a file stating
+    no balance at all, and one stating a balance its own lines cannot reach.
+    The third is the one this step added, on the developer's ruling **R-GN**
+    (2026-08-25) -- a placement the app GUESSED.
+
+    **The evidence level cannot tell a guess from a proof, and reading it alone
+    was measured wrong.**  ``uncorroborated`` is minted by two different arms of
+    :func:`~app.services.statement_import.resolve_anchor`: a solve against an
+    opening that is itself unconfirmed, where the DAY is proven and only the
+    chain is weak; and the arm that has nothing to solve against and takes the
+    file's last line.  A first version of this predicate exempted the level
+    outright, which green-ticked the second -- reproduced 2026-08-25 through
+    the real producers on the developer's own 2026-01-02..2026-03-31 export,
+    whose header names a day **145 days** past its last line and `$255.41` from
+    what its own 139 lines imply: as an account's first import it came back
+    ``effective_on=2026-03-31``, ``is_anchored=True``, category ``success``.
+    :attr:`~app.services.statement_import.ImportedBalance.day_is_solved` is the
+    fact that separates them, and :func:`_balance_sentence` says it in words
+    beside this colour.
+
+    **What the ruling removed, and what it did not.**  It removed the warning
+    that fired on the corroboration LEVEL, which SECU's dropped running-balance
+    column had made the developer's permanent normal state -- the badge still
+    reads ``uncorroborated`` and the sentence still says nothing has confirmed
+    the figure.  It did not remove the warning on a guessed day, which is
+    ACTIONABLE where the other was not: it clears by importing the span that is
+    missing, and it does not depend on that column returning.  Measured on the
+    developer's real books 2026-08-25 -- one contiguous recorded run,
+    2026-01-02 to 2026-08-21, so his next import's day is SOLVED and reports
+    green.
 
     **The signal used to be ``opening_balance is None`` and that was measured
-    WRONG** (plan step ``bank_import:X-f6e-1``).  That column was derived from
-    the per-line running-balance chain, which SECU stopped exporting between
-    the developer's 2026-07-19 and 2026-08-16 pulls -- so the warning fired on
-    every modern import, claiming "a missing line would not have been
+    WRONG too** (plan step ``bank_import:X-f6e-1``).  That column was derived
+    from the per-line running-balance chain, which SECU stopped exporting
+    between the developer's 2026-07-19 and 2026-08-16 pulls -- so the warning
+    fired on every modern import, claiming "a missing line would not have been
     detected" while ``_secu_csv._verify_against_totals`` had already checked
     the line list against the file's own ``Totals:`` row and would have
-    detected exactly that.  Both dev imports carry that NULL.  What is
-    genuinely unchecked is the BALANCE, and the basis is what says so.
+    detected exactly that.
 
     Args:
         outcome: The :class:`~app.services.statement_import.ImportOutcome`.
@@ -245,10 +307,10 @@ def _import_flash(outcome):
     Returns:
         ``(message, category)``.
     """
-    unproven = outcome.balance is None or (
-        not outcome.balance.is_anchored
-        or outcome.balance.evidence
-        is StatementBalanceEvidenceEnum.UNCORROBORATED
+    unproven = (
+        outcome.balance is None
+        or not outcome.balance.is_anchored
+        or not outcome.balance.day_is_solved
     )
     balance = f"  {_balance_sentence(outcome)}"
     if not outcome.recorded_count:

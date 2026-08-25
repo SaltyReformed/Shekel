@@ -52,6 +52,27 @@
      width / height (the rest of htmx's default) still settle. #}
   <meta name="htmx-config" content='{"includeIndicatorStyles":false,"attributesToSettle":["class","width","height"],"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"409","swap":true},{"code":"[45]..","swap":false,"error":true}]}'>
 
+  {# **The destructive-action guard, and its POSITION is the point** (plan step
+     bank_import:X-gc, ruling R-GP, finding N-345).  Every other script in this
+     document is
+     at the bottom of <body>, which is right for them and was wrong for this
+     one: it registers the submit listener that turns a data-confirm form into
+     a dialog, and until it runs, every such form -- 22 controls across 17
+     templates, including the statement Undo that destroys money records --
+     submits on the first click with no dialog at all.  The review page is
+     537 KB of HTML, so that window is real and was observed once.
+
+     NOT deferred, and not async: a classic script here runs before the parser
+     reaches <body>, so no element it guards can exist before it does.
+
+     **It sits ABOVE the stylesheets deliberately.**  A classic script that
+     FOLLOWS pending <link rel=stylesheet> elements is blocked on all of them
+     before it executes, so the same guarantee arrives later and costs the
+     whole CSS chain; this file touches no CSS and needs none of it.  It is
+     also unauthenticated-safe -- the login form carries no data-confirm, and
+     the listener simply never fires. #}
+  <script src="{{ url_for('static', filename='js/confirm.js') }}"></script>
+
   {# Vendored front-end assets -- pinned in app/static/vendor/VERSIONS.txt.
      The CSP forbids external origins (audit F-037), so every CSS/JS/font
      reference must resolve via url_for('static', ...). #}

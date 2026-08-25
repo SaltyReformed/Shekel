@@ -403,6 +403,25 @@ class TestTheAccountPageLinksHere:
         exporting that column, so the old warning fired on every modern import
         while the file's ``Totals:`` row had already checked the line list.
         What is genuinely unconfirmed on a first import is the BALANCE.
+
+        **This is the ASSUMED-day arm, and the warning it keeps is the one
+        plan step ``bank_import:X-gc`` deliberately did not remove.**  A first
+        import has nothing to solve its day against, so
+        :func:`~app.services.statement_import.resolve_anchor` takes the file's
+        last line -- ``day_is_solved`` is ``False`` -- and the developer's
+        ruling **R-GN** (2026-08-25) is that a GUESSED placement earns the
+        warning
+        where a merely uncorroborated LEVEL no longer does.
+
+        **A draft of this step flipped the assertion to ``success`` and it was
+        wrong**, because the level cannot tell the two arms apart: an import
+        that PROVES its day against an unconfirmed opening mints the same
+        ``uncorroborated``.  Two adversarial reviews measured the green tick
+        landing on the developer's 2026-01-02..2026-03-31 export, whose header
+        names a day 145 days past its last line.
+        ``test_a_SOLVED_day_on_an_UNCORROBORATED_chain_is_not_a_warning`` below
+        is the other side of the pair, and it is what makes this one
+        discriminate.
         """
         payload = build.build(build.chained(
             "100.00", _ENTRIES, with_running=False,
@@ -414,9 +433,77 @@ class TestTheAccountPageLinksHere:
         assert len(toasts) == 1
         category, message = toasts[0]
         assert "Nothing has confirmed its stated balance" in message
-        # The COLOUR is half the message: a green tick over an unconfirmed
-        # balance tells the owner the opposite of what happened.
         assert category == "warning"
+        # ...and the receipt says WHY in words, not only in colour: the level
+        # alone cannot distinguish this from a proven day.
+        assert "taken from its last line rather than worked out" in message
+        # **And it prescribes nothing.**  The sentence told the owner to
+        # "Export once with your bank's running-balance option ticked", an
+        # option no SECU export he can take today offers.
+        assert "option ticked" not in message
+
+    def test_a_SOLVED_day_on_an_UNCORROBORATED_chain_is_not_a_warning(
+        self, auth_client, db, seed_user,
+    ):
+        """The half of ruling **R-GN** that REMOVED a warning.
+
+        The level and the placement are two facts, and only one of them earns a
+        warning now.  Here the chain behind the figure is unconfirmed -- the
+        first file was chainless, so everything solved against it inherits
+        ``uncorroborated`` by the weakest-link rule -- while the DAY is worked
+        out from what the account already holds rather than guessed.  That is
+        the developer's steady state, measured on his real books 2026-08-25:
+        one contiguous recorded run from 2026-01-02 to 2026-08-21, so his next
+        import's day is solved.
+
+        **This is what makes the pair discriminate.**  Without it the predicate
+        could warn on every ``uncorroborated`` import -- which is what it did
+        before this step -- and
+        ``test_a_first_import_says_its_balance_is_UNCORROBORATED`` above would
+        still be green.
+
+        The arithmetic: the first file opens at `$100.00` and its two lines
+        move `-25.00` then `+1500.00`, so it closes at `$1,575.00` on 03-03.
+        The second covers 03-03..03-05 with `+1500.00` and `-30.00`, so the
+        balance before its first line is `1575.00 - 1500.00 = 75.00` and its
+        own closing is `75.00 + 1500.00 - 30.00 = 1545.00`.
+        """
+        # The first file carries NO chain, so its own day is assumed (arm 3)
+        # and its figure is uncorroborated -- which is what makes everything
+        # solved against it inherit that level.  Its header is stated
+        # explicitly because a chainless file has no implied closing for the
+        # builder to take.
+        _upload(
+            auth_client, seed_user["account"].id,
+            build.build(
+                build.chained("100.00", _ENTRIES, with_running=False),
+                balance_as_of="03/03/2026", stated_balance="1575.00",
+            ),
+        )
+
+        response = _upload(
+            auth_client, seed_user["account"].id,
+            build.build(
+                build.chained(
+                    "0.00",
+                    [(date(2026, 3, 3), "1500.00",
+                      "ACH DEPOSIT TOWN OF CLAYTON  PAYROLL"),
+                     (date(2026, 3, 5), "-30.00",
+                      "POINT OF SALE DEBIT L340 FUEL")],
+                    with_running=False,
+                ),
+                balance_as_of="03/05/2026", stated_balance="1545.00",
+            ),
+        )
+        toasts = _flash_toasts(response.get_data(as_text=True))
+
+        assert len(toasts) == 1
+        category, message = toasts[0]
+        # The LEVEL is still the weakest rung...
+        assert "Nothing has confirmed its stated balance" in message
+        # ...and the DAY was worked out, so nothing here was guessed.
+        assert "taken from its last line rather than worked out" not in message
+        assert category == "success"
 
     def test_a_CHAINED_file_is_PROVED_by_itself_and_ticked_green(
         self, auth_client, db, seed_user,
@@ -488,7 +575,15 @@ class TestTheAccountPageLinksHere:
         category, message = toasts[0]
         assert "Nothing has confirmed its stated balance" in message
         assert "agrees with the statements already recorded" not in message
-        assert category == "warning"
+        # **The COLOUR is no longer the tell** (plan step ``bank_import:X-gc``,
+        # ruling **R-GN**): an uncorroborated import reports as an
+        # ordinary success now, so what this control has to prove is that the
+        # second upload did not become CORROBORATED -- which is the promotion
+        # the review reproduced, and which the assertion above pins directly.
+        # ``info`` and not ``success`` because this upload adds no LINES: the
+        # re-import path reports "Nothing new", and its non-warning colour is
+        # the neutral one.
+        assert category == "info"
 
     def test_a_SECOND_import_is_CORROBORATED_against_a_proved_anchor(
         self, auth_client, db, seed_user,
@@ -623,6 +718,103 @@ class TestTheAccountPageLinksHere:
         assert "Bank said" in body
         assert "uncorroborated" in body
         assert "as of 2026-03-03" in body
+
+    def test_NO_surface_prescribes_an_export_option_the_bank_dropped(
+        self, auth_client, db, seed_user,
+    ):
+        """Plan step X-gc: the screens stop telling the owner to do the impossible.
+
+        Every surface that spoke about an unconfirmed balance told the owner to
+        "export once with your bank's running-balance option ticked".  SECU
+        stopped publishing that column between the developer's 2026-07-19 and
+        2026-08-16 pulls: every pull from 2026-08-16 onward carries NO balance
+        column, its header being ``Date, Account, Account Number, Account
+        Type, Description, Check #, Category, Memo, Credit, Debit``.  So the
+        instruction names an act he cannot perform with any export he can take
+        today.
+
+        **The receipt AND the imports table are both read**, because they are
+        two renders of one map and a first version of this file's assertions
+        passed against a receipt that said nothing at all (see
+        :func:`_flash_toasts`).  The whole page body covers the table's
+        ``title`` attribute; the toast covers the receipt.
+        """
+        payload = build.build(build.chained(
+            "100.00", _ENTRIES, with_running=False,
+        ))
+        response = _upload(auth_client, seed_user["account"].id, payload)
+        _, receipt = _flash_toasts(response.get_data(as_text=True))[0]
+
+        page = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements"
+        ).get_data(as_text=True)
+
+        for surface in (receipt, page):
+            assert "running-balance option" not in surface
+            assert "option ticked" not in surface
+        # It still says the figure is unconfirmed, and now says what the level
+        # MEANS rather than naming an act that cannot be performed.
+        assert "Nothing has confirmed its stated balance" in receipt
+        # Asserted on a clause carrying NO apostrophe: the flash is rendered
+        # into HTML, so `file's` reaches the page as `file&#39;s` and a raw
+        # assertion naming it would fail for a reason that is not the subject.
+        assert (
+            "It is checked against what this account has already recorded"
+            in receipt
+        )
+
+    def test_the_UNCORROBORATED_badge_is_not_coloured_as_a_warning(
+        self, auth_client, db, seed_user,
+    ):
+        """Plan step X-gc: the permanent state stops being dressed as an alarm.
+
+        The badge is looked up by enum member in ``EVIDENCE_COPY``, so this
+        reads the rendered markup rather than the map -- the map's own
+        ``badge`` value could be changed with the template still hard-coding a
+        class, which is exactly the drift the map exists to prevent.
+
+        **``text-bg-warning`` is asserted absent NEXT TO THE LABEL, not
+        page-wide**: this page has other legitimate amber (a "not placed"
+        badge, the delete control), so a body-wide assertion would be graded by
+        whichever of them happened to render.
+        """
+        _upload(
+            auth_client, seed_user["account"].id,
+            build.build(build.chained(
+                "100.00", _ENTRIES, with_running=False,
+            )),
+        )
+
+        page = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements"
+        ).get_data(as_text=True)
+
+        badge = re.search(
+            r'<span class="badge ([\w-]+)"[^>]*>uncorroborated</span>', page,
+        )
+        assert badge is not None, "the imports table renders no evidence badge"
+        assert badge.group(1) == "text-bg-secondary"
+
+    def test_the_source_select_names_the_FORMAT_not_a_column_it_lacks(
+        self, auth_client, seed_user,
+    ):
+        """Plan step X-gc: the label stops contradicting the help text under it.
+
+        ``ref.statement_sources.display_name`` is the text of the one control
+        that chooses a parser, and it read "SECU checking -- CSV with running
+        balance" while the form text directly beneath it has said the column is
+        optional since plan step ``bank_import:X-f6e-1``.  Migration
+        ``a1f4c7e0b839`` re-labels the row an existing database carries;
+        ``app.ref_seeds`` is what a new one is born with, and the test database
+        is built by the migration chain, so this grades the migration.
+        """
+        page = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements"
+        ).get_data(as_text=True)
+
+        select = page[page.index('id="source"'):page.index("</select>")]
+        assert "SECU checking -- CSV export" in select
+        assert "with running balance" not in select
 
     def test_the_cash_detail_page_offers_the_statements_link(
         self, auth_client, seed_user,
