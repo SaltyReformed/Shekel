@@ -88,7 +88,7 @@ from ._derive import (
     PayCalendarError,
     derive_periods,
 )
-from ._loader import cadence_for, calendar_for
+from ._loader import cadence_for, calendar_at_cadence, calendar_for
 from ._searches import (
     containing_period,
     earliest_start_in_month,
@@ -110,6 +110,7 @@ __all__ = [
     "PayCalendarError",
     "PeriodWindow",
     "cadence_for",
+    "calendar_at_cadence",
     "calendar_for",
     "containing_period",
     "derive_periods",

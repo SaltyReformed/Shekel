@@ -45,7 +45,12 @@ import pytest
 from app.models.pay_period import PayPeriod
 from app.models.pay_schedule import PaySchedule
 from app.services import pay_period_write, pay_schedule_service
-from app.services.pay_calendar import PayCalendar, calendar_for
+from app.services.pay_calendar import (
+    PayCalendar,
+    PayCalendarError,
+    calendar_at_cadence,
+    calendar_for,
+)
 from tests._test_helpers import open_calendar_hole, all_periods
 
 #: ``seed_periods``' first payday, restated so the assertions below name a value
@@ -507,3 +512,79 @@ class TestThePartialSetHazardIsRealAndTheDoorIsWhatClosesIt:
         with app.app_context():
             assert list(signature(calendar_for).parameters) == ["user_id"]
             assert len(calendar_for(seed_user["user"].id).periods) == PERIOD_COUNT
+
+
+@pytest.mark.usefixtures("seed_periods")
+class TestCalendarAtCadence:
+    """The second loader door, and the equivalence the refactor rests on.
+
+    Plan step **C4** added :func:`calendar_at_cadence` for the rolling top-up,
+    which holds the owner's ``budget.pay_schedule`` row already and would
+    otherwise pay for a second read of it, and REFACTORED
+    :func:`calendar_for` to delegate to it.  That refactor is behaviour-
+    preserving only if the two answer identically for a resolvable owner, so
+    the equivalence is pinned rather than argued.
+    """
+
+    def test_it_answers_exactly_what_calendar_for_answers(
+        self, app, seed_user,
+    ):
+        """Same owner, same schedule: the two doors build EQUAL calendars.
+
+        ``PayCalendar`` compares on its facts -- the canonicalised paydays, the
+        cadence and the owner -- with the derived periods excluded from
+        equality, so this asserts the periods too by construction.  Both are
+        asserted non-empty first, because two empty calendars would compare
+        equal and grade nothing.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            resolved = pay_schedule_service.resolve_cadence(user_id)
+
+            assert resolved == CADENCE
+            assert calendar_at_cadence(user_id, resolved) == calendar_for(user_id)
+            assert len(calendar_for(user_id).periods) == PERIOD_COUNT
+
+    def test_it_reads_the_paydays_and_NOT_the_schedule_row(
+        self, app, seed_user,
+    ):
+        """It answers from the cadence it is GIVEN, not the one on the row.
+
+        This is the whole point of the door: the caller has already resolved
+        the cadence and must not pay for a second read.  Handing it a cadence
+        the stored row does not carry proves it never looks -- and the value
+        that changes is the LAST period's end, which is the only one the
+        cadence decides.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+
+            stored = calendar_at_cadence(user_id, CADENCE)
+            supplied = calendar_at_cadence(user_id, CADENCE + 7)
+
+            assert supplied != stored
+            assert supplied.periods[-1].end_date == (
+                stored.periods[-1].end_date + timedelta(days=7)
+            )
+            # Every OTHER end is dictated by the next payday, so the cadence
+            # cannot have moved it.
+            assert [p.end_date for p in supplied.periods[:-1]] == [
+                p.end_date for p in stored.periods[:-1]
+            ]
+
+    def test_a_missing_cadence_beside_paydays_is_REFUSED(
+        self, app, seed_user,
+    ):
+        """``None`` beside a payday is a broken invariant, not a default.
+
+        :func:`calendar_for` cannot reach this for an owner with a schedule
+        row; this door can, because its caller supplies the value.  The
+        documented refusal is graded rather than trusted -- the last period's
+        end has no other source, and every cadence this could invent would
+        project a horizon the owner never chose.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+
+            with pytest.raises(PayCalendarError, match="no cadence"):
+                calendar_at_cadence(user_id, None)

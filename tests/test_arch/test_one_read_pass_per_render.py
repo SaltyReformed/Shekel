@@ -126,7 +126,7 @@ from app import ref_cache
 from app.enums import TxnTypeEnum
 from app.models.ref import FilingStatus
 from app.models.salary_profile import SalaryProfile
-from app.services import account_resolver
+from app.services import account_resolver, pay_schedule_service
 from app.services.balance_at import BalanceContext
 from tests._test_helpers import (
     counting_calls,
@@ -146,7 +146,7 @@ _ONCE_PER_RENDER = (
 )
 _PER_PLAN = ("app.services.retirement_projection", "project_accounts_with_batch")
 
-#: The one database door every pay-calendar derivation goes through.
+#: The DERIVATION itself, which is what "one calendar per render" is about.
 #: A read pass MEMOIZES the calendar, so "one pass" and "one derivation" ought
 #: to be the same claim -- and they were not.  Measured across pay-calendar plan
 #: step C2-f2d-3: ``/savings`` opened ONE pass and derived the owner's schedule
@@ -155,7 +155,16 @@ _PER_PLAN = ("app.services.retirement_projection", "project_accounts_with_batch"
 #: that held a pass and did not hand it over.  The pass counter beside this one
 #: read 1 throughout.  Two counts of one question, and only one of them could
 #: see it.
-_CALENDAR_DOOR = ("app.services.pay_calendar._loader", "calendar_for")
+#:
+#: **It named the LOADER (``calendar_for``) until plan step C4, and that made
+#: it a name list rather than a rule.**  ``pay_calendar`` grew a second loader
+#: door -- ``calendar_at_cadence``, for the rolling top-up, which runs BEFORE
+#: the render opens its pass and so cannot share one -- and every count here
+#: stayed at 1 while ``/grid`` and ``/dashboard`` began deriving twice.  A
+#: guard that enumerates doors is blind to the next door by construction;
+#: ``derive_periods`` is the one function every ``PayCalendar`` runs through
+#: (``PayCalendar.__post_init__``), so counting it cannot be walked around.
+_CALENDAR_DOOR = ("app.services.pay_calendar._derive", "derive_periods")
 
 #: What the budget dashboard resolves about its own SUBJECT, as
 #: ``(module path, attribute)``.  A render answers "which account is this page
@@ -673,8 +682,8 @@ class TestOneCalendarDerivationPerRender:
             resp = auth_client.get("/savings")
 
         assert resp.status_code == 200
-        assert counts["calendar_for"] == 1, (
-            f"/savings derived the pay calendar {counts['calendar_for']} "
+        assert counts["derive_periods"] == 1, (
+            f"/savings derived the pay calendar {counts['derive_periods']} "
             "times; the route opens one read pass and every producer below it "
             "must read that pass's memo"
         )
@@ -690,8 +699,8 @@ class TestOneCalendarDerivationPerRender:
             resp = auth_client.get("/retirement")
 
         assert resp.status_code == 200
-        assert counts["calendar_for"] == 1, (
-            f"/retirement derived the pay calendar {counts['calendar_for']} "
+        assert counts["derive_periods"] == 1, (
+            f"/retirement derived the pay calendar {counts['derive_periods']} "
             "times; see the class docstring"
         )
 
@@ -726,8 +735,8 @@ class TestOneCalendarDerivationPerRender:
             "the debt track did not render, so this count was taken over a "
             "producer that returned early"
         )
-        assert counts["calendar_for"] == 1, (
-            f"/ derived the pay calendar {counts['calendar_for']} times; the "
+        assert counts["derive_periods"] == 1, (
+            f"/ derived the pay calendar {counts['derive_periods']} times; the "
             "route opens one read pass and every producer below it must read "
             "that pass's memo"
         )
@@ -759,8 +768,8 @@ class TestOneCalendarDerivationPerRender:
                 resp = auth_client.get(path, headers={"HX-Request": "true"})
 
             assert resp.status_code == 200
-            assert counts["calendar_for"] == 1, (
-                f"{path} derived the pay calendar {counts['calendar_for']} "
+            assert counts["derive_periods"] == 1, (
+                f"{path} derived the pay calendar {counts['derive_periods']} "
                 "times; see the class docstring"
             )
 
@@ -802,9 +811,9 @@ class TestOneCalendarDerivationPerRender:
             "the pay-period selector did not render, so the reader whose "
             "derivation this counts never ran"
         )
-        assert counts["calendar_for"] == 1, (
+        assert counts["derive_periods"] == 1, (
             f"/analytics/income-statement derived the pay calendar "
-            f"{counts['calendar_for']} times; the route derives one and "
+            f"{counts['derive_periods']} times; the route derives one and "
             "threads it into the window defaults, the selector, the year "
             "list and the report"
         )
@@ -831,9 +840,9 @@ class TestOneCalendarDerivationPerRender:
             "the start-period selector did not render, so this count was "
             "taken over a form that never asked the calendar anything"
         )
-        assert counts["calendar_for"] == 1, (
+        assert counts["derive_periods"] == 1, (
             f"/transfers/new derived the pay calendar "
-            f"{counts['calendar_for']} times; the route derives one and asks "
+            f"{counts['derive_periods']} times; the route derives one and asks "
             "it both the option set and the preselection"
         )
 
@@ -872,9 +881,9 @@ class TestOneCalendarDerivationPerRender:
             "the modal did not render, so this count was taken over a route "
             "that returned before it reached the service"
         )
-        assert counts["calendar_for"] == 1, (
+        assert counts["derive_periods"] == 1, (
             f"the carry-forward preview derived the pay calendar "
-            f"{counts['calendar_for']} times; the route derives one and "
+            f"{counts['derive_periods']} times; the route derives one and "
             "threads it into both period lookups and the generation seam"
         )
 
@@ -925,8 +934,8 @@ class TestOneCalendarDerivationPerRender:
                 "no template was linked, so the half of the route this counts "
                 "never ran"
             )
-        assert counts["calendar_for"] == 1, (
-            f"POST /salary derived the pay calendar {counts['calendar_for']} "
+        assert counts["derive_periods"] == 1, (
+            f"POST /salary derived the pay calendar {counts['derive_periods']} "
             f"times; the route derives one and threads it into the template's "
             f"opening bound, its per-paycheck amount and the generate pass"
         )
@@ -955,10 +964,57 @@ class TestOneCalendarDerivationPerRender:
             resp = auth_client.get("/savings")
 
         assert resp.status_code == 200
-        assert counts["calendar_for"] == 1, (
-            f"/savings derived the pay calendar {counts['calendar_for']} times "
+        assert counts["derive_periods"] == 1, (
+            f"/savings derived the pay calendar {counts['derive_periods']} times "
             "for three investment accounts, so a producer is deriving PER "
             "ACCOUNT rather than reading the read pass's memo"
+        )
+
+    @pytest.mark.parametrize("path", ["/grid", "/dashboard"])
+    def test_a_rolling_owner_derives_TWICE_and_that_is_the_bound(
+        self, app, db, auth_client, seed_user, seed_periods_today, path,
+    ):
+        """With rolling ON, ``/grid`` and ``/dashboard`` derive exactly TWICE.
+
+        **A pin of a +1 plan step C4 introduced, and the case this whole class
+        could not see until it did.**  The rolling top-up counts the owner's
+        remaining paychecks, and it runs BEFORE the route opens its read pass
+        -- deliberately, so that pass sees any rows the top-up creates.  It
+        therefore cannot share the pass's calendar and derives its own.  Before
+        C4 it counted ``PayPeriod.end_date >= as_of`` in SQL and derived
+        nothing; the column it counted is one plan step C4 drops.
+
+        **TWO is the bound, not an aspiration.**  A third would mean a producer
+        below the pass resolving its own schedule again, which is what every
+        other case here grades; a second top-up derivation would mean the
+        deficit path re-deriving on a render that writes nothing.
+
+        **Every other case in this class runs with rolling OFF** -- the column
+        server-defaults to false -- so none of them covers this, and none of
+        them would have caught the +1 either: the counter named the LOADER
+        ``calendar_for`` until this step, and the top-up's door is a different
+        one.  Two blindnesses, one render.
+
+        Args:
+            path: The render to count, as a URL.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            pay_schedule_service.set_rolling(
+                user_id, enabled=True, target_periods=1,
+            )
+            db.session.commit()
+
+        with counting_calls(_CALENDAR_DOOR) as counts:
+            resp = auth_client.get(path)
+
+        assert resp.status_code == 200
+        assert counts["derive_periods"] == 2, (
+            f"{path} derived the pay calendar "
+            f"{counts['derive_periods']} times for a rolling owner; the "
+            "top-up derives one (it runs before the pass) and the read pass "
+            "derives the other, so anything above two is a producer below "
+            "the pass resolving its own schedule"
         )
 
     @pytest.mark.parametrize("path", [
@@ -1012,7 +1068,7 @@ class TestOneCalendarDerivationPerRender:
             f"{path} did not render the cell it was asked for, so this count "
             "was taken over a fragment that refused before it built anything"
         )
-        assert counts["calendar_for"] == 1, (
-            f"{path} derived the pay calendar {counts['calendar_for']} times; "
+        assert counts["derive_periods"] == 1, (
+            f"{path} derived the pay calendar {counts['derive_periods']} times; "
             "the three cell fragments share one resolver and it derives one"
         )

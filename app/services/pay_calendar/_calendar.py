@@ -162,6 +162,7 @@ from ._searches import (
 )
 from ._views import (
     axis_window,
+    current_and_future_window,
     index_window,
     overlapping_window,
     projection_axis_window,
@@ -792,6 +793,28 @@ class PayCalendar:
             calendar ends first and empty when *first_index* is past the end.
         """
         return index_window(self.periods, first_index, count)
+
+    def current_and_future(self, day: date) -> PeriodWindow:
+        """Return the periods that have not ENDED before *day*.
+
+        "How many paychecks are left", counting the one *day* falls in
+        (:func:`~._views.current_and_future_window`).  The rolling top-up's
+        target is compared against this; plan step **C4** moved the question
+        onto this value from a ``PayPeriod.end_date >= as_of`` count in SQL,
+        which was the last query in ``pay_period_admin`` naming a column plan
+        step C4 drops (finding **P70**).
+
+        Args:
+            day: The first day the window covers, inclusive.
+
+        Returns:
+            The :class:`~._window.PeriodWindow` of periods ending on or after
+            *day*.  **Empty rather than refused** when every period has already
+            ended -- unlike :meth:`overlapping`, which is the same question with
+            its bounds written out and which treats ``[day, horizon()]``
+            crossed as a caller defect.
+        """
+        return current_and_future_window(self.periods, day)
 
     def overlapping(self, first_day: date, last_day: date) -> PeriodWindow:
         """Return every SAVED period overlapping ``[first_day, last_day]``.

@@ -24,7 +24,7 @@ from flask import Blueprint, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from app.extensions import db
-from app.services import dashboard_service, pay_period_admin
+from app.services import dashboard_service, pay_period_rolling
 from app.services.balance_at import BalanceContext
 from app.services.savings_dashboard_service import DebtSummary
 from app.utils.auth_helpers import require_owner
@@ -220,7 +220,7 @@ def page():
     # Continuous rolling window: top up on dashboard entry (a future-
     # period consumer).  A no-op (one count, no lock) when rolling is
     # disabled; commits only when periods were actually created.
-    if pay_period_admin.top_up_rolling_window(current_user.id):
+    if pay_period_rolling.top_up_rolling_window(current_user.id):
         db.session.commit()
 
     balance_ctx = BalanceContext.build(current_user.id)
