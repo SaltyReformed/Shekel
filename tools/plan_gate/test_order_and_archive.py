@@ -421,13 +421,16 @@ class TestAnArchivedDocumentSaysSoOnItsFirstLine:
 class TestEveryRegistryIsUnderItsCap:
     """conventions.md rule 4, on the documents it did not used to reach.
 
-    **``ledger.md`` LEFT this class on 2026-08-25, by developer ruling**, and
-    :class:`TestTheLedgerIsBOUNDEDRatherThanCAPPED` is what replaced it.  A
-    line cap on a registry holding ONE LINE PER MEASURED DEFECT is a cap on how
-    many defects the project may have measured; it was raised three times, and
-    the fourth time it bound, a finding was written into a code docstring to get
-    around it.  The arms it kept are the ROW cap (a row may not swell into the
-    arc document's argument) and a runaway backstop.
+    **``ledger.md`` and ``steps.md`` both LEFT this class on 2026-08-25, by
+    developer ruling**, and :class:`TestTheLedgerIsBOUNDEDRatherThanCAPPED` and
+    :class:`TestTheIndexIsBOUNDEDRatherThanCAPPED` are what replaced them.  The
+    argument is one argument, made twice: a line cap on a registry holding ONE
+    LINE PER THING is a cap on how many of that thing the project may have --
+    defects measured for the ledger, leaves DECOMPOSED for the index.  The
+    ledger's was raised three times and the fourth time it bound a finding was
+    written into a code docstring to get around it; the index's bound on
+    ``recurrence:R7d``'s seven-leaf split with no shipped row free to archive.
+    The arms both kept are a per-ROW cap and a runaway backstop.
     """
 
     @pytest.mark.parametrize("name", sorted(registry.REGISTRY_CAPS))
@@ -457,10 +460,11 @@ class TestEveryRegistryIsUnderItsCap:
         nothing to do with the cap.
 
         The subject was ``ledger.md`` until 2026-08-25, when its line cap was
-        dropped; it is ``steps.md`` now, which is a registry the arm still
-        holds.
+        dropped, and ``steps.md`` for the few hours between that ruling and the
+        one that dropped this file's too.  It is ``conventions.md`` now, which
+        is a registry the arm still holds.
         """
-        over = "steps.md"
+        over = "conventions.md"
         for name, cap in registry.REGISTRY_CAPS.items():
             padding = cap + 1 if name == over else 1
             (tmp_path / name).write_text("filler\n" * padding)
@@ -534,16 +538,16 @@ class TestTheLedgerStatesItsBACKLOG:
         Staged on the REAL file, so the control exercises the same parser on
         the same shape the live document uses.
         """
-        stage("ledger", "By arc: balance 155", "By arc: balance 154")
+        stage("ledger", "By arc: balance 156", "By arc: balance 155")
 
         violation = registry.stated_arc_counts_violation()
 
         assert violation is not None
-        assert "154" in violation and "155" in violation
+        assert "155" in violation and "156" in violation
 
     def test_the_control_fires_when_the_split_is_deleted(self, stage):
         """Deleting the sentence must fail loudly, not read as agreement."""
-        stage("ledger", "By arc: balance 155", "By nothing at all: balance 155")
+        stage("ledger", "By arc: balance 156", "By nothing at all: balance 156")
 
         assert registry.stated_arc_counts_violation() is not None
 
@@ -556,9 +560,41 @@ class TestTheLedgerStatesItsBACKLOG:
         gate whose answer depends on where a formatter broke a line is a gate
         that fails for the wrong reason.
         """
-        stage("ledger", "recurrence 20, bank_import", "recurrence 20,\nbank_import")
+        stage("ledger", "recurrence 22, bank_import", "recurrence 22,\nbank_import")
 
         assert registry.stated_arc_counts_violation() is None
+
+
+class TestTheIndexIsBOUNDEDRatherThanCAPPED:
+    """What replaced ``steps.md``'s line cap (developer ruling 2026-08-25).
+
+    The same three-way split :class:`TestTheLedgerIsBOUNDEDRatherThanCAPPED`
+    records, one registry over: a ROW may not become a specification (graded by
+    rule 14's description cap); a table larger than any real plan is an accident
+    (graded here); and what the file's LENGTH was ever a proxy for -- can a cold
+    reader find the next step -- is graded directly by rule 3's counts and rule
+    14's dense ranks, which do not care how long the table is.
+    """
+
+    def test_the_index_carries_no_line_cap(self):
+        """The ruling, asserted -- a re-added cap must be a decision, not a merge."""
+        assert "steps.md" not in registry.REGISTRY_CAPS, (
+            "steps.md's line cap was dropped 2026-08-25; putting it back is a "
+            "developer ruling, not something a merge does quietly"
+        )
+
+    def test_the_real_index_is_under_the_runaway_backstop(self):
+        """The live file, so the backstop is a fact rather than a constant."""
+        assert registry.steps_runaway_violation() is None
+
+    def test_the_backstop_fires_on_a_table_that_could_only_be_an_accident(
+        self, monkeypatch,
+    ):
+        """A backstop nobody has seen fail is a number, not a gate."""
+        monkeypatch.setattr(registry, "STEPS_RUNAWAY_ROWS", 1)
+        violation = registry.steps_runaway_violation()
+        assert violation is not None
+        assert "runaway backstop" in violation
 
 
 class TestTheOrderTableIsSorted:

@@ -777,12 +777,44 @@ def blocked_by_violations() -> list[str]:
 #: pile is looked at.  On the day of the ruling that pile was 227 rows, 156 of
 #: them ``balance``, with 21 blocked on nothing but a decision -- the same 21
 #: whose clearance the 250 -> 260 raise had been granted against.
+#: **``steps.md``'s LINE cap was DROPPED on 2026-08-25, by developer ruling, on
+#: the argument the entry above had already made for ``ledger.md`` -- the same
+#: day, one registry over.**  One STEP is one line there, so a line cap on the
+#: file is a cap on how finely the plan is allowed to DECOMPOSE, and
+#: decomposition is the discipline every arc here runs on (rule 2 makes it the
+#: id's job, and ``feedback``'s multi-leaf rule makes it how work spans
+#: sessions).  It bound on ``recurrence:R7d``, whose reader census turned one
+#: step into seven leaves: the file reached 246 against the 240 headroom floor,
+#: and **not one SHIPPED row was free to archive** -- every one is cited by a
+#: live sentence or is another step's rule 13 blocker, which a 2026-08-19
+#: session had already recorded for the four obvious recurrence candidates
+#: (``historical/recurrence_completed_findings_span_as_built_2026-08-19.md``).
+#: So rule 5 could not answer, exactly as it could not for ``ledger.md``, and
+#: the file is 178 table rows against 44 lines of prose -- there is nothing
+#: else in it to trim.
+#:
+#: **What replaces it.**  :data:`~_order.DESCRIPTION_CAP` is the per-ROW cap and
+#: is now the whole of rule 4 for this file -- it prevents the failure a line
+#: cap was reached for, a row swelling into the arc document's specification.
+#: :data:`STEPS_RUNAWAY_ROWS` is the runaway backstop a dropped cap owes.  And
+#: what the length was ever a proxy for is graded directly and always was: rule
+#: 3's four counts in the header, and rule 14's dense ranks, which keep "the
+#: first row that is not done" the answer however long the table grows.  Nobody
+#: reads this file end to end; they read row one.
 REGISTRY_CAPS = {
-    "steps.md": 260,
     "conventions.md": 280,
     "verification.md": 120,
     "lessons.md": 200,
 }
+
+#: The number of ``steps.md`` rows that can only be an accident.
+#:
+#: Not a forcing function -- :data:`REGISTRY_CAPS` no longer holds this file,
+#: for the reasons above.  This is the runaway backstop a dropped cap owes: a
+#: duplicated table or a generator loop fails loudly instead of committing.
+#: Set far above the 157 steps the index held when the cap was dropped, so it
+#: can never bind on a real decomposition.
+STEPS_RUNAWAY_ROWS = 400
 
 #: The number of ``ledger.md`` rows that can only be an accident.
 #:
@@ -844,6 +876,25 @@ def ledger_runaway_violation() -> "str | None":
         return None
     return (
         f"ledger.md holds {rows} rows against the {LEDGER_RUNAWAY_ROWS}-row "
+        "runaway backstop. This is not rule 4's forcing function -- that cap "
+        "was dropped 2026-08-25 -- it is the arm that says a table this size "
+        "is an accident. Check for a duplicated block before doing anything "
+        "else."
+    )
+
+
+def steps_runaway_violation() -> "str | None":
+    """The backstop ``steps.md``'s dropped line cap owes.
+
+    Returns:
+        The message when ``steps.md`` holds more step rows than any real plan
+        could, or ``None``.
+    """
+    rows = len(step_rows())
+    if rows <= STEPS_RUNAWAY_ROWS:
+        return None
+    return (
+        f"steps.md holds {rows} steps against the {STEPS_RUNAWAY_ROWS}-row "
         "runaway backstop. This is not rule 4's forcing function -- that cap "
         "was dropped 2026-08-25 -- it is the arm that says a table this size "
         "is an accident. Check for a duplicated block before doing anything "
