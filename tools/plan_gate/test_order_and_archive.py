@@ -534,16 +534,16 @@ class TestTheLedgerStatesItsBACKLOG:
         Staged on the REAL file, so the control exercises the same parser on
         the same shape the live document uses.
         """
-        stage("ledger", "By arc: balance 156", "By arc: balance 155")
+        stage("ledger", "By arc: balance 155", "By arc: balance 154")
 
         violation = registry.stated_arc_counts_violation()
 
         assert violation is not None
-        assert "155" in violation and "156" in violation
+        assert "154" in violation and "155" in violation
 
     def test_the_control_fires_when_the_split_is_deleted(self, stage):
         """Deleting the sentence must fail loudly, not read as agreement."""
-        stage("ledger", "By arc: balance 156", "By nothing at all: balance 156")
+        stage("ledger", "By arc: balance 155", "By nothing at all: balance 155")
 
         assert registry.stated_arc_counts_violation() is not None
 
