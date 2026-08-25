@@ -113,19 +113,6 @@ def act_still_names_a_row():
     not (adversarial review, 2026-08-25, which measured the template
     hard-delete reaching the state from a shipped button).
 
-    **What those four doors still OWE, recorded here because ``ledger.md`` is
-    AT its cap** (240 lines of the 260 the gate requires 20 lines of headroom
-    in, which is the archival ruling ``bank_import:X-ga`` already named as
-    owed): the LINE is correct through every one of them, but each leaves a
-    DEAD act on the accepted-matches panel, and none of them says a word about
-    destroying an accepted match.  The disclosure and a sweep for dead acts
-    belong to ``bank_import:X-gf``, which rebuilds that screen.  The recurrence
-    retire sweep is the one held by an IMPLICATION rather than a check --
-    ``_maintain._rows_holding_owner_records`` reads ``settled_basis_id`` and an
-    accepted match settles its row, so 0 of 71 matched rows were in scope when
-    measured -- and that implication breaks the day anything matches a row with
-    no figure basis.
-
     **Applying it to the WHOLE member scan is exact rather than convenient.**
     The EXISTS is true for every member of an act that holds an app row, so
     filtering the scan changes only the LINE set -- an act with no app-side

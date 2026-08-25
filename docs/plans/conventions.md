@@ -76,17 +76,18 @@ exists to end.
 
 4. **Every document is capped, and a cap is a FORCING FUNCTION rather than a ceiling sized to fit
    the work.** Raising a cap is not the answer when it binds; rule 5 is. Current caps live in the
-   gate's own constants. **"Every document" meant four of nine until 2026-08-11**: the gate capped
-   the arc documents and left every registry uncapped, including the one that actually grows. That
-   is rule 3's own sentence one rule over -- a rule stated for one artifact and graded on one
-   artifact is a rule the second artifact does not have -- and `ledger.md` had reached 166 rows with
-   no forcing function at all. All five registries are capped now.
-   **`ledger.md` also has a per-ROW cap, which is rule 14's twin for the ledger.** A row had reached
-   3,536 characters against a 409-character median; at that size it is not an index entry, it is the
-   arc document's argument living in the registry.
-   **The overflow's destination is the OWNING STEP's specification**, never deletion: when eight
-   rows were brought under the cap on 2026-08-11 their census enumerations, mechanisms and reference
-   lists moved to `C2`, `C2-b2` and `C7`, where the person picking that step up meets them.
+   gate's own constants. *(No registry was capped at all until 2026-08-11 -- rule 3's sentence one
+   rule over -- and `ledger.md` had reached 166 rows unforced.)*
+   **`ledger.md` is the ONE exception and carries no LINE cap** (developer ruling 2026-08-25): one
+   finding is one line there, so the cap capped how many defects the project was allowed to have
+   MEASURED, and the fourth time it bound it pushed two into code docstrings --
+   **a gate may not refuse to record a defect somebody has measured.** Holding it instead: the
+   per-ROW cap below, a runaway backstop, and rule 3 on the BACKLOG, stated per arc in its header
+   and gate-checked, so the pile is READ rather than bumped into. Rule 5 could never relieve it:
+   rule 1 already guarantees no row names a shipped step, so a completed span has always already
+   left. **`ledger.md` also has a per-ROW cap, rule 14's twin for the ledger** -- a row had reached
+   3,536 characters against a 409-character median, which is the arc document's argument living in
+   the registry. **The overflow goes to the OWNING STEP's specification**, never deletion.
    **`lessons.md` is capped too, and its retirement path is its own**: a lesson MECHANIZED into a
    gate stops being a lesson, and its line moves to that gate's rationale. An append-only file
    nobody finishes reading loses its lessons as completely as deleting them would.

@@ -756,13 +756,42 @@ def blocked_by_violations() -> list[str]:
 #: :data:`LEDGER_ROW_CAP`, cap per arc, or split the balance arc out) and ruled
 #: for a condensed header plus this raise, keeping the forcing function while
 #: the arcs that own 35 of these rows (``X-ai``, ``X-ak``, ``X-f3c``) land.
+#: **``ledger.md``'s LINE cap was DROPPED on 2026-08-25, by developer ruling,
+#: and this is the FOURTH entry in the history above rather than a fourth
+#: raise.**  The paragraph above had already measured why: rule 5 can never
+#: answer for this file, one finding is one line, and a line cap on it is a cap
+#: on how many defects the project is allowed to have MEASURED.  Two more
+#: findings hit it on 2026-08-25 at ``bank_import:X-gb``, three days after
+#: ``X-ga`` hit it, and the assistant routed around it by writing them into
+#: code docstrings -- which is the failure this records: the cap did not force
+#: the ledger to shrink, it forced a measured defect out of the registry that
+#: exists to hold it.
+#:
+#: **What replaces it, and why each piece.**  :data:`LEDGER_ROW_CAP` stays and
+#: is now the whole of rule 4 for this file -- it is the arm that actually
+#: prevents the failure the line cap was reached for, a row swelling into the
+#: arc document's argument.  :data:`LEDGER_RUNAWAY_ROWS` is a backstop set far
+#: above any real backlog, so an accident that duplicates the table still
+#: fails.  And :func:`open_findings_by_arc` PRINTS the backlog every run,
+#: because the thing worth forcing was never the file's length: it is that the
+#: pile is looked at.  On the day of the ruling that pile was 227 rows, 156 of
+#: them ``balance``, with 21 blocked on nothing but a decision -- the same 21
+#: whose clearance the 250 -> 260 raise had been granted against.
 REGISTRY_CAPS = {
-    "ledger.md": 260,
     "steps.md": 260,
     "conventions.md": 280,
     "verification.md": 120,
     "lessons.md": 200,
 }
+
+#: The number of ``ledger.md`` rows that can only be an accident.
+#:
+#: Not a forcing function -- :data:`REGISTRY_CAPS` no longer holds this file,
+#: for the reasons above.  This is the runaway backstop a dropped cap owes:
+#: a duplicated table or a generator loop fails loudly instead of committing.
+#: Set far above the 227 rows the ledger held when the cap was dropped, so it
+#: can never bind on a real finding.
+LEDGER_RUNAWAY_ROWS = 400
 
 #: The widest a single ``ledger.md`` row may be, in characters.
 #:
@@ -801,6 +830,78 @@ def registry_line_cap_violations() -> list[str]:
             "Do not raise the cap and do not trim a live row."
         )
     return problems
+
+
+def ledger_runaway_violation() -> "str | None":
+    """The backstop a dropped line cap owes.
+
+    Returns:
+        The message when ``ledger.md`` holds more rows than any real backlog
+        could, or ``None``.
+    """
+    rows = len(ledger_rows())
+    if rows <= LEDGER_RUNAWAY_ROWS:
+        return None
+    return (
+        f"ledger.md holds {rows} rows against the {LEDGER_RUNAWAY_ROWS}-row "
+        "runaway backstop. This is not rule 4's forcing function -- that cap "
+        "was dropped 2026-08-25 -- it is the arm that says a table this size "
+        "is an accident. Check for a duplicated block before doing anything "
+        "else."
+    )
+
+
+def open_findings_by_arc() -> "list[tuple[str, int]]":
+    """Return each arc's open-finding count, largest first.
+
+    **The signal the line cap was standing in for**, published so the backlog
+    is looked at rather than bumped into.  A count is REPORTED and never
+    fails: what a gate must not do is refuse to record a defect somebody has
+    just measured, which is what the dropped cap did twice in three days.
+
+    Returns:
+        ``(arc, open rows)`` pairs, largest first, then alphabetical.
+    """
+    counts: dict[str, int] = {}
+    for row in ledger_rows():
+        counts[row.arc] = counts.get(row.arc, 0) + 1
+    return sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))
+
+
+def stated_arc_counts_violation() -> "str | None":
+    """Rule 3, applied to the BACKLOG the dropped line cap was standing in for.
+
+    **A registry that states its own size has that number CHECKED**, and since
+    2026-08-25 ``ledger.md`` states its per-arc split as well as its total.
+    That sentence is where the developer's ruling put the forcing function: a
+    gate may not refuse to record a measured defect, but the pile it records
+    into has to be READ, and a number in the file every reader opens is read
+    where a line printed at commit time is not.
+
+    Returns:
+        The message when the stated split disagrees with the table, or
+        ``None``.
+    """
+    text = LEDGER.read_text(encoding="utf-8")
+    # WHITESPACE-COLLAPSED before matching, because the sentence is ordinary
+    # prose that the markdown formatter re-wraps at 100 characters -- and it
+    # once wrapped BETWEEN an arc's name and its count, which made a true
+    # sentence read as a missing arc.  The parser follows the prose rather than
+    # the prose being written to suit the parser.
+    sentence = " ".join(text.split("By arc:", 1)[-1].split(".", 1)[0].split())
+    stated = {
+        arc: int(count)
+        for arc, count in re.findall(r"([a-z_]+) (\d+)", sentence)
+    } if "By arc:" in text else {}
+    actual = dict(open_findings_by_arc())
+    if stated == actual:
+        return None
+    return (
+        f"ledger.md's by-arc line says {stated or 'nothing'} and the table "
+        f"holds {actual}. The split is the backlog this file states instead of "
+        "a line cap (developer ruling 2026-08-25); a stale one hides the pile "
+        "it exists to keep in front of a reader (conventions.md rule 3)"
+    )
 
 
 def ledger_row_cap_violations() -> list[str]:

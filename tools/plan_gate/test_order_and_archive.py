@@ -419,7 +419,16 @@ class TestAnArchivedDocumentSaysSoOnItsFirstLine:
 # which is what the rest of this module grades.
 
 class TestEveryRegistryIsUnderItsCap:
-    """conventions.md rule 4, on the five documents it did not used to reach."""
+    """conventions.md rule 4, on the documents it did not used to reach.
+
+    **``ledger.md`` LEFT this class on 2026-08-25, by developer ruling**, and
+    :class:`TestTheLedgerIsBOUNDEDRatherThanCAPPED` is what replaced it.  A
+    line cap on a registry holding ONE LINE PER MEASURED DEFECT is a cap on how
+    many defects the project may have measured; it was raised three times, and
+    the fourth time it bound, a finding was written into a code docstring to get
+    around it.  The arms it kept are the ROW cap (a row may not swell into the
+    arc document's argument) and a runaway backstop.
+    """
 
     @pytest.mark.parametrize("name", sorted(registry.REGISTRY_CAPS))
     def test_the_registry_is_within_its_line_cap(self, name):
@@ -443,11 +452,15 @@ class TestEveryRegistryIsUnderItsCap:
         """A cap nobody has seen fail is a number, not a gate.
 
         EVERY registry is staged, not just the one being pushed over: the arm
-        walks all five, so a directory holding one file raises
+        walks them all, so a directory holding one file raises
         ``FileNotFoundError`` and the control fails for a reason that has
         nothing to do with the cap.
+
+        The subject was ``ledger.md`` until 2026-08-25, when its line cap was
+        dropped; it is ``steps.md`` now, which is a registry the arm still
+        holds.
         """
-        over = "ledger.md"
+        over = "steps.md"
         for name, cap in registry.REGISTRY_CAPS.items():
             padding = cap + 1 if name == over else 1
             (tmp_path / name).write_text("filler\n" * padding)
@@ -455,6 +468,97 @@ class TestEveryRegistryIsUnderItsCap:
         problems = registry.registry_line_cap_violations()
         assert len(problems) == 1, problems
         assert problems[0].startswith(over) and "rule 4" in problems[0]
+
+
+class TestTheLedgerIsBOUNDEDRatherThanCAPPED:
+    """What replaced ``ledger.md``'s line cap (developer ruling 2026-08-25).
+
+    Three arms, and the split between them is the ruling: a row may not become
+    a specification (graded elsewhere, ``LEDGER_ROW_CAP``); a table larger than
+    any real backlog is an accident (graded here); and the backlog itself is
+    REPORTED rather than gated, because refusing to record a measured defect is
+    what the dropped cap did.
+    """
+
+    def test_the_ledger_carries_no_line_cap(self):
+        """The ruling, asserted -- a re-added cap must be a decision, not a merge."""
+        assert "ledger.md" not in registry.REGISTRY_CAPS, (
+            "ledger.md's line cap was dropped 2026-08-25; putting it back is a "
+            "developer ruling, not something a merge does quietly"
+        )
+
+    def test_the_real_ledger_is_under_the_runaway_backstop(self):
+        """The live file, so the backstop is a fact rather than a constant."""
+        assert registry.ledger_runaway_violation() is None
+
+    def test_the_backstop_fires_on_a_table_that_could_only_be_an_accident(
+        self, monkeypatch,
+    ):
+        """A backstop nobody has seen fail is a number, not a gate."""
+        monkeypatch.setattr(registry, "LEDGER_RUNAWAY_ROWS", 1)
+        violation = registry.ledger_runaway_violation()
+        assert violation is not None
+        assert "runaway backstop" in violation
+
+    def test_the_backlog_is_reported_per_arc_and_sums_to_the_table(self):
+        """The signal the cap was standing in for, and it must be complete.
+
+        Summing it against the row count is what stops the report drifting
+        into a partial view of the pile it exists to keep visible.
+        """
+        by_arc = registry.open_findings_by_arc()
+
+        assert by_arc, "a ledger with rows reports a backlog"
+        assert sum(count for _, count in by_arc) == len(registry.ledger_rows())
+        assert by_arc == sorted(by_arc, key=lambda pair: (-pair[1], pair[0]))
+
+
+class TestTheLedgerStatesItsBACKLOG:
+    """The by-arc split, which is what the dropped line cap was standing in for.
+
+    Developer ruling 2026-08-25: ``ledger.md`` carries no line cap, and the
+    forcing function moved onto the number instead of the file.  A gate may not
+    refuse to record a defect somebody has measured -- it did, twice in three
+    days, and the second time a finding went into a code docstring to get round
+    it.  What is graded now is that the pile is stated TRUTHFULLY where every
+    reader of the file meets it.
+    """
+
+    def test_the_stated_split_matches_the_table(self):
+        """The live file."""
+        assert registry.stated_arc_counts_violation() is None
+
+    def test_the_control_fires_on_a_stale_split(self, stage):
+        """A number nobody grades is a number that goes stale.
+
+        Staged on the REAL file, so the control exercises the same parser on
+        the same shape the live document uses.
+        """
+        stage("ledger", "By arc: balance 156", "By arc: balance 155")
+
+        violation = registry.stated_arc_counts_violation()
+
+        assert violation is not None
+        assert "155" in violation and "156" in violation
+
+    def test_the_control_fires_when_the_split_is_deleted(self, stage):
+        """Deleting the sentence must fail loudly, not read as agreement."""
+        stage("ledger", "By arc: balance 156", "By nothing at all: balance 156")
+
+        assert registry.stated_arc_counts_violation() is not None
+
+    def test_a_line_wrap_inside_the_sentence_is_not_a_disagreement(self, stage):
+        """The formatter re-wraps this prose, and it once split an arc's count.
+
+        ``rumdl`` normalises paragraphs to 100 characters, and one such wrap
+        landed between ``bank_import`` and its number -- which the first parser
+        read as that arc having gone missing, on a sentence that was true.  A
+        gate whose answer depends on where a formatter broke a line is a gate
+        that fails for the wrong reason.
+        """
+        stage("ledger", "recurrence 20, bank_import", "recurrence 20,\nbank_import")
+
+        assert registry.stated_arc_counts_violation() is None
 
 
 class TestTheOrderTableIsSorted:
