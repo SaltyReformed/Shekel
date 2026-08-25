@@ -236,9 +236,16 @@ _REF_TABLE_SEEDS = (
     # table present and the row absent and raises, refusing to boot.  A dict
     # entry rather than a bare name because this table carries a display label
     # the upload form reads.
+    # **The label names the FORMAT and not a column it may not have** (plan
+    # step ``bank_import:X-gc``).  It read "CSV with running balance" until
+    # then, on the one control that chooses a parser -- while the help text
+    # directly beneath it says the column is optional, and while SECU had
+    # stopped offering it altogether.  Migration ``a1f4c7e0b839`` updates the
+    # row an existing database already carries, because this seeder INSERTS
+    # missing rows and leaves present ones alone.
     ("StatementSource", [
         {"name": "secu_checking_csv",
-         "display_name": "SECU checking -- CSV with running balance"},
+         "display_name": "SECU checking -- CSV export"},
     ]),
     # The settlement record's discriminator (balance arc, plan step X-au-c3).
     # HOW a settled row's recorded figure is known: ``derived`` is the app's own
@@ -446,11 +453,21 @@ def _seed_other_ref_tables(
 ) -> None:
     """Insert any missing rows in the non-AccountType ref tables.
 
-    Driven by ``_REF_TABLE_SEEDS``.  Existing rows are left untouched
-    (these tables carry only ``name`` plus, for ``Status``, three
-    migration-managed runtime booleans -- so there is no in-place
-    metadata refresh as in step 2).  Dict entries carry the non-name
-    columns (``Status``); every other entry is name-only.
+    Driven by ``_REF_TABLE_SEEDS``.  Existing rows are left untouched, so
+    there is no in-place metadata refresh as in step 2.  Dict entries
+    carry the non-name columns -- ``Status``'s three migration-managed
+    runtime booleans, and ``StatementSource``'s ``display_name``, which
+    the statement upload form renders; every other entry is name-only.
+
+    **The consequence of "left untouched" is a real seam and it is
+    graded rather than trusted**: editing a non-name value here changes
+    what a FRESH bootstrap says and NOTHING about a database that
+    already holds the row, so the two halves are changed together (the
+    dual-seed pattern -- a migration for the databases that exist, this
+    file for the ones yet to be born) and
+    ``tests/test_services/test_statement_import/test_reads.py::
+    test_the_SEEDER_and_the_DATABASE_agree_about_that_label`` compares
+    them.  Migration ``a1f4c7e0b839`` is the worked example.
 
     Args:
         session: SQLAlchemy session bound to the target database.

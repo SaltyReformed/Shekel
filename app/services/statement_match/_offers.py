@@ -55,6 +55,81 @@ class RowKind(enum.Enum):
 
 
 @dataclass(frozen=True)
+class NotShownAlone:
+    """Why a bank statement can never show one of the app's rows BY ITSELF.
+
+    **The panel that lists the rows a statement did not explain asserts an
+    INFERENCE, and for two row shapes that inference is false** (plan step
+    ``bank_import:X-gc``, ruling **R-GO**, the 2026-08-24 adversarial design
+    review).  Its
+    caption reads *a payment your records claim happened and your bank did not
+    make*, which only follows if the row's money would have reached the bank as
+    a line of its own.  A CC PAYBACK's does not -- it leaves inside one lump
+    payment to the card, so the bank shows the payment and never the payback --
+    and an ENVELOPE whose figure is its purchases is the opposite shape with
+    the same consequence: the bank showed the purchases, not the container.
+    Measured on the developer's own dev database 2026-08-25: **18 of the
+    panel's 67 rows are CC Paybacks**, and the left-hand list beside them holds
+    **9 unexplained ``ACH DEBIT CAPITAL ONE ... PMT`` lines** those paybacks
+    are the counterpart of.
+
+    **So the rows are ANNOTATED and never withheld.**  That panel is also the
+    row-picker of the hand-build group form, and ruling **R-GJ** leaves the
+    group match as the only ACT a parked card-payment line has -- its other arm
+    is to PARK, which disposes of nothing -- so dropping the paybacks out of it
+    would close the one path the ruling kept open.  What was false was the
+    caption, not the membership.
+
+    Attributes:
+        label: The chip's own text, short enough to sit beside a row label.
+        sentence: The whole reason, carried as the chip's title.  It ends in
+            the ACT rather than in the diagnosis, which is
+            :attr:`~._bars.ParkedLine.reason`'s shape one card over: a row the
+            owner cannot act on is a row they will read once.
+    """
+
+    label: str
+    sentence: str
+
+
+#: The one statement of it, because ONE property returns it and every surface
+#: subscripts that property.  It does not fork on WHICH of the two shapes a row
+#: is, and the measurement is why -- but the measurement is narrower than a
+#: first draft of this comment claimed, and the difference matters.
+#:
+#: **The ENVELOPE arm is unreachable through PRICING, not merely unexercised.**
+#: An envelope that derives its figure from entries values at
+#: ``gross - Sigma(card entries) - Sigma(posted purchases)``
+#: (:func:`~._candidates._price`), and
+#: :func:`~._candidates.transaction_candidate` drops a row worth nothing --
+#: measured 2026-08-25 on the developer's account, **63 of 63** such envelopes
+#: price to ``Decimal("0")`` and all 63 are dropped, so none can reach a panel.
+#: Every one of the 22 candidates stating no figure of its own is a CC payback.
+#: One sentence covering both therefore costs nothing today, and a fourteenth
+#: field on :class:`CandidateRow` to fork it would buy nothing.
+#:
+#: **What the panel DOES hold is a different envelope shape, and this
+#: deliberately does not claim it**: 7 envelope-tracked containers carrying
+#: ZERO entries (``Groceries`` `-163.95`, ``Gas`` `-40.00`, ``Mint Mobile`
+#: `-132.69`, ``Father's Day`` `-100.00` and three more).  Their figure IS
+#: their own -- there are no entries to derive it from, which is exactly what
+#: ``settles_from_entries``' second half exists to say -- and whether the bank
+#: showed such a row as ONE line or as several is a fact the app does not hold.
+#: ``Mint Mobile`` is plainly one.  Chipping them on ``tracks_purchases`` would
+#: withdraw the alarm from rows the bank may really have failed to show, which
+#: is the one direction this caveat may not fail in.
+NOT_SHOWN_ALONE = NotShownAlone(
+    label="not a line of its own",
+    sentence=(
+        "This row's figure is not its own to state -- it is the purchases "
+        "inside it, or the card spending it repays -- so your bank never "
+        "shows it as a line by itself.  Tick it here together with the line "
+        "that does carry its money, and match them."
+    ),
+)
+
+
+@dataclass(frozen=True)
 class CandidateRow:  # pylint: disable=too-many-instance-attributes
     """One app row a bank line could be, priced and dated as the app holds it.
 
@@ -366,6 +441,46 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
             differing figure through for this row.
         """
         return self.transfer_id is None and self.states_own_figure
+
+    @property
+    def not_shown_alone(self) -> "NotShownAlone | None":
+        """Return why the bank never shows this row alone, or ``None``.
+
+        **Server-derived rather than a Jinja branch**, for the reason
+        :attr:`~._bars.ParkedLine.reason` is: a template restating a partition
+        is a second place for it to be wrong, and this one is a claim about
+        money -- the panel that reads it is asserting the bank failed to make a
+        payment.  ``app.routes.accounts.bank_agreement._anchor_is_assumed``
+        makes the same argument for the same kind of decision.
+
+        **It reads** :attr:`states_own_figure` **and asks nothing else**, which
+        is what keeps this a naming rather than a second derivation: that
+        attribute is already carried and already published by
+        ``transaction_service`` as two predicates.  It is a NARROWER question
+        than that attribute answers, and the two are not the same fact -- a row
+        whose amount is a fact about some OTHER row is one the bank accounts
+        for through that other row, which is a SUFFICIENT reason for the bank
+        never to show it alone and not a necessary one.
+
+        **The converse is deliberately not claimed, and its gap is measured
+        rather than assumed.**  A ``None`` here means the app cannot PROVE the
+        bank would have shown this row separately, not that it would have.  Two
+        shapes on the developer's own panel answer ``None`` and are arguably
+        never their own line: the ``Phone Allowance`` and ``Health Insurance
+        Allowance`` rows, which arrive inside one payroll deposit; and the 7
+        envelope-tracked containers holding no entries (see
+        :data:`NOT_SHOWN_ALONE`).  Neither carries a fact that says so, and the
+        only predicates that would claim them -- a row-name list, or
+        ``tracks_purchases`` -- would withdraw the alarm from rows the bank may
+        really have failed to show.  **A predicate with no false positives and
+        stated gaps is the honest shape here**; the alternative is the
+        allowlist this project removes rather than writes.
+
+        Returns:
+            :data:`NOT_SHOWN_ALONE`, or ``None`` when the row states its own
+            figure.
+        """
+        return None if self.states_own_figure else NOT_SHOWN_ALONE
 
 
 @dataclass(frozen=True)

@@ -195,13 +195,21 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
         unmatched: Bank lines inside the pay calendar that no proposal
             explains, ascending by day.
         unmatched_rows: The app's OWN rows that no proposal explains, over the
-            span the statement covers -- ruling **R-FP**'s other side, and the
-            more valuable half for a budget: a row the bank never showed is a
-            payment the records claim happened and the bank did not make.  They
-            are :class:`~._offers.CandidateRow` values rather than a type of
-            their own; a second record carrying the same five fields was
-            reported by pylint's cross-file ``duplicate-code`` and was exactly
-            rule 13's speculative shape.
+            span the recorded statements cover -- ruling **R-FP**'s other side,
+            and the more valuable half for a budget: a row the bank never
+            showed *and would have shown separately* is a payment the records
+            claim happened and the bank did not make.  **That qualifier is
+            load-bearing and was missing until plan step ``bank_import:X-gc``**;
+            :attr:`~._offers.CandidateRow.not_shown_alone` is where the screen
+            withdraws the claim for a row whose money the bank accounts for
+            through some other row, and the membership of this list is
+            deliberately unchanged by it -- it is also the hand-build form's
+            row-picker, and ruling **R-GJ** leaves the group match as a parked
+            card payment's only arm.  They are
+            :class:`~._offers.CandidateRow` values rather than a type of their
+            own; a second record carrying the same five fields was reported by
+            pylint's cross-file ``duplicate-code`` and was exactly rule 13's
+            speculative shape.
         accepted: The matches already accepted, newest first.
         creatable: The unmatched OUTFLOW lines, each with the budget lines it
             could become a purchase against (:class:`CreatableLine`).  A SUBSET
@@ -665,8 +673,19 @@ def _rows_the_bank_never_showed(
     """Return the app's own rows the statement could have shown and did not.
 
     Ruling **R-FP**'s other side, and the more valuable half for a budget: a row
-    the bank never showed is a payment the records claim happened and the bank
-    did not make.
+    the bank never showed, and would have shown as a line of its own, is a
+    payment the records claim happened and the bank did not make.
+
+    **This answers "did any line explain it", never "should the bank have shown
+    it separately"**, and conflating the two is what plan step
+    ``bank_import:X-gc`` corrected on the screen rather than here.  A CC
+    payback's money leaves inside one payment to the card and an envelope's
+    inside its own purchases, so neither is ever a line of its own -- and both
+    stay in this list, because it is the hand-build form's row-picker and those
+    paybacks are what a parked Capital One line is grouped against.  The screen
+    withdraws the inference per row through
+    :attr:`~._offers.CandidateRow.not_shown_alone`; withdrawing MEMBERSHIP
+    would have closed ruling **R-GJ**'s only remaining arm.
 
     **The span is every RECORDED line's, not the unmatched ones'.**  Taking it
     from the leftovers made the window SHRINK as matches were accepted --

@@ -188,8 +188,9 @@
                 <td class="text-end font-mono">{{ row.recorded_count }}</td>
                 <td class="text-end font-mono text-muted">{{ row.line_count }}</td>
                 {# `data-confirm` is the project's own destructive-action
-                   pattern; base.html includes the modal, and app.js sets the
-                   body with textContent, so a hostile FILE NAME cannot inject.
+                   pattern; base.html includes the modal, and confirm.js sets
+                   the body with textContent, so a hostile FILE NAME cannot
+                   inject.
                    The line count is `recorded_count`: nothing removes a bank
                    line except its import's cascade or its account's, so a
                    "live" count beside it could never differ -- see
