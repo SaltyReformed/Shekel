@@ -851,6 +851,14 @@ hides.
   (`d8aed644`). **What remains needs a RULING first**: a rulings table is spelled THREE ways --
   the id in its own column, in a `#` column, or in PROSE with no id column at all -- so "an id
   resolves to one ruling" is not gradeable until rulings take ONE grammar.
+* [ ] **X-bb** `feat(plan-gate): the gate closes the loop on its own corpus` -- closes **N-355**,
+  **N-356**, **N-357**. THREE arms, ONE root: every arm grades the planning documents and nothing grades
+  the GATE against them. **(a)** A control may not derive its specimen from a LIVE row -- `C1`, `C2-f1`
+  and `X-f1` are each held in a size-capped index solely so an arm has something to grade, and `C2-f3e`
+  is the remedy, having built its own and closed **D42**. **(b)** A DERIVED value may not be restated in
+  PROSE beside itself -- four blocker cells carry `(the container ticks at #N)` unparsed, one of them
+  stale on `dev` before anyone touched it. **(c)** An archive reference resolves BOTH ways, needing TWO
+  arms: 30 citations / 1 dangling to a file never added, 20 archived files / 1 unindexed. 2026-08-26.
 * [ ] **X-al** `fix(pylint): a duplicate-code disable that suppresses nothing is a finding` --
   closes **N-154**. `useless-suppression` is enabled precisely so a stale disable is reported, and
   it is BLIND to a `duplicate-code` one -- measured both directions: removing a disable left
@@ -946,33 +954,25 @@ lifetime, and a RESUBMITTED day is an ECHO that may not restate its basis (`$4,1
 
 ## 6. The findings ledger
 
-**Moved to `../../plans/ledger.md`**, the one findings table for every arc. This arc's rows
-are the ones whose `arc` column reads `balance`; a row's owner names a step in
-`../../plans/steps.md`, whose specification is section 5 of this document.
-
-They moved because a finding is not arc-local: `P2` / `F-10`, `P3` / `N-123` and
-`P6` / `F-12` were each one defect recorded in two ledgers, kept in step by hand,
-and one of those pairs went unnoticed for months. The rules the table is graded
-against are `../../plans/conventions.md`.
+**Moved to `../../plans/ledger.md`**, the one findings table for every arc. This arc's rows are the
+ones whose `arc` column reads `balance`; a row's owner names a step in `../../plans/steps.md`, whose
+specification is section 5 of this document, and the rules it is graded against are
+`../../plans/conventions.md`.
 
 ## 7. Verification standard
 
-**Moved to `../../plans/verification.md`**, one copy for every arc. It was stated here in full and,
-in a shorter and not-quite-equal form, in the credit-card plan; the recurrence and pay-calendar arcs
-had none at all. This arc wrote it, and this arc is why several of its clauses exist -- three of the
-five defects behind the suite's two clock gates were fixture-clock bugs created here, and this arc
-writes more anchors, assertion instants and due dates than anything else in the codebase.
+**Moved to `../../plans/verification.md`**, one copy for every arc. This arc WROTE it and is why
+several of its clauses exist -- three of the five defects behind the suite's two clock gates were
+fixture-clock bugs created here, and this arc writes more anchors, assertion instants and due dates
+than anything else in the codebase.
 
 ## 8. Process lessons
 
-**Moved to `../../plans/lessons.md`**, one copy for every arc. They were stated here and nowhere
-else, so the other three arcs did not have them -- which is what this restructure removes
-everywhere else in the corpus.
+**Moved to `../../plans/lessons.md`**, one copy for every arc.
 
 ## 9. Rules for this document
 
-**Moved to `../../plans/conventions.md`**, one copy for every arc. They were near-identical in
-three documents and absent from the fourth.
+**Moved to `../../plans/conventions.md`**, one copy for every arc.
 
 `tools/plan_gate/` grades this document against them through a pre-commit hook
 scoped to it and the CI step that runs the custom pylint checkers -- so EDITING
