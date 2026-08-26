@@ -247,6 +247,7 @@ Section 5 entry restates it inline (rule 5).
 | **R-FO** | 2026-08-14 (developer) | **What a balance assertion's difference MEANS is a property of the ACCOUNT, and the counter leg is a TOTAL DISPATCH over `classify_account` -- not a carve-out.** `PLAIN` books it to Uncategorized once X-f3c makes it a recorded, user-accepted transaction (**R-FN**) and stays on `anchor_equity` until then, because classifying it automatically is what R-FN refuses; `INTEREST` books per-account **Interest Income**; `INVESTMENT` and `APPRECIATING` book per-account **Change in Value** in a SIXTH reporting class of their own (this ruling first said FIFTH, and `ref.ledger_account_classes` already held five rows; the class is also NAMED for what it measures rather than for a gain, developer 2026-08-14 -- see **N-277**); `AMORTIZING` is untouched (a loan has its own correction family and its own chart). Five kinds, five answers, one function. **This is N-171 on a different account class, and it is LARGER**: `ref.posting_sources` holds seven rows and none is an accrual, so nothing posts modelled interest or modelled return anywhere -- the true-up correction is the ledger's ONLY trace of them, and it lands in equity. Measured 2026-08-13: the whole Income side of the chart is `Income: Salary` and `Income: Other Income`, no interest / dividend / investment account or category exists at all, and **`$10,653.91` of return earned over 4.5 months is invisible on the income statement** (Roth `$4,523.33`, 401(k) `$4,157.50`, Traditional `$1,942.83`, Money Market `$30.25` -- every one POSITIVE). **The RESET stays on the modelled kinds, and R-EB's own reasoning is why**: it deletes the reset because *"the reset discards what the records say"*, and an IRA has no record of a price movement to discard -- the assertion is the only fact, so the reset IS mark-to-market and re-deriving the correction each read is CORRECT (a contribution back-dated under an assertion rightly shrinks the gain). **The sixth class is not decoration**: `net_income = income - expense`, so a `$40,000` house revaluation booked to Income would read as `$40,000` earned. Unrealized gain is other comprehensive income and is reported below the line. Rejected: one combined return account, which tells the owner the bank paid them `$10,654`; and removing the reset on the modelled kinds, which breaks R-S for two account kinds with nothing to replace it and makes the app's IRA balance stop equalling the statement |
 | **R-FQ** | 2026-08-14 (developer) | **Clearing is RECORDED now and only becomes AUTHORITATIVE at the cutover, so X-f3a splits in two.** The three answers R-FL's own amendment demanded, plus what measurement then forced on top of them. (1) A line naming no statement is UNKNOWN and the DATE rule answers it, so the link SHARPENS rather than replaces -- which is what keeps `dated_deltas` from counting an unabsorbed source twice. (2) Both walks stop being monotonic PREFIX scans: the rule answers per line and the walks GROUP by the answer, because a pointer meeting an out-of-order link halts and shorts every later assertion. (3) The posted walk reads a link where its source rows carry one and falls to the date rule where they cannot -- RESIDUE, whose entries carry both source FKs NULL by construction; measured 2026-08-14, every nonzero residue group belongs to a LOAN account, which the walk refuses outright. **And the fourth answer is a THEOREM the first implementation got wrong.** While an assertion RESETS the ledger a link may NOT disagree with the day: a balance is the prefix sum of `dated_deltas`, which emits a source on its settle day and a correction on its statement's, so `prefix(statement day) = asserted balance` holds only where every line's clearing statement is the one the date rule picks. Measured on a production clone by the adversarial review this ruling was written against: one `$500.00` source linked to a later assertion rendered `$2,246.58` on 2026-03-27 against an asserted `$2,746.58`, breaking **R-S** on the assertion's own day; the mirror direction reads `anchor + X`, the `$4,001.42` class. So a link may only choose between assertions SHARING a civil day -- which is exactly what the panel writes, and production carries three such days on Checking -- every door that moves a settle day RELEASES the link, and `StatementCoverage` REFUSES what is left rather than rendering a balance that contradicts the user's own statement. **X-f3c is what lifts it**, because an assertion stops resetting anything there. The link is scoped by a COMPOSITE foreign key over the account rather than by a write-door convention, and NOTHING is backfilled: backfilling from the date rule would launder a measured-wrong guess into an observation nobody made, and X-f6a fills history from the bank. Rejected: letting the link outrank the date now, refuted by the measurement above; and refusing the day EDIT instead of releasing the link, which traps a user against the panel's own copy |
 | **R-FR** | 2026-08-15 (developer) | **A purchase is a POSTING SOURCE of its own, and what makes it one is the DAY THE BANK TOOK IT.** The four answers **R-FM** left open, taken together because each decides the next. (1) The TRIGGER is `settled_on IS NOT NULL` on a debit purchase -- the same fact that makes a TRANSACTION an actual event, asked of the row in front of it -- and NOT the clearing link nor `StatementCoverage.is_cleared`. That is what *"a purchase that has CLEARED"* means: cleared the BANK, not cleared by a statement. It also DISSOLVES **N-286** rather than building it: no consumer needs to tell a record-cleared line from a date-cleared one, because which statement absorbed the movement is the walk's question about that movement, asked identically of both kinds. Rejected: the link, which is `0` rows today so the step would move no money and leave **N-274** open until the bank import; and `is_cleared`, which would leave a purchase the bank took after the last assertion held as reserved BUDGET rather than booked on the day the money left. (2) The COUNTER leg is the ENVELOPE'S OWN category, so the expense is recognised in the right category on the day it happens and the close books the remainder to the same account. Rejected: Uncategorized until the close, which shows an open envelope's real spend as uncategorised on the income statement and makes every close write a reclassification pair. (3) A purchase gets its OWN journal entry -- `journal_entries.transaction_entry_id` plus a `purchase` source kind -- because the posted walk reads a source's DAY and its CLEARING LINK off the source row, and both are per-purchase; legs grouped under the parent's `transaction_id` would be dated at a `settled_on` a still-projected envelope does not have. It is also the grain the bank speaks in (R-FM: 58 of 110 matched movements are individual purchases). (4) A FUTURE `settled_on` on a purchase is REFUSED at the write door, which INVERTS the reason it had no upper bound: a forward day was conservative while a purchase was not a cash movement, and now releases the reservation today while booking the cash later -- already-spent money back in today's projection, the exact shape `status_seam.reject_future_settle_day` refuses on a transaction. Nothing expressible is lost (an unobserved purchase leaves the day NULL) and 0 of 91 production purchases carried one. **Measured on a production clone**: exactly ONE of 215 sampled days moves on one of seven accounts -- Checking 2026-08-13, `$1,993.90` -> `$2,006.69` -- which is entry 89 (`$12.79`, taken by the bank 08-12, inside the `$2,193.69` asserted that day) no longer leaving a second time when its envelope closed on 08-13. 9 purchase entries are written, the trial balance closes at `0.00` on both sides, and R-DH (c)'s three green rows still pass in both orders |
+| **R-GU** | 2026-08-26 (developer) | **A request is a QUERY or a COMMAND, and its TRANSACTION says which** -- the snapshot `X-i3` is about is taken at the REQUEST, not at the read pass. GET and HEAD run at `REPEATABLE READ, READ ONLY`; every other method keeps `READ COMMITTED`, writable; a GET that must write says so in one `write_transaction()` block that commits before the render resumes. **Two things the trace refuted, and each rules out the obvious design.** (1) The PASS cannot decide: `apply_statement_review` and `loan_recurrence_sync` both build one before they write, so a pass has no way to tell a render from a write's own decision basis and would need a second constructor -- "an argument a caller can get wrong is a defect, not a contract", which is `X-i4`'s own sentence reproduced in the step that removes `X-i3`'s. (2) A snapshot in front of a WRITE is a money bug, not a stricter setting: `user_write_lock`'s lock-then-reread requires the waiter to see the winner's just-committed postings, which only `READ COMMITTED` shows, so one snapshot re-arms the `$4,000.00`-asserted-against-`$1,000.00` divergence ruling **R-EN** measured -- silently, because the anchor-equity leg mirrors the error and the trial balance still closes at `$0.00`. **Measured before ruling**: the mechanism proven against this application's own session (two counts across one concurrent committed append answer `(1, 2)` today and `(1, 1)` under the query mode), 2,302 of 2,978 suite GETs arriving on an inherited transaction, and 36 arriving on one that had already written. **Rejected**: two constructors on the pass (the argument above); and "the render stops writing first", which is a product change across three arcs and still leaves every POST-then-render pass unsnapshotted |
 | **R-ES** | 2026-08-05 | **`account_anchor_history.notes` is DELETED and the origination assertion goes through the SAME write door as every later one**, so the table has ONE writer. An assertion is (account, day, balance) and nothing else -- the sentence ruling R-EO already wrote into the model. Measured: no code in `app/` READS the column (AST census), 76 of 78 production rows are NULL, and it labels the origination on 2 of 9 accounts. It is a SECOND answer to a question the app already decides positionally (`CashAnchorFact.is_opening` -> `account_opening` / `account_trueup`), and the forensic trail it was nominally for is `system.audit_log`, which records every INSERT with the full row and the acting user. The loan twin's typed `source_id` STAYS: that one is read |
 
 ## 5. The steps
@@ -297,8 +298,7 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   carrying **N-42**, redesigned 2026-08-03 (R-EB) and re-decomposed 2026-08-13 (R-FL..R-FO). **It
   ticks with X-f4**, not the import: a leaf is derived WITHIN an arc (`_classes.py:78`).
 
-* [x] **X-f1** `8d812662` a settle carries the day the money moved; absorbs **S2-b**. Fourteen leaves
-  in `archive/…2026-08-04.md` 1a. Did NOT close **N-173** (**X-f6a**'s).
+* [x] **X-f1** `8d812662` a settle carries the day the money moved; absorbs **S2-b**; fourteen leaves in `archive/…2026-08-04.md` 1a. Did NOT close **N-173** (**X-f6a**'s).
 
 *NINE of this span's shipped steps left under rule 5 -- X-an, X-f2's four leaves, X-aq, X-as and X-ap
 on 2026-08-13; X-f1 with five others on 2026-08-26 (`archive/five_shipped_steps_2026-08-26.md`).*
@@ -331,10 +331,10 @@ on 2026-08-13; X-f1 with five others on 2026-08-26 (`archive/five_shipped_steps_
     and widen the offer set to every uncleared line. **MOVES MONEY.** Closes **N-273**. **It follows
     X-f3c and R-FQ's theorem is why**: while an assertion RESETS the ledger a line no assertion
     clears reads as `anchor + X` at every later date (**N-285**).
-  * [x] **X-f3b** `38ffd87b` a purchase carrying a recorded bank posting day is a
-    cash movement of its own -- in the walk, in the ledger, and as its own posting source -- and its
-    envelope's close books only the remainder (**R-FM**, refined by **R-FR**). 1 of 215 sampled days
-    moves on a production clone. Closed **N-274**, **N-286**, **N-288**; opened **N-290**-**N-292**.
+  * [x] **X-f3b** `38ffd87b` a purchase carrying a recorded bank posting day is a cash movement of
+    its own -- in the walk, in the ledger and as its own posting source -- and its envelope's close
+    books only the remainder (**R-FM**, refined by **R-FR**); 1 of 215 sampled days moves on a
+    production clone. Closed **N-274**, **N-286**, **N-288**; opened **N-290**-**N-292**.
   * [ ] **X-f3c** `feat(cash): an assertion is a check, not a reset` -- **THE CUTOVER. MOVES MONEY.
     OWN PR, NO BACKLOG.** Closes **N-171**, **N-172**, **N-174**, **N-275**, **N-276**.
     `cash_ledger/_walk.py:300` goes, `balance(T)` becomes `opening equity + SUM(postings <= T)`, the
@@ -427,29 +427,16 @@ hides.
   at ~25 code reads across 15 modules and it is not one session's work. The split puts the schema
   where nothing can move a figure, then the readers where every change is provably byte-identical,
   then the money. It ticks with the last of them.
-  * [x] **X-au-c1** `2dbdad1c` the SCHEMA: both amount columns became NULLABLE under
-    `(amount_source_id IS NULL) = (<amount> IS NOT NULL)`, the source names the RELATION rather than
-    the RULE (**R-FK**), and two conventions became structural. **What a LATER leaf must obey**:
-    nothing is declared derived yet, so each cutover stamps its own relation -- and a writer that
-    sets a figure without clearing the source is now an `IntegrityError`. Opened **N-260**-**N-265**.
-  * [x] **X-au-c2a** `d44a4f01` the READERS: all 17 `effective_amount` reads routed and BOTH model
-    properties DELETED, with the 104 test reads that were their last callers.
-    `investment_projection` is valued at its boundary. **What a LATER leaf must obey**:
-    `get_payment_history` can never take the resolver (**N-266**, a cycle), and nothing reachable
-    from `loan_payment_service` may NAME `cash_ledger` (**N-267**) -- which is why the
-    producer-free arms live in `row_valuation.py`. Closed **N-262**; opened **N-266**-**N-272**.
-  * [x] **X-au-c2b** `a24f0b80` a row's BUDGET is RESOLVED, and ONE rule says what it DISPLAYS as
-    (`display_amounts_by_id`, where the grid, the fragments and the companion had three). The basis
-    is pinned to `(user_id, scenario_id)`: `priced_ids` deleted, a scenario REFUSAL in its place.
-    **A LATER leaf must obey**: rules 2 and 4 read no STATUS; `amounts_by_id` has no gate above the
-    resolve; the basis pins `date.today()` and moving it to `ctx.as_of` is X-i2's money move; every
-    door writing an amount CLEARS `amount_source_id`. Closed **N-268**-**N-271**; opened **N-294**-**N-298**.
-  * [x] **X-au-c3** `3d1379d1` a settle RECORDS what moved rather than refreshing an amount:
-    `settled_amount` + `settled_basis_id` + `settled_on` are ONE record, the seam is its only
-    writer, and a revert releases the ASSERTION while KEEPING the fact -- so `actual_amount`, one
-    column answering two questions, is gone. Both popovers correct a figure IN PLACE, transfers too.
-    **A LATER leaf must obey**: a lock protects a DECISION and an observation is CORRECTED; a figure
-    and a status change are independent facts one seam call applies. Closed **N-241**, **N-242**, **N-257**, **N-259**, **N-265**, **N-282**, **N-298**; opened **N-301**-**N-304**.
+  **Three of its leaves left for `archive/x_au_c_as_built_2026-08-26.md`** under rule 5 on
+  2026-08-26. **What still binds the leaves that REMAIN**, restated because rule 5 forbids a live
+  sentence depending on an archived one: `get_payment_history` may never take the resolver and
+  nothing reachable from `loan_payment_service` may NAME `cash_ledger`, which is why the
+  producer-free arms live in `row_valuation.py`; and the amount rules read no STATUS, the basis
+  pinning `date.today()` being `X-i2`'s money rather than theirs.
+  * [x] **X-au-c3** `3d1379d1` a settle RECORDS what moved rather than refreshing an amount, and
+    a revert releases the ASSERTION while KEEPING the fact. **A LATER leaf must obey**: a figure
+    and a status change are independent facts ONE seam call applies. Kept in place rather than
+    archived with its siblings because two live blocker cells name it.
 * [ ] **X-au-d** `refactor(salary): a projected paycheck is not stored` -- the SALARY cutover. The
   recurrence engine stops pricing salary rows, the 51 live rows go NULL, and
   `income_service.live_projected_net`, `transaction_service._freshest_amount` and
@@ -651,9 +638,8 @@ hides.
   repair X-x's refusals point at is that step's and X-x waits on both.
   *Its opening line claimed this step "re-anchors accounts". That was expired when written: ruling
   R-EH deleted `accounts.current_anchor_period_id`, so there is nothing left to re-anchor.*
-  * [x] **X-ad-a** `2a4eb477` -- registration ASKS for the payday, the cadence and the horizon;
-    the bootstrap payday is DELETED. Closed **N-123** (= pay-calendar `P3`) and satisfies `C4`'s
-    `P8`. **Shipped to `dev`, NOT to production** -- it is not an ancestor of `origin/main`.
+  * [x] **X-ad-a** `2a4eb477` -- registration ASKS for the payday, the cadence and the horizon and
+    the bootstrap payday is DELETED; closed **N-123** (= pay-calendar `P3`), satisfies `C4`'s `P8`.
   * [ ] **X-ad-b** the rolling top-up stops writing HISTORY (**N-124**, ruling **R-EZ**). With
     rolling enabled, a lapsed schedule's page load appends periods from `last.end_date + 1`
     wherever that is and populates them -- **61 -> 113 -> 132 periods and +991 transactions** over
@@ -706,25 +692,39 @@ hides.
     contribution load costs `2.7 -> 14.8 ms` per render entry, so shipping X-j first ships that
     regression and then removes it. Forks for its trace: which salary profile a historical read
     picks when several are active, and whether deductions resolve at the read date.
-  * [ ] **X-i3 THE SNAPSHOT** -- one pass, one SNAPSHOT. The context memoizes its calendar and loads
-    rows in LATER statements, and READ COMMITTED gives each its own, so a pass can value rows against
-    a calendar OLDER than they are. **Nine sites reason about this in their own words, FOUR of them
-    independent discoveries with four different accommodations**: `pay_calendar/_loader.py:100`
-    ORDERS two reads so the loser narrows rather than refuses; `statement_match/_candidates.py:600`
-    scopes a query by the calendar's own ids so `period_by_id` "cannot answer `None`" -- the exact
-    state `pay_calendar:C4-a-1` hit and cannot copy, `planned_cash_rows` being ruled unwindowable at a
-    measured `$150,000.00`; `:770` is that class found by adversarial financial review; and
-    `generation_schedule.py:97` carried a runtime CHECK over two reads. **Ruled 2026-08-25 (developer):
-    UNCONSTRUCTIBLE at REPEATABLE READ, not accommodated a fifth time.** A read-only transaction never
-    serialize-fails so the guarantee is free, but FOUR GET handlers WRITE (`grid/page.py:588`,
-    `dashboard.py:224`, `accounts/detail.py:819`, `auth/mfa.py:300`) and the trace decides whether the
-    pass opens its own transaction after those commit, or the render stops writing first.
+  * [ ] **X-i3 THE SNAPSHOT** -- the DECOMPOSED parent, split into two leaves 2026-08-26 when the
+    trace refuted WHERE the snapshot is taken (ruling **R-GU**). A pass cannot take it:
+    `apply_statement_review` and `loan_recurrence_sync` build one BEFORE they write, so nothing at
+    that tier tells a render from a write's decision basis without a second constructor -- `X-i4`'s
+    defect in the step that removes `X-i3`'s. And a snapshot before a write is a MONEY BUG:
+    `user_write_lock`'s lock-then-reread needs READ COMMITTED (`anchor_service.py:586`), so one
+    re-arms **R-EN**'s `$4,000.00`-against-`$1,000.00` divergence. The boundary is the REQUEST.
+  * [x] **X-i3-a THE BOUNDARY** `765daebd` -- GET and HEAD run at `REPEATABLE READ, READ ONLY`,
+    every other method keeps READ COMMITTED, bound at the session's `after_begin`, with
+    `write_transaction()` the one door a render has when it must write. **What a LATER step must
+    obey**: a command's reads may NOT be given a snapshot (`user_write_lock`); anything bound
+    per-transaction belongs in that listener rather than a before-request hook, which is how the
+    audit actor was lost and recovered here. Closes **N-353**; opens **N-358**, **N-359**.
+  * [ ] **X-i3-b THE ACCOMMODATIONS** -- retire what a query can no longer construct. THREE are
+    live: a read ORDER (`pay_calendar/_loader.py:100`), a query scoped by the calendar's own ids
+    (`statement_match/_candidates.py:600`), and the class adversarial financial review found beside
+    it (`:770`). *The fourth this step named, `generation_schedule.py:97`, is PROSE about a check
+    `C2-f3c` already deleted -- corrected 2026-08-26.* Each states "under READ COMMITTED the two
+    reads can differ", now true of COMMANDS only. A NARROWING, not a deletion: `_candidates`'
+    scoping is also the ownership scope. Re-take the census -- `bank_import:X-gd-2` renamed
+    `_policy.py` and the merchant door under it.
   * [ ] **X-i4 THE BINDING** -- the pass BINDS the account it values. `_cash_fold.assemble` and its
     four siblings take the account and the pass's own calendar as two INDEPENDENT arguments, agreeing
     only because both name one `ctx` -- "an argument a caller can get wrong is a defect, not a
     contract", which this seam cites three times and then reproduces, and `BalanceContext` pins a
     `user_id` it never checks against the account. **Ruled 2026-08-25 (developer)**: the pass hands
     out the fold and refuses a foreign account there, so the pairing cannot be stated wrongly.
+  * [ ] **X-i5 THE COMMAND'S RENDER** -- **N-358**. A mutation route's re-render rides the
+    transaction its writes are in, so it reads at READ COMMITTED and is the one render `X-i3-a` does
+    not cover; it is also what keeps `X-i3-b` a NARROWING rather than a deletion. The shape is the
+    one `/grid` already has -- the write inside `write_transaction`, the render outside it -- and
+    the trace owed is WHICH routes render at all rather than redirect, because moving the boundary
+    on a route that only redirects buys nothing and moves a settle path's locks.
 * [ ] **X-j** `feat(balance): one account, one answer -- or a row that explains the difference` --
   closes **N-87**, **N-90**, and **N-83**'s DISPLAY half. **This step is the OWN RULING R-AK
   deferred, and its title does not presuppose the outcome.** R-AK ruled the dashboard, the pulse and
