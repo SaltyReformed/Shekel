@@ -52,6 +52,7 @@ from tests._test_helpers import (
     linked_net_by_date,
     loan_params_for,
     make_cadence_rule,
+    make_loan_payment_template,
     posted_loan_balance_at,
     select_option_values,
 )
@@ -5775,37 +5776,29 @@ class TestDashboardChartComposer:
 # -- Recurrence End Date Auto-Update Tests (Commit 5.9-1) ----------------
 
 
-def _create_transfer_template(seed_user, db_session, loan_account,
-                              amount=Decimal("1500.00"), end_date=None,
-                              name=None):
-    """Create a recurring transfer template targeting a loan account.
+def _create_transfer_template(seed_user, db_session, loan_account):
+    """Create the recurring LOAN PAYMENT these tests wire a sync through.
 
-    Returns (template, rule) so tests can inspect both objects.
-    Creates a monthly recurrence rule from the seed user's checking
-    account to the given loan account.
+    Returns ``(template, rule)`` so tests can inspect both objects.
+
+    **It delegates to the shared builder, and the reason is its settings row.**
+    This used to construct the template inline with no
+    ``budget.loan_payment_settings`` -- a recurring transfer into a loan that
+    is not a loan payment, which ``routes/loan/payment_transfer.py`` cannot
+    produce.  Nothing read the difference until plan step **R7d-a** made the
+    forward plan price an unmaterialised installment from the loan's own
+    standing payment: the inline ``$1,500.00`` then meant "this is what the
+    owner pays a $250,000 mortgage", the plan correctly reported a loan that
+    never clears, and three tests asserting only that a payoff EXISTS failed on
+    a fixture that had stopped describing a payable loan.  The three unused
+    parameters (``amount``, ``end_date``, ``name``) went with the inline block;
+    no caller passed one.
     """
-    from app.models.recurrence_rule import RecurrenceRule  # pylint: disable=import-outside-toplevel
-    from app.models.transfer_template import TransferTemplate  # pylint: disable=import-outside-toplevel
-
-    if name is None:
-        name = f"Loan Payment {loan_account.id}"
-
-    tpl = TransferTemplate(
-        user_id=seed_user["user"].id,
-        from_account_id=seed_user["account"].id,
-        to_account_id=loan_account.id,
-        name=name,
-        default_amount=amount,
-        is_active=True,
+    template = make_loan_payment_template(
+        db_session, seed_user, loan_account,
+        cadence=MONTHLY, fires_on_day=1,
     )
-    db_session.add(tpl)
-    db_session.commit()
-    # The definition first, then the cadence onto it (plan step R-F6).
-    rule = make_cadence_rule(
-        tpl, MONTHLY,
-        fires_on_day=1, end_date=end_date,
-    )
-    return tpl, rule
+    return template, template.recurrence_rule
 
 
 class TestRecurrenceEndDateUpdate:

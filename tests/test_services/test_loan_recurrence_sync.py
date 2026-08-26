@@ -21,9 +21,10 @@ from decimal import Decimal
 
 import pytest
 
-from app.services import loan_recurrence_sync
+from app.services import loan_recurrence_sync, template_amount_service
 from app.services.loan_recurrence_sync import recurrence_end_date
-from app.services.loan_loaders import load_loan_params
+from app.services.loan_payment_service import compute_contractual_pi
+from app.services.loan_loaders import load_loan_params, load_rate_changes
 from app.models.transfer_template import TransferTemplate
 from tests._test_helpers import (
     create_account_of_type,
@@ -31,6 +32,7 @@ from tests._test_helpers import (
     freeze_today,
     make_every_period_rule,
     make_expense_template,
+    make_loan_payment_template,
     make_transfer_template,
 )
 
@@ -111,7 +113,7 @@ class TestSyncRecurringPaymentBounds:
         """
         with app.app_context():
             loan = self._current_loan(seed_user, db.session)
-            tpl = make_transfer_template(db.session, seed_user, loan)
+            tpl = make_loan_payment_template(db.session, seed_user, loan)
             db.session.commit()
             rule = tpl.recurrence_rule
             assert rule.end_date is None
@@ -141,7 +143,7 @@ class TestSyncRecurringPaymentBounds:
         """
         with app.app_context():
             loan = self._current_loan(seed_user, db.session)
-            tpl = make_transfer_template(db.session, seed_user, loan)
+            tpl = make_loan_payment_template(db.session, seed_user, loan)
             rule = tpl.recurrence_rule
             rule.max_occurrences = 12
             db.session.commit()
@@ -171,7 +173,7 @@ class TestSyncRecurringPaymentBounds:
         """
         with app.app_context():
             loan = self._current_loan(seed_user, db.session)
-            tpl = make_transfer_template(db.session, seed_user, loan)
+            tpl = make_loan_payment_template(db.session, seed_user, loan)
             rule = tpl.recurrence_rule
             db.session.commit()
 
@@ -219,7 +221,7 @@ class TestSyncRecurringPaymentBounds:
         """
         with app.app_context():
             loan = self._loan(seed_user, db.session)
-            tpl = make_transfer_template(db.session, seed_user, loan)
+            tpl = make_loan_payment_template(db.session, seed_user, loan)
             db.session.commit()
             rule = tpl.recurrence_rule
 
@@ -235,6 +237,46 @@ class TestSyncRecurringPaymentBounds:
             )
             assert rule.end_date == date(2028, 6, 1)
 
+    def test_a_STATED_price_at_the_contractual_figure_bounds_identically(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A payment that STATES the contract's figure bounds where DERIVE does.
+
+        **The arm production is actually in, driven through the real sync.**
+        ``budget.loan_payment_settings`` holds ZERO rows on the developer's
+        database, so both live loan payments state a price rather than deriving
+        one -- and plan step R7d-a made that distinction decide how every
+        uncovered installment is priced. An adversarial review found the fixture
+        repair had moved every sync test into the DERIVE arm, where the new rule
+        reduces to the old behaviour, leaving the production arm untested
+        through any door.
+
+        A definition stating exactly the contractual P&I must reach the same
+        bound as one deriving it: 2028-07-01, the control above's figure, from
+        the same $12,000.00 / 24-month / 5% loan whose level payment is $526.46.
+        """
+        with app.app_context():
+            loan = self._current_loan(seed_user, db.session)
+            params = load_loan_params(loan.id)
+            contractual_pi = compute_contractual_pi(
+                params, load_rate_changes(loan.id),
+            )
+            tpl = make_loan_payment_template(
+                db.session, seed_user, loan,
+                amount=str(contractual_pi), derive_from_loan=False,
+            )
+            template_amount_service.set_amount(
+                tpl, contractual_pi, effective_on=params.origination_date,
+            )
+            db.session.commit()
+            rule = tpl.recurrence_rule
+
+            loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
+            db.session.commit()
+            db.session.refresh(rule)
+
+            assert rule.end_date == date(2028, 7, 1)
+
     def test_is_idempotent(self, app, db, seed_user, seed_periods):
         """A second sync at the same payoff writes nothing new.
 
@@ -245,7 +287,7 @@ class TestSyncRecurringPaymentBounds:
         """
         with app.app_context():
             loan = self._current_loan(seed_user, db.session)
-            tpl = make_transfer_template(db.session, seed_user, loan)
+            tpl = make_loan_payment_template(db.session, seed_user, loan)
             db.session.commit()
             rule = tpl.recurrence_rule
             loan_recurrence_sync.sync_recurring_payment_bounds(loan.id)
@@ -298,7 +340,7 @@ class TestSyncRecurringPaymentBounds:
             assert load_loan_params(acct.id) is None, (
                 "precondition: this account must have NO LoanParams"
             )
-            make_transfer_template(db.session, seed_user, acct)
+            make_loan_payment_template(db.session, seed_user, acct)
             db.session.commit()
 
             loan_recurrence_sync.sync_recurring_payment_bounds(acct.id)
@@ -329,7 +371,7 @@ class TestOwnsValidityWindow:
         """The True arm: exactly the template the sync writes for."""
         with app.app_context():
             loan = create_loan_account(seed_user, db.session)
-            template = make_transfer_template(db.session, seed_user, loan)
+            template = make_loan_payment_template(db.session, seed_user, loan)
             db.session.flush()
 
             assert loan_recurrence_sync.owns_validity_window(template) is True
@@ -376,7 +418,7 @@ class TestOwnsValidityWindow:
         """
         with app.app_context():
             loan = create_loan_account(seed_user, db.session)
-            first = make_transfer_template(db.session, seed_user, loan)
+            first = make_loan_payment_template(db.session, seed_user, loan)
             # Built directly: the shared helper hardcodes one name and
             # ``uq_transfer_templates_user_name`` refuses a second.
             second = TransferTemplate(
@@ -412,7 +454,7 @@ class TestOwnsValidityWindow:
         """
         with app.app_context():
             loan = create_loan_account(seed_user, db.session)
-            template = make_transfer_template(db.session, seed_user, loan)
+            template = make_loan_payment_template(db.session, seed_user, loan)
             template.recurrence_rule = None
             db.session.flush()
 

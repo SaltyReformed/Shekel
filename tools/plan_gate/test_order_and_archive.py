@@ -10,6 +10,8 @@ grading, which is the denormalization these registries exist to remove.
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 
 import _archive as archive
@@ -421,13 +423,16 @@ class TestAnArchivedDocumentSaysSoOnItsFirstLine:
 class TestEveryRegistryIsUnderItsCap:
     """conventions.md rule 4, on the documents it did not used to reach.
 
-    **``ledger.md`` LEFT this class on 2026-08-25, by developer ruling**, and
-    :class:`TestTheLedgerIsBOUNDEDRatherThanCAPPED` is what replaced it.  A
-    line cap on a registry holding ONE LINE PER MEASURED DEFECT is a cap on how
-    many defects the project may have measured; it was raised three times, and
-    the fourth time it bound, a finding was written into a code docstring to get
-    around it.  The arms it kept are the ROW cap (a row may not swell into the
-    arc document's argument) and a runaway backstop.
+    **``ledger.md`` and ``steps.md`` both LEFT this class on 2026-08-25, by
+    developer ruling**, and :class:`TestTheLedgerIsBOUNDEDRatherThanCAPPED` and
+    :class:`TestTheIndexIsBOUNDEDRatherThanCAPPED` are what replaced them.  The
+    argument is one argument, made twice: a line cap on a registry holding ONE
+    LINE PER THING is a cap on how many of that thing the project may have --
+    defects measured for the ledger, leaves DECOMPOSED for the index.  The
+    ledger's was raised three times and the fourth time it bound a finding was
+    written into a code docstring to get around it; the index's bound on
+    ``recurrence:R7d``'s seven-leaf split with no shipped row free to archive.
+    The arms both kept are a per-ROW cap and a runaway backstop.
     """
 
     @pytest.mark.parametrize("name", sorted(registry.REGISTRY_CAPS))
@@ -457,10 +462,11 @@ class TestEveryRegistryIsUnderItsCap:
         nothing to do with the cap.
 
         The subject was ``ledger.md`` until 2026-08-25, when its line cap was
-        dropped; it is ``steps.md`` now, which is a registry the arm still
-        holds.
+        dropped, and ``steps.md`` for the few hours between that ruling and the
+        one that dropped this file's too.  It is ``conventions.md`` now, which
+        is a registry the arm still holds.
         """
-        over = "steps.md"
+        over = "conventions.md"
         for name, cap in registry.REGISTRY_CAPS.items():
             padding = cap + 1 if name == over else 1
             (tmp_path / name).write_text("filler\n" * padding)
@@ -528,22 +534,51 @@ class TestTheLedgerStatesItsBACKLOG:
         """The live file."""
         assert registry.stated_arc_counts_violation() is None
 
+    @staticmethod
+    def _live_split():
+        """Return the by-arc sentence's ``[(arc, count)]``, read off the file.
+
+        **DERIVED, because a control that NAMES a volatile value is a second
+        copy of it.**  These three planted their defect with the arc and the
+        number written out -- ``"By arc: balance 156"`` -- so the control went
+        stale on any tree whose ledger differed by one finding, which is every
+        concurrent branch that opens or closes one.  Measured 2026-08-25: the
+        `recurrence:R7d-a` gate run against the `bank_import:X-gc` branch's
+        plan documents failed three of these and NOTHING else, purely on the
+        anchors.  Two branches editing an anchor also collide where the same
+        control derived from the file cannot.  Same move
+        `pay_calendar:C2-f3e` made for a sibling control, closing row D42.
+
+        Uses the parser's own whitespace collapse so a formatter's line wrap
+        does not change what the control anchors on -- the very property the
+        third test below grades.
+        """
+        text = registry.LEDGER.read_text()
+        sentence = " ".join(text.split("By arc:", 1)[-1].split(".", 1)[0].split())
+        pairs = [(arc, int(n)) for arc, n in re.findall(r"([a-z_]+) (\d+)", sentence)]
+        assert len(pairs) >= 2, "ledger.md states no by-arc split to plant in"
+        return pairs
+
     def test_the_control_fires_on_a_stale_split(self, stage):
         """A number nobody grades is a number that goes stale.
 
         Staged on the REAL file, so the control exercises the same parser on
         the same shape the live document uses.
         """
-        stage("ledger", "By arc: balance 155", "By arc: balance 154")
+        arc, count = self._live_split()[0]
+        stage("ledger", f"By arc: {arc} {count}", f"By arc: {arc} {count - 1}")
 
         violation = registry.stated_arc_counts_violation()
 
         assert violation is not None
-        assert "154" in violation and "155" in violation
+        assert str(count) in violation and str(count - 1) in violation
 
     def test_the_control_fires_when_the_split_is_deleted(self, stage):
         """Deleting the sentence must fail loudly, not read as agreement."""
-        stage("ledger", "By arc: balance 155", "By nothing at all: balance 155")
+        arc, count = self._live_split()[0]
+        stage(
+            "ledger", f"By arc: {arc} {count}", f"By nothing at all: {arc} {count}",
+        )
 
         assert registry.stated_arc_counts_violation() is not None
 
@@ -555,10 +590,64 @@ class TestTheLedgerStatesItsBACKLOG:
         read as that arc having gone missing, on a sentence that was true.  A
         gate whose answer depends on where a formatter broke a line is a gate
         that fails for the wrong reason.
+
+        Planted at the first arc boundary that is still on ONE line, derived,
+        because naming the arc would re-introduce the staleness
+        :meth:`_live_split` exists to remove -- and because the sentence is
+        ALREADY wrapped somewhere by the time it is 100 characters long. On
+        2026-08-25 that live wrap sat between ``bank_import`` and its number,
+        which is the exact defect this grades, so a control that planted its
+        own wrap at the last boundary could not find an anchor at all.
         """
-        stage("ledger", "recurrence 20, bank_import", "recurrence 20,\nbank_import")
+        text = registry.LEDGER.read_text()
+        pairs = self._live_split()
+        planted = False
+        for (arc, count), (nxt, _) in zip(pairs, pairs[1:]):
+            anchor = f"{arc} {count}, {nxt}"
+            if anchor not in text:
+                continue
+            stage("ledger", anchor, f"{arc} {count},\n{nxt}")
+            planted = True
+            break
+        assert planted, (
+            "no arc boundary in the by-arc sentence sits on one line, so this "
+            "control planted nothing -- a check that can pass by producing "
+            "nothing is not a check"
+        )
 
         assert registry.stated_arc_counts_violation() is None
+
+
+class TestTheIndexIsBOUNDEDRatherThanCAPPED:
+    """What replaced ``steps.md``'s line cap (developer ruling 2026-08-25).
+
+    The same three-way split :class:`TestTheLedgerIsBOUNDEDRatherThanCAPPED`
+    records, one registry over: a ROW may not become a specification (graded by
+    rule 14's description cap); a table larger than any real plan is an accident
+    (graded here); and what the file's LENGTH was ever a proxy for -- can a cold
+    reader find the next step -- is graded directly by rule 3's counts and rule
+    14's dense ranks, which do not care how long the table is.
+    """
+
+    def test_the_index_carries_no_line_cap(self):
+        """The ruling, asserted -- a re-added cap must be a decision, not a merge."""
+        assert "steps.md" not in registry.REGISTRY_CAPS, (
+            "steps.md's line cap was dropped 2026-08-25; putting it back is a "
+            "developer ruling, not something a merge does quietly"
+        )
+
+    def test_the_real_index_is_under_the_runaway_backstop(self):
+        """The live file, so the backstop is a fact rather than a constant."""
+        assert registry.steps_runaway_violation() is None
+
+    def test_the_backstop_fires_on_a_table_that_could_only_be_an_accident(
+        self, monkeypatch,
+    ):
+        """A backstop nobody has seen fail is a number, not a gate."""
+        monkeypatch.setattr(registry, "STEPS_RUNAWAY_ROWS", 1)
+        violation = registry.steps_runaway_violation()
+        assert violation is not None
+        assert "runaway backstop" in violation
 
 
 class TestTheOrderTableIsSorted:
