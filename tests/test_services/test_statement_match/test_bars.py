@@ -15,7 +15,7 @@ spending.  The
 saved answer was *a new envelope called Capital One Credit Card*; the screen
 printed "a card payment your app records as payback rows would be counted
 twice" one card above the select that did it; and
-``create_purchase_from_line`` read no policy at all.  A tenth line
+``create_purchase_from_line`` read no rule at all.  A tenth line
 (`-$466.47`, 2026-06-17) was group-matched to four of those payback rows
 instead, which is the arm this ruling leaves open.
 
@@ -35,7 +35,7 @@ import pytest
 
 from app.enums import StatementSourceEnum
 from app.exceptions import ValidationError
-from app.models.merchant_destination import MerchantDestination
+from app.models.merchant_rule import MerchantRule
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.statement_match import StatementMatch
@@ -44,12 +44,12 @@ from app.services.statement_match import (
     CreationBar,
     CreationBars,
     NewEnvelope,
-    PolicyAnswer,
-    PolicyStatement,
+    RuleAnswer,
+    RuleSubmission,
     PurchaseCreation,
     ReviewedBatch,
     review_set,
-    state_policies,
+    state_rules,
 )
 from app.services.statement_match import _create  # pylint: disable=protected-access
 from app.services.statement_match._vocabulary import (  # pylint: disable=protected-access
@@ -60,7 +60,7 @@ from ._builders import (
     a_bank_line,
     a_bars,
     a_merchant,
-    a_policy,
+    a_rule,
     a_scope,
     a_submission,
     a_transaction,
@@ -77,7 +77,7 @@ CARD_PAYMENT = "Financial Services/Credit Card Payment"
 
 #: What SECU calls the developer's Capital One ACH payments -- and the second
 #: spelling it used for the same payee between 2026-01-22 and 2026-02-17, which
-#: is why a policy keyed on the merchant string is not by itself a guard.
+#: is why a rule keyed on the merchant string is not by itself a guard.
 CARD_MERCHANT = "Capital One Credit Card"
 OLD_CARD_MERCHANT = "Capital One Mobile Pmt"
 
@@ -109,12 +109,12 @@ class TestWhichMerchantsAreBarred:
         """The owner's own decision, which until X-ga was a caption.
 
         A row with all three columns NULL is the *never a purchase* answer
-        (``ck_merchant_destinations_one_answer``'s third shape).  Before this
+        (``ck_merchant_rules_one_answer``'s third shape).  Before this
         step it withheld a sweep value and nothing else.
         """
         statement = an_import(seed_user)
         _a_card_payment(seed_user, statement)
-        a_policy(seed_user, CARD_MERCHANT)
+        a_rule(seed_user, CARD_MERCHANT)
         db.session.flush()
 
         bars = a_bars(seed_user)
@@ -163,7 +163,7 @@ class TestWhichMerchantsAreBarred:
         envelope = a_transaction(seed_user, name="Groceries", is_envelope=True)
         statement = an_import(seed_user)
         _a_card_payment(seed_user, statement)
-        a_policy(seed_user, CARD_MERCHANT, template_id=envelope.template_id)
+        a_rule(seed_user, CARD_MERCHANT, template_id=envelope.template_id)
         db.session.flush()
 
         assert a_bars(seed_user).bar_for(the_merchant_id(seed_user, CARD_MERCHANT)) is (
@@ -181,7 +181,7 @@ class TestWhichMerchantsAreBarred:
         """
         statement = an_import(seed_user)
         _a_swipe(seed_user, statement, merchant="Geico")
-        a_policy(seed_user, "Geico")
+        a_rule(seed_user, "Geico")
         db.session.flush()
 
         assert a_bars(seed_user).bar_for(the_merchant_id(seed_user, "Geico")) is (
@@ -208,7 +208,7 @@ class TestWhichMerchantsAreBarred:
     ):
         """THE FIRING CONTROL for the ``merchant.isnot(None)`` filter.
 
-        A source naming no merchant keys no policy, so there is nothing the
+        A source naming no merchant keys no rule, so there is nothing the
         owner could ever have said about it -- and a bar that fired on ``None``
         would refuse every such line on every source that truncates its
         descriptions.  SECU's own OFX cuts 326 of 361 to the same 32
@@ -348,8 +348,8 @@ class TestTheSourcesLabelOnlyASKS:
     ):
         """The scope, which the composite join is what makes structural.
 
-        A policy is stated per account
-        (``uq_merchant_destinations_account_merchant``) and so is the
+        A rule is stated per account
+        (``uq_merchant_rules_account_merchant``) and so is the
         evidence behind it: a card payment recorded on another account says
         nothing about what this account's lines are.  The join carries the
         account on BOTH sides (``fk_bank_statement_lines_import_account``), so
@@ -400,7 +400,7 @@ class TestTheDoorRefusesABarredLine:
         """
         statement = an_import(seed_user)
         line = _a_card_payment(seed_user, statement)
-        a_policy(seed_user, CARD_MERCHANT)
+        a_rule(seed_user, CARD_MERCHANT)
         db.session.flush()
         before = db.session.query(Transaction).count()
 
@@ -468,7 +468,7 @@ class TestTheDoorRefusesABarredLine:
         """
         statement = an_import(seed_user)
         line = _a_card_payment(seed_user, statement)
-        a_policy(seed_user, CARD_MERCHANT)
+        a_rule(seed_user, CARD_MERCHANT)
         db.session.flush()
 
         with pytest.raises(ValidationError) as refusal:
@@ -496,7 +496,7 @@ class TestABarredItemCostsOnlyItself:
         statement = an_import(seed_user)
         barred = _a_card_payment(seed_user, statement)
         ordinary = _a_swipe(seed_user, statement, sequence=1)
-        a_policy(seed_user, CARD_MERCHANT)
+        a_rule(seed_user, CARD_MERCHANT)
         db.session.commit()
 
         outcome = statement_match.apply_reviewed(
@@ -523,13 +523,13 @@ class TestABarredItemCostsOnlyItself:
         ] == ["Food Lion"]
 
 
-class TestThePolicyDoorRefusesTheAnswerThatContradictsTheBar:
+class TestTheRuleDoorRefusesTheAnswerThatContradictsTheBar:
     """No answer opens the create arm, so no answer may claim to."""
 
     def _state(self, seed_user, answer, **fields):
-        """Submit one policy statement for the card merchant."""
-        return state_policies(
-            (PolicyStatement(
+        """Submit one rule statement for the card merchant."""
+        return state_rules(
+            (RuleSubmission(
                 merchant_id=a_merchant(seed_user, CARD_MERCHANT).id,
                 answer=answer, **fields,
             ),),
@@ -552,13 +552,13 @@ class TestThePolicyDoorRefusesTheAnswerThatContradictsTheBar:
         db.session.flush()
 
         outcome = self._state(
-            seed_user, PolicyAnswer.TEMPLATE, template_id=envelope.template_id,
+            seed_user, RuleAnswer.TEMPLATE, template_id=envelope.template_id,
         )
 
         assert outcome.stated == ()
         assert len(outcome.refused) == 1
         assert "payment to an account you hold" in outcome.refused[0]
-        assert db.session.query(MerchantDestination).count() == 0
+        assert db.session.query(MerchantRule).count() == 0
 
     def test_a_NEW_ENVELOPE_answer_is_refused(self, app, db, seed_user):
         """The exact answer the developer had saved, and what it cost.
@@ -573,14 +573,14 @@ class TestThePolicyDoorRefusesTheAnswerThatContradictsTheBar:
         db.session.flush()
 
         outcome = self._state(
-            seed_user, PolicyAnswer.NEW_ENVELOPE,
+            seed_user, RuleAnswer.NEW_ENVELOPE,
             envelope_name=CARD_MERCHANT,
             category_id=seed_user["categories"]["Groceries"].id,
         )
 
         assert outcome.stated == ()
         assert len(outcome.refused) == 1
-        assert db.session.query(MerchantDestination).count() == 0
+        assert db.session.query(MerchantRule).count() == 0
 
     def test_NEVER_and_a_WITHDRAWAL_are_both_still_taken(
         self, app, db, seed_user,
@@ -595,13 +595,13 @@ class TestThePolicyDoorRefusesTheAnswerThatContradictsTheBar:
         _a_card_payment(seed_user, statement)
         db.session.flush()
 
-        stated = self._state(seed_user, PolicyAnswer.NEVER)
+        stated = self._state(seed_user, RuleAnswer.NEVER)
         assert stated.refused == ()
-        assert db.session.query(MerchantDestination).count() == 1
+        assert db.session.query(MerchantRule).count() == 1
 
         withdrawn = self._state(seed_user, None)
         assert withdrawn.refused == ()
-        assert db.session.query(MerchantDestination).count() == 0
+        assert db.session.query(MerchantRule).count() == 0
 
     def test_an_ORDINARY_merchant_may_still_be_given_an_envelope(
         self, app, db, seed_user,
@@ -609,17 +609,17 @@ class TestThePolicyDoorRefusesTheAnswerThatContradictsTheBar:
         """The other firing control: the refusal is scoped to the flagged set.
 
         74 of the developer's 91 unexplained outflows are ordinary swipes, and
-        answering for them is the whole of what the policy control is for.
+        answering for them is the whole of what the rule control is for.
         """
         envelope = a_transaction(seed_user, name="Groceries", is_envelope=True)
         statement = an_import(seed_user)
         _a_swipe(seed_user, statement)
         db.session.flush()
 
-        outcome = state_policies(
-            (PolicyStatement(
+        outcome = state_rules(
+            (RuleSubmission(
                 merchant_id=a_merchant(seed_user, "Food Lion").id,
-                answer=PolicyAnswer.TEMPLATE,
+                answer=RuleAnswer.TEMPLATE,
                 template_id=envelope.template_id,
             ),),
             owner_id=seed_user["user"].id,
@@ -627,7 +627,7 @@ class TestThePolicyDoorRefusesTheAnswerThatContradictsTheBar:
         )
 
         assert outcome.refused == ()
-        assert db.session.query(MerchantDestination).count() == 1
+        assert db.session.query(MerchantRule).count() == 1
 
     def test_a_STORED_answer_that_became_illegal_is_refused_not_ignored(
         self, app, db, seed_user,
@@ -641,12 +641,12 @@ class TestThePolicyDoorRefusesTheAnswerThatContradictsTheBar:
         """
         envelope = a_transaction(seed_user, name="Groceries", is_envelope=True)
         statement = an_import(seed_user)
-        a_policy(seed_user, CARD_MERCHANT, template_id=envelope.template_id)
+        a_rule(seed_user, CARD_MERCHANT, template_id=envelope.template_id)
         _a_card_payment(seed_user, statement)
         db.session.flush()
 
         outcome = self._state(
-            seed_user, PolicyAnswer.TEMPLATE, template_id=envelope.template_id,
+            seed_user, RuleAnswer.TEMPLATE, template_id=envelope.template_id,
         )
 
         assert outcome.unchanged_count == 0
@@ -668,7 +668,7 @@ class TestWhatTheScreenShowsInstead:
         """
         statement = an_import(seed_user)
         _a_card_payment(seed_user, statement)
-        a_policy(seed_user, CARD_MERCHANT)
+        a_rule(seed_user, CARD_MERCHANT)
         db.session.commit()
 
         review = review_set(a_scope(seed_user))
@@ -716,7 +716,7 @@ class TestWhatTheScreenShowsInstead:
         """
         statement = an_import(seed_user)
         line = _a_card_payment(seed_user, statement)
-        a_policy(seed_user, CARD_MERCHANT)
+        a_rule(seed_user, CARD_MERCHANT)
         db.session.commit()
 
         review = review_set(a_scope(seed_user))
@@ -747,7 +747,7 @@ class TestWhatTheScreenShowsInstead:
         )
         statement = an_import(seed_user)
         line = _a_card_payment(seed_user, statement)
-        a_policy(seed_user, CARD_MERCHANT)
+        a_rule(seed_user, CARD_MERCHANT)
         db.session.commit()
         scope = a_scope(seed_user)
 
@@ -774,7 +774,7 @@ class TestWhatTheScreenShowsInstead:
         # took the bank's day.
         assert {first.settled_on, second.settled_on} == {line.posted_on}
 
-    def test_the_policy_control_says_WHY_it_is_asking(
+    def test_the_rule_control_says_WHY_it_is_asking(
         self, app, db, seed_user,
     ):
         """The row where the bar is lifted has to be findable.
@@ -815,7 +815,7 @@ class TestWhatTheScreenShowsInstead:
         """
         statement = an_import(seed_user)
         _a_card_payment(seed_user, statement)
-        a_policy(seed_user, CARD_MERCHANT)
+        a_rule(seed_user, CARD_MERCHANT)
         db.session.commit()
 
         row = {
@@ -823,5 +823,5 @@ class TestWhatTheScreenShowsInstead:
             for item in review_set(a_scope(seed_user)).merchants.merchants
         }[CARD_MERCHANT]
 
-        assert row.policy.answer is PolicyAnswer.NEVER
+        assert row.rule.answer is RuleAnswer.NEVER
         assert row.pays_an_account is True

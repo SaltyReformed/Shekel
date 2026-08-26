@@ -50,19 +50,19 @@ class PurchaseDestination:  # pylint: disable=too-many-instance-attributes
 
     Pylint: too-many-instance-attributes -- **eight because a destination
     genuinely states eight things** (8/7), and three of them are what a merchant
-    policy has to MATCH on rather than display: the name, the category, and
+    rule has to MATCH on rather than display: the name, the category, and
     whether a recurring definition owns the row.  ``StatementLine``,
     ``CandidateRow`` and ``CreatedPurchase`` carry the same disable for the same
     reason.
 
     Attributes:
         transaction_id: The budget line.
-        name: The row's OWN name, unlabelled -- what a merchant policy's stated
+        name: The row's OWN name, unlabelled -- what a merchant rule's stated
             envelope name is compared against (plan step
             ``bank_import:X-f6a-4``, finding **N-327**), so that a second
             statement files into the envelope the first one created instead of
             minting another beside it.
-        category_id: The category it files under.  **A policy's answer is a
+        category_id: The category it files under.  **A rule's answer is a
             NAME AND a category and both are part of what it names**: two
             answers spelling one word under two categories are two budget
             lines, and reusing one for the other would file spending under a
@@ -81,14 +81,14 @@ class PurchaseDestination:  # pylint: disable=too-many-instance-attributes
             is rather than leaving the reviewer to know.
         template_id: The recurring definition this row was generated from, or
             ``None`` for an ad-hoc one.  **It is the row's identity ACROSS pay
-            periods, and that is what a merchant destination policy is keyed
-            on** (plan step ``bank_import:X-f6a-3d``): a policy cannot name
+            periods, and that is what a merchant destination rule is keyed
+            on** (plan step ``bank_import:X-f6a-3d``): a rule cannot name
             ``transaction_id`` -- an envelope belongs to one period, and the 24
             unexplained Amazon lines on the developer's own statement fall in
             ten of them -- and it cannot name the NAME either, because template
             22 generated a row called ``Kayla`` in one period and ``Kayla's
             Spending Money`` in the other 60.  ``None`` is a real answer and it
-            means this row can hold a purchase but can never be a POLICY's
+            means this row can hold a purchase but can never be a RULE's
             destination, because there is nothing period-independent to
             remember about it.
     """
@@ -112,7 +112,7 @@ class PurchaseDestination:  # pylint: disable=too-many-instance-attributes
         **DERIVED rather than stored beside its source**, which is the rule
         :attr:`~._offers.MatchProposal.posts_on` states one class over: a
         second spelling could let the screen print one row's name while a
-        policy matched another's.
+        rule matched another's.
         """
         return f"{self.name} ({self.period_start} - {self.period_end})"
 
@@ -150,7 +150,7 @@ def envelope_answer_key(
 #: the ONE definition of it.
 #:
 #: **It lives in the service because the service PRODUCES it**:
-#: :attr:`~._policy.Placement.select_value` answers what a line's control would
+#: :attr:`~._rules.Placement.select_value` answers what a line's control would
 #: be set to, so the value is part of what this package says rather than only
 #: something a schema reads.  ``app.schemas.validation.statements`` imports it
 #: -- the direction that module already takes for

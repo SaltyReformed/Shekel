@@ -216,7 +216,7 @@ def _reject_uncorrectable_row(
     any match whose two sides did not sum to the same figure was refused and
     the owner sent away to retype the number the statement already carried.
     That refusal was not neutral: a line the screen would not explain is the
-    line the merchant policy offers to RECORD, so the cheapest act left was to
+    line the merchant rule offers to RECORD, so the cheapest act left was to
     enter the movement a SECOND time -- measured at `$356.61` booked for one
     `$178.29` Geico payment, finding **N-335**.  The bank's figure is the
     record, so where it names ONE row it is simply written to that row.

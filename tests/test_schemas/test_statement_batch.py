@@ -31,15 +31,15 @@ from werkzeug.datastructures import MultiDict
 from app.services.statement_match import ReviewedRow, RowKind
 
 from app.schemas.validation.statements import (  # pylint: disable=protected-access
-    _MAX_POLICY_ITEMS,
+    _MAX_RULE_ITEMS,
     LEAVE_ALONE,
     NEVER,
     NEW_ENVELOPE,
     NOT_SAID,
-    MerchantPolicyBatchSchema,
+    MerchantRuleBatchSchema,
     StatementBatchSchema,
     batch_payload,
-    policy_payload,
+    rule_payload,
 )
 
 
@@ -553,7 +553,7 @@ class TestTheBatchSchemaRefusesWhatItDoesNotDeclare:
         assert loaded == {"matches": [], "creations": []}
 
 
-class TestThePolicySectionOnTheWire:
+class TestTheRuleSectionOnTheWire:
     """Where your merchants go, as a form submits it -- plan step X-f6a-3d.
 
     The same two facts this module was written for, on the section this leaf
@@ -574,10 +574,10 @@ class TestThePolicySectionOnTheWire:
         made the schema unable to say anything about it at all.
         """
         return [
-            (f"policy-{index}", answer),
-            (f"policy_merchant-{index}", str(merchant_id)),
-            (f"policy_name-{index}", name),
-            (f"policy_category-{index}", category),
+            (f"rule-{index}", answer),
+            (f"rule_merchant-{index}", str(merchant_id)),
+            (f"rule_name-{index}", name),
+            (f"rule_category-{index}", category),
         ]
 
     def test_every_rendered_row_submits_including_the_untouched_ones(self):
@@ -588,27 +588,27 @@ class TestThePolicySectionOnTheWire:
         was" field -- would be a value the submitter could forge into a write
         nobody asked for.  So every row arrives and the SERVICE compares.
         """
-        payload = policy_payload(_form(
+        payload = rule_payload(_form(
             self._row(0, 11, "t:38")
             + self._row(1, 12, NOT_SAID)
             + self._row(2, 13, NEVER),
         ))
 
-        assert [item["merchant_id"] for item in payload["policies"]] == [
+        assert [item["merchant_id"] for item in payload["rules"]] == [
             "11", "12", "13",
         ]
 
     def test_NOT_SAID_is_carried_rather_than_dropped(self):
-        """It is how a policy is WITHDRAWN, so it cannot be an absence.
+        """It is how a rule is WITHDRAWN, so it cannot be an absence.
 
         The destination select one card down drops its do-nothing value,
         because there the default means "do not record this line" and there is
         nothing to undo.  Here it means "forget what I said", which is an act
-        -- and dropping it would make a stated policy permanent.
+        -- and dropping it would make a stated rule permanent.
         """
-        payload = policy_payload(_form(self._row(0, 11, NOT_SAID)))
+        payload = rule_payload(_form(self._row(0, 11, NOT_SAID)))
 
-        assert payload["policies"] == [{
+        assert payload["rules"] == [{
             "merchant_id": "11", "answer": NOT_SAID,
             "envelope_name": "", "category_id": "",
         }]
@@ -620,26 +620,26 @@ class TestThePolicySectionOnTheWire:
         which is the inference that made the existing-envelope destination
         unreachable from a browser one leaf earlier.
         """
-        loaded = MerchantPolicyBatchSchema().load(
-            policy_payload(_form(self._row(0, 11, "t:38"))),
+        loaded = MerchantRuleBatchSchema().load(
+            rule_payload(_form(self._row(0, 11, "t:38"))),
         )
 
-        assert loaded["policies"][0]["answer"] == 38
+        assert loaded["rules"][0]["answer"] == 38
 
     def test_the_four_answers_all_load(self):
         """The closed set, so none of them is refused by the grader."""
-        loaded = MerchantPolicyBatchSchema().load(policy_payload(_form(
+        loaded = MerchantRuleBatchSchema().load(rule_payload(_form(
             self._row(0, 11, "t:38")
             + self._row(1, 12, NOT_SAID)
             + self._row(2, 13, NEVER)
             + self._row(3, 14, NEW_ENVELOPE, name="Lowe's", category="4"),
         )))
 
-        assert [item["answer"] for item in loaded["policies"]] == [
+        assert [item["answer"] for item in loaded["rules"]] == [
             38, NOT_SAID, NEVER, NEW_ENVELOPE,
         ]
-        assert loaded["policies"][3]["envelope_name"] == "Lowe's"
-        assert loaded["policies"][3]["category_id"] == 4
+        assert loaded["rules"][3]["envelope_name"] == "Lowe's"
+        assert loaded["rules"][3]["category_id"] == 4
 
     def test_an_answer_with_no_merchant_beside_it_names_nothing(self):
         """Unreachable from this screen -- the two fields render together.
@@ -648,9 +648,9 @@ class TestThePolicySectionOnTheWire:
         for nobody has asked for nothing, and refusing would give a caller a
         way to fail a whole legitimate pass by appending one key.
         """
-        payload = policy_payload(_form([("policy-9", NEVER)]))
+        payload = rule_payload(_form([("rule-9", NEVER)]))
 
-        assert payload["policies"] == []
+        assert payload["rules"] == []
 
     def test_a_merchant_key_that_str_isdigit_ACCEPTS_does_not_raise(self):
         """The same trap the tick keys carry, on this section's keys.
@@ -660,12 +660,12 @@ class TestThePolicySectionOnTheWire:
         ``int()`` refuses 128 of them.  These keys are sorted through the same
         ``_sort_key``, so the fix covers them -- and this is what says so.
         """
-        payload = policy_payload(_form(
-            [("policy-\N{SUPERSCRIPT TWO}", NEVER),
-             ("policy_merchant-\N{SUPERSCRIPT TWO}", "11")],
+        payload = rule_payload(_form(
+            [("rule-\N{SUPERSCRIPT TWO}", NEVER),
+             ("rule_merchant-\N{SUPERSCRIPT TWO}", "11")],
         ))
 
-        assert [item["merchant_id"] for item in payload["policies"]] == ["11"]
+        assert [item["merchant_id"] for item in payload["rules"]] == ["11"]
 
     def test_a_respelled_template_id_is_refused(self):
         """``t:007`` names no template, exactly as ``007`` names no envelope.
@@ -674,19 +674,19 @@ class TestThePolicySectionOnTheWire:
         money is filed is what plan step X-ae removed.
         """
         with pytest.raises(ValidationError):
-            MerchantPolicyBatchSchema().load(
-                policy_payload(_form(self._row(0, 11, "t:007"))),
+            MerchantRuleBatchSchema().load(
+                rule_payload(_form(self._row(0, 11, "t:007"))),
             )
 
     def test_an_undeclared_key_is_refused(self):
         """``unknown = RAISE``: nothing is swallowed on this payload either."""
         with pytest.raises(ValidationError):
-            MerchantPolicyBatchSchema().load(
-                {"policies": [], "sneaky": 1},
+            MerchantRuleBatchSchema().load(
+                {"rules": [], "sneaky": 1},
             )
 
     def test_a_submission_over_the_CEILING_is_refused_and_says_so(self):
-        """The policy ceiling had no test at either tier.
+        """The rule ceiling had no test at either tier.
 
         Its sibling ``_MAX_BATCH_ITEMS`` is graded twice; this one could be
         raised to a billion with the suite green.  It is a SEPARATE bound on
@@ -695,23 +695,23 @@ class TestThePolicySectionOnTheWire:
         so it needs its own control rather than inheriting that one's.
         """
         rows = []
-        for index in range(_MAX_POLICY_ITEMS + 1):
+        for index in range(_MAX_RULE_ITEMS + 1):
             rows.extend(self._row(index, 1000 + index, NEVER))
 
         with pytest.raises(ValidationError) as caught:
-            MerchantPolicyBatchSchema().load(policy_payload(_form(rows)))
+            MerchantRuleBatchSchema().load(rule_payload(_form(rows)))
 
         assert "at most" in str(caught.value)
 
     def test_a_submission_AT_the_ceiling_still_loads(self):
         """The bound pinned from the other side, so it is not off by one."""
         rows = []
-        for index in range(_MAX_POLICY_ITEMS):
+        for index in range(_MAX_RULE_ITEMS):
             rows.extend(self._row(index, 1000 + index, NEVER))
 
-        loaded = MerchantPolicyBatchSchema().load(policy_payload(_form(rows)))
+        loaded = MerchantRuleBatchSchema().load(rule_payload(_form(rows)))
 
-        assert len(loaded["policies"]) == _MAX_POLICY_ITEMS
+        assert len(loaded["rules"]) == _MAX_RULE_ITEMS
 
     def test_a_merchant_that_is_NOT_A_ROW_ID_is_refused(self):
         """The key is an id now, and it is exactly as strict as every other.
@@ -722,12 +722,12 @@ class TestThePolicySectionOnTheWire:
         :class:`~app.schemas.validation._fields.RowId` refuses the whole family
         it refuses everywhere else, and a well-formed id that is not this
         account's is refused by
-        ``fk_merchant_destinations_merchant_account`` rather than by anyone
+        ``fk_merchant_rules_merchant_account`` rather than by anyone
         remembering to look.
         """
         for spelled in ("\N{ARABIC-INDIC DIGIT SEVEN}", " 7 ", "+7", "007",
                         "-7", "0", "Amazon"):
             with pytest.raises(ValidationError):
-                MerchantPolicyBatchSchema().load(
-                    policy_payload(_form(self._row(0, spelled, NEVER))),
+                MerchantRuleBatchSchema().load(
+                    rule_payload(_form(self._row(0, spelled, NEVER))),
                 )

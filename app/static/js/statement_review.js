@@ -42,7 +42,7 @@
       });
   }
 
-  // ── The policy sweeps ──────────────────────────────────────────────────
+  // ── The rule sweeps ──────────────────────────────────────────────────
   //
   // PER CLASS, like the proposal sweep above and for the same ruled reason
   // (R-FZ(c)): filing into an open budget line, raising what a closed one
@@ -51,7 +51,7 @@
   // class is the SERVER's (Placement.sweep_class), not a shape read off the
   // markup.
   //
-  // Plan step bank_import:X-f6a-3d.  A stated merchant policy is a SUGGESTION:
+  // Plan step bank_import:X-f6a-3d.  A stated merchant rule is a SUGGESTION:
   // each line's destination select still opens on "leave this line alone", and
   // this is what turns the suggestions into ticks -- one press, visible, and
   // undoable line by line before Apply.  Prefilling the selects instead would
@@ -60,8 +60,8 @@
   //
   // The value it sets comes from the SERVER (data-placement, which is
   // Placement.select_value), so the control and the write door cannot disagree
-  // about which option a policy means.  A row with no data-placement has no
-  // act to sweep -- "never a purchase", or a policy that does not reach this
+  // about which option a rule means.  A row with no data-placement has no
+  // act to sweep -- "never a purchase", or a rule that does not reach this
   // line's pay period -- and is passed over.
   function sweepPlaced(root, group, checked) {
     root
@@ -78,7 +78,7 @@
         // documented default rather than an undo stack.
         select.value = checked ? row.getAttribute("data-placement") : "";
         // The name and category boxes are NOT set here.  The server already
-        // renders them from the policy, so the sweep and a hand-picked "a new
+        // renders them from the rule, so the sweep and a hand-picked "a new
         // envelope" state the same thing -- and one rule about what a created
         // envelope is called lives in one place.
         revealNewEnvelope(select);
@@ -125,8 +125,8 @@
       }
       return;
     }
-    if (target.matches("select[data-policy]")) {
-      revealPolicyFields(target);
+    if (target.matches("select[data-rule]")) {
+      revealRuleFields(target);
       return;
     }
     if (target.matches("select[data-destination]")) {
@@ -139,15 +139,15 @@
   // line alone", so the fields start hidden and nothing needs re-syncing.  The
   // one case that does is a browser restoring a select's value on a back /
   // reload, which fires no change event.
-  // The policy control's own reveal: its name and category boxes are
+  // The rule control's own reveal: its name and category boxes are
   // parameters of ONE of its options, exactly as the create form's are.
-  function revealPolicyFields(select) {
-    const row = select.closest("[data-policy-row]");
+  function revealRuleFields(select) {
+    const row = select.closest("[data-rule-row]");
     if (!row) {
       return;
     }
     const wanted = select.value === "new";
-    row.querySelectorAll("[data-policy-new-field]").forEach(function (field) {
+    row.querySelectorAll("[data-rule-new-field]").forEach(function (field) {
       field.classList.toggle("d-none", !wanted);
     });
   }
@@ -156,7 +156,7 @@
     document
       .querySelectorAll("select[data-destination]")
       .forEach(revealNewEnvelope);
-    document.querySelectorAll("select[data-policy]").forEach(revealPolicyFields);
+    document.querySelectorAll("select[data-rule]").forEach(revealRuleFields);
   }
 
   document.addEventListener("DOMContentLoaded", syncAll);

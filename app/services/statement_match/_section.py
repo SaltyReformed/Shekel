@@ -1,4 +1,4 @@
-"""The policy CONTROL: where this account's merchants go, as the screen asks it.
+"""The rule CONTROL: where this account's merchants go, as the screen asks it.
 
 Plan step ``bank_import:X-f6a-3d`` built this; plan step ``bank_import:X-ga``
 moved it out of :mod:`._reads`.  **The split is a line cap made useful rather
@@ -9,7 +9,7 @@ cut the module.  The seam is the SUBJECT: :mod:`._reads` answers *what does the
 review screen show about this pass's LINES*, and this answers *what does it ask
 about this account's MERCHANTS*, which is a question with its own grain -- one
 row per merchant, not one per line -- and its own door
-(:func:`~._policy.state_policies`, which moves no money).
+(:func:`~._rules.state_rules`, which moves no money).
 
 Nothing changed on the way across except what R-GJ added: a row now says
 whether a SOURCE files this merchant as a payment to a credit card, because
@@ -17,7 +17,7 @@ that is why the owner is being asked (:class:`~._bars.CreationBars`).
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): reads only, plain
 data in, frozen dataclasses out, no Flask import, no query -- every fact it
-needs arrives on a :class:`~._policy.PolicyView` or a
+needs arrives on a :class:`~._rules.RuleView` or a
 :class:`~._bars.CreationBars`.
 """
 
@@ -28,28 +28,28 @@ from decimal import Decimal
 
 from ._bars import CreationBars
 from ._offers import BankLine
-from ._policy import MerchantPolicy, PolicyView
+from ._rules import StandingRule, RuleView
 
 
 @dataclass(frozen=True)
 class MerchantSummary:
-    """One merchant the policy section asks the owner about.
+    """One merchant the rule section asks the owner about.
 
     Attributes:
         merchant_id: The :class:`~app.models.merchant.Merchant` this row asks
             about, which is the rule's key and what the form posts back.
         merchant: What that merchant is called, which is what the row prints.
-        policy: What the owner has said, or ``None`` for *not said yet*.
+        rule: What the owner has said, or ``None`` for *not said yet*.
         line_count: How many of THIS pass's unexplained outflows it names.
             Zero for a merchant whose lines are all explained today and whose
-            policy the owner may still want to see or withdraw.
+            rule the owner may still want to see or withdraw.
         stale_template_label: What to call the recurring definition this
             merchant's stored answer names, when that definition is no longer
             offerable -- else ``None``.  The screen renders it as an option of
             its own, because a select with no selected option submits its
             FIRST, which here means *I have not said*: without it the screen
-            reported such a policy as unanswered and the next Save silently
-            withdrew it (:attr:`~._policy.PolicyView.stale_templates`).
+            reported such a rule as unanswered and the next Save silently
+            withdrew it (:attr:`~._rules.RuleView.stale_templates`).
         total: What those lines come to, signed.  **The section is where a
             decision is made about several lines at once, so it has to say how
             much money it is a decision about**: on the developer's own
@@ -59,7 +59,7 @@ class MerchantSummary:
             (ruling **R-GJ**, plan step ``bank_import:X-ga``).  **It is why
             two of this row's options are refused**: such a merchant's money
             was spent somewhere else, so it cannot be filed in a budget line,
-            and :func:`~._policy.state_policies` refuses a template or a
+            and :func:`~._rules.state_rules` refuses a template or a
             new-envelope answer for it outright.  Saying so on the row is what
             keeps that refusal from being the first the owner hears of it --
             the *chooser whose submission can never succeed* shape this package
@@ -68,7 +68,7 @@ class MerchantSummary:
 
     merchant_id: int
     merchant: str
-    policy: MerchantPolicy | None
+    rule: StandingRule | None
     line_count: int
     total: Decimal
     stale_template_label: "str | None" = None
@@ -77,7 +77,7 @@ class MerchantSummary:
 
 @dataclass(frozen=True)
 class MerchantSection:
-    """The policy control: where this account's merchants go.
+    """The rule control: where this account's merchants go.
 
     Plan step ``bank_import:X-f6a-3d``.  **It is the screen's shape matching
     the model's.**  The leftover list asks 91 questions on the developer's own
@@ -85,7 +85,7 @@ class MerchantSection:
     selects and no per-merchant control is rendering a decision the owner does
     not actually make one line at a time.
 
-    **Stating a policy here MOVES NO MONEY**, which is why it is a separate
+    **Stating a rule here MOVES NO MONEY**, which is why it is a separate
     control posting to a separate door: the placements it produces are
     suggestions, and the destination select on each line still opens on *leave
     this line alone* (ruling **R-FZ**).
@@ -102,18 +102,18 @@ class MerchantSection:
     Attributes:
         merchants: One row per merchant this pass has an unexplained outflow
             for, PLUS every merchant the owner has already answered for --
-            ascending BY NAME.  The second half is what makes a policy visible and
+            ascending BY NAME.  The second half is what makes a rule visible and
             withdrawable once its lines are all explained; without it an answer
             could only be changed while there was work outstanding.  It is
             NARROWER than what a statement may legitimately name
-            (:func:`~._policy.account_merchants`, every merchant the account
+            (:func:`~._rules.account_merchants`, every merchant the account
             has ever recorded), and deliberately: a merchant with neither
             pending work nor an answer is not a question anyone is asking
             today.
-        templates: The recurring definitions a policy on this account may name
-            (:func:`~._policy.offerable_templates`), as ``(id, name)``
+        templates: The recurring definitions a rule on this account may name
+            (:func:`~._rules.offerable_templates`), as ``(id, name)``
             ascending by name.  The option list, and the same set
-            :func:`~._policy.state_policies` checks a submission against.
+            :func:`~._rules.state_rules` checks a submission against.
     """
 
     merchants: "tuple[MerchantSummary, ...]"
@@ -122,7 +122,7 @@ class MerchantSection:
     @property
     def answered_count(self) -> int:
         """Return how many of these merchants the owner has answered for."""
-        return sum(1 for row in self.merchants if row.policy is not None)
+        return sum(1 for row in self.merchants if row.rule is not None)
 
 
 @dataclass(frozen=True)
@@ -147,11 +147,11 @@ class _Waiting:
 def _merchant_summary(
     merchant_id: int,
     merchant: str,
-    view: PolicyView,
+    view: RuleView,
     bars: CreationBars,
     waiting: _Waiting,
 ) -> MerchantSummary:
-    """Return one row of the policy control.
+    """Return one row of the rule control.
 
     Args:
         merchant_id: The merchant row this asks about.
@@ -166,29 +166,29 @@ def _merchant_summary(
         that has stopped being offerable so the control can show the answer it
         holds.
     """
-    policy = view.policies.get(merchant_id)
+    rule = view.rules.get(merchant_id)
     stale = (
-        policy is not None
-        and policy.template_id is not None
-        and policy.template_id in view.stale_templates
+        rule is not None
+        and rule.template_id is not None
+        and rule.template_id in view.stale_templates
     )
     return MerchantSummary(
         merchant_id=merchant_id,
         merchant=merchant,
-        policy=policy,
+        rule=rule,
         line_count=waiting.count,
         total=waiting.total,
         stale_template_label=(
-            view.stale_templates[policy.template_id] if stale else None
+            view.stale_templates[rule.template_id] if stale else None
         ),
         pays_an_account=bars.pays_an_account(merchant_id),
     )
 
 
 def merchant_section(
-    outflows: "list[BankLine]", view: PolicyView, bars: CreationBars,
+    outflows: "list[BankLine]", view: RuleView, bars: CreationBars,
 ) -> MerchantSection:
-    """Return the policy control's rows and its option list.
+    """Return the rule control's rows and its option list.
 
     Args:
         outflows: This pass's offerable unexplained outflows -- the ones with a
@@ -224,8 +224,8 @@ def merchant_section(
     # whose lines are all explained is named by the answer stored for it.
     # Neither half alone covers the union this section renders.
     names.update(
-        {policy.merchant_id: policy.merchant
-         for policy in view.policies.values()},
+        {rule.merchant_id: rule.merchant
+         for rule in view.rules.values()},
     )
     return MerchantSection(
         merchants=tuple(
@@ -239,7 +239,7 @@ def merchant_section(
             # first showed each merchant, which is not an order anyone reading
             # a list of merchants is looking for.
             for merchant_id in sorted(
-                set(waiting) | set(view.policies),
+                set(waiting) | set(view.rules),
                 key=lambda row_id: names[row_id],
             )
         ),

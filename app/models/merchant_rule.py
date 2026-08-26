@@ -1,5 +1,5 @@
 """
-Shekel Budget App -- Merchant Destination Model (budget schema)
+Shekel Budget App -- Merchant Rule Model (budget schema)
 
 WHERE the owner has said a merchant's spending goes.  One table, one subject
 (plan step ``bank_import:X-f6a-3d``).
@@ -30,15 +30,15 @@ for three reasons and the third is the one that settles it:
 
 **The same shape ruling R-FP already gives the account identity**: recorded by
 the user's own choice and then CHECKED, never inferred.  Nothing here writes
-money and nothing here can: a policy is read to SUGGEST, and the only thing
+money and nothing here can: a rule is read to SUGGEST, and the only thing
 that records a purchase is an explicit destination on one specific line
-(developer ruling, 2026-08-19; see :class:`MerchantDestination`).
+(developer ruling, 2026-08-19; see :class:`MerchantRule`).
 
-**A policy is restated and withdrawn freely, and is expected to be.**  It is a
+**A rule is restated and withdrawn freely, and is expected to be.**  It is a
 statement about today's shape of the budget, not a judgement: when the credit
 card arc gives Capital One its own account, the Checking-side line stops being
 "not a purchase" and becomes a payment to MATCH against the card's payback row,
-and the card account gets policies of its own -- which is why the key carries
+and the card account gets rules of its own -- which is why the key carries
 the account.
 """
 
@@ -50,8 +50,8 @@ from app.models.mixins import (
 )
 
 
-class MerchantDestination(AccountScopedMixin, UserScopedMixin, TimestampMixin,
-                          db.Model):
+class MerchantRule(AccountScopedMixin, UserScopedMixin, TimestampMixin,
+                   db.Model):
     """Where this owner has said one merchant's spending goes on one account.
 
     **THREE ANSWERS, and they are the complete set rather than a menu.**  A
@@ -83,16 +83,16 @@ class MerchantDestination(AccountScopedMixin, UserScopedMixin, TimestampMixin,
     Columns:
         account_id -- the account whose statements this governs
             (:class:`~app.models.mixins.AccountScopedMixin`).  **Per account
-            and not per owner**, because a destination is: a Checking policy
+            and not per owner**, because a destination is: a Checking rule
             naming a Checking template is meaningless on a card statement, and
             the same merchant legitimately goes somewhere else there.
         user_id -- its owner (:class:`~app.models.mixins.UserScopedMixin`),
-            held equal to the account's by ``fk_merchant_destinations_owner``
+            held equal to the account's by ``fk_merchant_rules_owner``
             so it is a co-located key rather than a copy.  The same
             construction ``fk_account_external_identities_owner`` uses.
         merchant_id -- the :class:`~app.models.merchant.Merchant` this answer
             is about, held to this row's own account by
-            ``fk_merchant_destinations_merchant_account``.  It held the bank's
+            ``fk_merchant_rules_merchant_account``.  It held the bank's
             STRING until plan step ``bank_import:X-gd-1``, matched to
             ``bank_statement_lines.merchant`` by equality between two
             independently-declared 100-character columns; the merchant is a row
@@ -101,31 +101,31 @@ class MerchantDestination(AccountScopedMixin, UserScopedMixin, TimestampMixin,
         template_id -- answer (1), else NULL.
         envelope_name / category_id -- answer (2), else both NULL.
         created_at / updated_at -- when it was first stated and last restated
-            (:class:`~app.models.mixins.TimestampMixin`).  A policy is EDITED
+            (:class:`~app.models.mixins.TimestampMixin`).  A rule is EDITED
             in place rather than superseded by a new row, because it answers
             one question and the answer is whatever the owner last said; the
             history of what they said before is
             ``system.audit_log``'s, which this table has a trigger for.
 
     **Every subject key CASCADES, and the consequence is deliberate.**  Deleting
-    a template or a category takes the policy with it, leaving the merchant
+    a template or a category takes the rule with it, leaving the merchant
     unanswered -- which is the truth, because an answer naming a row that no
     longer exists is not an answer.  ``RESTRICT`` would refuse an ordinary
     delete because of a PREFERENCE the user cannot see from the thing they are
     deleting, which is the dead end finding **N-302** records one arc over.
     """
 
-    __tablename__ = "merchant_destinations"
+    __tablename__ = "merchant_rules"
     __table_args__ = (
         # ONE answer per merchant per account.  The key is what makes
-        # "restating a policy" an UPDATE rather than a second row that would
+        # "restating a rule" an UPDATE rather than a second row that would
         # leave two answers to one question.  **``user_id`` is not a term of
-        # it**: ``fk_merchant_destinations_owner`` holds it equal to the
+        # it**: ``fk_merchant_rules_owner`` holds it equal to the
         # account's, so it was functionally dependent on ``account_id`` and
         # narrowed nothing.
         db.UniqueConstraint(
             "account_id", "merchant_id",
-            name="uq_merchant_destinations_account_merchant",
+            name="uq_merchant_rules_account_merchant",
         ),
         # THE THREE SHAPES, spelled as three shapes.  A count-the-NULLs form
         # (``ck_statement_match_members_one_subject``'s) cannot say this:
@@ -139,30 +139,30 @@ class MerchantDestination(AccountScopedMixin, UserScopedMixin, TimestampMixin,
             "AND category_id IS NOT NULL) "
             "OR (template_id IS NULL AND envelope_name IS NULL "
             "AND category_id IS NULL)",
-            name="ck_merchant_destinations_one_answer",
+            name="ck_merchant_rules_one_answer",
         ),
         # The merchant this answer is about is one of THIS ACCOUNT's,
         # structurally (plan step ``bank_import:X-gd-1``).  It is the same
         # composite construction the two subject keys below use, and it is what
-        # retires the scope CHECK: ``_policy._refuse_unknown_merchants``
+        # retires the scope CHECK: ``_rules._refuse_unknown_merchants``
         # compared a submitted string against a DISTINCT over every recorded
         # line, and was the only thing between a crafted body and a stored row
         # keyed on a merchant this account has never seen.  That refusal
         # survives as a SENTENCE for a stale page -- the shape
-        # ``_policy._checked_template`` already has -- and no longer as what
+        # ``_rules._checked_template`` already has -- and no longer as what
         # makes the row correct.  The blank-name rule it also carried now lives
         # once, on ``ck_merchants_name_not_blank``.
         db.ForeignKeyConstraint(
             ["merchant_id", "account_id"],
             ["budget.merchants.id", "budget.merchants.account_id"],
-            name="fk_merchant_destinations_merchant_account",
+            name="fk_merchant_rules_merchant_account",
         ),
         # An envelope NAME is a name too, for the same reason
         # ``transactions.name`` is NOT NULL: answer (2) creates a budget line
         # with it.
         db.CheckConstraint(
             "envelope_name IS NULL OR btrim(envelope_name) <> ''",
-            name="ck_merchant_destinations_envelope_name_not_blank",
+            name="ck_merchant_rules_envelope_name_not_blank",
         ),
         # This row's owner IS its account's, guaranteed rather than maintained
         # -- keyed onto ``uq_accounts_id_user``, the construction
@@ -170,11 +170,11 @@ class MerchantDestination(AccountScopedMixin, UserScopedMixin, TimestampMixin,
         db.ForeignKeyConstraint(
             ["account_id", "user_id"],
             ["budget.accounts.id", "budget.accounts.user_id"],
-            name="fk_merchant_destinations_owner",
+            name="fk_merchant_rules_owner",
             ondelete="CASCADE",
         ),
         # ...and the TEMPLATE it names is on that same account, structurally.
-        # A statement is one bank's record of ONE account, so a policy pointing
+        # A statement is one bank's record of ONE account, so a rule pointing
         # at another account's recurring envelope is not a destination at all.
         # Composite rather than a bare ``template_id`` FK for the reason
         # ``fk_statement_match_members_transaction_account`` is composite:
@@ -187,7 +187,7 @@ class MerchantDestination(AccountScopedMixin, UserScopedMixin, TimestampMixin,
             ["template_id", "account_id"],
             ["budget.transaction_templates.id",
              "budget.transaction_templates.account_id"],
-            name="fk_merchant_destinations_template_account",
+            name="fk_merchant_rules_template_account",
             ondelete="CASCADE",
         ),
         # ...and the CATEGORY it names is this owner's.  Categories carry only
@@ -198,11 +198,11 @@ class MerchantDestination(AccountScopedMixin, UserScopedMixin, TimestampMixin,
         db.ForeignKeyConstraint(
             ["category_id", "user_id"],
             ["budget.categories.id", "budget.categories.user_id"],
-            name="fk_merchant_destinations_category_owner",
+            name="fk_merchant_rules_category_owner",
             ondelete="CASCADE",
         ),
-        # The review screen reads a whole account's policies at once.
-        db.Index("idx_merchant_destinations_account", "account_id"),
+        # The review screen reads a whole account's rules at once.
+        db.Index("idx_merchant_rules_account", "account_id"),
         {"schema": "budget"},
     )
 
@@ -221,8 +221,8 @@ class MerchantDestination(AccountScopedMixin, UserScopedMixin, TimestampMixin,
     # **No relationships, deliberately.**  Both arms are reached through a
     # COMPOSITE key whose other half comes from a mixin, so a relationship here
     # would have to name its foreign keys as strings and would then lazy-load
-    # one row per policy on a screen that renders every merchant on the
-    # account.  ``statement_match._policy`` loads the templates and categories
+    # one row per rule on a screen that renders every merchant on the
+    # account.  ``statement_match._rules`` loads the templates and categories
     # it needs in one statement each, which is the same shape
     # ``_reads._by_id`` already uses for a match's members.
 
@@ -235,6 +235,6 @@ class MerchantDestination(AccountScopedMixin, UserScopedMixin, TimestampMixin,
             else "never"
         )
         return (
-            f"<MerchantDestination account={self.account_id} "
+            f"<MerchantRule account={self.account_id} "
             f"merchant={self.merchant_id} -> {answer}>"
         )

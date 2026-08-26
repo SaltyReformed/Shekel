@@ -21,7 +21,7 @@ from app.enums import (
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.merchant import Merchant
-from app.models.merchant_destination import MerchantDestination
+from app.models.merchant_rule import MerchantRule
 from app.models.pay_period import PayPeriod
 from app.models.statement_import import BankStatementLine, StatementImport
 from app.models.transaction import Transaction
@@ -31,7 +31,7 @@ from app.services.cash_ledger import amount_basis
 from app.services.statement_match import (
     CreationBars,
     MatchSubmission,
-    PolicyStatement,
+    RuleSubmission,
     ReviewScope,
     ReviewedRow,
     RowKind,
@@ -257,7 +257,7 @@ def a_merchant(seed_user, name, *, account=None, account_id=None):
     **Built through the ORM, like everything else here**, so a broken
     ``statement_import._merchants.resolve_merchants`` cannot also build the
     fixture a reader test would have caught it with -- the rule
-    :func:`a_policy` already states.
+    :func:`a_rule` already states.
 
     **Get-or-create, because a merchant is per ACCOUNT and a test states its
     name several times.**  Two lines from one merchant are two lines and ONE
@@ -325,7 +325,7 @@ def a_bank_line(
             ``tests/test_services/test_statement_import/test_secu_csv.py``.
             What these builders state is the recorded FACT.  ``None`` is the
             default because it is the state every guard here has to survive: a
-            line with no merchant joins no destination policy, and the label
+            line with no merchant joins no destination rule, and the label
             readers fall back to *description*.
         source_category: The BANK's own category string, or ``None`` for a
             source stating none -- which is the DEFAULT, because it is
@@ -416,29 +416,29 @@ def a_statement(seed_user, merchant, answer=None, *, account=None, **fields):
     Args:
         seed_user: The seeded user bundle.
         merchant: What the source calls the merchant.
-        answer: The :class:`~app.services.statement_match.PolicyAnswer`, or
+        answer: The :class:`~app.services.statement_match.RuleAnswer`, or
             ``None`` to withdraw.
         account: The account it governs; the seeded checking one by default.
         **fields: ``template_id`` / ``envelope_name`` / ``category_id``, as the
             answer needs them.
 
     Returns:
-        The :class:`~app.services.statement_match.PolicyStatement`.
+        The :class:`~app.services.statement_match.RuleSubmission`.
     """
-    return PolicyStatement(
+    return RuleSubmission(
         merchant_id=a_merchant(seed_user, merchant, account=account).id,
         answer=answer, **fields,
     )
 
 
-def a_policy(
+def a_rule(
     seed_user, merchant, *, template_id=None, envelope_name=None,
     category_id=None, account=None,
 ):
     """Stage and return one stated merchant destination.
 
     Built through the ORM like everything else here, so a broken
-    ``state_policies`` cannot also break the fixture a reader test would have
+    ``state_rules`` cannot also break the fixture a reader test would have
     caught it with.
 
     Args:
@@ -456,11 +456,11 @@ def a_policy(
 
     Returns:
         The staged
-        :class:`~app.models.merchant_destination.MerchantDestination`.  With no
+        :class:`~app.models.merchant_rule.MerchantRule`.  With no
         arm given it is the NEVER answer, which is a row with all three columns
         NULL rather than the absence of a row.
     """
-    row = MerchantDestination(
+    row = MerchantRule(
         user_id=seed_user["user"].id,
         account_id=(account or seed_user["account"]).id,
         merchant_id=a_merchant(seed_user, merchant, account=account).id,

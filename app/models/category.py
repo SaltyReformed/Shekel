@@ -23,7 +23,7 @@ class Category(UserScopedMixin, SortOrderMixin, IsActiveMixin, CreatedAtMixin, d
             "user_id", "group_name", "item_name",
             name="uq_categories_user_group_item",
         ),
-        # The SUPERKEY ``fk_merchant_destinations_category_owner`` targets, so a
+        # The SUPERKEY ``fk_merchant_rules_category_owner`` targets, so a
         # merchant destination policy's category is provably its OWNER's (plan
         # step ``bank_import:X-f6a-3d``) -- the IDOR every create door in this
         # project probes for by hand, made unwritable instead.  It constrains

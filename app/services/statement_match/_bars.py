@@ -23,10 +23,10 @@ the door for a crafted request.
 may decide.**
 
 * :attr:`CreationBar.NEVER_A_PURCHASE` -- the owner has answered *never a
-  purchase* for this merchant (:class:`~._policy.PolicyAnswer`'s third
+  purchase* for this merchant (:class:`~._rules.RuleAnswer`'s third
   answer).  Until this step that answer was a CAPTION: it withheld a sweep
   value, and the line's own select went on offering every envelope in the
-  period while :func:`~._create.create_purchase_from_line` read no policy at
+  period while :func:`~._create.create_purchase_from_line` read no rule at
   all.  A stated decision the money door ignores is the defect, and this is
   the whole of its repair.
 * :attr:`CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD` -- the SOURCE files this
@@ -52,7 +52,7 @@ weakened.  What the permissive arm bought was worth zero lines: of the 7 Van
 Loan lines, 4 are matched and 3 fall before the pay calendar opens, so not one
 has ever been offered a create arm.
 
-**The merchant is the grain, because the merchant is the policy's grain.**  A
+**The merchant is the grain, because the merchant is the rule's grain.**  A
 bar per LINE would offer a create arm on some of one merchant's lines and
 withhold it on others, which is incoherent on a screen whose answers are stated
 once per merchant.  It costs nothing measurable: all 15 Capital One lines and
@@ -111,7 +111,7 @@ from app.exceptions import ValidationError
 from app.models.statement_import import BankStatementLine
 
 from ._offers import BankLine
-from ._policy import MerchantPolicy, policies_for
+from ._rules import StandingRule, rules_for
 from ._vocabulary import account_payment_merchants
 
 class CreationBar(enum.Enum):
@@ -145,7 +145,7 @@ def _core_sentence(barred_by: CreationBar, merchant: str) -> str:
 
     Args:
         barred_by: Which bar applies.
-        merchant: The bank's own merchant string, which is the policy key.
+        merchant: The bank's own merchant string, which is the rule key.
 
     Returns:
         The shared sentence.
@@ -174,7 +174,7 @@ def _refusal_for(barred_by: CreationBar, merchant: str) -> str:
 
     Args:
         barred_by: The bar the caller established.
-        merchant: The bank's own merchant string, which is the policy key.
+        merchant: The bank's own merchant string, which is the rule key.
 
     Returns:
         The refusal sentence, ending in the phrase every designed refusal in
@@ -191,14 +191,14 @@ class CreationBars:
     """Which of one account's merchants may not become purchases, and why.
 
     **ONE derivation at one instant**, which is the argument
-    :class:`~._policy.PolicyView` makes beside it: what the owner has answered
+    :class:`~._rules.RuleView` makes beside it: what the owner has answered
     and what the bank has filed are read from the same moment, so the screen
     and the door cannot disagree about whether a merchant has been answered
     for.
 
     **It is NOT carried on the** :class:`~._scope.ReviewScope`, for the reason
-    :func:`~._reads._leftovers` states about the policies themselves: the
-    policy-stating route derives its scope ONCE, BEFORE its write, and a reader
+    :func:`~._reads._leftovers` states about the rules themselves: the
+    rule-stating route derives its scope ONCE, BEFORE its write, and a reader
     taking these off the scope would show the answers that pass had just
     replaced.  The batch door builds one per REQUEST instead, exactly as it
     builds one :class:`~._create.MintedEnvelopes`.
@@ -229,29 +229,29 @@ class CreationBars:
         cls,
         owner_id: int,
         account_id: int,
-        policies: dict[str, MerchantPolicy] | None = None,
+        rules: dict[str, StandingRule] | None = None,
     ) -> "CreationBars":
         """Derive the bars for one pass over one account.
 
         Args:
             owner_id: The user the caller proved owns the account.
             account_id: The account being reviewed.
-            policies: What the owner has answered, where the caller has already
-                read them (:attr:`~._policy.PolicyView.policies` has), else
+            rules: What the owner has answered, where the caller has already
+                read them (:attr:`~._rules.RuleView.rules` has), else
                 ``None`` to read them here.  The same shape -- and the same
-                reason -- as :func:`~._policy.policies_for`'s callers have:
+                reason -- as :func:`~._rules.rules_for`'s callers have:
                 one request that has the answers must not ask for them twice.
 
         Returns:
             The :class:`CreationBars`.  Two indexed reads, or one when the
             answers arrive with the call.
         """
-        if policies is None:
-            policies = policies_for(owner_id, account_id)
+        if rules is None:
+            rules = rules_for(owner_id, account_id)
         return cls(
             never=frozenset(
-                merchant_id for merchant_id, policy in policies.items()
-                if policy.is_never
+                merchant_id for merchant_id, rule in rules.items()
+                if rule.is_never
             ),
             account_payments=account_payment_merchants(account_id),
         )
@@ -265,7 +265,7 @@ class CreationBars:
         reach.  None of the three sets can hold ``NULL`` --
         :func:`~._vocabulary.account_payment_merchants` filters
         ``merchant_id.isnot(None)``, and the other two are keyed on
-        ``merchant_destinations.merchant_id``, which is ``NOT NULL`` -- so
+        ``merchant_rules.merchant_id``, which is ``NOT NULL`` -- so
         ``None`` is absent from all three and falls through
         to the same answer the branch gave.  Two guards for one fact meant
         neither could fail while the other stood, and the case written to grade
@@ -292,8 +292,8 @@ class CreationBars:
             is what an adversarial review 2026-08-24 measured as the step's own
             hole: the answer that lifted it was ``a new envelope``, which is
             the answer the developer had saved for Capital One and the one that
-            booked `$7,412.94` through the sweep.  :func:`~._policy.
-            state_policies` refuses that answer outright for such a merchant
+            booked `$7,412.94` through the sweep.  :func:`~._rules.
+            state_rules` refuses that answer outright for such a merchant
             now, so a stored one cannot sit inert either.
         """
         if merchant_id in self.never:
@@ -305,10 +305,10 @@ class CreationBars:
     def pays_an_account(self, merchant_id: "int | None") -> bool:
         """Return whether a source files this merchant as paying an account.
 
-        **The POLICY door's question, and the control's** -- not the line's,
+        **The RULE door's question, and the control's** -- not the line's,
         which asks :meth:`bar_for` instead.  The door refuses an answer that
         would file such a merchant's money as spending
-        (:func:`~._policy.state_policies`), and the control says why before the
+        (:func:`~._rules.state_rules`), and the control says why before the
         answer is attempted, so the refusal is not the first the owner hears of
         it.
 
@@ -384,7 +384,7 @@ def reject_barred_line(
 
     **It reads the bars the PASS derived rather than deriving its own**, which
     is the rule :class:`~._create.MintedEnvelopes` states beside it: a door that read
-    ``merchant_destinations`` per act would ask it 90 times for the
+    ``merchant_rules`` per act would ask it 90 times for the
     developer's own statement, and a redundant producer call inside one request
     is this project's DRY violation rather than a cost.
 

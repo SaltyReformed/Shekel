@@ -62,7 +62,7 @@ from app.models.escrow_line import EscrowLine, EscrowComponentVersion
 from app.models.investment_params import InvestmentParams
 from app.models.asset_appreciation_params import AssetAppreciationParams
 from app.models.merchant import Merchant
-from app.models.merchant_destination import MerchantDestination
+from app.models.merchant_rule import MerchantRule
 from app.models.statement_import import (
     AccountExternalIdentity,
     BankStatementLine,
@@ -149,7 +149,7 @@ __all__ = [
     "InvestmentParams",
     "AssetAppreciationParams",
     "Merchant",
-    "MerchantDestination",
+    "MerchantRule",
     "AccountExternalIdentity",
     "BankStatementLine",
     "StatementImport",

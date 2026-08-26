@@ -925,7 +925,7 @@ def destinations_for(
             pay_period_id=txn.pay_period_id,
             is_settled=txn.status.is_settled,
             # The row's identity ACROSS periods, which is what a merchant
-            # destination policy names (plan step X-f6a-3d).
+            # rule names (plan step X-f6a-3d).
             template_id=txn.template_id,
         )
         for txn in rows

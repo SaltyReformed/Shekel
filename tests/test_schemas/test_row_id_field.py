@@ -290,12 +290,12 @@ _NON_INTEGER_FIELD_FACTORIES = frozenset({
 #: two lists of them (plan step ``bank_import:X-f6a-3c-2``), and the ids inside
 #: each item are graded where they are declared -- so nothing is waved through
 #: by listing the container.
-#: **``PolicyAnswerField`` is here on exactly ``PurchaseDestination``'s terms**
-#: (plan step ``bank_import:X-f6a-3d``): the merchant policy control submits
+#: **``RuleAnswerField`` is here on exactly ``PurchaseDestination``'s terms**
+#: (plan step ``bank_import:X-f6a-3d``): the merchant rule control submits
 #: one of four things -- I have not said, a recurring definition's id, a new
 #: envelope, never a purchase -- so it cannot derive from ``RowId`` either, and
 #: :meth:`TestNoIdFieldWasMissed
-#: ::test_the_policy_answer_field_is_strict_about_the_id_it_carries` asserts
+#: ::test_the_rule_answer_field_is_strict_about_the_id_it_carries` asserts
 #: the strictness directly rather than granting it by listing.
 #: **``ReviewedRowField`` is here on the same terms** (plan step
 #: ``bank_import:X-f6d-3``): it carries a row id AND a version counter AND a
@@ -304,7 +304,7 @@ _NON_INTEGER_FIELD_FACTORIES = frozenset({
 #: ::test_the_reviewed_row_field_is_strict_about_the_ids_it_carries` asserts
 #: the strictness on BOTH of its counters directly.
 _NON_INTEGER_FIELD_SPELLINGS = frozenset({
-    "Boolean", "Date", "Decimal", "Nested", "PolicyAnswerField",
+    "Boolean", "Date", "Decimal", "Nested", "RuleAnswerField",
     "PurchaseDestination", "ReviewedRowField", "String",
 })
 
@@ -654,8 +654,8 @@ class TestNoIdFieldWasMissed:
             cash_amount=Decimal("2473.38"), version_id=1,
         )
 
-    def test_the_policy_answer_field_is_strict_about_the_id_it_carries(self):
-        """``PolicyAnswerField`` names a TEMPLATE and is graded like a row id.
+    def test_the_rule_answer_field_is_strict_about_the_id_it_carries(self):
+        """``RuleAnswerField`` names a TEMPLATE and is graded like a row id.
 
         :meth:`test_the_destination_field_is_strict_about_the_id_it_carries`'s
         twin, on the control one card up the same screen.  It is listed as a
@@ -675,10 +675,10 @@ class TestNoIdFieldWasMissed:
             NEVER,
             NEW_ENVELOPE,
             NOT_SAID,
-            PolicyAnswerField,
+            RuleAnswerField,
         )
 
-        field = PolicyAnswerField()
+        field = RuleAnswerField()
         for lax in ("\u0661\u0662", " 12 ", "+12", "1_0", "007", "-5", "0"):
             with pytest.raises(ValidationError):
                 field.deserialize(f"t:{lax}")

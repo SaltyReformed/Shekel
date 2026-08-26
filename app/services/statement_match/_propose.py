@@ -236,7 +236,7 @@ def _assign(
     # ``row_id``, the file order this whole function exists to eliminate.
     # Measured on five identical `$1,910.95` transfers: 3 of 5 lines paired, 1
     # of those to the right month, 2 lines left unexplained -- and an
-    # unexplained line is what the merchant policy offers to RECORD, which is
+    # unexplained line is what the merchant rule offers to RECORD, which is
     # the duplicate this arc just finished removing 50 of.  Re-keyed: 5 of 5,
     # all correct.  Found by three independent adversarial reviews.
     dated = sorted(

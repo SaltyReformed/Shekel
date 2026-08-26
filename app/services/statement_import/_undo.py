@@ -89,7 +89,7 @@ from decimal import Decimal
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.merchant import Merchant
-from app.models.merchant_destination import MerchantDestination
+from app.models.merchant_rule import MerchantRule
 from app.models.statement_import import BankStatementLine, StatementImport
 from app.services.statement_match import release_match
 
@@ -213,7 +213,7 @@ def _forget_orphan_merchants(account_id: int) -> int:
     render it, no rule is keyed on it, and nothing else can reach it.
 
     **Without this the table has no ceiling at all**, which is precisely the
-    hazard ``_policy._refuse_unknown_merchants`` was written for and which
+    hazard ``_rules._refuse_unknown_merchants`` was written for and which
     moved one table over when the rule's key became a foreign key: an owner
     uploading a file naming N unseen merchants and then deleting the import
     reclaims the lines and keeps the merchants, permanently, once per upload.
@@ -237,8 +237,8 @@ def _forget_orphan_merchants(account_id: int) -> int:
         .filter(BankStatementLine.merchant_id.isnot(None))
     )
     answered_for = (
-        db.session.query(MerchantDestination.merchant_id)
-        .filter(MerchantDestination.account_id == account_id)
+        db.session.query(MerchantRule.merchant_id)
+        .filter(MerchantRule.account_id == account_id)
     )
     return (
         db.session.query(Merchant)

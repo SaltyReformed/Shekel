@@ -7,7 +7,7 @@ rows and prove nothing; the downgrade is never executed at all.  Two adversarial
 reviews on 2026-08-25 named the gap, and one of them named why it is the arm
 worth covering: ``bank_statement_lines.merchant_id`` stays NULLABLE and the
 source column is dropped four statements later, so a row the UPDATE misses
-loses its merchant permanently with no error.  ``merchant_destinations`` is
+loses its merchant permanently with no error.  ``merchant_rules`` is
 self-checking by comparison -- its ``ALTER COLUMN ... SET NOT NULL`` fails
 loudly.
 
@@ -29,6 +29,7 @@ needs to write around, and it restores the schema on teardown.
 # pylint: disable=unused-argument
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import pathlib
 from datetime import date
@@ -38,7 +39,7 @@ import pytest
 from sqlalchemy import text
 
 from app.models.merchant import Merchant
-from app.models.merchant_destination import MerchantDestination
+from app.models.merchant_rule import MerchantRule
 from app.models.statement_import import BankStatementLine
 from tests.test_services.test_statement_match._builders import (
     a_bank_line,
@@ -92,11 +93,11 @@ def pre_migration_shape(db):
         "ADD COLUMN merchant VARCHAR(100)"
     ))
     db.session.execute(text(
-        "ALTER TABLE budget.merchant_destinations "
+        "ALTER TABLE budget.merchant_rules "
         "ADD COLUMN merchant VARCHAR(100)"
     ))
     db.session.execute(text(
-        "ALTER TABLE budget.merchant_destinations "
+        "ALTER TABLE budget.merchant_rules "
         "ALTER COLUMN merchant_id DROP NOT NULL"
     ))
     yield
@@ -119,24 +120,66 @@ def _to_the_pre_migration_state(db):
         "FROM budget.merchants AS m WHERE m.id = l.merchant_id"
     ))
     db.session.execute(text(
-        "UPDATE budget.merchant_destinations AS d SET merchant = m.name "
+        "UPDATE budget.merchant_rules AS d SET merchant = m.name "
         "FROM budget.merchants AS m WHERE m.id = d.merchant_id"
     ))
     db.session.execute(text(
         "UPDATE budget.bank_statement_lines SET merchant_id = NULL"
     ))
     db.session.execute(text(
-        "UPDATE budget.merchant_destinations SET merchant_id = NULL"
+        "UPDATE budget.merchant_rules SET merchant_id = NULL"
     ))
     db.session.execute(text("DELETE FROM budget.merchants"))
     db.session.expire_all()
 
 
+@contextlib.contextmanager
+def _under_the_revisions_own_name(db):
+    """Present the rule table under the name THIS revision knew it by.
+
+    ``budget.merchant_rules`` was ``budget.merchant_destinations`` until
+    ``d4a1f8b0c25e`` renamed it, one revision after this one (plan step
+    ``bank_import:X-gd-2``).  The strings under test are frozen at the older
+    name, which is the whole point of importing them rather than re-typing
+    them, so they are executed against a table carrying it.
+
+    **Renamed BACK on the way out**, and that is what makes the window narrow
+    rather than a second pre-migration fixture: every assertion in this module
+    reads through :class:`~app.models.merchant_rule.MerchantRule`, which is
+    mapped at HEAD, and the builders that stage rows do too.  Only the frozen
+    strings need the old world, so only they get it.
+
+    Args:
+        db: The test database session.
+
+    Yields:
+        ``None`` -- it is used for its side effect.
+    """
+    db.session.execute(text(
+        "ALTER TABLE budget.merchant_rules RENAME TO merchant_destinations"
+    ))
+    try:
+        yield
+    finally:
+        db.session.execute(text(
+            "ALTER TABLE budget.merchant_destinations RENAME TO merchant_rules"
+        ))
+
+
 def _upgrade(db):
     """Run the revision's three backfill statements, in its own order."""
-    db.session.execute(text(_REVISION.MINT_MERCHANTS_SQL))
-    db.session.execute(text(_REVISION.POINT_LINES_SQL))
-    db.session.execute(text(_REVISION.POINT_DESTINATIONS_SQL))
+    with _under_the_revisions_own_name(db):
+        db.session.execute(text(_REVISION.MINT_MERCHANTS_SQL))
+        db.session.execute(text(_REVISION.POINT_LINES_SQL))
+        db.session.execute(text(_REVISION.POINT_DESTINATIONS_SQL))
+    db.session.expire_all()
+
+
+def _downgrade(db):
+    """Run the revision's two restore statements, in its own order."""
+    with _under_the_revisions_own_name(db):
+        db.session.execute(text(_REVISION.RESTORE_DESTINATION_STRINGS_SQL))
+        db.session.execute(text(_REVISION.RESTORE_LINE_STRINGS_SQL))
     db.session.expire_all()
 
 
@@ -227,7 +270,7 @@ class TestTheUpgradeBackfill:
         )
         db.session.add(ghost)
         db.session.flush()
-        db.session.add(MerchantDestination(
+        db.session.add(MerchantRule(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             merchant_id=ghost.id,
@@ -244,7 +287,7 @@ class TestTheUpgradeBackfill:
 
         _upgrade(db)
 
-        stored = db.session.query(MerchantDestination).one()
+        stored = db.session.query(MerchantRule).one()
         assert stored.merchant_id is not None
         assert db.session.get(Merchant, stored.merchant_id).name == (
             "Ghost Merchant"
@@ -299,7 +342,7 @@ class TestTheDowngradeRestoresTheStrings:
         )
         db.session.flush()
         named = db.session.query(Merchant).one()
-        db.session.add(MerchantDestination(
+        db.session.add(MerchantRule(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             merchant_id=named.id,
@@ -310,13 +353,11 @@ class TestTheDowngradeRestoresTheStrings:
             "UPDATE budget.bank_statement_lines SET merchant = NULL"
         ))
         db.session.execute(text(
-            "UPDATE budget.merchant_destinations SET merchant = NULL"
+            "UPDATE budget.merchant_rules SET merchant = NULL"
         ))
         db.session.expire_all()
 
-        db.session.execute(text(_REVISION.RESTORE_DESTINATION_STRINGS_SQL))
-        db.session.execute(text(_REVISION.RESTORE_LINE_STRINGS_SQL))
-        db.session.expire_all()
+        _downgrade(db)
 
         restored = db.session.execute(text(
             "SELECT sequence_in_group, merchant "
@@ -324,7 +365,7 @@ class TestTheDowngradeRestoresTheStrings:
         )).all()
         assert restored == [(0, "Food Lion"), (1, None)]
         assert db.session.execute(text(
-            "SELECT merchant FROM budget.merchant_destinations"
+            "SELECT merchant FROM budget.merchant_rules"
         )).scalar() == "Food Lion"
 
     def test_a_merchant_NOTHING_references_writes_back_nowhere(

@@ -29,7 +29,7 @@
    untouched control writes money.
 
    Context: account, review (ReviewSet), categories, outcome (BatchOutcome or
-   None), error (a sentence or None), policies (StatedPolicies or None -- what
+   None), error (a sentence or None), rules (StatedRules or None -- what
    a pass over the merchant section recorded, which is a SEPARATE receipt
    because it is a separate act that moves no money). #}
 
@@ -151,16 +151,16 @@
   </div>
   {% endif %}
 
-  {# ── What the last policy pass recorded ───────────────────────────────── #}
-  {% if policies %}
-  <div class="card mb-3 border-{% if policies.refused %}warning{% else %}success{% endif %}">
+  {# ── What the last rule pass recorded ───────────────────────────────── #}
+  {% if rules %}
+  <div class="card mb-3 border-{% if rules.refused %}warning{% else %}success{% endif %}">
     <div class="card-header">
       <i class="bi bi-signpost-split"></i> Where your merchants go
     </div>
     <div class="card-body">
-      {% if policies.stated %}
+      {% if rules.stated %}
       <ul class="mb-0 small">
-        {% for said in policies.stated %}
+        {% for said in rules.stated %}
         <li class="mb-1">{{ said }}</li>
         {% endfor %}
       </ul>
@@ -169,23 +169,23 @@
         Nothing changed -- every answer was already what you had said.
       </p>
       {% endif %}
-      {% if policies.unchanged_count %}
+      {% if rules.unchanged_count %}
       {# The DENOMINATOR.  The section submits every merchant it renders, so
          most of a real pass is no-ops; "2 recorded" with nothing beside it
          would read as though the other 19 had failed. #}
       <p class="mt-2 mb-0 small text-body-secondary">
-        {{ policies.unchanged_count }} other merchant(s) were already answered
+        {{ rules.unchanged_count }} other merchant(s) were already answered
         for and were left as they are. This changed no money.
       </p>
       {% else %}
       <p class="mt-2 mb-0 small text-body-secondary">This changed no money.</p>
       {% endif %}
     </div>
-    {% if policies.refused %}
+    {% if rules.refused %}
     <div class="card-body border-top">
       <p class="fw-semibold mb-2">These were not recorded:</p>
       <ul class="mb-0 small">
-        {% for reason in policies.refused %}
+        {% for reason in rules.refused %}
         <li class="mb-1">{{ reason }}</li>
         {% endfor %}
       </ul>
@@ -195,7 +195,7 @@
   {% endif %}
 
   {# ── Where your merchants go ──────────────────────────────────────────── #}
-  {# THE POLICY CONTROL, plan step bank_import:X-f6a-3d.
+  {# THE RULE CONTROL, plan step bank_import:X-f6a-3d.
 
      The screen's shape matching the model's.  The leftover list below asks 91
      questions on the developer's own statement and the real question is asked
@@ -213,12 +213,12 @@
      onto envelopes closed at a fixed figure.
 
      An answer is restated or withdrawn at any time -- "I have not said"
-     deletes it -- because a policy is a statement about today's budget rather
+     deletes it -- because a rule is a statement about today's budget rather
      than a judgement. #}
   {% if review.merchants.merchants %}
   <form method="post"
-        action="{{ url_for('accounts.state_merchant_destinations', account_id=account.id) }}"
-        hx-post="{{ url_for('accounts.state_merchant_destinations', account_id=account.id) }}"
+        action="{{ url_for('accounts.state_merchant_rules', account_id=account.id) }}"
+        hx-post="{{ url_for('accounts.state_merchant_rules', account_id=account.id) }}"
         hx-target="#statement-review-body"
         hx-swap="outerHTML show:top"
         hx-disabled-elt="find button[type=submit]">
@@ -266,8 +266,8 @@
                    bank_import:X-gd-1).  The name posted back until then, so
                    the door's only defence against a merchant this account has
                    never shown was a comparison in Python; the id is held to
-                   this account by fk_merchant_destinations_merchant_account. #}
-                <input type="hidden" name="policy_merchant-{{ idx }}"
+                   this account by fk_merchant_rules_merchant_account. #}
+                <input type="hidden" name="rule_merchant-{{ idx }}"
                        value="{{ row.merchant_id }}">
                 {# WHY TWO OF THIS ROW'S OPTIONS ARE REFUSED (ruling R-GJ, plan
                    step bank_import:X-ga).  A merchant a source files as a
@@ -295,14 +295,14 @@
                 {% endif %}
               </td>
               <td>
-                <div class="row g-2 align-items-center" data-policy-row>
+                <div class="row g-2 align-items-center" data-rule-row>
                   <div class="col-12 col-lg-5">
                     <select class="form-select form-select-sm"
-                            name="policy-{{ idx }}" data-policy
+                            name="rule-{{ idx }}" data-rule
                             aria-label="Where {{ row.merchant }} goes">
-                      <option value="unset"{% if not row.policy %} selected{% endif %}>-- I have not said --</option>
+                      <option value="unset"{% if not row.rule %} selected{% endif %}>-- I have not said --</option>
                       {% for template_id, template_name in review.merchants.templates %}
-                      <option value="t:{{ template_id }}"{% if row.policy and row.policy.template_id == template_id %} selected{% endif %}>
+                      <option value="t:{{ template_id }}"{% if row.rule and row.rule.template_id == template_id %} selected{% endif %}>
                         {{ template_name }}
                       </option>
                       {% endfor %}
@@ -311,37 +311,37 @@
                          still has to be shown, because a select with no
                          selected option displays and submits its FIRST, which
                          is "I have not said": the screen would have reported a
-                         policy as unanswered and the next Save would have
+                         rule as unanswered and the next Save would have
                          silently withdrawn it.  Rendered as its own option so
                          the form round-trips it, and re-submitting it unchanged
                          is a no-op rather than a refusal. #}
                       {% if row.stale_template_label %}
-                      <option value="t:{{ row.policy.template_id }}" selected>
+                      <option value="t:{{ row.rule.template_id }}" selected>
                         {{ row.stale_template_label }} -- no longer offered
                       </option>
                       {% endif %}
-                      <option value="new"{% if row.policy and row.policy.is_new_envelope %} selected{% endif %}>-- a new envelope --</option>
-                      <option value="never"{% if row.policy and row.policy.is_never %} selected{% endif %}>-- never a purchase --</option>
+                      <option value="new"{% if row.rule and row.rule.is_new_envelope %} selected{% endif %}>-- a new envelope --</option>
+                      <option value="never"{% if row.rule and row.rule.is_never %} selected{% endif %}>-- never a purchase --</option>
                     </select>
                   </div>
-                  <div class="col-12 col-lg-4{% if not (row.policy and row.policy.is_new_envelope) %} d-none{% endif %}"
-                       data-policy-new-field>
+                  <div class="col-12 col-lg-4{% if not (row.rule and row.rule.is_new_envelope) %} d-none{% endif %}"
+                       data-rule-new-field>
                     <input class="form-control form-control-sm" type="text"
-                           name="policy_name-{{ idx }}" maxlength="200"
-                           value="{{ row.policy.envelope_name if row.policy and row.policy.is_new_envelope else row.merchant }}"
+                           name="rule_name-{{ idx }}" maxlength="200"
+                           value="{{ row.rule.envelope_name if row.rule and row.rule.is_new_envelope else row.merchant }}"
                            aria-label="Name for the envelope to create">
                   </div>
-                  <div class="col-12 col-lg-3{% if not (row.policy and row.policy.is_new_envelope) %} d-none{% endif %}"
-                       data-policy-new-field>
+                  <div class="col-12 col-lg-3{% if not (row.rule and row.rule.is_new_envelope) %} d-none{% endif %}"
+                       data-rule-new-field>
                     <select class="form-select form-select-sm"
-                            name="policy_category-{{ idx }}"
+                            name="rule_category-{{ idx }}"
                             aria-label="Category for the envelope to create">
                       {# NO default, for the reason the create form's own
                          category select has none: the category is what every
                          spending report groups by, so an envelope filed under
                          whichever one sorts first is a misclassification
                          nobody chose. #}
-                      {% set answered = row.policy.category_id if row.policy and row.policy.is_new_envelope else None %}
+                      {% set answered = row.rule.category_id if row.rule and row.rule.is_new_envelope else None %}
                       <option value=""{% if not answered %} selected{% endif %}>-- choose a category --</option>
                       {% for category in categories %}
                       <option value="{{ category.id }}"{% if answered == category.id %} selected{% endif %}>{{ category.display_name }}</option>
@@ -645,7 +645,7 @@
          so this is a convenience over a form that works without it and never
          the only way to reach a control.
 
-         Nothing is swept for a policy that cannot reach this line's pay
+         Nothing is swept for a rule that cannot reach this line's pay
          period: it has no value to set, so it is not counted here. A merchant
          the owner answered "never a purchase" is not in this card at all since
          ruling R-GJ -- it is parked below. #}
@@ -735,12 +735,12 @@
                     </select>
                   </div>
                   <div class="col-12 col-lg-4 d-none" data-new-envelope-field>
-                    {# PREFILLED FROM THE POLICY where one names an envelope,
+                    {# PREFILLED FROM THE RULE where one names an envelope,
                        else from what the bank called the merchant.  Decided on
                        the SERVER so the sweep and a hand-picked "a new
                        envelope" cannot disagree: a first version set these two
                        from JavaScript when the sweep ran, which left the
-                       no-script path filing the policy's line under the
+                       no-script path filing the rule's line under the
                        merchant's name instead of the one the owner stated. #}
                     <input class="form-control form-control-sm" type="text"
                            name="envelope_name-{{ item.line.line_id }}" maxlength="200"
@@ -770,7 +770,7 @@
                     this money. "A new envelope" is the only place open to it.
                   </div>
                   {% endif %}
-                  {# WHAT YOUR POLICY SAYS, printed beside the control and
+                  {# WHAT YOUR RULE SAYS, printed beside the control and
                      never selected into it (plan step X-f6a-3d).  The select
                      above still opens on "leave this line alone": a remembered
                      destination that arrived already chosen would be a default
