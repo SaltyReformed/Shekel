@@ -458,7 +458,8 @@ def _as_bank_line(row: BankStatementLine) -> BankLine:
         amount=Decimal(str(row.amount)),
         description=row.description,
         transaction_on=row.transaction_on,
-        merchant=row.merchant,
+        merchant_id=row.merchant_id,
+        merchant=row.merchant_name,
     )
 
 
@@ -532,7 +533,7 @@ def _creatable_lines(
         # ONE ask of the bar per line, and its answer is what routes the line:
         # a second ask -- once to partition and once to word the sentence -- is
         # the redundant producer call this module already refuses above.
-        barred_by = bars.bar_for(line.merchant)
+        barred_by = bars.bar_for(line.merchant_id)
         if barred_by is not None:
             parked.append(ParkedLine(line=line, barred_by=barred_by))
             continue
@@ -619,7 +620,7 @@ def _one_creatable(
         destinations=tuple(offered),
         placement=(
             None if period_id is None
-            else placements_for(line.merchant, view, offered)
+            else placements_for(line.merchant_id, view, offered)
         ),
     )
 

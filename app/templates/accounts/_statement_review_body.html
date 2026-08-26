@@ -262,8 +262,13 @@
             <tr>
               <td>
                 <span class="fw-semibold">{{ row.merchant }}</span>
+                {# THE KEY IS THE MERCHANT ROW, not its name (plan step
+                   bank_import:X-gd-1).  The name posted back until then, so
+                   the door's only defence against a merchant this account has
+                   never shown was a comparison in Python; the id is held to
+                   this account by fk_merchant_destinations_merchant_account. #}
                 <input type="hidden" name="policy_merchant-{{ idx }}"
-                       value="{{ row.merchant }}">
+                       value="{{ row.merchant_id }}">
                 {# WHY TWO OF THIS ROW'S OPTIONS ARE REFUSED (ruling R-GJ, plan
                    step bank_import:X-ga).  A merchant a source files as a
                    payment to an account the owner holds has no create-a-purchase

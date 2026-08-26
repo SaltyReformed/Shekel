@@ -566,11 +566,16 @@ class TestThePolicySectionOnTheWire:
     """
 
     @staticmethod
-    def _row(index, merchant, answer, name="", category=""):
-        """Return the fields ONE merchant row submits, as a browser sends them."""
+    def _row(index, merchant_id, answer, name="", category=""):
+        """Return the fields ONE merchant row submits, as a browser sends them.
+
+        *merchant_id* is the merchant ROW the hidden input carries (plan step
+        ``bank_import:X-gd-1``).  It was the bank's own STRING, which is what
+        made the schema unable to say anything about it at all.
+        """
         return [
             (f"policy-{index}", answer),
-            (f"policy_merchant-{index}", merchant),
+            (f"policy_merchant-{index}", str(merchant_id)),
             (f"policy_name-{index}", name),
             (f"policy_category-{index}", category),
         ]
@@ -584,13 +589,13 @@ class TestThePolicySectionOnTheWire:
         nobody asked for.  So every row arrives and the SERVICE compares.
         """
         payload = policy_payload(_form(
-            self._row(0, "Amazon", "t:38")
-            + self._row(1, "Walmart", NOT_SAID)
-            + self._row(2, "Capital One", NEVER),
+            self._row(0, 11, "t:38")
+            + self._row(1, 12, NOT_SAID)
+            + self._row(2, 13, NEVER),
         ))
 
-        assert [item["merchant"] for item in payload["policies"]] == [
-            "Amazon", "Walmart", "Capital One",
+        assert [item["merchant_id"] for item in payload["policies"]] == [
+            "11", "12", "13",
         ]
 
     def test_NOT_SAID_is_carried_rather_than_dropped(self):
@@ -601,10 +606,10 @@ class TestThePolicySectionOnTheWire:
         nothing to undo.  Here it means "forget what I said", which is an act
         -- and dropping it would make a stated policy permanent.
         """
-        payload = policy_payload(_form(self._row(0, "Amazon", NOT_SAID)))
+        payload = policy_payload(_form(self._row(0, 11, NOT_SAID)))
 
         assert payload["policies"] == [{
-            "merchant": "Amazon", "answer": NOT_SAID,
+            "merchant_id": "11", "answer": NOT_SAID,
             "envelope_name": "", "category_id": "",
         }]
 
@@ -616,7 +621,7 @@ class TestThePolicySectionOnTheWire:
         unreachable from a browser one leaf earlier.
         """
         loaded = MerchantPolicyBatchSchema().load(
-            policy_payload(_form(self._row(0, "Amazon", "t:38"))),
+            policy_payload(_form(self._row(0, 11, "t:38"))),
         )
 
         assert loaded["policies"][0]["answer"] == 38
@@ -624,10 +629,10 @@ class TestThePolicySectionOnTheWire:
     def test_the_four_answers_all_load(self):
         """The closed set, so none of them is refused by the grader."""
         loaded = MerchantPolicyBatchSchema().load(policy_payload(_form(
-            self._row(0, "Amazon", "t:38")
-            + self._row(1, "Walmart", NOT_SAID)
-            + self._row(2, "Capital One", NEVER)
-            + self._row(3, "Lowe's", NEW_ENVELOPE, name="Lowe's", category="4"),
+            self._row(0, 11, "t:38")
+            + self._row(1, 12, NOT_SAID)
+            + self._row(2, 13, NEVER)
+            + self._row(3, 14, NEW_ENVELOPE, name="Lowe's", category="4"),
         )))
 
         assert [item["answer"] for item in loaded["policies"]] == [
@@ -657,10 +662,10 @@ class TestThePolicySectionOnTheWire:
         """
         payload = policy_payload(_form(
             [("policy-\N{SUPERSCRIPT TWO}", NEVER),
-             ("policy_merchant-\N{SUPERSCRIPT TWO}", "Amazon")],
+             ("policy_merchant-\N{SUPERSCRIPT TWO}", "11")],
         ))
 
-        assert [item["merchant"] for item in payload["policies"]] == ["Amazon"]
+        assert [item["merchant_id"] for item in payload["policies"]] == ["11"]
 
     def test_a_respelled_template_id_is_refused(self):
         """``t:007`` names no template, exactly as ``007`` names no envelope.
@@ -670,7 +675,7 @@ class TestThePolicySectionOnTheWire:
         """
         with pytest.raises(ValidationError):
             MerchantPolicyBatchSchema().load(
-                policy_payload(_form(self._row(0, "Amazon", "t:007"))),
+                policy_payload(_form(self._row(0, 11, "t:007"))),
             )
 
     def test_an_undeclared_key_is_refused(self):
@@ -691,7 +696,7 @@ class TestThePolicySectionOnTheWire:
         """
         rows = []
         for index in range(_MAX_POLICY_ITEMS + 1):
-            rows.extend(self._row(index, f"Merchant {index}", NEVER))
+            rows.extend(self._row(index, 1000 + index, NEVER))
 
         with pytest.raises(ValidationError) as caught:
             MerchantPolicyBatchSchema().load(policy_payload(_form(rows)))
@@ -702,20 +707,27 @@ class TestThePolicySectionOnTheWire:
         """The bound pinned from the other side, so it is not off by one."""
         rows = []
         for index in range(_MAX_POLICY_ITEMS):
-            rows.extend(self._row(index, f"Merchant {index}", NEVER))
+            rows.extend(self._row(index, 1000 + index, NEVER))
 
         loaded = MerchantPolicyBatchSchema().load(policy_payload(_form(rows)))
 
         assert len(loaded["policies"]) == _MAX_POLICY_ITEMS
 
-    def test_a_merchant_longer_than_the_COLUMN_is_refused(self):
-        """The key may not be stored truncated, so it may not be submitted long.
+    def test_a_merchant_that_is_NOT_A_ROW_ID_is_refused(self):
+        """The key is an id now, and it is exactly as strict as every other.
 
-        ``bank_statement_lines.merchant`` is 100 characters and the adapter
-        reads no longer token; a policy keyed on a truncated string would be a
-        DIFFERENT key from the one the bank named, silently.
+        It was free text from a BANK, so this schema could refuse only a string
+        longer than the column -- everything else was the service's to check.
+        A merchant is a row as of plan step ``bank_import:X-gd-1``, so
+        :class:`~app.schemas.validation._fields.RowId` refuses the whole family
+        it refuses everywhere else, and a well-formed id that is not this
+        account's is refused by
+        ``fk_merchant_destinations_merchant_account`` rather than by anyone
+        remembering to look.
         """
-        with pytest.raises(ValidationError):
-            MerchantPolicyBatchSchema().load(
-                policy_payload(_form(self._row(0, "X" * 101, NEVER))),
-            )
+        for spelled in ("\N{ARABIC-INDIC DIGIT SEVEN}", " 7 ", "+7", "007",
+                        "-7", "0", "Amazon"):
+            with pytest.raises(ValidationError):
+                MerchantPolicyBatchSchema().load(
+                    policy_payload(_form(self._row(0, spelled, NEVER))),
+                )

@@ -204,9 +204,15 @@ class CreationBars:
     builds one :class:`~._create.MintedEnvelopes`.
 
     Attributes:
-        never: The merchants answered *never a purchase*.
-        account_payments: The merchants whose lines this account's sources file
-            as a payment to an account the owner holds.
+        never: The merchant ROW IDS answered *never a purchase*.
+        account_payments: The merchant row ids whose lines this account's
+            sources file as a payment to an account the owner holds.
+
+    **Both are sets of ids and not of names** (plan step
+    ``bank_import:X-gd-1``).  A merchant is a row, so a bar is about that row;
+    two sets of strings compared against a line's own string was the same
+    equality join in three places, each free to fold case differently from the
+    others.
 
     **There is no set of merchants ANSWERED-FOR here, and a first version had
     one.**  It served the arm that let any answer lift the second bar, which is
@@ -215,8 +221,8 @@ class CreationBars:
     registries exist to remove.
     """
 
-    never: "frozenset[str]"
-    account_payments: "frozenset[str]"
+    never: "frozenset[int]"
+    account_payments: "frozenset[int]"
 
     @classmethod
     def build(
@@ -233,7 +239,7 @@ class CreationBars:
             policies: What the owner has answered, where the caller has already
                 read them (:attr:`~._policy.PolicyView.policies` has), else
                 ``None`` to read them here.  The same shape -- and the same
-                reason -- as :func:`~._policy.statable_merchants`' *stored*:
+                reason -- as :func:`~._policy.policies_for`'s callers have:
                 one request that has the answers must not ask for them twice.
 
         Returns:
@@ -244,22 +250,23 @@ class CreationBars:
             policies = policies_for(owner_id, account_id)
         return cls(
             never=frozenset(
-                merchant for merchant, policy in policies.items()
+                merchant_id for merchant_id, policy in policies.items()
                 if policy.is_never
             ),
             account_payments=account_payment_merchants(account_id),
         )
 
-    def bar_for(self, merchant: "str | None") -> "CreationBar | None":
-        """Return why *merchant* may not become a purchase, or ``None``.
+    def bar_for(self, merchant_id: "int | None") -> "CreationBar | None":
+        """Return why *merchant_id* may not become a purchase, or ``None``.
 
         **Total over ``None`` without a branch for it**, and an adversarial
         review 2026-08-24 is why there is no branch: a first version opened
         with ``if merchant is None: return None``, which no mutation could ever
         reach.  None of the three sets can hold ``NULL`` --
-        :func:`~._vocabulary.account_payment_merchants` filters ``merchant.isnot(None)``, and
-        the other two are keyed on ``merchant_destinations.merchant``, which is
-        ``NOT NULL`` -- so ``None`` is absent from all three and falls through
+        :func:`~._vocabulary.account_payment_merchants` filters
+        ``merchant_id.isnot(None)``, and the other two are keyed on
+        ``merchant_destinations.merchant_id``, which is ``NOT NULL`` -- so
+        ``None`` is absent from all three and falls through
         to the same answer the branch gave.  Two guards for one fact meant
         neither could fail while the other stood, and the case written to grade
         it asserted ``None is None``.  The surviving guard is the QUERY's,
@@ -267,8 +274,8 @@ class CreationBars:
         merchant would be false about the data as well as dangerous here.
 
         Args:
-            merchant: The line's merchant, or ``None`` where the source names
-                none -- which keys no policy and is filed under no category
+            merchant_id: The line's merchant row, or ``None`` where the source
+                names none -- which keys no rule and is filed under no category
                 this account can be asked about, so it is never barred.  The
                 same total :func:`~._placement.placements_for` gives it.
 
@@ -289,14 +296,14 @@ class CreationBars:
             state_policies` refuses that answer outright for such a merchant
             now, so a stored one cannot sit inert either.
         """
-        if merchant in self.never:
+        if merchant_id in self.never:
             return CreationBar.NEVER_A_PURCHASE
-        if merchant in self.account_payments:
+        if merchant_id in self.account_payments:
             return CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD
         return None
 
-    def pays_an_account(self, merchant: "str | None") -> bool:
-        """Return whether a source files *merchant* as paying an account.
+    def pays_an_account(self, merchant_id: "int | None") -> bool:
+        """Return whether a source files this merchant as paying an account.
 
         **The POLICY door's question, and the control's** -- not the line's,
         which asks :meth:`bar_for` instead.  The door refuses an answer that
@@ -306,14 +313,14 @@ class CreationBars:
         it.
 
         Args:
-            merchant: The line's merchant, or ``None``, which is never one --
-                for the reason :meth:`bar_for` states, and through the same
-                single guard rather than a second one here.
+            merchant_id: The line's merchant row, or ``None``, which is never
+                one -- for the reason :meth:`bar_for` states, and through the
+                same single guard rather than a second one here.
 
         Returns:
             Whether it is one.
         """
-        return merchant in self.account_payments
+        return merchant_id in self.account_payments
 
 
 @dataclass(frozen=True)
@@ -395,6 +402,6 @@ def reject_barred_line(
         ValidationError: When a bar applies.  A 400: an owner working from a
             page rendered before they answered for the merchant reaches it.
     """
-    barred_by = bars.bar_for(line.merchant)
+    barred_by = bars.bar_for(line.merchant_id)
     if barred_by is not None:
-        raise ValidationError(_refusal_for(barred_by, line.merchant))
+        raise ValidationError(_refusal_for(barred_by, line.merchant_name))

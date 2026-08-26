@@ -36,7 +36,9 @@ class MerchantSummary:
     """One merchant the policy section asks the owner about.
 
     Attributes:
-        merchant: The bank's own merchant string, which is the policy key.
+        merchant_id: The :class:`~app.models.merchant.Merchant` this row asks
+            about, which is the rule's key and what the form posts back.
+        merchant: What that merchant is called, which is what the row prints.
         policy: What the owner has said, or ``None`` for *not said yet*.
         line_count: How many of THIS pass's unexplained outflows it names.
             Zero for a merchant whose lines are all explained today and whose
@@ -64,6 +66,7 @@ class MerchantSummary:
             has now closed four times.
     """
 
+    merchant_id: int
     merchant: str
     policy: MerchantPolicy | None
     line_count: int
@@ -99,11 +102,11 @@ class MerchantSection:
     Attributes:
         merchants: One row per merchant this pass has an unexplained outflow
             for, PLUS every merchant the owner has already answered for --
-            ascending.  The second half is what makes a policy visible and
+            ascending BY NAME.  The second half is what makes a policy visible and
             withdrawable once its lines are all explained; without it an answer
             could only be changed while there was work outstanding.  It is
             NARROWER than what a statement may legitimately name
-            (:func:`~._policy.statable_merchants`, every merchant the account
+            (:func:`~._policy.account_merchants`, every merchant the account
             has ever recorded), and deliberately: a merchant with neither
             pending work nor an answer is not a question anyone is asking
             today.
@@ -122,43 +125,63 @@ class MerchantSection:
         return sum(1 for row in self.merchants if row.policy is not None)
 
 
+@dataclass(frozen=True)
+class _Waiting:
+    """How much of THIS pass one merchant's unexplained outflows come to.
+
+    Two facts about one merchant's share of one pass, and they are only ever
+    read together -- the row prints "N line(s)" over a figure.  Carried as one
+    value so a caller cannot pair a count with another merchant's total.
+
+    Attributes:
+        count: How many of this pass's unexplained outflows the merchant
+            names.  Zero for a merchant whose lines are all explained today and
+            whose answer the owner may still want to see or change.
+        total: What those lines come to, signed.
+    """
+
+    count: int = 0
+    total: Decimal = Decimal("0.00")
+
+
 def _merchant_summary(
+    merchant_id: int,
     merchant: str,
     view: PolicyView,
     bars: CreationBars,
-    line_count: int,
-    total: Decimal,
+    waiting: _Waiting,
 ) -> MerchantSummary:
     """Return one row of the policy control.
 
     Args:
-        merchant: The bank's own merchant string.
+        merchant_id: The merchant row this asks about.
+        merchant: What it is called.
         view: What the owner has said and what it can resolve against.
         bars: Which merchants may not become purchases, and why
             (:class:`~._bars.CreationBars`).
-        line_count: How many of this pass's unexplained outflows it names.
-        total: What those lines come to, signed.
+        waiting: This merchant's share of the pass (:class:`_Waiting`).
 
     Returns:
         Its :class:`MerchantSummary`, carrying a label for a stored template
         that has stopped being offerable so the control can show the answer it
         holds.
     """
-    policy = view.policies.get(merchant)
+    policy = view.policies.get(merchant_id)
     stale = (
         policy is not None
         and policy.template_id is not None
         and policy.template_id in view.stale_templates
     )
     return MerchantSummary(
+        merchant_id=merchant_id,
         merchant=merchant,
         policy=policy,
-        line_count=line_count,
-        total=total,
+        line_count=waiting.count,
+        total=waiting.total,
         stale_template_label=(
             view.stale_templates[policy.template_id] if stale else None
         ),
-        pays_an_account=bars.pays_an_account(merchant),
+        pays_an_account=bars.pays_an_account(merchant_id),
     )
 
 
@@ -182,25 +205,43 @@ def merchant_section(
         every merchant already answered for, ascending -- so an answer stays
         visible and withdrawable after the lines that prompted it are gone.
     """
-    counts: "dict[str, int]" = {}
-    totals: "dict[str, Decimal]" = {}
+    waiting: "dict[int, _Waiting]" = {}
+    names: "dict[int, str]" = {}
     for line in outflows:
-        merchant = line.merchant
-        if merchant is None:
-            # A source naming no merchant keys no policy, so there is nothing
+        merchant_id = line.merchant_id
+        if merchant_id is None:
+            # A source naming no merchant keys no rule, so there is nothing
             # to ask about it -- the same NULL that makes a placement
             # impossible makes a row here meaningless.
             continue
-        counts[merchant] = counts.get(merchant, 0) + 1
-        totals[merchant] = totals.get(merchant, Decimal("0.00")) + line.amount
+        so_far = waiting.get(merchant_id, _Waiting())
+        waiting[merchant_id] = _Waiting(
+            count=so_far.count + 1, total=so_far.total + line.amount,
+        )
+        names[merchant_id] = line.merchant
+    # **The NAMES come from BOTH halves**, because the two sets are not the
+    # same: a merchant with pending work is named by its own lines, and one
+    # whose lines are all explained is named by the answer stored for it.
+    # Neither half alone covers the union this section renders.
+    names.update(
+        {policy.merchant_id: policy.merchant
+         for policy in view.policies.values()},
+    )
     return MerchantSection(
         merchants=tuple(
             _merchant_summary(
-                merchant, view, bars,
-                counts.get(merchant, 0),
-                totals.get(merchant, Decimal("0.00")),
+                merchant_id, names[merchant_id], view, bars,
+                waiting.get(merchant_id, _Waiting()),
             )
-            for merchant in sorted(set(counts) | set(view.policies))
+            # **Ordered by NAME and not by key** (plan step
+            # ``bank_import:X-gd-1``).  The merchant was the key and sorting it
+            # WAS alphabetical order; a surrogate id sorts by when the bank
+            # first showed each merchant, which is not an order anyone reading
+            # a list of merchants is looking for.
+            for merchant_id in sorted(
+                set(waiting) | set(view.policies),
+                key=lambda row_id: names[row_id],
+            )
         ),
         templates=tuple(
             sorted(view.template_names.items(), key=lambda pair: pair[1]),

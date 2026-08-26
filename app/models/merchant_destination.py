@@ -90,13 +90,14 @@ class MerchantDestination(AccountScopedMixin, UserScopedMixin, TimestampMixin,
             held equal to the account's by ``fk_merchant_destinations_owner``
             so it is a co-located key rather than a copy.  The same
             construction ``fk_account_external_identities_owner`` uses.
-        merchant -- what the BANK names the merchant
-            (``bank_statement_lines.merchant``), verbatim.  **Not case-folded
-            and not normalized**: two spellings from one bank are two policies,
-            which is honest -- deciding that ``Amazon`` and ``AMAZON`` are one
-            merchant is a guess, and this table exists not to make guesses.
-            Measured: the developer's 361 lines carry 59 distinct merchants and
-            **0 pairs differing only by case**.
+        merchant_id -- the :class:`~app.models.merchant.Merchant` this answer
+            is about, held to this row's own account by
+            ``fk_merchant_destinations_merchant_account``.  It held the bank's
+            STRING until plan step ``bank_import:X-gd-1``, matched to
+            ``bank_statement_lines.merchant`` by equality between two
+            independently-declared 100-character columns; the merchant is a row
+            now, so the two tables agree by id and *which merchants may be
+            asked about* is that table rather than a union of two derivations.
         template_id -- answer (1), else NULL.
         envelope_name / category_id -- answer (2), else both NULL.
         created_at / updated_at -- when it was first stated and last restated
@@ -118,10 +119,13 @@ class MerchantDestination(AccountScopedMixin, UserScopedMixin, TimestampMixin,
     __table_args__ = (
         # ONE answer per merchant per account.  The key is what makes
         # "restating a policy" an UPDATE rather than a second row that would
-        # leave two answers to one question.
+        # leave two answers to one question.  **``user_id`` is not a term of
+        # it**: ``fk_merchant_destinations_owner`` holds it equal to the
+        # account's, so it was functionally dependent on ``account_id`` and
+        # narrowed nothing.
         db.UniqueConstraint(
-            "user_id", "account_id", "merchant",
-            name="uq_merchant_destinations_owner_account_merchant",
+            "account_id", "merchant_id",
+            name="uq_merchant_destinations_account_merchant",
         ),
         # THE THREE SHAPES, spelled as three shapes.  A count-the-NULLs form
         # (``ck_statement_match_members_one_subject``'s) cannot say this:
@@ -137,12 +141,21 @@ class MerchantDestination(AccountScopedMixin, UserScopedMixin, TimestampMixin,
             "AND category_id IS NULL)",
             name="ck_merchant_destinations_one_answer",
         ),
-        # A merchant is a NAME or this row keys nothing.  The same rule
-        # ``ck_bank_statement_lines_merchant_not_blank`` states on the column
-        # this one joins to, so a blank cannot enter from either side.
-        db.CheckConstraint(
-            "btrim(merchant) <> ''",
-            name="ck_merchant_destinations_merchant_not_blank",
+        # The merchant this answer is about is one of THIS ACCOUNT's,
+        # structurally (plan step ``bank_import:X-gd-1``).  It is the same
+        # composite construction the two subject keys below use, and it is what
+        # retires the scope CHECK: ``_policy._refuse_unknown_merchants``
+        # compared a submitted string against a DISTINCT over every recorded
+        # line, and was the only thing between a crafted body and a stored row
+        # keyed on a merchant this account has never seen.  That refusal
+        # survives as a SENTENCE for a stale page -- the shape
+        # ``_policy._checked_template`` already has -- and no longer as what
+        # makes the row correct.  The blank-name rule it also carried now lives
+        # once, on ``ck_merchants_name_not_blank``.
+        db.ForeignKeyConstraint(
+            ["merchant_id", "account_id"],
+            ["budget.merchants.id", "budget.merchants.account_id"],
+            name="fk_merchant_destinations_merchant_account",
         ),
         # An envelope NAME is a name too, for the same reason
         # ``transactions.name`` is NOT NULL: answer (2) creates a budget line
@@ -194,10 +207,10 @@ class MerchantDestination(AccountScopedMixin, UserScopedMixin, TimestampMixin,
     )
 
     id = db.Column(db.Integer, primary_key=True)
-    # 100 to match ``bank_statement_lines.merchant``, which is what it joins
-    # to: a key stored narrower than its source would silently fail to match
-    # the longest merchants.
-    merchant = db.Column(db.String(100), nullable=False)
+    # No direct single-column key: the merchant is reached through a composite
+    # that also holds the account equal, exactly as the two answer arms below
+    # are.
+    merchant_id = db.Column(db.Integer, nullable=False)
     # No direct single-column keys on either arm: both are reached through a
     # composite key that also holds the owner or the account equal.  Same
     # shape, same reason, as ``statement_match_members``' three subject keys.
@@ -223,5 +236,5 @@ class MerchantDestination(AccountScopedMixin, UserScopedMixin, TimestampMixin,
         )
         return (
             f"<MerchantDestination account={self.account_id} "
-            f"{self.merchant!r} -> {answer}>"
+            f"merchant={self.merchant_id} -> {answer}>"
         )

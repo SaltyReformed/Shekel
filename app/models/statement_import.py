@@ -353,15 +353,22 @@ class BankStatementLine(db.Model):
         amount       -- signed, positive INTO the account (see the module
                         docstring).
         description  -- what the bank called it, verbatim.
-        merchant     -- what the bank NAMES the merchant, or ``None`` where the
-                        source names none.  **The one column here that a rule
-                        MATCHES on** (plan step ``bank_import:X-f6a-3d``): a
+        merchant_id  -- the :class:`~app.models.merchant.Merchant` this line
+                        was with, or ``None`` where the source names none.
+                        **The one column here that a rule MATCHES on** (plan
+                        step ``bank_import:X-f6a-3d``): a
                         :class:`~app.models.merchant_destination
-                        .MerchantDestination` is keyed by it, so *lines from
-                        this merchant go in this budget line* is a fact the
-                        owner states once.  That is why it is a column the
-                        ADAPTER writes rather than a token a reader parses out
-                        of :attr:`description` -- see below.
+                        .MerchantDestination` is keyed by the same row, so
+                        *lines from this merchant go in this budget line* is a
+                        fact the owner states once.  It held the bank's string
+                        itself until plan step ``bank_import:X-gd-1``, when the
+                        merchant became a row -- so the string lives once and
+                        the two tables agree by id rather than by comparing two
+                        independently-widened copies of it.  What the ADAPTER
+                        reads is still the source's own merchant FIELD rather
+                        than a token parsed out of :attr:`description` -- see
+                        below -- and ``statement_import._record`` is what turns
+                        that string into this row.
         source_category -- the bank's OWN category string, kept as provenance.
                         It is the bank's opinion about a merchant, not a Shekel
                         category, and treating it as one would be a reference
@@ -376,8 +383,8 @@ class BankStatementLine(db.Model):
                         Loan car payment under the same words as the Capital
                         One card payments, 7 of the 22 lines carrying it.  The
                         vocabulary is keyed by ADAPTER in
-                        ``statement_match._bars``; nothing reads this column to
-                        decide a destination, a figure or a day.
+                        ``statement_match._vocabulary``; nothing reads this
+                        column to decide a destination, a figure or a day.
         external_id  -- the source's own id for the line (OFX ``FITID``) where
                         it has one.  CORROBORATION, not identity -- see below.
         sequence_in_group -- the ordinal that completes the identity key.
@@ -418,7 +425,7 @@ class BankStatementLine(db.Model):
     claiming it (``uq_bank_statement_lines_external_id``).  One identity rule
     serves every adapter, including ``X-f6b``'s, instead of one rule per format.
 
-    **``merchant`` is a COLUMN the adapter writes, not a token a reader parses,
+    **The merchant is a FACT the adapter states, not a token a reader parses,
     and the NULL is the source saying it names none** (plan step
     ``bank_import:X-f6a-3d``).  It was
     ``statement_match._offers.merchant_of(description)``, read at render time,
@@ -519,15 +526,20 @@ class BankStatementLine(db.Model):
             "OR running_balance < 'NaN'::numeric)",
             name="ck_bank_statement_lines_amount_real_nonzero",
         ),
-        # A merchant is a NAME or it is nothing.  Stricter than the provenance
-        # columns beside it because this one is a KEY: a blank merchant would
-        # be a policy the owner could neither read on the screen nor restate,
-        # and ``uq_merchant_destinations_owner_account_merchant`` would happily
-        # hold it.  ``_secu_csv._stated_merchant`` answers ``None`` for the
-        # same input, so the adapter and the table state one rule.
-        db.CheckConstraint(
-            "merchant IS NULL OR btrim(merchant) <> ''",
-            name="ck_bank_statement_lines_merchant_not_blank",
+        # This line's merchant is one of THIS ACCOUNT's, structurally (plan
+        # step ``bank_import:X-gd-1``).  Composite rather than a bare
+        # ``merchant_id`` FK for the reason
+        # ``fk_bank_statement_lines_import_account`` is composite: otherwise
+        # "is this merchant on this account" is a reader's check that can be
+        # forgotten.  ``MATCH SIMPLE`` (PostgreSQL's default) is what lets it
+        # sit on a nullable column -- a line whose ``merchant_id`` is NULL
+        # satisfies it whatever ``account_id`` says, which is the source
+        # naming none.  The blank-name rule it replaces now lives once, on
+        # ``ck_merchants_name_not_blank``.
+        db.ForeignKeyConstraint(
+            ["merchant_id", "account_id"],
+            ["budget.merchants.id", "budget.merchants.account_id"],
+            name="fk_bank_statement_lines_merchant_account",
         ),
         # The walk reads a whole account in posted-day order.
         db.Index(
@@ -540,8 +552,8 @@ class BankStatementLine(db.Model):
         # no policy and so is never looked up by this column.
         db.Index(
             "idx_bank_statement_lines_account_merchant",
-            "account_id", "merchant",
-            postgresql_where=db.text("merchant IS NOT NULL"),
+            "account_id", "merchant_id",
+            postgresql_where=db.text("merchant_id IS NOT NULL"),
         ),
         {"schema": "budget"},
     )
@@ -564,10 +576,10 @@ class BankStatementLine(db.Model):
     description = db.Column(db.String(200), nullable=False)
     # NULLABLE, and the NULL means "this source names no merchant" rather than
     # "unknown" -- see the class docstring for why that direction is the safe
-    # one on a column a rule matches against.  100 characters: the longest of
-    # the developer's 361 is 28 (``Department of motor vehicles``), and the
-    # adapter's own pattern will not read a longer token.
-    merchant = db.Column(db.String(100))
+    # one on the fact a rule matches against.  No direct single-column key:
+    # the merchant is reached through a composite that also holds the ACCOUNT
+    # equal, the same shape ``import_id`` above takes.
+    merchant_id = db.Column(db.Integer)
     source_category = db.Column(db.String(100))
     external_id = db.Column(db.String(64))
     # NO server default, deliberately.  The table is new and empty, so there
@@ -581,6 +593,39 @@ class BankStatementLine(db.Model):
         "StatementImport", back_populates="lines",
         foreign_keys=[import_id, account_id],
     )
+    # **Eager and VIEWONLY** (plan step ``bank_import:X-gd-1``).  Eager because
+    # every reader that has a line wants what its merchant is CALLED -- the
+    # review screen renders 91 of them at once, and a lazy load there is the
+    # N+1 finding **N-309** already paid for.  Viewonly because the writer sets
+    # ``merchant_id`` from a resolved map (``statement_import._record``), so
+    # nothing assigns through this and the two relationships sharing
+    # ``account_id`` cannot contend over persisting it.
+    #
+    # **A writer that sets ``merchant_id`` may not then read
+    # :attr:`merchant_name` on the same instance**, and that is not a rule
+    # about ``viewonly`` -- it is what a loaded many-to-one does in any
+    # session: assigning the FK column does not move it, so the stale name
+    # survives until the instance is expired.  It cost a real test failure on
+    # 2026-08-25, where the arm under test was correct and the assertion read
+    # the object rather than the row.  No writer in ``app/`` reads it: both
+    # writers are in ``statement_import._record``, which sets the column and
+    # returns counts.  The direction the seam runs in is the whole reason this
+    # is viewonly.
+    merchant = db.relationship(
+        "Merchant", foreign_keys=[merchant_id, account_id],
+        lazy="joined", viewonly=True,
+    )
+
+    @property
+    def merchant_name(self) -> "str | None":
+        """Return what the source CALLS this line's merchant, or ``None``.
+
+        The label half of the fact :attr:`merchant_id` is the key half of, so
+        a caller holding this row does not have to know that a merchant is a
+        row to print its name.  ``None`` exactly when :attr:`merchant_id` is,
+        which is the source naming none.
+        """
+        return self.merchant.name if self.merchant is not None else None
 
     def __repr__(self):
         return (

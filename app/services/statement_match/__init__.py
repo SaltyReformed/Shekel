@@ -145,7 +145,7 @@ from ._policy import (
     PolicyStatement,
     PolicyView,
     StatedPolicies,
-    statable_merchants,
+    account_merchants,
     state_policies,
 )
 from ._reads import (
@@ -201,6 +201,7 @@ __all__ = [
     "RowKind",
     "StatedPolicies",
     "accept_match",
+    "account_merchants",
     "apply_reviewed",
     "as_reviewed",
     "awaiting_review_count",
@@ -216,7 +217,6 @@ __all__ = [
     "release_match",
     "removals_by_match",
     "review_set",
-    "statable_merchants",
     "state_policies",
     "unmatched_destinations",
 ]

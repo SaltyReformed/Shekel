@@ -102,7 +102,7 @@ def _names_the_merchant(line: BankLine, row: CandidateRow) -> bool:
     the owner's own hand-build form is what R-FP reserves for asserting one.
 
     **The merchant must appear as a WHOLE WORD, and a bare substring was a
-    real hole** rather than a tidiness point.  ``bank_statement_lines.merchant``
+    real hole** rather than a tidiness point.  ``merchants.name``
     is a ``String(100)`` whose only constraint is that it is not blank, so a
     two-character merchant is storable and real -- `BP` is a filling station --
     and unanchored containment made `BP` corroborate ``Subprime Loan Payment``,

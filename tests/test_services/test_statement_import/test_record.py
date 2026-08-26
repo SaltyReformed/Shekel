@@ -34,6 +34,7 @@ from app.exceptions import (
     StatementBalanceUnexplained,
     StatementLineConflict,
 )
+from app.models.merchant import Merchant
 from app.models.statement_import import (
     AccountExternalIdentity,
     BankStatementLine,
@@ -133,7 +134,7 @@ class TestItRecordsWhatTheBankSaid:
         rows = db.session.query(BankStatementLine).order_by(
             BankStatementLine.posted_on,
         ).all()
-        assert [row.merchant for row in rows] == _MERCHANTS
+        assert [row.merchant_name for row in rows] == _MERCHANTS
 
     def test_it_records_the_banks_posted_day(self, app, db, seed_user):
         """The whole point of the arc: the day the BANK says, not the app."""
@@ -711,9 +712,12 @@ class TestItAbsorbsWhatALaterExportAdds:
                     "POINT OF SALE DEBIT L340 COFFEE (Big Cheese Clayton)")]
         _record(seed_user, build.build(build.chained("100.00", entries)))
         recorded = db.session.query(BankStatementLine).one()
-        assert recorded.merchant == "Big Cheese Clayton"
+        assert recorded.merchant_name == "Big Cheese Clayton"
         # Stand in for a row an older adapter wrote, which named no merchant.
-        recorded.merchant = None
+        # The MERCHANT ROW stays: it outlives the lines that named it, which
+        # is what makes the second import's fill a re-point rather than a
+        # create (plan step ``bank_import:X-gd-1``).
+        recorded.merchant_id = None
         db.session.flush()
 
         second = _record(seed_user, build.build(build.chained(
@@ -721,7 +725,7 @@ class TestItAbsorbsWhatALaterExportAdds:
         )), file_name="again.csv")
 
         assert second.recorded_count == 0
-        assert db.session.query(BankStatementLine).one().merchant == (
+        assert db.session.query(BankStatementLine).one().merchant_name == (
             "Big Cheese Clayton"
         )
 
@@ -739,16 +743,243 @@ class TestItAbsorbsWhatALaterExportAdds:
                     "POINT OF SALE DEBIT L340 COFFEE (Big Cheese Clayton)")]
         _record(seed_user, build.build(build.chained("100.00", entries)))
         recorded = db.session.query(BankStatementLine).one()
-        recorded.merchant = "Cheese Shop"
+        renamed = Merchant(account_id=recorded.account_id, name="Cheese Shop")
+        db.session.add(renamed)
+        db.session.flush()
+        recorded.merchant_id = renamed.id
         db.session.flush()
 
         _record(seed_user, build.build(build.chained(
             "100.00", entries,
         )), file_name="again.csv")
 
-        assert db.session.query(BankStatementLine).one().merchant == (
+        # **Read back from the DATABASE, not from the instance this test just
+        # re-pointed.**  ``BankStatementLine.merchant`` is a relationship, and
+        # assigning the ``merchant_id`` COLUMN does not move a relationship
+        # that is already loaded -- so the in-session object would still name
+        # the merchant it was loaded with, whatever the arm under test did.
+        # What the next request sees is what is persisted.
+        db.session.expire_all()
+        assert db.session.query(BankStatementLine).one().merchant_name == (
             "Cheese Shop"
         )
+
+
+class TestTheMerchantWordsBecomeRows:
+    """Plan step ``bank_import:X-gd-1``, through the REAL door.
+
+    The parse is graded in ``test_secu_csv`` and the resolver in
+    ``test_models/test_merchant_schema.py``; this is the only place that says
+    the two meet -- that a word the adapter read reaches
+    ``budget.merchants`` as one row per merchant per account, and that a
+    re-import of the same file adds none.
+    """
+
+    def test_one_row_per_MERCHANT_not_per_line(self, app, db, seed_user):
+        """Three lines naming two merchants are two rows.
+
+        A rule is keyed on the merchant, so a second row for one name would
+        leave a stated answer reaching half that merchant's lines -- silently,
+        because nothing joins the two rows.
+        """
+        entries = [
+            (date(2026, 3, 2), "-25.00",
+             "POINT OF SALE DEBIT L340 FOOD LION (Food Lion)"),
+            (date(2026, 3, 3), "-40.81",
+             "POINT OF SALE DEBIT L340 FOOD LION (Food Lion)"),
+            (date(2026, 3, 4), "-12.00",
+             "POINT OF SALE DEBIT L340 COFFEE (Big Cheese Clayton)"),
+        ]
+
+        _record(seed_user, build.build(build.chained("100.00", entries)))
+
+        assert sorted(
+            row.name for row in db.session.query(Merchant).all()
+        ) == ["Big Cheese Clayton", "Food Lion"]
+        named = db.session.query(BankStatementLine).order_by(
+            BankStatementLine.posted_on,
+        ).all()
+        assert named[0].merchant_id == named[1].merchant_id
+        assert named[2].merchant_id != named[0].merchant_id
+
+    def test_RE_IMPORTING_the_same_file_adds_no_merchant(
+        self, app, db, seed_user,
+    ):
+        """The idempotence the identity key gives, at the door.
+
+        Re-importing an overlapping span records no line
+        (``recorded_count == 0``), and the merchant resolution runs anyway --
+        the absorb arm needs it.  ``ON CONFLICT DO NOTHING`` is what makes that
+        a no-op instead of an ``IntegrityError`` that would fail an import
+        which had nothing to add.
+        """
+        _record(seed_user, _file())
+        before = db.session.query(Merchant).count()
+
+        second = _record(seed_user, _file(), file_name="again.csv")
+
+        assert second.recorded_count == 0
+        assert db.session.query(Merchant).count() == before == 3
+
+    def test_a_line_the_source_names_NO_merchant_for_creates_none(
+        self, app, db, seed_user,
+    ):
+        """The NULL that keys nothing, through the door that decides it.
+
+        The parse-level ``None`` is graded in ``test_secu_csv`` and the
+        schema-level one in ``test_models/test_merchant_schema.py``; the DOOR
+        between them was covered by neither, which an adversarial review found
+        on 2026-08-25 (the case it replaces asserted an empty table over a
+        merchant that was never going to be created, and no mutation could fail
+        it).  Delete ``_merchant_words``' truthiness test or ``_stage_lines``'
+        ``if line.merchant else None`` and this account gains a merchant named
+        for nothing.
+        """
+        entries = [(date(2026, 3, 2), "-25.00",
+                    "POINT OF SALE DEBIT L340 NO TOKEN HERE")]
+
+        _record(seed_user, build.build(build.chained("100.00", entries)))
+
+        assert db.session.query(Merchant).count() == 0
+        line = db.session.query(BankStatementLine).one()
+        assert line.merchant_id is None
+        assert line.merchant_name is None
+
+    def test_a_merchant_is_scoped_to_the_ACCOUNT_that_imported_it(
+        self, app, db, seed_user,
+    ):
+        """Two accounts importing one payee hold two merchants.
+
+        A statement is one bank's record of ONE account and a rule is stated
+        per account, so the same word on two accounts is two subjects -- the
+        key that lets a Checking answer and a card answer differ.
+        """
+        second = _second_account(db, seed_user)
+        entries = [(date(2026, 3, 2), "-25.00",
+                    "POINT OF SALE DEBIT L340 FOOD LION (Food Lion)")]
+
+        _record(seed_user, build.build(build.chained("100.00", entries)))
+        _record(
+            seed_user,
+            build.build(build.chained(
+                "100.00", entries, account_number="9999999999",
+            )),
+            file_name="second.csv", account=second,
+        )
+
+        rows = db.session.query(Merchant).filter(
+            Merchant.name == "Food Lion",
+        ).all()
+        assert sorted(row.account_id for row in rows) == sorted(
+            [seed_user["account"].id, second.id],
+        )
+
+
+class TestARefusedImportLeavesTheSessionUNTOUCHED:
+    """The claim ``_reconcile`` exists for, and the only refusal that sees it.
+
+    Plan step ``bank_import:X-gd-1`` split DECIDING from WRITING:
+    :func:`_reconcile` returns the partition and :func:`_write_records` writes
+    it, after the file's last refusal.  Before that split,
+    :func:`_absorb_gained_facts` ran inside the reconciliation's own loop, so a
+    refusal raised on group *k* left groups 1..*k*-1 dirty in the session and
+    the route's rollback is what discarded them -- the caveat the module
+    docstring carried since an adversarial review found it on 2026-08-20.
+
+    **THE REFUSAL HAS TO FIRE AFTER THE RECONCILIATION, and the two obvious
+    ones do not.**  Two adversarial reviews on 2026-08-25 measured a first
+    version of this class passing under BOTH mutations it named, and this is
+    why: ``StatementLineConflict`` is raised INSIDE ``_reconcile``, so no
+    placement of the writes downstream of it can be told apart, and
+    ``StatementAccountMismatch`` fires at ``verify_identity``, before the
+    reconciliation runs at all.  ``StatementBalanceUnexplained`` is the one
+    that lands in between -- ``resolve_anchor`` is the last refusal, and the
+    reconciliation has already decided everything by the time it raises.
+
+    **Asserted WITHOUT rolling back**, because what the rollback would hide is
+    the whole subject.
+    """
+
+    #: Two lines the re-import restates exactly, so both groups PAIR and the
+    #: pass decides to absorb before it is refused.  The first carries the
+    #: bank's own ``DATE MM-DD`` token, which is what
+    #: :attr:`~app.models.statement_import.BankStatementLine.transaction_on`
+    #: is read from -- so it can be absorbed without the DESCRIPTION changing,
+    #: and the description is what the pairing matches on.
+    _ENTRIES = [
+        (date(2026, 3, 2), "-25.00",
+         "POINT OF SALE DEBIT L340 DATE 03-01 COFFEE (Big Cheese Clayton)"),
+        (date(2026, 3, 4), "-40.81",
+         "POINT OF SALE DEBIT L340 FOOD LION (Food Lion)"),
+    ]
+
+    @staticmethod
+    def _contradicting(entries):
+        """Return a well-chained file whose HEADER its own chain never reaches.
+
+        The refusal is ``resolve_anchor``'s and it is the last one the door
+        performs, which is the whole point -- see the class docstring.
+        """
+        return build.build(
+            build.chained("100.00", entries),
+            balance_as_of="03/09/2026", stated_balance="9999.99",
+        )
+
+    def test_it_absorbs_NOTHING_from_a_group_it_had_already_walked(
+        self, app, db, seed_user,
+    ):
+        """THE firing control for moving the absorb after the last refusal.
+
+        Restore the inline absorb inside ``_reconcile``'s ``pairing.held``
+        loop and this fails: the day is written, and only the route's rollback
+        takes it back.
+        """
+        _record(seed_user, build.build(build.chained("100.00", self._ENTRIES)))
+        recorded = db.session.query(BankStatementLine).order_by(
+            BankStatementLine.posted_on,
+        ).first()
+        assert recorded.transaction_on == date(2026, 3, 1)
+        # Stand in for a row an older adapter wrote, which knew no such day.
+        recorded.transaction_on = None
+        db.session.flush()
+
+        with pytest.raises(StatementBalanceUnexplained):
+            _record(
+                seed_user, self._contradicting(self._ENTRIES),
+                file_name="refused.csv",
+            )
+
+        assert db.session.query(BankStatementLine).order_by(
+            BankStatementLine.posted_on,
+        ).first().transaction_on is None
+
+    def test_it_creates_NO_merchant_row(self, app, db, seed_user):
+        """A refused file may not leave a merchant behind, and nothing sweeps one.
+
+        ``budget.merchants`` is reclaimed only when an IMPORT is deleted
+        (``statement_import.delete_import``), so a row a refused upload created
+        would survive with no line and no answer to justify it -- and would put
+        a merchant the owner never recorded onto the screen that asks where
+        merchants go.  Hoist :func:`~._merchants.resolve_merchants` out of
+        ``_write_records`` to anywhere before ``resolve_anchor`` and this
+        fails.
+        """
+        _record(seed_user, build.build(build.chained("100.00", self._ENTRIES)))
+        with_a_stranger = self._ENTRIES + [
+            (date(2026, 3, 9), "-11.00",
+             "POINT OF SALE DEBIT L340 NEW PLACE (Never Seen Ltd)"),
+        ]
+
+        with pytest.raises(StatementBalanceUnexplained):
+            _record(
+                seed_user, self._contradicting(with_a_stranger),
+                file_name="refused.csv",
+            )
+
+        assert db.session.query(Merchant).filter(
+            Merchant.name == "Never Seen Ltd",
+        ).count() == 0
+
 
 
 class TestTheAccountMappingIsAFactNotAGuess:

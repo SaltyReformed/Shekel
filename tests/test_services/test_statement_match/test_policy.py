@@ -26,10 +26,13 @@ import pytest
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.exceptions import ValidationError
+from app.models.merchant import Merchant
 from app.models.merchant_destination import MerchantDestination
+from app.models.statement_import import BankStatementLine
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
+from app.services.statement_import import delete_import
 from app.services.statement_match import (
     MerchantPolicy,
     Placement,
@@ -38,7 +41,7 @@ from app.services.statement_match import (
     PolicyStatement,
     PolicyView,
     PurchaseDestination,
-    statable_merchants,
+    account_merchants,
     review_set,
     state_policies,
 )
@@ -55,9 +58,12 @@ from app.services.statement_match._policy import (  # pylint: disable=protected-
 from ._builders import (
     a_bank_line,
     a_later_period,
+    a_merchant,
     a_policy,
     a_scope,
+    a_statement,
     a_transaction,
+    the_merchant_id,
     an_import,
 )
 
@@ -67,6 +73,18 @@ from ._builders import (
 # for a module reach into it, which is the same allowance every sibling here
 # takes for ``_candidates`` and ``_propose``.
 # pylint: disable=protected-access
+
+
+#: A stand-in merchant ROW ID for the cases that build a
+#: :class:`~app.services.statement_match.MerchantPolicy` by hand.
+#:
+#: Those cases grade the RESOLVER, which never reads ``budget.merchants`` --
+#: it takes a merchant id and a view and returns a placement -- so staging a
+#: real merchant row would arrange a database the code under test does not
+#: look at.  The literal is what the view is keyed by AND what the resolver is
+#: asked about, so the two cannot drift: a case that changed one and not the
+#: other would resolve nothing and fail loudly.
+_MERCHANT = 4001
 
 
 def _view(*policies, templates=None, categories=frozenset(), stale=None):
@@ -79,7 +97,7 @@ def _view(*policies, templates=None, categories=frozenset(), stale=None):
     graded by the cases that go through ``review_set``.
     """
     return PolicyView(
-        policies={policy.merchant: policy for policy in policies},
+        policies={policy.merchant_id: policy for policy in policies},
         template_names=templates or {},
         active_categories=categories,
         stale_templates=stale or {},
@@ -123,8 +141,8 @@ class TestStatingAPolicyMovesNoMoney:
         before_txns = db.session.query(Transaction).count()
 
         state_policies(
-            (PolicyStatement(
-                "Amazon", PolicyAnswer.TEMPLATE,
+            (a_statement(
+                seed_user, "Amazon", PolicyAnswer.TEMPLATE,
                 template_id=envelope.template_id,
             ),),
             seed_user["user"].id, seed_user["account"].id,
@@ -182,12 +200,12 @@ class TestWhatAPolicyResolvesTo:
             seed_user, name="Groceries", is_envelope=True,
         )
         policy = MerchantPolicy(
-            merchant="Amazon", answer=PolicyAnswer.TEMPLATE,
+            merchant_id=_MERCHANT, merchant="Amazon", answer=PolicyAnswer.TEMPLATE,
             template_id=envelope.template_id,
         )
 
         placement = placements_for(
-            "Amazon",
+            _MERCHANT,
             _view(policy, templates={envelope.template_id: "Groceries"}),
             [_destination(envelope)],
         )
@@ -212,12 +230,12 @@ class TestWhatAPolicyResolvesTo:
             seed_user, name="Groceries", is_envelope=True,
         )
         policy = MerchantPolicy(
-            merchant="Amazon", answer=PolicyAnswer.TEMPLATE,
+            merchant_id=_MERCHANT, merchant="Amazon", answer=PolicyAnswer.TEMPLATE,
             template_id=envelope.template_id,
         )
 
         placement = placements_for(
-            "Amazon",
+            _MERCHANT,
             _view(policy, templates={envelope.template_id: "Groceries"}), [],
         )
 
@@ -248,12 +266,12 @@ class TestWhatAPolicyResolvesTo:
         second.is_override = True
         db.session.flush()
         policy = MerchantPolicy(
-            merchant="Amazon", answer=PolicyAnswer.TEMPLATE,
+            merchant_id=_MERCHANT, merchant="Amazon", answer=PolicyAnswer.TEMPLATE,
             template_id=first.template_id,
         )
 
         placement = placements_for(
-            "Amazon", _view(policy, templates={first.template_id: "Groceries"}),
+            _MERCHANT, _view(policy, templates={first.template_id: "Groceries"}),
             [_destination(first), _destination(second)],
         )
 
@@ -270,12 +288,12 @@ class TestWhatAPolicyResolvesTo:
         """
         category = seed_user["categories"]["Groceries"]
         policy = MerchantPolicy(
-            merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
+            merchant_id=_MERCHANT, merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
             envelope_name="Lowe's", category_id=category.id,
         )
 
         placement = placements_for(
-            "Lowe's", _view(policy, categories=frozenset({category.id})), [],
+            _MERCHANT, _view(policy, categories=frozenset({category.id})), [],
         )
 
         assert placement.kind is PlacementKind.CREATE_NEW
@@ -298,12 +316,12 @@ class TestWhatAPolicyResolvesTo:
         """
         category = seed_user["categories"]["Groceries"]
         policy = MerchantPolicy(
-            merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
+            merchant_id=_MERCHANT, merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
             envelope_name="Lowe's", category_id=category.id,
         )
 
         placement = placements_for(
-            "Lowe's", _view(policy, categories=frozenset()), [],
+            _MERCHANT, _view(policy, categories=frozenset()), [],
         )
 
         assert placement.kind is PlacementKind.UNRESOLVED
@@ -352,11 +370,11 @@ class TestWhatAPolicyResolvesTo:
         ``NULL`` template id, which names every offerable row in the period.
         """
         policy = MerchantPolicy(
-            merchant="Capital One Credit Card", answer=PolicyAnswer.NEVER,
+            merchant_id=_MERCHANT, merchant="Capital One Credit Card", answer=PolicyAnswer.NEVER,
         )
 
         assert placements_for(
-            "Capital One Credit Card", _view(policy), [],
+            _MERCHANT, _view(policy), [],
         ) is None
 
     def test_a_stored_NEVER_does_not_fall_through_to_a_TEMPLATE_placement(
@@ -375,11 +393,11 @@ class TestWhatAPolicyResolvesTo:
         envelope.template_id = None
         db.session.flush()
         policy = MerchantPolicy(
-            merchant="Capital One Credit Card", answer=PolicyAnswer.NEVER,
+            merchant_id=_MERCHANT, merchant="Capital One Credit Card", answer=PolicyAnswer.NEVER,
         )
 
         assert placements_for(
-            "Capital One Credit Card", _view(policy), [_destination(envelope)],
+            _MERCHANT, _view(policy), [_destination(envelope)],
         ) is None
 
     def test_a_line_naming_NO_merchant_reaches_no_policy_at_all(
@@ -393,7 +411,10 @@ class TestWhatAPolicyResolvesTo:
         cuts 326 of 361 to the same 32 characters -- would each key one policy
         and fire it on every merchant behind them.
         """
-        policy = MerchantPolicy(merchant="Amazon", answer=PolicyAnswer.NEVER)
+        policy = MerchantPolicy(
+            merchant_id=_MERCHANT, merchant="Amazon",
+            answer=PolicyAnswer.NEVER,
+        )
 
         assert placements_for(None, _view(policy), []) is None
 
@@ -404,18 +425,17 @@ class TestStatingAndRestatingAPolicy:
     def _state(self, db, seed_user, *statements):
         """Run the door for this owner's checking account.
 
-        **It records a bank line for every merchant first**, because that is
-        the production precondition: ``state_policies`` refuses a statement
-        about a merchant this account has never seen, and it reads that scope
-        from the same query it writes through.  A helper that skipped it would
-        be exercising a state the app cannot reach.
+        **The precondition is a MERCHANT ROW, and :func:`a_statement` stages
+        it** (plan step ``bank_import:X-gd-1``).  ``state_policies`` refuses a
+        statement about a merchant this account has never seen, and that scope
+        is ``budget.merchants``.  This helper used to record a bank line per
+        merchant, because the scope was a DISTINCT over recorded lines and a
+        merchant with no line was outside it.  A merchant row OUTLIVES its
+        lines now, so a row with no line is an ordinary production state -- the
+        import that first recorded it was deleted -- and staging one is no
+        longer a fixture shortcut past a guard.  The guard itself is graded by
+        ``TestWhatTheWriteDoorRefuses``, on an id this account does not hold.
         """
-        statement_import = an_import(seed_user)
-        for index, submitted in enumerate(statements):
-            a_bank_line(
-                seed_user, statement_import, amount="-9.99",
-                merchant=submitted.merchant, sequence_in_group=index,
-            )
         db.session.flush()
         return state_policies(
             tuple(statements),
@@ -433,11 +453,11 @@ class TestStatingAndRestatingAPolicy:
 
         recorded = self._state(
             db, seed_user,
-            PolicyStatement("Amazon", PolicyAnswer.TEMPLATE,
+            a_statement(seed_user, "Amazon", PolicyAnswer.TEMPLATE,
                             template_id=envelope.template_id),
-            PolicyStatement("Lowe's", PolicyAnswer.NEW_ENVELOPE,
+            a_statement(seed_user, "Lowe's", PolicyAnswer.NEW_ENVELOPE,
                             envelope_name="Lowe's", category_id=category.id),
-            PolicyStatement("Capital One Credit Card", PolicyAnswer.NEVER),
+            a_statement(seed_user, "Capital One Credit Card", PolicyAnswer.NEVER),
         )
         db.session.flush()
 
@@ -446,11 +466,12 @@ class TestStatingAndRestatingAPolicy:
         held = policies_for(
             seed_user["user"].id, seed_user["account"].id,
         )
-        assert held["Amazon"].answer is PolicyAnswer.TEMPLATE
-        assert held["Amazon"].template_id == envelope.template_id
-        assert held["Lowe's"].answer is PolicyAnswer.NEW_ENVELOPE
-        assert held["Lowe's"].envelope_name == "Lowe's"
-        assert held["Capital One Credit Card"].answer is PolicyAnswer.NEVER
+        by_name = {policy.merchant: policy for policy in held.values()}
+        assert by_name["Amazon"].answer is PolicyAnswer.TEMPLATE
+        assert by_name["Amazon"].template_id == envelope.template_id
+        assert by_name["Lowe's"].answer is PolicyAnswer.NEW_ENVELOPE
+        assert by_name["Lowe's"].envelope_name == "Lowe's"
+        assert by_name["Capital One Credit Card"].answer is PolicyAnswer.NEVER
 
     def test_restating_the_SAME_answer_writes_nothing_and_says_so(
         self, app, db, seed_user,
@@ -469,7 +490,7 @@ class TestStatingAndRestatingAPolicy:
 
         recorded = self._state(
             db, seed_user,
-            PolicyStatement("Amazon", PolicyAnswer.TEMPLATE,
+            a_statement(seed_user, "Amazon", PolicyAnswer.TEMPLATE,
                             template_id=envelope.template_id),
         )
 
@@ -482,7 +503,7 @@ class TestStatingAndRestatingAPolicy:
         """One answer per merchant is structural, so restating is an UPDATE.
 
         Two rows would be two answers to one question, which is what
-        ``uq_merchant_destinations_owner_account_merchant`` makes unwritable.
+        ``uq_merchant_destinations_account_merchant`` makes unwritable.
         """
         first = a_transaction(seed_user, name="Groceries", is_envelope=True)
         second = a_transaction(seed_user, name="Gas", is_envelope=True)
@@ -491,7 +512,7 @@ class TestStatingAndRestatingAPolicy:
 
         recorded = self._state(
             db, seed_user,
-            PolicyStatement("Amazon", PolicyAnswer.TEMPLATE,
+            a_statement(seed_user, "Amazon", PolicyAnswer.TEMPLATE,
                             template_id=second.template_id),
         )
         db.session.flush()
@@ -518,7 +539,7 @@ class TestStatingAndRestatingAPolicy:
         db.session.flush()
 
         recorded = self._state(
-            db, seed_user, PolicyStatement("Amazon", answer=None),
+            db, seed_user, a_statement(seed_user, "Amazon"),
         )
         db.session.flush()
 
@@ -534,7 +555,7 @@ class TestStatingAndRestatingAPolicy:
         Counting each as a change would make the receipt useless.
         """
         recorded = self._state(
-            db, seed_user, PolicyStatement("Amazon", answer=None),
+            db, seed_user, a_statement(seed_user, "Amazon"),
         )
 
         assert recorded.stated == ()
@@ -550,18 +571,11 @@ class TestWhatTheWriteDoorRefuses:
     def _state(self, db, seed_user, *statements):
         """Run the door for this owner's checking account.
 
-        **It records a bank line for every merchant first**, because that is
-        the production precondition: ``state_policies`` refuses a statement
-        about a merchant this account has never seen, and it reads that scope
-        from the same query it writes through.  A helper that skipped it would
-        be exercising a state the app cannot reach.
+        :func:`a_statement` stages the merchant these submissions are about,
+        which is the precondition ``state_policies`` checks -- see
+        :meth:`TestStatingAndRestatingAPolicy._state` for why that is no longer
+        a bank line.
         """
-        statement_import = an_import(seed_user)
-        for index, submitted in enumerate(statements):
-            a_bank_line(
-                seed_user, statement_import, amount="-9.99",
-                merchant=submitted.merchant, sequence_in_group=index,
-            )
         db.session.flush()
         return state_policies(
             tuple(statements),
@@ -584,7 +598,7 @@ class TestWhatTheWriteDoorRefuses:
 
         recorded = self._state(
             db, seed_user,
-            PolicyStatement("Amazon", PolicyAnswer.TEMPLATE,
+            a_statement(seed_user, "Amazon", PolicyAnswer.TEMPLATE,
                             template_id=other.template_id),
         )
 
@@ -607,7 +621,7 @@ class TestWhatTheWriteDoorRefuses:
 
         recorded = self._state(
             db, seed_user,
-            PolicyStatement("Amazon", PolicyAnswer.TEMPLATE,
+            a_statement(seed_user, "Amazon", PolicyAnswer.TEMPLATE,
                             template_id=plain.template_id),
         )
 
@@ -628,7 +642,7 @@ class TestWhatTheWriteDoorRefuses:
 
         recorded = self._state(
             db, seed_user,
-            PolicyStatement("Amazon", PolicyAnswer.TEMPLATE,
+            a_statement(seed_user, "Amazon", PolicyAnswer.TEMPLATE,
                             template_id=income.template_id),
         )
 
@@ -647,7 +661,7 @@ class TestWhatTheWriteDoorRefuses:
 
         recorded = self._state(
             db, seed_user,
-            PolicyStatement("Amazon", PolicyAnswer.TEMPLATE,
+            a_statement(seed_user, "Amazon", PolicyAnswer.TEMPLATE,
                             template_id=envelope.template_id),
         )
 
@@ -667,7 +681,7 @@ class TestWhatTheWriteDoorRefuses:
 
         recorded = self._state(
             db, seed_user,
-            PolicyStatement("Lowe's", PolicyAnswer.NEW_ENVELOPE,
+            a_statement(seed_user, "Lowe's", PolicyAnswer.NEW_ENVELOPE,
                             envelope_name="Lowe's", category_id=foreign.id),
         )
 
@@ -684,7 +698,7 @@ class TestWhatTheWriteDoorRefuses:
 
         recorded = self._state(
             db, seed_user,
-            PolicyStatement("Lowe's", PolicyAnswer.NEW_ENVELOPE,
+            a_statement(seed_user, "Lowe's", PolicyAnswer.NEW_ENVELOPE,
                             envelope_name="Lowe's", category_id=category.id),
         )
 
@@ -706,41 +720,53 @@ class TestWhatTheWriteDoorRefuses:
 
         recorded = self._state(
             db, seed_user,
-            PolicyStatement("Amazon", PolicyAnswer.TEMPLATE,
+            a_statement(seed_user, "Amazon", PolicyAnswer.TEMPLATE,
                             template_id=envelope.template_id),
-            PolicyStatement("Walmart", PolicyAnswer.TEMPLATE,
+            a_statement(seed_user, "Walmart", PolicyAnswer.TEMPLATE,
                             template_id=plain.template_id),
-            PolicyStatement("Capital One Credit Card", PolicyAnswer.NEVER),
+            a_statement(seed_user, "Capital One Credit Card", PolicyAnswer.NEVER),
         )
         db.session.flush()
 
         assert len(recorded.stated) == 2
         assert len(recorded.refused) == 1
         held = policies_for(seed_user["user"].id, seed_user["account"].id)
-        assert sorted(held) == ["Amazon", "Capital One Credit Card"]
+        assert sorted(policy.merchant for policy in held.values()) == [
+            "Amazon", "Capital One Credit Card",
+        ]
 
     def test_a_merchant_this_account_NEVER_SAW_is_refused(
-        self, app, db, seed_user,
+        self, app, db, seed_user, seed_second_user,
     ):
-        """The scope check, and it is the whole submission's.
+        """The scope check, as the SENTENCE a stale page gets.
 
-        The section renders exactly the merchants this account's recorded lines
-        name, so a statement about another cannot have come from this screen --
-        there is no pass to salvage.  Without it the table would hold a policy
-        for any string a caller liked, which is unbounded write amplification
-        against a table with no other ceiling.
+        Since plan step ``bank_import:X-gd-1`` this is no longer what makes a
+        stored answer correct -- that is
+        ``fk_merchant_destinations_merchant_account``, graded by
+        :meth:`TestTheTableRefusesWhatIsNotAnAnswer
+        .test_ANOTHER_ACCOUNTS_merchant_is_unwritable` -- so what it buys is a
+        sentence rather than an ``IntegrityError`` and a logged traceback for
+        what is ordinarily a stale page.  The whole submission is refused,
+        because the section renders only this account's merchants and a
+        statement about another cannot have come from the screen.
+
+        **The id is ANOTHER ACCOUNT'S real merchant**, not an invented number:
+        an id no row carries would also be refused by the foreign key, and the
+        case that matters is the one a crafted request would actually try.
         """
-        statement = an_import(seed_user)
-        a_bank_line(seed_user, statement, amount="-25.00", merchant="Amazon")
+        theirs = a_merchant(
+            seed_second_user, "Nowhere Ltd",
+            account=seed_second_user["account"],
+        )
         db.session.flush()
 
         with pytest.raises(ValidationError) as caught:
             _refuse_unknown_merchants(
-                (PolicyStatement("Nowhere Ltd", PolicyAnswer.NEVER),),
-                seed_user["account"].id, {},
+                (PolicyStatement(theirs.id, PolicyAnswer.NEVER),),
+                account_merchants(seed_user["account"].id),
             )
 
-        assert "never shown" in str(caught.value)
+        assert "not ones your bank has shown" in str(caught.value)
 
     def test_a_merchant_this_account_HAS_seen_is_admitted(
         self, app, db, seed_user,
@@ -751,27 +777,29 @@ class TestWhatTheWriteDoorRefuses:
         db.session.flush()
 
         _refuse_unknown_merchants(
-            (PolicyStatement("Amazon", PolicyAnswer.NEVER),),
-            seed_user["account"].id, {},
+            (a_statement(seed_user, "Amazon", PolicyAnswer.NEVER),),
+            account_merchants(seed_user["account"].id),
         )
 
     def test_a_merchant_from_a_line_that_is_already_MATCHED_is_admitted(
         self, app, db, seed_user,
     ):
-        """The scope is every RECORDED line, not the leftover ones.
+        """The scope is every merchant SEEN, not the ones still outstanding.
 
         A merchant whose every line is explained today is still one the owner
         may want to answer for -- the next statement brings more of it -- and a
         scope narrowed to the leftovers would refuse an answer the section
-        itself renders.
+        itself renders.  The line staged here is matched by nothing, which is
+        the point: what puts a merchant in scope is that it EXISTS, and no
+        reader has to remember to widen past this pass's leftovers.
         """
         statement = an_import(seed_user)
         a_bank_line(seed_user, statement, amount="-25.00", merchant="Amazon")
         db.session.flush()
 
-        assert statable_merchants(
-            seed_user["account"].id,
-        ) == frozenset({"Amazon"})
+        assert sorted(
+            account_merchants(seed_user["account"].id).values(),
+        ) == ["Amazon"]
 
 
 class TestWhatAPolicyMayNAME:
@@ -958,7 +986,7 @@ class TestTheTableRefusesWhatIsNotAnAnswer:
         row = MerchantDestination(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
-            merchant="Amazon",
+            merchant_id=a_merchant(seed_user, "Amazon").id,
             **columns,
         )
         db.session.add(row)
@@ -1001,21 +1029,49 @@ class TestTheTableRefusesWhatIsNotAnAnswer:
         assert "ck_merchant_destinations_one_answer" in str(caught.value)
 
     def test_a_BLANK_merchant_is_unwritable(self, app, db, seed_user):
-        """A blank key is a policy the owner could neither read nor restate.
+        """A blank name is a merchant the owner could neither read nor restate.
 
-        The adapter answers ``None`` for the same input
-        (``_secu_csv._stated_merchant``), so the two cannot drift.
+        **The rule moved to where the string now lives once** (plan step
+        ``bank_import:X-gd-1``): it was stated on the answer table AND on the
+        line table, two CHECKs over two copies of one value, and it is
+        ``ck_merchants_name_not_blank`` alone now.  The adapter answers ``None``
+        for the same input (``_secu_csv._stated_merchant``), so the two cannot
+        drift.
         """
+        row = Merchant(account_id=seed_user["account"].id, name="   ")
+        db.session.add(row)
+        with pytest.raises(Exception) as caught:
+            db.session.flush()
+
+        assert "ck_merchants_name_not_blank" in str(caught.value)
+
+    def test_ANOTHER_ACCOUNTS_merchant_is_unwritable(
+        self, app, db, seed_user, seed_second_user,
+    ):
+        """THE guard the scope check used to be, now structural.
+
+        A stated answer keyed on a merchant belonging to somebody else's
+        account is what ``_refuse_unknown_merchants`` was the only thing
+        refusing.  ``fk_merchant_destinations_merchant_account`` is composite
+        -- ``(merchant_id, account_id)`` against ``uq_merchants_id_account`` --
+        so the row is unwritable rather than merely unreached, which is what
+        demotes that Python check to a sentence.
+        """
+        theirs = a_merchant(
+            seed_second_user, "Theirs",
+            account=seed_second_user["account"],
+        )
+        db.session.flush()
         row = MerchantDestination(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
-            merchant="   ",
+            merchant_id=theirs.id,
         )
         db.session.add(row)
         with pytest.raises(Exception) as caught:
             db.session.flush()
 
-        assert "merchant_not_blank" in str(caught.value)
+        assert "fk_merchant_destinations_merchant_account" in str(caught.value)
 
     def test_TWO_answers_for_ONE_merchant_are_unwritable(
         self, app, db, seed_user,
@@ -1025,100 +1081,93 @@ class TestTheTableRefusesWhatIsNotAnAnswer:
         with pytest.raises(Exception) as caught:
             self._row(db, seed_user)
 
-        assert "uq_merchant_destinations_owner_account_merchant" in str(
+        assert "uq_merchant_destinations_account_merchant" in str(
             caught.value,
         )
 
 
-class TestAPolicyOutLIVESTheLinesThatPrompted_It:
-    """A merchant with an answer stays answerable when its lines are gone."""
+class TestAMerchantOutLIVESTheLinesThatNamedIt:
+    """A merchant with an answer stays answerable when its lines are gone.
 
-    def test_an_ANSWERED_merchant_is_in_scope_with_no_recorded_line(
+    **This was the second half of a UNION and it is now the table** (plan step
+    ``bank_import:X-gd-1``).  The scope used to be *every merchant this
+    account's recorded lines name*, unioned with *every merchant already
+    answered for*, and the second half existed because deleting an import took
+    a merchant's lines and would otherwise have made its answer unwithdrawable.
+    A merchant ROW survives its lines, so what these cases grade is that
+    survival rather than a second clause someone has to remember to keep.
+    """
+
+    def test_a_merchant_stays_in_scope_when_its_IMPORT_is_deleted(
         self, app, db, seed_user,
     ):
-        """THE FIRING CONTROL for the second half of the statable set.
+        """The real event, through the real door.
 
-        Narrow the scope to the recorded lines and this fails: the section
-        renders an answered merchant whichever half it came from, so submitting
-        it would then refuse the WHOLE pass -- and a policy would become
-        unwithdrawable the moment its lines went.  **No door in `app/` deletes
-        an import today**; that is finding **N-302**, owned by `X-f6a-4`, which
-        is the next step in this arc.  One step from live, not hypothetical.
+        ``statement_import.delete_import`` is what removes an import and its
+        lines (plan step ``bank_import:X-f6a-4``).  Before the merchant was a
+        row, that deletion took the ONLY evidence the merchant had ever been
+        seen, and the answer stated about it became unrestatable -- the door
+        refuses a merchant outside the scope, and the whole submission with it.
         """
-        a_policy(seed_user, "Gone Merchant")
+        statement = an_import(seed_user)
+        a_bank_line(seed_user, statement, amount="-25.00", merchant="Amazon")
+        db.session.flush()
+        a_policy(seed_user, "Amazon")
         db.session.flush()
 
-        assert "Gone Merchant" in statable_merchants(
-            seed_user["account"].id,
+        delete_import(
+            statement.id, seed_user["user"].id, seed_user["account"].id,
         )
-        # ...and the door admits it, reading the same policies it will write.
+        db.session.flush()
+
+        assert db.session.query(BankStatementLine).count() == 0
+        held = account_merchants(seed_user["account"].id)
+        assert sorted(held.values()) == ["Amazon"]
+        # ...and the door still admits a restatement of the answer.
         state_policies(
-            (PolicyStatement("Gone Merchant", answer=None),),
+            (a_statement(seed_user, "Amazon", PolicyAnswer.NEVER),),
             seed_user["user"].id, seed_user["account"].id,
         )
 
-    def test_ANOTHER_OWNERS_policy_does_not_widen_this_owners_scope(
+    def test_ANOTHER_ACCOUNTS_merchant_is_not_in_this_ones_scope(
         self, app, db, seed_user, seed_second_user,
     ):
-        """The second half is scoped by owner AND account, like the first.
+        """THE security-relevant filter, and it is one clause on one table.
 
-        Without both clauses the set would be "any merchant anyone has answered
-        for", which is a scope check that admits a string this owner has never
-        seen -- the thing the check exists to refuse.
+        Delete ``Merchant.account_id == account_id`` from
+        :func:`~app.services.statement_match.account_merchants` and every
+        merchant on every account in the database widens this account's scope.
+        The stored row is unwritable either way since
+        ``fk_merchant_destinations_merchant_account`` -- this is the reader's
+        half, which is what decides whether the SCREEN offers the question.
         """
-        a_policy(seed_second_user, "Theirs", account=seed_second_user["account"])
-        db.session.flush()
-
-        assert "Theirs" not in statable_merchants(
-            seed_user["account"].id,
+        theirs = an_import(
+            seed_second_user, account=seed_second_user["account"],
         )
-
-
-class TestEveryScopeFilterHasAControlThatFiresOnItsOwn:
-    """One guard per case, because a case that needs two to fail grades neither.
-
-    **Every filter below was measured to survive its own deletion** by an
-    adversarial test-quality review on 2026-08-19: the suite stayed green with
-    each of them removed one at a time, and the one case that looked like a
-    control for two of them differed on both, so it fired only when both went.
-    A guard nothing can observe is not a guard.
-    """
-
-    def test_the_recorded_scope_is_THIS_ACCOUNTS_lines_alone(
-        self, app, db, seed_user, seed_second_user,
-    ):
-        """THE security-relevant one, and it fired on nothing.
-
-        Delete ``BankStatementLine.account_id == account_id`` from
-        ``statable_merchants`` and every merchant on every account in the
-        database widens this account's statable scope -- which is to say the
-        refusal stops refusing, and a caller may write a policy row keyed on
-        any merchant any other owner's bank ever showed.
-        """
-        theirs = an_import(seed_second_user, account=seed_second_user["account"])
         a_bank_line(
             seed_second_user, theirs, amount="-9.99", merchant="Theirs Only",
         )
         db.session.flush()
 
-        assert "Theirs Only" not in statable_merchants(
-            seed_user["account"].id,
-        )
+        assert account_merchants(seed_user["account"].id) == {}
 
-    def test_a_line_naming_NO_merchant_widens_the_scope_by_nothing(
-        self, app, db, seed_user,
-    ):
-        """``merchant IS NOT NULL`` had no control either.
 
-        Without it the set carries a ``None``, which then compares against
-        every submitted string -- and ``sorted()`` over it raises, so the
-        refusal path 500s instead of refusing.
-        """
-        statement = an_import(seed_user)
-        a_bank_line(seed_user, statement, amount="-9.99", merchant=None)
-        db.session.flush()
+class TestEveryReadFilterHasAControlThatFiresOnItsOwn:
+    """One guard per case, because a case that needs two to fail grades neither.
 
-        assert statable_merchants(seed_user["account"].id) == frozenset()
+    **The owner/account pair below was measured to survive its own deletion**
+    by an adversarial test-quality review on 2026-08-19: the suite stayed green
+    with each filter removed one at a time, and the one case that looked like a
+    control for two of them differed on both, so it fired only when both went.
+    That sentence is scoped to that member on purpose -- it is a MEASUREMENT
+    with a date, and the name-join case beside it was written on 2026-08-25 and
+    is not covered by it.  A false provenance line is worse than none, because
+    the next reader trusts it instead of re-measuring.
+
+    The scope filters this class also used to cover are now
+    :class:`TestAMerchantOutLIVESTheLinesThatNamedIt`'s, because the scope
+    became one clause on one table.
+    """
 
     def test_policies_are_read_for_THIS_OWNER_and_THIS_ACCOUNT(
         self, app, db, seed_user, seed_second_user,
@@ -1157,8 +1206,38 @@ class TestEveryScopeFilterHasAControlThatFiresOnItsOwn:
         ) == {}
         # ...and the right pair finds exactly its own.
         assert sorted(
-            policies_for(seed_user["user"].id, seed_user["account"].id),
+            policy.merchant for policy in policies_for(
+                seed_user["user"].id, seed_user["account"].id,
+            ).values()
         ) == ["Amazon"]
+
+    def test_the_NAME_a_policy_carries_is_ITS_OWN_merchants(
+        self, app, db, seed_user,
+    ):
+        """The join in ``policies_for``, which two answers can tell apart.
+
+        The name travels with the answer so every sentence the door writes can
+        print it without a second read.  Join on ``merchant_id`` alone and one
+        account's two answers still resolve correctly; drop the join's
+        ``account_id`` term and nothing observable changes here either, which
+        is why the composite is stated for the reason the FOREIGN KEY is and
+        not because a case could catch it.  What this DOES catch is the join
+        pairing an answer with the wrong merchant's name.
+        """
+        a_policy(seed_user, "Amazon")
+        a_policy(seed_user, "Walmart")
+        db.session.flush()
+
+        held = policies_for(seed_user["user"].id, seed_user["account"].id)
+        by_id = {
+            merchant_id: policy.merchant
+            for merchant_id, policy in held.items()
+        }
+        assert by_id == {
+            the_merchant_id(seed_user, "Amazon"): "Amazon",
+            the_merchant_id(seed_user, "Walmart"): "Walmart",
+        }
+
 
 
 class TestRestatingOneCOLUMNIsStillAChange:
@@ -1185,7 +1264,7 @@ class TestRestatingOneCOLUMNIsStillAChange:
         )
 
         recorded = state_policies(
-            (PolicyStatement("Lowe's", PolicyAnswer.NEW_ENVELOPE,
+            (a_statement(seed_user, "Lowe's", PolicyAnswer.NEW_ENVELOPE,
                              envelope_name="Yard & Garden",
                              category_id=category.id),),
             seed_user["user"].id, seed_user["account"].id,
@@ -1195,7 +1274,7 @@ class TestRestatingOneCOLUMNIsStillAChange:
         assert len(recorded.stated) == 1
         assert policies_for(
             seed_user["user"].id, seed_user["account"].id,
-        )["Lowe's"].envelope_name == "Yard & Garden"
+        )[a_merchant(seed_user, "Lowe's").id].envelope_name == "Yard & Garden"
 
     def test_changing_only_the_CATEGORY_is_written(self, app, db, seed_user):
         """Delete the ``category_id`` term and this restatement is dropped.
@@ -1210,7 +1289,7 @@ class TestRestatingOneCOLUMNIsStillAChange:
         )
 
         recorded = state_policies(
-            (PolicyStatement("Lowe's", PolicyAnswer.NEW_ENVELOPE,
+            (a_statement(seed_user, "Lowe's", PolicyAnswer.NEW_ENVELOPE,
                              envelope_name="Lowe's", category_id=now.id),),
             seed_user["user"].id, seed_user["account"].id,
         )
@@ -1219,7 +1298,7 @@ class TestRestatingOneCOLUMNIsStillAChange:
         assert len(recorded.stated) == 1
         assert policies_for(
             seed_user["user"].id, seed_user["account"].id,
-        )["Lowe's"].category_id == now.id
+        )[a_merchant(seed_user, "Lowe's").id].category_id == now.id
 
     def test_a_NEW_answer_is_stored_TRIMMED(self, app, db, seed_user):
         """The write-path trim, which the no-op case above cannot observe.
@@ -1236,7 +1315,7 @@ class TestRestatingOneCOLUMNIsStillAChange:
         db.session.flush()
 
         state_policies(
-            (PolicyStatement("Lowe's", PolicyAnswer.NEW_ENVELOPE,
+            (a_statement(seed_user, "Lowe's", PolicyAnswer.NEW_ENVELOPE,
                              envelope_name="  Lowe's  ",
                              category_id=category.id),),
             seed_user["user"].id, seed_user["account"].id,
@@ -1245,7 +1324,7 @@ class TestRestatingOneCOLUMNIsStillAChange:
 
         assert policies_for(
             seed_user["user"].id, seed_user["account"].id,
-        )["Lowe's"].envelope_name == "Lowe's"
+        )[a_merchant(seed_user, "Lowe's").id].envelope_name == "Lowe's"
 
     def test_a_name_differing_only_by_WHITESPACE_is_not_a_change(
         self, app, db, seed_user,
@@ -1262,7 +1341,7 @@ class TestRestatingOneCOLUMNIsStillAChange:
         )
 
         recorded = state_policies(
-            (PolicyStatement("Lowe's", PolicyAnswer.NEW_ENVELOPE,
+            (a_statement(seed_user, "Lowe's", PolicyAnswer.NEW_ENVELOPE,
                              envelope_name="  Lowe's  ",
                              category_id=category.id),),
             seed_user["user"].id, seed_user["account"].id,
@@ -1281,7 +1360,7 @@ class TestOneSubmISSIONNamingOneMerchantTwice:
         """THE FIRING CONTROL for keeping ``stored`` in step.
 
         Without it both statements take the insert branch,
-        ``uq_merchant_destinations_owner_account_merchant`` raises an
+        ``uq_merchant_destinations_account_merchant`` raises an
         ``IntegrityError`` -- which is not a designed refusal, so it escapes
         the per-item savepoint into the route's database arm and rolls back
         every answer that had already landed.  Unreachable from the rendered
@@ -1295,9 +1374,9 @@ class TestOneSubmISSIONNamingOneMerchantTwice:
 
         recorded = state_policies(
             (
-                PolicyStatement("Amazon", PolicyAnswer.TEMPLATE,
+                a_statement(seed_user, "Amazon", PolicyAnswer.TEMPLATE,
                                 template_id=first.template_id),
-                PolicyStatement("Amazon", PolicyAnswer.TEMPLATE,
+                a_statement(seed_user, "Amazon", PolicyAnswer.TEMPLATE,
                                 template_id=second.template_id),
             ),
             seed_user["user"].id, seed_user["account"].id,
@@ -1359,7 +1438,7 @@ class TestAStoredAnswerThatStoppedBeingOfferable:
         db.session.flush()
 
         recorded = state_policies(
-            (PolicyStatement("Amazon", PolicyAnswer.TEMPLATE,
+            (a_statement(seed_user, "Amazon", PolicyAnswer.TEMPLATE,
                              template_id=envelope.template_id),),
             seed_user["user"].id, seed_user["account"].id,
         )
@@ -1453,12 +1532,12 @@ class TestANewEnvelopeAnswerReusesOneOfThatNameHere:
             template=False,
         )
         policy = MerchantPolicy(
-            merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
+            merchant_id=_MERCHANT, merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
             envelope_name="Home Improvement", category_id=category.id,
         )
 
         placement = placements_for(
-            "Lowe's", _view(policy, categories={category.id}), [_destination(existing)],
+            _MERCHANT, _view(policy, categories={category.id}), [_destination(existing)],
         )
 
         assert placement.kind is PlacementKind.RECORD_IN
@@ -1479,12 +1558,12 @@ class TestANewEnvelopeAnswerReusesOneOfThatNameHere:
             seed_user, name="Groceries", is_envelope=True, template=False,
         )
         policy = MerchantPolicy(
-            merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
+            merchant_id=_MERCHANT, merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
             envelope_name="Home Improvement", category_id=category.id,
         )
 
         placement = placements_for(
-            "Lowe's", _view(policy, categories={category.id}), [_destination(other)],
+            _MERCHANT, _view(policy, categories={category.id}), [_destination(other)],
         )
 
         assert placement.kind is PlacementKind.CREATE_NEW
@@ -1510,12 +1589,12 @@ class TestANewEnvelopeAnswerReusesOneOfThatNameHere:
             is_envelope=True, template=False,
         )
         policy = MerchantPolicy(
-            merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
+            merchant_id=_MERCHANT, merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
             envelope_name="Home Improvement", category_id=category.id,
         )
 
         placement = placements_for(
-            "Lowe's", _view(policy, categories={category.id}),
+            _MERCHANT, _view(policy, categories={category.id}),
             [_destination(one), _destination(two)],
         )
 
@@ -1544,12 +1623,12 @@ class TestANewEnvelopeAnswerReusesOneOfThatNameHere:
             template=False, category=other,
         )
         policy = MerchantPolicy(
-            merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
+            merchant_id=_MERCHANT, merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
             envelope_name="Home Improvement", category_id=answered.id,
         )
 
         placement = placements_for(
-            "Lowe's",
+            _MERCHANT,
             _view(policy, categories={answered.id, other.id}),
             [_destination(existing)],
         )
@@ -1575,12 +1654,12 @@ class TestANewEnvelopeAnswerReusesOneOfThatNameHere:
         )
         assert generated.template_id is not None
         policy = MerchantPolicy(
-            merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
+            merchant_id=_MERCHANT, merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
             envelope_name="Home Improvement", category_id=category.id,
         )
 
         placement = placements_for(
-            "Lowe's", _view(policy, categories={category.id}),
+            _MERCHANT, _view(policy, categories={category.id}),
             [_destination(generated)],
         )
 
@@ -1604,10 +1683,10 @@ class TestANewEnvelopeAnswerReusesOneOfThatNameHere:
         assert offered.label != offered.name
 
         placement = placements_for(
-            "Lowe's",
+            _MERCHANT,
             _view(
                 MerchantPolicy(
-                    merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
+                    merchant_id=_MERCHANT, merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
                     envelope_name="Home Improvement",
                     category_id=category.id,
                 ),
@@ -1632,12 +1711,12 @@ class TestANewEnvelopeAnswerReusesOneOfThatNameHere:
             template=False,
         )
         policy = MerchantPolicy(
-            merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
+            merchant_id=_MERCHANT, merchant="Lowe's", answer=PolicyAnswer.NEW_ENVELOPE,
             envelope_name="Home Improvement", category_id=category.id,
         )
 
         placement = placements_for(
-            "Lowe's", _view(policy, categories=frozenset()),
+            _MERCHANT, _view(policy, categories=frozenset()),
             [_destination(existing)],
         )
 

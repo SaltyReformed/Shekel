@@ -505,13 +505,14 @@ class MerchantPolicySchema(BaseSchema):
     :class:`StatementPurchaseSchema` states none: whose account this is, is
     the route's one proved statement.
 
-    **The merchant is free text from a BANK and is not validated here**, and
-    that is deliberate rather than an omission.  What makes it safe is a scope
-    check the schema cannot perform -- ``refuse_unknown_merchants`` compares it
-    against the merchants this account's recorded lines actually name -- and a
-    length rule here would only add a second, weaker answer to the same
-    question.  The 100 matches ``bank_statement_lines.merchant``, so a string
-    no line could carry is refused before the service is asked.
+    **The merchant is an ID and is exactly as strict as every other id here**
+    (plan step ``bank_import:X-gd-1``).  It was free text from a BANK, so the
+    schema could say nothing about it at all and the whole defence was a scope
+    comparison in the service.  A merchant is a row now:
+    :class:`RowId` refuses ``'٧'``, ``' 7 '``, ``'+7'``, ``'007'``, ``'-7'``
+    and ``'0'`` before the service is asked, and
+    ``fk_merchant_destinations_merchant_account`` refuses a well-formed id that
+    is not this account's.
 
     **The name and the category are PARAMETERS OF ONE ANSWER**, like
     ``StatementPurchaseSchema``'s, and whether that answer is COMPLETE is the
@@ -525,8 +526,8 @@ class MerchantPolicySchema(BaseSchema):
         """Drop empty inputs; map empties on nullable fields to None."""
         return _normalize_empty_inputs(self, data)
 
-    merchant = fields.String(
-        required=True, validate=validate.Length(min=1, max=100),
+    merchant_id = RowId(
+        required=True,
         error_messages={"required": "Which merchant is this about?"},
     )
     answer = PolicyAnswerField(
@@ -671,15 +672,16 @@ NOT_SAID: str = "unset"
 #: differently, so the wire has to be able to tell them apart.
 NEVER: str = "never"
 
-#: The prefix a submitted policy answer carries, keyed by the merchant's own
-#: rendered POSITION rather than by the merchant string.  A merchant is free
-#: text from a bank -- it carries spaces, apostrophes and parentheses -- so a
-#: field name built from it could not be split back apart reliably, where a
-#: bank line's id (``destination-<id>``) can.  The merchant itself travels in
-#: :data:`_POLICY_MERCHANT_PREFIX`, and the SERVICE checks it against the
-#: merchants this account has actually recorded
-#: (``statement_match.refuse_unknown_merchants``) -- so an index the owner
-#: cannot forge is not what makes this safe, and nothing here depends on one.
+#: The prefix a submitted rule answer carries, keyed by the merchant's own
+#: rendered POSITION rather than by the merchant itself.  It was keyed by
+#: position because a merchant was free TEXT from a bank -- spaces, apostrophes
+#: and parentheses -- and a field name built from it could not be split back
+#: apart reliably.  A merchant is a ROW as of plan step ``bank_import:X-gd-1``,
+#: so ``policy-<merchant_id>`` would now split as cleanly as
+#: ``destination-<id>`` does; the position key is KEPT because nothing depends
+#: on it being unforgeable -- the merchant id travels in
+#: :data:`_POLICY_MERCHANT_PREFIX` and is what the door acts on -- and changing
+#: it would be churn on a control ``bank_import:X-gf`` rebuilds whole.
 _POLICY_PREFIX = "policy-"
 _POLICY_MERCHANT_PREFIX = "policy_merchant-"
 _POLICY_NAME_PREFIX = "policy_name-"
@@ -892,7 +894,7 @@ def policy_payload(form) -> dict:
             # crafted body naming an answer for nobody has asked for nothing.
             continue
         items.append({
-            "merchant": merchant,
+            "merchant_id": merchant,
             "answer": form[f"{_POLICY_PREFIX}{key}"],
             "envelope_name": form.get(f"{_POLICY_NAME_PREFIX}{key}", ""),
             "category_id": form.get(f"{_POLICY_CATEGORY_PREFIX}{key}", ""),
