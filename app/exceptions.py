@@ -115,6 +115,48 @@ class AmountUnresolvable(ShekelError, ValueError):
     """
 
 
+class ForeignAccountError(ShekelError, ValueError):
+    """A read pass was asked to derive state for an account it does not own.
+
+    Raised by ``app.services.balance_at._context._memoize_once`` -- the ONE
+    primitive that creates state keyed by ``account.id`` on a
+    :class:`~app.services.balance_at.BalanceContext` -- when the account handed
+    in belongs to some other owner than the pass's ``user_id`` (plan step
+    balance:**X-i4**, finding **N-354**).
+
+    **It is a PAIRING refusal, not a second ownership gate.**  Whether the
+    requester may see the account is decided upstream, where an untrusted id
+    becomes a row (``account_resolver``, ``auth_helpers.require_owner``,
+    ``load_cash_account_or_404``), and a copy of that decision here would be a
+    band-aid.  This answers a question no upstream gate can even ask: the seam
+    takes the account and the pass as two arguments, the route validates the
+    account against ``current_user`` while the context is built separately from
+    ``current_user.id``, and a service-tier caller
+    (``debt_strategy``, ``tax_report_service``, ``loan_recurrence_sync``, a CLI
+    door) has no ``current_user`` at all.  Nothing above the seam knows a
+    context exists, so nothing above it can catch the two being mis-paired.
+
+    **What a mis-pairing would publish, which is why it raises rather than
+    returning nothing.**  The transaction rows are scenario-scoped, so a foreign
+    account folds NONE of its owner's rows -- but
+    :func:`app.services.cash_ledger.cash_anchor_facts` is scoped by ACCOUNT
+    alone, so the other owner's real balance ASSERTIONS replay and the fold
+    answers a confident figure built from them.  A wrong number that renders
+    like a right one, plus a cross-tenant disclosure.
+
+    **Not translated by any route**, which is the same disposition
+    :class:`UndatedSettleError` and :class:`RequiredRecordMissing` carry and for
+    the same reason: it names a state no door can legitimately produce, so
+    reaching a user as a 500 is correct.  Answering it as a 404 would make a
+    code defect read as an ordinary missing page -- which is exactly how a
+    permissive account resolver's silent fallback stayed invisible long enough
+    to need the guard at ``app/routes/analytics.py``.
+
+    A ``ValueError`` as well as a :class:`ShekelError`, on the same reasoning as
+    its neighbours above.
+    """
+
+
 class BaselineMissingError(ShekelError, ValueError):
     """The balance seam was asked for a figure by a user with no baseline scenario.
 

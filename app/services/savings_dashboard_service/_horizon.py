@@ -375,7 +375,7 @@ def _retirement_investment_bands(
     period contains today (``_pick_current_period_balances``), and that figure
     is this band's index-0 point while ``frame.today`` came from the other pass
     -- against the module's own "index 0 equals the net-worth hero" invariant.
-    And ruling R-G's forward clamp (``_cash_fold.assemble``) dates every still
+    And ruling R-G's forward clamp (``_cash_fold._assemble``) dates every still
     -projected row from ``as_of``, so the balance map is a function of it too.
     Both priced ``$0.00`` on the developer's data only because the three
     investment accounts hold zero transaction rows (ruling R-R's measurement),

@@ -513,7 +513,9 @@ def memoized_plan(account: Account, ctx: BalanceContext) -> list[PlannedPayment]
             no-baseline context starts answering.  That is the property that makes
             the fail-loud trustworthy rather than first-call-only.
     """
-    return _memoize_once(ctx.plans, account.id, lambda: loan_plan(account, ctx))
+    return _memoize_once(
+        ctx, ctx.plans, account, lambda: loan_plan(account, ctx),
+    )
 
 
 @dataclass(frozen=True)

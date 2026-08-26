@@ -512,9 +512,12 @@ def cash_detail(account_id):
     account = load_cash_account_or_404(account_id)
     # ONE read pass for the whole page.  Both builders below fold this
     # account, and handing each its own context would be two resolutions of
-    # one question inside one request.  The WALK still runs twice (the band's
-    # fold and the history's), which is plan step X-i1's subject -- the
-    # context is the half this route can hold to one.
+    # one question inside one request.  **The WALK ran twice as well -- the
+    # band's fold and the history's -- until plan step X-i4** put the cash
+    # fold on the pass beside the loan derivations it already memoized, so
+    # both builders now share one assembly and this route holds BOTH halves
+    # to one.  (This comment named X-i1 as that half's owner; X-i4 reached it
+    # first, by making the pass hand out the fold.)
     ctx = BalanceContext.build(current_user.id)
     return render_template(
         "accounts/cash_detail.html",

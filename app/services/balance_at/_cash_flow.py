@@ -158,8 +158,8 @@ def cash_balance_map(
             the step that removes it.
     """
     _require_scenario(ctx)
-    return _cash_fold.cash_period_balances(
-        account, ctx.amounts(), ctx.as_of, ctx.reported_periods(),
+    return _cash_fold.period_balances(
+        _cash_fold.assembled_fold(account, ctx), ctx.reported_periods(),
     )
 
 
@@ -212,9 +212,7 @@ def cash_balance_at(
     """
     _require_scenario(ctx)
     _require_civil_date("cash_balance_at", as_of=as_of)
-    return _cash_fold.fold_cash_balances(
-        account, ctx.amounts(), ctx.as_of, [as_of],
-    )[as_of]
+    return _cash_fold.balances_at(_cash_fold.assembled_fold(account, ctx), [as_of])[as_of]
 
 
 def cash_daily_balance_series(
@@ -275,9 +273,7 @@ def cash_daily_balance_series(
 
     days = days_in_range(first_day, last_day)
 
-    folded = _cash_fold.fold_cash_balances(
-        account, ctx.amounts(), ctx.as_of, days,
-    )
+    folded = _cash_fold.balances_at(_cash_fold.assembled_fold(account, ctx), days)
     return OrderedDict((day, folded[day]) for day in days)
 
 
@@ -334,9 +330,7 @@ def cash_daily_facts_series(
     )
     days = days_in_range(first_day, last_day)
 
-    series = _cash_fold.fold_cash_day_facts(
-        account, ctx.amounts(), ctx.as_of, days,
-    )
+    series = _cash_fold.day_facts(_cash_fold.assembled_fold(account, ctx), days)
     # Re-keyed into range order, which a dict comprehension over an unordered
     # sample list does not promise.  An inverted range yields no days and still
     # reports where the records begin -- the account HAS a first event whether
@@ -422,7 +416,7 @@ def records_balance_at(
         # precedence this codebase has already been bitten by stating twice
         # (S6-03).
         return None
-    walk = _cash_fold.assemble(account, ctx.amounts(), ctx.as_of).walk
+    walk = _cash_fold.assembled_fold(account, ctx).walk
     for correction in walk.anchor_corrections:
         if correction.observed_on == as_of:
             return correction.balance_before
@@ -622,13 +616,13 @@ def cash_anchor_history(
     """
     _require_scenario(ctx)
     reconcilable = classify_account(account) is AccountProjectionKind.PLAIN
-    # Through ``assemble`` rather than ``walk_cash_ledger`` directly, which is
-    # the spelling :func:`records_balance_at` one function up already uses.
-    # Two spellings of one dependency inside one module is how a later
-    # request-scoped memo on ``assemble`` would collapse ONE of the cash
-    # detail page's two walks and quietly leave the other -- and that memo is
-    # plan step X-i1, the step this page's double walk is waiting on.
-    walk = _cash_fold.assemble(account, ctx.amounts(), ctx.as_of).walk
+    # Through the pass rather than ``walk_cash_ledger`` directly, which is the
+    # spelling :func:`records_balance_at` one function up already uses.  Two
+    # spellings of one dependency inside one module is how a memo on the fold
+    # would collapse ONE of this module's walks and quietly leave the other --
+    # and plan step **X-i4** put that memo on the pass, so every reading here
+    # shares the one assembly it holds.
+    walk = _cash_fold.assembled_fold(account, ctx).walk
     # ``booked`` rather than ``correction``: the walk's record and the row's
     # field would otherwise share a name inside one expression, and
     # ``correction=correction.delta`` reads as a self-reference.

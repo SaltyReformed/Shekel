@@ -5885,6 +5885,55 @@ def read_pass_over_paydays(paydays, cadence_days, as_of, user_id=1):
     )
 
 
+def read_pass(account, scenario, as_of):
+    """Return a :class:`BalanceContext` for *account*'s OWNER, pinned at *as_of*.
+
+    **The DB-backed twin of :func:`read_pass_over_paydays`**, and what a test
+    holds where it used to build a bare
+    :class:`~app.services.cash_ledger.AmountBasis` with :func:`basis_for` and
+    hand it to the cash fold alongside an account and a date.  Plan step
+    **X-i4** made that triple unstateable: the fold comes out of the pass
+    (``assembled_fold(account, ctx)``), which memoizes it and refuses
+    an account the pass does not own.
+
+    **It takes the ACCOUNT rather than a user id, deliberately**, which is the
+    same discipline :func:`read_pass_over_paydays` states for the calendar one
+    tier over: the pass is built for the owner of the very account it is about
+    to be asked for, so a test cannot express the mis-pairing production can no
+    longer express either.  A test that WANTS the mismatch -- the ones grading
+    :class:`~app.exceptions.ForeignAccountError` -- constructs the two halves by
+    hand and says so at the call.
+
+    It builds the context DIRECTLY rather than through
+    :meth:`~app.services.balance_at.BalanceContext.build`, because the caller
+    already holds the scenario its fixture seeded and ``build`` would re-resolve
+    the owner's baseline from the database -- a second answer to a question the
+    test has already answered, and one that would silently pick a different
+    scenario for a fixture holding more than one.  It is therefore invisible to
+    :func:`counting_read_passes`, exactly as ``read_pass_over_paydays`` is.
+
+    Args:
+        account: Any account of the owner the pass is for; ``user_id`` is read
+            off it.
+        scenario: The scenario whose rows the pass values.
+        as_of: The reader's NOW -- ruling R-G's clamp floor, and the date each
+            loan resolves at.  Required, because a fold pinned to the ambient
+            clock is the fixture-depends-on-the-calendar shape
+            ``.claude/rules/testing.md`` names.
+
+    Returns:
+        A real frozen :class:`~app.services.balance_at.BalanceContext` with
+        empty memos.
+    """
+    from app.services.balance_at import (  # pylint: disable=import-outside-toplevel
+        BalanceContext,
+    )
+
+    return BalanceContext(
+        user_id=account.user_id, scenario=scenario, as_of=as_of,
+    )
+
+
 @contextmanager
 def counting_calls(*targets):
     """Count calls to each ``(module path, attribute name)`` in *targets*.

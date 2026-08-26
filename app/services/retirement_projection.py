@@ -694,7 +694,7 @@ def _resolve_seed_balances(
     disagree by construction.  The pass now arrives SEPARATELY, and
     :func:`balance_at.balance_at` is a function of it: its scenario scopes the
     row set and its ``as_of`` clamps every still-projected row forward (ruling
-    R-G, ``_cash_fold.assemble``).  A batch shared across two passes would
+    R-G, ``_cash_fold._assemble``).  A batch shared across two passes would
     otherwise hand the second one the first one's seeds, silently.  Keyed on the
     pass's VALUES rather than its identity, so two passes pinned alike share a
     seed -- which is the answer being memoized.  The account-set term is here

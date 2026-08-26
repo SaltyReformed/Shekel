@@ -59,7 +59,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import TYPE_CHECKING, TypeVar
 
-from app.exceptions import BaselineMissingError
+from app.exceptions import BaselineMissingError, ForeignAccountError
 from app.models.account import Account
 from app.models.scenario import Scenario
 from app.services.cash_ledger import AmountBasis, amount_basis
@@ -68,19 +68,20 @@ from app.services.pay_calendar import PayCalendar, PeriodWindow, calendar_for
 from app.services.scenario_resolver import get_baseline_scenario
 
 if TYPE_CHECKING:
-    # Type-only: both RECORD types below are defined by seam SIBLINGS that import
-    # THIS module at runtime.  They type the caches the seam FILLS (this module
-    # never builds a plan and never resolves a loan), so they carry NO runtime edge
-    # back -- the sibling cycle a runtime import would close (finding N-25) stays
-    # open.
+    # Type-only: all three RECORD types below are defined by seam SIBLINGS that
+    # import THIS module at runtime.  They type the caches the seam FILLS (this
+    # module never builds a plan, never resolves a loan and never assembles a
+    # cash fold), so they carry NO runtime edge back -- the sibling cycle a
+    # runtime import would close (finding N-25) stays open.
+    from ._cash_fold import AssembledCashFold
     from ._plan import PlannedPayment
     from ._resolution import ResolvedLoan
 
-# What a memo cache's derivation yields.  The three seam-FILLED caches
+# What a memo cache's derivation yields.  The five account-keyed caches
 # (:attr:`BalanceContext.loans` / :attr:`BalanceContext.plans` /
-# :attr:`BalanceContext.payoffs`) differ only in this type, so
-# :func:`_memoize_once` is generic over it and there is ONE store-once mechanism
-# rather than a copy per cache.
+# :attr:`BalanceContext.payoffs`, and the private ``_walks`` / ``_cash_folds``)
+# differ only in this type, so :func:`_memoize_once` is generic over it and
+# there is ONE store-once mechanism rather than a copy per cache.
 _Derived = TypeVar("_Derived")
 
 
@@ -88,19 +89,22 @@ _Derived = TypeVar("_Derived")
 class BalanceContext:  # pylint: disable=too-many-instance-attributes
     """One read pass's pinned as-of, scenario, and memoized derivations.
 
-    Pylint: ``too-many-instance-attributes`` (8/7) -- suppressed because the
-    eight ARE one read pass's state and there is no smaller cohesive object
-    inside them: three PINS (``user_id`` / ``scenario`` / ``as_of``) and five
+    Pylint: ``too-many-instance-attributes`` (10/7) -- suppressed because the
+    ten ARE one read pass's state and there is no smaller cohesive object
+    inside them: three PINS (``user_id`` / ``scenario`` / ``as_of``) and seven
     MEMOS, each keyed by the thing it is a derivation of.  Bundling the memos
     behind a nested record would put an access level in front of state the
-    seam fills from four different modules while creating a second object with
+    seam fills from five different modules while creating a second object with
     no behaviour of its own.  It reached 8 at plan step C2-c, when the pay
     calendar became a pass-level derivation instead of an argument every caller
-    passed by hand, and plan step **X-i1** raises it further: that step's
-    remaining four inputs (the contribution feed, the override map, the
-    standing extra, the contractual schedule) are memos of exactly this kind,
-    so the count is a property of what a read pass IS rather than a threshold
-    this class is drifting past.
+    passed by hand, 9 at X-au-c2b (the amount basis) and 10 at **X-i4** (the
+    cash fold); plan step **X-i1** raises it further, because that step's
+    remaining inputs (the contribution feed, the standing extra, the
+    contractual schedule) are memos of exactly this kind.  The count is a
+    property of what a read pass IS rather than a threshold this class is
+    drifting past.  *The figure read ``(8/7)`` and "five MEMOS" until X-i4:
+    ``_amount_bases`` had joined without it being updated, which is the class
+    of claim this file's own ``scenario_id`` docstring already warns about.*
 
     Frozen: the pinned inputs (``user_id`` / ``scenario`` / ``as_of``) cannot be
     reassigned mid-pass, which is the whole point -- a producer that could move
@@ -110,13 +114,18 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
     contexts with the same pins are equal whether or not either has resolved a
     loan yet.
 
-    **Two derivations this module owns, and three it only stores.**  The WALK
-    memo (:meth:`loan_walk`) and the CALENDAR memo (:meth:`calendar`) both
-    derive from leaves BELOW this module, which it imports outright, so they
-    stay PRIVATE, filled by this module's own methods.  The RESOLUTION, PLAN,
-    and PAYOFF caches (:attr:`loans` /
-    :attr:`plans` / :attr:`payoffs`) are derived in the ``balance_at`` seam modules
-    ABOVE it (``_resolution`` / ``_plan`` / ``_positions``, which import THIS
+    **THREE derivations this module owns, three it stores in PUBLIC caches, and
+    ONE in a PRIVATE one.**  The WALK (:meth:`loan_walk`), the CALENDAR
+    (:meth:`calendar`) and the AMOUNT BASIS (:meth:`amounts`) derive from leaves
+    BELOW this module, which it imports outright, so all three stay private,
+    filled by this module's own methods.  *The count read "two" and named only
+    the first two until plan step X-i4, having missed ``amounts`` when X-au-c2b
+    added it -- the same omission the attribute-count note above records, one
+    sentence over.*  The RESOLUTION, PLAN and
+    PAYOFF caches (:attr:`loans` /
+    :attr:`plans` / :attr:`payoffs`) are derived in the
+    ``balance_at`` seam modules ABOVE it (``_resolution`` / ``_plan`` /
+    ``_positions``, which import THIS
     module); the context cannot import them back to compute them without inverting
     the dependency arrow and closing a real import cycle (finding N-25), so those
     caches are PUBLIC pass-through state the seam FILLS through
@@ -127,11 +136,36 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
     one surface W9910 cannot see -- finding H1 of step D3's review), which is why
     ``loans`` is a cache here rather than a ``resolved_loan`` method.
 
-    Exposing the caches hands out no balance the fence must guard: a plan is
-    payment RECORDS, a payoff is a ``date``, and a
+    **Every account-keyed cache above is filled through ONE primitive, and that
+    is where this pass BINDS the account it values** (plan step **X-i4**,
+    finding **N-354**).  :func:`_memoize_once` takes the ``account`` rather than
+    a bare id and refuses one whose ``user_id`` is not this pass's, so the
+    pairing the seam used to state as two independent arguments -- an account
+    here, ``ctx.amounts()`` / ``ctx.as_of`` / ``ctx.calendar()`` there, agreeing
+    only because every call site happened to name one ``ctx`` -- cannot be
+    stated wrongly.  It is a precondition on the one constructor of per-account
+    pass state, not a guard repeated at each funnel: there is no way to memoize
+    a derivation against this object without going through it, and
+    :meth:`loan_walk` open-coded its own store-once lines until X-i4 routed it
+    here too.  What it is NOT is a second ownership gate -- see
+    :class:`~app.exceptions.ForeignAccountError` for why no upstream gate can
+    answer this question at all.
+
+    Exposing THOSE THREE caches hands out no balance the fence must guard: a plan
+    is payment RECORDS, a payoff is a ``date``, and a
     :class:`~app.services.balance_at._resolution.ResolvedLoan` carries schedule
     detail and NO balance-at-T (its ``current_balance`` was deleted at the root by
     plan step D2a -- the reason step D3 un-fenced the memo in the first place).
+    **That test is what decides which caches are public, and plan step X-i4's
+    first build failed it**: it added the CASH FOLD as a fourth PUBLIC cache
+    without re-reading this paragraph, and an
+    :class:`~app.services.balance_at._cash_fold.AssembledCashFold` carries
+    ``seed`` and ``steps`` -- a running total, so a prefix sum over it
+    reproduces the seam's own scalar exactly.  Two adversarial reviews each
+    measured that bypass independently.  It is ``_cash_folds`` now, filled
+    through the one crossing in
+    :func:`~app.services.balance_at._cash_fold.assembled_fold`, and the rule
+    this paragraph states is the reason rather than a layering accident.
 
     Nor does exposing them let a consumer FORGE one.  A context is a plain value
     its caller constructs and hands to the seam; writing a fabricated bundle into
@@ -143,7 +177,11 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
 
     Attributes:
         user_id: The owning user.  Every account a context resolves must belong
-            to them; the caller owns that check (the loaders trust it).
+            to them, and since plan step **X-i4** that is REFUSED rather than
+            trusted -- at :func:`_memoize_once` for the account, and at
+            :meth:`__post_init__` for the ``scenario`` beside it.  *This entry
+            read "the caller owns that check (the loaders trust it)" until
+            X-i4.*
         scenario: The baseline scenario, or ``None`` for a user with no baseline
             (the degraded state: a loan then resolves from its anchor with no
             payment feed, and the seam's cash paths cannot run at all -- see
@@ -163,6 +201,22 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         payoffs: The read pass's per-loan derived-payoff cache, keyed by
             ``account.id`` and FILLED by the seam's
             :func:`~app.services.balance_at._positions.memoized_payoff`.
+        _cash_folds: The pass's per-account cash-fold memo, keyed by
+            ``account.id`` and filled by :meth:`cash_fold`.  **PRIVATE, and not
+            for the reason ``_walks`` is** (that one is private because this
+            module owns its derivation): an
+            :class:`~app.services.balance_at._cash_fold.AssembledCashFold`
+            carries ``seed`` and ``steps``, which ARE a balance-at-T -- five
+            lines of prefix sum over them reproduce
+            :func:`~app.services.balance_at.cash_balance_at`'s answer exactly.
+            The three PUBLIC caches beside it are public because they carry no
+            such thing, which is the argument the paragraph above makes and
+            which this one would have falsified.  Two adversarial reviews found
+            it public in X-i4's first build and each measured the bypass: a
+            consumer importing nothing private, holding only the re-exported
+            :class:`BalanceContext`, read a balance the W9910 fence exists to
+            make unreachable -- and W9910 sees IMPORTS, ``protected-access``
+            sees underscores, so a public dataclass FIELD passed every gate.
         _calendars: The pass's pay-calendar memo, keyed by ``user_id`` and
             filled by :meth:`calendar` -- private for the reason ``_walks`` is,
             because this module owns the derivation rather than storing a
@@ -186,12 +240,52 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
     payoffs: "dict[int, date | None]" = field(
         default_factory=dict, repr=False, compare=False,
     )
+    _cash_folds: "dict[int, AssembledCashFold]" = field(
+        default_factory=dict, repr=False, compare=False,
+    )
     _calendars: "dict[int, PayCalendar]" = field(
         default_factory=dict, repr=False, compare=False,
     )
     _amount_bases: "dict[int, AmountBasis]" = field(
         default_factory=dict, repr=False, compare=False,
     )
+
+    def __post_init__(self) -> None:
+        """Refuse a pass whose scenario belongs to a different owner.
+
+        **The other half of X-i4's binding, and finding N-354's own sentence one
+        field over.**  That row says ``BalanceContext`` "pins a ``user_id`` and
+        never checks it against the account handed alongside"; it pinned three
+        things and checked none of them against each other.  An adversarial
+        review measured the gap: a pass carrying owner 1's ``user_id`` and owner
+        2's :class:`~app.models.scenario.Scenario` answered
+        ``cash_balance_at`` a real figure and nothing refused it -- the scenario
+        is what scopes every row the fold loads, so the pass would report one
+        owner's account under another's budget.
+
+        It is checked HERE rather than in :meth:`build`, which resolves the
+        baseline itself and cannot get it wrong, because the constructor is
+        public, frozen and directly called: ``tests/_test_helpers`` builds one
+        for the pay-calendar memo and two loan-sync suites build one by hand.
+        A ``__post_init__`` covers every construction path there is, which
+        :meth:`build` alone does not -- the same reason
+        :func:`_memoize_once` holds the account rule rather than each funnel.
+
+        A ``None`` scenario is legal and unchecked: it is the DEGRADED state
+        :func:`require_scenario` names, not a foreign one.
+
+        Raises:
+            ForeignAccountError: When ``scenario`` belongs to another owner.
+        """
+        if self.scenario is not None and self.scenario.user_id != self.user_id:
+            raise ForeignAccountError(
+                f"read pass for user {self.user_id} was built with scenario "
+                f"{self.scenario.id}, which belongs to user "
+                f"{self.scenario.user_id}. The scenario scopes every row this "
+                f"pass folds, so the two must name one owner: build the pass "
+                f"through BalanceContext.build, which resolves the owner's own "
+                f"baseline"
+            )
 
     @classmethod
     def build(
@@ -332,9 +426,16 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         seam-private module W9910 protects.  A consumer that wants a loan's
         balance takes :func:`app.services.balance_at.balance_at`.
 
+        **It goes through :func:`_memoize_once` since plan step X-i4**, where it
+        open-coded the same three store-once lines before.  That was a fourth
+        copy of the primitive whose own docstring says a copy is where two memos
+        drift on the property they exist to guarantee -- and it was the one
+        account-keyed cache on this object that the binding could not reach.
+
         Args:
-            account: The loan account to walk.  Must belong to ``user_id`` (the
-                caller owns the ownership check).  A non-loan / unconfigured
+            account: The loan account to walk.  Must belong to ``user_id``, and
+                since plan step X-i4 that is REFUSED rather than trusted (see
+                :func:`_memoize_once`).  A non-loan / unconfigured
                 account walks to an empty
                 :class:`~app.services.loan_ledger.LoanLedgerWalk` (the leaf's own
                 no-params contract), which the seam never reaches for -- it
@@ -343,12 +444,16 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
         Returns:
             The memoized :class:`~app.services.loan_ledger.LoanLedgerWalk` for
             this loan under the pass's scenario.
+
+        Raises:
+            ForeignAccountError: When *account* belongs to another owner.
+            BaselineMissingError: When this pass has no baseline scenario --
+                ``scenario_id`` scopes the walk.
         """
-        if account.id not in self._walks:
-            self._walks[account.id] = walk_loan_ledger(
-                account.id, self.scenario_id,
-            )
-        return self._walks[account.id]
+        return _memoize_once(
+            self, self._walks, account,
+            lambda: walk_loan_ledger(account.id, self.scenario_id),
+        )
 
     def calendar(self) -> PayCalendar:
         """Return the owner's pay calendar for this pass, deriving it once.
@@ -491,51 +596,99 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
 
 
 def _memoize_once(
+    ctx: BalanceContext,
     cache: "dict[int, _Derived]",
-    key: int,
+    account: Account,
     build: "Callable[[], _Derived]",
 ) -> "_Derived":
-    """Return ``cache[key]``, computing it via ``build()`` at most once.
+    """Return ``cache[account.id]``, computing it via ``build()`` at most once.
 
-    The ONE store-once rule behind the seam's three per-loan memos
-    (:func:`~app.services.balance_at._resolution.resolved_loan` fills
+    The ONE store-once rule behind every account-keyed derivation a read pass
+    holds (:func:`~app.services.balance_at._resolution.resolved_loan` fills
     :attr:`BalanceContext.loans`;
     :func:`~app.services.balance_at._plan.memoized_plan` fills
     :attr:`BalanceContext.plans`;
     :func:`~app.services.balance_at._positions.memoized_payoff` fills
-    :attr:`BalanceContext.payoffs`).  They share this rather than each carrying a
-    copy of the same three lines -- a copy is where two memos drift on the very
+    :attr:`BalanceContext.payoffs`;
+    :func:`~app.services.balance_at._cash_fold.assembled_fold` fills
+    the private ``_cash_folds``; and :meth:`BalanceContext.loan_walk`
+    fills its own private ``_walks``).  They share this rather than each carrying
+    a copy of the same three lines -- a copy is where two memos drift on the very
     property they exist to guarantee.
 
-    **Membership, never truthiness.**  The check is ``key not in cache``, not a
-    truthiness test on the value, because every derivation has a legitimately
-    falsy answer: a ``None`` resolution (not a configured loan), an empty plan (a
-    not-yet-configured or fully-retired loan), and a ``None`` payoff (a loan that
-    never clears).  A truthiness check would re-derive those on EVERY read of every
-    pass -- unbounded, and green under every test that happens to use a loan whose
-    plan is non-empty.
+    **It BINDS the account to the pass, and that is plan step X-i4** (finding
+    **N-354**).  It takes the ``account`` rather than a bare id precisely so it
+    can refuse one this pass does not own, and it does so BEFORE the membership
+    test, so a foreign account is refused on a cache hit exactly as on a miss.
+    Putting the refusal here rather than at each funnel is what makes it a
+    precondition rather than a fence: creating per-account state on a context is
+    the thing that has to be bound, this is the only way to create it, and a
+    funnel added later cannot forget a rule it never had to remember.  The
+    seam's five funnels each had their own chance to get the pairing wrong until
+    this took the argument away from them.  **Scoped to the ACCOUNT-keyed
+    caches, and that scope is exact**: :meth:`BalanceContext.calendar` and
+    :meth:`BalanceContext.amounts` beside them open-code the same three lines
+    against a ``user_id`` and a ``scenario_id``, which is a residue this step
+    did not remove -- taking the ``Account`` narrowed the primitive, so those
+    two can no longer adopt it.  Neither is per-account, so neither is a
+    pairing a caller can state at all.
 
-    **A raising build is not cached.**  ``cache[key]`` is assigned only from a
-    returned value, so a fail-loud guard inside *build* (the seam's
-    ``require_scenario``) fires on every call rather than being swallowed after the
-    first.
+    **It is not an ownership gate**; whether the requester may see the account
+    was decided upstream, and this cannot know that.  What it answers is whether
+    the account and the pass describe ONE read -- a question no route can ask,
+    because no route knows a context exists.  See
+    :class:`~app.exceptions.ForeignAccountError`.
 
-    See :class:`BalanceContext` for why these three caches are PUBLIC
+    **Membership, never truthiness.**  The check is ``account.id not in cache``,
+    not a truthiness test on the value, because THREE of the five derivations
+    have a legitimately falsy answer: a ``None`` resolution (not a configured
+    loan), an empty plan (a not-yet-configured or fully-retired loan), and a
+    ``None`` payoff (a loan that never clears).  A truthiness check would
+    re-derive those on EVERY read of every pass -- unbounded, and green under
+    every test that happens to use a loan whose plan is non-empty.  *The other
+    two, the WALK and the CASH FOLD, are dataclass instances and never falsy, so
+    they would not have caught it -- which is why the property is pinned on the
+    primitive rather than on whichever cache a test happened to use.*
+
+    **A raising build is not cached.**  ``cache[account.id]`` is assigned only
+    from a returned value, so a fail-loud guard inside *build* (the seam's
+    ``require_scenario``) fires on every call rather than being swallowed after
+    the first.
+
+    See :class:`BalanceContext` for why four of these caches are PUBLIC
     pass-through state the seam fills, while the WALK memo beside them is a
     private method (the dependency arrow, finding N-25).
 
     Args:
-        cache: The read pass's per-loan cache to fill, keyed by ``account.id``.
-        key: The account id this derivation is memoized under.
-        build: The zero-argument derivation, called at most once per *key*.
+        ctx: The read pass the derivation is being memoized on -- the owner
+            *account* is bound against.
+        cache: The read pass's per-account cache to fill, keyed by
+            ``account.id``.
+        account: The account this derivation is memoized under and bound to.
+        build: The zero-argument derivation, called at most once per account.
 
     Returns:
-        The value stored for *key* (freshly built on the first call, replayed
-        after).
+        The value stored for ``account.id`` (freshly built on the first call,
+        replayed after).
+
+    Raises:
+        ForeignAccountError: When *account* does not belong to ``ctx.user_id``.
     """
-    if key not in cache:
-        cache[key] = build()
-    return cache[key]
+    if account.user_id != ctx.user_id:
+        raise ForeignAccountError(
+            f"read pass for user {ctx.user_id} was handed account "
+            f"{account.id}, which belongs to user {account.user_id}. The "
+            f"balance seam takes the account and the pass as two arguments and "
+            f"they must describe one read: the pass's scenario scopes the rows, "
+            f"its as-of clamps the plan and its calendar supplies the columns, "
+            f"while balance assertions are per-ACCOUNT and would replay "
+            f"whatever it was handed. Build the context for the account's own "
+            f"owner, or resolve the account through this owner's resolver "
+            f"(app.services.account_resolver)"
+        )
+    if account.id not in cache:
+        cache[account.id] = build()
+    return cache[account.id]
 
 
 def require_scenario(ctx: BalanceContext) -> None:

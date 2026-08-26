@@ -1,8 +1,9 @@
 """X-b / X-g4a: the cash FOLD, graded on a hand-computed oracle.
 
 Plan steps X-b and X-g4a (``docs/audits/balance_architecture/README.md``).
-Grades ``app.services.balance_at._cash_fold`` -- ``fold_cash_balances`` at day
-grain, and since X-g4a ``cash_period_balances`` over a 52-period horizon.
+Grades ``app.services.balance_at._cash_fold`` -- ``balances_at`` at day
+grain, and since X-g4a ``period_balances`` over a 52-period horizon.  Both read
+the pass's own ``assembled_fold`` since plan step X-i4.
 
 **The fold is no longer ADDITIVE and this header used to say it was** (corrected
 at X-g4a).  Plan step X-c2b2 pointed all three cash seam entries at it and
@@ -45,8 +46,9 @@ from app.enums import StatusEnum
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.services.balance_at._cash_fold import (
-    cash_period_balances,
-    fold_cash_balances,
+    assembled_fold,
+    balances_at,
+    period_balances,
 )
 from app.services.balance_at._fold import sample_cumulative
 from app.services.cash_ledger import dated_deltas, walk_cash_ledger
@@ -54,7 +56,7 @@ from tests._test_helpers import (
     add_entry,
     add_txn,
     append_balance_assertion,
-    basis_for,
+    read_pass,
     create_envelope_txn,
     create_savings_account,
     create_settled_cash_transaction,
@@ -97,7 +99,8 @@ def _instant(year, month, day, hour=0, minute=0, second=0):
 
 def _fold(account, scenario, days, as_of=_LATE_AS_OF):
     """Fold *account* at each of *days*, returning ``{date: Decimal}``."""
-    return fold_cash_balances(account, basis_for(account, scenario), as_of, list(days))
+    ctx = read_pass(account, scenario, as_of)
+    return balances_at(assembled_fold(account, ctx), list(days))
 
 
 def _opened_at(account, at):
@@ -1240,10 +1243,10 @@ def _drift_oracle(periods):
 
 def _drift_period_map(seed_user, periods):
     """Return the fold's period-end balance map for the drift shape."""
-    return cash_period_balances(
-        seed_user["account"],
-        basis_for(seed_user["account"], seed_user["scenario"]),
-        _DRIFT_AS_OF, period_window(periods),
+    account = seed_user["account"]
+    ctx = read_pass(account, seed_user["scenario"], _DRIFT_AS_OF)
+    return period_balances(
+        assembled_fold(account, ctx), period_window(periods),
     )
 
 

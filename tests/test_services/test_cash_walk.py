@@ -35,7 +35,7 @@ from app.services.cash_ledger import (
     settled_cash_facts,
     walk_cash_ledger,
 )
-from app.services.balance_at._cash_fold import fold_cash_balances
+from app.services.balance_at._cash_fold import assembled_fold, balances_at
 from app.services import transaction_service
 from app.services.row_valuation import purchases_total, settled_figure
 from app.enums import StatusEnum
@@ -45,7 +45,7 @@ from tests._test_helpers import (
     add_txn,
     an_entered_day,
     append_balance_assertion,
-    basis_for,
+    read_pass,
     create_savings_account,
     create_settled_cash_transaction,
     create_settled_transfer,
@@ -127,8 +127,9 @@ def _running_balance(account, scenario):
 def _fold_at(account, scenario, day):
     """Return the balance a SCREEN renders for *account* on *day*.
 
-    The real producer (``balance_at._cash_fold.fold_cash_balances``), not a
-    hand-rolled prefix sum, because the property under test is what a user sees
+    The real producer (the pass's own ``assembled_fold``, sampled by
+    ``balances_at``), not a hand-rolled prefix sum, because the property under
+    test is what a user sees
     and a replay written beside the thing it grades can agree with a wrong
     answer.
 
@@ -149,7 +150,8 @@ def _fold_at(account, scenario, day):
     Returns:
         The folded balance as a ``Decimal``.
     """
-    return fold_cash_balances(account, basis_for(account, scenario), day, [day])[day]
+    ctx = read_pass(account, scenario, day)
+    return balances_at(assembled_fold(account, ctx), [day])[day]
 
 
 def _replay_terminal_balance(account, scenario):
