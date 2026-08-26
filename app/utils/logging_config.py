@@ -563,23 +563,34 @@ def setup_logging(app: Flask) -> None:
         g.request_id = str(uuid.uuid4())
         g.request_start = time.perf_counter()
 
-        # Propagate the application user_id into the PostgreSQL session
-        # so audit triggers can capture who made the change.
-        # Uses SET LOCAL (transaction-scoped, not session-scoped).
+        # RESOLVE who is acting, and record it for the whole request.  The
+        # audit triggers read a TRANSACTION-scoped setting, and since plan step
+        # balance:X-i3 a request no longer runs in one transaction -- a render
+        # gets its own read-only snapshot and a render's declared write gets a
+        # command transaction of its own.  So this hook resolves the actor and
+        # ``app.db_transaction``'s ``after_begin`` listener BINDS it onto every
+        # transaction the request opens, which is the same division of labour
+        # that listener already has for the isolation level and for the same
+        # reason: a before-request hook cannot reach a transaction that does
+        # not exist yet.
+        #
+        # It binds the CURRENT transaction here as well, because resolving the
+        # actor is what opens it: reading ``current_user`` loads the user row,
+        # and that statement's ``after_begin`` fired before this line ran.
         try:
             if current_user.is_authenticated:
                 # Pylint: ``import-outside-toplevel`` -- Deferred:
                 # app.extensions imports this logging module during
                 # logging setup, so a module-top import here would be circular.
-                from app.extensions import db  # pylint: disable=import-outside-toplevel
-                db.session.execute(
-                    db.text("SET LOCAL app.current_user_id = :uid"),
-                    {"uid": str(current_user.id)},
-                )
+                # pylint: disable=import-outside-toplevel
+                from app.audit_infrastructure import bind_audit_actor
+                from app.extensions import db
+                g.shekel_audit_actor = current_user.id
+                bind_audit_actor(db.session.connection(), current_user.id)
         except (RuntimeError, AttributeError, SQLAlchemyError):
             # RuntimeError: outside application/request context.
             # AttributeError: anonymous user proxy has no 'id'.
-            # SQLAlchemyError: SET LOCAL fails on broken DB session.
+            # SQLAlchemyError: the bind fails on a broken DB session.
             pass
 
     # Slow request threshold in milliseconds (configurable via env var).

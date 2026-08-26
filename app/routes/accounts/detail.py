@@ -57,6 +57,7 @@ from flask_login import current_user, login_required
 
 from app import ref_cache
 from app.enums import CompoundingFrequencyEnum
+from app.exceptions import RequiredRecordMissing
 from app.extensions import db
 from app.models.account import Account
 from app.models.asset_appreciation_params import AssetAppreciationParams
@@ -131,33 +132,60 @@ def _current_period_balance(
     return current_bal
 
 
-def _ensure_interest_params(account: Account) -> InterestParams:
-    """Return the account's :class:`InterestParams`, auto-creating if missing.
+def _interest_params(account: Account) -> InterestParams:
+    """Return the account's :class:`InterestParams`, refusing if it has none.
 
-    Mirrors the pre-merge ``interest_detail`` safety fallback: an
-    interest-bearing account should always carry a params row (the create
-    flow seeds it), but if one was lost this defensively recreates it with
-    an explicit ``apy=0`` sentinel and the DAILY compounding ref id.
+    **It used to auto-create the row, and plan step balance:X-i3 deleted that
+    branch rather than declaring it.**  A render that repairs data is a write
+    inside a read: it cost this page the one snapshot every figure on it is
+    computed against, and it hid the door that should have written the row.
+    The gap was real, and WIDER than the step's own first draft said: the
+    seeder had a single caller, account CREATION, while **THREE doors can make
+    an account interest-bearing** -- creating it, re-classing it
+    (``crud.update_account``), and editing the TYPE itself
+    (``types.update_account_type``, which may flip ``has_interest`` on an
+    owner's own custom type and so change every account already on it, with no
+    account row touched at all).  All three hold the rule now, through the one
+    statement of it in :mod:`app.routes.accounts._type_params`.
 
-    The explicit zero (E-12 / HIGH-06) is deliberate: relying on a column
-    ``server_default`` would silently project 4.5% interest the user never
-    configured.  ``compounding_frequency_id`` is a ref FK now (#38, no
-    server_default), so the DAILY id is supplied explicitly.
+    So a missing row means the data was changed outside the application, and
+    the honest answer is to refuse rather than manufacture a zero-rate row that
+    reads on screen exactly like a rate the owner configured.  **NOT the answer
+    :func:`require_scenario` gives**, which an earlier draft of this paragraph
+    cited and which is the opposite disposition: a missing baseline has a
+    handler and a repair page (ruling R-BW) because the owner can fix it from a
+    screen the app can still render.  This state has no door that produces it,
+    so there is no screen to send anyone to.
+
+    Measured before the branch was deleted: **0 of 9 production accounts** of a
+    parameterised kind were missing their satellite row, on either table.
+
+    Args:
+        account: The interest-bearing cash account being rendered.
+
+    Returns:
+        The account's :class:`InterestParams`.
+
+    Raises:
+        RequiredRecordMissing: The account carries no params row.
     """
     params = (
         db.session.query(InterestParams)
         .filter_by(account_id=account.id)
         .first()
     )
-    if not params:
-        params = InterestParams(
-            account_id=account.id, apy=Decimal("0"),
-            compounding_frequency_id=ref_cache.compounding_frequency_id(
-                CompoundingFrequencyEnum.DAILY,
-            ),
+    if params is None:
+        raise RequiredRecordMissing(
+            f"account {account.id} is interest-bearing and carries no "
+            f"budget.interest_params row, so there is no APY or compounding "
+            f"basis to project it at. All three doors that can make an "
+            f"account interest-bearing write one -- creating it, re-classing "
+            f"it, and editing the account TYPE -- so reaching this means the "
+            f"row was removed outside the application. To rebuild it, change "
+            f"the account's type to another kind and change it back: the "
+            f"re-class door seeds on a CHANGE, so re-saving the same type is a "
+            f"no-op."
         )
-        db.session.add(params)
-        db.session.commit()
     return params
 
 
@@ -392,11 +420,11 @@ def _cash_detail_context(account: Account, ctx: BalanceContext) -> dict:
     all_periods = ctx.reported_periods()
     current_period = calendar.period_containing(ctx.as_of)
 
-    # Preserve the pre-merge ``interest_detail`` behaviour: the params row is
-    # auto-created before any projection so the parameters card always
-    # renders for an interest-bearing account.  Plain accounts carry no
-    # params / compounding list.
-    params = _ensure_interest_params(account) if is_interest else None
+    # The params row is READ before any projection so the parameters card
+    # always renders for an interest-bearing account.  Plain accounts carry no
+    # params / compounding list.  It is read rather than repaired since plan
+    # step balance:X-i3 -- see :func:`_interest_params`.
+    params = _interest_params(account) if is_interest else None
     compounding_frequencies = (
         CompoundingFrequency.query.order_by(CompoundingFrequency.id).all()
         if is_interest else []
@@ -808,15 +836,20 @@ def property_detail(account_id):
         .first()
     )
     if params is None:
-        # Defensive auto-create with a zero-rate sentinel (E-12), mirroring
-        # ``_ensure_interest_params``: the create flow already seeds this
-        # row, so this branch only fires if it was lost (manual delete /
-        # data loss).
-        params = AssetAppreciationParams(
-            account_id=account.id, annual_appreciation_rate=Decimal("0"),
+        # The appreciation twin of :func:`_interest_params`, deleted as an
+        # auto-create by the same step and for the same reason: this is a
+        # render, and a render that writes is a render without a snapshot.
+        raise RequiredRecordMissing(
+            f"account {account.id} is an appreciating asset and carries no "
+            f"budget.asset_appreciation_params row, so there is no rate to "
+            f"project its value at. Every door that can make an account "
+            f"appreciating writes one -- creating it and re-classing it; "
+            f"``has_appreciation`` is not editable on a type -- so reaching "
+            f"this means the row was removed outside the application. To "
+            f"rebuild it, change the account's type to another kind and change "
+            f"it back: the re-class door seeds on a CHANGE, so re-saving the "
+            f"same type is a no-op."
         )
-        db.session.add(params)
-        db.session.commit()
 
     balance_ctx = BalanceContext.build(current_user.id)
 

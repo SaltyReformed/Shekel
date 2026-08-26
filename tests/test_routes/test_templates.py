@@ -3241,7 +3241,7 @@ def _template_with_starts_on(seed_user, txn_type, starts_on):
 
 
 def _loan_payment_template(seed_user):
-    """Create and flush a recurring LOAN PAYMENT transfer template.
+    """Create and COMMIT a recurring LOAN PAYMENT transfer template.
 
     A loan payment is a transfer template carrying
     :class:`~app.models.loan_payment_settings.LoanPaymentSettings` -- decision
@@ -3253,7 +3253,14 @@ def _loan_payment_template(seed_user):
         seed_user: The seeded owner fixture.
 
     Returns:
-        The flushed :class:`~app.models.transfer_template.TransferTemplate`.
+        The committed :class:`~app.models.transfer_template.TransferTemplate`.
+
+    The CADENCE is committed too (plan step balance:X-i3).  It was only
+    flushed, so every test here that went on to issue a request was asking the
+    route to read a rule no request could see -- a request holds its own
+    transaction and an uncommitted row is invisible in it.  The template
+    itself was already committed one line above, which is the shape this
+    matches rather than departs from.
     """
     loan_account = create_loan_account(seed_user, db.session)
     template = TransferTemplate(
@@ -3272,6 +3279,7 @@ def _loan_payment_template(seed_user):
         template, MONTHLY,
         fires_on_day=1, end_date=date(2030, 1, 1),
     )
+    db.session.commit()
     return template
 
 
@@ -3667,7 +3675,12 @@ class TestALoanPaymentCannotBeMadeOneTime:
         with app.app_context():
             loan = create_loan_account(seed_user, db.session)
             template = make_transfer_template(db.session, seed_user, loan)
-            db.session.flush()
+            # COMMITTED, not flushed (plan step balance:X-i3): this case posts
+            # a REFUSAL, so the route redirects without committing, and the
+            # followed redirect is a fresh request that cannot see rows this
+            # fixture never committed.  The sibling above rides
+            # ``_loan_payment_template``, which commits its own.
+            db.session.commit()
             assert template.settings is None, "fixture must have no settings row"
             rule_id = template.recurrence_rule.id
 

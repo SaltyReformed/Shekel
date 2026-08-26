@@ -57,6 +57,37 @@ class UndatedSettleError(ShekelError, ValueError):
     """
 
 
+class RequiredRecordMissing(ShekelError, ValueError):
+    """A record a live invariant says must exist does not.
+
+    Raised where the record is READ, by the surface that cannot answer without
+    it: an interest-bearing account with no ``budget.interest_params``, an
+    appreciating one with no ``budget.asset_appreciation_params``, an owner
+    with no ``auth.user_settings``.
+
+    **Each of those was an AUTO-CREATE on a GET until plan step
+    balance:X-i3.**  A render that repairs data is a write inside a read -- it
+    cost those pages the one snapshot every figure on them is computed against
+    (:mod:`app.db_transaction`) -- and it hid the doors that should have
+    written the row: the params seeder had ONE caller while THREE doors set an
+    account's kind, which is what
+    :mod:`app.services.account_params` now states once for all of them.
+
+    A ``ValueError`` as well as a ``ShekelError``, on
+    :class:`UndatedSettleError`'s reasoning exactly: the condition is a broken
+    invariant in stored data rather than a user input error, and no route
+    translates it -- reaching a user as a 500 is the correct disposition,
+    because a manufactured zero-rate row renders on screen exactly like a rate
+    the owner configured.
+
+    **Deliberately NOT given an application-wide handler**, which is where it
+    differs from :class:`BaselineMissingError` beneath it: that one has a
+    repair the owner can perform on a page the app can render, and this one
+    names a state no door can produce.  A rendered answer for it would be the
+    auto-create under another name.
+    """
+
+
 class AmountUnresolvable(ShekelError, ValueError):
     """A row was asked what its amount is and no rule could answer.
 

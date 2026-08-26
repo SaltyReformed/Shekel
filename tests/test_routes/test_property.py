@@ -13,8 +13,10 @@ import json
 from datetime import date
 from decimal import Decimal
 
+import pytest
 from flask import template_rendered
 
+from app.exceptions import RequiredRecordMissing
 from app.models.account import Account
 from app.models.asset_appreciation_params import AssetAppreciationParams
 from app.models.investment_params import InvestmentParams
@@ -148,6 +150,72 @@ class TestPropertyDetailPage:
         assert b"Secured by" in body
         # Market value renders (entered as 400000.00).
         assert b"400,000" in body
+
+    def test_the_page_REFUSES_a_missing_params_row_rather_than_creating_one(
+        self, app, auth_client, db, seed_user, seed_periods_today,
+    ):
+        """The appreciation twin of the interest refusal (plan step X-i3).
+
+        This page auto-created an ``asset_appreciation_params`` row on a GET
+        until that step deleted the branch: a render that repairs data is a
+        write inside a read, and it cost the page the one snapshot its equity
+        and LTV figures are computed against.  The rule is held at the doors
+        that set an account's kind instead
+        (:mod:`app.services.account_params`).
+
+        A manufactured zero-rate row renders on screen exactly like a rate the
+        owner configured, which is why the refusal is the honest answer.
+        """
+        with app.app_context():
+            acct = _make_property(
+                db, seed_user, seed_periods_today, rate=Decimal("0.03000"),
+            )
+            acct_id = acct.id
+            db.session.query(AssetAppreciationParams).filter_by(
+                account_id=acct_id,
+            ).delete()
+            db.session.commit()
+
+        with pytest.raises(
+            RequiredRecordMissing, match="asset_appreciation_params",
+        ):
+            auth_client.get(f"/accounts/{acct_id}/property")
+
+        with app.app_context():
+            assert db.session.query(AssetAppreciationParams).filter_by(
+                account_id=acct_id,
+            ).first() is None, "the render manufactured a row on its way out"
+
+    def test_reclassing_INTO_a_property_type_seeds_its_params_row(
+        self, app, auth_client, db, seed_user, seed_periods_today,
+    ):
+        """The APPRECIATING arm of the shared seeder, at the re-class door.
+
+        Its sibling in ``test_accounts.py`` covers the INTEREST arm; this is
+        the one the deleted ``property_detail`` auto-create was standing in
+        for, and without it only one of the seeder's three arms is exercised
+        anywhere.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            property_type = db.session.query(AccountType).filter_by(
+                name="Property",
+            ).one()
+            assert db.session.query(AssetAppreciationParams).filter_by(
+                account_id=checking.id,
+            ).first() is None
+
+            resp = auth_client.post(f"/accounts/{checking.id}", data={
+                "name": checking.name,
+                "account_type_id": property_type.id,
+                "version_id": checking.version_id,
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+
+            params = db.session.query(AssetAppreciationParams).filter_by(
+                account_id=checking.id,
+            ).one()
+            assert params.annual_appreciation_rate == Decimal("0")
 
     def test_update_appreciation_rate(self, app, auth_client, db, seed_user, seed_periods_today):
         """POSTing a percent rate stores the decimal fraction."""

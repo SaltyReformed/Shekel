@@ -99,7 +99,11 @@ def _create_savings_account(
             user's earliest pay period at create time).
 
     Returns:
-        Account: the new savings account.
+        Account: the new savings account, COMMITTED.  Committed rather than
+        flushed (plan step balance:X-i3): the callers that go on to issue a
+        request need the account to exist as far as that request is concerned,
+        and a request holds a transaction of its own in which an uncommitted
+        row does not.
     """
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     acct = account_service.create_account(
@@ -111,7 +115,7 @@ def _create_savings_account(
         ),
     )
     db.session.add(acct)
-    db.session.flush()
+    db.session.commit()
     return acct
 
 
