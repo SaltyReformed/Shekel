@@ -46,7 +46,7 @@ from ._offers import (
 )
 from ._bars import CreationBars, ParkedLine
 from ._placement import Placement, placements_for
-from ._policy import PolicyView
+from ._rules import RuleView
 from ._propose import propose
 from ._scope import ReviewScope
 from ._section import MerchantSection, merchant_section
@@ -151,8 +151,8 @@ class CreatableLine:
             all three closed at a fixed figure, so 8 lines worth `$662.13` have
             no existing destination and a NEW envelope is the only arm open to
             them.
-        placement: What the owner's stated MERCHANT POLICY comes to for this
-            line (:class:`~._policy.Placement`), or ``None`` when they have not
+        placement: What the owner's stated MERCHANT RULE comes to for this
+            line (:class:`~._placement.Placement`), or ``None`` when they have not
             said where this merchant goes -- which is a different answer from
             "they said never" and the screen says it differently.  Plan step
             ``bank_import:X-f6a-3d``.
@@ -230,7 +230,7 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             card that they have not answered for at all.  They are still in
             ``unmatched``, so the group-match arm the ruling leaves open is
             reached exactly as it was.
-        merchants: The policy control (:class:`~._section.MerchantSection`) --
+        merchants: The rule control (:class:`~._section.MerchantSection`) --
             where this account's merchants go, and what the owner has already
             said.  **It counts** ``parked`` **beside** ``creatable``, because
             the parked half is parked for want of an answer and this is the
@@ -266,9 +266,9 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
         """Return how many creatable lines each sweep CLASS would tick.
 
         **Counted where the sweep's own rule is**
-        (:attr:`~._policy.Placement.sweep_class`) rather than as a Jinja
+        (:attr:`~._placement.Placement.sweep_class`) rather than as a Jinja
         expression, so a caption cannot promise a number the control does not
-        deliver.  A placement that is not an act -- a policy that does not
+        deliver.  A placement that is not an act -- a rule that does not
         reach this line's pay period -- has no class and is not counted, and a
         line ruling **R-GJ** bars is not in :attr:`creatable` at all.
 
@@ -466,7 +466,7 @@ def _as_bank_line(row: BankStatementLine) -> BankLine:
 def _creatable_lines(
     calendar, unmatched: "list[BankLine]",
     destinations: "list[PurchaseDestination]",
-    view: PolicyView,
+    view: RuleView,
     bars: CreationBars,
 ) -> "tuple[tuple[CreatableLine, ...], tuple[ParkedLine, ...], int]":
     """Split the unmatched OUTFLOWS into what may be recorded and what may not.
@@ -496,7 +496,7 @@ def _creatable_lines(
             re-queried per line -- a redundant producer call inside one request
             is this project's DRY violation rather than a cost.
         view: What the owner has said and what it can resolve against
-            (:class:`~._policy.PolicyView`).
+            (:class:`~._rules.RuleView`).
         bars: Which of this account's merchants may not become purchases, and
             why (:class:`~._bars.CreationBars`, ruling **R-GJ**).  **Asked
             BEFORE a destination is resolved**, because a barred line has no
@@ -596,7 +596,7 @@ def _one_creatable(
     line: BankLine,
     period_id: "int | None",
     by_period: "dict[int, list[PurchaseDestination]]",
-    view: PolicyView,
+    view: RuleView,
 ) -> CreatableLine:
     """Return one offerable outflow with its destinations and its placement.
 
@@ -608,7 +608,7 @@ def _one_creatable(
 
     Returns:
         Its :class:`CreatableLine`.  A line no saved period covers gets NO
-        placement, because a policy resolves into a destination and there is no
+        placement, because a rule resolves into a destination and there is no
         period here for one to be in -- the create door refuses such a line by
         name (``_create._period_holding``), so suggesting anything for it would
         be the chooser-that-cannot-succeed shape again.
@@ -723,7 +723,7 @@ def _rows_the_bank_never_showed(
 
 @dataclass(frozen=True)
 class _Leftovers:
-    """What this pass could not explain, placed against the owner's policy.
+    """What this pass could not explain, placed against the owner's rule.
 
     Four facts one derivation produces that travel together, which is the
     argument :class:`~._offers.Candidates` and
@@ -738,7 +738,7 @@ class _Leftovers:
             rendered for, each with its placement.
         parked: The offerable unexplained outflows ruling **R-GJ** bars, each
             with the reason (:class:`~._bars.ParkedLine`).
-        merchants: The policy control's rows and option list.
+        merchants: The rule control's rows and option list.
         impossible_day_count: How many outflows were declined for being dated
             MADE after they POSTED (finding **N-325**).
     """
@@ -754,16 +754,16 @@ def _leftovers(
     unmatched: "list[BankLine]",
     destinations: "list[PurchaseDestination]",
 ) -> _Leftovers:
-    """Return the unexplained outflows placed against the owner's policy.
+    """Return the unexplained outflows placed against the owner's rule.
 
     **What the owner has SAID is read HERE, not carried on the scope**, for the
     same reason the claims are (plan step ``bank_import:X-f6a-3d``): a pass can
-    restate a policy, and this screen is re-rendered after the door that does,
+    restate a rule, and this screen is re-rendered after the door that does,
     so a reader taking it off the scope would show the answers the pass had
     just replaced.  Ruling **R-GJ**'s bars are read at the same instant and for
     the same reason -- one of them IS an answer, and the other is the absence
     of one -- and from the answers this view has already read, so one request
-    asks ``merchant_destinations`` once.
+    asks ``merchant_rules`` once.
 
     Args:
         scope: The pass's derived offer set.
@@ -773,9 +773,9 @@ def _leftovers(
     Returns:
         The :class:`_Leftovers`.
     """
-    view = PolicyView.build(scope.owner_id, scope.account_id)
+    view = RuleView.build(scope.owner_id, scope.account_id)
     bars = CreationBars.build(
-        scope.owner_id, scope.account_id, policies=view.policies,
+        scope.owner_id, scope.account_id, rules=view.rules,
     )
     creatable, parked, impossible_days = _creatable_lines(
         scope.calendar, unmatched, destinations, view, bars,

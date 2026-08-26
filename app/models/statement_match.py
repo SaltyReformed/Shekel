@@ -82,12 +82,44 @@ class StatementMatch(AccountScopedMixin, UserScopedMixin, CreatedAtMixin,
         created_at -- when (:class:`~app.models.mixins.CreatedAtMixin`).  A
             match is never edited: correcting one is deleting it and matching
             again, which is why there is no ``updated_at``.
+        applied_by_rule -- whether a STANDING RULE performed this act rather
+            than the owner ticking it (ruling **R-GT**, plan step
+            ``bank_import:X-gd-2``).  See below.
 
     **It stores no amount and no day**, and both absences are the rule rather
     than an omission.  The amount is the sum of the member lines and the day is
     their latest ``posted_on``; storing either would put a derived value beside
     its source with nothing reconciling them, which is the root cause three of
     this project's arcs exist to remove.
+
+    **...and it stores WHO CONSENTED, because that one is not derivable**
+    (ruling **R-GT**).  A standing rule is the owner's consent given once
+    (ruling **R-GH**), so an act performed under one is still consented to --
+    but it is a different fact from a tick, and the receipt an application owes
+    (ruling **R-GI**) has to be able to say which.
+
+    **WHICH rule is deliberately NOT stored**, and that is the same argument
+    the two absences above make.  The matched line carries the account and the
+    merchant, which is exactly ``budget.merchant_rules``' key, so a foreign key
+    to the rule row would store a pointer the line already determines -- and it
+    would force a choice none of whose arms is right: ``CASCADE`` deletes money
+    records when a rule is restated away, ``SET NULL`` claims the owner ticked
+    it, and ``RESTRICT`` refuses to change a rule that ever fired, which is the
+    dead end finding **N-302** records one arc over.  What is left over -- that
+    a rule acted rather than a person -- is not derivable from anything, because
+    a person may tick a line whose merchant has a rule.  That is the whole of
+    what this column holds.
+
+    **NOT NULL with no default.**  The writer states it or the flush refuses
+    (:func:`~app.services.statement_match._accept._record`).  A default of
+    ``false`` would be correct for every row that exists today and would still
+    be wrong, because the value it supplies is *the owner agreed to this*.
+
+    **Every row is ``false`` until plan step ``bank_import:X-ge``**, which
+    builds the door that applies a rule at import; measured 221 acts on the
+    developer's dev database, all of them ticks.  The column ships one leaf
+    ahead of that door on purpose, so the step that MOVES MONEY carries no
+    schema change and the consent boundary can be reviewed before it does.
     """
 
     __tablename__ = "statement_matches"
@@ -113,6 +145,7 @@ class StatementMatch(AccountScopedMixin, UserScopedMixin, CreatedAtMixin,
     )
 
     id = db.Column(db.Integer, primary_key=True)
+    applied_by_rule = db.Column(db.Boolean, nullable=False)
 
     members = db.relationship(
         "StatementMatchMember", back_populates="match",

@@ -34,7 +34,7 @@ from app.models.statement_import import (
     StatementImport,
 )
 from app.models.merchant import Merchant
-from app.models.merchant_destination import MerchantDestination
+from app.models.merchant_rule import MerchantRule
 from app.models.statement_match import StatementMatch, StatementMatchMember
 from app.services import statement_match
 from app.services.statement_import import delete_import, record_statement
@@ -437,16 +437,17 @@ class TestTheMerchantsOutliveTheirLinesONLYWhileTheyAreANSWERED:
         Drop that clause and an owner who deletes an import loses every answer
         they had stated about its merchants -- silently, through a door whose
         receipt would not even say so, because the rule row goes with the
-        merchant on ``fk_merchant_destinations_merchant_account``.
+        merchant on ``fk_merchant_rules_merchant_account``.
         """
         outcome = _import(seed_user)
         answered = db.session.query(Merchant).filter(
             Merchant.name == "Food Lion",
         ).one()
-        db.session.add(MerchantDestination(
+        db.session.add(MerchantRule(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             merchant_id=answered.id,
+            never_a_purchase=True,
         ))
         db.session.flush()
 
@@ -456,7 +457,7 @@ class TestTheMerchantsOutliveTheirLinesONLYWhileTheyAreANSWERED:
         assert [row.name for row in db.session.query(Merchant).all()] == [
             "Food Lion",
         ]
-        assert db.session.query(MerchantDestination).count() == 1
+        assert db.session.query(MerchantRule).count() == 1
 
     def test_a_merchant_ANOTHER_SURVIVING_import_names_STAYS(
         self, app, db, seed_user,

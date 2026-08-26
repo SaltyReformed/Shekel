@@ -15,25 +15,37 @@ decision, and a subject that two tables agree about is a row.
 **What the promotion actually buys, stated so it can be checked.**
 
   * The scope check stops being load-bearing.  A rule could name any string a
-    caller liked, and ``statement_match._policy._refuse_unknown_merchants``
+    caller liked, and ``statement_match._stating._refuse_unknown_merchants``
     was the only thing between that and a stored row; it compared the
     submission against a DISTINCT over every recorded line.  A rule now names
-    a ``merchant_id``, and ``fk_merchant_destinations_merchant_account``
+    a ``merchant_id``, and ``fk_merchant_rules_merchant_account``
     refuses one that is not this account's -- so the refusal survives as a
-    SENTENCE for a stale page, in the shape ``_policy._checked_template``
+    SENTENCE for a stale page, in the shape ``_rules._checked_template``
     already has, and no longer as the thing that makes the rule correct.
   * *Which merchants may be asked about* becomes a read of one table.  It was
     the UNION of two derivations -- every merchant this account's lines name,
     plus every merchant already answered for -- and the second half existed
     because deleting an import took a merchant's lines and would otherwise
-    have made its rule unwithdrawable.  A merchant row OUTLIVES its lines, so
-    the union is the table.
+    have left its rule unreachable -- unrenderable and so unrestatable.  A
+    merchant row OUTLIVES its lines, so the union is the table.  (It said
+    "unwithdrawable" until ruling **R-GS** removed the withdrawal at plan step
+    ``bank_import:X-gd-2``; the property is the same one and RESTATING is what
+    it is now for.)
   * The join is by id.  *IDs for logic, strings for display* is this project's
     rule for ``ref`` tables, and a rule matching on a NAME is the same
-    substitution one tier out: ``merchant_destinations`` and
+    substitution one tier out: ``merchant_rules`` and
     ``bank_statement_lines`` each held their own 100-character copy of the
     string, matched by equality, with nothing holding the two widths or the
     two spellings together.
+
+**And the set it can reclaim SHRANK at ruling R-GS.**  Withdrawing a rule was
+the one act that returned an answered merchant to sweepable, and there is no
+withdrawal now -- *ask me every time* is a stored answer like the others.  So a
+merchant the owner ever answered for is kept for the life of the account, and
+its rule with it.  That is owner-scoped and self-inflicted rather than a
+ceiling anyone else can push on, which is why it is recorded here rather than
+guarded: what bounds this table is the number of merchants an owner's own banks
+have shown them.
 
 **A merchant SURVIVES the lines that named it, and that is the whole property
 the union above rests on** -- a stated answer has to stay readable and
@@ -45,7 +57,7 @@ preserves nothing: no rule is keyed on it, the section does not render it, and
 nothing else can reach it.  Without that sweep the table had no ceiling at all
 -- an owner could upload a file naming any number of unseen merchants, delete
 the import, and keep the merchants permanently, once per upload.  That is the
-hazard ``_policy._refuse_unknown_merchants`` was written for, which MOVED here
+hazard ``_stating._refuse_unknown_merchants`` was written for, which MOVED here
 when the rule's key became a foreign key, and an adversarial security review
 measured it on 2026-08-25.  An account's deletion takes every merchant through
 :class:`~app.models.mixins.AccountScopedMixin`'s cascade.
@@ -63,7 +75,7 @@ deleting a merchant deletes bank lines, which is false of what this app does
 and dangerous if it ever became reachable.
 
 **Per ACCOUNT, not per owner, and that is the same key
-``merchant_destinations`` already carries.**  A statement is one bank's record
+``merchant_rules`` already carries.**  A statement is one bank's record
 of ONE account, so ``Food Lion`` as SECU spells it on Checking and ``Food
 Lion`` as a card issuer spells it are two rows -- which is what lets a rule on
 one account be a different answer from a rule on the other, the property
@@ -146,7 +158,7 @@ class Merchant(AccountScopedMixin, db.Model):
     # where it is needed and used: ``BankStatementLine.merchant`` is eager and
     # viewonly, because a reader holding a line always wants the name; the
     # RULE table has none at all, and reads its merchants in one statement
-    # (``statement_match._policy.policies_for``) because it renders every
+    # (``statement_match._rules.rules_for``) because it renders every
     # merchant on the account at once.
 
     def __repr__(self):

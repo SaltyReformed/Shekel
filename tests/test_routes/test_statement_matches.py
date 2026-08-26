@@ -222,12 +222,12 @@ def _record_line(line, *, destination, name="Walmart", category_id=""):
 
 
 def _merchants_url(account_id):
-    """Return the merchant-policy POST's URL for *account_id*."""
+    """Return the merchant-rule POST's URL for *account_id*."""
     return f"/accounts/{account_id}/statements/review/merchants"
 
 
-def _policy(index, merchant_id, *, answer, name="", category_id=""):
-    """Return the form fields ONE merchant row of the policy section submits.
+def _rules(index, merchant_id, *, answer, name="", category_id=""):
+    """Return the form fields ONE merchant row of the rule section submits.
 
     **Every control the row renders**, whichever answer was picked, because a
     browser submits every control it renders -- the fact a hand-picked payload
@@ -237,8 +237,8 @@ def _policy(index, merchant_id, *, answer, name="", category_id=""):
         index: The row's rendered position, which is what keys its fields.
         merchant_id: The merchant ROW the hidden input carries (plan step
             ``bank_import:X-gd-1``); it was the bank's own string until then.
-        answer: ``"unset"`` (I have not said), ``"never"``, ``"new"``, or
-            ``"t:<template_id>"``.
+        answer: ``"unset"`` (I have not said), ``"never"``, ``"ask"``,
+            ``"new"``, or ``"t:<template_id>"``.
         name: What the envelope-name box carries.
         category_id: What the category select carries; ``""`` is its default.
 
@@ -246,15 +246,15 @@ def _policy(index, merchant_id, *, answer, name="", category_id=""):
         The form fields, as a plain ``dict`` for the test client.
     """
     return {
-        f"policy-{index}": str(answer),
-        f"policy_merchant-{index}": str(merchant_id),
-        f"policy_name-{index}": name,
-        f"policy_category-{index}": str(category_id),
+        f"rule-{index}": str(answer),
+        f"rule_merchant-{index}": str(merchant_id),
+        f"rule_name-{index}": name,
+        f"rule_category-{index}": str(category_id),
     }
 
 
-class _PolicyFormReader(HTMLParser):
-    """Collect the policy form's controls and their RENDERED values.
+class _RuleFormReader(HTMLParser):
+    """Collect the rule form's controls and their RENDERED values.
 
     **A browser submits every control it renders, at the value it renders**, and
     that is the fact a hand-written payload cannot check -- it is written by the
@@ -263,11 +263,11 @@ class _PolicyFormReader(HTMLParser):
 
     A ``<select>`` submits the option carrying ``selected``, and its FIRST
     option when none does; an ``<input>`` submits its ``value``.  Only controls
-    whose name begins with ``policy`` are collected, because the review body
+    whose name begins with ``rule`` are collected, because the review body
     holds three forms and a browser posts one at a time.
     """
 
-    def __init__(self, prefixes=("policy",)):
+    def __init__(self, prefixes=("rule",)):
         super().__init__()
         self.prefixes = prefixes
         self.controls = {}
@@ -306,9 +306,9 @@ class _PolicyFormReader(HTMLParser):
             self._select = None
 
 
-def _policy_form_controls(page):
-    """Return what a browser would submit for the merchant-policy form."""
-    reader = _PolicyFormReader()
+def _rule_form_controls(page):
+    """Return what a browser would submit for the merchant-rule form."""
+    reader = _RuleFormReader()
     reader.feed(page)
     return reader.controls
 
@@ -316,12 +316,12 @@ def _policy_form_controls(page):
 def _apply_form_controls(page):
     """Return what a browser would submit for the APPLY form, untouched.
 
-    The money form's own version of :func:`_policy_form_controls`, and it
+    The money form's own version of :func:`_rule_form_controls`, and it
     exists for the sharper case: pressing Apply having touched nothing must
     write nothing, and a hand-written ``destination=""`` grades the reader's
     idea of the default rather than the template's.
     """
-    reader = _PolicyFormReader(
+    reader = _RuleFormReader(
         prefixes=("destination-", "envelope_name-", "category_id-", "apply"),
     )
     reader.feed(page)
@@ -331,7 +331,7 @@ def _apply_form_controls(page):
 class _TickedMatchReader(HTMLParser):
     """Collect the APPLY form's match controls, keeping REPEATED names.
 
-    :class:`_PolicyFormReader`'s twin for the one field that is submitted more
+    :class:`_RuleFormReader`'s twin for the one field that is submitted more
     than once per item.  A ``dict`` cannot hold a GROUP -- ``match-0-rows`` is
     rendered once per member row -- and a group is exactly where the
     multi-value defect this file's own docstring names would hide.
@@ -629,7 +629,7 @@ class TestTheReviewPage:
         same distance from one line and both name its merchant, so the pass
         declines to pick -- *an ambiguous proposal is a question dressed as an
         answer*.  Saying nothing would leave the line looking like one nothing
-        could explain, which is the state the merchant policy offers to RECORD
+        could explain, which is the state the merchant rule offers to RECORD
         and the duplicate this whole step exists to stop.
 
         **It is rendered against the LINE since plan step
@@ -1180,7 +1180,7 @@ class TestOneRequestWorksTheWholeStatement:
     def test_a_refused_item_is_QUOTED_and_the_rest_still_land(
         self, auth_client, db, seed_user,
     ):
-        """The ruled failure policy, on the screen the owner is looking at.
+        """The ruled failure rule, on the screen the owner is looking at.
 
         Flash messages ride in the signed session cookie and one of these
         sentences measures 497 bytes against the 4 KB a browser stores -- nine
@@ -2382,7 +2382,7 @@ class TestTheCreateArm:
     def test_a_new_envelope_missing_its_CATEGORY_costs_only_ITSELF(
         self, auth_client, db, seed_user,
     ):
-        """The ruled failure policy, on the slip the FORM ITSELF produces.
+        """The ruled failure rule, on the slip the FORM ITSELF produces.
 
         A budget line with no category is invisible to every spending report,
         so it must be refused -- and the category select has no default on
@@ -2490,7 +2490,7 @@ def _a_line(seed_user, merchant="Amazon", amount="-57.96", sequence=0,
 
     Args:
         seed_user: The seeded user bundle.
-        merchant: What the bank names the merchant, which is the policy key.
+        merchant: What the bank names the merchant, which is the rule key.
         amount: Signed, negative OUT of the account.
         sequence: The ordinal completing the line's identity.
         source_category: The BANK's own category string, verbatim, or ``None``
@@ -2513,15 +2513,15 @@ def _a_line(seed_user, merchant="Amazon", amount="-57.96", sequence=0,
 
 
 
-class TestTheMerchantPolicySection:
+class TestTheStandingRuleSection:
     """Where your merchants go: the control, its door, and what it may not do.
 
     Plan step **bank_import:X-f6a-3d**.  The route's own subjects: ownership,
-    the form payload, and -- the one that matters most -- that a stated policy
+    the form payload, and -- the one that matters most -- that a stated rule
     reaches the SCREEN as a suggestion and never as a selected control.
     """
 
-    def test_the_page_offers_a_policy_row_per_merchant(
+    def test_the_page_offers_a_rule_row_per_merchant(
         self, auth_client, db, seed_user,
     ):
         """The card is what makes the whole leaf reachable.
@@ -2538,7 +2538,7 @@ class TestTheMerchantPolicySection:
 
         assert response.status_code == 200
         assert b"Where your merchants go" in response.data
-        assert b'name="policy_merchant-0"' in response.data
+        assert b'name="rule_merchant-0"' in response.data
         assert b"-- never a purchase --" in response.data
         # ...and the option list is the account's recurring DEFINITIONS, graded
         # by the id it carries rather than by the word "Groceries" -- which is
@@ -2566,7 +2566,7 @@ class TestTheMerchantPolicySection:
         response = auth_client.get(_review_url(seed_user["account"].id))
         body = response.data.decode()
 
-        marker = body.index('name="policy-0"')
+        marker = body.index('name="rule-0"')
         control = body[marker:body.index("</select>", marker)]
         assert '<option value="unset" selected>' in control
         # ...and it is the ONLY option selected, so nothing else is offered as
@@ -2585,7 +2585,7 @@ class TestTheMerchantPolicySection:
 
         response = auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(
+            data=_rules(
                 0, a_merchant(seed_user, "Amazon").id,
                 answer=f"t:{envelope.template_id}",
             ),
@@ -2595,7 +2595,7 @@ class TestTheMerchantPolicySection:
         assert b"Amazon goes in Groceries." in response.data
         assert b"changed no money" in response.data
 
-    def test_a_stated_policy_SUGGESTS_and_does_not_select(
+    def test_a_stated_rule_SUGGESTS_and_does_not_select(
         self, auth_client, db, seed_user,
     ):
         """THE MONEY TEST, and the one the whole design turns on.
@@ -2608,7 +2608,7 @@ class TestTheMerchantPolicySection:
         undone from this screen: releasing a match keeps the purchase and any
         envelope it created.
 
-        So the policy is rendered BESIDE the control and the control still
+        So the rule is rendered BESIDE the control and the control still
         opens on the do-nothing arm.  Delete that separation and this fails.
         """
         envelope = _an_envelope(seed_user)
@@ -2616,7 +2616,7 @@ class TestTheMerchantPolicySection:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(
+            data=_rules(
                 0, a_merchant(seed_user, "Amazon").id,
                 answer=f"t:{envelope.template_id}",
             ),
@@ -2635,7 +2635,7 @@ class TestTheMerchantPolicySection:
         assert '<option value="" selected>' in control
         assert f'<option value="{envelope.id}">' in control
 
-    def test_pressing_APPLY_with_a_policy_and_no_tick_records_nothing(
+    def test_pressing_APPLY_with_a_rule_and_no_tick_records_nothing(
         self, auth_client, db, seed_user,
     ):
         """The suggestion is inert until the owner acts on it.
@@ -2650,7 +2650,7 @@ class TestTheMerchantPolicySection:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(
+            data=_rules(
                 0, a_merchant(seed_user, "Amazon").id,
                 answer=f"t:{envelope.template_id}",
             ),
@@ -2689,7 +2689,7 @@ class TestTheMerchantPolicySection:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(
+            data=_rules(
                 0, a_merchant(seed_user, "Amazon").id,
                 answer=f"t:{envelope.template_id}",
             ),
@@ -2735,7 +2735,7 @@ class TestTheMerchantPolicySection:
 
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(
+            data=_rules(
                 0, a_merchant(seed_user, "Capital One Credit Card").id,
                 answer="never",
             ),
@@ -2752,7 +2752,7 @@ class TestTheMerchantPolicySection:
         # name box and no category select for this line, so a browser has
         # nothing to submit for it.  **The APPLY form's controls, not the
         # page's text**: "-- a new envelope --" still appears on the page as an
-        # ANSWER the policy section offers, which is a different control on a
+        # ANSWER the rule section offers, which is a different control on a
         # different form posting to a door that moves no money.
         assert _apply_form_controls(response.data.decode()) == {
             "apply": "hand",
@@ -2802,7 +2802,7 @@ class TestTheMerchantPolicySection:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(
+            data=_rules(
                 0, a_merchant(seed_user, "Alpha").id,
                 answer=f"t:{envelope.template_id}",
             ),
@@ -2811,8 +2811,8 @@ class TestTheMerchantPolicySection:
         response = auth_client.post(
             _merchants_url(seed_user["account"].id),
             data=_pass(
-                _policy(0, a_merchant(seed_user, "Alpha").id, answer=f"t:{envelope.template_id}"),
-                _policy(1, a_merchant(seed_user, "Beta").id, answer="never"),
+                _rules(0, a_merchant(seed_user, "Alpha").id, answer=f"t:{envelope.template_id}"),
+                _rules(1, a_merchant(seed_user, "Beta").id, answer="never"),
             ),
         )
         body = " ".join(response.data.decode().split())
@@ -2830,7 +2830,7 @@ class TestTheMerchantPolicySection:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, a_merchant(seed_user, "Lowe's").id, answer="new", name="Yard & Garden",
+            data=_rules(0, a_merchant(seed_user, "Lowe's").id, answer="new", name="Yard & Garden",
                          category_id=category.id),
         )
 
@@ -2853,7 +2853,7 @@ class TestTheMerchantPolicySection:
     ):
         """An IDOR on the control that decides where later money is filed.
 
-        ``fk_merchant_destinations_template_account`` makes it unwritable; this
+        ``fk_merchant_rules_template_account`` makes it unwritable; this
         is what makes the refusal a sentence rather than a 500 with a logged
         traceback.
         """
@@ -2866,7 +2866,7 @@ class TestTheMerchantPolicySection:
 
         response = auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(
+            data=_rules(
                 0, a_merchant(seed_user, "Amazon").id,
                 answer=f"t:{foreign.template_id}",
             ),
@@ -2874,10 +2874,10 @@ class TestTheMerchantPolicySection:
 
         assert response.status_code == 200
         assert b"no recurring envelope on this account" in response.data
-        from app.models.merchant_destination import (  # pylint: disable=import-outside-toplevel
-            MerchantDestination,
+        from app.models.merchant_rule import (  # pylint: disable=import-outside-toplevel
+            MerchantRule,
         )
-        assert db.session.query(MerchantDestination).count() == 0
+        assert db.session.query(MerchantRule).count() == 0
 
     def test_a_merchant_this_ACCOUNT_never_saw_is_refused_on_screen(
         self, auth_client, db, seed_user,
@@ -2886,7 +2886,7 @@ class TestTheMerchantPolicySection:
 
         The section renders exactly the merchants this account's recorded lines
         name, so a statement about another is a crafted request -- and the
-        table would otherwise take a policy for any string at all.
+        table would otherwise take a rule for any string at all.
         """
         _an_envelope(seed_user)
         _a_line(seed_user)
@@ -2900,7 +2900,7 @@ class TestTheMerchantPolicySection:
         # ``IntegrityError`` reaching the owner as "Something went wrong".
         response = auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, 9_999_999, answer="never"),
+            data=_rules(0, 9_999_999, answer="never"),
         )
 
         assert response.status_code == 400
@@ -2934,19 +2934,19 @@ class TestTheMerchantPolicySection:
 
         real = auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, theirs.id, answer="never"),
+            data=_rules(0, theirs.id, answer="never"),
         )
         nobodys = auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, 9_999_999, answer="never"),
+            data=_rules(0, 9_999_999, answer="never"),
         )
 
         assert real.status_code == nobodys.status_code == 400
         assert real.data == nobodys.data
-        from app.models.merchant_destination import (  # pylint: disable=import-outside-toplevel
-            MerchantDestination,
+        from app.models.merchant_rule import (  # pylint: disable=import-outside-toplevel
+            MerchantRule,
         )
-        assert db.session.query(MerchantDestination).count() == 0
+        assert db.session.query(MerchantRule).count() == 0
 
     def test_a_CRAFTED_answer_is_refused_rather_than_a_500(
         self, auth_client, db, seed_user,
@@ -2963,7 +2963,7 @@ class TestTheMerchantPolicySection:
 
         response = auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(
+            data=_rules(
                 0, a_merchant(seed_user, "Amazon").id,
                 answer="t:007",
             ),
@@ -2982,7 +2982,7 @@ class TestTheMerchantPolicySection:
         """
         response = auth_client.post(
             _merchants_url(seed_second_user["account"].id),
-            data=_policy(
+            data=_rules(
                 0, a_merchant(seed_user, "Amazon").id,
                 answer="never",
             ),
@@ -2990,13 +2990,13 @@ class TestTheMerchantPolicySection:
 
         assert response.status_code == 404
 
-    def test_a_NEW_ENVELOPE_policy_prefills_the_name_and_the_CATEGORY(
+    def test_a_NEW_ENVELOPE_rule_prefills_the_name_and_the_CATEGORY(
         self, auth_client, db, seed_user,
     ):
         """Decided on the SERVER, so no-script and the sweep agree.
 
         A first version set these two from JavaScript when the sweep ran, which
-        left the no-script path filing the policy's line under the MERCHANT's
+        left the no-script path filing the rule's line under the MERCHANT's
         name instead of the one the owner stated -- one rule about what a
         created envelope is called, in two places, disagreeing on the path that
         has no scripting at all.
@@ -3007,7 +3007,7 @@ class TestTheMerchantPolicySection:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(
+            data=_rules(
                 0, a_merchant(seed_user, "Lowe's").id, answer="new", name="Yard & Garden",
                 category_id=category.id,
             ),
@@ -3018,7 +3018,7 @@ class TestTheMerchantPolicySection:
         ).data.decode()
 
         # Pinned to the CREATE FORM's own controls.  Both values are emitted
-        # by the policy section too, so a bare substring passed with either
+        # by the rule section too, so a bare substring passed with either
         # site broken; adversarial test-quality review 2026-08-19 measured
         # that each was individually ungraded.
         line_id = db.session.query(BankStatementLine).one().id
@@ -3029,21 +3029,27 @@ class TestTheMerchantPolicySection:
         assert f'<option value="{category.id}" selected>' in control
         assert control.count("selected") == 1
 
-    def test_a_stated_policy_can_be_WITHDRAWN_from_the_screen(
+    def test_a_stated_rule_is_REVOKED_by_answering_ask_me_every_time(
         self, auth_client, db, seed_user,
     ):
-        """THE FIRING CONTROL for naming the do-nothing arm.
+        """THE FIRING CONTROL for revocation, over the wire.
 
-        The control's default value used to be the empty string, which
-        ``BaseSchema``'s ``@pre_load`` normalizer drops -- so ``required=True``
-        read a withdrawal as a missing answer and refused it, and a policy
-        could be restated but never taken back.  That matters beyond tidiness:
-        a policy is a statement about today's budget, and when the credit-card
-        arc gives Capital One its own account the Checking-side answer stops
-        being right.
+        **This case replaced ``test_a_stated_rule_can_be_WITHDRAWN_from_the_
+        screen``**, which posted ``unset`` and asserted the row was gone.
+        Ruling **R-GS** (developer, 2026-08-25) removed the withdrawal: a rule
+        is only ever restated, and *ask me every time* is the answer that
+        revokes a destination.  What the case exists for is unchanged -- a rule
+        is a statement about today's budget, and when the credit-card arc gives
+        Capital One its own account the Checking-side answer stops being right,
+        so the owner must be able to take a destination back from this screen.
+
+        The named-arm point the old case also made is kept and moved to the new
+        value: ``BaseSchema``'s ``@pre_load`` normalizer drops every ``""`` a
+        form submits, so an arm spelled as an absence is an arm that never
+        arrives.
         """
-        from app.models.merchant_destination import (  # pylint: disable=import-outside-toplevel
-            MerchantDestination,
+        from app.models.merchant_rule import (  # pylint: disable=import-outside-toplevel
+            MerchantRule,
         )
 
         envelope = _an_envelope(seed_user)
@@ -3051,23 +3057,69 @@ class TestTheMerchantPolicySection:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(
+            data=_rules(
                 0, a_merchant(seed_user, "Amazon").id,
                 answer=f"t:{envelope.template_id}",
             ),
         )
-        assert db.session.query(MerchantDestination).count() == 1
+        assert db.session.query(MerchantRule).one().template_id == (
+            envelope.template_id
+        )
 
         response = auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(
+            data=_rules(
+                0, a_merchant(seed_user, "Amazon").id,
+                answer="ask",
+            ),
+        )
+
+        assert response.status_code == 200
+        row = db.session.query(MerchantRule).one()
+        assert row.template_id is None
+        # ...and NOT the other container-less answer.  A revocation that landed
+        # on *never a purchase* would bar every future line from this merchant,
+        # which is the opposite of what the owner asked for.
+        assert row.never_a_purchase is False
+
+    def test_answering_UNSET_for_a_merchant_that_HAS_a_rule_changes_nothing(
+        self, auth_client, db, seed_user,
+    ):
+        """A rule is never un-stated, including by a stale page (**R-GS**).
+
+        The screen renders *I have not said* only where there is no rule, so a
+        browser cannot send this -- but a page rendered before the rule existed
+        can, and a crafted body always can.  It has to be a NO-OP rather than a
+        delete, because the delete is the door ruling R-GS removed and this is
+        the only remaining way to reach it.
+        """
+        from app.models.merchant_rule import (  # pylint: disable=import-outside-toplevel
+            MerchantRule,
+        )
+
+        envelope = _an_envelope(seed_user)
+        _a_line(seed_user)
+        db.session.commit()
+        auth_client.post(
+            _merchants_url(seed_user["account"].id),
+            data=_rules(
+                0, a_merchant(seed_user, "Amazon").id,
+                answer=f"t:{envelope.template_id}",
+            ),
+        )
+
+        response = auth_client.post(
+            _merchants_url(seed_user["account"].id),
+            data=_rules(
                 0, a_merchant(seed_user, "Amazon").id,
                 answer="unset",
             ),
         )
 
         assert response.status_code == 200
-        assert db.session.query(MerchantDestination).count() == 0
+        assert db.session.query(MerchantRule).one().template_id == (
+            envelope.template_id
+        )
 
     def test_submitting_the_RENDERED_form_UNCHANGED_records_nothing(
         self, auth_client, db, seed_user,
@@ -3082,10 +3134,13 @@ class TestTheMerchantPolicySection:
         refused.  Every hand-written payload in this class shares the flaw that
         it is written by the same person as the template.
 
-        So this one reads the rendered page, submits every control the policy
+        So this one reads the rendered page, submits every control the rule
         form actually contains at the value it actually carries, and asserts
-        the round trip is a NO-OP: nothing recorded, nothing refused, and every
-        answered merchant counted as unchanged.
+        the round trip is a NO-OP: nothing recorded, nothing refused, and the
+        one ANSWERED merchant counted as unchanged.  (The other renders *I have
+        not said*, which the route drops before the door, so it is counted as
+        neither -- and the receipt's denominator is what tells those two states
+        apart.)
         """
         envelope = _an_envelope(seed_user)
         _a_line(seed_user)
@@ -3093,7 +3148,7 @@ class TestTheMerchantPolicySection:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(
+            data=_rules(
                 0, a_merchant(seed_user, "Amazon").id,
                 answer=f"t:{envelope.template_id}",
             ),
@@ -3102,18 +3157,24 @@ class TestTheMerchantPolicySection:
         page = auth_client.get(
             _review_url(seed_user["account"].id),
         ).data.decode()
-        submitted = _policy_form_controls(page)
+        submitted = _rule_form_controls(page)
         response = auth_client.post(
             _merchants_url(seed_user["account"].id), data=submitted,
         )
 
         # The form really did carry both merchants and all four fields each.
         assert sorted(
-            key for key in submitted if key.startswith("policy_merchant-")
-        ) == ["policy_merchant-0", "policy_merchant-1"]
+            key for key in submitted if key.startswith("rule_merchant-")
+        ) == ["rule_merchant-0", "rule_merchant-1"]
         assert response.status_code == 200
         assert b"Nothing changed" in response.data
         assert b"were not recorded" not in response.data
+        # ...and the DENOMINATOR, which is what makes the sentence above mean
+        # "the answer was already stored" rather than "nothing was submitted".
+        # Asserting only the flash left `unchanged_count == 0` and `== 1`
+        # indistinguishable, on the one number that says a restatement was
+        # SEEN.  Found by adversarial review 2026-08-26.
+        assert b"1 other merchant(s) were already answered" in response.data
 
     def test_a_merchant_carrying_MARKUP_is_escaped_in_every_attribute(
         self, auth_client, db, seed_user,
@@ -3145,7 +3206,7 @@ class TestTheMerchantPolicySection:
         assert 'onmouseover="alert(1)"' not in body
         assert "&#34; onmouseover=&#34;alert(1)" in body
 
-    def test_a_policy_that_cannot_REACH_this_line_says_why_and_ticks_nothing(
+    def test_a_rule_that_cannot_REACH_this_line_says_why_and_ticks_nothing(
         self, auth_client, db, seed_user,
     ):
         """The template's last branch, which an `{% else %}` hides when wrong.
@@ -3171,7 +3232,7 @@ class TestTheMerchantPolicySection:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(
+            data=_rules(
                 0, a_merchant(seed_user, "Amazon").id,
                 answer=f"t:{closed.template_id}",
             ),
@@ -3206,10 +3267,10 @@ class TestTheMerchantPolicySection:
         auth_client.post(
             _merchants_url(seed_user["account"].id),
             data=_pass(
-                _policy(0, a_merchant(seed_user, "Alpha").id, answer=f"t:{envelope.template_id}"),
-                _policy(1, a_merchant(seed_user, "Beta").id, answer="new", name="Beta Fund",
+                _rules(0, a_merchant(seed_user, "Alpha").id, answer=f"t:{envelope.template_id}"),
+                _rules(1, a_merchant(seed_user, "Beta").id, answer="new", name="Beta Fund",
                         category_id=category.id),
-                _policy(2, a_merchant(seed_user, "Gamma").id, answer="never"),
+                _rules(2, a_merchant(seed_user, "Gamma").id, answer="never"),
             ),
         )
 
@@ -3220,7 +3281,7 @@ class TestTheMerchantPolicySection:
         for index, expected in enumerate(
             (f"t:{envelope.template_id}", "new", "never"),
         ):
-            marker = body.index(f'name="policy-{index}"')
+            marker = body.index(f'name="rule-{index}"')
             control = body[marker:body.index("</select>", marker)]
             assert f'<option value="{expected}" selected>' in control, expected
             # ...and it is the ONLY one, so no browser has to choose.
@@ -3231,7 +3292,7 @@ class TestTheMerchantPolicySection:
     ):
         """The stale-answer option, end to end through the screen.
 
-        Deactivating a template does not delete the policy naming it, and
+        Deactivating a template does not delete the rule naming it, and
         ``offerable_templates`` stops listing it -- so without an option of its
         own the select falls back to *I have not said* and the next Save
         withdraws an answer the owner never touched.
@@ -3239,8 +3300,8 @@ class TestTheMerchantPolicySection:
         from app.models.transaction_template import (  # pylint: disable=import-outside-toplevel
             TransactionTemplate,
         )
-        from app.models.merchant_destination import (  # pylint: disable=import-outside-toplevel
-            MerchantDestination,
+        from app.models.merchant_rule import (  # pylint: disable=import-outside-toplevel
+            MerchantRule,
         )
 
         envelope = _an_envelope(seed_user)
@@ -3248,7 +3309,7 @@ class TestTheMerchantPolicySection:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(
+            data=_rules(
                 0, a_merchant(seed_user, "Amazon").id,
                 answer=f"t:{envelope.template_id}",
             ),
@@ -3261,7 +3322,7 @@ class TestTheMerchantPolicySection:
         page = auth_client.get(
             _review_url(seed_user["account"].id),
         ).data.decode()
-        marker = page.index('name="policy-0"')
+        marker = page.index('name="rule-0"')
         control = page[marker:page.index("</select>", marker)]
         assert f'<option value="t:{envelope.template_id}" selected>' in control
         assert "no longer offered" in " ".join(control.split())
@@ -3269,9 +3330,176 @@ class TestTheMerchantPolicySection:
         # ...and submitting the page back UNCHANGED leaves the answer alone.
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy_form_controls(page),
+            data=_rule_form_controls(page),
         )
-        assert db.session.query(MerchantDestination).count() == 1
+        assert db.session.query(MerchantRule).count() == 1
+
+    def test_an_UNANSWERED_merchant_opens_on_I_have_not_said(
+        self, auth_client, db, seed_user,
+    ):
+        """What a browser submits for a merchant with no rule.
+
+        The half of ruling **R-GS** that has to keep working: *I have not said*
+        is still the control's opening state where nothing has been said, and
+        it still means *state nothing*.  Read off the page rather than
+        asserted from the template, because what is under test is the value a
+        browser would post.
+        """
+        _an_envelope(seed_user)
+        _a_line(seed_user)
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+
+        assert _rule_form_controls(page)["rule-0"] == "unset"
+
+    def test_an_ANSWERED_merchant_is_NOT_offered_I_have_not_said(
+        self, auth_client, db, seed_user,
+    ):
+        """Ruling **R-GS**: there is no act behind that option once a rule exists.
+
+        It used to be the WITHDRAWAL, and a rule is never un-stated now, so the
+        option is not rendered at all -- an option whose submission does
+        nothing is a control that says the owner may take an answer back when
+        they may not.
+
+        **What a browser would submit is asserted beside its absence**, because
+        those are two different failures: dropping the option from the markup
+        while leaving the select unselected would make a browser post the FIRST
+        option instead, which is a real envelope and would silently re-aim the
+        rule.
+        """
+        envelope = _an_envelope(seed_user)
+        _a_line(seed_user)
+        db.session.commit()
+        auth_client.post(
+            _merchants_url(seed_user["account"].id),
+            data=_rules(
+                0, a_merchant(seed_user, "Amazon").id,
+                answer=f"t:{envelope.template_id}",
+            ),
+        )
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+        marker = page.index('name="rule-0"')
+        control = page[marker:page.index("</select>", marker)]
+
+        assert 'value="unset"' not in control
+        assert _rule_form_controls(page)["rule-0"] == (
+            f"t:{envelope.template_id}"
+        )
+
+    def test_ASK_ME_EVERY_TIME_is_offered_and_round_trips(
+        self, auth_client, db, seed_user,
+    ):
+        """The fourth answer, end to end through the screen (**R-GS**).
+
+        It is the answer that looks most like the absence of one, so the arm
+        that would be missed is the RENDER: a control that stored *ask me every
+        time* and then displayed something else would send the owner's next
+        Save somewhere they never chose.
+        """
+        from app.models.merchant_rule import (  # pylint: disable=import-outside-toplevel
+            MerchantRule,
+        )
+
+        _an_envelope(seed_user)
+        _a_line(seed_user)
+        db.session.commit()
+        auth_client.post(
+            _merchants_url(seed_user["account"].id),
+            data=_rules(
+                0, a_merchant(seed_user, "Amazon").id, answer="ask",
+            ),
+        )
+        assert db.session.query(MerchantRule).one().never_a_purchase is False
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+
+        assert "-- ask me every time --" in page
+        assert _rule_form_controls(page)["rule-0"] == "ask"
+
+        # ...and posting the page straight back changes nothing, which is what
+        # says the render and the door agree about which answer this is.
+        response = auth_client.post(
+            _merchants_url(seed_user["account"].id),
+            data=_rule_form_controls(page),
+        )
+        assert b"Nothing changed" in response.data
+        assert db.session.query(MerchantRule).one().never_a_purchase is False
+
+    def test_a_stored_answer_whose_CATEGORY_was_ARCHIVED_still_round_trips(
+        self, auth_client, db, seed_user,
+    ):
+        """The category select's totality, and the state THIS step created.
+
+        The picker renders active categories only, so an archived one had no
+        option carrying the stored value: the select carried no ``selected``
+        and a browser posted its first, the EMPTY one. That reaches the door as
+        a new-envelope answer with no category and is REFUSED -- so pressing
+        Save to answer about one merchant printed "a new envelope needs both a
+        name and a category" for another the owner never touched, every pass,
+        naming the wrong half.
+
+        **This step is what makes the state reachable.** Before it, deleting a
+        category only a rule used hard-deleted it and cascaded the rule away,
+        leaving nothing to mis-render; teaching ``category_has_usage`` about
+        this table turns that into an ARCHIVE, which is exactly this. Found by
+        two adversarial reviews 2026-08-26.
+
+        Driven through the real page and posted back, because the defect is in
+        what a BROWSER submits for a control nobody touched -- which is the one
+        thing a hand-written payload cannot show.
+        """
+        from app.models.category import (  # pylint: disable=import-outside-toplevel
+            Category,
+        )
+        from app.models.merchant_rule import (  # pylint: disable=import-outside-toplevel
+            MerchantRule,
+        )
+
+        _a_line(seed_user)
+        category = seed_user["categories"]["Groceries"]
+        db.session.commit()
+        auth_client.post(
+            _merchants_url(seed_user["account"].id),
+            data=_rules(
+                0, a_merchant(seed_user, "Amazon").id,
+                answer="new", name="Amazon Spending",
+                category_id=str(category.id),
+            ),
+        )
+        assert db.session.query(MerchantRule).one().category_id == category.id
+
+        db.session.query(Category).filter(
+            Category.id == category.id,
+        ).update({"is_active": False})
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+        submitted = _rule_form_controls(page)
+
+        # The browser carries the STORED category, not the empty option.
+        assert submitted["rule_category-0"] == str(category.id)
+        assert "-- archived" in page
+
+        response = auth_client.post(
+            _merchants_url(seed_user["account"].id), data=submitted,
+        )
+
+        # ...so posting the page straight back is a no-op rather than a
+        # refusal about a merchant the owner never touched.
+        assert response.status_code == 200
+        assert b"were not recorded" not in response.data
+        assert db.session.query(MerchantRule).one().category_id == category.id
 
     def test_the_sweep_is_rendered_PER_CLASS_and_names_its_counts(
         self, auth_client, db, seed_user,
@@ -3294,8 +3522,8 @@ class TestTheMerchantPolicySection:
         auth_client.post(
             _merchants_url(seed_user["account"].id),
             data=_pass(
-                _policy(0, a_merchant(seed_user, "Alpha").id, answer=f"t:{template_id}"),
-                _policy(1, a_merchant(seed_user, "Beta").id, answer="new", name="Beta Fund",
+                _rules(0, a_merchant(seed_user, "Alpha").id, answer=f"t:{template_id}"),
+                _rules(1, a_merchant(seed_user, "Beta").id, answer="new", name="Beta Fund",
                         category_id=category.id),
             ),
         )
@@ -3333,7 +3561,7 @@ class TestTheScreenSaysWhichLineWouldCREATE:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, a_merchant(seed_user, "Lowe's").id, answer="new", name="Yard & Garden",
+            data=_rules(0, a_merchant(seed_user, "Lowe's").id, answer="new", name="Yard & Garden",
                          category_id=category.id),
         )
 
@@ -3385,7 +3613,7 @@ class TestALineThatMayNeverBecomeAPurchase:
         A card the owner has never answered for is the case a merchant-keyed
         answer cannot reach -- there is no answer yet to key on -- and it is
         exactly the case a first statement brings.  The line is parked, the
-        page says why, and the policy row says which two of its own options are
+        page says why, and the rule row says which two of its own options are
         refused so that refusal is not the first the owner hears of it.
         """
         _an_envelope(seed_user)
@@ -3461,7 +3689,7 @@ class TestALineThatMayNeverBecomeAPurchase:
 
         response = auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(
+            data=_rules(
                 0, a_merchant(seed_user, "Capital One Credit Card").id,
                 answer=f"t:{envelope.template_id}",
             ),
@@ -3469,10 +3697,10 @@ class TestALineThatMayNeverBecomeAPurchase:
         body = " ".join(response.data.decode().split())
 
         assert "cannot be filed in a budget line" in body
-        from app.models.merchant_destination import (  # pylint: disable=import-outside-toplevel
-            MerchantDestination,
+        from app.models.merchant_rule import (  # pylint: disable=import-outside-toplevel
+            MerchantRule,
         )
-        assert db.session.query(MerchantDestination).count() == 0
+        assert db.session.query(MerchantRule).count() == 0
         # ...and the line is still parked, with no control anywhere.
         page = auth_client.get(
             _review_url(seed_user["account"].id),
@@ -3499,7 +3727,7 @@ class TestALineThatMayNeverBecomeAPurchase:
 
         response = auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(
+            data=_rules(
                 0, a_merchant(seed_user, "Capital One Credit Card").id,
                 answer="never",
             ),
@@ -3507,10 +3735,10 @@ class TestALineThatMayNeverBecomeAPurchase:
         body = " ".join(response.data.decode().split())
 
         assert "Capital One Credit Card is never a purchase." in body
-        from app.models.merchant_destination import (  # pylint: disable=import-outside-toplevel
-            MerchantDestination,
+        from app.models.merchant_rule import (  # pylint: disable=import-outside-toplevel
+            MerchantRule,
         )
-        stored = db.session.query(MerchantDestination).one()
+        stored = db.session.query(MerchantRule).one()
         assert stored.merchant_id == a_merchant(
             seed_user, "Capital One Credit Card",
         ).id
@@ -3537,7 +3765,7 @@ class TestALineThatMayNeverBecomeAPurchase:
         stale[f"destination-{line.id}"] = str(envelope.id)
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(
+            data=_rules(
                 0, a_merchant(seed_user, "Capital One Credit Card").id,
                 answer="never",
             ),
@@ -3569,7 +3797,7 @@ class TestALineThatMayNeverBecomeAPurchase:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(
+            data=_rules(
                 0, a_merchant(seed_user, "Capital One Credit Card").id,
                 answer="never",
             ),

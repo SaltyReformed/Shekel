@@ -35,6 +35,7 @@ from app.enums import SettlementBasisEnum, StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.category import Category
+from app.models.statement_match import StatementMatch
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import (
@@ -193,6 +194,36 @@ class TestRecordingALineAddsTheMovement:
 
             after = _balance_on(seed_user, day + timedelta(days=2))
             assert after == before - Decimal("57.96")
+
+    def test_the_act_is_recorded_as_a_TICK_and_not_as_a_rule(
+        self, app, db, seed_user,
+    ):
+        """Ruling **R-GT**, at this package's SECOND writer of a match act.
+
+        Both doors reach ``record_match``, and ``applied_by_rule`` is
+        keyword-only with no default the whole way down, so each states the
+        fact for itself.  Today both state ``False``: this one is entered from
+        the review screen's own per-line destination select, one line at a time
+        under a human press.  **This is the call site plan step
+        ``bank_import:X-ge`` changes**, when the same creation runs under a
+        standing rule at import -- so a case that asserted nothing here would
+        let that step ship without anyone noticing which acts it re-labelled.
+        """
+        with app.app_context():
+            envelope = _closed_from_purchases(seed_user)
+            statement = an_import(seed_user)
+            day = seed_user["bootstrap_period"].start_date + timedelta(days=5)
+            line = a_bank_line(
+                seed_user, statement, amount="-57.96", posted_on=day,
+                description="POINT OF SALE DEBIT L340 WAL-MART (Walmart)",
+            )
+
+            _record(seed_user, line, transaction_id=envelope.id)
+            db.session.flush()
+
+            assert db.session.query(StatementMatch).one().applied_by_rule is (
+                False
+            )
 
     def test_the_envelope_s_recorded_cost_grows_by_the_purchase(
         self, app, db, seed_user,

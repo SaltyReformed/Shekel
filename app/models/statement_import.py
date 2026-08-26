@@ -357,8 +357,8 @@ class BankStatementLine(db.Model):
                         was with, or ``None`` where the source names none.
                         **The one column here that a rule MATCHES on** (plan
                         step ``bank_import:X-f6a-3d``): a
-                        :class:`~app.models.merchant_destination
-                        .MerchantDestination` is keyed by the same row, so
+                        :class:`~app.models.merchant_rule
+                        .MerchantRule` is keyed by the same row, so
                         *lines from this merchant go in this budget line* is a
                         fact the owner states once.  It held the bank's string
                         itself until plan step ``bank_import:X-gd-1``, when the
@@ -430,13 +430,13 @@ class BankStatementLine(db.Model):
     ``bank_import:X-f6a-3d``).  It was
     ``statement_match._offers.merchant_of(description)``, read at render time,
     and that was right for what it fed: a form's name box, where a wrong parse
-    costs a badly-named row.  Keying a POLICY on it is a stronger claim than a
+    costs a badly-named row.  Keying a RULE on it is a stronger claim than a
     display default can carry, in one specific way -- that reader is TOTAL, so
     a source with no merchant token falls back to the whole description, and
     SECU's own OFX truncates 326 of its 361 descriptions to exactly 32
-    characters.  Every one of those would key one policy, which would then fire
+    characters.  Every one of those would key one rule, which would then fire
     on every merchant behind them.  A NULL keys nothing, so a source that
-    cannot name a merchant offers no policy rather than a wrong one -- the same
+    cannot name a merchant offers no rule rather than a wrong one -- the same
     direction a missing fact has to fail in that :attr:`transaction_on` already
     fails in.
     **It is read from the source's own merchant FIELD** (for SECU's CSV, the
@@ -547,9 +547,9 @@ class BankStatementLine(db.Model):
             "account_id", "posted_on",
         ),
         # The review screen groups an account's unexplained lines BY MERCHANT
-        # and resolves one policy per group (plan step ``bank_import:X-f6a-3d``,
-        # ``statement_match._policy``).  Partial, because a NULL merchant joins
-        # no policy and so is never looked up by this column.
+        # and resolves one rule per group (plan step ``bank_import:X-f6a-3d``,
+        # ``statement_match._rules``).  Partial, because a NULL merchant joins
+        # no rule and so is never looked up by this column.
         db.Index(
             "idx_bank_statement_lines_account_merchant",
             "account_id", "merchant_id",

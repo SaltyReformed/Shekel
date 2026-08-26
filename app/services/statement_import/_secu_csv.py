@@ -738,7 +738,7 @@ def _read_line(row: "list[str]", columns: "dict[str, int]") -> StatementLine:
         description=joined,
         # **The merchant the bank NAMES, read from the same cell and for
         # the same reason** (plan step X-f6a-3d): it is the key a
-        # destination policy is stated against, so a memo's own
+        # rule is stated against, so a memo's own
         # parentheses must not be able to reach it.
         merchant=_stated_merchant(description),
         source_category=_cell(row, columns, "Category")[:100] or None,

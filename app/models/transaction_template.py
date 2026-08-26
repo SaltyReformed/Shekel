@@ -36,8 +36,8 @@ class TransactionTemplate(
 
     __tablename__ = "transaction_templates"
     __table_args__ = (
-        # The SUPERKEY ``fk_merchant_destinations_template_account`` targets, so
-        # a merchant destination policy's template is provably on the policy's
+        # The SUPERKEY ``fk_merchant_rules_template_account`` targets, so
+        # a merchant rule's template is provably on the policy's
         # own ACCOUNT (plan step ``bank_import:X-f6a-3d``).  It constrains
         # nothing -- ``id`` is already the primary key -- and exists only
         # because PostgreSQL requires a UNIQUE over exactly the referenced
