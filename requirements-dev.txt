@@ -54,6 +54,15 @@ pylint-flask-sqlalchemy==0.2.0
 # actually runs.  0.2.58 also FIXES a destructive `rumdl fmt` bug 0.2.14 had:
 # 0.2.14 rewrote fenced code blocks as indented ones (measured, same file, 6
 # fences -> 0), which is why the in-repo procedure said never to run it blind.
+#
+# THE TWO VERSIONS' CANONICAL FORMS ARE MUTUALLY INCOMPATIBLE, so this bump is
+# not optional for anyone.  Measured: 0.2.14 reports `Found 34 issues in 17/44
+# files`, exit 1, against the tree 0.2.58 formatted -- each version rejects the
+# other's output.  **After pulling this, run `pip install -r requirements-dev.txt`**
+# or a stale venv still holding 0.2.14 fails every Markdown commit, which is the
+# mirror image of the bug this closes.  It is also what makes CI's version
+# OBSERVABLE rather than assumed: `polyglot-lint` passing on this tree could
+# only happen at 0.2.58.
 yamllint==1.38.0
 zizmor==1.25.2
 djlint==1.39.2
