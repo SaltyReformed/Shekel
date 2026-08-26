@@ -16,6 +16,7 @@ All money is ``Decimal`` from strings.
 """
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -611,6 +612,68 @@ class TestLoanPaymentWindowIsTotal:
         ]
         assert answers == [True, True, False]
         assert all(isinstance(answer, bool) for answer in answers)
+
+
+#: One instance of each window shape, so immutability is asserted over the
+#: WHOLE set rather than over three hand-written examples.  Held total by
+#: ``TestTheWindowShapesAreValues.test_every_concrete_shape_is_sampled``.
+_WINDOW_SAMPLES: dict[type[LoanPaymentWindow], LoanPaymentWindow] = {
+    ClosesOn: ClosesOn(on=date(2029, 2, 22)),
+    Indefinite: INDEFINITE,
+    Empty: EMPTY,
+}
+
+
+class TestTheWindowShapesAreValues:
+    """Frozen records -- a DERIVED window is not mutable state."""
+
+    def test_every_concrete_shape_is_sampled(self):
+        """A shape left out of the table narrows the sweep below in silence.
+
+        The contract ``END_BOUND_KINDS`` gets in ``test_recurrence_bounds``:
+        the property is asserted over the CLOSED SET, so a fourth shape a
+        later step adds fails here rather than quietly sitting outside it.
+
+        **Scoped to shapes declared in ``app/``, and this file is why.**
+        ``TestLoanPaymentWindowIsTotal`` above declares ``_HalfWritten``
+        inside a test body, ``__subclasses__()`` is a live interpreter-wide
+        registry, and a class object survives until the cyclic collector takes
+        it.  Unscoped, this gate fails whenever that test has already run --
+        a failure unrelated to the code, which is broken rather than flaky.
+        """
+        declared_in_app = {
+            kind for kind in LoanPaymentWindow.__subclasses__()
+            if kind.__module__.startswith("app.")
+        }
+
+        assert declared_in_app == set(_WINDOW_SAMPLES)
+
+    @pytest.mark.parametrize("kind", list(_WINDOW_SAMPLES))
+    def test_no_shape_can_be_mutated_after_construction(self, kind):
+        """Two of the three carry no field, and both are SHARED singletons.
+
+        :data:`INDEFINITE` and :data:`EMPTY` hold no value, so the module
+        builds ONE of each and hands the same object to every caller -- the
+        comment beside them gives frozen-ness as the reason that is safe.
+        Nothing asserted it until this test.
+
+        Probed through ``admits``, the one name every shape declares: the base
+        makes it ``@abstractmethod``, so a shape without one cannot be built
+        at all (``TestLoanPaymentWindowIsTotal`` holds that), which makes it
+        each shape's OWN name rather than an arbitrary one.  **One name is the
+        whole claim** -- frozen is a property of the CLASS and is
+        all-or-nothing, so a shape that refuses one name refuses every name,
+        and walking ``dataclasses.fields`` instead would ask ZERO times for
+        the two shapes that carry none.
+
+        ``admits`` is also the name with the money on it.  An instance
+        attribute shadowing the method answers for every holder of the
+        singleton at once, and that is the difference between a loan that goes
+        on charging a debt the owner has cleared and one that stops paying a
+        debt they still owe.
+        """
+        with pytest.raises(FrozenInstanceError):
+            setattr(_WINDOW_SAMPLES[kind], "admits", None)
 
 
 class TestLoanPaymentWindow:
