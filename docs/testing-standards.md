@@ -429,8 +429,8 @@ discrepancy between what the code does and what it should do.
 2. **Outside scope but quick and safe:** Report it to the developer. Fix in a separate commit only
    if the developer approves.
 3. **Outside scope and risky or complex:** Report it immediately. State: what the problem is, where
-   it is (file and function), what the impact could be, and your recommended next step. Lead with it
-   -- do not bury it at the end of a long message.
+   it is (file and function), what the impact could be, and your recommended next step. Lead with
+   it -- do not bury it at the end of a long message.
 
 ### What You Must Never Do
 

@@ -461,10 +461,10 @@ cockpit page (Section 7, Phase 6) is future UI work that runs through the same s
 
 **Status:** Planned; resumes after Section 8 (Import and Reconciliation), whose actuals feed every
 feature here. **Spec status:** the detailed v5.3 specification (data models, thresholds, UI copy)
-was written in April 2026, before the posting ledger and the UI overhaul, and had rotted in places
--- it targeted the removed dashboard mark-as-paid flow and recommended the Credit workflow Section 7
-deletes. It is superseded; the full text remains in git history (v5.3, commit bb879797). Write a
-fresh plan of record (the Section 7 pattern) before building.
+was written in April 2026, before the posting ledger and the UI overhaul, and had rotted in
+places -- it targeted the removed dashboard mark-as-paid flow and recommended the Credit workflow
+Section 7 deletes. It is superseded; the full text remains in git history (v5.3, commit bb879797).
+Write a fresh plan of record (the Section 7 pattern) before building.
 
 **Intent:** make projections smarter from the actuals the app accumulates, and catch bad data at the
 point of entry. The app's core value is projection accuracy; these features compound it.

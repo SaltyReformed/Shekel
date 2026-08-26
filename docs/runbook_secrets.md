@@ -351,11 +351,11 @@ The full rotation has four steps and one optional cleanup deploy:
 
      Step 5 below removes the inline edit and the retired-key file after rotation.
 
-   If `TOTP_ENCRYPTION_KEY_OLD` already has a value (e.g. from an earlier in-progress rotation), append
-   the new retired value with a comma -- the application reads the value as a comma-separated list of
-   Fernet keys, regardless of whether it came from an env var or a secret file. In the file-backed
-   posture, write the comma-joined string into the file with `printf` (no trailing newline) so the file
-   content is exactly the comma-separated list.
+   If `TOTP_ENCRYPTION_KEY_OLD` already has a value (e.g. from an earlier in-progress rotation),
+   append the new retired value with a comma -- the application reads the value as a comma-separated
+   list of Fernet keys, regardless of whether it came from an env var or a secret file. In the
+   file-backed posture, write the comma-joined string into the file with `printf` (no trailing
+   newline) so the file content is exactly the comma-separated list.
 
 3. **Restart the application container so the new key list takes effect.**
 
@@ -410,8 +410,8 @@ The full rotation has four steps and one optional cleanup deploy:
      sudo rm /opt/docker/shekel/secrets/totp_encryption_key_old
      ```
 
-   Run `docker compose up -d --force-recreate app`. The retired key is now permanently retired -- if it <!-- MD013 kept: rumdl 0.2.14 reflow overshoots this list-item line to 103 chars and reverts a manual wrap; left as the canonical form. --> <!-- rumdl-disable-line MD013 -->
-   was leaked, the leak no longer confers access to the MFA secrets.
+   Run `docker compose up -d --force-recreate app`. The retired key is now permanently retired -- if
+   it was leaked, the leak no longer confers access to the MFA secrets.
 
    You may leave `TOTP_ENCRYPTION_KEY_OLD` populated longer than necessary if you want a rollback
    window; the only cost is that the retired key continues to be a valid decryption key during that

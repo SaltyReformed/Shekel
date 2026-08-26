@@ -203,8 +203,8 @@ real forward model, this is the ONE place that changes").
       concurrency, guard controls fire. Hazard checks: `template_id` partial unique unaffected;
       regeneration skips settled.
 - [ ] **CC3b**
-      `feat(cards)!: mark-credit is charge-to-card -- transaction-level cutover + live-pair migration`
-      -- delete mark/unmark routes + PATCH revert path; state machine: Projected loses `credit`,
+      `feat(cards)!: mark-credit is charge-to-card -- transaction-level cutover + live-pair migration` -- <!-- MD013 kept: the backticked commit SUBJECT is 96 characters on its own, so at this list's 6-space continuation indent no wrap reaches 100; the real fix is a shorter subject, which is CC3b's to decide. --> <!-- rumdl-disable-line MD013 -->
+      delete mark/unmark routes + PATCH revert path; state machine: Projected loses `credit`,
       `credit: {credit}` terminal; minimal template/JS cutover (`data-can-charge`, `c` key, palette,
       badges' predicates); Alembic migration with in-migration backfill: per LIVE pair -- resolve
       target card (single; multiple -> lowest sort_order; zero -> CREATE the card inline per ruling
