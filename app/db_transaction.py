@@ -64,7 +64,7 @@ not the report you were handed.*
 
 **Why the mode is bound at ``after_begin`` and not in a before-request hook.**
 ``SET TRANSACTION`` must precede the transaction's first statement, and
-``before_request`` cannot guarantee that: ``_refresh_last_activity`` reads
+``before_request`` cannot guarantee that: ``_attach_request_id`` reads
 ``current_user``, which loads the user row, and Flask runs before-request hooks
 in registration order.  Binding at the session's own ``after_begin`` fires
 between ``BEGIN`` and the statement that caused it, whoever issued it, so the
@@ -79,9 +79,13 @@ first, and it reads ``current_user`` -- so the user row was loaded, and a
 transaction opened for it, before the boundary below had recorded anything.
 That transaction was bound as a COMMAND (no mode was recorded yet), the
 boundary then rolled it back, and the render's real transaction was the
-SECOND one.  Measured on one authenticated ``GET /settings``: seven statements
-where two were the work, and every one of the five extra was a consequence of
-deciding late.  ``request_started`` is sent by ``Flask.full_dispatch_request``
+SECOND one.  Measured on one authenticated ``GET /settings``, statement by
+statement: the page's own work was **eight** statements either way, and the
+machinery around it was **seven** and is now **two** -- one ``SET
+TRANSACTION`` and one user load.  (Eleven rather than ten in total for the
+first GET after a POST, on both sides, because that one inherits an open
+transaction and pays the refusal probe; the saving is the same.)
+``request_started`` is sent by ``Flask.full_dispatch_request``
 immediately before ``preprocess_request``, which is what runs the
 before-request hooks, so a receiver there precedes every one of them by
 Flask's own dispatch order rather than by a registration order this module
@@ -147,7 +151,7 @@ request CONTEXT that was never dispatched, which is not a pedantic distinction:
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from flask import g, has_app_context, request, request_started
+from flask import Flask, g, has_app_context, request, request_started
 from sqlalchemy import event
 from sqlalchemy.orm import Session
 
@@ -155,12 +159,21 @@ from app.audit_infrastructure import bind_audit_actor
 from app.extensions import db
 
 # HTTP's safe methods, as this application serves them.  ``OPTIONS`` is left
-# out deliberately rather than overlooked: Flask answers it from the URL map
-# without dispatching a view, so it issues no statement for a mode to bind.
+# out, and the reason first given here was measurably WRONG: it said Flask
+# answers OPTIONS from the URL map without dispatching a view "so it issues no
+# statement for a mode to bind".  Flask runs ``preprocess_request`` -- every
+# before-request hook -- BEFORE ``dispatch_request`` reaches its automatic
+# OPTIONS branch, so an authenticated ``OPTIONS`` issues three statements
+# (measured): the user load, and the actor bind on the writable transaction it
+# opens.  What is true is narrower and is why it stays out: OPTIONS runs no
+# view, so nothing it can reach is a render whose figures need one snapshot.
+# Whether a method that can never write should nonetheless be a QUERY is a
+# behaviour question this step did not take.
 _QUERY_METHODS = frozenset({"GET", "HEAD"})
 
 # Where the DISPATCH records what it decided this request is.  The mode is
-# decided ONCE, by the before-request hook, and read from here afterwards -- it
+# decided ONCE, by :func:`_open_this_request_s_own_transaction` on
+# ``request_started``, and read from here afterwards -- it
 # is deliberately not re-derived from ``request.method`` at each transaction,
 # for two reasons.  A derived value read in many places and stored in none is
 # this arc's own root cause, and more concretely: a request CONTEXT is not a
@@ -173,10 +186,12 @@ _MODE_KEY = "shekel_transaction_mode"
 _QUERY = "query"
 _COMMAND = "command"
 
-# Where the dispatch records WHO is acting, for the same reason it records the
+# Where the request records WHO is acting, for the same reason it records the
 # mode: the audit triggers read a TRANSACTION-scoped setting
 # (:func:`app.audit_infrastructure.bind_audit_actor`), and a request no longer
-# runs in one transaction.
+# runs in one transaction.  Written by :func:`bind_request_actor` from a
+# before-request hook rather than by the dispatch, because resolving the actor
+# takes a statement and the dispatch runs before any is allowed.
 #
 # Private, and reached only through :func:`bind_request_actor`.  It was written
 # by ``logging_config`` as a bare ``g.shekel_audit_actor = ...`` and read here
@@ -219,7 +234,8 @@ def _is_query_request() -> bool:
 
     It READS the mode the dispatch recorded rather than deciding one, so every
     transaction a request opens is bound the same way and the decision has a
-    single site (:func:`register_transaction_boundary`).  Absent means command:
+    single site (:func:`_open_this_request_s_own_transaction`).  Absent means
+    command:
     a CLI script, a deploy reconcile, Alembic, and a request context nobody
     dispatched all take the transaction they have always had.
 
@@ -276,7 +292,7 @@ def _bind_transaction_mode(session, transaction, connection) -> None:
         bind_audit_actor(connection, actor)
 
 
-def _open_this_request_s_own_transaction(sender, **extra) -> None:
+def _open_this_request_s_own_transaction(sender: Flask, **extra) -> None:
     """Decide this request's mode, then give a query its own transaction.
 
     **The ONE site that reads ``request.method``**, which is why it records the
@@ -298,6 +314,16 @@ def _open_this_request_s_own_transaction(sender, **extra) -> None:
     :func:`register_transaction_boundary` would be collected the moment that
     call returned and the signal would silently stop firing.
 
+    **The ordering this buys is against BEFORE-REQUEST HOOKS and not against
+    other receivers**, which is the residual and is stated rather than left to
+    be discovered: blinker's ``send`` iterates a ``set`` and documents receiver
+    order as undefined.  Today this application connects exactly one receiver
+    to ``request_started`` -- pinned by
+    ``test_the_boundary_is_the_only_request_started_receiver`` -- so there is no
+    order to be undefined.  A second receiver that touched the database would
+    reopen the defect this function exists to close, which is why the arm
+    grades the count rather than trusting the census.
+
     **The query mode is recorded LAST, after the refusal**, and the order is
     what makes the refusal's sentence true: a request that is turned away never
     gets a mode, so the teardown ends nothing, and the uncommitted writes this
@@ -306,7 +332,9 @@ def _open_this_request_s_own_transaction(sender, **extra) -> None:
 
     Args:
         sender: The Flask application the signal was sent from.  Unused: the
-            connection is already scoped to one app.
+            mode comes from the REQUEST, and the connection is per-app anyway
+            (:func:`register_transaction_boundary`), so the sender is always
+            the application this receiver was registered for.
         **extra: Blinker's forward-compatibility keywords.
 
     Raises:
@@ -345,7 +373,7 @@ def _open_this_request_s_own_transaction(sender, **extra) -> None:
     setattr(g, _MODE_KEY, _QUERY)
 
 
-def register_transaction_boundary(app) -> None:
+def register_transaction_boundary(app: Flask) -> None:
     """Give every query request a transaction of its OWN, opened AND closed.
 
     See the module docstring for why this exists and what it measured.  Two
@@ -414,7 +442,7 @@ def register_transaction_boundary(app) -> None:
             g.pop(_ACTOR_KEY, None)
 
 
-def bind_request_actor(user_id) -> None:
+def bind_request_actor(user_id: int) -> None:
     """Record who is acting, and tell the transaction ALREADY open.
 
     **The one door to the audit actor**, so the key that decides whose name an
@@ -435,13 +463,28 @@ def bind_request_actor(user_id) -> None:
     says so with :func:`write_transaction`, whose transaction is a command's
     and is bound by the listener like any other.
 
+    **And a command binds nothing when no transaction is open yet**, which is
+    the difference between "tell the one already running" and "open one to
+    have something to tell".  ``Session.connection()`` BEGINS a transaction
+    when none is open, so an unconditional bind would start one from a
+    logging hook and then bind it twice -- once through the listener, which
+    ``g`` now satisfies, and once here.  Reachable whenever ``current_user``
+    resolves without a statement, i.e. wherever the row is already loaded and
+    unexpired.  Binding only an open transaction is also the honest reading of
+    this function's own first line.
+
+    **``g`` is recorded LAST for the same reason**: the explicit bind covers
+    the transaction that began before the actor was known, and every
+    transaction after this one is the listener's, so setting ``g`` first would
+    make the listener and this line bind the same transaction.
+
     Args:
         user_id: The acting ``auth.users.id``.
     """
+    session = db.session()
+    if not _is_query_request() and session.in_transaction():
+        bind_audit_actor(session.connection(), user_id)
     setattr(g, _ACTOR_KEY, user_id)
-    if _is_query_request():
-        return
-    bind_audit_actor(db.session.connection(), user_id)
 
 
 @contextmanager

@@ -34,14 +34,29 @@ Closed **N-353**; opened **N-358** and **N-359**.
 
 CI on PR #134 reported this as a cost: `test_no_baseline_policy`'s `url_map` sweep blew its 30 s
 budget at 25.38 s, and a per-statement tally put the step at **+2,954 statements over 444
-requests**, a 52% increase. The cost was a symptom of a CORRECTNESS defect.
+requests**, a 52% increase. **What it was is a MEASURED COST and a LATENT correctness hazard**, and
+the second half is stated that way because an adversarial review refuted the stronger claim this
+paragraph first made.
 
 `765daebd` decided the mode in a `before_request` hook, and Flask calls those in REGISTRATION
 order: `setup_logging`'s `_attach_request_id` is registered first and reads `current_user`. So the
 request's first statement -- and the transaction carrying it -- ran at `READ COMMITTED` before any
 mode existed; the boundary then threw that transaction away, and the render's real snapshot was its
-SECOND. Everything the first one read was outside the snapshot the page is computed against, which
-is **N-353** with a smaller blast radius rather than a different defect.
+SECOND.
+
+**The refuted claim was "everything the first one read was outside the snapshot the page is
+computed against".** Measured, tagged by transaction, on one authenticated `GET /settings` at
+`765daebd`: the discarded transaction held THREE statements -- the `auth.users` load, one actor
+bind, and the refusal probe -- and the user row is re-read inside the render's own snapshot
+anyway, because the rollback expires it. So no figure any page published was ever computed against
+it. What it did carry out was `load_user`'s authentication decision (`is_active`,
+`session_invalidated_at`, the idle check), read on a snapshot the request then discarded: not
+money, and a window measured in statements.
+
+**What makes it a hazard rather than a curiosity is that WHICH hook is first is not a property
+anything holds.** The rule was one before-request registration away from a money read landing
+outside the render's snapshot, and nothing in the module, the gate or the suite would have said so
+-- which is **N-353**'s own shape, at one remove.
 
 Two of the module's own claims were false with it: that the boundary was a TEST-FIDELITY property,
 and that its opening hook "is a no-op on every request" in production. Both were untrue for the
@@ -94,21 +109,38 @@ COMMAND each still describes. None deleted: `_candidates`' period-id scope is AL
 scope, and `_scope.period_holding` pairs two different REQUESTS (a line is OFFERED by the GET and
 PLACED by a POST), which no per-request snapshot could reconcile.
 
-The census was re-taken and found more than the specification named: eleven statements across nine
-`app/` modules plus one script, including three query-reachable sites the step never listed
+The census was re-taken and found more than the specification named. Eleven statements carrying the
+literal phrase, across nine `app/` modules plus one script -- which is the "nine sites"
+`db_transaction`'s own docstring counts, and the count is of MODULES rather than statements. A
+TENTH `app/` module describes the same class without the phrase (`exceptions.RecurrenceWindowError`,
+narrating the check `pay_calendar:C2-f3c` deleted), so a grep for the phrase is a lower bound on
+this class and is recorded here as one. Among the eleven were three query-reachable sites the step
+never listed
 (`_scope`'s `ReviewScope.calendar` and `period_holding`, `_reads.awaiting_review_count`) and one
 claim `X-i3-a` had FALSIFIED -- `anchor_service`'s lock-then-reread justified itself with "READ
 COMMITTED, verified as the default on dev, test and production, with no override anywhere", and
 there is an override now. It rests on something stronger than a census: the function WRITES, and
 the override applies only to transactions PostgreSQL would refuse a write in.
 
-Request-kind reachability was measured rather than assumed. `ReviewScope.build` has one GET call
-site and FOUR POSTs, so the `statement_match` accommodations hold for exactly the four doors that
-move money. `awaiting_review_count` is the one that goes fully dead -- its only caller is
-`grid/page._bank_control`, whose only caller is the `/grid` GET -- and its DRY reason survives
-untouched.
+Request-kind reachability was measured rather than assumed, and the FIRST measurement of it was
+wrong. `ReviewScope.build` has five call sites, and counting sites rather than FUNCTIONS gave "one
+GET and four POSTs" -- which named `release_statement_match`, a door that builds no scope at all.
+An `ast` walk over the module gives the real answer: **one GET door and THREE POST doors**, with
+`apply_statement_review` building TWO, deliberately -- a fresh scope for the ANSWER on the path that
+wrote, because the pass it was applied against describes a state that no longer exists. The
+docstrings that had carried the wrong count were corrected before this shipped. The lesson is the
+project's own: a census over line numbers is not a census over the things being counted.
 
-Opened **N-364**.
+`awaiting_review_count` is the one accommodation that goes fully dead -- its only caller is
+`grid/page._bank_control`, whose only caller is the `/grid` GET -- and its DRY reason survives
+untouched. **A first draft of its docstring said "a QUERY, whose whole request is one snapshot",
+and `/grid` is the one route in the application for which that is false**: it opens a
+`write_transaction` block for the rolling top-up, so it runs read-only, then writable, then
+read-only over a NEW snapshot, which the step's own `test_a_grid_render_is_query_command_query`
+asserts. What holds is positional -- the block is the first statement of `index()` and both reads
+fall well after it -- and the docstring says that instead. An adversarial review found it.
+
+Opened **N-364** and **N-365**.
 
 ## `balance:X-i4` -- the binding (`79a1730c`)
 

@@ -583,7 +583,7 @@ def apply_anchor_true_up(
     :func:`app.services.user_write_lock.lock_user_writes`, taken inside the
     sync, so every other door into that same window (the settle self-heal, the
     direct anchor edit, the pay-period resync) is covered by the same rule.
-    The waiting transaction re-reads under READ COMMITTED, which ruling R-GU
+    The waiting transaction re-reads under READ COMMITTED, which ruling `balance:R-GU`
     guarantees for a WRITER (its override is also ``READ ONLY``), so it sees
     the winner's postings and reconciles to the true merged target.
     **Since plan step X-f1c4b the SAME lock is taken one layer up**, in

@@ -43,13 +43,13 @@ side: both were unblocked and they shared no file.
 pairing two inside one arc, check that neither names a module the other deletes. A row marked
 **MOVES MONEY** takes its own PR either way, so it is never the second lane.
 
-**The rank is a DECISION, not a derivation.** 63 of these steps are legal to start right now, so the
+**The rank is a DECISION, not a derivation.** 64 of these steps are legal to start right now, so the
 dependency graph alone cannot say which comes next; the sequence below follows each arc's own stated
 sequencing -- the balance README's ten blocks, and each plan's section 0.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**159 steps, 126 open.** The dependency graph holds 97 edges over 62 rows.
+**160 steps, 127 open.** The dependency graph holds 97 edges over 62 rows.
 
 ## The order
 
@@ -166,6 +166,7 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | balance | X-i5 | -- | Make a COMMAND's own re-render one snapshot too, by moving the mutation routes' writes inside `write_transaction` so the render that follows falls outside the command and takes a snapshot of the state that command just committed. | #109 | -- | NOW / balance:X-i3-a (shipped) |
 | balance | X-bc | -- | Make the collateral link's same-owner invariant STRUCTURAL: `budget.accounts.collateral_account_id` becomes a COMPOSITE foreign key on `(collateral_account_id, user_id)` against the `uq_accounts_id_user` superkey two other tables already target, and `_validate_collateral_link`'s ownership arm goes with the state it can no longer express. Closes **N-360**. | #110 | -- | NOW |
 | balance | X-i6 | -- | Bind the per-account reads a pass does NOT memoize and so never reach `_memoize_once`: the seven seam entries that early-out before the funnel, the contribution feed that scopes its payroll loaders off the ACCOUNT's owner, and `bank_agreement`'s direct walk -- with the ARM that mechanizes "one door". Closes **N-362**. | #111 | -- | NOW / balance:X-i4 (shipped) |
+| balance | X-be | -- | Resolve the THREE `app/` modules sitting at exactly pylint's 1000-line ceiling -- `calendar_service`, `balance_at/_asset_fold` and `anchor_service` -- by deciding per module whether it SPLITS or whether the ceiling is the wrong number, because in this corpus what the cap binds is what gets written down. Closes **N-365**. | #112 | -- | NOW |
 | bank_import | X-gd-2 | -- | Ship the rule STORE (**R-GI**): a stated merchant answer gains a fourth answer, *ask me every time*, told apart from *never a purchase* by one boolean (**R-GS**); the withdrawal goes, so a rule is only ever restated; and a match act records whether a standing rule performed it (**R-GT**). Closed **N-353**; opened **N-358**. | SHIPPED | `154cfcec` | -- |
 | bank_import | X-gd-1 | -- | Make a merchant a ROW rather than a string two tables each keep a 100-character copy of (**R-GR**), so the answer's key is a foreign key, the scope check becomes a sentence and *which merchants may be asked about* is one table read. | SHIPPED | `395b14f7` | -- |
 | bank_import | X-gc | -- | Three import surfaces stopped stating what is false: the corroboration advice no longer prescribes an export option SECU dropped, the never-showed panel stops claiming the bank failed to pay 18 CC Payback rows it only ever shows inside a card payment, and the destructive dialog binds in `<head>` so it cannot be raced. Closed **N-345**'s race half; re-pointed its other half at `operator`. | SHIPPED | `0452eef3` | -- |

@@ -48,7 +48,7 @@ from datetime import date, timedelta
 
 import psycopg2
 import pytest
-from flask import g
+from flask import g, request_started
 from sqlalchemy import event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import InternalError
@@ -675,6 +675,33 @@ class TestTheDecisionPrecedesTheRequestSFirstStatement:
             f"against. Modes seen, in order: {observed_modes}"
         )
 
+    def test_the_boundary_is_the_only_request_started_receiver(self, app):
+        """The ordering claim holds against HOOKS; this is what holds it here.
+
+        ``request_started`` precedes every before-request hook by Flask's own
+        dispatch code, which is the guarantee the module rests on.  It says
+        nothing about other RECEIVERS of the same signal: blinker's ``send``
+        iterates a ``set`` and documents receiver order as undefined.  With one
+        receiver there is no order to be undefined -- so the property is a
+        COUNT, and this is the arm that keeps it one rather than a census
+        somebody re-takes by hand.
+
+        A second receiver that reads the database would put a statement back in
+        front of the decision, which is the defect this whole module was
+        corrected for, and nothing else in the suite would notice.
+        """
+        # Pylint: ``protected-access`` -- blinker exposes no public accessor
+        # for a signal's receivers, and asserting the COUNT is the property.
+        # pylint: disable=protected-access
+        receivers = list(request_started.receivers_for(app))
+
+        assert receivers == [db_transaction._open_this_request_s_own_transaction], (
+            f"``request_started`` has receivers other than the transaction "
+            f"boundary: {receivers}. Blinker does not order them, so whichever "
+            f"runs first decides whether the request's mode is set before its "
+            f"first statement -- see app/db_transaction.py"
+        )
+
     def test_a_query_binds_no_audit_actor(
         self, auth_client, seed_user, db, observed_statements,
     ):
@@ -728,6 +755,60 @@ class TestACommandNamesItsActor:
             "system.audit_log with a NULL user -- silently, because the "
             "trigger reads an unset setting as 'no authenticated user'"
         )
+
+    def test_binding_the_actor_opens_no_transaction_of_its_own(
+        self, app, db, seed_user, observed_statements,
+    ):
+        """It tells the transaction already open, and starts none to tell.
+
+        The distinction is not pedantic.  ``Session.connection()`` BEGINS a
+        transaction when none is open, so binding unconditionally makes a
+        LOGGING hook start one -- which the listener then binds off ``g``,
+        giving that transaction the actor twice and putting the first statement
+        of a request's transaction somewhere no reader of the route would look
+        for it.  Reachable whenever ``current_user`` resolves without a
+        statement, which is wherever the row is loaded and unexpired.
+
+        **Asserted on the transaction rather than on a statement count**,
+        because counting binds against transactions cannot work here: a request
+        under the test client can INHERIT a transaction whose ``after_begin``
+        fired before the count began, so two binds on two transactions and two
+        binds on one are indistinguishable to that instrument.  The first
+        version of this test was that instrument and reported the defect it was
+        written to refute.
+        """
+        # Read the id BEFORE the rollback below and pass a plain int: the
+        # rollback EXPIRES every instance, so `seed_user["user"].id` inside the
+        # measured window would refresh the row and open the very transaction
+        # this test is asking about -- which is how the first draft of it
+        # failed, blaming the code for its own setup.
+        owner_id = seed_user["user"].id
+
+        with app.test_request_context("/settings", method="POST"):
+            db.session.rollback()
+            session = db.session()
+            assert not session.in_transaction(), "the setup left one open"
+            observed_statements.clear()
+
+            db_transaction.bind_request_actor(owner_id)
+
+            assert not session.in_transaction(), (
+                "binding the audit actor opened a transaction that nothing "
+                "asked for, and the listener will bind it a second time"
+            )
+            assert not observed_statements, (
+                f"binding the actor with no transaction open issued "
+                f"{observed_statements}; there was nothing to tell"
+            )
+            # Through the CONSTANT, not the string: the whole reason
+            # ``_ACTOR_KEY`` exists is that this key had two spellings in two
+            # modules, and a test that hard-codes the literal is a third.
+            # pylint: disable=protected-access
+            recorded = getattr(g, db_transaction._ACTOR_KEY, None)
+            assert recorded == owner_id, (
+                "the actor was not recorded, so no LATER transaction of this "
+                "request would be told who is acting"
+            )
 
     def test_an_audited_write_a_command_makes_carries_the_user(
         self, auth_client, seed_user, db,

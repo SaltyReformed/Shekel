@@ -100,7 +100,7 @@ def calendar_for(user_id: int) -> PayCalendar:
     # the two reads: Python evaluates this argument before the call it feeds.
     #
     # **Whether the two reads can differ at all now depends on WHO is asking**
-    # (plan step balance:X-i3, ruling R-GU).  Inside a QUERY -- every render,
+    # (plan step balance:X-i3, ruling `balance:R-GU`).  Inside a QUERY -- every render,
     # which is where the calendar is read most -- the request's transaction is
     # one ``REPEATABLE READ`` snapshot, so both reads see one state of the
     # database and no interleaving is expressible.  Inside a COMMAND they are

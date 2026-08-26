@@ -606,7 +606,21 @@ def setup_logging(app: Flask) -> None:
         # 500 that was already being rendered, replacing the real refusal with
         # a "request finalizing failed" log line.  Guarded on ``request_start``
         # alone because the same hook sets both.
+        #
+        # It LOGS rather than returning silently: a request that got this far
+        # with no start time was refused before any hook ran, which is the one
+        # state where losing the request line entirely would hide the refusal
+        # as well as the timing.  An adversarial review found the first version
+        # returning in silence.
         if getattr(g, "request_start", None) is None:
+            logging.getLogger(__name__).warning(
+                "request completed with no start time: it was refused before "
+                "the request-id hook ran (see app.db_transaction's boundary), "
+                "so this response carries no request id and no duration",
+                extra={"event": "request_unattributed", "category": "error",
+                       "method": request.method, "path": request.path,
+                       "status_code": response.status_code},
+            )
             return response
 
         duration_ms = (time.perf_counter() - g.request_start) * 1000

@@ -237,14 +237,22 @@ def _bind_extensions(app):
     helpers beside it already are, so the factory reads as a list of what an
     application HAS rather than as the wiring of each.
 
-    **The boundary is registered LAST here, and so AFTER ``setup_logging``'s
-    hook, deliberately.** That hook resolves the acting user
-    (:func:`app.audit_infrastructure.bind_audit_actor`), and the listener the
-    boundary installs is what binds that actor onto every transaction the
-    request then opens. Neither the isolation mode nor the actor depends on
-    hook ORDER for correctness -- both are bound at the session's own
-    ``after_begin`` -- so what this position decides is only which hook opens
-    the request's first transaction.
+    **The boundary's position in this function decides nothing, and saying so
+    is the correction to what this paragraph used to claim.** It registered no
+    before-request hook at plan step balance:X-i3's correction: the request's
+    kind is decided by a ``request_started`` receiver, which Flask sends before
+    it runs ANY before-request hook, so no registration order here can put a
+    statement in front of it. The paragraph this replaces argued the opposite
+    -- that the position "decides only which hook opens the request's first
+    transaction" -- and that sentence is exactly what the correction refutes,
+    because that first transaction was the one running outside the render's own
+    snapshot.
+
+    ``setup_logging``'s hook still RESOLVES the acting user and hands it to
+    :func:`app.db_transaction.bind_request_actor`, which tells the transaction
+    already open and lets the boundary's listener tell every later one. That
+    division does depend on the resolution happening before the route writes,
+    which any before-request hook satisfies.
 
     Args:
         app: The Flask application being built.

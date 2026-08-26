@@ -596,7 +596,7 @@ def _transaction_candidates(
       ``pay_periods.user_id``, and that is what makes the window lookup below
       total**: a row this query returns names a period the calendar was built
       from, so :meth:`~app.services.pay_calendar.PayCalendar.period_by_id`
-      cannot answer ``None`` for it.  Inside a COMMAND -- the four POST doors
+      cannot answer ``None`` for it.  Inside a COMMAND -- the three POST doors
       that build a scope -- the two reads are separate snapshots under READ
       COMMITTED, so a concurrent period INSERT between them is expressible,
       and scoping by the calendar's own ids means the query simply does not
@@ -775,8 +775,8 @@ def candidates_for(
     READ COMMITTED a concurrent payday write between the two loads would place
     a line by one calendar and bound its candidates by another.  Found by
     adversarial financial review 2026-08-19.  **Since plan step balance:X-i3
-    the disagreement is a COMMAND's alone** -- the four POST doors that build
-    a scope, which are also the four that move money -- because a render's
+    the disagreement is a COMMAND's alone** -- the three POST doors that build
+    a scope, which are also the three that move money -- because a render's
     whole request is one snapshot.  The DRY half of the argument was never
     conditional on the isolation level and is what still makes the parameter
     required on every path.

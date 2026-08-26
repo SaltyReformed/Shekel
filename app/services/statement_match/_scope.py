@@ -73,14 +73,19 @@ class ReviewScope:
             ``calendar_for`` separately inside one request until adversarial
             financial review 2026-08-19, and two of them can disagree under
             READ COMMITTED -- which since plan step balance:X-i3 is true of
-            the four POST doors that build a scope (``apply_statement_review``,
-            ``state_merchant_rules``, ``statement_review_totals``,
-            ``release_statement_match``) and not of the GET that renders the
-            screen, whose whole request is one snapshot.  **The parameter
-            stays either way, and not only for the arms it still protects**:
-            three reads of one fact in one request is this project's DRY
-            violation rather than a cost, and the four doors it protects are
-            the ones that MOVE MONEY.  **It is not one per REQUEST, and saying
+            the THREE POST doors that build a scope
+            (``apply_statement_review``, ``state_merchant_rules``,
+            ``statement_review_totals``) and not of the GET that renders the
+            screen, whose whole request is one snapshot.
+            ``apply_statement_review`` builds TWO, and that is the one place
+            two scopes in one request is right: the second is a FRESH one for
+            the ANSWER, taken only on the path that WROTE, because the pass it
+            was applied against describes a state that no longer exists.
+            **The parameter stays either way, and not only for the arms it
+            still protects**: three reads of one fact in one request is this
+            project's DRY violation rather than a cost, and the doors it
+            protects are the ones that MOVE MONEY.
+            **It is not one per REQUEST, and saying
             so would be false**: ``entry_credit_workflow._create_payback``
             reads its own, and a creation filing a purchase into an envelope
             whose payback was soft-deleted reaches it.  Narrowing the claim
