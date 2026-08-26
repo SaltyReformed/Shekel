@@ -30,6 +30,8 @@ from app.services.balance_at._resolution import (
 )
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._context import _memoize_once
+from app.exceptions import ForeignAccountError
+from app.models.account import Account
 from tests._test_helpers import (
     add_escrow_line,
     create_loan_account,
@@ -451,17 +453,41 @@ def test_the_plan_is_built_once_per_read_pass(seed_user, db):
     )
 
 
+#: The owner every primitive case below builds its pass for, and the account id
+#: those cases memoize under.  Named because three tests share them and a bare
+#: ``7`` in four places is the kind of coincidence a later edit breaks silently.
+_PASS_OWNER = 1
+_OWNED_ACCOUNT_ID = 7
+
+
+def _pass_and_account(owner=_PASS_OWNER, account_owner=_PASS_OWNER):
+    """Return a ``(ctx, account)`` pair for the primitive's own cases.
+
+    Both halves are the REAL types -- a frozen
+    :class:`~app.services.balance_at.BalanceContext` and an
+    :class:`~app.models.account.Account` -- constructed in memory, because
+    ``_memoize_once`` reads exactly ``ctx.user_id``, ``account.user_id`` and
+    ``account.id`` and touches no database.  Passing *account_owner* different
+    from *owner* is how a case states the mis-pairing plan step X-i4 refuses.
+    """
+    return (
+        BalanceContext(user_id=owner, scenario=None, as_of=_AS_OF),
+        Account(id=_OWNED_ACCOUNT_ID, user_id=account_owner),
+    )
+
+
 def test_the_cache_stores_on_membership_not_truthiness():
     """An empty result is CACHED, not re-derived on every read.
 
-    ``_memoize_once`` -- the ONE primitive both forward memos
-    (``memoized_plan`` / ``memoized_payoff``) fill through -- tests
-    ``key not in cache``, never the value's truthiness, because a derivation may
-    have a legitimately falsy answer: a ``None`` payoff (a loan that never
-    clears).  A truthiness check would rebuild that on EVERY read of every pass,
-    unbounded and green under any test that happens to use a loan that clears.
-    Pinned directly on the shared primitive, so it holds for the payoff cache
-    too.
+    ``_memoize_once`` -- the ONE primitive every per-account pass memo fills
+    through (``memoized_plan`` / ``memoized_payoff`` / ``resolved_loan`` /
+    ``assembled_fold`` / ``loan_walk``) -- tests ``account.id not in cache``,
+    never the value's truthiness, because a derivation may have a legitimately
+    falsy answer: a ``None`` resolution (not a configured loan) and a ``None``
+    payoff (a loan that never clears).  A truthiness check would rebuild those
+    on EVERY read of every pass, unbounded and green under any test that happens
+    to use a configured loan that clears.  Pinned directly on the shared
+    primitive, so it holds for every cache it fills.
 
     **The empty PLAN stopped being the second example at plan step R16-a**, and
     the docstring said otherwise until an adversarial merge review found it one
@@ -473,6 +499,7 @@ def test_the_cache_stores_on_membership_not_truthiness():
     was false, and a falsy-answer example that is no longer falsy is how the
     rule it argues for gets dropped by the next reader.
     """
+    ctx, account = _pass_and_account()
     cache: dict[int, list] = {}
     builds = []
 
@@ -481,21 +508,22 @@ def test_the_cache_stores_on_membership_not_truthiness():
         builds.append(1)
         return []
 
-    assert _memoize_once(cache, 7, _build_empty) == []
+    assert _memoize_once(ctx, cache, account, _build_empty) == []
     # The SECOND read must be served from the cache even though the value is falsy.
-    assert _memoize_once(cache, 7, _build_empty) == []
+    assert _memoize_once(ctx, cache, account, _build_empty) == []
     assert builds == [1], "an empty result must cache, not re-derive"
 
 
 def test_the_cache_does_not_store_a_raising_build():
     """A build that RAISES is never cached, so a fail-loud guard fires every call.
 
-    ``_memoize_once`` assigns ``cache[key]`` only from a returned value, so the
-    seam's ``require_scenario`` guard (raised inside the build for a no-baseline
-    context) cannot be worn down by retrying: the key stays absent and the next
-    read re-raises.  Pinned on the primitive both forward funnels fill through --
+    ``_memoize_once`` assigns ``cache[account.id]`` only from a returned value, so
+    the seam's ``require_scenario`` guard (raised inside the build for a
+    no-baseline context) cannot be worn down by retrying: the key stays absent and
+    the next read re-raises.  Pinned on the primitive every funnel fills through --
     the property the funnel docstrings assert.
     """
+    ctx, account = _pass_and_account()
     cache: dict[int, list] = {}
     attempts = []
 
@@ -506,6 +534,57 @@ def test_the_cache_does_not_store_a_raising_build():
 
     for _ in range(2):
         with pytest.raises(ValueError):
-            _memoize_once(cache, 7, _raising_build)
+            _memoize_once(ctx, cache, account, _raising_build)
     assert attempts == [1, 1], "a raising build must re-run, never be cached"
-    assert 7 not in cache
+    assert _OWNED_ACCOUNT_ID not in cache
+
+
+def test_the_primitive_refuses_an_account_the_pass_does_not_own():
+    """Plan step X-i4: creating per-account pass state BINDS it to the pass.
+
+    ``_memoize_once`` takes the ``account`` rather than a bare id precisely so it
+    can refuse one whose owner is not the pass's.  Pinned on the primitive rather
+    than on each funnel because that is what makes the rule a precondition rather
+    than a fence: there is no other way to memoize a derivation on a context, so
+    a funnel added later cannot forget a check it never had to remember.
+
+    The build must not run and nothing must be stored -- a refusal that derived
+    the value first would still have issued the foreign account's queries.
+    """
+    ctx, foreign = _pass_and_account(owner=_PASS_OWNER, account_owner=_PASS_OWNER + 1)
+    cache: dict[int, list] = {}
+    builds = []
+
+    with pytest.raises(ForeignAccountError) as excinfo:
+        _memoize_once(ctx, cache, foreign, lambda: builds.append(1) or [])
+
+    assert builds == [], "the derivation must not run for a foreign account"
+    assert cache == {}, "a refused account must leave no state on the pass"
+    # The message names both owners and the account, because the failure it
+    # reports is a caller pairing two values wrongly and neither id alone
+    # identifies which pairing.
+    message = str(excinfo.value)
+    assert str(_PASS_OWNER) in message and str(_PASS_OWNER + 1) in message
+    assert str(_OWNED_ACCOUNT_ID) in message
+
+
+def test_the_refusal_survives_a_WARM_cache():
+    """A foreign account is refused on a cache HIT, not only on a miss.
+
+    The order inside ``_memoize_once`` is load-bearing: the binding is checked
+    BEFORE the membership test.  Were it after, a pass that had already memoized
+    id ``7`` for its own account would hand that answer straight back to a caller
+    naming a DIFFERENT owner's account with the same id -- which is the worst
+    form of the defect, because the figure returned would be real, be the wrong
+    owner's, and cost no query to produce.
+    """
+    ctx, owned = _pass_and_account()
+    cache: dict[int, list] = {}
+    assert _memoize_once(ctx, cache, owned, lambda: ["warm"]) == ["warm"]
+    assert cache[_OWNED_ACCOUNT_ID] == ["warm"]
+
+    _, foreign = _pass_and_account(account_owner=_PASS_OWNER + 1)
+    assert foreign.id == owned.id, "precondition: the cache is warm for this id"
+    with pytest.raises(ForeignAccountError):
+        _memoize_once(ctx, cache, foreign, lambda: ["rebuilt"])
+    assert cache[_OWNED_ACCOUNT_ID] == ["warm"], "the refusal must not disturb the cache"

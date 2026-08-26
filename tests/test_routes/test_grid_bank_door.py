@@ -47,7 +47,10 @@ def _a_recorded_line(seed_user, posted_on, account=None):
         account: The account; the seeded checking one by default.
 
     Returns:
-        The staged :class:`BankStatementLine`.
+        The COMMITTED :class:`BankStatementLine`.  Committed rather than
+        flushed (plan step balance:X-i3): every caller goes on to issue a
+        request, and a request holds its own transaction in which an
+        uncommitted row does not exist.
     """
     target = account or seed_user["account"]
     statement = StatementImport(
@@ -74,7 +77,7 @@ def _a_recorded_line(seed_user, posted_on, account=None):
         sequence_in_group=0,
     )
     db.session.add(line)
-    db.session.flush()
+    db.session.commit()
     return line
 
 
@@ -184,7 +187,11 @@ class TestTheGateOnWhichAccountsGetADoor:
             seed_user: The seeded user bundle.
 
         Returns:
-            The IRA :class:`~app.models.account.Account`.
+            The COMMITTED IRA :class:`~app.models.account.Account`.  Committed
+            rather than flushed (plan step balance:X-i3): both callers go on to
+            issue a request, and the whole point of this fixture is that the
+            REQUEST resolves the IRA as the grid account -- which it cannot do
+            against a preference no transaction of its own can see.
         """
         ira = account_service.create_account(
             account_service.AccountSpec(
@@ -198,7 +205,7 @@ class TestTheGateOnWhichAccountsGetADoor:
             user_id=seed_user["user"].id,
         ).one()
         settings.default_grid_account_id = ira.id
-        db.session.flush()
+        db.session.commit()
         return ira
 
     def test_no_door_when_the_grid_account_cannot_hold_statements(

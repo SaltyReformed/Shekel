@@ -71,7 +71,7 @@ class PeriodWindow:
       untidy: the balance column a reader scans down does not telescope across
       the hole, and the per-period reconciliation identity that column rests on
       values each period at its OWN boundaries, so nothing on screen explains
-      the step.  ``cash_period_view``'s contract used to PERMIT it in as many
+      the step.  ``period_view_of``'s contract used to PERMIT it in as many
       words ("they need not be contiguous"), which is row **P32**.
 
       **Five of the six views cannot produce one and the sixth can, and an

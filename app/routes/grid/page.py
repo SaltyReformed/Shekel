@@ -18,6 +18,7 @@ from flask import redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 from sqlalchemy.orm import selectinload
 
+from app.db_transaction import write_transaction
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
@@ -581,11 +582,16 @@ def index():
     user_id = current_user.id
 
     # Continuous rolling window: top up before resolving the grid so any
-    # newly generated periods are visible this request.  A no-op (one
-    # count, no lock) when rolling is disabled; commits only when periods
-    # were actually created.
-    if pay_period_rolling.top_up_rolling_window(user_id):
-        db.session.commit()
+    # newly generated periods are visible this request.  A no-op (one count,
+    # no lock) when rolling is disabled.
+    #
+    # **In its own COMMAND transaction** (plan step X-i3): this render is a
+    # query, so its transaction is one read-only snapshot and cannot hold the
+    # append.  The block writes, commits, and the read pass below then takes
+    # its snapshot of a database that already holds the new periods -- which is
+    # the ordering this route always needed and stated in prose.
+    with write_transaction():
+        pay_period_rolling.top_up_rolling_window(user_id)
 
     ctx = _resolve_grid_context(
         user_id, request.args, current_user.settings,

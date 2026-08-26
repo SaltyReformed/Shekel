@@ -22,6 +22,7 @@ from app.enums import (
     SettlementBasisEnum,
     StatusEnum,
 )
+from app.exceptions import RequiredRecordMissing
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.utils.dates import display_today
@@ -4813,7 +4814,19 @@ class TestInterestDispatch:
     def test_has_interest_true_but_no_params_row(
         self, app, auth_client, seed_user, db, seed_periods_today,
     ):
-        """Cash detail auto-creates interest params if the row is missing."""
+        """Cash detail REFUSES a missing params row; it does not manufacture one.
+
+        **This test asserted the opposite until plan step balance:X-i3**, which
+        deleted the auto-create branch on the developer's ruling.  The old
+        behaviour was a render repairing data: it wrote inside a read, which
+        costs the page the one snapshot every figure on it is computed against,
+        and it hid the door that should have written the row (the type-change
+        gap the sibling test below now covers).
+
+        A zero-rate row manufactured here renders on screen exactly like a rate
+        the owner configured, so the refusal is the honest answer and the
+        message names the repair.
+        """
         with app.app_context():
             hsa_type = db.session.query(AccountType).filter_by(name="HSA").one()
             acct = account_service.create_account(
@@ -4827,18 +4840,121 @@ class TestInterestDispatch:
             db.session.add(acct)
             db.session.commit()
 
-            # No InterestParams row exists yet.
+            # No InterestParams row exists yet.  ``account_service`` builds the
+            # Account; the params row is the ACCOUNT ROUTE's, which is why this
+            # state is reachable from the service and not from a browser.
             assert db.session.query(InterestParams).filter_by(
                 account_id=acct.id,
             ).first() is None
 
-            resp = auth_client.get(f"/accounts/{acct.id}/details")
-            assert resp.status_code == 200
+            with pytest.raises(RequiredRecordMissing, match="interest_params"):
+                auth_client.get(f"/accounts/{acct.id}/details")
 
-            # Auto-created by the cash-detail route's safety fallback.
+            # And it manufactured NOTHING on the way out.
             assert db.session.query(InterestParams).filter_by(
                 account_id=acct.id,
-            ).first() is not None
+            ).first() is None
+
+    def test_editing_the_TYPE_into_an_interest_kind_seeds_every_account_on_it(
+        self, app, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The THIRD door, and the one the step's own first draft missed.
+
+        Plan step balance:X-i3.  ``POST /accounts/types/<id>`` may flip
+        ``has_interest`` on an owner's OWN custom type, which changes the
+        projection kind of every account already on it -- with no
+        ``account_type_id`` change for the account-update door to see and no
+        account row touched at all.  Deleting the detail page's auto-create
+        without holding the rule here would have turned a legitimate settings
+        edit into a 500 on the account's own page.
+
+        Asserted through the RENDER, not just the row: the page is what the
+        deleted repair existed to keep working.
+        """
+        with app.app_context():
+            plain_type = AccountType(
+                user_id=seed_user["user"].id,
+                name="My Cash Pot",
+                category_id=db.session.query(AccountType).filter_by(
+                    name="Checking",
+                ).one().category_id,
+            )
+            db.session.add(plain_type)
+            db.session.flush()
+            acct = account_service.create_account(
+                account_service.AccountSpec(
+                    user_id=seed_user["user"].id,
+                    account_type_id=plain_type.id,
+                    name="Cash Pot",
+                    anchor_balance=Decimal("100.00"),
+                ),
+            )
+            db.session.add(acct)
+            db.session.commit()
+            assert db.session.query(InterestParams).filter_by(
+                account_id=acct.id,
+            ).first() is None, "a plain custom type starts with no params row"
+
+            resp = auth_client.post(f"/accounts/types/{plain_type.id}", data={
+                "name": plain_type.name,
+                "category_id": plain_type.category_id,
+                "has_interest": "true",
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+            db.session.expire_all()
+            # The precondition, asserted rather than assumed: a schema refusal
+            # here flashes and redirects, which ``follow_redirects`` would also
+            # render as a 200.
+            assert db.session.get(AccountType, plain_type.id).has_interest
+
+            params = db.session.query(InterestParams).filter_by(
+                account_id=acct.id,
+            ).one()
+            assert params.apy == Decimal("0")
+            assert auth_client.get(
+                f"/accounts/{acct.id}/details",
+            ).status_code == 200
+
+    def test_reclassing_into_an_interest_type_seeds_its_params_row(
+        self, app, auth_client, seed_user, db, seed_periods_today,
+    ):
+        """The gap the deleted auto-create was covering, closed at its door.
+
+        Plan step balance:X-i3.  The seeder had exactly ONE caller -- account
+        CREATION -- so an account re-classed into a parameterised kind carried
+        no params row, and two detail pages each repaired it on a GET.
+        ``update_account`` now seeds through the shared
+        ``_type_params.ensure_type_params``, so the invariant holds at the door
+        that establishes the kind.
+
+        The FIRING half matters: without the seeding line this test fails at
+        the render below, which is the state the auto-create used to hide.
+        """
+        with app.app_context():
+            checking = seed_user["account"]
+            hsa_type = db.session.query(AccountType).filter_by(name="HSA").one()
+            assert db.session.query(InterestParams).filter_by(
+                account_id=checking.id,
+            ).first() is None, "a Checking account starts with no params row"
+
+            resp = auth_client.post(f"/accounts/{checking.id}", data={
+                "name": checking.name,
+                "account_type_id": hsa_type.id,
+                "version_id": checking.version_id,
+            }, follow_redirects=True)
+            assert resp.status_code == 200
+
+            params = db.session.query(InterestParams).filter_by(
+                account_id=checking.id,
+            ).one()
+            # The explicit zero sentinel the create door uses (E-12 / HIGH-06):
+            # a missing rate is never projected as a server-default one.
+            assert params.apy == Decimal("0")
+
+            # And the page the missing row used to repair now renders.
+            assert auth_client.get(
+                f"/accounts/{checking.id}/details",
+            ).status_code == 200
 
 
 # ── Investment Dispatch (Metadata-Driven) ────────────────────────

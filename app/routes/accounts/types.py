@@ -25,6 +25,8 @@ from app.models.account import Account
 from app.models.ref import AccountType
 from app.routes.accounts._bp import accounts_bp
 from app.services import account_posting_service, ledger_account_service
+from app.services.account_params import ensure_type_params
+from app.services.account_projection import classify_account
 from app.utils.account_validation import (
     _crosses_posting_boundary,
     _owned_account_type,
@@ -32,6 +34,7 @@ from app.utils.account_validation import (
     _type_update_schema,
     _validate_account_type_boundary_edit,
 )
+from app.services.user_write_lock import lock_user_writes
 from app.utils.auth_helpers import require_owner
 
 logger = logging.getLogger(__name__)
@@ -118,6 +121,18 @@ def update_account_type(type_id):
 
     data = _type_update_schema.load(request.form)
 
+    # The owner's write lock, taken HERE and unconditionally, BEFORE any row of
+    # this transaction is touched -- the invariant
+    # :mod:`app.services.user_write_lock` states, held the way the sibling door
+    # ``accounts.update_account`` holds it and for the same reason.  It was not
+    # needed while this route only UPDATEd ``ref.account_types``; plan step
+    # balance:X-i3 gave it params-row INSERTs of its own, which would otherwise
+    # take table locks several statements before the advisory lock that the
+    # boundary-crossing branch below reaches through the posting re-sync.  That
+    # inversion is the class finding **N-193** records, and adding a door to it
+    # in the commit that removes one next door is not a trade worth making.
+    lock_user_writes(current_user.id)
+
     # Per-user duplicate-name guard on rename.  Identical scoping to
     # ``create_account_type`` -- the conflict universe is the
     # caller's own custom types only.  ``id != type_id`` excludes
@@ -158,6 +173,30 @@ def update_account_type(type_id):
         if field in data:
             setattr(account_type, field, data[field])
 
+    # **This is the THIRD door into an account's projection KIND** (plan step
+    # balance:X-i3): ``has_interest`` and ``has_parameters`` are both editable
+    # here, so one form post can turn every account already on this type into
+    # an interest or investment account -- with no ``account_type_id`` change
+    # for the account-update door to see, and no account row touched at all.
+    # Until this loop the params rows those kinds require were written by the
+    # CREATE and RE-CLASS doors only, and two detail pages repaired the gap on
+    # a GET.
+    #
+    # Run over EVERY account of the type rather than over the ones whose kind
+    # changed, and the seeder's idempotence is what makes that right: deciding
+    # which changed would mean a second copy of ``classify_account``'s branch
+    # order, which is the second answer to one question this package deletes.
+    # The query autoflushes the dirtied type, and ``classify_account`` reads
+    # each account's ``account_type`` relationship -- that same session-held
+    # row -- so it sees the new flags.
+    affected_accounts = (
+        db.session.query(Account)
+        .filter_by(account_type_id=type_id, user_id=current_user.id)
+        .all()
+    )
+    for account in affected_accounts:
+        ensure_type_params(account, classify_account(account))
+
     # An ALLOWED boundary crossing (every affected ledger is empty, per the
     # guard above) still leaves each account's pairing stale: re-class the
     # empty linked rows to the new category's class and re-sync the anchor
@@ -165,11 +204,6 @@ def update_account_type(type_id):
     # instead of stranding one (the sync structurally no-ops for loans and
     # for the $0 anchors that made the ledgers empty in the first place).
     if boundary_crossed:
-        affected_accounts = (
-            db.session.query(Account)
-            .filter_by(account_type_id=type_id, user_id=current_user.id)
-            .all()
-        )
         for account in affected_accounts:
             ledger_account_service.sync_linked_ledger_class(account)
             account_posting_service.sync_account_anchor_postings_all_scenarios(

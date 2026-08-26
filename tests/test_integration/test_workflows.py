@@ -280,16 +280,24 @@ class TestAnchorTrueUpBalance:
             # through the same helper production writes one with, and read back
             # through the seam.  That is what this test was always about; the
             # deleted producer merely let it be simulated with a parameter.
-            ctx = BalanceContext.build(
-                seed_user["user"].id, as_of=seed_periods[0].start_date,
-            )
+            # ONE read pass per true-up, built AFTER its commit.  A pass is a
+            # memo whose lifetime is the one read it was built for
+            # (``BalanceContext``), and since plan step X-i4 the cash fold is
+            # one of the derivations it holds -- so a pass reused across these
+            # two writes would answer the first anchor twice and the $1,000.00
+            # shift would read $0.00.  Both passes are pinned to the same
+            # ``as_of``, so the only thing that differs between them is the
+            # assertion each was built to read.
             override_anchor(
                 db.session, seed_user["account"], seed_periods[0],
                 Decimal("2000.00"), at=settle_instant_on(seed_periods[0].start_date),
             )
             db.session.commit()
             balances_2k = balance_at.cash_balance_map(
-                seed_user["account"], ctx,
+                seed_user["account"],
+                BalanceContext.build(
+                    seed_user["user"].id, as_of=seed_periods[0].start_date,
+                ),
             )
 
             override_anchor(
@@ -300,7 +308,10 @@ class TestAnchorTrueUpBalance:
             )
             db.session.commit()
             balances_3k = balance_at.cash_balance_map(
-                seed_user["account"], ctx,
+                seed_user["account"],
+                BalanceContext.build(
+                    seed_user["user"].id, as_of=seed_periods[0].start_date,
+                ),
             )
 
             # Every period's balance should differ by exactly $1000.

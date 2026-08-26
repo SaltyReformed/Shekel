@@ -447,7 +447,7 @@ def memoized_payoff(account: Account, ctx: BalanceContext) -> date | None:
             configured loan -- on EVERY call (a raising derivation is never cached).
     """
     return _memoize_once(
-        ctx.payoffs, account.id, lambda: loan_payoff_date(account, ctx),
+        ctx, ctx.payoffs, account, lambda: loan_payoff_date(account, ctx),
     )
 
 

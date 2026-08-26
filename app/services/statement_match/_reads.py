@@ -407,8 +407,29 @@ def awaiting_review_count(account_id: int, opens: "date | None") -> int:
             :func:`_split_at_calendar_open`.  **Taken as a parameter rather
             than derived here**: the grid route already holds the pass's
             memoized calendar, and a producer below the route reads the
-            pass's derivation instead of building a second one that can
-            disagree with it under READ COMMITTED.
+            pass's derivation instead of building a second one.
+
+            *The second half of that reason has been retired.*  It read "a
+            second one that can disagree with it under READ COMMITTED", and
+            this function's only caller is ``grid/page._bank_control`` on the
+            ``GET /grid`` render, where since plan step balance:X-i3 a second
+            derivation here could not disagree with the route's.
+
+            **And ``/grid`` is the ONE route where "the whole request is one
+            snapshot" would be false**, which is why that is not the sentence:
+            it opens a :func:`~app.db_transaction.write_transaction` block for
+            the rolling top-up, so it runs read-only, then writable, then
+            read-only again over a NEW snapshot.  What holds is narrower and
+            positional -- the block is the first statement of ``index()``, and
+            both the route's memoized calendar and this count are read long
+            after it, so both fall inside the same later snapshot.  A
+            ``write_transaction`` moved between those two reads would make the
+            disagreement expressible again.
+
+            What survives unconditionally is the reason that never depended on
+            the isolation level: two reads of one fact in one request is this
+            project's DRY violation, and the read this replaced was a second
+            ``budget.pay_periods`` scan on the app's hottest render path.
 
     Returns:
         The count, ``0`` when the account has nothing recorded.

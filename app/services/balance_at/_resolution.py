@@ -182,7 +182,7 @@ def resolved_loan(
         not a configured loan.
     """
     return _memoize_once(
-        ctx.loans, account.id, lambda: resolve_loan_bundle(account, ctx),
+        ctx, ctx.loans, account, lambda: resolve_loan_bundle(account, ctx),
     )
 
 

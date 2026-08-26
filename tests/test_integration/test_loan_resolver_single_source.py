@@ -159,6 +159,12 @@ def _settle_one_payment(seed_user, loan_account, period, auth_client):
         seed_user, db.session, seed_user["account"], loan_account, period,
         amount=FIXED_PI, settled_on=period.start_date,
     )
+    # COMMITTED before the surfaces are read (plan step balance:X-i3).  The
+    # whole point of this test is that the loan CARD -- rendered by a request
+    # -- reports the same balance the replay does, and a request cannot see a
+    # settle this fixture never committed.  ``expire_all`` alone dropped the
+    # identity map without making the rows visible to anyone else.
+    db.session.commit()
     db.session.expire_all()
 
 

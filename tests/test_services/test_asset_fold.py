@@ -322,8 +322,7 @@ class TestTheAccrualWindow:
             db.session, account, settle_instant_on(date(2026, 1, 2)),
         )
         db.session.commit()
-        ctx = _ctx(seed_user)
-        assert _view(account, ctx, seed_periods[:1])[
+        assert _view(account, _ctx(seed_user), seed_periods[:1])[
             seed_periods[0].id
         ].accrual == Decimal("113.44")
 
@@ -331,7 +330,15 @@ class TestTheAccrualWindow:
             db.session, account, _instant(2026, 1, 9),
         )
         db.session.commit()
-        assert _view(account, ctx, seed_periods[:1])[
+        # A FRESH read pass, because the assertion above is a WRITE and a pass
+        # is a memo whose lifetime is the one read it was built for -- the rule
+        # ``BalanceContext``'s own docstring states, and the shape every write
+        # path in ``app/`` already takes.  Reusing the first pass here read the
+        # pre-write fold from plan step X-i4 on, which is the memo working:
+        # until then the cash fold was the one account-keyed derivation a pass
+        # did NOT hold, so this was the only kind of test that could reuse one
+        # across a commit and still see the new data.
+        assert _view(account, _ctx(seed_user), seed_periods[:1])[
             seed_periods[0].id
         ].accrual == Decimal("56.70")
 
@@ -1232,8 +1239,8 @@ class TestAnAccountThatModelsNothingIsItsCashFold:
             column.balance
             for column in _view(account, ctx, seed_periods).values()
         ] == list(
-            _cash_fold.cash_period_balances(
-                account, ctx.amounts(), ctx.as_of,
+            _cash_fold.period_balances(
+                _cash_fold.assembled_fold(account, ctx),
                 period_window(seed_periods),
             ).values()
         )
@@ -1298,8 +1305,9 @@ class TestThePerPeriodIdentity:
             account, ctx, seed_periods, params=params,
             gross=Decimal("3631.74"),
         )
-        cash = _cash_periods.cash_period_view(
-            account, ctx.amounts(), ctx.as_of, period_window(seed_periods),
+        cash = _cash_periods.period_view_of(
+            _cash_fold.assembled_fold(account, ctx),
+            period_window(seed_periods),
         )
         openings = _fold(
             account, ctx,

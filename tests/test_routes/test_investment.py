@@ -129,7 +129,14 @@ def _cards_context(*, limit, ytd, paydays, current_index, as_of, cadence=14,
 
 def _create_investment_account(seed_user, db_session, type_name="401(k)",
                                 name="My 401k", balance="50000.00"):
-    """Helper to create an investment/retirement account."""
+    """Helper to create an investment/retirement account.
+
+    COMMITS rather than flushes (plan step balance:X-i3).  A request cannot see
+    an uncommitted row -- it holds its own transaction -- so a fixture that
+    only flushed and then issued one was asking the route to read a state no
+    browser could produce.  The sibling ``_create_investment_params`` below has
+    always committed; this one differed for no stated reason.
+    """
     acct_type = db_session.query(AccountType).filter_by(name=type_name).one()
     account = account_service.create_account(
         account_service.AccountSpec(
@@ -140,7 +147,7 @@ def _create_investment_account(seed_user, db_session, type_name="401(k)",
         ),
     )
     db_session.add(account)
-    db_session.flush()
+    db_session.commit()
     return account
 
 

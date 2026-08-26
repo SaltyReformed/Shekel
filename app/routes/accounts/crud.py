@@ -27,11 +27,6 @@ from decimal import Decimal
 from flask import abort, flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
-from app import ref_cache
-from app.enums import (
-    CompoundingFrequencyEnum,
-    EmployerContributionTypeEnum,
-)
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import Account
@@ -61,6 +56,7 @@ from app.services import (
     pay_period_service,
     transfer_service,
 )
+from app.services.account_params import ensure_type_params
 from app.services.account_projection import AccountProjectionKind, classify_account
 from app.services.user_write_lock import lock_user_writes
 from app.utils import archive_helpers
@@ -133,58 +129,6 @@ def new_account():
             current_user.id,
         ),
     )
-
-
-def _auto_create_type_params(account, kind):
-    """Auto-create the type-specific params row for a new parameterized account.
-
-    Dispatches on the account's :class:`AccountProjectionKind`: interest
-    accounts get an ``apy=0`` :class:`InterestParams`, investment/retirement
-    accounts a default :class:`InvestmentParams`, and Property
-    (appreciating) accounts an ``annual_appreciation_rate=0``
-    :class:`AssetAppreciationParams`.  Each row carries an explicit zero
-    sentinel (E-12: zero is a value, not missing) so no projection runs on a
-    silent server-default before the user configures the real value on the
-    type-specific setup page.  Does not commit; the caller owns the
-    transaction boundary.
-
-    Args:
-        account: The freshly-created :class:`~app.models.account.Account`.
-        kind: The account's :class:`AccountProjectionKind`.
-    """
-    if kind is AccountProjectionKind.INTEREST:
-        if not db.session.query(InterestParams).filter_by(account_id=account.id).first():
-            # #38: compounding frequency is a ref FK, so the auto-create
-            # supplies the DAILY id explicitly (an FK id is not a static
-            # literal).  HIGH-06: explicit ``apy=0`` (no server_default) so
-            # no ghost 4.5% interest is ever projected.
-            db.session.add(InterestParams(
-                account_id=account.id, apy=Decimal("0"),
-                compounding_frequency_id=ref_cache.compounding_frequency_id(
-                    CompoundingFrequencyEnum.DAILY,
-                ),
-            ))
-    elif kind is AccountProjectionKind.INVESTMENT:
-        if not db.session.query(InvestmentParams).filter_by(account_id=account.id).first():
-            # #38: employer-contribution type is a ref FK, so the
-            # auto-create supplies the NONE id explicitly.
-            db.session.add(InvestmentParams(
-                account_id=account.id,
-                employer_contribution_type_id=(
-                    ref_cache.employer_contribution_type_id(
-                        EmployerContributionTypeEnum.NONE,
-                    )
-                ),
-            ))
-    elif kind is AccountProjectionKind.APPRECIATING:
-        # Property: the user sets the real rate on the property detail page.
-        if not db.session.query(AssetAppreciationParams).filter_by(
-            account_id=account.id,
-        ).first():
-            db.session.add(AssetAppreciationParams(
-                account_id=account.id,
-                annual_appreciation_rate=Decimal("0"),
-            ))
 
 
 def _setup_redirect_url(account, kind):
@@ -327,7 +271,7 @@ def create_account():
     # is never mistaken for an investment -- the bug a bare ``has_parameters
     # and not has_interest and not has_amortization`` predicate introduces.
     kind = classify_account(account)
-    _auto_create_type_params(account, kind)
+    ensure_type_params(account, kind)
     db.session.commit()
 
     logger.info("Created account: %s (id=%d)", account.name, account.id)
@@ -476,6 +420,17 @@ def update_account(account_id):
         purchase already inside the balance the user typed" an answer decided by
         recording order.  That reasoning is what this step finished: an account
         EDIT is not the surface a balance reading is entered on.
+
+        **It SEEDS the new kind's params row since plan step balance:X-i3**, and
+        that it did not is what made two detail pages repair the row on a GET.
+        :mod:`app.services.account_params` had exactly ONE caller --
+        account CREATION -- so re-classing Checking into a ``has_interest``
+        type left an interest-bearing account with no
+        :class:`~app.models.interest_params.InterestParams`, and the cash and
+        property detail pages each carried an auto-create for the row this door
+        should have written.  Reached through the shared seeder rather than a
+        second copy of it: two doors establishing one invariant two ways is how
+        they come to disagree.
         """
         if not type_changed:
             return
@@ -485,6 +440,7 @@ def update_account(account_id):
         # by the setattr alone).
         db.session.flush()
         db.session.expire(account, ["account_type"])
+        ensure_type_params(account, classify_account(account))
         ledger_account_service.sync_linked_ledger_class(account)
         account_posting_service.sync_account_anchor_postings_all_scenarios(
             account.id,

@@ -496,7 +496,7 @@ _FENCED_MODULE_RULINGS = {
         # live-override basis across them.  Its per-period ``period_subtotal`` /
         # ``period_subtotals`` siblings carried this same ruling until plan step
         # X-c2b3 deleted them: ruling R-K changed what a subtotal COUNTS, so the
-        # seam-private ``_cash_fold.cash_period_view`` is their successor, and
+        # seam-private ``_cash_periods.period_view_of`` is their successor, and
         # two rulings went with the two names (the reverse-staleness meta-test
         # would otherwise flag them).
         "sum_projected",
