@@ -65,7 +65,7 @@ class StatementLine:  # pylint: disable=too-many-instance-attributes
             **The NULL is the source saying so**, exactly as
             :attr:`transaction_on`'s is, and for a sharper reason: plan step
             ``bank_import:X-f6a-3d`` makes this string the KEY a merchant
-            destination policy is stated against, so a source that cannot name
+            rule is stated against, so a source that cannot name
             a merchant must key NOTHING rather than key something wrong.
             Measured on the developer's own 2026-08-16 exports: SECU's CSV
             names one on **361 of 361** lines, and its OFX truncates 326 of

@@ -8,7 +8,7 @@ line PAID AN ACCOUNT THE OWNER HOLDS rather than bought something.
 
 **Two modules ask it and neither may import the other**, which is why it is a
 leaf rather than a member of either.  :mod:`._bars` asks it of a LINE, to
-decide whether a create-a-purchase arm exists; :mod:`._policy` asks it of a
+decide whether a create-a-purchase arm exists; :mod:`._stating` asks it of a
 SUBMISSION, to refuse an answer that would file such a merchant's money as
 spending.  A second spelling of *which words mean this* across those two is the
 duplication a money rule may least afford.
@@ -75,7 +75,7 @@ def account_payment_merchants(account_id: int) -> "frozenset[int]":
 
     ONE statement over the account's whole recorded history rather than over
     this pass's leftovers, and the reason is the reason
-    :func:`~._policy.account_merchants` spans the whole account too: a merchant
+    :func:`~._rules.account_merchants` spans the whole account too: a merchant
     whose every line is already matched is still one the owner may want to
     answer for, and the next statement will bring more of it.
 

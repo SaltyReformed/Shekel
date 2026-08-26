@@ -114,7 +114,7 @@ class MintedEnvelopes:
     """The envelopes ONE request has already created, so a press mints one each.
 
     Plan step ``bank_import:X-f6a-4``, finding **N-327**, developer ruling
-    2026-08-20.  A merchant policy answering *a new envelope called X* used to
+    2026-08-20.  A merchant rule answering *a new envelope called X* used to
     mint one PER LINE: measured on the developer's own statement, a ``Lowe's``
     answer places 4 lines over 3 pay periods, so one press made 4 envelopes,
     two of them in the SAME period.  No figure was wrong -- each closes at its
@@ -860,7 +860,7 @@ def create_purchase_from_line(
             caller that forgot it would re-open the exact door this parameter
             closes -- the one a YTD pass took `$7,412.94` through.  Derived
             once per REQUEST by :func:`~._batch.apply_reviewed`, beside
-            *minted*, because nothing inside a batch can restate a policy and
+            *minted*, because nothing inside a batch can restate a rule and
             re-reading it per act would be 90 queries for one statement.
 
     Returns:
@@ -958,6 +958,11 @@ def create_purchase_from_line(
             created=_made_by_this_act(candidate, envelope, created),
         ),
         matched,
+        # A TICK: this door is entered from the review screen's own destination
+        # select, one line at a time (ruling **R-GT**).  Plan step
+        # ``bank_import:X-ge`` is what gives it a second entrance, and this is
+        # the line that changes there.
+        applied_by_rule=False,
     )
 
     recorded = CreatedPurchase(

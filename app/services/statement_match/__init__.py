@@ -139,14 +139,16 @@ from ._propose import ProposedMatches, propose
 from ._accepted_view import AcceptedGroup, AcceptedRow
 from ._placement import Placement, PlacementKind
 from ._preview import HandTotals, preview_hand_build
-from ._policy import (
-    MerchantPolicy,
-    PolicyAnswer,
-    PolicyStatement,
-    PolicyView,
-    StatedPolicies,
+from ._rules import (
+    StandingRule,
+    RuleAnswer,
+    RuleView,
     account_merchants,
-    state_policies,
+)
+from ._stating import (
+    RuleSubmission,
+    StatedRules,
+    state_rules,
 )
 from ._reads import (
     CreatableLine,
@@ -175,7 +177,7 @@ __all__ = [
     "DAY_WINDOW",
     "NEAR_MISS_BOUND",
     "MatchDays",
-    "MerchantPolicy",
+    "StandingRule",
     "MerchantSection",
     "MerchantSummary",
     "MatchProposal",
@@ -186,9 +188,9 @@ __all__ = [
     "PlacementKind",
     "PlannedRemoval",
     "PlannedRemovals",
-    "PolicyAnswer",
-    "PolicyStatement",
-    "PolicyView",
+    "RuleAnswer",
+    "RuleSubmission",
+    "RuleView",
     "ProposedMatches",
     "PurchaseCreation",
     "PurchaseDestination",
@@ -199,7 +201,7 @@ __all__ = [
     "ReviewedBatch",
     "ReviewedRow",
     "RowKind",
-    "StatedPolicies",
+    "StatedRules",
     "accept_match",
     "account_merchants",
     "apply_reviewed",
@@ -217,6 +219,6 @@ __all__ = [
     "release_match",
     "removals_by_match",
     "review_set",
-    "state_policies",
+    "state_rules",
     "unmatched_destinations",
 ]

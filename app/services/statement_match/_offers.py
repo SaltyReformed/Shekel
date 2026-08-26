@@ -339,7 +339,7 @@ class CandidateRow:  # pylint: disable=too-many-instance-attributes
         than** :data:`~._pairing.DAY_WINDOW` **days after their purchase day**
         (worst: 128).  So a point at ``settled_on`` put them out of reach of
         their own bank lines, every such line read as unexplained, and the
-        merchant-destination policy offered to RECORD it -- **50 duplicate
+        merchant rule offered to RECORD it -- **50 duplicate
         purchases worth `$3,590.00`**, among them a `$18.64` Food Lion the app
         already held on the bank's own day.  The remedy is to say what the app
         actually knows: the money moved between the day the row was budgeted

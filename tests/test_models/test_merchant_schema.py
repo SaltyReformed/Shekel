@@ -7,8 +7,8 @@ writable.
 
 **What the promotion moved, and therefore what has to be graded here.**  A
 merchant was a 100-character STRING kept twice -- on
-``bank_statement_lines.merchant`` and on ``merchant_destinations.merchant`` --
-joined by equality, with ``statement_match._policy._refuse_unknown_merchants``
+``bank_statement_lines.merchant`` and on ``merchant_rules.merchant`` --
+joined by equality, with ``statement_match._stating._refuse_unknown_merchants``
 as the only thing between a crafted body and a stored answer keyed on a
 merchant this account had never seen.  Three things carry that now, and each is
 a case below: the identity key, the composite foreign keys, and the fact that a
@@ -18,7 +18,7 @@ merchant row OUTLIVES the lines that named it.
 import pytest
 
 from app.models.merchant import Merchant
-from app.models.merchant_destination import MerchantDestination
+from app.models.merchant_rule import MerchantRule
 from app.models.statement_import import BankStatementLine
 from app.services.statement_import._merchants import resolve_merchants
 from tests._test_helpers import capture_sql_statements
@@ -193,10 +193,11 @@ class TestWhatDeletingOneCosts:
         # BOTH referrers, because the deferral argument is about a statement
         # whose cascade reaches more than one of them -- a class staging only
         # the line half would grade half the claim.
-        db.session.add(MerchantDestination(
+        db.session.add(MerchantRule(
             user_id=seed_second_user["user"].id,
             account_id=account.id,
             merchant_id=line.merchant_id,
+            never_a_purchase=True,
         ))
         db.session.flush()
         assert db.session.query(Merchant).filter(
@@ -236,7 +237,7 @@ class TestWhatDeletingOneCosts:
 
 
 class TestARuleIsAboutAMerchantOfItsOwnAccount:
-    """``fk_merchant_destinations_merchant_account``: the retired fence."""
+    """``fk_merchant_rules_merchant_account``: the retired fence."""
 
     def test_a_rule_naming_ANOTHER_ACCOUNTS_merchant_is_unwritable(
         self, app, db, seed_user, seed_second_user,
@@ -253,16 +254,17 @@ class TestARuleIsAboutAMerchantOfItsOwnAccount:
         )
         db.session.add(theirs)
         db.session.flush()
-        db.session.add(MerchantDestination(
+        db.session.add(MerchantRule(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             merchant_id=theirs.id,
+            never_a_purchase=True,
         ))
 
         with pytest.raises(Exception) as caught:
             db.session.flush()
 
-        assert "fk_merchant_destinations_merchant_account" in str(caught.value)
+        assert "fk_merchant_rules_merchant_account" in str(caught.value)
 
 
 class TestReadingALinesMerchantCostsNoSecondStatement:

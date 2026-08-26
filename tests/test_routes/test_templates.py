@@ -2063,6 +2063,160 @@ class TestTemplateHardDelete:
             assert b"permanently deleted" in resp.data
             assert db.session.get(TransactionTemplate, template_id) is None
 
+    def test_MOVING_a_template_a_merchant_rule_names_is_refused(
+        self, app, auth_client, seed_user,
+    ):
+        """A designed refusal where there was an unhandled 500.
+
+        Plan step ``bank_import:X-gd-2``.
+        ``fk_merchant_rules_template_account`` is composite over
+        ``(template_id, account_id)`` with no ``ON UPDATE``, so moving a
+        template between accounts orphans every rule naming it and PostgreSQL
+        raises -- an IntegrityError ``commit_or_handle_stale`` does not catch
+        and no error handler renders.  Verified against the developer's own
+        data 2026-08-26: ``UPDATE budget.transaction_templates SET account_id
+        = 10 WHERE id = 19`` is refused by that constraint.
+
+        **The 500 predates this step and the UNRECOVERABILITY does not**: the
+        owner's way out used to be withdrawing the rule, and ruling R-GS
+        removed the withdrawal.  Found by an adversarial security review.
+        """
+        from app.models.merchant import (  # pylint: disable=import-outside-toplevel
+            Merchant,
+        )
+        from app.models.merchant_rule import (  # pylint: disable=import-outside-toplevel
+            MerchantRule,
+        )
+
+        with app.app_context():
+            template = _create_template(seed_user)
+            template_id = template.id
+            origin = template.account_id
+            elsewhere = Account(
+                user_id=seed_user["user"].id,
+                name="Second Checking",
+                account_type_id=seed_user["account"].account_type_id,
+            )
+            db.session.add(elsewhere)
+            db.session.flush()
+            merchant = Merchant(account_id=origin, name="Food Lion")
+            db.session.add(merchant)
+            db.session.flush()
+            db.session.add(MerchantRule(
+                user_id=seed_user["user"].id,
+                account_id=origin,
+                merchant_id=merchant.id,
+                template_id=template_id,
+                never_a_purchase=False,
+            ))
+            db.session.commit()
+
+            resp = auth_client.post(
+                f"/templates/{template_id}",
+                data={"account_id": str(elsewhere.id)},
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            assert b"cannot be moved to another" in resp.data
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionTemplate, template_id,
+            ).account_id == origin
+
+    def test_MOVING_a_template_NO_rule_names_still_works(
+        self, app, auth_client, seed_user,
+    ):
+        """The firing control: the guard refuses a move, it does not forbid one.
+
+        Without it the case above would be satisfied by a door that refused
+        every account change, which is an ordinary edit the form offers.
+        """
+        with app.app_context():
+            template = _create_template(seed_user)
+            template_id = template.id
+            elsewhere = Account(
+                user_id=seed_user["user"].id,
+                name="Second Checking",
+                account_type_id=seed_user["account"].account_type_id,
+            )
+            db.session.add(elsewhere)
+            db.session.commit()
+            target = elsewhere.id
+
+            resp = auth_client.post(
+                f"/templates/{template_id}",
+                data={"account_id": str(target)},
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            db.session.expire_all()
+            assert db.session.get(
+                TransactionTemplate, template_id,
+            ).account_id == target
+
+    def test_hard_delete_template_a_MERCHANT_RULE_names_is_archived(
+        self, app, auth_client, seed_user,
+    ):
+        """A stated answer is not collateral of deleting the row it names.
+
+        Plan step ``bank_import:X-gd-2``.  ``fk_merchant_rules_template_account``
+        is ON DELETE CASCADE, and this door gated only on settled TRANSACTIONS
+        -- so permanently deleting a template destroyed every standing merchant
+        rule filing into it, under a flash that mentioned only the template.
+        Ruling **R-GS** is what makes it matter rather than untidy: a rule row
+        is never un-stated by its owner, so a silent cascade was the only way
+        one could vanish at all.
+
+        Measured on the developer's dev database 2026-08-26: 16 of 29 rules
+        name a template, and template 19 (`Clothes`) carried a rule and ZERO
+        settled transactions -- so the permanent arm was live on it.  Found by
+        three adversarial reviews the same day; the category twin of this door
+        was already closed and this one was not.
+        """
+        from app.models.merchant import (  # pylint: disable=import-outside-toplevel
+            Merchant,
+        )
+        from app.models.merchant_rule import (  # pylint: disable=import-outside-toplevel
+            MerchantRule,
+        )
+
+        with app.app_context():
+            template = _create_template(seed_user)
+            template_id = template.id
+            merchant = Merchant(
+                account_id=seed_user["account"].id, name="Food Lion",
+            )
+            db.session.add(merchant)
+            db.session.flush()
+            rule = MerchantRule(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                merchant_id=merchant.id,
+                template_id=template_id,
+                never_a_purchase=False,
+            )
+            db.session.add(rule)
+            db.session.commit()
+            rule_id = rule.id
+
+            resp = auth_client.post(
+                f"/templates/{template_id}/hard-delete",
+                follow_redirects=True,
+            )
+
+            assert resp.status_code == 200
+            # The sentence names the REASON.  Saying "has payment history" for
+            # a template whose only usage is a rule is the screens-stating-what-
+            # is-false defect this arc keeps closing.
+            assert b"where a merchant" in resp.data
+            assert b"payment history" not in resp.data
+            surviving = db.session.get(TransactionTemplate, template_id)
+            assert surviving is not None
+            assert surviving.is_active is False
+            assert db.session.get(MerchantRule, rule_id) is not None
+
     def test_hard_delete_template_with_history(self, app, auth_client, seed_user, seed_periods_today):
         """C-5A.5-12: Template with Paid txn is blocked and archived instead."""
         with app.app_context():

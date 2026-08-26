@@ -60,7 +60,7 @@ class StatementUploadSchema(BaseSchema):
 
     Inherits :class:`~app.schemas.validation._helpers.BaseSchema`, whose
     ``unknown = EXCLUDE`` is what drops the form's ``csrf_token`` -- the same
-    policy every other schema here takes, rather than a second spelling of it.
+    rule every other schema here takes, rather than a second spelling of it.
     """
 
     source = fields.String(
@@ -450,15 +450,21 @@ class StatementPurchaseSchema(BaseSchema):
     category_id = RowId(required=False, load_default=None)
 
 
-class PolicyAnswerField(fields.Field):
-    """Which of the four things the policy control's one select can say.
+class RuleAnswerField(fields.Field):
+    """Which of the five things the rule control's one select can say.
 
     **One field because the owner makes one choice**, exactly as
     :class:`PurchaseDestination` is one field: the control is a single
-    ``<select>`` whose options are *I have not said*, each recurring envelope
-    on the account, *a new envelope*, and *never a purchase*.  Splitting it
-    into an id plus an implied arm is what let a form name two destinations at
-    once one leaf earlier.
+    ``<select>`` whose options are each recurring envelope on the account, *a
+    new envelope*, *ask me every time*, *never a purchase*, and -- on a
+    merchant with no rule only -- *I have not said*.  Splitting it into an id
+    plus an implied arm is what let a form name two destinations at once one
+    leaf earlier.
+
+    **Four of the five are ANSWERS and the fifth is the absence of one**
+    (ruling **R-GI**).  This field grades the wire and does not know the
+    difference; the route is where :data:`NOT_SAID` stops being a value and
+    becomes an item that is simply not submitted to the door.
 
     **The id half is exactly as strict as :class:`RowId`**, through the same
     :func:`~app.utils.digit_strings.parse_row_id`: after the ``t:`` prefix,
@@ -480,13 +486,13 @@ class PolicyAnswerField(fields.Field):
             **kwargs: Marshmallow's contract, unused.
 
         Returns:
-            :data:`NOT_SAID`, :data:`NEVER`, :data:`NEW_ENVELOPE`, or the
-            ``int`` id of a recurring definition.
+            :data:`NOT_SAID`, :data:`NEVER`, :data:`ALWAYS_ASK`,
+            :data:`NEW_ENVELOPE`, or the ``int`` id of a recurring definition.
 
         Raises:
             ValidationError: When *value* is none of those.
         """
-        if value in (NOT_SAID, NEVER, NEW_ENVELOPE):
+        if value in (NOT_SAID, NEVER, ALWAYS_ASK, NEW_ENVELOPE):
             return value
         if not isinstance(value, str) or not value.startswith(
             _TEMPLATE_VALUE_PREFIX,
@@ -498,7 +504,7 @@ class PolicyAnswerField(fields.Field):
         return row_id
 
 
-class MerchantPolicySchema(BaseSchema):
+class MerchantRuleSchema(BaseSchema):
     """Validate ONE merchant's stated destination.
 
     **It states no owner and no account**, for the reason
@@ -511,7 +517,7 @@ class MerchantPolicySchema(BaseSchema):
     comparison in the service.  A merchant is a row now:
     :class:`RowId` refuses ``'٧'``, ``' 7 '``, ``'+7'``, ``'007'``, ``'-7'``
     and ``'0'`` before the service is asked, and
-    ``fk_merchant_destinations_merchant_account`` refuses a well-formed id that
+    ``fk_merchant_rules_merchant_account`` refuses a well-formed id that
     is not this account's.
 
     **The name and the category are PARAMETERS OF ONE ANSWER**, like
@@ -530,7 +536,7 @@ class MerchantPolicySchema(BaseSchema):
         required=True,
         error_messages={"required": "Which merchant is this about?"},
     )
-    answer = PolicyAnswerField(
+    answer = RuleAnswerField(
         required=True,
         error_messages={"required": "Where should this merchant's spending go?"},
     )
@@ -541,15 +547,15 @@ class MerchantPolicySchema(BaseSchema):
     category_id = RowId(required=False, load_default=None)
 
 
-class MerchantPolicyBatchSchema(Schema):
-    """Validate ONE pass over the policy section: every merchant it renders.
+class MerchantRuleBatchSchema(Schema):
+    """Validate ONE pass over the rule section: every merchant it renders.
 
     Plan step ``bank_import:X-f6a-3d``.  **A plain
     :class:`marshmallow.Schema`, not a
     :class:`~app.schemas.validation._helpers.BaseSchema`**, for the reason
     :class:`StatementBatchSchema` is: that base drops a FORM's ``csrf_token``
     with ``unknown = EXCLUDE``, and this schema never sees a form --
-    :func:`policy_payload` has already turned one into a list.  Inheriting it
+    :func:`rule_payload` has already turned one into a list.  Inheriting it
     would silently swallow a key this schema does not declare.
     """
 
@@ -558,8 +564,8 @@ class MerchantPolicyBatchSchema(Schema):
 
         unknown = RAISE
 
-    policies = fields.List(
-        fields.Nested(MerchantPolicySchema), required=False,
+    rules = fields.List(
+        fields.Nested(MerchantRuleSchema), required=False,
         load_default=list,
     )
 
@@ -572,15 +578,15 @@ class MerchantPolicyBatchSchema(Schema):
             **kwargs: Marshmallow's context, unused.
 
         Raises:
-            ValidationError: When it names more than :data:`_MAX_POLICY_ITEMS`.
+            ValidationError: When it names more than :data:`_MAX_RULE_ITEMS`.
         """
-        total = len(data.get("policies", ()))
-        if total > _MAX_POLICY_ITEMS:
+        total = len(data.get("rules", ()))
+        if total > _MAX_RULE_ITEMS:
             raise ValidationError(
                 f"That is {total:,} merchants to answer for at once, and this "
-                f"page records at most {_MAX_POLICY_ITEMS:,}.  Nothing was "
+                f"page records at most {_MAX_RULE_ITEMS:,}.  Nothing was "
                 f"changed.",
-                field_name="policies",
+                field_name="rules",
             )
 
 
@@ -647,23 +653,28 @@ class StatementBatchSchema(Schema):
             )
 
 
-#: What the policy control submits when the owner has not answered for a
-#: merchant, which is its DEFAULT -- and, when a policy already exists, what
-#: WITHDRAWS it.
+#: What the rule control submits for a merchant the owner has not answered
+#: for, which is that row's DEFAULT.  It means *state nothing about this
+#: merchant*: the route drops such an item before the service sees it, so no
+#: row is written and none is removed.
+#:
+#: **It is rendered ONLY on a merchant with no rule** (ruling **R-GS**, plan
+#: step ``bank_import:X-gd-2``).  It used to be the WITHDRAWAL as well -- pick
+#: it on an answered merchant and the row was deleted -- and there is no
+#: withdrawal now: *ask me every time* (:data:`ALWAYS_ASK`) is the answer that
+#: replaced it, and a rule row once made is only ever restated.  A crafted body
+#: submitting this for an answered merchant therefore changes nothing rather
+#: than un-stating an answer, which is the direction the absence of a delete
+#: door has to fail in.
 #:
 #: **A NAMED arm rather than the empty string, and the first draft of this
 #: constant WAS the empty string and was unreachable.**  ``BaseSchema``'s
 #: ``@pre_load`` normalizer drops every ``""`` a form submits, because for an
-#: ordinary optional control that means *untouched*; here it means *forget what
-#: I said*, so the drop turned ``required=True`` into "this answer is missing"
-#: and made a policy restatable but never withdrawable.  Caught by this
-#: package's own wire test.  It is the same correction plan step X-f6a-3c-2
-#: made to :data:`NEW_ENVELOPE` -- an arm is STATED, never inferred from an
-#: absence -- and the reason it bit here and not on
-#: :data:`LEAVE_ALONE` is that the two mean different things: leaving a LINE
-#: alone is not an act and :func:`_creation_items` drops it before the schema
-#: sees it, while not answering for a MERCHANT is an act that has to reach the
-#: door.
+#: ordinary optional control that means *untouched*; here it means something
+#: the door has to be able to read, so the drop turned ``required=True`` into
+#: "this answer is missing".  Caught by this package's own wire test.  It is
+#: the same correction plan step X-f6a-3c-2 made to :data:`NEW_ENVELOPE` -- an
+#: arm is STATED, never inferred from an absence.
 NOT_SAID: str = "unset"
 
 #: What it submits for *never a purchase*.  A NAMED arm rather than an absence,
@@ -672,20 +683,31 @@ NOT_SAID: str = "unset"
 #: differently, so the wire has to be able to tell them apart.
 NEVER: str = "never"
 
+#: What it submits for *ask me every time*, ruling **R-GS**'s fourth answer.
+#:
+#: **It is a different value from :data:`NOT_SAID` even though the two have the
+#: same effect on money today**, and that is the whole reason it exists: one is
+#: a question the owner still owes an answer to and the other is a question
+#: they have answered.  Collapsing them onto one wire value would make the
+#: answer unsayable, which is precisely the mistake :data:`NEVER` exists not to
+#: repeat -- and the screen that asks for rules
+#: (``bank_import:X-gf``'s exception queue) reads exactly this difference.
+ALWAYS_ASK: str = "ask"
+
 #: The prefix a submitted rule answer carries, keyed by the merchant's own
 #: rendered POSITION rather than by the merchant itself.  It was keyed by
 #: position because a merchant was free TEXT from a bank -- spaces, apostrophes
 #: and parentheses -- and a field name built from it could not be split back
 #: apart reliably.  A merchant is a ROW as of plan step ``bank_import:X-gd-1``,
-#: so ``policy-<merchant_id>`` would now split as cleanly as
+#: so ``rule-<merchant_id>`` would now split as cleanly as
 #: ``destination-<id>`` does; the position key is KEPT because nothing depends
 #: on it being unforgeable -- the merchant id travels in
-#: :data:`_POLICY_MERCHANT_PREFIX` and is what the door acts on -- and changing
+#: :data:`_RULE_MERCHANT_PREFIX` and is what the door acts on -- and changing
 #: it would be churn on a control ``bank_import:X-gf`` rebuilds whole.
-_POLICY_PREFIX = "policy-"
-_POLICY_MERCHANT_PREFIX = "policy_merchant-"
-_POLICY_NAME_PREFIX = "policy_name-"
-_POLICY_CATEGORY_PREFIX = "policy_category-"
+_RULE_PREFIX = "rule-"
+_RULE_MERCHANT_PREFIX = "rule_merchant-"
+_RULE_NAME_PREFIX = "rule_name-"
+_RULE_CATEGORY_PREFIX = "rule_category-"
 
 #: What a TEMPLATE answer's value is prefixed with, so one control can carry
 #: three kinds of answer without a second field saying which kind it is.  The
@@ -693,17 +715,17 @@ _POLICY_CATEGORY_PREFIX = "policy_category-"
 #: every other row id on this screen goes through.
 _TEMPLATE_VALUE_PREFIX = "t:"
 
-#: The most merchants one submission of the policy section may answer for.
+#: The most merchants one submission of the rule section may answer for.
 #: **A separate ceiling from :data:`_MAX_BATCH_ITEMS`, and the distinction is
 #: the subject rather than a second copy of one rule.**  That one bounds MONEY
-#: acts, each of which runs a settle door and costs about 10 ms; a policy
+#: acts, each of which runs a settle door and costs about 10 ms; a rule
 #: statement writes at most one small row and moves nothing, and the section
 #: submits every merchant it renders -- so most of a real pass is no-ops.
 #: Bounded by what an account can actually show: the developer's own 361-line
 #: export names 59 distinct merchants, and ``_secu_csv.MAX_LINES`` caps an
 #: import at 20,000 lines.  2,000 is far past any real statement and still
 #: refuses a body inventing merchants.
-_MAX_POLICY_ITEMS: int = 2000
+_MAX_RULE_ITEMS: int = 2000
 
 #: The prefix a submitted match item carries.  Its INDEX is the rendered
 #: position of the proposal it came from, so the ids of the item the owner
@@ -860,8 +882,8 @@ def _creation_items(form) -> list:
     return items
 
 
-def policy_payload(form) -> dict:
-    """Return one pass over the policy section as :class:`MerchantPolicyBatchSchema` loads it.
+def rule_payload(form) -> dict:
+    """Return one pass over the rule section as :class:`MerchantRuleBatchSchema` loads it.
 
     **The form shape lives HERE, beside the schema that grades it**, for the
     reason :func:`batch_payload` gives.
@@ -878,28 +900,28 @@ def policy_payload(form) -> dict:
         form: The request's ``MultiDict``.
 
     Returns:
-        ``{"policies": [...]}``.  Raw strings: the schema is what reads them.
+        ``{"rules": [...]}``.  Raw strings: the schema is what reads them.
     """
     keys = [
-        field[len(_POLICY_PREFIX):] for field in form.keys()
-        if field.startswith(_POLICY_PREFIX)
+        field[len(_RULE_PREFIX):] for field in form.keys()
+        if field.startswith(_RULE_PREFIX)
     ]
     items = []
     for key in sorted(keys, key=_sort_key):
-        merchant = form.get(f"{_POLICY_MERCHANT_PREFIX}{key}")
+        merchant = form.get(f"{_RULE_MERCHANT_PREFIX}{key}")
         if merchant is None:
-            # A policy answer with no merchant beside it names nothing.  It is
+            # A rule answer with no merchant beside it names nothing.  It is
             # dropped rather than refused because it is unreachable from this
             # screen -- the two fields are rendered together -- and because a
             # crafted body naming an answer for nobody has asked for nothing.
             continue
         items.append({
             "merchant_id": merchant,
-            "answer": form[f"{_POLICY_PREFIX}{key}"],
-            "envelope_name": form.get(f"{_POLICY_NAME_PREFIX}{key}", ""),
-            "category_id": form.get(f"{_POLICY_CATEGORY_PREFIX}{key}", ""),
+            "answer": form[f"{_RULE_PREFIX}{key}"],
+            "envelope_name": form.get(f"{_RULE_NAME_PREFIX}{key}", ""),
+            "category_id": form.get(f"{_RULE_CATEGORY_PREFIX}{key}", ""),
         })
-    return {"policies": items}
+    return {"rules": items}
 
 
 def batch_payload(form) -> dict:

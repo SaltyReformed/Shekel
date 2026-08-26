@@ -143,11 +143,15 @@ def _a_match(db, seed_user, account=None):
         account: The account it is for; the seeded checking one by default.
 
     Returns:
-        The staged :class:`~app.models.statement_match.StatementMatch`.
+        The staged :class:`~app.models.statement_match.StatementMatch`.  A
+        TICK: ``applied_by_rule`` is NOT NULL with no default (ruling
+        **R-GT**), so every construction states who consented, and a fixture
+        that did not would be staging an act nobody agreed to.
     """
     match = StatementMatch(
         account_id=(account or seed_user["account"]).id,
         user_id=seed_user["user"].id,
+        applied_by_rule=False,
     )
     db.session.add(match)
     db.session.flush()
@@ -452,6 +456,7 @@ class TestAnActsOwnerIsItsAccountsOwner:
 
         db.session.add(StatementMatch(
             account_id=seed_user["account"].id, user_id=stranger.id,
+            applied_by_rule=False,
         ))
         with pytest.raises(sqlalchemy.exc.IntegrityError) as caught:
             db.session.flush()
@@ -923,3 +928,104 @@ class TestTheOldMarkerIsGone:
             ),
         ).scalar()
         assert found == 0
+
+
+class TestAnActRecordsWhoConsentedToIt:
+    """``applied_by_rule``, ruling **R-GT**, plan step ``bank_import:X-gd-2``.
+
+    A standing rule is the owner's consent given ONCE (ruling **R-GH**), so an
+    act performed under one is still consented to -- but it is a different fact
+    from a tick, and the receipt an application owes (ruling **R-GI**) has to be
+    able to say which.  WHICH rule is deliberately not stored: the matched line
+    carries the account and the merchant, which is exactly the rule's key.
+
+    **No writer sets it TRUE until plan step ``bank_import:X-ge``**, which
+    builds the door that applies a rule at import.  The column ships one leaf
+    ahead of that door so the step which MOVES MONEY carries no schema change,
+    which is what the cases here can and cannot show: the column holds both
+    values and refuses neither, and the DOOR states it.
+    """
+
+    def test_an_act_that_STATES_nothing_is_unwritable(
+        self, app, db, seed_user,
+    ):
+        """NOT NULL with no default, and this is what that buys.
+
+        A default of ``false`` would be correct for every row that exists today
+        and would still be wrong, because the value it supplies is *the owner
+        agreed to this*.  A door added later that simply did not think about
+        consent would record that they had given it.
+        """
+        db.session.add(StatementMatch(
+            account_id=seed_user["account"].id,
+            user_id=seed_user["user"].id,
+        ))
+
+        with pytest.raises(sqlalchemy.exc.IntegrityError) as caught:
+            db.session.flush()
+
+        assert "applied_by_rule" in str(caught.value)
+
+    def test_it_holds_BOTH_answers(self, app, db, seed_user):
+        """The firing control: the column records a fact, it does not forbid one.
+
+        Without this the case above would be satisfied by a column that refused
+        every value, and the arm ``bank_import:X-ge`` needs -- an act a rule
+        performed -- would be unwritable on the day that step ships.
+
+        **It reads the value BACK from the database rather than off the
+        instance.**  A first version asserted ``match.applied_by_rule is
+        applied`` on the object it had just constructed, which re-read the
+        attribute Python had set and would have passed against a column that
+        was never written at all.  Found by adversarial review 2026-08-26.
+        """
+        written = {}
+        for applied in (False, True):
+            match = StatementMatch(
+                account_id=seed_user["account"].id,
+                user_id=seed_user["user"].id,
+                applied_by_rule=applied,
+            )
+            db.session.add(match)
+            db.session.flush()
+            written[applied] = match.id
+
+        db.session.expire_all()
+        stored = {
+            row.id: row.applied_by_rule
+            for row in db.session.query(StatementMatch).all()
+        }
+
+        assert stored[written[False]] is False
+        assert stored[written[True]] is True
+
+    def test_it_carries_no_pointer_to_the_rule_that_acted(self):
+        """Ruling **R-GT**'s other half, graded as an ABSENCE.
+
+        A foreign key to ``budget.merchant_rules`` would store a pointer the
+        matched line already determines, and would force a choice none of whose
+        arms is right: ``CASCADE`` deletes money records when a rule is
+        restated away, ``SET NULL`` claims the owner ticked it, ``RESTRICT``
+        refuses to change a rule that ever fired -- which is the dead end
+        finding **N-302** records one arc over.
+
+        Asked of the MAPPING rather than of a row, because what is being
+        graded is that no such column was added: a case over data could pass
+        while the column sat there unused, and the next person to want a rule
+        id would find it and fill it in.
+        """
+        columns = set(StatementMatch.__table__.columns.keys())
+        # Every table this act's columns point AT, read off the mapping rather
+        # than matched by name.  A first version asked whether any column name
+        # CONTAINED "rule_id", which a column called ``standing_rule`` or
+        # ``applied_rule`` sails straight past -- a substring probe standing in
+        # for the question the docstring asks.  Found by adversarial review
+        # 2026-08-26.
+        referenced = {
+            key.column.table.fullname
+            for column in StatementMatch.__table__.columns
+            for key in column.foreign_keys
+        }
+
+        assert "applied_by_rule" in columns
+        assert "budget.merchant_rules" not in referenced

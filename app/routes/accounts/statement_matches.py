@@ -73,22 +73,23 @@ from app.routes.accounts._statement_doors import (
 from app.routes.accounts._cash_page import load_cash_account_or_404
 from app.schemas.validation import form_payload
 from app.schemas.validation.statements import (
+    ALWAYS_ASK,
     NEVER,
     NEW_ENVELOPE,
     NOT_SAID,
-    MerchantPolicyBatchSchema,
+    MerchantRuleBatchSchema,
     StatementBatchSchema,
     StatementMatchReleaseSchema,
     batch_payload,
-    policy_payload,
+    rule_payload,
 )
 from app.services.category_service import list_active_categories
 from app.services.statement_match import (
     HandTotals,
     MatchSubmission,
     NewEnvelope,
-    PolicyAnswer,
-    PolicyStatement,
+    RuleAnswer,
+    RuleSubmission,
     PurchaseCreation,
     ReviewedBatch,
     ReviewScope,
@@ -96,7 +97,7 @@ from app.services.statement_match import (
     preview_hand_build,
     release_match,
     review_set,
-    state_policies,
+    state_rules,
 )
 from app.utils.auth_helpers import require_owner
 from app.utils.error_fragments import designed_error
@@ -111,7 +112,7 @@ _logger = logging.getLogger(__name__)
 #: One schema instance each, constructed at import like every sibling's.
 _batch_schema = StatementBatchSchema()
 _release_schema = StatementMatchReleaseSchema()
-_policy_schema = MerchantPolicyBatchSchema()
+_rule_schema = MerchantRuleBatchSchema()
 
 #: The partial both the page and the batch POST render.  Extracted at plan step
 #: X-f6a-3c-2 so the answer to "apply this pass" is the SCREEN carrying its own
@@ -131,7 +132,7 @@ _DB_ERROR_MESSAGE = (
 
 
 def _review_context(
-    account, scope, outcome=None, error=None, policies=None,
+    account, scope, outcome=None, error=None, rules=None,
 ) -> dict:
     """Assemble what the review body renders, for the page and for the POST.
 
@@ -151,7 +152,7 @@ def _review_context(
         error: A sentence explaining why nothing was applied at all, or
             ``None``.  Distinct from a refused ITEM: this one means the
             submission never reached the door.
-        policies: The :class:`~app.services.statement_match.StatedPolicies` a
+        rules: The :class:`~app.services.statement_match.StatedRules` a
             pass over the merchant section produced, or ``None``.  A SEPARATE
             receipt from *outcome* because it reports a separate act: stating
             where a merchant goes moves no money, and folding the two would put
@@ -182,7 +183,7 @@ def _review_context(
         "categories": list_active_categories(current_user.id),
         "outcome": outcome,
         "error": error,
-        "policies": policies,
+        "rules": rules,
     }
 
 
@@ -369,45 +370,58 @@ def apply_statement_review(account_id):
     )
 
 
-def _submitted_policies(submitted) -> "tuple[PolicyStatement, ...]":
+def _submitted_rules(submitted) -> "tuple[RuleSubmission, ...]":
     """Return the loaded payload as the statements the service records.
 
-    **The wire's four values become the service's three answers plus a
-    withdrawal**, and the mapping happens HERE because it is a fact about the
-    FORM rather than about the domain: the service's
-    :class:`~app.services.statement_match.PolicyAnswer` has no member for "not
-    said", since not having said something is the absence of a row.
+    **The wire's five values become the service's four answers, and the fifth
+    becomes NOTHING** (ruling **R-GS**, plan step ``bank_import:X-gd-2``).  The
+    mapping happens HERE because it is a fact about the FORM rather than about
+    the domain: the service's
+    :class:`~app.services.statement_match.RuleAnswer` has no member for *I have
+    not said*, since not having said something is the absence of a row.
+
+    **:data:`~app.schemas.validation.statements.NOT_SAID` is DROPPED rather
+    than carried as a null answer.**  It used to travel to the door as
+    ``answer=None`` and mean *withdraw*, so the door had a delete arm and an
+    optional answer; there is no withdrawal now, so a submission that states
+    nothing is an item with nothing in it.  Dropping it here is what lets
+    :class:`~app.services.statement_match.RuleSubmission` require its answer,
+    which is what makes an answer-less rule row unconstructible one tier down.
+    It is most of an ordinary pass: the section submits every merchant it
+    renders, and a merchant with no rule submits this.
 
     Args:
         submitted: What :class:`~app.schemas.validation.statements
-            .MerchantPolicyBatchSchema` loaded.
+            .MerchantRuleBatchSchema` loaded.
 
     Returns:
-        One :class:`~app.services.statement_match.PolicyStatement` per merchant
-        the section rendered, in the order it rendered them.
+        One :class:`~app.services.statement_match.RuleSubmission` per merchant
+        the section rendered AND ANSWERED FOR, in the order it rendered them.
     """
     statements = []
-    for item in submitted["policies"]:
+    for item in submitted["rules"]:
         answer = item["answer"]
         if answer == NOT_SAID:
-            statements.append(PolicyStatement(
-                merchant_id=item["merchant_id"], answer=None,
+            continue
+        if answer == NEVER:
+            statements.append(RuleSubmission(
+                merchant_id=item["merchant_id"], answer=RuleAnswer.NEVER,
             ))
-        elif answer == NEVER:
-            statements.append(PolicyStatement(
-                merchant_id=item["merchant_id"], answer=PolicyAnswer.NEVER,
+        elif answer == ALWAYS_ASK:
+            statements.append(RuleSubmission(
+                merchant_id=item["merchant_id"], answer=RuleAnswer.ALWAYS_ASK,
             ))
         elif answer == NEW_ENVELOPE:
-            statements.append(PolicyStatement(
+            statements.append(RuleSubmission(
                 merchant_id=item["merchant_id"],
-                answer=PolicyAnswer.NEW_ENVELOPE,
+                answer=RuleAnswer.NEW_ENVELOPE,
                 envelope_name=item["envelope_name"],
                 category_id=item["category_id"],
             ))
         else:
-            statements.append(PolicyStatement(
+            statements.append(RuleSubmission(
                 merchant_id=item["merchant_id"],
-                answer=PolicyAnswer.TEMPLATE,
+                answer=RuleAnswer.TEMPLATE,
                 template_id=answer,
             ))
     return tuple(statements)
@@ -419,10 +433,10 @@ def _submitted_policies(submitted) -> "tuple[PolicyStatement, ...]":
 )
 @login_required
 @require_owner
-def state_merchant_destinations(account_id):
+def state_merchant_rules(account_id):
     """Record where this owner says each merchant's spending goes.
 
-    **It MOVES NO MONEY and can move none.**  A policy is read to SUGGEST a
+    **It MOVES NO MONEY and can move none.**  A rule is read to SUGGEST a
     destination on the review screen below; the only thing that records a
     purchase is an explicit destination submitted for one specific line, which
     is what keeps ruling **R-FZ**'s *the destination select IS the tick* whole.
@@ -456,22 +470,22 @@ def state_merchant_destinations(account_id):
     #
     # **It stays valid for the answer**, which a scope built before a MONEY
     # pass would not: this door writes exactly one table,
-    # ``budget.merchant_destinations``, through the ORM and calls no service --
+    # ``budget.merchant_rules``, through the ORM and calls no service --
     # so nothing it can do touches the calendar, the candidates or their
-    # prices, and ``review_set`` re-reads the policies themselves.  That is a
+    # prices, and ``review_set`` re-reads the rules themselves.  That is a
     # closed argument over one table rather than an enumeration over an open
     # set of writers, which is the shape adversarial review measured false at
     # X-f6a-3c-2.
     scope = ReviewScope.build(current_user.id, account_id)
 
-    payload = policy_payload(request.form)
-    errors = _policy_schema.validate(payload)
+    payload = rule_payload(request.form)
+    errors = _rule_schema.validate(payload)
     if errors:
         return _refused(account, scope, refusal_sentence(errors))
-    statements = _submitted_policies(_policy_schema.load(payload))
+    statements = _submitted_rules(_rule_schema.load(payload))
 
     try:
-        recorded = state_policies(statements, current_user.id, account_id)
+        recorded = state_rules(statements, current_user.id, account_id)
         db.session.commit()
     except ValidationError as exc:
         db.session.rollback()
@@ -479,13 +493,13 @@ def state_merchant_destinations(account_id):
     except SQLAlchemyError:
         db.session.rollback()
         _logger.exception(
-            "user_id=%d failed to record merchant destinations on account %d",
+            "user_id=%d failed to record merchant rules on account %d",
             current_user.id, account_id,
         )
         return _refused(account, scope, _DB_ERROR_MESSAGE)
 
     return render_template(
-        _BODY, **_review_context(account, scope, policies=recorded),
+        _BODY, **_review_context(account, scope, rules=recorded),
     )
 
 
@@ -546,7 +560,7 @@ def statement_review_totals(account_id):
     answer; the only door that writes is still
     ``apply_statement_review``.  It is a POST rather than a GET because it
     carries a list of ids and a CSRF token, not because it changes anything --
-    the same reason the policy section posts.
+    the same reason the rule section posts.
 
     **It takes the body Apply would send**, read through the same
     ``batch_payload`` regrouping, so the panel is that act asked what it would

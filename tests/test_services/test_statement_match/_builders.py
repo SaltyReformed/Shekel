@@ -21,7 +21,7 @@ from app.enums import (
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
 from app.models.merchant import Merchant
-from app.models.merchant_destination import MerchantDestination
+from app.models.merchant_rule import MerchantRule
 from app.models.pay_period import PayPeriod
 from app.models.statement_import import BankStatementLine, StatementImport
 from app.models.transaction import Transaction
@@ -31,7 +31,7 @@ from app.services.cash_ledger import amount_basis
 from app.services.statement_match import (
     CreationBars,
     MatchSubmission,
-    PolicyStatement,
+    RuleSubmission,
     ReviewScope,
     ReviewedRow,
     RowKind,
@@ -257,7 +257,7 @@ def a_merchant(seed_user, name, *, account=None, account_id=None):
     **Built through the ORM, like everything else here**, so a broken
     ``statement_import._merchants.resolve_merchants`` cannot also build the
     fixture a reader test would have caught it with -- the rule
-    :func:`a_policy` already states.
+    :func:`a_rule` already states.
 
     **Get-or-create, because a merchant is per ACCOUNT and a test states its
     name several times.**  Two lines from one merchant are two lines and ONE
@@ -325,7 +325,7 @@ def a_bank_line(
             ``tests/test_services/test_statement_import/test_secu_csv.py``.
             What these builders state is the recorded FACT.  ``None`` is the
             default because it is the state every guard here has to survive: a
-            line with no merchant joins no destination policy, and the label
+            line with no merchant joins no destination rule, and the label
             readers fall back to *description*.
         source_category: The BANK's own category string, or ``None`` for a
             source stating none -- which is the DEFAULT, because it is
@@ -400,7 +400,7 @@ def the_merchant_id(seed_user, name, *, account=None):
     return found[0]
 
 
-def a_statement(seed_user, merchant, answer=None, *, account=None, **fields):
+def a_statement(seed_user, merchant, answer, *, account=None, **fields):
     """Return the submission a test makes ABOUT *merchant*, by name.
 
     **The door takes a merchant ROW ID** (plan step ``bank_import:X-gd-1``), and
@@ -416,30 +416,36 @@ def a_statement(seed_user, merchant, answer=None, *, account=None, **fields):
     Args:
         seed_user: The seeded user bundle.
         merchant: What the source calls the merchant.
-        answer: The :class:`~app.services.statement_match.PolicyAnswer`, or
-            ``None`` to withdraw.
+        answer: The :class:`~app.services.statement_match.RuleAnswer`.
+            **Required, and it used to default to ``None`` meaning WITHDRAW**
+            (ruling **R-GS**, plan step ``bank_import:X-gd-2``): there is no
+            withdrawal, a submission always states one of the four answers, and
+            the screen's *I have not said* never reaches this door at all
+            because the route drops it.
         account: The account it governs; the seeded checking one by default.
         **fields: ``template_id`` / ``envelope_name`` / ``category_id``, as the
             answer needs them.
 
     Returns:
-        The :class:`~app.services.statement_match.PolicyStatement`.
+        The :class:`~app.services.statement_match.RuleSubmission`.
     """
-    return PolicyStatement(
+    return RuleSubmission(
         merchant_id=a_merchant(seed_user, merchant, account=account).id,
         answer=answer, **fields,
     )
 
 
-def a_policy(
+def a_rule(
     seed_user, merchant, *, template_id=None, envelope_name=None,
-    category_id=None, account=None,
+    category_id=None, always_ask=False, account=None,
 ):
-    """Stage and return one stated merchant destination.
+    """Stage and return one stated merchant rule.
 
     Built through the ORM like everything else here, so a broken
-    ``state_policies`` cannot also break the fixture a reader test would have
-    caught it with.
+    ``state_rules`` cannot also break the fixture a reader test would have
+    caught it with -- and the four columns are spelled out rather than taken
+    from ``_rules._columns_of``, so a mistake in that mapping cannot arrive
+    here and agree with itself.
 
     Args:
         seed_user: The seeded user bundle.
@@ -452,21 +458,28 @@ def a_policy(
         envelope_name: What to call the envelope to create, for the
             NEW ENVELOPE answer.
         category_id: The category to create it under, likewise.
+        always_ask: Which of the two CONTAINER-LESS answers this is
+            (ruling **R-GS**) -- ``False`` for *never a purchase*, ``True`` for
+            *ask me every time*.  **Read only when no container arm is given**,
+            which is the same discipline ``_rules._columns_of`` follows: a
+            field belongs to one answer, so naming it beside another answer's
+            arm states nothing.
         account: The account it governs; the seeded checking one by default.
 
     Returns:
-        The staged
-        :class:`~app.models.merchant_destination.MerchantDestination`.  With no
-        arm given it is the NEVER answer, which is a row with all three columns
-        NULL rather than the absence of a row.
+        The staged :class:`~app.models.merchant_rule.MerchantRule`.  With no
+        arm given at all it is the NEVER answer, which is what every caller
+        written before ``always_ask`` existed meant by it.
     """
-    row = MerchantDestination(
+    names_a_container = template_id is not None or envelope_name is not None
+    row = MerchantRule(
         user_id=seed_user["user"].id,
         account_id=(account or seed_user["account"]).id,
         merchant_id=a_merchant(seed_user, merchant, account=account).id,
         template_id=template_id,
         envelope_name=envelope_name,
         category_id=category_id,
+        never_a_purchase=not names_a_container and not always_ask,
     )
     db.session.add(row)
     db.session.flush()

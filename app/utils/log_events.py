@@ -534,11 +534,11 @@ EVT_STATEMENT_BATCH_APPLIED = _register(
     "REFUSED item is counted at all.",
 )
 
-EVT_MERCHANT_DESTINATION_STATED = _register(
-    "merchant_destination_stated", BUSINESS,
+EVT_MERCHANT_RULE_STATED = _register(
+    "merchant_rule_stated", BUSINESS,
     "An owner said where one merchant's spending goes on one account -- a "
-    "recurring envelope's template, a new envelope, never a purchase, or "
-    "withdrawn.  It MOVES NO MONEY and can move none: a policy is read to "
+    "recurring envelope's template, a new envelope, never a purchase, or ask "
+    "me every time.  It MOVES NO MONEY and can move none: a rule is read to "
     "SUGGEST a destination, and the only thing that records a purchase is an "
     "explicit destination submitted for one specific line.  Logged because "
     "the decision governs where later money is filed, and because the row is "

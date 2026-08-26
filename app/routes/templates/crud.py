@@ -200,6 +200,37 @@ def _validate_template_form(data, on_invalid, template=None):
                 "danger",
             )
             return on_invalid.to_response()
+        # **MOVING a template between accounts is refused while a standing
+        # merchant rule names it** (plan step ``bank_import:X-gd-2``).
+        # ``fk_merchant_rules_template_account`` is composite over
+        # ``(template_id, account_id)`` with no ``ON UPDATE``, so the move
+        # orphans the rule and PostgreSQL raises -- an IntegrityError that
+        # ``commit_or_handle_stale`` does not catch and no handler renders,
+        # i.e. an unhandled 500 with a logged traceback.  Cascading the
+        # account onto the rule instead would be worse than the error: the
+        # rule's merchant belongs to the OLD account
+        # (``fk_merchant_rules_merchant_account``), so the row would move to
+        # an account whose statements never showed that merchant.
+        #
+        # The owner's route out is to restate the rule first, which the
+        # sentence says.  **That route used to be a withdrawal**, which ruling
+        # R-GS removed in this same step -- so the 500 was pre-existing and
+        # this step is what made it unrecoverable.  Found by an adversarial
+        # security review 2026-08-26 and measured on the developer's own data:
+        # template 19 is one edit away from it.
+        if (
+            template is not None
+            and acct.id != template.account_id
+            and archive_helpers.template_has_standing_rule(template.id)
+        ):
+            flash(
+                f"'{template.name}' is where a merchant's bank spending goes "
+                "on its current account, so it cannot be moved to another "
+                "one. Change that merchant's answer on the statement review "
+                "screen first.",
+                "danger",
+            )
+            return on_invalid.to_response()
     if "category_id" in data:
         cat = db.session.get(Category, data["category_id"])
         if not cat or cat.user_id != current_user.id:
@@ -812,9 +843,12 @@ def hard_delete_template(template_id):
 
     Two-path logic:
       1. If the template has any settled transaction (Paid, Received, or
-         Settled -- anything with ``Status.is_settled = True``), permanent
-         deletion is blocked.  The template is archived instead (if not
-         already) and the user is warned.
+         Settled -- anything with ``Status.is_settled = True``), OR any
+         standing merchant rule files a merchant's bank spending into it
+         (``archive_helpers.template_has_standing_rule``, plan step
+         ``bank_import:X-gd-2``), permanent deletion is blocked.  The template
+         is archived instead (if not already) and the user is warned, with the
+         sentence naming which of the two reasons applied.
       2. If no settled history exists, all linked NON-SETTLED transactions
          are deleted first, then the template itself is permanently
          removed.  ``Transaction.template_id`` is a FK with ON DELETE SET
@@ -846,12 +880,35 @@ def hard_delete_template(template_id):
     # branch mirrors ``transfers.hard_delete_transfer_template`` but is too
     # thin and too coupled to extract (see plan.md Phase 2 notes).
     # pylint: disable=duplicate-code
+    # **TWO reasons a permanent delete is refused, and each gets its own
+    # sentence** (plan step ``bank_import:X-gd-2``).  The second was missing:
+    # ``fk_merchant_rules_template_account`` is ON DELETE CASCADE, so deleting
+    # a template destroyed every standing merchant rule filing into it, under
+    # a flash that mentioned only the template.  Under ruling R-GS a rule is
+    # never un-stated by its owner, which made that cascade the only way one
+    # could disappear at all.  Measured 2026-08-26: template 19 on the
+    # developer's own data carries a rule and no settled history, so the
+    # permanent arm was live on it.
+    #
+    # The REASON is resolved before the branch rather than inside it, because
+    # the archive body below is long and identical for both -- and telling an
+    # owner their template "has payment history" when what it has is a
+    # merchant rule is the screens-stating-what-is-false defect this arc keeps
+    # closing.
+    refusal = None
     if archive_helpers.template_has_paid_history(template.id):
-        flash(
+        refusal = (
             f"'{template.name}' has payment history and cannot be permanently "
-            "deleted. It has been archived instead.",
-            "warning",
+            "deleted. It has been archived instead."
         )
+    elif archive_helpers.template_has_standing_rule(template.id):
+        refusal = (
+            f"'{template.name}' is where a merchant's bank spending goes and "
+            "cannot be permanently deleted -- that answer would go with it. "
+            "It has been archived instead."
+        )
+    if refusal is not None:
+        flash(refusal, "warning")
         if template.is_active:
             template.is_active = False
             # pylint: enable=duplicate-code
