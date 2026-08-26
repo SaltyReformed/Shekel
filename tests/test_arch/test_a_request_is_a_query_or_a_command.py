@@ -50,12 +50,20 @@ import psycopg2
 import pytest
 from flask import g
 from sqlalchemy import event, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.exc import InternalError
 from sqlalchemy.orm import Session
 
 from app import db_transaction
 from app.extensions import db
 from app.models.pay_period import PayPeriod
+from app.models.user import UserSettings
+
+#: The statement that tells the audit triggers who is acting.  Matched as a
+#: FRAGMENT of the SQL rather than by patching
+#: :func:`app.audit_infrastructure.bind_audit_actor`, so what the tests below
+#: count is what PostgreSQL was actually asked to do.
+_ACTOR_BIND_SQL = "set_config('app.current_user_id'"
 
 
 def _record_len(calendar, sink):
@@ -92,6 +100,35 @@ def observed_modes(app):
         yield seen
     finally:
         event.remove(Session, "after_begin", _record)
+
+
+@pytest.fixture()
+def observed_statements(app):
+    """Record every statement the engine executes while active.
+
+    On the ``Engine`` class rather than on this app's engine, for the reason
+    :func:`observed_modes` registers on the ``Session`` class: the listener
+    then sees what the process actually issued, whichever session issued it.
+
+    **It cannot see a ``BEGIN``, a ``COMMIT`` or a ``ROLLBACK``**, which is
+    worth stating because a reader will otherwise take a count here for the
+    round-trip count: psycopg2 issues those through the connection rather than
+    through a cursor, so they never reach ``before_cursor_execute``.  Every
+    test below counts a named statement, never a total.
+
+    Yields:
+        The list of normalised SQL strings, appended to as the test runs.
+    """
+    seen = []
+
+    def _record(conn, cursor, statement, params, context, executemany):  # noqa: ARG001
+        seen.append(" ".join(statement.split()))
+
+    event.listen(Engine, "before_cursor_execute", _record)
+    try:
+        yield seen
+    finally:
+        event.remove(Engine, "before_cursor_execute", _record)
 
 
 class TestTheModeIsBoundByTheDispatch:
@@ -376,6 +413,59 @@ class TestWriteTransaction:
             f"at least {target} committed; its snapshot predates the write"
         )
 
+    def test_a_grid_render_is_query_command_query(
+        self, app, auth_client, seed_user, seed_periods, db, observed_modes,
+    ):
+        """The mode SEQUENCE of the one route that declares a write.
+
+        It is the counterexample to
+        :meth:`TestTheDecisionPrecedesTheRequestSFirstStatement.test_every_transaction_of_a_query_is_one_snapshot`,
+        and having both is what keeps that one from reading as "every
+        transaction in the application is read-only".  ``/grid`` opens its
+        snapshot, leaves it for a writable transaction that commits the
+        rolling top-up, and returns to a NEW snapshot -- which is what lets
+        the render see the periods the block just created.
+
+        Asserted as a SUBSEQUENCE rather than as the whole list, because how
+        many transactions the render itself opens is a property of the render
+        and not of this rule; what this pins is that the writable one is
+        surrounded by read-only ones.
+        """
+        from app.models.pay_schedule import PaySchedule  # pylint: disable=import-outside-toplevel
+
+        schedule = db.session.query(PaySchedule).filter_by(
+            user_id=seed_user["user"].id,
+        ).one_or_none()
+        if schedule is None:
+            schedule = PaySchedule(user_id=seed_user["user"].id, cadence_days=14)
+            db.session.add(schedule)
+        schedule.rolling_enabled = True
+        schedule.rolling_target_periods = len(seed_periods) + 4
+        db.session.commit()
+        observed_modes.clear()
+
+        assert auth_client.get("/grid").status_code == 200
+
+        writable = [
+            index for index, pair in enumerate(observed_modes)
+            if pair == ("read committed", "off")
+        ]
+        assert len(writable) == 1, (
+            f"expected exactly one writable transaction -- the top-up's -- in "
+            f"a /grid render, saw {len(writable)}: {observed_modes}"
+        )
+        at = writable[0]
+        assert at > 0 and observed_modes[at - 1] == ("repeatable read", "on"), (
+            f"the write_transaction block did not leave a snapshot behind it: "
+            f"{observed_modes}"
+        )
+        assert observed_modes[at + 1:] and all(
+            pair == ("repeatable read", "on") for pair in observed_modes[at + 1:]
+        ), (
+            f"the render did not return to a snapshot after the block "
+            f"committed: {observed_modes}"
+        )
+
     def test_a_write_it_commits_still_names_the_ACTOR_in_the_audit_log(
         self, app, auth_client, seed_user, seed_periods, db,
     ):
@@ -527,4 +617,176 @@ class TestARequestArrivingOnAWrittenTransaction:
         assert ("repeatable read", "on") in observed_modes, (
             f"the request did not open a transaction of its own; it inherited "
             f"the one this test body opened. Modes seen: {observed_modes}"
+        )
+
+
+class TestTheDecisionPrecedesTheRequestSFirstStatement:
+    """Where the mode is decided, and why anywhere later is not enough.
+
+    The decision has to happen before the request's FIRST statement, and a
+    ``before_request`` hook cannot promise that: Flask calls them in
+    registration order and ``setup_logging``'s ``_attach_request_id`` is
+    registered first -- it reads ``current_user``, which loads the user row.
+    While the decision lived in a hook, that load ran at ``READ COMMITTED`` in
+    a transaction the boundary then threw away, so a render's real snapshot
+    was its SECOND transaction and everything the first one read was outside
+    it.  The decision is made on ``request_started`` now, which Flask sends
+    before ``preprocess_request``.
+    """
+
+    def test_every_transaction_of_a_query_is_one_snapshot(
+        self, auth_client, seed_user, db, observed_modes,
+    ):
+        """Not "some transaction was read-only" -- EVERY one of them was.
+
+        This is the assertion that separates deciding early from deciding in a
+        hook, and the reason the sibling above is written the weaker way is
+        that it is asking a different question (did the request leave the
+        inherited transaction).  Here a single ``("read committed", "off")``
+        means some part of this render read outside its own snapshot, which is
+        finding **N-353** with a smaller blast radius rather than a different
+        defect.
+
+        ``/settings`` deliberately: it holds no :func:`write_transaction`
+        block, so every transaction it opens is a query's.  The route that
+        does hold one is pinned by
+        :meth:`TestWriteTransaction.test_a_grid_render_is_query_command_query`.
+
+        **The rollback below is the setup, not tidying**, and without it this
+        test passes against the defect it exists to catch.  It puts the
+        session in the state a production request starts in -- no transaction
+        open, the user row not loaded -- so that resolving ``current_user``
+        is what opens the request's first transaction.  Leave a fixture's
+        transaction open instead and the user row is already there, no
+        statement is issued for it, and the first transaction anything
+        observes is the one opened after the boundary had run either way.
+        """
+        db.session.rollback()
+        observed_modes.clear()
+
+        assert auth_client.get("/settings").status_code == 200
+
+        assert observed_modes, "the GET opened no transaction at all"
+        assert all(
+            pair == ("repeatable read", "on") for pair in observed_modes
+        ), (
+            f"a transaction of this render ran at READ COMMITTED, so what it "
+            f"read is outside the snapshot the rest of the page is computed "
+            f"against. Modes seen, in order: {observed_modes}"
+        )
+
+    def test_a_query_binds_no_audit_actor(
+        self, auth_client, seed_user, db, observed_statements,
+    ):
+        """A transaction that cannot write is not told who is acting.
+
+        ``READ ONLY`` refuses every write to an audited table, so no trigger
+        in a query's transaction can fire and nothing can read the setting.
+        Binding one there is a round trip per render transaction buying a
+        value with no reader -- measured at THREE per authenticated GET before
+        this: one from the listener on the transaction the user load opened,
+        one bound explicitly at that load, and one on the render's own.
+
+        The firing control is
+        :meth:`TestACommandNamesItsActor.test_a_command_binds_the_actor`,
+        which counts the same statement on a POST and finds it.
+
+        The rollback is the same setup its sibling above explains: it puts the
+        session in a production request's starting state, so the transaction
+        the user load opens is one of the transactions counted here.
+        """
+        db.session.rollback()
+        observed_statements.clear()
+
+        assert auth_client.get("/settings").status_code == 200
+
+        binds = [sql for sql in observed_statements if _ACTOR_BIND_SQL in sql]
+        assert not binds, (
+            f"{len(binds)} audit-actor bind(s) were issued during a GET, whose "
+            f"transactions are READ ONLY and can fire no audit trigger: {binds}"
+        )
+
+
+class TestACommandNamesItsActor:
+    """The half a query does not need, and the audit trail that depends on it."""
+
+    def test_a_command_binds_the_actor(
+        self, auth_client, seed_user, observed_statements,
+    ):
+        """The control that makes the query-side assertion mean something.
+
+        Without it, deleting the bind everywhere would leave both tests green
+        and the audit trail anonymous.
+        """
+        observed_statements.clear()
+
+        auth_client.post("/settings", data={"grid_default_periods": "7"})
+
+        binds = [sql for sql in observed_statements if _ACTOR_BIND_SQL in sql]
+        assert binds, (
+            "a POST bound no audit actor, so every row it writes lands in "
+            "system.audit_log with a NULL user -- silently, because the "
+            "trigger reads an unset setting as 'no authenticated user'"
+        )
+
+    def test_an_audited_write_a_command_makes_carries_the_user(
+        self, auth_client, seed_user, db,
+    ):
+        """The behavioural half: the ROW names the owner, not the statement.
+
+        ``auth.user_settings`` is audited, and ``POST /settings`` updates it,
+        so this reads the trail the trigger actually wrote rather than
+        inferring it from a bind having been issued.
+        """
+        db.session.execute(text("DELETE FROM system.audit_log"))
+        db.session.commit()
+
+        auth_client.post("/settings", data={"grid_default_periods": "9"})
+
+        db.session.rollback()
+        actors = db.session.execute(text(
+            "select distinct user_id from system.audit_log "
+            "where table_name = 'user_settings'"
+        )).scalars().all()
+        assert actors == [seed_user["user"].id], (
+            f"the settings write was attributed to {actors}; a NULL here is "
+            f"the audit trail losing the acting user on an ordinary mutation"
+        )
+
+    def test_the_actor_does_not_outlive_the_request(
+        self, auth_client, seed_user, db,
+    ):
+        """A write the TEST BODY makes after a request is not that user's.
+
+        ``flask.g`` dies with the request in production, and the ``SET LOCAL``
+        this replaced died with the request's transaction -- so neither ever
+        attributed a later write to the request's user.  Under the test client
+        the app context is shared across a whole test, so an actor left on
+        ``g`` would follow the request out and sign every row the test body
+        went on to write.  The teardown retires it for the same reason it
+        retires the mode.
+
+        What the trail should say for such a row is ``NULL``: nobody acting
+        through the application wrote it, which is exactly what
+        ``TestAuditTriggerMetadata.test_user_id_is_null_without_middleware``
+        pins for a test that issues no request at all.
+        """
+        auth_client.post("/settings", data={"grid_default_periods": "7"})
+        db.session.rollback()
+        db.session.execute(text("DELETE FROM system.audit_log"))
+        db.session.commit()
+
+        settings = db.session.query(UserSettings).filter_by(
+            user_id=seed_user["user"].id,
+        ).one()
+        settings.grid_default_periods = 11
+        db.session.commit()
+
+        actors = db.session.execute(text(
+            "select distinct user_id from system.audit_log "
+            "where table_name = 'user_settings'"
+        )).scalars().all()
+        assert actors == [None], (
+            f"a row this test body wrote AFTER the request was attributed to "
+            f"{actors}; the request's actor outlived the request"
         )
