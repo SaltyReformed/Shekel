@@ -213,7 +213,7 @@ def _forget_orphan_merchants(account_id: int) -> int:
     render it, no rule is keyed on it, and nothing else can reach it.
 
     **Without this the table has no ceiling at all**, which is precisely the
-    hazard ``_rules._refuse_unknown_merchants`` was written for and which
+    hazard ``_stating._refuse_unknown_merchants`` was written for and which
     moved one table over when the rule's key became a foreign key: an owner
     uploading a file naming N unseen merchants and then deleting the import
     reclaims the lines and keeps the merchants, permanently, once per upload.

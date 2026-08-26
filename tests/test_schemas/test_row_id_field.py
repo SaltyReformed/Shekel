@@ -292,8 +292,10 @@ _NON_INTEGER_FIELD_FACTORIES = frozenset({
 #: by listing the container.
 #: **``RuleAnswerField`` is here on exactly ``PurchaseDestination``'s terms**
 #: (plan step ``bank_import:X-f6a-3d``): the merchant rule control submits
-#: one of four things -- I have not said, a recurring definition's id, a new
-#: envelope, never a purchase -- so it cannot derive from ``RowId`` either, and
+#: one of FIVE things -- I have not said, a recurring definition's id, a new
+#: envelope, ask me every time, never a purchase (plan step
+#: ``bank_import:X-gd-2`` added the fourth answer) -- so it cannot derive from
+#: ``RowId`` either, and
 #: :meth:`TestNoIdFieldWasMissed
 #: ::test_the_rule_answer_field_is_strict_about_the_id_it_carries` asserts
 #: the strictness directly rather than granting it by listing.
@@ -659,7 +661,7 @@ class TestNoIdFieldWasMissed:
 
         :meth:`test_the_destination_field_is_strict_about_the_id_it_carries`'s
         twin, on the control one card up the same screen.  It is listed as a
-        non-integer spelling because it returns one of four things, so it
+        non-integer spelling because it returns one of FIVE things, so it
         cannot derive from :class:`RowId` without lying about its return type;
         that listing is the standing permission
         :data:`_NON_INTEGER_FIELD_SPELLINGS`' docstring refuses, so the
@@ -672,6 +674,7 @@ class TestNoIdFieldWasMissed:
         line that merchant ever posts.
         """
         from app.schemas.validation.statements import (  # pylint: disable=import-outside-toplevel
+            ALWAYS_ASK,
             NEVER,
             NEW_ENVELOPE,
             NOT_SAID,
@@ -683,17 +686,20 @@ class TestNoIdFieldWasMissed:
             with pytest.raises(ValidationError):
                 field.deserialize(f"t:{lax}")
         # A bare id with no arm prefix names nothing either: the prefix is what
-        # says WHICH of the four answers this is, and reading a bare number as
+        # says WHICH answer this is, and reading a bare number as
         # a template would make the arm inferable from a shape rather than
         # stated -- the defect that made the existing-envelope arm unreachable
         # from a browser one leaf earlier.
         with pytest.raises(ValidationError):
             field.deserialize("12")
-        # ...and the four things it DOES accept.
+        # ...and the FIVE things it DOES accept.  ``ALWAYS_ASK`` joined them
+        # at plan step ``bank_import:X-gd-2`` and this list is one of the two
+        # places a member missing from the grader is caught.
         assert field.deserialize("t:12") == 12
         assert field.deserialize(NOT_SAID) == NOT_SAID
         assert field.deserialize(NEVER) == NEVER
         assert field.deserialize(NEW_ENVELOPE) == NEW_ENVELOPE
+        assert field.deserialize(ALWAYS_ASK) == ALWAYS_ASK
 
     def test_the_non_integer_spellings_are_all_declared(self):
         """No field type is waved through that the package does not declare.

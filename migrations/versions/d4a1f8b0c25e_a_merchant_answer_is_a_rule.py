@@ -36,6 +36,17 @@ birth.
 
 **Reversible exactly.**  The downgrade is the same list backwards; nothing about
 this revision loses information in either direction.
+
+**What it DOES split is the audit trail, and the split is permanent.**
+``system.audit_trigger_func`` records ``table_name``, so a rule's history now
+lies under two values -- measured on a clone of the developer's own database
+2026-08-26: 60 rows under ``merchant_destinations`` and 8 under
+``merchant_rules``, sharing one ``row_id`` space.  Nothing in ``app/`` or
+``scripts/`` reads ``system.audit_log`` by table name, so there is no runtime
+consequence; an operator reading one rule's history has to know both names, and
+that is what this paragraph is for.  Rewriting the historical rows was
+rejected: an audit trail whose past can be edited to match the present is not
+one.  Found by adversarial review 2026-08-26.
 """
 from alembic import op
 

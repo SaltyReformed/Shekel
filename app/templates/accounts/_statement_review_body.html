@@ -334,9 +334,9 @@
                          silently withdrawn it.  Rendered as its own option so
                          the form round-trips it, and re-submitting it unchanged
                          is a no-op rather than a refusal. #}
-                      {% if row.stale_template_label %}
+                      {% if row.unofferable.template %}
                       <option value="t:{{ row.rule.template_id }}" selected>
-                        {{ row.stale_template_label }} -- no longer offered
+                        {{ row.unofferable.template }} -- no longer offered
                       </option>
                       {% endif %}
                       <option value="new"{% if row.rule and row.rule.is_new_envelope %} selected{% endif %}>-- a new envelope --</option>
@@ -369,6 +369,24 @@
                       {% for category in categories %}
                       <option value="{{ category.id }}"{% if answered == category.id %} selected{% endif %}>{{ category.display_name }}</option>
                       {% endfor %}
+                      {# A STORED answer whose category has been ARCHIVED, for
+                         the reason the stale TEMPLATE option above exists: the
+                         picker renders active categories only, so without an
+                         option of its own the select carries no selected value
+                         and a browser submits its FIRST -- the empty one. That
+                         reaches the door as a new-envelope answer with no
+                         category and is REFUSED, so a Save aimed at one
+                         merchant printed a refusal for another, every pass,
+                         naming the wrong half. Archiving is what
+                         category_has_usage now produces where a permanent
+                         delete used to cascade the rule away, so this is live
+                         state rather than a hypothetical (plan step
+                         bank_import:X-gd-2). #}
+                      {% if row.unofferable.category %}
+                      <option value="{{ row.rule.category_id }}" selected>
+                        {{ row.unofferable.category }} -- archived
+                      </option>
+                      {% endif %}
                     </select>
                   </div>
                 </div>

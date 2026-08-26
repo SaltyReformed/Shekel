@@ -32,6 +32,7 @@ from app.services.statement_match import ReviewedRow, RowKind
 
 from app.schemas.validation.statements import (  # pylint: disable=protected-access
     _MAX_RULE_ITEMS,
+    ALWAYS_ASK,
     LEAVE_ALONE,
     NEVER,
     NEW_ENVELOPE,
@@ -599,12 +600,22 @@ class TestTheRuleSectionOnTheWire:
         ]
 
     def test_NOT_SAID_is_carried_rather_than_dropped(self):
-        """It is how a rule is WITHDRAWN, so it cannot be an absence.
+        """An arm is STATED, never inferred from an absence.
 
         The destination select one card down drops its do-nothing value,
         because there the default means "do not record this line" and there is
-        nothing to undo.  Here it means "forget what I said", which is an act
-        -- and dropping it would make a stated rule permanent.
+        nothing to undo.  Here it means "state nothing about this merchant",
+        which the ROUTE drops -- but it has to ARRIVE for the route to drop it,
+        and ``answer`` is ``required=True`` while ``BaseSchema``'s ``@pre_load``
+        normalizer removes every ``""`` a form submits.  So an arm spelled as
+        an absence is an arm that never reaches the door at all, which is what
+        this case pins.
+
+        **Its original reason was that this value WITHDREW a rule**, and ruling
+        R-GS deleted the withdrawal in the same step that kept this case
+        (plan step ``bank_import:X-gd-2``).  A stated rule is now permanent by
+        design; the surviving reason is the one above.  Found by adversarial
+        review 2026-08-26.
         """
         payload = rule_payload(_form(self._row(0, 11, NOT_SAID)))
 
@@ -626,17 +637,27 @@ class TestTheRuleSectionOnTheWire:
 
         assert loaded["rules"][0]["answer"] == 38
 
-    def test_the_four_answers_all_load(self):
-        """The closed set, so none of them is refused by the grader."""
+    def test_the_FIVE_wire_values_all_load(self):
+        """The closed set, so none of them is refused by the grader.
+
+        **It was four and the set became five at ruling R-GS** (plan step
+        ``bank_import:X-gd-2``), which added *ask me every time*.  This class
+        is where a value the grader refuses is caught, so a member missing
+        from it is a member with no grading at THIS tier -- delete
+        ``ALWAYS_ASK`` from ``RuleAnswerField``'s accepted tuple and the class
+        whose whole job is the wire stayed green.  Found by adversarial review
+        2026-08-26.
+        """
         loaded = MerchantRuleBatchSchema().load(rule_payload(_form(
             self._row(0, 11, "t:38")
             + self._row(1, 12, NOT_SAID)
             + self._row(2, 13, NEVER)
-            + self._row(3, 14, NEW_ENVELOPE, name="Lowe's", category="4"),
+            + self._row(3, 14, NEW_ENVELOPE, name="Lowe's", category="4")
+            + self._row(4, 15, ALWAYS_ASK),
         )))
 
         assert [item["answer"] for item in loaded["rules"]] == [
-            38, NOT_SAID, NEVER, NEW_ENVELOPE,
+            38, NOT_SAID, NEVER, NEW_ENVELOPE, ALWAYS_ASK,
         ]
         assert loaded["rules"][3]["envelope_name"] == "Lowe's"
         assert loaded["rules"][3]["category_id"] == 4

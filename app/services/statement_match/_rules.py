@@ -242,6 +242,38 @@ def _named_templates(
     return dict(rows)
 
 
+def _named_categories(
+    category_ids: "set[int]", owner_id: int,
+) -> "dict[int, str]":
+    """Return ``{id: display name}`` for *category_ids* of *owner_id*.
+
+    :func:`_named_templates`' twin, for the other arm a stored answer can name
+    (plan step ``bank_import:X-gd-2``).  It exists for the same reason and is
+    scoped for the same reason: the NAME it returns is rendered, so the safety
+    is local rather than inherited from where the ids came from.
+
+    Args:
+        category_ids: The ids wanted.  Empty issues no query.
+        owner_id: The user whose categories may be named.
+
+    Returns:
+        The display names by id.  Built with
+        :attr:`~app.models.category.Category.display_name` rather than a
+        column, because that is what every other category control on this
+        screen shows and a bare ``item_name`` would read as a different
+        category.
+
+    """
+    if not category_ids:
+        return {}
+    rows = (
+        db.session.query(Category)
+        .filter(Category.id.in_(category_ids), Category.user_id == owner_id)
+        .all()
+    )
+    return {row.id: row.display_name for row in rows}
+
+
 @dataclass(frozen=True)
 class RuleView:
     """What the owner has SAID, and what it can still resolve against.
@@ -271,12 +303,27 @@ class RuleView:
             ``routes/templates/crud.py``, so this is live user state rather
             than a hypothetical.  Found by adversarial financial review
             2026-08-19.  Usually empty, and then it costs no query at all.
+        stale_categories: The same, for a CATEGORY a stored *new envelope*
+            answer names that is no longer active, by id (plan step
+            ``bank_import:X-gd-2``).  **The template arm had this and the
+            category arm did not**, and the category arm's failure was worse:
+            with no option carrying the stored value the select submitted
+            ``""``, which reaches the door as a NEW ENVELOPE answer missing its
+            category and is REFUSED -- so pressing Save to answer about one
+            merchant printed "a new envelope needs both a name and a category"
+            for another the owner never touched, on every pass, naming the
+            wrong half.  Found by two adversarial reviews 2026-08-26, which
+            also measured what made it reachable: teaching
+            ``archive_helpers.category_has_usage`` about this table turned a
+            permanent delete (which cascaded the rule away, leaving nothing to
+            mis-render) into an ARCHIVE, which is exactly this state.
     """
 
     rules: "dict[int, StandingRule]"
     template_names: "dict[int, str]"
     active_categories: "frozenset[int]"
     stale_templates: "dict[int, str]"
+    stale_categories: "dict[int, str]"
 
     @classmethod
     def build(cls, owner_id: int, account_id: int) -> "RuleView":
@@ -287,17 +334,18 @@ class RuleView:
             account_id: The account being reviewed.
 
         Returns:
-            The :class:`RuleView`.  Three small indexed reads, and a fourth
-            only when a stored rule names a template that has stopped being
-            offerable; the review screen's cost is its 3.6 s candidate
-            derivation, not this.
+            The :class:`RuleView`.  Three small indexed reads, plus one each
+            for a stored answer whose template has stopped being offerable or
+            whose category has been archived; the review screen's cost is its
+            3.6 s candidate derivation, not this.
         """
         rules = rules_for(owner_id, account_id)
         offerable = offerable_templates(account_id)
+        active = active_category_ids(owner_id)
         return cls(
             rules=rules,
             template_names=offerable,
-            active_categories=active_category_ids(owner_id),
+            active_categories=active,
             stale_templates=_named_templates(
                 {
                     rule.template_id for rule in rules.values()
@@ -305,6 +353,14 @@ class RuleView:
                     and rule.template_id not in offerable
                 },
                 account_id,
+            ),
+            stale_categories=_named_categories(
+                {
+                    rule.category_id for rule in rules.values()
+                    if rule.category_id is not None
+                    and rule.category_id not in active
+                },
+                owner_id,
             ),
         )
 
@@ -326,6 +382,24 @@ class RuleView:
             or self.stale_templates.get(template_id)
             or "a recurring envelope"
         )
+
+    def category_label_for(self, category_id: int) -> str:
+        """Return what to call *category_id* when it is no longer active.
+
+        :meth:`label_for`'s twin, and TOTAL for the same reason: a caller
+        asking is holding an id a stored rule carries, and
+        ``fk_merchant_rules_category_owner`` holds that id to this owner -- so
+        the only way it is unknown here is a row hard-deleted between this
+        view's two reads, where the honest answer is a phrase rather than a
+        raise on a read path.
+
+        Args:
+            category_id: The category a stored *new envelope* answer names.
+
+        Returns:
+            Its display name, or a phrase.
+        """
+        return self.stale_categories.get(category_id) or "an archived category"
 
 
 def rules_for(

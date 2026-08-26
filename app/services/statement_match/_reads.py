@@ -152,7 +152,7 @@ class CreatableLine:
             no existing destination and a NEW envelope is the only arm open to
             them.
         placement: What the owner's stated MERCHANT RULE comes to for this
-            line (:class:`~._rules.Placement`), or ``None`` when they have not
+            line (:class:`~._placement.Placement`), or ``None`` when they have not
             said where this merchant goes -- which is a different answer from
             "they said never" and the screen says it differently.  Plan step
             ``bank_import:X-f6a-3d``.
@@ -266,7 +266,7 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
         """Return how many creatable lines each sweep CLASS would tick.
 
         **Counted where the sweep's own rule is**
-        (:attr:`~._rules.Placement.sweep_class`) rather than as a Jinja
+        (:attr:`~._placement.Placement.sweep_class`) rather than as a Jinja
         expression, so a caption cannot promise a number the control does not
         deliver.  A placement that is not an act -- a rule that does not
         reach this line's pay period -- has no class and is not counted, and a

@@ -972,7 +972,14 @@ class TestAnActRecordsWhoConsentedToIt:
         Without this the case above would be satisfied by a column that refused
         every value, and the arm ``bank_import:X-ge`` needs -- an act a rule
         performed -- would be unwritable on the day that step ships.
+
+        **It reads the value BACK from the database rather than off the
+        instance.**  A first version asserted ``match.applied_by_rule is
+        applied`` on the object it had just constructed, which re-read the
+        attribute Python had set and would have passed against a column that
+        was never written at all.  Found by adversarial review 2026-08-26.
         """
+        written = {}
         for applied in (False, True):
             match = StatementMatch(
                 account_id=seed_user["account"].id,
@@ -981,8 +988,16 @@ class TestAnActRecordsWhoConsentedToIt:
             )
             db.session.add(match)
             db.session.flush()
+            written[applied] = match.id
 
-            assert match.applied_by_rule is applied
+        db.session.expire_all()
+        stored = {
+            row.id: row.applied_by_rule
+            for row in db.session.query(StatementMatch).all()
+        }
+
+        assert stored[written[False]] is False
+        assert stored[written[True]] is True
 
     def test_it_carries_no_pointer_to_the_rule_that_acted(self):
         """Ruling **R-GT**'s other half, graded as an ABSENCE.
@@ -1000,6 +1015,17 @@ class TestAnActRecordsWhoConsentedToIt:
         id would find it and fill it in.
         """
         columns = set(StatementMatch.__table__.columns.keys())
+        # Every table this act's columns point AT, read off the mapping rather
+        # than matched by name.  A first version asked whether any column name
+        # CONTAINED "rule_id", which a column called ``standing_rule`` or
+        # ``applied_rule`` sails straight past -- a substring probe standing in
+        # for the question the docstring asks.  Found by adversarial review
+        # 2026-08-26.
+        referenced = {
+            key.column.table.fullname
+            for column in StatementMatch.__table__.columns
+            for key in column.foreign_keys
+        }
 
         assert "applied_by_rule" in columns
-        assert not [name for name in columns if "rule_id" in name]
+        assert "budget.merchant_rules" not in referenced

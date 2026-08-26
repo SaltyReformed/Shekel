@@ -26,14 +26,26 @@ decision, and a subject that two tables agree about is a row.
     the UNION of two derivations -- every merchant this account's lines name,
     plus every merchant already answered for -- and the second half existed
     because deleting an import took a merchant's lines and would otherwise
-    have made its rule unwithdrawable.  A merchant row OUTLIVES its lines, so
-    the union is the table.
+    have left its rule unreachable -- unrenderable and so unrestatable.  A
+    merchant row OUTLIVES its lines, so the union is the table.  (It said
+    "unwithdrawable" until ruling **R-GS** removed the withdrawal at plan step
+    ``bank_import:X-gd-2``; the property is the same one and RESTATING is what
+    it is now for.)
   * The join is by id.  *IDs for logic, strings for display* is this project's
     rule for ``ref`` tables, and a rule matching on a NAME is the same
     substitution one tier out: ``merchant_rules`` and
     ``bank_statement_lines`` each held their own 100-character copy of the
     string, matched by equality, with nothing holding the two widths or the
     two spellings together.
+
+**And the set it can reclaim SHRANK at ruling R-GS.**  Withdrawing a rule was
+the one act that returned an answered merchant to sweepable, and there is no
+withdrawal now -- *ask me every time* is a stored answer like the others.  So a
+merchant the owner ever answered for is kept for the life of the account, and
+its rule with it.  That is owner-scoped and self-inflicted rather than a
+ceiling anyone else can push on, which is why it is recorded here rather than
+guarded: what bounds this table is the number of merchants an owner's own banks
+have shown them.
 
 **A merchant SURVIVES the lines that named it, and that is the whole property
 the union above rests on** -- a stated answer has to stay readable and
@@ -45,7 +57,7 @@ preserves nothing: no rule is keyed on it, the section does not render it, and
 nothing else can reach it.  Without that sweep the table had no ceiling at all
 -- an owner could upload a file naming any number of unseen merchants, delete
 the import, and keep the merchants permanently, once per upload.  That is the
-hazard ``_rules._refuse_unknown_merchants`` was written for, which MOVED here
+hazard ``_stating._refuse_unknown_merchants`` was written for, which MOVED here
 when the rule's key became a foreign key, and an adversarial security review
 measured it on 2026-08-25.  An account's deletion takes every merchant through
 :class:`~app.models.mixins.AccountScopedMixin`'s cascade.

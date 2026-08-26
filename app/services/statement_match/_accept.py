@@ -630,9 +630,11 @@ def _record(
             is on.
         content: What this act is MADE OF, as it will be RECORDED -- the
             members and the creations FINAL, with a group's minted residual
-            already among them (:func:`record_match` puts it there).  It is the
-            same :class:`MatchContent` the caller took, so nothing here decides
-            what the act contains.
+            already among them.  **It is a :func:`~dataclasses.replace`d copy
+            rather than the one the caller passed**, because
+            :func:`record_match` above decides whether a residual exists and
+            this function may not: nothing here changes what the act contains,
+            and everything that does has already happened.
         applied_by_rule: Whether a standing rule performed this act rather than
             a person ticking it (ruling **R-GT**).  **Keyword-only and with no
             default**, because it is a boolean argument whose two values are
@@ -707,12 +709,20 @@ class MatchContent:
         rows: The app rows that explain them, already priced -- resolved by
             :func:`~._resolve.resolve_rows` or built by the door that created
             one.
-        created: Every app row the CALLER brought into existence for this act,
-            at the revision it left them (ruling **R-GG**).  A residual
-            :func:`record_match` mints itself is added to this rather than
-            expected in it, which is why the field is what the caller made and
-            not what the act made.  ``()`` is what the form door passes: a
-            submission names rows that already existed.
+        created: Every app row brought into existence for this act, at the
+            revision it left them (ruling **R-GG**).  ``()`` is what the form
+            door passes: a submission names rows that already existed.
+
+            **It means two subtly different things either side of**
+            :func:`record_match`, and saying so is cheaper than a second type.
+            What a CALLER passes is what the caller made.  What
+            :func:`_record` receives is that plus a group's minted residual,
+            because :func:`record_match` mints one and hands its writer a
+            :func:`~dataclasses.replace`d copy -- so the field there is what
+            the ACT made.  ``rows`` moves the same way, from what the caller
+            resolved to what the act asserts.  Found by adversarial review
+            2026-08-26, which is also why :func:`_record`'s own docstring no
+            longer claims it receives what the caller passed.
         residual: The difference the owner reviewed and agreed to record, or
             ``None`` -- which is what every caller but the form door passes,
             because a door that BUILT its row built it at the bank's own figure
@@ -790,8 +800,10 @@ def record_match(
             not think about consent would then record that the owner had given
             it.  The one value this app cannot afford to infer is the one it
             would infer.  Plan step ``bank_import:X-ge`` is the first writer of
-            ``True``; until then this is a fact stated four times and false
-            four times, which is what it is.
+            ``True``; until then it is stated ``False`` at the two call sites
+            that exist -- :func:`accept_match` and
+            :func:`~._create.create_purchase_from_line` -- which is what those
+            acts are.
 
     Returns:
         The :class:`AcceptedMatch`.

@@ -152,12 +152,22 @@ class MerchantRule(AccountScopedMixin, UserScopedMixin, TimestampMixin,
             history of what they said before is
             ``system.audit_log``'s, which this table has a trigger for.
 
-    **Every subject key CASCADES, and the consequence is deliberate.**  Deleting
+    **Both ANSWER keys CASCADE, and the consequence is deliberate.**  Deleting
     a template or a category takes the rule with it, leaving the merchant
     unanswered -- which is the truth, because an answer naming a row that no
     longer exists is not an answer.  ``RESTRICT`` would refuse an ordinary
     delete because of a PREFERENCE the user cannot see from the thing they are
     deleting, which is the dead end finding **N-302** records one arc over.
+    **The MERCHANT key does NOT cascade** -- it declares no ``ON DELETE``, so
+    deleting a merchant a rule answers for is REFUSED rather than silently
+    taking the answer with it.  The difference is which of the three is the
+    rule's SUBJECT and which are its ANSWERS.
+
+    **What the owner may no longer do is un-state a rule** (ruling **R-GS**),
+    so a cascade is the only remaining way a row can leave -- which is why both
+    permanent-delete doors ask about this table before they run
+    (``archive_helpers.category_has_usage`` and
+    ``archive_helpers.template_has_standing_rule``).
     """
 
     __tablename__ = "merchant_rules"
@@ -198,7 +208,7 @@ class MerchantRule(AccountScopedMixin, UserScopedMixin, TimestampMixin,
         # The merchant this answer is about is one of THIS ACCOUNT's,
         # structurally (plan step ``bank_import:X-gd-1``).  It is the same
         # composite construction the two subject keys below use, and it is what
-        # retires the scope CHECK: ``_rules._refuse_unknown_merchants``
+        # retires the scope CHECK: ``_stating._refuse_unknown_merchants``
         # compared a submitted string against a DISTINCT over every recorded
         # line, and was the only thing between a crafted body and a stored row
         # keyed on a merchant this account has never seen.  That refusal

@@ -237,8 +237,8 @@ def _rules(index, merchant_id, *, answer, name="", category_id=""):
         index: The row's rendered position, which is what keys its fields.
         merchant_id: The merchant ROW the hidden input carries (plan step
             ``bank_import:X-gd-1``); it was the bank's own string until then.
-        answer: ``"unset"`` (I have not said), ``"never"``, ``"new"``, or
-            ``"t:<template_id>"``.
+        answer: ``"unset"`` (I have not said), ``"never"``, ``"ask"``,
+            ``"new"``, or ``"t:<template_id>"``.
         name: What the envelope-name box carries.
         category_id: What the category select carries; ``""`` is its default.
 
@@ -3131,8 +3131,11 @@ class TestTheStandingRuleSection:
 
         So this one reads the rendered page, submits every control the rule
         form actually contains at the value it actually carries, and asserts
-        the round trip is a NO-OP: nothing recorded, nothing refused, and every
-        answered merchant counted as unchanged.
+        the round trip is a NO-OP: nothing recorded, nothing refused, and the
+        one ANSWERED merchant counted as unchanged.  (The other renders *I have
+        not said*, which the route drops before the door, so it is counted as
+        neither -- and the receipt's denominator is what tells those two states
+        apart.)
         """
         envelope = _an_envelope(seed_user)
         _a_line(seed_user)
@@ -3161,6 +3164,12 @@ class TestTheStandingRuleSection:
         assert response.status_code == 200
         assert b"Nothing changed" in response.data
         assert b"were not recorded" not in response.data
+        # ...and the DENOMINATOR, which is what makes the sentence above mean
+        # "the answer was already stored" rather than "nothing was submitted".
+        # Asserting only the flash left `unchanged_count == 0` and `== 1`
+        # indistinguishable, on the one number that says a restatement was
+        # SEEN.  Found by adversarial review 2026-08-26.
+        assert b"1 other merchant(s) were already answered" in response.data
 
     def test_a_merchant_carrying_MARKUP_is_escaped_in_every_attribute(
         self, auth_client, db, seed_user,
@@ -3419,6 +3428,73 @@ class TestTheStandingRuleSection:
         )
         assert b"Nothing changed" in response.data
         assert db.session.query(MerchantRule).one().never_a_purchase is False
+
+    def test_a_stored_answer_whose_CATEGORY_was_ARCHIVED_still_round_trips(
+        self, auth_client, db, seed_user,
+    ):
+        """The category select's totality, and the state THIS step created.
+
+        The picker renders active categories only, so an archived one had no
+        option carrying the stored value: the select carried no ``selected``
+        and a browser posted its first, the EMPTY one. That reaches the door as
+        a new-envelope answer with no category and is REFUSED -- so pressing
+        Save to answer about one merchant printed "a new envelope needs both a
+        name and a category" for another the owner never touched, every pass,
+        naming the wrong half.
+
+        **This step is what makes the state reachable.** Before it, deleting a
+        category only a rule used hard-deleted it and cascaded the rule away,
+        leaving nothing to mis-render; teaching ``category_has_usage`` about
+        this table turns that into an ARCHIVE, which is exactly this. Found by
+        two adversarial reviews 2026-08-26.
+
+        Driven through the real page and posted back, because the defect is in
+        what a BROWSER submits for a control nobody touched -- which is the one
+        thing a hand-written payload cannot show.
+        """
+        from app.models.category import (  # pylint: disable=import-outside-toplevel
+            Category,
+        )
+        from app.models.merchant_rule import (  # pylint: disable=import-outside-toplevel
+            MerchantRule,
+        )
+
+        _a_line(seed_user)
+        category = seed_user["categories"]["Groceries"]
+        db.session.commit()
+        auth_client.post(
+            _merchants_url(seed_user["account"].id),
+            data=_rules(
+                0, a_merchant(seed_user, "Amazon").id,
+                answer="new", name="Amazon Spending",
+                category_id=str(category.id),
+            ),
+        )
+        assert db.session.query(MerchantRule).one().category_id == category.id
+
+        db.session.query(Category).filter(
+            Category.id == category.id,
+        ).update({"is_active": False})
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+        submitted = _rule_form_controls(page)
+
+        # The browser carries the STORED category, not the empty option.
+        assert submitted["rule_category-0"] == str(category.id)
+        assert "-- archived" in page
+
+        response = auth_client.post(
+            _merchants_url(seed_user["account"].id), data=submitted,
+        )
+
+        # ...so posting the page straight back is a no-op rather than a
+        # refusal about a merchant the owner never touched.
+        assert response.status_code == 200
+        assert b"were not recorded" not in response.data
+        assert db.session.query(MerchantRule).one().category_id == category.id
 
     def test_the_sweep_is_rendered_PER_CLASS_and_names_its_counts(
         self, auth_client, db, seed_user,

@@ -582,20 +582,29 @@ class TestTheRuleDoorRefusesTheAnswerThatContradictsTheBar:
         assert len(outcome.refused) == 1
         assert db.session.query(MerchantRule).count() == 0
 
-    def test_NEVER_and_ALWAYS_ASK_are_both_still_taken(
+    def test_NEVER_is_the_ONLY_answer_such_a_merchant_takes(
         self, app, db, seed_user,
     ):
-        """THE FIRING CONTROL: the door refuses two answers, not four.
+        """THE FIRING CONTROL: the door refuses three answers and takes one.
 
-        Both of these are TRUE of a merchant a source files as a payment to an
-        account the owner holds -- it is never spending, and there is nothing
-        standing to apply to it -- so both stay legal.  Without this case a
-        door that refused EVERY answer would satisfy the two above.
+        Ruling **R-GJ**: *no answer lifts it*, and *never a purchase* is the
+        answer that fits.  Without this case a door that refused EVERY answer
+        would satisfy the two above -- and such a merchant would have no
+        legal answer at all, which is not what the ruling says.
 
-        **The second arm was a WITHDRAWAL until ruling R-GS** (plan step
-        ``bank_import:X-gd-2``), which replaced the withdrawal with *ask me
-        every time*.  What the case grades is unchanged: ruling **R-GJ** bars
-        the two SPENDING answers and leaves the rest alone.
+        **The second arm used to assert ``ALWAYS_ASK`` was taken too**, and an
+        adversarial review 2026-08-26 measured that wrong on its own terms.
+        The exemption's only stated reason was *"never a purchase and the
+        WITHDRAWAL are both still legal"*, and ruling R-GS deleted the
+        withdrawal in this same step; *ask me every time* is not the same fact.
+        A withdrawal left the merchant unanswered, while this stores a promise
+        the app cannot keep -- such a line has no create control, so nothing
+        ever asks -- and, worse, restating a stored *never* as *ask me every
+        time* takes the merchant out of ``CreationBars.never`` and leaves only
+        the bar :mod:`._bars` records as INTERIM.  On the developer's own data
+        that is `Capital One Credit Card`, 9 lines and `-$7,412.94`, traded
+        away by one select under a caption reading *an answer can always be
+        changed*.
         """
         statement = an_import(seed_user)
         _a_card_payment(seed_user, statement)
@@ -606,10 +615,13 @@ class TestTheRuleDoorRefusesTheAnswerThatContradictsTheBar:
         assert db.session.query(MerchantRule).one().never_a_purchase is True
 
         asked = self._state(seed_user, RuleAnswer.ALWAYS_ASK)
-        assert asked.refused == ()
-        # The row STAYS -- it is restated, not removed -- and it is the other
-        # container-less answer, which no longer bars the line.
-        assert db.session.query(MerchantRule).one().never_a_purchase is False
+
+        assert len(asked.refused) == 1
+        assert "Never a purchase" in asked.refused[0]
+        # ...and the bar it would have traded away is STILL THERE, which is the
+        # half that matters: a refusal that left the row rewritten would be no
+        # refusal at all.
+        assert db.session.query(MerchantRule).one().never_a_purchase is True
 
     def test_an_ORDINARY_merchant_may_still_be_given_an_envelope(
         self, app, db, seed_user,

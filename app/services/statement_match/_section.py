@@ -9,7 +9,7 @@ cut the module.  The seam is the SUBJECT: :mod:`._reads` answers *what does the
 review screen show about this pass's LINES*, and this answers *what does it ask
 about this account's MERCHANTS*, which is a question with its own grain -- one
 row per merchant, not one per line -- and its own door
-(:func:`~._rules.state_rules`, which moves no money).
+(:func:`~._stating.state_rules`, which moves no money).
 
 Nothing changed on the way across except what R-GJ added: a row now says
 whether a SOURCE files this merchant as a payment to a credit card, because
@@ -32,6 +32,42 @@ from ._rules import StandingRule, RuleView
 
 
 @dataclass(frozen=True)
+class Unofferable:
+    """What a stored answer NAMES that the picker cannot show, by arm.
+
+    **One value because it is one fact**: a rendered select submits the option
+    carrying ``selected``, and its FIRST when none does -- so an answer whose
+    subject is missing from the option list is submitted as something the owner
+    never chose.  Each arm gets an option of its own carrying the stored value,
+    and the two arms fail differently only in what the wrong submission then
+    means.
+
+    Both were found the same way and a year apart in nothing but this arc's own
+    time: the template arm by adversarial financial review 2026-08-19, when a
+    deactivated template made the select fall onto *I have not said* and the
+    next Save silently withdrew a rule; the category arm by two adversarial
+    reviews 2026-08-26, when an archived category made it fall onto the empty
+    option and the door refused a merchant the owner never touched.  They are
+    grouped rather than carried as two more fields because the second is what
+    took :class:`MerchantSummary` past its attribute ceiling, and a ceiling is
+    a question about whether the fields are one thing.
+
+    Attributes:
+        template: What to call the recurring definition a stored answer names
+            when it is no longer offerable, else ``None``.  Deactivated or
+            un-enveloped through ``routes/templates/crud.py``.
+        category: What to call the category a stored *new envelope* answer
+            files under when it is no longer active, else ``None``.
+            Archiving is what ``archive_helpers.category_has_usage`` now
+            produces where a permanent delete used to cascade the rule away,
+            so this is live state rather than a hypothetical.
+    """
+
+    template: "str | None" = None
+    category: "str | None" = None
+
+
+@dataclass(frozen=True)
 class MerchantSummary:
     """One merchant the rule section asks the owner about.
 
@@ -42,14 +78,13 @@ class MerchantSummary:
         rule: What the owner has said, or ``None`` for *not said yet*.
         line_count: How many of THIS pass's unexplained outflows it names.
             Zero for a merchant whose lines are all explained today and whose
-            rule the owner may still want to see or withdraw.
-        stale_template_label: What to call the recurring definition this
-            merchant's stored answer names, when that definition is no longer
-            offerable -- else ``None``.  The screen renders it as an option of
-            its own, because a select with no selected option submits its
-            FIRST, which here means *I have not said*: without it the screen
-            reported such a rule as unanswered and the next Save silently
-            withdrew it (:attr:`~._rules.RuleView.stale_templates`).
+            rule the owner may still want to see or RESTATE -- there is no
+            withdrawal as of ruling **R-GS**.
+        unofferable: What this merchant's stored answer NAMES that the
+            option list cannot show (:class:`Unofferable`).  Both arms are
+            rendered as an option of their own, because a select with no
+            selected option submits its FIRST and that submission is one the
+            owner never made.
         total: What those lines come to, signed.  **The section is where a
             decision is made about several lines at once, so it has to say how
             much money it is a decision about**: on the developer's own
@@ -59,7 +94,7 @@ class MerchantSummary:
             (ruling **R-GJ**, plan step ``bank_import:X-ga``).  **It is why
             two of this row's options are refused**: such a merchant's money
             was spent somewhere else, so it cannot be filed in a budget line,
-            and :func:`~._rules.state_rules` refuses a template or a
+            and :func:`~._stating.state_rules` refuses a template or a
             new-envelope answer for it outright.  Saying so on the row is what
             keeps that refusal from being the first the owner hears of it --
             the *chooser whose submission can never succeed* shape this package
@@ -71,7 +106,7 @@ class MerchantSummary:
     rule: StandingRule | None
     line_count: int
     total: Decimal
-    stale_template_label: "str | None" = None
+    unofferable: Unofferable = Unofferable()
     pays_an_account: bool = False
 
 
@@ -103,7 +138,7 @@ class MerchantSection:
         merchants: One row per merchant this pass has an unexplained outflow
             for, PLUS every merchant the owner has already answered for --
             ascending BY NAME.  The second half is what makes a rule visible and
-            withdrawable once its lines are all explained; without it an answer
+            restatable once its lines are all explained; without it an answer
             could only be changed while there was work outstanding.  It is
             NARROWER than what a statement may legitimately name
             (:func:`~._rules.account_merchants`, every merchant the account
@@ -113,7 +148,7 @@ class MerchantSection:
         templates: The recurring definitions a rule on this account may name
             (:func:`~._rules.offerable_templates`), as ``(id, name)``
             ascending by name.  The option list, and the same set
-            :func:`~._rules.state_rules` checks a submission against.
+            :func:`~._stating.state_rules` checks a submission against.
     """
 
     merchants: "tuple[MerchantSummary, ...]"
@@ -182,7 +217,7 @@ def _merchant_summary(
     whenever the answer is not offerable leaves no case with no option.
     """
     rule = view.rules.get(merchant_id)
-    unofferable = (
+    names_a_stale_template = (
         rule is not None
         and rule.template_id is not None
         and rule.template_id not in view.template_names
@@ -193,8 +228,18 @@ def _merchant_summary(
         rule=rule,
         line_count=waiting.count,
         total=waiting.total,
-        stale_template_label=(
-            view.label_for(rule.template_id) if unofferable else None
+        unofferable=Unofferable(
+            template=(
+                view.label_for(rule.template_id) if names_a_stale_template
+                else None
+            ),
+            category=(
+                view.category_label_for(rule.category_id)
+                if rule is not None
+                and rule.category_id is not None
+                and rule.category_id not in view.active_categories
+                else None
+            ),
         ),
         pays_an_account=bars.pays_an_account(merchant_id),
     )
@@ -218,7 +263,7 @@ def merchant_section(
     Returns:
         The :class:`MerchantSection`.  Every merchant with pending work, plus
         every merchant already answered for, ascending -- so an answer stays
-        visible and withdrawable after the lines that prompted it are gone.
+        visible and RESTATABLE after the lines that prompted it are gone.
     """
     waiting: "dict[int, _Waiting]" = {}
     names: "dict[int, str]" = {}

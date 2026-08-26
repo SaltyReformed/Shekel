@@ -286,8 +286,34 @@ def _reject_spending_answer(
     is worse than the refusal -- the owner would read *Capital One goes in a
     new envelope* and be right about nothing.
 
-    *Never a purchase* and the withdrawal are both still legal, because both
-    are TRUE of such a merchant.
+    **EVERY other answer is refused, and *ask me every time* stopped being an
+    exception when the withdrawal did** (ruling **R-GS**, plan step
+    ``bank_import:X-gd-2``).  The sentence here used to read "*never a
+    purchase* and the withdrawal are both still legal, because both are TRUE
+    of such a merchant" -- and the withdrawal no longer exists, so the only
+    reason ever given for the second exemption named a deleted door.  Its
+    replacement is not the same fact: a withdrawal left the merchant
+    UNANSWERED, while *ask me every time* stores a promise this app cannot
+    keep.  Such a line is rendered with no create control at all
+    (:class:`~._bars.CreationBar`), so nothing will ever ask -- which is the
+    chooser-whose-submission-can-never-succeed shape this package has closed
+    four times.
+
+    **And it is the standing bar that would be traded away.**  Restating
+    *never a purchase* as *ask me every time* takes the merchant out of
+    :attr:`~._bars.CreationBars.never` and leaves only
+    :attr:`~._bars.CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD`, which
+    :mod:`._bars` records as INTERIM and deletes whole when ``credit_card:CC3b``
+    ships.  Measured on the developer's own data: that is `Capital One Credit
+    Card`, 9 unexplained outflows and `-$7,412.94`.  One select, no warning,
+    under a caption reading *an answer can always be changed*.  Found by
+    adversarial review 2026-08-26.
+
+    So the refusal is stated the way ruling **R-GJ** states it -- *no answer
+    lifts it*, and *never a purchase* is the answer that fits -- rather than as
+    a list of the answers that happen to be wrong.  An owner who has answered
+    for such a merchant may restate that answer; they may not exchange it for
+    one that is false of the merchant.
 
     Args:
         statement: What the owner submitted for one merchant.
@@ -302,9 +328,7 @@ def _reject_spending_answer(
     """
     if statement.merchant_id not in account_payments:
         return
-    if statement.answer not in (
-        RuleAnswer.TEMPLATE, RuleAnswer.NEW_ENVELOPE,
-    ):
+    if statement.answer is RuleAnswer.NEVER:
         return
     raise ValidationError(
         f"Your bank files {merchant} as a payment to an account you "
@@ -373,7 +397,7 @@ class _Answering:
         owner_id: The user the route proved owns the account.
         account_id: The account being answered for.
         stored: The answers already held, by merchant id.  **It is HELD IN
-            STEP as rows are added and withdrawn**, which is why it is a
+            STEP as rows are added**, which is why it is a
             mapping this pass mutates rather than a snapshot: a submission
             naming one merchant twice must restate the row it just wrote
             rather than insert a second and raise ``IntegrityError`` past that
@@ -416,7 +440,24 @@ def _apply_one(
     templates = answering.templates
     statement = _trimmed(statement)
     row = stored.get(statement.merchant_id)
-    # **UNCHANGED is decided before anything is validated, and the order is the
+    # **COMPLETENESS is checked BEFORE the unchanged short-circuit, and
+    # OFFERABILITY after it.**  The two are different questions and only the
+    # second may be deferred.  An incomplete NEW ENVELOPE answer -- a name with
+    # no category, or a category with no name -- comes to the SAME four columns
+    # as *ask me every time* through :func:`_columns_of`, which reads a field
+    # only for the answer that uses it.  So against a stored *ask me every
+    # time* row the short-circuit found "nothing changed" and returned before
+    # the refusal ran: the owner cleared the name box, pressed Save, and the
+    # receipt counted it as already answered -- while the identical click on an
+    # UNANSWERED merchant said "a new envelope needs both a name and a
+    # category".  Found by adversarial review 2026-08-26.
+    #
+    # It cannot fire on a faithful round trip, which is what the ordering below
+    # protects: a stored NEW ENVELOPE row always has both fields and the
+    # section renders both, so re-submitting the page unchanged never reaches
+    # this refusal.
+    _reject_incomplete_new_envelope(statement, merchant)
+    # **UNCHANGED is decided before anything is VALIDATED, and the order is the
     # fix rather than a saving.**  A stored answer can stop being offerable
     # under the owner's feet -- a template deactivated through the templates
     # screen -- and the section renders it back as the answer it is.  Validating
@@ -430,7 +471,6 @@ def _apply_one(
         named = _checked_template(statement, merchant, templates)
         said = f"{merchant} goes in {named}."
     elif statement.answer is RuleAnswer.NEW_ENVELOPE:
-        _reject_incomplete_new_envelope(statement, merchant)
         category = _checked_category(statement, merchant, answering.owner_id)
         said = (
             f"{merchant} gets a new envelope called "
@@ -577,8 +617,17 @@ def state_rules(
             user_id=owner_id, account_id=account_id,
             merchant_id=statement.merchant_id,
             answer=statement.answer.value,
-            template_id=statement.template_id,
-            category_id=statement.category_id,
+            # **The columns WRITTEN, not the ids submitted** (adversarial
+            # review 2026-08-26).  ``_columns_of`` reads a field only for the
+            # answer that uses it, so a body pairing *never a purchase* with a
+            # ``template_id`` stores neither -- and logging the raw submission
+            # would make the audit record assert a template the row does not
+            # carry, contradicting the row it exists to explain.
+            **{
+                column: value
+                for column, value in _columns_of(statement).items()
+                if column in ("template_id", "category_id")
+            },
         )
     return StatedRules(
         stated=tuple(said), refused=tuple(refused),

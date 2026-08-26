@@ -61,6 +61,51 @@ def template_has_paid_history(template_id: int) -> bool:
     ).scalar()
 
 
+def template_has_standing_rule(template_id: int) -> bool:
+    """Check if a standing merchant rule files a merchant's spending here.
+
+    **The template twin of :func:`category_has_usage`'s merchant-rule clause**,
+    and it exists for the same reason and closes the same defect on the other
+    of the two cascading subject keys (plan step ``bank_import:X-gd-2``).
+    ``fk_merchant_rules_template_account`` is ``ON DELETE CASCADE``, so
+    permanently deleting a template destroys every rule that names it -- and
+    ``hard_delete_template`` gated only on settled TRANSACTIONS, which knows
+    nothing about rules.
+
+    Measured on the developer's own dev database, 2026-08-26: 16 of 29 rules
+    name a template, and template 19 (`Clothes`) carries a rule and ZERO
+    settled transactions -- so the permanent-delete arm was live on it and one
+    press would have destroyed a stated answer under a flash that said only
+    that the template was deleted.  Ruling **R-GS** is what makes it matter
+    rather than merely untidy: a rule row is never un-stated by the owner, so
+    a silent cascade would be the only way one could vanish.
+
+    **It is NOT folded into :func:`template_has_paid_history`**, which is cited
+    by name from the transfer-template route's own guard and means exactly what
+    it says.  Two predicates with two reasons give the door two SENTENCES, and
+    telling an owner their template "has payment history" when what it has is a
+    merchant rule is the screens-stating-what-is-false defect this arc has
+    closed three times.
+
+    Args:
+        template_id: The TransactionTemplate.id to check.
+
+    Returns:
+        True if any :class:`~app.models.merchant_rule.MerchantRule` names it.
+        **Not scoped**, for the reason ``category_has_usage``'s own clause is
+        not: ``fk_merchant_rules_template_account`` is composite over
+        ``(template_id, account_id)``, and ``transaction_templates.id`` is a
+        primary key -- so a rule naming this template can only be on this
+        template's account, and its owner is that account's.
+    """
+
+    return db.session.query(
+        db.session.query(MerchantRule).filter(
+            MerchantRule.template_id == template_id,
+        ).exists()
+    ).scalar()
+
+
 def transfer_template_has_paid_history(template_id: int) -> bool:
     """Check if a transfer template has any settled transfers.
 
@@ -156,18 +201,20 @@ def account_has_ledger_postings(account_id: int) -> bool:
 def category_has_usage(category_id: int, user_id: int) -> bool:
     """Check if a category is in use by templates, transactions or rules.
 
-    Performs a three-part check: (1) any TransactionTemplate with matching
-    category_id and user_id, (2) any Transaction with matching category_id
-    joined to PayPeriod filtered by user_id, and (3) any standing merchant
-    rule whose *new envelope* answer files under it.  Short-circuits in that
-    order, cheapest first, so the transaction join is only paid for when the
-    two indexed reads either side of it find nothing.
+    Performs a three-part check, short-circuiting in the order it runs them:
+    (1) any TransactionTemplate with matching category_id and user_id, (2) any
+    standing merchant rule whose *new envelope* answer files under it, and (3)
+    any Transaction with matching category_id joined to PayPeriod filtered by
+    user_id.  The join is last because it is the only one of the three that
+    needs one; none of the three has an index on ``category_id``, so all three
+    are sequential scans over small tables and the ordering buys the JOIN
+    rather than a lookup.
 
-    The user_id scoping is critical -- categories are user-scoped, and
-    the check must not cross user boundaries.
+    The user_id scoping is critical for (1) and (3) -- categories are
+    user-scoped, and the check must not cross user boundaries.
 
-    **The third part was added at plan step ``bank_import:X-gd-2``, and it is
-    about what ``delete_category`` does with the answer.**  A "no" here is what
+    **The merchant-rule part was added at plan step ``bank_import:X-gd-2``, and
+    it is about what ``delete_category`` does with the answer.**  A "no" here is what
     permits a PERMANENT delete, and ``fk_merchant_rules_category_owner``
     cascades -- so a category no template and no transaction used, but that one
     merchant rule filed under, was destroyed together with the rule, under a
@@ -181,9 +228,22 @@ def category_has_usage(category_id: int, user_id: int) -> bool:
     distinct categories, every one of them also used by a template or a
     transaction -- so the path is reachable and has not yet fired.
 
-    **A rule carries a ``user_id`` of its own**, held equal to its account's
-    owner by ``fk_merchant_rules_owner``, so this scopes on the same column the
-    two clauses above do rather than joining through the account.
+    **It is NOT scoped, and that is structural rather than an omission.**  The
+    two clauses beside it filter on ``user_id`` because they must:
+    ``transaction_templates.category_id`` and ``transactions.category_id`` are
+    plain single-column keys, so either can name a category belonging to
+    somebody else and the reader is what stops it.  A rule cannot:
+    ``fk_merchant_rules_category_owner`` is composite over
+    ``(category_id, user_id)`` against ``categories(id, user_id)``, and
+    ``categories.id`` is a primary key -- so a ``category_id`` DETERMINES its
+    owner and a rule naming one necessarily carries that owner's id.  A
+    ``user_id`` term here would restate what the constraint already holds, and
+    no test could make it fire; an adversarial review 2026-08-26 found the case
+    written for it grading a different scenario for exactly that reason.
+
+    **What it deliberately does NOT filter is the ACCOUNT.**  A rule is
+    account-scoped and a category is not, so one owner's rules on two accounts
+    may both file under one category and BOTH are usage.
 
     Args:
         category_id: The Category.id to check.
@@ -204,11 +264,16 @@ def category_has_usage(category_id: int, user_id: int) -> bool:
     if has_templates:
         return True
 
-    # ...then the merchant rules, for the same reason and at the same cost:
-    # a direct user_id column, before the join below is paid for.
+    # ...then the merchant rules, before the join below is paid for.  No
+    # ``user_id`` term: ``fk_merchant_rules_category_owner`` is composite over
+    # ``(category_id, user_id)`` and ``categories.id`` is a primary key, so a
+    # rule naming this category can only be this owner's.  No ``account_id``
+    # term either, and that one IS load-bearing: a category is owner-scoped
+    # while a rule is account-scoped, so two accounts' rules may file under one
+    # category and both are usage.
     has_rules = db.session.query(
         db.session.query(MerchantRule).filter_by(
-            category_id=category_id, user_id=user_id,
+            category_id=category_id,
         ).exists()
     ).scalar()
 

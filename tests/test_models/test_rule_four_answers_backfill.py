@@ -165,8 +165,12 @@ class TestTheUpgradeKeepsEveryBar:
 
         Measured on a clone of the developer's own database, 2026-08-26: of 29
         stored rules exactly ONE is container-less, and it is
-        ``Capital One Credit Card`` -- 9 of the 91 unexplained outflows and
-        `-$7,412.94` of the `-$11,336.36` in that list.  Without this UPDATE
+        ``Capital One Credit Card``, whose 9 unexplained in-calendar outflows
+        come to `-$7,412.94`.  (Ruling **R-GA**'s "9 of the 91... of the
+        `-$11,336.36`" is an OLDER measurement, taken against a 2026-08-19
+        production clone; the denominators moved when this arc recorded 221
+        matches, and quoting them under today's date was a claim nobody
+        re-took.  Found by adversarial review 2026-08-26.)  Without this UPDATE
         that row reads back as *ask me every time*, its
         :class:`~app.services.statement_match._bars.CreationBar` lifts, and the
         screen offers to record those lines as purchases beside the payback
@@ -184,16 +188,29 @@ class TestTheUpgradeKeepsEveryBar:
         assert row.never_a_purchase is True
         assert RuleAnswer.of(row) is RuleAnswer.NEVER
 
-    def test_a_rule_naming_a_CONTAINER_is_left_alone(
+    def test_a_rule_naming_a_CONTAINER_keeps_the_flag_FALSE(
         self, app, db, seed_user, pre_migration_shape,
     ):
         """The firing control: the predicate narrows, it does not sweep.
 
         Without it the case above would be satisfied by an UPDATE with no WHERE
         clause -- which would claim all 29 of the developer's rules are *never
-        a purchase*, silencing 28 answers that name somewhere for money to go.
-        Both container answers, because the predicate has two terms that could
-        each be dropped alone.
+        a purchase*.
+
+        **It asserts the FLAG, and an earlier version of this case asserted the
+        ANSWER, which made it a tautology.** ``RuleAnswer.of`` reads the
+        container columns FIRST and never looks at the flag when one is set, so
+        a template row swept by a WHERE-less UPDATE still reads back
+        ``TEMPLATE`` -- and every one of the predicate's three terms could be
+        deleted with the case still green. Found by adversarial review
+        2026-08-26. The flag is the only thing the statement writes, so the
+        flag is what has to be read.
+
+        **Three terms, one case each**, because the predicate is a conjunction
+        and any one of them dropped is a different sweep: dropping
+        ``template_id IS NULL`` sweeps the template answer, dropping
+        ``envelope_name IS NULL`` or ``category_id IS NULL`` sweeps the
+        new-envelope one.
         """
         envelope = a_transaction(
             seed_user, name="Groceries", is_envelope=True,
@@ -210,6 +227,14 @@ class TestTheUpgradeKeepsEveryBar:
         db.session.execute(text(_REVISION.CLAIM_NEVER_SQL))
         db.session.expire_all()
 
+        flags = {
+            row.merchant_id: row.never_a_purchase
+            for row in db.session.query(MerchantRule).all()
+        }
+        assert flags[by_template] is False
+        assert flags[by_name] is False
+        # ...and the answers they read back as, which is what the flag being
+        # false is FOR.
         kept = {
             row.merchant_id: RuleAnswer.of(row)
             for row in db.session.query(MerchantRule).all()
@@ -246,12 +271,12 @@ class TestTheDowngradeInventsNoBar:
     def test_a_NEVER_rule_SURVIVES_the_downgrade(
         self, app, db, seed_user, pre_migration_shape,
     ):
-        """The firing control: the delete is scoped to the unrepresentable one.
+        """The first firing control: the delete is scoped by the FLAG.
 
-        Without it the case above would be satisfied by a DELETE that swept
-        every container-less rule, which would take the bars with it -- the
-        same loss the upgrade's backfill exists to prevent, arriving on the way
-        back.
+        Without the ``never_a_purchase IS FALSE`` term the case above would be
+        satisfied by a DELETE that swept every container-less rule, which would
+        take the bars with it -- the same loss the upgrade's backfill exists to
+        prevent, arriving on the way back.
         """
         merchant_id = _a_rule(
             db, seed_user, "Capital One Credit Card", never_a_purchase=True,
@@ -264,3 +289,42 @@ class TestTheDowngradeInventsNoBar:
         assert db.session.query(MerchantRule).filter(
             MerchantRule.merchant_id == merchant_id,
         ).one().never_a_purchase is True
+
+    def test_a_rule_naming_a_CONTAINER_survives_the_downgrade(
+        self, app, db, seed_user, pre_migration_shape,
+    ):
+        """The second firing control, and the DESTRUCTIVE statement's own.
+
+        **The upgrade had a container control and the downgrade had none**,
+        which is the asymmetry an adversarial review measured on 2026-08-26:
+        drop the three container terms from ``FORGET_ALWAYS_ASK_SQL`` and it
+        becomes ``DELETE ... WHERE never_a_purchase IS FALSE``, which destroys
+        every TEMPLATE and NEW ENVELOPE rule on the account -- 28 of the
+        developer's 29 -- while both of the cases beside it stay green, because
+        both stage container-LESS rows only.
+
+        The upgrade's worst case writes a wrong flag; this one deletes the row.
+        The more destructive direction had the weaker grading.
+        """
+        envelope = a_transaction(
+            seed_user, name="Groceries", is_envelope=True,
+        )
+        by_template = _a_rule(
+            db, seed_user, "Amazon", template_id=envelope.template_id,
+            never_a_purchase=False,
+        )
+        by_name = _a_rule(
+            db, seed_user, "Lowe's", envelope_name="Home Improvement",
+            category_id=seed_user["categories"]["Groceries"].id,
+            never_a_purchase=False,
+        )
+        db.session.flush()
+
+        db.session.execute(text(_REVISION.FORGET_ALWAYS_ASK_SQL))
+        db.session.expire_all()
+
+        survived = {
+            row.merchant_id for row in db.session.query(MerchantRule).all()
+        }
+        assert by_template in survived
+        assert by_name in survived

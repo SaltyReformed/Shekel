@@ -81,7 +81,7 @@ class PurchaseDestination:  # pylint: disable=too-many-instance-attributes
             is rather than leaving the reviewer to know.
         template_id: The recurring definition this row was generated from, or
             ``None`` for an ad-hoc one.  **It is the row's identity ACROSS pay
-            periods, and that is what a merchant destination rule is keyed
+            periods, and that is what a merchant rule is keyed
             on** (plan step ``bank_import:X-f6a-3d``): a rule cannot name
             ``transaction_id`` -- an envelope belongs to one period, and the 24
             unexplained Amazon lines on the developer's own statement fall in
@@ -150,7 +150,7 @@ def envelope_answer_key(
 #: the ONE definition of it.
 #:
 #: **It lives in the service because the service PRODUCES it**:
-#: :attr:`~._rules.Placement.select_value` answers what a line's control would
+#: :attr:`~._placement.Placement.select_value` answers what a line's control would
 #: be set to, so the value is part of what this package says rather than only
 #: something a schema reads.  ``app.schemas.validation.statements`` imports it
 #: -- the direction that module already takes for

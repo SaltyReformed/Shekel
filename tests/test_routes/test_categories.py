@@ -11,6 +11,8 @@ Tests for category CRUD endpoints:
 
 from decimal import Decimal
 
+import pytest
+
 from app.extensions import db
 from app.models.account import Account
 from app.models.category import Category
@@ -1812,20 +1814,30 @@ class TestACategoryAStandingMERCHANTRULEFilesUnderIsInUse:
             assert response.status_code == 200
             assert db.session.get(Category, category_id) is None
 
-    def test_ANOTHER_owners_rule_does_not_make_it_in_use(
+    def test_a_STRANGERS_rule_cannot_name_this_owners_category_at_all(
         self, app, db, seed_user, seed_second_user,
     ):
-        """The scope clause, which every predicate in this helper carries.
+        """Why the rule clause needs no ``user_id`` term, shown structurally.
 
-        Categories are user-scoped and the check must not cross user
-        boundaries: a stranger's rule naming an id must not make this owner's
-        category undeletable, which would be a stranger holding a door shut.
+        **This case replaced one that graded nothing.** The original staged a
+        stranger's rule naming the STRANGER'S OWN category and then asserted
+        this owner's category was unused -- true whatever the clause said,
+        because no rule anywhere named it. Deleting the clause's ``user_id``
+        filter left it green. Found by adversarial review 2026-08-26.
+
+        What is actually true is stronger than a filter:
+        ``fk_merchant_rules_category_owner`` is composite over
+        ``(category_id, user_id)`` against ``categories(id, user_id)``, and
+        ``categories.id`` is a primary key -- so a rule naming a category
+        DETERMINES its owner, and a stranger's rule naming this owner's
+        category is UNWRITABLE rather than filtered out. That is what the
+        clause rests on, so that is what is graded.
         """
         with app.app_context():
             category = Category(
                 user_id=seed_user["user"].id,
                 group_name="Temp",
-                item_name="Only A Rule Uses This",
+                item_name="Mine",
             )
             db.session.add(category)
             db.session.flush()
@@ -1834,23 +1846,60 @@ class TestACategoryAStandingMERCHANTRULEFilesUnderIsInUse:
             )
             db.session.add(merchant)
             db.session.flush()
-            theirs = Category(
-                user_id=seed_second_user["user"].id,
-                group_name="Temp",
-                item_name="Theirs",
-            )
-            db.session.add(theirs)
-            db.session.flush()
             db.session.add(MerchantRule(
                 user_id=seed_second_user["user"].id,
                 account_id=seed_second_user["account"].id,
                 merchant_id=merchant.id,
                 envelope_name="Theirs",
-                category_id=theirs.id,
+                category_id=category.id,
+                never_a_purchase=False,
+            ))
+
+            with pytest.raises(Exception) as caught:
+                db.session.flush()
+
+            assert "fk_merchant_rules_category_owner" in str(caught.value)
+
+    def test_a_rule_on_ANOTHER_ACCOUNT_of_this_owner_counts(
+        self, app, db, seed_user):
+        """The clause is scoped by neither owner nor ACCOUNT, and the second
+        absence is the load-bearing one.
+
+        A category is owner-scoped and a rule is account-scoped, so one owner's
+        rules on two accounts may file under one category. An account term
+        would answer "unused" for a category the owner's OTHER account's rule
+        is using, and the permanent delete would cascade that rule away -- the
+        exact defect this clause was added to close, reintroduced by narrowing
+        it.
+        """
+        with app.app_context():
+            second = Account(
+                user_id=seed_user["user"].id,
+                name="Second Checking",
+                account_type_id=seed_user["account"].account_type_id,
+            )
+            db.session.add(second)
+            db.session.flush()
+            category = Category(
+                user_id=seed_user["user"].id,
+                group_name="Temp",
+                item_name="Only The Other Account Uses This",
+            )
+            db.session.add(category)
+            db.session.flush()
+            merchant = Merchant(account_id=second.id, name="Public Library")
+            db.session.add(merchant)
+            db.session.flush()
+            db.session.add(MerchantRule(
+                user_id=seed_user["user"].id,
+                account_id=second.id,
+                merchant_id=merchant.id,
+                envelope_name="Library Fines",
+                category_id=category.id,
                 never_a_purchase=False,
             ))
             db.session.commit()
 
             assert category_has_usage(
                 category.id, seed_user["user"].id,
-            ) is False
+            ) is True

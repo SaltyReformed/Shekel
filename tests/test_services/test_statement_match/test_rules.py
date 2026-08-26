@@ -77,8 +77,8 @@ from ._builders import (
     an_import,
 )
 
-# Pylint: protected-access -- the three readers above are this PACKAGE's
-# internals and have no importer outside it, so exporting them from
+# Pylint: protected-access -- the private names imported above are this
+# PACKAGE's internals and have no importer outside it, so exporting them from
 # ``statement_match.__init__`` would be the surface rule 13 forbids; the tests
 # for a module reach into it, which is the same allowance every sibling here
 # takes for ``_candidates`` and ``_propose``.
@@ -97,7 +97,8 @@ from ._builders import (
 _MERCHANT = 4001
 
 
-def _view(*rules, templates=None, categories=frozenset(), stale=None):
+def _view(*rules, templates=None, categories=frozenset(), stale=None,
+          stale_categories=None):
     """Return the rule view these resolvers read, built by hand.
 
     Built here rather than through :meth:`RuleView.build` because these cases
@@ -111,6 +112,7 @@ def _view(*rules, templates=None, categories=frozenset(), stale=None):
         template_names=templates or {},
         active_categories=categories,
         stale_templates=stale or {},
+        stale_categories=stale_categories or {},
     )
 
 
@@ -430,7 +432,12 @@ class TestWhatARuleResolvesTo:
 
 
 class TestStatingAndRestatingARule:
-    """The write door: record, restate, withdraw, and say only what changed."""
+    """The write door: record, restate, and say only what changed.
+
+    **There is no withdrawal** as of ruling **R-GS** (plan step
+    ``bank_import:X-gd-2``): a rule row, once made, is only ever restated, and
+    *ask me every time* is the answer that replaced taking one back.
+    """
 
     def _state(self, db, seed_user, *statements):
         """Run the door for this owner's checking account.
@@ -452,7 +459,7 @@ class TestStatingAndRestatingARule:
             seed_user["user"].id, seed_user["account"].id,
         )
 
-    def test_it_records_each_of_the_three_answers(
+    def test_it_records_each_of_the_four_answers(
         self, app, db, seed_user,
     ):
         """One row per merchant, carrying the columns its answer sets."""
@@ -1931,6 +1938,53 @@ class TestTheFourAnswersRoundTrip:
 
             assert RuleAnswer.of(row) is answer
 
+    def test_every_answer_gets_its_OWN_sentence(self, app, db, seed_user):
+        """The receipt is a fourth place the answer set is enumerated.
+
+        ``_columns_of`` derives the flag and ``_apply_one`` dispatches on three
+        members and falls through to the fourth, so a fifth member added to
+        :class:`RuleAnswer` would be STORED as *ask me every time* and
+        RECEIPTED as it too -- telling the owner they said something they did
+        not.  The round trip above catches the storage half; this catches the
+        sentence, which is the half the owner reads.  Named by adversarial
+        review 2026-08-26.
+
+        Distinct sentences rather than four literals, because what has to hold
+        is that no two answers report the same thing, not what any one of them
+        says.
+        """
+        envelope = a_transaction(
+            seed_user, name="Groceries", is_envelope=True,
+        )
+        category = seed_user["categories"]["Groceries"]
+        fields = {
+            RuleAnswer.TEMPLATE: {"template_id": envelope.template_id},
+            RuleAnswer.NEW_ENVELOPE: {
+                "envelope_name": "Lowe's", "category_id": category.id,
+            },
+            RuleAnswer.NEVER: {},
+            RuleAnswer.ALWAYS_ASK: {},
+        }
+        assert set(fields) == set(RuleAnswer)
+
+        said = []
+        for answer in RuleAnswer:
+            db.session.flush()
+            recorded = state_rules(
+                (a_statement(
+                    seed_user, f"Merchant {answer.value}", answer,
+                    **fields[answer],
+                ),),
+                seed_user["user"].id,
+                seed_user["account"].id,
+            )
+            db.session.flush()
+            assert recorded.refused == ()
+            assert len(recorded.stated) == 1
+            said.append(recorded.stated[0])
+
+        assert len(set(said)) == len(RuleAnswer)
+
     def test_a_field_belonging_to_ANOTHER_answer_is_not_written(
         self, app, db, seed_user,
     ):
@@ -2024,15 +2078,19 @@ class TestTheFlagIsPinnedOnTheContainerAnswers:
         unwritable -- the answer worth `-$7,412.94` on the developer's own
         statement.
         """
-        assert self._row(
-            db, seed_user, never_a_purchase=True,
-        ).never_a_purchase is True
+        # Read BACK from the database in both arms: asserting the attribute on
+        # the instance just constructed re-reads what Python set and would pass
+        # against a column that was never written.  Found by adversarial review
+        # 2026-08-26.
+        barred = self._row(db, seed_user, never_a_purchase=True).id
+        db.session.expire_all()
+        assert db.session.get(MerchantRule, barred).never_a_purchase is True
 
         db.session.rollback()
 
-        assert self._row(
-            db, seed_user, never_a_purchase=False,
-        ).never_a_purchase is False
+        asking = self._row(db, seed_user, never_a_purchase=False).id
+        db.session.expire_all()
+        assert db.session.get(MerchantRule, asking).never_a_purchase is False
 
     def test_a_row_that_STATES_no_flag_is_unwritable(
         self, app, db, seed_user,
@@ -2184,6 +2242,7 @@ class TestTheControlAlwaysCarriesTheAnswerItHOLDS:
             template_names={},
             active_categories=frozenset(),
             stale_templates={},
+            stale_categories={},
         )
 
         section = merchant_section(
@@ -2192,7 +2251,7 @@ class TestTheControlAlwaysCarriesTheAnswerItHOLDS:
         )
 
         assert len(section.merchants) == 1
-        assert section.merchants[0].stale_template_label == (
+        assert section.merchants[0].unofferable.template == (
             "a recurring envelope"
         )
 
@@ -2219,6 +2278,7 @@ class TestTheControlAlwaysCarriesTheAnswerItHOLDS:
             template_names={envelope.template_id: "Groceries"},
             active_categories=frozenset(),
             stale_templates={},
+            stale_categories={},
         )
 
         section = merchant_section(
@@ -2226,4 +2286,4 @@ class TestTheControlAlwaysCarriesTheAnswerItHOLDS:
             CreationBars(never=frozenset(), account_payments=frozenset()),
         )
 
-        assert section.merchants[0].stale_template_label is None
+        assert section.merchants[0].unofferable.template is None

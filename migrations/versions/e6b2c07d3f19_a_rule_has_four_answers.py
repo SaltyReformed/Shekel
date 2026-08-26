@@ -30,14 +30,22 @@ Before it, a rule with all three container columns NULL means *never a
 purchase* -- the answer that bars a bank line from ever becoming a purchase.
 After it, that same shape means *ask me every time* unless the flag says
 otherwise.  So every existing container-less row must be set ``TRUE``, and a
-run that skipped it would silently lift a bar the owner had set.  Measured on a
-clone of the developer's own database, 2026-08-26: **29 rules, of which 16 name
-a template, 12 name a new envelope, and exactly ONE is container-less** --
-``Capital One Credit Card``, which is 9 of the 91 unexplained outflows on the
-developer's own statement and `-$7,412.94` of the `-$11,336.36` in that list.
-Production carries neither this table nor a single bank line (checked
-2026-08-26: ``budget.merchant_rules`` and ``budget.merchants`` both absent, prod
-at ``a4c6f1d92b73``), so there the backfill selects nothing.
+run that skipped it would silently lift a bar the owner had set.
+
+**Measured on a clone of the developer's own database, 2026-08-26: 29 rules, of
+which 16 name a template, 12 name a new envelope, and exactly ONE is
+container-less** -- ``Capital One Credit Card``, whose 9 unexplained in-calendar
+outflows come to `-$7,412.94`.  (Ruling **R-GA**'s "9 of the 91 unexplained
+outflows... `-$11,336.36`" is a DIFFERENT measurement, taken against a
+2026-08-19 production clone before this arc recorded 221 matches; an adversarial
+review 2026-08-26 caught it being carried into this one's date as though the
+denominators had been re-taken.  They had not.)
+
+**Production runs the whole chain on its next deploy** -- it is stamped
+``a4c6f1d92b73``, so ``b7c3d9e41a06`` creates this table and ``d4a1f8b0c25e``
+renames it before this revision executes.  The table will therefore EXIST and
+be EMPTY here, and the backfill selects nothing because there are no rows, not
+because there is no table.
 
 ``statement_matches`` needs no equivalent judgement: no rule can have performed
 an act before the door that applies one exists, so ``FALSE`` is not a default
@@ -140,8 +148,13 @@ def upgrade():
         ),
         schema='budget',
     )
-    # BEFORE the CHECK is replaced, because until this runs the container-less
-    # rows carry FALSE and mean something the owner never said.
+    # **The order is not load-bearing and an earlier comment here claimed it
+    # was.**  ``migrations/env.py`` wraps the whole upgrade in ONE transaction
+    # (no ``transaction_per_migration``), so no intermediate state is
+    # observable, and the new CHECK's container-less arm admits either value of
+    # the flag -- so neither ordering can be refused.  What matters is only
+    # that this runs AT ALL.  It is written first because it reads the OLD
+    # schema's meaning, which is the order the docstring above explains it in.
     op.execute(CLAIM_NEVER_SQL)
     op.drop_constraint(
         'ck_merchant_rules_one_answer', 'merchant_rules',

@@ -262,11 +262,11 @@ class CreationBars:
         **Total over ``None`` without a branch for it**, and an adversarial
         review 2026-08-24 is why there is no branch: a first version opened
         with ``if merchant is None: return None``, which no mutation could ever
-        reach.  None of the three sets can hold ``NULL`` --
+        reach.  Neither of the two sets can hold ``NULL`` --
         :func:`~._vocabulary.account_payment_merchants` filters
-        ``merchant_id.isnot(None)``, and the other two are keyed on
+        ``merchant_id.isnot(None)``, and the other is keyed on
         ``merchant_rules.merchant_id``, which is ``NOT NULL`` -- so
-        ``None`` is absent from all three and falls through
+        ``None`` is absent from both and falls through
         to the same answer the branch gave.  Two guards for one fact meant
         neither could fail while the other stood, and the case written to grade
         it asserted ``None is None``.  The surviving guard is the QUERY's,
@@ -292,9 +292,11 @@ class CreationBars:
             is what an adversarial review 2026-08-24 measured as the step's own
             hole: the answer that lifted it was ``a new envelope``, which is
             the answer the developer had saved for Capital One and the one that
-            booked `$7,412.94` through the sweep.  :func:`~._rules.
-            state_rules` refuses that answer outright for such a merchant
-            now, so a stored one cannot sit inert either.
+            booked `$7,412.94` through the sweep.  :func:`~._stating.
+            state_rules` refuses EVERY answer but *never a purchase* for such
+            a merchant now (plan step ``bank_import:X-gd-2``), so a stored one
+            cannot sit inert and a stated one cannot be traded away for *ask
+            me every time* either.
         """
         if merchant_id in self.never:
             return CreationBar.NEVER_A_PURCHASE
@@ -308,7 +310,7 @@ class CreationBars:
         **The RULE door's question, and the control's** -- not the line's,
         which asks :meth:`bar_for` instead.  The door refuses an answer that
         would file such a merchant's money as spending
-        (:func:`~._rules.state_rules`), and the control says why before the
+        (:func:`~._stating.state_rules`), and the control says why before the
         answer is attempted, so the refusal is not the first the owner hears of
         it.
 
