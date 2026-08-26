@@ -73,7 +73,7 @@ if TYPE_CHECKING:
     # never builds a plan and never resolves a loan), so they carry NO runtime edge
     # back -- the sibling cycle a runtime import would close (finding N-25) stays
     # open.
-    from ._plan import PlannedPayment
+    from ._plan import LoanForwardPlan
     from ._resolution import ResolvedLoan
 
 # What a memo cache's derivation yields.  The three seam-FILLED caches
@@ -180,7 +180,7 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
     loans: "dict[int, ResolvedLoan | None]" = field(
         default_factory=dict, repr=False, compare=False,
     )
-    plans: "dict[int, list[PlannedPayment]]" = field(
+    plans: "dict[int, LoanForwardPlan]" = field(
         default_factory=dict, repr=False, compare=False,
     )
     payoffs: "dict[int, date | None]" = field(

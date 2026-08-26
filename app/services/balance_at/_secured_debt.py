@@ -245,8 +245,8 @@ def _debt_span_upper(
         return max(figures.payoff_date, ctx.as_of)
     if figures.is_retired:
         return ctx.as_of
-    plan = memoized_plan(loan, ctx)
-    if not plan:
+    payments = memoized_plan(loan, ctx).payments
+    if not payments:
         # Reachable, and not a degenerate: a loan whose whole TERM has already
         # matured while it still owes (a balloon, or a long-delinquent loan).
         # Every contractual installment is in the past, and so is the ESTIMATED
@@ -255,7 +255,7 @@ def _debt_span_upper(
         # ``term_months > 0`` are DB check constraints, so an EMPTY contractual
         # schedule is not the case being handled here.)
         return ctx.as_of
-    return max(max(payment.due_date for payment in plan), ctx.as_of)
+    return max(max(payment.due_date for payment in payments), ctx.as_of)
 
 
 def _sample_date_for(month_first: date, as_of: date) -> date:

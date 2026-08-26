@@ -21,10 +21,10 @@ from app.models.loan_features import RateHistory
 from app.services import loan_loaders, transfer_service
 from app.services.balance_at._plan import (
     _PAYOFF_EXTENSION_MONTHS,
-    fold_forward,
     loan_plan,
     memoized_plan,
 )
+from app.services.balance_at._plan_fold import fold_forward
 from app.services.balance_at._resolution import (
     contractual_schedule_from_origination,
 )
@@ -79,6 +79,7 @@ def test_a_loan_with_no_recurring_payment_is_all_estimated_future_installments(
     account, ctx = _configured_loan(seed_user, db)
 
     plan = loan_plan(account, ctx)
+    payments = plan.payments
 
     # The contractual schedule the ESTIMATED tier draws from, for cross-checking.
     contractual = contractual_schedule_from_origination(
@@ -87,11 +88,11 @@ def test_a_loan_with_no_recurring_payment_is_all_estimated_future_installments(
     future_rows = [row for row in contractual if row.payment_date >= _AS_OF]
 
     # Every plan entry is ESTIMATED (no records exist).
-    assert plan, "a configured loan must project a forward plan"
-    assert all(payment.is_estimated for payment in plan)
+    assert payments, "a configured loan must project a forward plan"
+    assert all(payment.is_estimated for payment in payments)
 
     # The plan splits into the future CONTRACTUAL installments then the EXTENSION.
-    plan_due = [p.due_date for p in plan]
+    plan_due = [p.due_date for p in payments]
     contractual_due = plan_due[:len(future_rows)]
     extension_due = plan_due[len(future_rows):]
 
@@ -109,15 +110,18 @@ def test_a_loan_with_no_recurring_payment_is_all_estimated_future_installments(
     # The extension pays the level P&I -- equal to a NON-last contractual
     # installment's payment (05-01 here; no standing extra) -- not the reduced
     # absorbed amount of the final contractual row.
-    first_extension = plan[len(future_rows)]
+    first_extension = payments[len(future_rows)]
     assert first_extension.cash == future_rows[0].payment
-    assert first_extension.escrow == Decimal("0.00")
     # The CONTRACTUAL ESTIMATED cash is the contractual P&I, escrow-free; the
     # effective date is the due date (all future, so the as_of + 1d clamp is a no-op).
-    for payment, row in zip(plan, future_rows):
+    for payment, row in zip(payments, future_rows):
         assert payment.cash == row.payment
-        assert payment.escrow == Decimal("0.00")
         assert payment.effective_date == payment.due_date
+    # The escrow is the ACCRUAL's since plan step R16-a: a month impounds it, not
+    # a payment.  This loan escrows nothing, and there is exactly one charge per
+    # period the payments occupy.
+    assert all(charge.escrow == Decimal("0.00") for charge in plan.charges)
+    assert [charge.on_date for charge in plan.charges] == plan_due
 
 
 def test_missed_installments_with_no_record_do_not_pay_the_loan_down(seed_user, db):
@@ -143,7 +147,7 @@ def test_missed_installments_with_no_record_do_not_pay_the_loan_down(seed_user, 
     assert folded[date(2026, 5, 1)] < _PRINCIPAL
     # Concretely: interest = round(12000 * 0.06 / 12) = 60.00; principal =
     # contractual P&I - 60.00.
-    first = plan[0]
+    first = plan.payments[0]
     expected = _PRINCIPAL - (first.cash - Decimal("60.00"))
     assert folded[date(2026, 5, 1)] == expected
 
@@ -188,10 +192,10 @@ def test_a_projected_record_makes_its_slot_planned_not_estimated(
 
     plan = loan_plan(account, ctx)
 
-    by_due = {payment.due_date: payment for payment in plan}
+    by_due = {payment.due_date: payment for payment in plan.payments}
     # The 2026-06 slot is folded exactly once, as a PLANNED record at its cash --
     # never doubled by an ESTIMATED synthesis (the de-dup).
-    assert [p.due_date for p in plan].count(date(2026, 6, 1)) == 1
+    assert [p.due_date for p in plan.payments].count(date(2026, 6, 1)) == 1
     june = by_due[date(2026, 6, 1)]
     assert june.is_estimated is False
     assert june.cash == Decimal("2100.00")
@@ -216,7 +220,7 @@ def test_a_planned_record_keys_its_rate_and_escrow_on_the_due_date(
       * PERIOD-START keying (the N-34 defect): 0.06 and 100.00.
 
     This is not cosmetic on the forward side.  The escrow figure is what
-    :func:`app.services.balance_at._plan.fold_forward` subtracts from the record's
+    :func:`app.services.balance_at._plan_fold.fold_forward` subtracts from the record's
     cash, and the cash itself is now built on the DUE date's escrow
     (``loan_payment_service._shadow_live_amount``); if the two ends key on
     different dates, the difference lands silently in PROJECTED principal and
@@ -257,10 +261,106 @@ def test_a_planned_record_keys_its_rate_and_escrow_on_the_due_date(
     ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)
     plan = loan_plan(account, ctx)
 
-    june = {payment.due_date: payment for payment in plan}[date(2026, 6, 1)]
+    june = {p.due_date: p for p in plan.payments}[date(2026, 6, 1)]
     assert june.is_estimated is False
-    assert june.annual_rate == Decimal("0.12")
-    assert june.escrow == Decimal("500.00")
+    # The rate and the escrow are the ACCRUAL's since plan step R16-a, and its
+    # date is the period's earliest due -- the INSTALLMENT, which is what this
+    # control measures.  Both mutations die here and they die differently: a
+    # charge DATED on the pay-period start KeyErrors this lookup, and one dated
+    # right but RESOLVED on the period start reads 0.06 / 100.00 against the two
+    # asserts below.
+    june_charge = {
+        charge.on_date: charge for charge in plan.charges
+    }[date(2026, 6, 1)]
+    assert june_charge.annual_rate == Decimal("0.12")
+    assert june_charge.escrow == Decimal("500.00")
+
+
+def test_two_payments_in_one_month_produce_ONE_charge_at_the_EARLIEST(
+    seed_user, db, seed_periods,
+):
+    """The firing control for :func:`app.services.balance_at._plan._charges_for`.
+
+    **The producer half of plan step R16-a had NO test until an adversarial
+    review mutated it and the suite stayed green.**  Replacing ``_charges_for``
+    with the pre-R16-a rule -- one charge per PAYMENT -- left 5,427 tests
+    passing, because every plan any other test builds through the real producer
+    holds exactly one payment per slot, where "one charge per slot" and "one
+    charge per payment" are indistinguishable.  The two ``_plan()`` helpers that
+    DO build multi-payment plans state their charges by hand, so they grade the
+    FOLD and can never reach the builder.  This test builds the multi-payment
+    month through ``loan_plan`` itself.
+
+    Two projected payments land in June 2026 -- the 2026-06-01 installment and an
+    extra on 2026-06-20 -- and the month must yield exactly ONE charge.
+
+    **Its date is the EARLIEST of the two, and a rate and an escrow version
+    effective BETWEEN them are what make that a firing assertion rather than a
+    coincidence.**  Dated at the earliest the charge reads 6% / $100.00; dated at
+    the latest it reads 12% / $500.00, which is the same wrong-date defect N-34
+    names one function over, reached through the charge instead of the payment.
+    """
+    account = create_loan_account(
+        seed_user, db.session,
+        principal=_PRINCIPAL, rate=_RATE, term=_TERM,
+        origination_date=_ORIGINATION, payment_day=1,
+    )
+    escrow = add_escrow_line(
+        db.session, account.id, "Tax", Decimal("1200.00"),
+        effective_date=_ORIGINATION,
+    )
+    # Effective strictly BETWEEN the month's two payments, so the two candidate
+    # charge dates resolve to different figures.
+    db.session.add(EscrowComponentVersion(
+        line_id=escrow.line_id,
+        effective_date=date(2026, 6, 10),
+        annual_amount=Decimal("6000.00"),
+    ))
+    db.session.add(RateHistory(
+        account_id=account.id, effective_date=date(2026, 6, 10),
+        interest_rate=Decimal("0.12"),
+    ))
+    _project_loan_payment(
+        seed_user, db, account, seed_periods[9],
+        amount=Decimal("2100.00"), due_date=date(2026, 6, 1),
+    )
+    _project_loan_payment(
+        seed_user, db, account, seed_periods[9],
+        amount=Decimal("500.00"), due_date=date(2026, 6, 20),
+    )
+
+    ctx = BalanceContext.build(seed_user["user"].id, _AS_OF)
+    plan = loan_plan(account, ctx)
+
+    june_payments = [
+        payment for payment in plan.payments
+        if (payment.due_date.year, payment.due_date.month) == (2026, 6)
+    ]
+    assert sorted(p.due_date for p in june_payments) == [
+        date(2026, 6, 1), date(2026, 6, 20),
+    ], "precondition: both payments must reach the plan"
+
+    june_charges = [
+        charge for charge in plan.charges
+        if (charge.on_date.year, charge.on_date.month) == (2026, 6)
+    ]
+    assert len(june_charges) == 1, (
+        "a month charges ONCE however many payments fall in it -- one charge "
+        "per PAYMENT is the pre-R16-a rule this test exists to refuse"
+    )
+    charge = june_charges[0]
+    assert charge.on_date == date(2026, 6, 1), "dated at the EARLIEST due"
+    # Resolved AT that date: the versions effective 06-10 govern neither.
+    assert charge.annual_rate == _RATE
+    assert charge.escrow == Decimal("100.00")     # 1,200.00 a year
+
+    # And the whole plan holds one charge per occupied month, no more.
+    occupied = {
+        (payment.due_date.year, payment.due_date.month)
+        for payment in plan.payments
+    }
+    assert len(plan.charges) == len(occupied)
+    assert len({charge.on_date for charge in plan.charges}) == len(plan.charges)
 
 
 def test_an_early_settled_payment_is_not_re_synthesized_as_estimated(
@@ -303,12 +403,15 @@ def test_an_early_settled_payment_is_not_re_synthesized_as_estimated(
     ctx = BalanceContext.build(seed_user["user"].id, _EARLY_SETTLE_AS_OF)
     plan = loan_plan(account, ctx)
 
-    dues = [payment.due_date for payment in plan]
+    dues = [payment.due_date for payment in plan.payments]
     # The June installment is in the seed already, so it is NOT re-synthesized.
     assert date(2026, 6, 1) not in dues
     # The genuinely-uncovered July installment still is (ESTIMATED).
     assert date(2026, 7, 1) in dues
-    assert all(payment.is_estimated for payment in plan)
+    assert all(payment.is_estimated for payment in plan.payments)
+    # And no June CHARGE either: a period the plan does not pay in charges
+    # nothing, so the seed's own accrual is never counted twice.
+    assert date(2026, 6, 1) not in [c.on_date for c in plan.charges]
 
 
 # ── D-ctx-b: the plan memo is a PUBLIC pass-through cache the seam fills ──────
@@ -337,7 +440,7 @@ def test_the_plan_is_built_once_per_read_pass(seed_user, db):
     assert not ctx.plans, "the cache starts empty"
 
     first = memoized_plan(account, ctx)
-    assert first, "precondition: this loan has a non-empty forward plan"
+    assert first.payments, "precondition: this loan has a non-empty forward plan"
 
     # The slot the seam's funnel filled -- keyed on the account id alone now the
     # builder is no longer injected (plan step D-ctx-b).
