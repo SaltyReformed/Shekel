@@ -91,18 +91,29 @@ def calendar_for(user_id: int) -> PayCalendar:
 
     Raises:
         PayCalendarError: The owner has paydays and no resolvable cadence --
-            reachable here only if a concurrent truncate lands between the two
-            reads below -- or the rows cannot define a calendar, which for a
-            duplicate payday ``uq_pay_periods_user_start`` already prevents.
+            reachable here only inside a COMMAND, and only if a concurrent
+            truncate lands between the two reads below (see the comment there)
+            -- or the rows cannot define a calendar, which for a duplicate
+            payday ``uq_pay_periods_user_start`` already prevents.
     """
     # The CADENCE is read first, deliberately, and the nesting is what orders
     # the two reads: Python evaluates this argument before the call it feeds.
-    # Both reads are separate snapshots under READ COMMITTED, so a concurrent
-    # truncate can land between them; in this order the loser sees a cadence
-    # and fewer paydays, which derives a shorter calendar, while the other
-    # order sees paydays and no cadence, which REFUSES.  Narrowing toward the
-    # answerable state is the right way to lose a race a lock would otherwise
-    # have to prevent.
+    #
+    # **Whether the two reads can differ at all now depends on WHO is asking**
+    # (plan step balance:X-i3, ruling R-GU).  Inside a QUERY -- every render,
+    # which is where the calendar is read most -- the request's transaction is
+    # one ``REPEATABLE READ`` snapshot, so both reads see one state of the
+    # database and no interleaving is expressible.  Inside a COMMAND they are
+    # still separate snapshots: the write doors reach here through
+    # ``_posting_reconcile.filing_calendar_for`` and through generation, and a
+    # CLI script or a deploy reconcile has no mode at all.
+    #
+    # So the order below still decides who loses the race, and only a command
+    # can now lose it: in this order the loser sees a cadence and fewer
+    # paydays, which derives a shorter calendar, while the other order sees
+    # paydays and no cadence, which REFUSES.  Narrowing toward the answerable
+    # state is the right way to lose a race a lock would otherwise have to
+    # prevent.
     return calendar_at_cadence(
         user_id, pay_schedule_service.resolve_cadence(user_id),
     )
