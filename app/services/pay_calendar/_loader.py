@@ -33,9 +33,13 @@ depend on the calendar, never the reverse.
 
 **And why it reads only ``start_date``.**  The payday is the sole fact in the
 row (``docs/plans/implementation_plan_pay_calendar.md`` section 1); ``end_date``
-and ``period_index`` are derived here from it.  So this query is already written
-against the schema plan step C4 leaves behind -- C4 drops both columns and does
-not touch this module.
+and ``period_index`` are derived here from it.  So the query is already written
+against the schema plan step C4 leaves behind: C4 drops both columns and this
+module needs no edit for it.  *It said C4 "does not touch this module" until
+C4's FIRST commit, which ADDED :func:`calendar_at_cadence` here -- not because the
+drop reached the query, but because the rolling top-up needed this read without
+the cadence read in front of it.  The claim about the COLUMNS still holds; the
+claim about the FILE did not.*
 
 The cadence comes from ``pay_schedule_service.resolve_cadence`` rather than from
 a second query of ``budget.pay_schedule``, because that function carries the
@@ -91,13 +95,60 @@ def calendar_for(user_id: int) -> PayCalendar:
             reads below -- or the rows cannot define a calendar, which for a
             duplicate payday ``uq_pay_periods_user_start`` already prevents.
     """
-    # The CADENCE is read first, deliberately.  Both reads are separate
-    # snapshots under READ COMMITTED, so a concurrent truncate can land between
-    # them; in this order the loser sees a cadence and fewer paydays, which
-    # derives a shorter calendar, while the other order sees paydays and no
-    # cadence, which REFUSES.  Narrowing toward the answerable state is the
-    # right way to lose a race a lock would otherwise have to prevent.
-    cadence_days = pay_schedule_service.resolve_cadence(user_id)
+    # The CADENCE is read first, deliberately, and the nesting is what orders
+    # the two reads: Python evaluates this argument before the call it feeds.
+    # Both reads are separate snapshots under READ COMMITTED, so a concurrent
+    # truncate can land between them; in this order the loser sees a cadence
+    # and fewer paydays, which derives a shorter calendar, while the other
+    # order sees paydays and no cadence, which REFUSES.  Narrowing toward the
+    # answerable state is the right way to lose a race a lock would otherwise
+    # have to prevent.
+    return calendar_at_cadence(
+        user_id, pay_schedule_service.resolve_cadence(user_id),
+    )
+
+
+def calendar_at_cadence(
+    user_id: int, cadence_days: "int | None",
+) -> PayCalendar:
+    """Return *user_id*'s pay calendar at a cadence the CALLER already holds.
+
+    Plan step **C4**.  :func:`calendar_for`'s body, minus the read that
+    resolves the cadence -- for a caller that has the owner's
+    ``budget.pay_schedule`` row in hand and would otherwise pay for a second
+    read of it.
+
+    **One caller today and it is not a convenience** (finding **P70**):
+    ``pay_period_admin._future_period_count`` counts the owner's remaining
+    paychecks on the rolling top-up, which ``/grid`` and ``/dashboard`` run
+    BEFORE they open their read pass -- deliberately, so that pass sees the
+    rows the top-up creates.  So it can neither take a calendar off a pass nor
+    call :func:`calendar_for` without re-reading a schedule row it has already
+    read, and a redundant per-render schedule query is the defect ledger rows
+    **P68** and **P69** record.  This door lets it pay for exactly the one
+    query the ``COUNT(*)`` it replaced cost.
+
+    **The payday read lives HERE rather than at that caller**, which is this
+    module's whole reason for existing: it is the one place in the package that
+    holds a session, so a second ``budget.pay_periods`` query written for a
+    caller's convenience would be a second answer to "what are this owner's
+    paydays" outside the boundary that makes the rest of the package pure.
+
+    Args:
+        user_id: The owning user.
+        cadence_days: Days between paydays, as the caller already resolved it.
+            ``None`` is legal ONLY for an owner with no paydays, which is the
+            pairing :func:`~._derive.derive_periods` enforces; a caller holding
+            a schedule row never has one.
+
+    Returns:
+        The frozen :class:`~._calendar.PayCalendar` over the owner's COMPLETE
+        payday set -- :func:`calendar_for`'s own guarantee, for its reasons.
+
+    Raises:
+        PayCalendarError: The owner has paydays and *cadence_days* is ``None``,
+            or the rows cannot define a calendar.
+    """
     paydays = (
         db.session.query(PayPeriod.id, PayPeriod.start_date)
         .filter(PayPeriod.user_id == user_id)

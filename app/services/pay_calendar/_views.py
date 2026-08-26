@@ -1,4 +1,4 @@
-"""How a pay calendar is CUT into views: the five producers of a window.
+"""How a pay calendar is CUT into views: the six producers of a window.
 
 Plan step **C2-f3b**, and it left :mod:`._calendar` for the reason
 :mod:`._searches` did at plan step C2-c -- that module had ONE line of headroom
@@ -31,11 +31,15 @@ enforces -- ``cadence_days`` is ``None`` only beside an empty payday set, which
 PRECONDITION here, because a free function cannot see the constructor that
 holds it.  :func:`axis_window` states it where it reads the value.
 
-**Four of the five cannot produce a gapped window and the fifth can**, which is
+**Five of the six cannot produce a gapped window and the sixth can**, which is
 :class:`~._window.PeriodWindow`'s own contiguity refusal restated from the
 producing end: :func:`index_window`, :func:`overlapping_window`,
-:func:`axis_window` and :func:`projection_axis_window` SLICE a tiling, and a
-slice of a tiling tiles; :func:`saved_window` FILTERS it, and a filter does not.
+:func:`current_and_future_window`, :func:`axis_window` and
+:func:`projection_axis_window` SLICE a tiling, and a slice of a tiling tiles;
+:func:`saved_window` FILTERS it, and a filter does not.
+*The count read "four of the five" until C4's first commit added the sixth, which
+is the shape a stated size has: it is a derived value stored in prose, so it is
+restated rather than left to a reader to recount.*
 
 Boundary discipline (``CLAUDE.md``): no Flask symbol, no database session, no
 clock.  Every answer is a pure function of the arguments a caller supplies.
@@ -165,6 +169,50 @@ def overlapping_window(
             period for period in periods
             if period.start_date <= last_day and period.end_date >= first_day
         ),
+    )
+
+
+def current_and_future_window(
+    periods: "tuple[DerivedPeriod, ...]", day: date,
+) -> PeriodWindow:
+    """Return every period of *periods* that has not ENDED before *day*.
+
+    "The paychecks this owner has left", counting the one they are IN: a period
+    qualifies when its ``end_date`` falls on or after *day*.  The rolling
+    top-up's target is compared against this count -- "keep N ahead" counts the
+    current period as one of the N -- and plan step **C4** moved the question
+    here from a ``PayPeriod.end_date >= as_of`` predicate written in SQL
+    (finding **P70**), so "a period ends the day before the next payday" is
+    stated in :func:`~._derive.derive_periods` and nowhere else.
+
+    **A SLICE of the tiling, so the result tiles**, exactly as
+    :func:`index_window` and :func:`overlapping_window` do rather than as
+    :func:`saved_window` does: the qualifying periods are a SUFFIX, because
+    derived ends ascend with the paydays they are derived from, and a suffix of
+    a tiling cannot carry the hole :class:`~._window.PeriodWindow` refuses.
+
+    **It ANSWERS an empty window where :func:`overlapping_window` would
+    REFUSE, and that difference is the whole reason it is its own producer.**
+    Asking that one for ``[day, horizon()]`` is the same question -- every
+    saved period starts on or before the horizon, so overlapping that range is
+    exactly "ends on or after *day*" -- but it is the wrong door: a *day* past
+    the horizon CROSSES those bounds, and a crossed range is a caller defect
+    there because an empty result and a crossed one are indistinguishable in
+    ITS answer.  Here they are not.  "Every paycheck has already ended" is an
+    ordinary state, and it is precisely the one the rolling top-up exists to
+    repair, so it is answered rather than raised.
+
+    Args:
+        periods: The calendar's periods, ``start_date`` ascending.
+        day: The first day the window covers, inclusive.
+
+    Returns:
+        The periods whose ``end_date`` is on or after *day*, as a
+        :class:`~._window.PeriodWindow`.  Empty when every period has ended
+        before *day*, and for a calendar holding no payday at all.
+    """
+    return PeriodWindow(
+        periods=tuple(period for period in periods if period.end_date >= day),
     )
 
 

@@ -79,7 +79,7 @@ companion's default period read the clock, so a BEFORE captured yesterday and
 an AFTER captured today differ by the calendar rather than by the change.
 
 **AND RUN BOTH SIDES ON THE SAME DATA.**  Nothing here writes, but a sibling
-probe can: ``GET /grid`` calls ``pay_period_admin.top_up_rolling_window`` and
+probe can: ``GET /grid`` calls ``pay_period_rolling.top_up_rolling_window`` and
 COMMITS, so any harness that drives the real route creates a pay period on the
 clone the first time it runs.  Capturing a BEFORE, driving ``/grid``, then
 capturing an AFTER diffs 61 paydays against 62 and reports a change this leaf

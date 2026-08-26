@@ -33,13 +33,18 @@ class PeriodWindow:
     both accepted an arbitrary list, so deriving over a six-period grid window
     gave that window's last period a cadence-projected end while the same
     period ended a day earlier everywhere else.  **In ``app/``** a window is
-    only ever produced by :meth:`~._calendar.PayCalendar.saved`,
+    only ever produced by one of :class:`~._calendar.PayCalendar`'s own view
+    methods -- :meth:`~._calendar.PayCalendar.saved`,
     :meth:`~._calendar.PayCalendar.window`,
-    :meth:`~._calendar.PayCalendar.overlapping` or
-    :meth:`~._calendar.PayCalendar.axis`, each of which views a calendar that
-    was built from a complete payday set.  The scope is stated because the
-    TEST suite constructs one directly, which is the only way the refusal
-    below can be shown firing at all.
+    :meth:`~._calendar.PayCalendar.overlapping`,
+    :meth:`~._calendar.PayCalendar.current_and_future`,
+    :meth:`~._calendar.PayCalendar.axis` and
+    :meth:`~._calendar.PayCalendar.projection_axis` -- each of which views a
+    calendar that was built from a complete payday set.  *This list is a
+    derived value stored in prose: it named four until plan step C4's first
+    commit added the fifth, and had never named ``projection_axis`` at all.*
+    The scope is stated because the TEST suite constructs one directly, which
+    is the only way the refusal below can be shown firing at all.
 
     **What this type guarantees, and the claim it does NOT make** (ledger row
     **P24**).  An earlier draft said a window "cannot be derived FROM", and
@@ -69,12 +74,14 @@ class PeriodWindow:
       the step.  ``cash_period_view``'s contract used to PERMIT it in as many
       words ("they need not be contiguous"), which is row **P32**.
 
-      **Three of the four views cannot produce one and the fourth can, and an
-      earlier draft of this paragraph said all four could not.**
-      :meth:`~._calendar.PayCalendar.window`,
-      :meth:`~._calendar.PayCalendar.overlapping` and
-      :meth:`~._calendar.PayCalendar.axis` SLICE a tiling, and a slice of a
-      tiling tiles.  :meth:`~._calendar.PayCalendar.saved` FILTERS it, and a
+      **Five of the six views cannot produce one and the sixth can, and an
+      earlier draft of this paragraph said all four of the four it then knew
+      could not.**  :meth:`~._calendar.PayCalendar.window`,
+      :meth:`~._calendar.PayCalendar.overlapping`,
+      :meth:`~._calendar.PayCalendar.current_and_future`,
+      :meth:`~._calendar.PayCalendar.axis` and
+      :meth:`~._calendar.PayCalendar.projection_axis` SLICE a tiling, and a
+      slice of a tiling tiles.  :meth:`~._calendar.PayCalendar.saved` FILTERS it, and a
       filter does not: an UNSAVED candidate payday between two saved ones
       leaves exactly this hole, which is why that method documents the refusal
       as one of its own outcomes.  No such calendar exists today --

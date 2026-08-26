@@ -674,9 +674,10 @@ class TestTheDestructiveDoorsHoldNoDerivedColumn:
     Each of the four doors reads the owner's schedule through ``calendar_for``
     and decides in ``DerivedPeriod`` values, so ``end_date`` and
     ``period_index`` -- the two columns plan step **C4** drops -- are read
-    nowhere in this module or in the settings page's period list.  ONE reader
-    survives and is named: ``_future_period_count``, on the rolling top-up,
-    which finding **P70** carries.
+    nowhere in this module or in the settings page's period list.  **The one
+    reader that survived C2-f3b, ``_future_period_count`` on the rolling
+    top-up, went at C4's first commit**, so the census below asserts the EMPTY
+    set for both files (finding **P70**).
 
     **Two adversarial reviews of this step measured the FIRST cut of this class
     passing on the defect it names**, and the rewrite is theirs.  That predicate
@@ -751,11 +752,40 @@ class TestTheDestructiveDoorsHoldNoDerivedColumn:
                 )
         return names
 
-    def test_the_admin_module_reads_one_dropped_column_in_one_named_place(self):
-        """``_future_period_count`` is the only survivor, and it is finding P70."""
-        assert self._column_reads("app/services/pay_period_admin.py") == {
-            ("_future_period_count", "end_date", "PayPeriod"),
-        }
+    @pytest.mark.parametrize("module", [
+        "app/services/pay_period_admin.py",
+        "app/services/pay_period_rolling.py",
+    ])
+    def test_the_schedule_doors_read_no_dropped_column_anywhere(self, module):
+        """Neither module names either column, in any scope, on any receiver.
+
+        **Both, because plan step C4 SPLIT them** (finding **P31**): the
+        rolling top-up moved to ``pay_period_rolling`` and it is the door that
+        held the last read, so a census scoped to the file it used to live in
+        would be green about a module the read had simply left.
+
+        **The last survivor went at plan step C4** (finding **P70**):
+        ``_future_period_count`` counted ``PayPeriod.end_date >= as_of`` in SQL
+        and now derives the calendar from the owner's paydays and asks
+        :meth:`~app.services.pay_calendar.PayCalendar.current_and_future`.
+        **Not ``overlapping``**, which is the same question with its bounds
+        written out and which REFUSES them past the horizon -- the distinction
+        the new producer exists for, and one an earlier draft of this docstring
+        got backwards.
+
+        The empty set is a STRONGER claim than the one-element set this
+        replaced, and it is the strongest this census can make: the predicate
+        matches an attribute NAME on any receiver in any scope, so it cannot
+        tell an ORM read from a ``DerivedPeriod`` one -- which means a module
+        that reads neither name is a module no future edit can quietly regrow
+        either read in.  Counting through a window rather than comparing ends
+        here is what buys that, and it is why the replacement does not simply
+        filter on ``period.end_date``.
+
+        Args:
+            module: The file to census, relative to the repository root.
+        """
+        assert self._column_reads(module) == set()
 
     def test_the_settings_period_list_reads_none(self):
         """The page that RENDERS the schedule reads neither column."""

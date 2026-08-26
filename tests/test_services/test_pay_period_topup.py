@@ -28,11 +28,12 @@ import pytest
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services import (
-    pay_period_admin,
+    pay_period_rolling,
     pay_period_write,
     pay_schedule_service,
     period_population,
 )
+from app.services.pay_calendar import calendar_for
 from scripts.integrity_check import (
     check_balance_anomalies,
     check_referential_integrity,
@@ -43,6 +44,7 @@ from tests._test_helpers import (
     capture_sql_statements,
     freeze_today,
     make_expense_template,
+    open_calendar_hole,
     seam_cash_balance_at,
     took_advisory_lock,
 )
@@ -114,7 +116,7 @@ class TestTopUpFastPaths:
             _future_periods(db.session, seed_user, count=3)
             before = _count_periods(db.session, seed_user["user"].id)
             result, statements = capture_sql_statements(
-                lambda: pay_period_admin.top_up_rolling_window(
+                lambda: pay_period_rolling.top_up_rolling_window(
                     seed_user["user"].id,
                 )
             )
@@ -132,7 +134,7 @@ class TestTopUpFastPaths:
             db.session.commit()
             before = _count_periods(db.session, user_id)
             result, statements = capture_sql_statements(
-                lambda: pay_period_admin.top_up_rolling_window(user_id)
+                lambda: pay_period_rolling.top_up_rolling_window(user_id)
             )
             assert result == 0
             assert not took_advisory_lock(statements)
@@ -146,7 +148,7 @@ class TestTopUpFastPaths:
             _enable_rolling(db.session, user_id, target=3)
             before = _count_periods(db.session, user_id)
             result, statements = capture_sql_statements(
-                lambda: pay_period_admin.top_up_rolling_window(user_id)
+                lambda: pay_period_rolling.top_up_rolling_window(user_id)
             )
             assert result == 0
             assert not took_advisory_lock(statements)
@@ -170,7 +172,7 @@ class TestTopUpFastPaths:
             db.session.commit()
             _enable_rolling(db.session, user_id, target=1)
             before = _count_periods(db.session, user_id)
-            assert pay_period_admin.top_up_rolling_window(user_id) == 0
+            assert pay_period_rolling.top_up_rolling_window(user_id) == 0
             assert _count_periods(db.session, user_id) == before
 
 
@@ -186,7 +188,7 @@ class TestTopUpDeficitPath:
             _future_periods(db.session, seed_user, count=3)  # idx 1..3 future
             _enable_rolling(db.session, user_id, target=5)
             result, statements = capture_sql_statements(
-                lambda: pay_period_admin.top_up_rolling_window(user_id)
+                lambda: pay_period_rolling.top_up_rolling_window(user_id)
             )
             db.session.commit()
 
@@ -206,9 +208,9 @@ class TestTopUpDeficitPath:
         with app.app_context():
             _future_periods(db.session, seed_user, count=3)
             _enable_rolling(db.session, user_id, target=5)
-            first = pay_period_admin.top_up_rolling_window(user_id)
+            first = pay_period_rolling.top_up_rolling_window(user_id)
             db.session.commit()
-            second = pay_period_admin.top_up_rolling_window(user_id)
+            second = pay_period_rolling.top_up_rolling_window(user_id)
             db.session.commit()
             assert first == 5 - (3 + _BOOTSTRAP_IN_WINDOW)
             assert second == 0
@@ -221,7 +223,7 @@ class TestTopUpDeficitPath:
         with app.app_context():
             _future_periods(db.session, seed_user, count=2)  # idx 1..2
             _enable_rolling(db.session, user_id, target=6)
-            pay_period_admin.top_up_rolling_window(user_id)
+            pay_period_rolling.top_up_rolling_window(user_id)
             db.session.commit()
             indices = sorted(
                 p.period_index
@@ -240,7 +242,7 @@ class TestTopUpDeficitPath:
             make_expense_template(db.session, seed_user, amount="1200.00")
             db.session.commit()
             _enable_rolling(db.session, user_id, target=5)
-            created = pay_period_admin.top_up_rolling_window(user_id)
+            created = pay_period_rolling.top_up_rolling_window(user_id)
             db.session.commit()
             assert created == 5 - (2 + _BOOTSTRAP_IN_WINDOW)
             new_periods = all_periods(user_id)[-created:]
@@ -286,7 +288,7 @@ class TestTopUpDeficitPath:
             assert retained == Decimal("-1400.00")
 
             _enable_rolling(db.session, user_id, target=5)
-            created = pay_period_admin.top_up_rolling_window(user_id)
+            created = pay_period_rolling.top_up_rolling_window(user_id)
             db.session.commit()
             assert created == 5 - (3 + _BOOTSTRAP_IN_WINDOW)
 
@@ -332,25 +334,30 @@ class TestTheTopUpCountsOnTheOwnersDay:
         schedule where the two happen to agree.
         """
         owner_day = date(2026, 7, 30)
+        # Named once and threaded, so the schedule the writer builds and the
+        # cadence the counter derives the LAST period's end from cannot come
+        # apart -- which is the pairing plan step C4 made explicit when the
+        # counter stopped reading a stored ``end_date``.
+        cadence_days = 14
         with app.app_context():
             user_id = seed_user["user"].id
             pay_period_write.record_paydays(
-                user_id, date(2026, 7, 3), 4, 14,
+                user_id, date(2026, 7, 3), 4, cadence_days,
             )
             db.session.commit()
 
             # pylint: disable=protected-access
-            on_process = pay_period_admin._future_period_count(
-                user_id, date(2026, 7, 31),
+            on_process = pay_period_rolling._future_period_count(
+                user_id, cadence_days, date(2026, 7, 31),
             )
-            on_owner = pay_period_admin._future_period_count(
-                user_id, owner_day,
+            on_owner = pay_period_rolling._future_period_count(
+                user_id, cadence_days, owner_day,
             )
             assert on_owner == on_process + 1, (on_owner, on_process)
 
             freeze_today(monkeypatch, date(2026, 7, 31))
             monkeypatch.setattr(
-                pay_period_admin, "display_today", lambda: owner_day,
+                pay_period_rolling, "display_today", lambda: owner_day,
             )
             pay_schedule_service.set_rolling(
                 user_id, enabled=True, target_periods=on_owner,
@@ -359,4 +366,190 @@ class TestTheTopUpCountsOnTheOwnersDay:
 
             # The window is FULL on the owner's clock and one short on the
             # process clock, so a door reading the process clock appends one.
-            assert pay_period_admin.top_up_rolling_window(user_id) == 0
+            assert pay_period_rolling.top_up_rolling_window(user_id) == 0
+
+
+class TestTheCountReadsTheDerivedEnd:
+    """The remaining-paycheck count follows the PAYDAYS, not the stored column.
+
+    Plan step **C4**, finding **P70**.  ``_future_period_count`` counted
+    ``PayPeriod.end_date >= as_of`` in SQL -- the last query in the pay-period
+    schedule doors naming a column plan step **C4** drops.  Since plan
+    step C3-b the writer materialises the derivation, so the stored column and
+    the derived end agree on every row this app writes and on both production
+    clones (62 of 62 rows, 0 mismatches, measured 2026-08-25).  **That is
+    exactly why a cutover here cannot be graded on a schedule the app built**:
+    the only way to say which of the two a reader takes is to make them
+    disagree, which is what ``open_calendar_hole`` is for -- it writes the
+    column directly, the way a row written before C3-b holds it.  Ledger row
+    **P53** is the standing complaint that no fixture could express this
+    disagreement; this is the rolling top-up's answer to it.
+    """
+
+    def _diverged(self, db_session, seed_user):
+        """Build a schedule whose 07-17 period's STORED end is short by 11 days.
+
+        Paydays 2026-07-03, -07-17, -07-31, -08-14, -08-28 at cadence 14, on
+        top of the fixture's 2024 bootstrap payday.  The 07-17 period runs to
+        07-30 by derivation (the day before its successor's payday) and its
+        stored ``end_date`` is then shortened to 07-19.
+
+        Args:
+            db_session: The test ``db.session``.
+            seed_user: The seeded owner fixture.
+
+        Returns:
+            The ``(user_id, as_of)`` pair, where ``as_of`` falls BETWEEN the
+            two ends so the reader's choice decides the count.
+        """
+        user_id = seed_user["user"].id
+        periods = pay_period_write.record_paydays(
+            user_id, _FUTURE_START, 5, 14,
+        )
+        open_calendar_hole(db_session, periods[1], date(2026, 7, 19))
+        db_session.commit()
+
+        as_of = date(2026, 7, 25)
+        stored = db_session.get(PayPeriod, periods[1].id)
+        derived = calendar_for(user_id).period_by_id(periods[1].id)
+        # The FIRING CONTROL: assert the two columns really straddle the day
+        # being asked about, before asserting which side the counter lands on.
+        # A fixture that silently failed to doctor the column would otherwise
+        # make every assertion below vacuously true.
+        assert stored.end_date < as_of <= derived.end_date
+        return user_id, as_of
+
+    def test_a_shortened_stored_end_does_not_drop_a_period_from_the_count(
+        self, app, db, seed_user,
+    ):
+        """FOUR paychecks remain by derivation; a stored-column reader says three.
+
+        The bootstrap and the 07-03 period have both ended by 07-25 either way.
+        The 07-17 period is the one the doctoring moves: its derived end is
+        07-30, so it is the CURRENT paycheck and counts, while its stored end
+        of 07-19 is in the past.  Both numbers are asserted -- the wrong one
+        explicitly -- so the case cannot pass on a schedule where they agree.
+        """
+        with app.app_context():
+            user_id, as_of = self._diverged(db.session, seed_user)
+
+            # pylint: disable=protected-access
+            assert pay_period_rolling._future_period_count(user_id, 14, as_of) == 4
+            assert db.session.query(PayPeriod).filter(
+                PayPeriod.user_id == user_id,
+                PayPeriod.end_date >= as_of,
+            ).count() == 3
+
+    def test_the_top_up_appends_nothing_on_a_window_only_the_derivation_fills(
+        self, app, db, seed_user, monkeypatch,
+    ):
+        """The door, not just its helper: target 4, derived 4, stored 3.
+
+        A reader on the stored column is one short of the target and appends a
+        paycheck the owner already has -- which is a real write, on a READ
+        path, into a schedule that was never short.  The derivation sees a full
+        window and writes nothing.
+        """
+        with app.app_context():
+            user_id, as_of = self._diverged(db.session, seed_user)
+            monkeypatch.setattr(
+                pay_period_rolling, "display_today", lambda: as_of,
+            )
+            pay_schedule_service.set_rolling(
+                user_id, enabled=True, target_periods=4,
+            )
+            db.session.commit()
+            before = len(all_periods(user_id))
+
+            assert pay_period_rolling.top_up_rolling_window(user_id) == 0
+            assert len(all_periods(user_id)) == before
+
+
+class TestTheCadenceThreadedIsTheOWNERSStoredOne:
+    """The cadence the door passes is graded, not just the day and the paydays.
+
+    The cadence decides ONE thing in the count -- the LAST period's end, which
+    is ``start_date + cadence_days - 1`` where every other end is dictated by
+    the next payday.  So a test whose ``as_of`` falls outside that last
+    projected span cannot see the argument at all, and every other case in this
+    file is such a test: they would pass unchanged if
+    :func:`top_up_rolling_window` threaded any other in-range number, including
+    ``rolling_target_periods``, whose column default is 52.
+
+    **The fixture is ledger row P28's shape**, which is why it is buildable:
+    the paydays are recorded at cadence 14 and the STORED cadence is then moved
+    to 3, so the horizon shortens while no payday moves.  That is a legacy
+    state -- since plan step C3-b only a batch that records a payday may set
+    the cadence -- and it is the one state in which "which cadence did you
+    use?" has an observable answer.
+    """
+
+    #: Paydays 2026-07-03, -07-17 and -07-31, recorded at cadence 14.  The last
+    #: period's end is the only one the cadence decides: 08-13 at 14, 08-02 at
+    #: 3.  ``_PROBE_DAY`` sits BETWEEN them, so the two answers differ by one.
+    _STORED_CADENCE = 3
+    _PROBE_DAY = date(2026, 8, 10)
+
+    def _diverged_cadence(self, db_session, seed_user):
+        """Record three biweekly paydays, then shorten the STORED cadence to 3.
+
+        Args:
+            db_session: The test ``db.session``.
+            seed_user: The seeded owner fixture.
+
+        Returns:
+            The owner's user id.
+        """
+        user_id = seed_user["user"].id
+        pay_period_write.record_paydays(user_id, _FUTURE_START, 3, 14)
+        pay_schedule_service.upsert_schedule(
+            user_id, cadence_days=self._STORED_CADENCE,
+        )
+        db_session.commit()
+        return user_id
+
+    def test_the_count_moves_with_the_cadence_it_is_given(
+        self, app, db, seed_user,
+    ):
+        """Same owner, same day, two cadences, two answers -- 0 and 1.
+
+        The FIRING CONTROL for the door case below: it shows the probe day
+        really does straddle the two projected ends, so the door assertion is
+        about which cadence was threaded rather than about an insensitive day.
+        """
+        with app.app_context():
+            user_id = self._diverged_cadence(db.session, seed_user)
+
+            # pylint: disable=protected-access
+            assert pay_period_rolling._future_period_count(
+                user_id, self._STORED_CADENCE, self._PROBE_DAY,
+            ) == 0
+            assert pay_period_rolling._future_period_count(
+                user_id, 14, self._PROBE_DAY,
+            ) == 1
+
+    def test_the_door_threads_the_STORED_cadence(
+        self, app, db, seed_user, monkeypatch,
+    ):
+        """Target 1: the stored cadence 3 is one short, so exactly one is added.
+
+        With the owner's own cadence the window holds ZERO current-and-future
+        paychecks on the probe day and the top-up appends one.  A door that
+        threaded 14 instead -- the cadence the paydays were GENERATED at, and
+        the number every other case in this file would accept -- would see a
+        full window and write nothing.
+        """
+        with app.app_context():
+            user_id = self._diverged_cadence(db.session, seed_user)
+            monkeypatch.setattr(
+                pay_period_rolling, "display_today", lambda: self._PROBE_DAY,
+            )
+            pay_schedule_service.set_rolling(
+                user_id, enabled=True, target_periods=1,
+            )
+            db.session.commit()
+            before = len(all_periods(user_id))
+
+            assert pay_period_rolling.top_up_rolling_window(user_id) == 1
+            assert len(all_periods(user_id)) == before + 1
+            assert_pay_period_invariants(db.session, user_id)
