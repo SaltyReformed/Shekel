@@ -159,7 +159,8 @@ def cash_balance_map(
     """
     _require_scenario(ctx)
     return _cash_fold.cash_period_balances(
-        account, ctx.amounts(), ctx.as_of, ctx.reported_periods(),
+        account, ctx.amounts(), ctx.as_of, ctx.calendar(),
+        ctx.reported_periods(),
     )
 
 
@@ -213,7 +214,7 @@ def cash_balance_at(
     _require_scenario(ctx)
     _require_civil_date("cash_balance_at", as_of=as_of)
     return _cash_fold.fold_cash_balances(
-        account, ctx.amounts(), ctx.as_of, [as_of],
+        account, ctx.amounts(), ctx.as_of, ctx.calendar(), [as_of],
     )[as_of]
 
 
@@ -276,7 +277,7 @@ def cash_daily_balance_series(
     days = days_in_range(first_day, last_day)
 
     folded = _cash_fold.fold_cash_balances(
-        account, ctx.amounts(), ctx.as_of, days,
+        account, ctx.amounts(), ctx.as_of, ctx.calendar(), days,
     )
     return OrderedDict((day, folded[day]) for day in days)
 
@@ -335,7 +336,7 @@ def cash_daily_facts_series(
     days = days_in_range(first_day, last_day)
 
     series = _cash_fold.fold_cash_day_facts(
-        account, ctx.amounts(), ctx.as_of, days,
+        account, ctx.amounts(), ctx.as_of, ctx.calendar(), days,
     )
     # Re-keyed into range order, which a dict comprehension over an unordered
     # sample list does not promise.  An inverted range yields no days and still
@@ -422,7 +423,9 @@ def records_balance_at(
         # precedence this codebase has already been bitten by stating twice
         # (S6-03).
         return None
-    walk = _cash_fold.assemble(account, ctx.amounts(), ctx.as_of).walk
+    walk = _cash_fold.assemble(
+        account, ctx.amounts(), ctx.as_of, ctx.calendar(),
+    ).walk
     for correction in walk.anchor_corrections:
         if correction.observed_on == as_of:
             return correction.balance_before
@@ -628,7 +631,9 @@ def cash_anchor_history(
     # request-scoped memo on ``assemble`` would collapse ONE of the cash
     # detail page's two walks and quietly leave the other -- and that memo is
     # plan step X-i1, the step this page's double walk is waiting on.
-    walk = _cash_fold.assemble(account, ctx.amounts(), ctx.as_of).walk
+    walk = _cash_fold.assemble(
+        account, ctx.amounts(), ctx.as_of, ctx.calendar(),
+    ).walk
     # ``booked`` rather than ``correction``: the walk's record and the row's
     # field would otherwise share a name inside one expression, and
     # ``correction=correction.delta`` reads as a self-reference.

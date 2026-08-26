@@ -572,8 +572,11 @@ def settled_cash_facts(
     valued and dated once, and both carry the budget column they were attributed
     to, so the ONE valued row set can be grouped on either clock (see
     :class:`CashSourceFact`).  For the transaction half both extra fields are
-    free: the shared loader already joins ``pay_period``, and the transaction
-    TYPE is a column on the row it already holds.
+    free: ``pay_period_id`` and the transaction TYPE are both columns on the row
+    it already holds.  *It said "the shared loader already joins pay_period"
+    until pay-calendar plan step C4-a-1 removed that join; the claim was true
+    and the FIELD never needed it -- this half reads the column, not the
+    relationship.*
 
     **It loads its own rows and takes no period window, deliberately.**  An
     argument a caller can get wrong is a defect, not a contract (plan Section 8):

@@ -50,6 +50,7 @@ from tests._test_helpers import (
     create_settled_cash_transaction,
     create_settled_transfer,
     freeze_today,
+    owner_calendar,
     restamp_opening_assertion,
     settle_day_columns,
     settlement_if_settling,
@@ -149,7 +150,10 @@ def _fold_at(account, scenario, day):
     Returns:
         The folded balance as a ``Decimal``.
     """
-    return fold_cash_balances(account, basis_for(account, scenario), day, [day])[day]
+    return fold_cash_balances(
+        account, basis_for(account, scenario), day, owner_calendar(account),
+        [day],
+    )[day]
 
 
 def _replay_terminal_balance(account, scenario):

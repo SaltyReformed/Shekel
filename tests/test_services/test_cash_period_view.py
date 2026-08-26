@@ -51,6 +51,7 @@ from app.services.balance_at import BalanceContext
 from app.services.balance_at._cash_fold import assemble
 from app.services.balance_at._cash_periods import period_view_of
 from app.services.pay_calendar import PayCalendarError, PeriodWindow
+from app.utils.dates import attribution_date
 from app.services.balance_at._cash_fold import fold_cash_balances
 from app.services.balance_at._cash_periods import (
     CashPeriodFigures,
@@ -64,6 +65,7 @@ from tests._test_helpers import (
     create_envelope_txn,
     create_settled_cash_transaction,
     mark_purchase_settled,
+    owner_calendar,
     period_window,
     restamp_opening_assertion,
 )
@@ -86,7 +88,8 @@ def _view(account, scenario, periods, as_of=_EARLY_AS_OF):
     them; ``TestTheViewCarriesTheBasisItWasValuedOn`` grades the map.
     """
     return cash_period_view(
-        account, basis_for(account, scenario), as_of, period_window(periods),
+        account, basis_for(account, scenario), as_of, owner_calendar(account),
+        period_window(periods),
     ).columns
 
 
@@ -118,7 +121,10 @@ def _identity_holds(account, scenario, periods, as_of=_EARLY_AS_OF):
     figures = _view(account, scenario, periods, as_of=as_of)
     boundaries = [period.start_date - _ONE_DAY for period in window]
     boundaries += [period.end_date for period in window]
-    folded = fold_cash_balances(account, basis_for(account, scenario), as_of, boundaries)
+    folded = fold_cash_balances(
+        account, basis_for(account, scenario), as_of, owner_calendar(account),
+        boundaries,
+    )
     return [
         (
             period,
@@ -490,7 +496,7 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
 
         folded = fold_cash_balances(
             account, basis_for(account, scenario), _EARLY_AS_OF,
-            [seed_periods[0].start_date - _ONE_DAY],
+            owner_calendar(account), [seed_periods[0].start_date - _ONE_DAY],
         )
         assert folded[seed_periods[0].start_date - _ONE_DAY] == Decimal("1400.00")
 
@@ -737,7 +743,10 @@ class TestTheIdentityHoldsOnEveryPeriod:
 
         forwards = period_window(seed_periods)
         backwards = PeriodWindow(periods=tuple(reversed(forwards.periods)))
-        folded = assemble(account, basis_for(account, scenario), _EARLY_AS_OF)
+        folded = assemble(
+            account, basis_for(account, scenario), _EARLY_AS_OF,
+            owner_calendar(account),
+        )
 
         assert period_view_of(folded, forwards).columns == period_view_of(
             folded, backwards,
@@ -920,6 +929,14 @@ class TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn:
     graded at all.  The corruption below is applied with a direct UPDATE,
     because ``pay_period_write`` rematerialises the derivation on every write
     and so cannot produce it.
+
+    **Pay-calendar plan step C4-a-1 closed the last of it**, and the class kept
+    its name because the name was always the property.  C2-c moved the column
+    SAMPLING onto the derivation and left the PLANNED tier's clamp reading
+    ``txn.pay_period``, so this fixture rendered a projected row in a column its
+    own paycheck is not (finding **P38**).  Both sides read one derivation now,
+    and the third test below is the control that keeps the second honest on a
+    schedule where the two spans agree.
     """
 
     def test_a_corrupted_stored_end_moves_no_figure(
@@ -968,36 +985,43 @@ class TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn:
         assert figures[seed_periods[1].id].net == Decimal("0.00")
         assert figures[seed_periods[1].id].period_timing == Decimal("-250.00")
 
-    def test_a_PROJECTED_row_clamped_against_the_stored_span_still_reconciles(
+    def test_a_PROJECTED_row_is_clamped_against_the_DERIVED_span(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The two-source coupling C2-c creates, MEASURED rather than argued.
+        """The two-source coupling is GONE, and this is the shape that shows it.
 
-        An adversarial design review of this step claimed R-K's identity
-        breaks here, and the claim is REFUTED by this test.  The coupling is
-        real: :func:`~app.services.balance_at._cash_fold._period_balances`
-        samples each column at its DERIVED end while
-        :func:`~app.services.balance_at._cash_fold._cash_plan` still clamps a
-        projected row's landing day against the STORED span it reads off
-        ``txn.pay_period`` (the reader plan step C4 owns).  What does NOT
-        follow is a broken identity, and the reason is structural: the fold's
-        steps and this view's cash-clock grouping read the SAME
-        ``day_nets``, so wherever the clamp puts a row, both sides put it
-        there.  A disagreement surfaces as ``period_timing`` -- the figure
-        that exists to say "budgeted here, moved there" -- and never as an
-        unexplained balance step.
+        **This test asserted the opposite figures until pay-calendar plan step
+        C4-a-1**, and the change is the step rather than a re-measurement.  The
+        coupling was real: :func:`~app.services.balance_at._cash_fold._period_balances`
+        sampled each column at its DERIVED end while
+        :func:`~app.services.balance_at._cash_fold._cash_plan` clamped a
+        projected row's landing day against the STORED span it read off
+        ``txn.pay_period``.  R-K's identity held across it -- the fold's steps
+        and this view's cash-clock grouping read the SAME ``day_nets``, so
+        wherever the clamp put a row both sides put it there -- but the row
+        RENDERED in a column its own paycheck is not, reported as
+        ``period_timing``.  That is pay-calendar finding **P38**, and it closes
+        here: both sides now read the one derivation.
 
         Hand-computed against a ``$1,000.00`` opening asserted 2026-01-01.
         Period 0's stored end is pushed to 2026-01-20 while its derived end
-        stays 2026-01-15, and a still-projected ``$250.00`` expense budgeted
-        to period 0 carries ``due_date`` 2026-01-18 -- inside the corrupted
-        span, so ``attribution_date`` does NOT clamp it, and outside the real
-        one.  Period 0 budgets it (net ``-$250.00``) while nothing lands
-        inside 01-02..01-15, so its timing is ``+$250.00`` and its balance
-        holds at ``$1,000.00``.  Period 1 budgets nothing and the money lands
-        in its span, so its timing is ``-$250.00`` against a ``$750.00``
-        close.  Both columns satisfy the identity, and the assertion below is
-        the identity itself over every column.
+        stays 2026-01-15, and a still-projected ``$250.00`` expense budgeted to
+        period 0 carries ``due_date`` 2026-01-18 -- outside the real span and
+        inside the corrupted one, which is what makes the two answers differ.
+        ``attribution_date`` now clamps 01-18 down to the DERIVED end 01-15,
+        and ruling R-G's floor (``as_of`` 2026-01-05, so 01-06) does not move
+        it, so the row lands 01-15: inside the very period that budgets it.
+        Period 0 therefore nets ``-$250.00``, explains ALL of it on its own
+        cash clock (``period_timing`` ``$0.00``) and closes at ``$750.00``;
+        period 1 budgets nothing, nothing lands in its span, and it holds
+        ``$750.00`` flat.
+
+        **Every figure below is one the old arm answered differently**: it put
+        the row on 01-18, giving period 0 ``+$250.00`` of timing against a
+        ``$1,000.00`` close and period 1 ``-$250.00`` against ``$750.00``.  The
+        identity held then and holds now, so the identity alone cannot grade
+        this step -- which is why the per-column figures are asserted first and
+        the control below pins the rule itself.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         as_of = date(2026, 1, 5)
@@ -1014,9 +1038,10 @@ class TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn:
         figures = _view(account, scenario, seed_periods, as_of=as_of)
 
         assert figures[seed_periods[0].id].net == Decimal("-250.00")
-        assert figures[seed_periods[0].id].period_timing == Decimal("250.00")
-        assert figures[seed_periods[0].id].balance == Decimal("1000.00")
-        assert figures[seed_periods[1].id].period_timing == Decimal("-250.00")
+        assert figures[seed_periods[0].id].period_timing == Decimal("0.00")
+        assert figures[seed_periods[0].id].balance == Decimal("750.00")
+        assert figures[seed_periods[1].id].net == Decimal("0.00")
+        assert figures[seed_periods[1].id].period_timing == Decimal("0.00")
         assert figures[seed_periods[1].id].balance == Decimal("750.00")
 
         rows = _identity_holds(account, scenario, seed_periods, as_of=as_of)
@@ -1025,6 +1050,39 @@ class TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn:
             assert balance_delta == explained, (
                 f"period {period.period_id}"
             )
+
+    def test_the_control_shows_the_two_spans_still_disagree(
+        self, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The firing control for the test above: the corruption is not a no-op.
+
+        The test above would pass vacuously on any schedule whose stored and
+        derived ends coincide -- which is every schedule either database holds
+        (0 of 62 and 0 of 61 disagreements).  So this reads BOTH spans off the
+        same fixture and applies the shared clamp to each, showing that the
+        landing day the step changed is genuinely two different days: 01-15 by
+        the paydays, 01-18 by the stored column.
+
+        It grades the RULE rather than a figure, so it survives the step that
+        moves that rule onto ``DerivedPeriod`` (C4-a-2).
+        """
+        account = seed_user["account"]
+        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
+        db.session.query(PayPeriod).filter_by(id=seed_periods[0].id).update(
+            {"end_date": date(2026, 1, 20)},
+        )
+        db.session.commit()
+
+        stored = db.session.get(PayPeriod, seed_periods[0].id)
+        derived = owner_calendar(account).period_by_id(seed_periods[0].id)
+        assert stored.end_date == date(2026, 1, 20)
+        assert derived.end_date == date(2026, 1, 15)
+
+        due = date(2026, 1, 18)
+        assert attribution_date(due, derived.start_date, derived.end_date) == (
+            date(2026, 1, 15)
+        )
+        assert attribution_date(due, stored.start_date, stored.end_date) == due
 
     def test_the_control_shows_the_stored_column_would_answer_differently(
         self, db, seed_user, seed_periods,
@@ -1052,7 +1110,7 @@ class TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn:
         assert stored.end_date == date(2026, 1, 20)
         folded = fold_cash_balances(
             account, basis_for(account, scenario), _EARLY_AS_OF,
-            [date(2026, 1, 15), date(2026, 1, 20)],
+            owner_calendar(account), [date(2026, 1, 15), date(2026, 1, 20)],
         )
         # Sampled at the stored end the column reads $750.00; at the derived
         # end it reads $1,000.00.  The test above asserts the second.
@@ -1186,7 +1244,8 @@ class TestTheViewCarriesTheBasisItWasValuedOn:
         db.session.commit()
 
         view = cash_period_view(
-            account, basis_for(account, scenario), _EARLY_AS_OF, period_window(seed_periods),
+            account, basis_for(account, scenario), _EARLY_AS_OF,
+            owner_calendar(account), period_window(seed_periods),
         )
 
         assert view.amount_overrides == {txn.id: Decimal("4000.00")}
@@ -1207,7 +1266,8 @@ class TestTheViewCarriesTheBasisItWasValuedOn:
         db.session.commit()
 
         view = cash_period_view(
-            account, basis_for(account, scenario), _EARLY_AS_OF, period_window(seed_periods),
+            account, basis_for(account, scenario), _EARLY_AS_OF,
+            owner_calendar(account), period_window(seed_periods),
         )
 
         assert view.amount_overrides == {}

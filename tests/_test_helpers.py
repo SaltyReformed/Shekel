@@ -5574,6 +5574,42 @@ def window_head(window, count):
     return PeriodWindow(periods=window.periods[:count])
 
 
+def owner_calendar(owned):
+    """Return the DERIVED pay calendar of whoever owns *owned*.
+
+    :func:`period_window`'s whole-calendar sibling, added at pay-calendar plan
+    step **C4-a-1** when the cash fold began taking one: the seam producers that
+    take a ``basis`` and an ``as_of`` rather than a context now also take the
+    owner's calendar, because the PLANNED tier clamps each row against the span
+    its paycheck DERIVES rather than the ``end_date`` its ``pay_period`` row
+    stores.
+
+    It reads the owner off the row it is given -- an ``Account``, a
+    ``PayPeriod``, anything carrying ``user_id`` -- so a test naming the account
+    it is folding cannot accidentally hand the fold a different owner's
+    schedule, which is the exact state :func:`~app.services.balance_at._cash_fold._filed_span`
+    raises on.
+
+    Args:
+        owned: Any row carrying a ``user_id``.
+
+    Returns:
+        That owner's :class:`~app.services.pay_calendar.PayCalendar`, derived
+        from their saved paydays and stored cadence.
+
+    Raises:
+        PayCalendarError: The owner's paydays cannot define a calendar -- a
+            cadence outside 1..365, which ``resolve_cadence``'s legacy fallback
+            can infer for an owner with no ``budget.pay_schedule`` row (plan
+            findings **P8** / **P35**).
+    """
+    from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
+        calendar_for,
+    )
+
+    return calendar_for(owned.user_id)
+
+
 def period_window(periods):
     """Return the :class:`PeriodWindow` the seam reports over for *periods*.
 

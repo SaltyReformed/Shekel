@@ -502,7 +502,9 @@ def grid_balance_view(
         # window -- the same guard :func:`._asset_fold.asset_period_view` and
         # :func:`._asset_fold.period_columns` already carry.
         return empty_grid_view()
-    folded = _cash_fold.assemble(account, ctx.amounts(), ctx.as_of)
+    folded = _cash_fold.assemble(
+        account, ctx.amounts(), ctx.as_of, ctx.calendar(),
+    )
     view = _cash_periods.period_view_of(folded, window)
     modelled = _asset_fold.period_columns(
         _asset_fold.resolve(

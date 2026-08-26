@@ -1233,7 +1233,7 @@ class TestAnAccountThatModelsNothingIsItsCashFold:
             for column in _view(account, ctx, seed_periods).values()
         ] == list(
             _cash_fold.cash_period_balances(
-                account, ctx.amounts(), ctx.as_of,
+                account, ctx.amounts(), ctx.as_of, ctx.calendar(),
                 period_window(seed_periods),
             ).values()
         )
@@ -1299,7 +1299,8 @@ class TestThePerPeriodIdentity:
             gross=Decimal("3631.74"),
         )
         cash = _cash_periods.cash_period_view(
-            account, ctx.amounts(), ctx.as_of, period_window(seed_periods),
+            account, ctx.amounts(), ctx.as_of, ctx.calendar(),
+            period_window(seed_periods),
         )
         openings = _fold(
             account, ctx,

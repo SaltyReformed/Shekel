@@ -41,6 +41,7 @@ from tests._test_helpers import (
     append_balance_assertion,
     basis_for,
     create_settled_cash_transaction,
+    owner_calendar,
     restamp_opening_assertion,
 )
 from tests.test_services.test_cash_fold import _instant
@@ -60,7 +61,8 @@ def _context(seed_user, as_of):
 def _folded(seed_user, account, as_of, days):
     """Fold *account* at every day in *days*."""
     return fold_cash_balances(
-        account, basis_for(account, seed_user["scenario"]), as_of, list(days),
+        account, basis_for(account, seed_user["scenario"]), as_of,
+        owner_calendar(account), list(days),
     )
 
 

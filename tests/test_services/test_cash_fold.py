@@ -40,10 +40,13 @@ implementation fails rather than a comment asserting it:
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
-from app.utils.dates import DISPLAY_TIMEZONE
+import pytest
+
+from app.utils.dates import DISPLAY_TIMEZONE, attribution_date
 from app.enums import StatusEnum
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
+from app.models.pay_period import PayPeriod
 from app.services.balance_at._cash_fold import (
     cash_period_balances,
     fold_cash_balances,
@@ -62,6 +65,7 @@ from tests._test_helpers import (
     freeze_today,
     mark_purchase_settled,
     override_anchor,
+    owner_calendar,
     period_window,
     restamp_opening_assertion,
 )
@@ -97,7 +101,10 @@ def _instant(year, month, day, hour=0, minute=0, second=0):
 
 def _fold(account, scenario, days, as_of=_LATE_AS_OF):
     """Fold *account* at each of *days*, returning ``{date: Decimal}``."""
-    return fold_cash_balances(account, basis_for(account, scenario), as_of, list(days))
+    return fold_cash_balances(
+        account, basis_for(account, scenario), as_of, owner_calendar(account),
+        list(days),
+    )
 
 
 def _opened_at(account, at):
@@ -1243,7 +1250,8 @@ def _drift_period_map(seed_user, periods):
     return cash_period_balances(
         seed_user["account"],
         basis_for(seed_user["account"], seed_user["scenario"]),
-        _DRIFT_AS_OF, period_window(periods),
+        _DRIFT_AS_OF, owner_calendar(seed_user["account"]),
+        period_window(periods),
     )
 
 
@@ -1414,3 +1422,115 @@ class TestTheDriftOracleWalksFiftyTwoPeriods:
         assert actual[seed_periods_52[19].id] == Decimal("9361.77")
         assert actual[seed_periods_52[20].id] == Decimal("10274.05")
         assert actual[seed_periods_52[51].id] == Decimal("50067.39")
+
+
+class TestThePlanClampsAgainstTheDerivedSpan:
+    """Pay-calendar plan step **C4-a-1**, and finding **P38**'s last site.
+
+    :func:`~app.services.balance_at._cash_fold._cash_plan` read a projected
+    row's span off ``txn.pay_period`` -- the STORED ``end_date``, a copy of
+    ``lead(start_date) - 1`` with nothing reconciling it to the paydays it
+    derives from -- while :func:`_period_balances` in the same module sampled
+    that period at its DERIVED end.  One module, two ends.
+
+    **The class is latent on real data and that is why it needs a planted
+    shape**: 0 of 62 and 0 of 61 stored ends disagree with the derivation on
+    the two production-shaped databases, and ``pay_period_write``
+    rematerialises every end on every write, so the divergence is applied with
+    a direct UPDATE under the writer.
+    """
+
+    def test_a_row_dated_past_its_DERIVED_end_lands_on_that_end(
+        self, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Stored end 01-20, derived end 01-15, a bill due 01-18: it lands 01-15.
+
+        Hand-computed against a ``$1,000.00`` opening asserted 2026-01-01, with
+        ``as_of`` 2026-01-05 so ruling R-G's floor (01-06) never binds.  A
+        still-projected ``$250.00`` expense is budgeted to period 0 and dated
+        2026-01-18; period 0's stored end is pushed to 01-20 while its paydays
+        keep it at 01-15.
+
+        Reading the DERIVED span, ``attribution_date`` clamps 01-18 down to
+        01-15, so the fold steps ``-$250.00`` on 01-15 and every date from
+        there on reads ``$750.00``.
+
+        **Both assertions fail against the old arm**, which left the row on
+        01-18: it read ``$1,000.00`` at 01-15 and only reached ``$750.00`` on
+        01-18.  The pair is asserted rather than one figure because a single
+        end-state balance is identical under both arms -- only WHEN the step
+        lands distinguishes them.
+        """
+        account, scenario = seed_user["account"], seed_user["scenario"]
+        _opened_at(account, _instant(2026, 1, 1))
+        add_txn(
+            db.session, seed_user, seed_periods[0], "projected bill", "250.00",
+            due_date=date(2026, 1, 18),
+        )
+        db.session.query(PayPeriod).filter_by(id=seed_periods[0].id).update(
+            {"end_date": date(2026, 1, 20)},
+        )
+        db.session.commit()
+
+        folded = _fold(
+            account, scenario,
+            [date(2026, 1, 14), date(2026, 1, 15), date(2026, 1, 18)],
+            as_of=date(2026, 1, 5),
+        )
+
+        assert folded[date(2026, 1, 14)] == Decimal("1000.00")
+        assert folded[date(2026, 1, 15)] == Decimal("750.00")
+        assert folded[date(2026, 1, 18)] == Decimal("750.00")
+
+    def test_the_control_shows_the_stored_span_would_place_it_elsewhere(
+        self, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The firing control: the planted divergence is real, not a no-op.
+
+        The test above would pass vacuously on any schedule whose two ends
+        coincide -- which is every schedule either database holds.  This reads
+        both ends off the same fixture and shows they differ, and that the
+        shared clamp answers a different day for each.
+        """
+        account = seed_user["account"]
+        db.session.query(PayPeriod).filter_by(id=seed_periods[0].id).update(
+            {"end_date": date(2026, 1, 20)},
+        )
+        db.session.commit()
+
+        stored = db.session.get(PayPeriod, seed_periods[0].id)
+        derived = owner_calendar(account).period_by_id(seed_periods[0].id)
+
+        assert stored.end_date == date(2026, 1, 20)
+        assert derived.end_date == date(2026, 1, 15)
+        due = date(2026, 1, 18)
+        assert attribution_date(
+            due, derived.start_date, derived.end_date,
+        ) == date(2026, 1, 15)
+        assert attribution_date(due, stored.start_date, stored.end_date) == due
+
+    def test_a_calendar_belonging_to_another_owner_is_REFUSED(
+        self, db, seed_user, seed_periods, seed_second_user, seed_second_periods,
+    ):  # pylint: disable=unused-argument
+        """A foreign calendar raises rather than silently mis-dating the plan.
+
+        ``period_by_id`` searches ONE owner's schedule, so a calendar derived
+        for a different owner answers ``None`` for every row of this account's
+        plan.  Skipping such a row would delete it from the projection and
+        falling back to ``txn.pay_period`` would reinstate the stored end this
+        step removes, so the fold refuses -- naming both ids, because the pair
+        is what identifies the mismatched caller.
+        """
+        account, scenario = seed_user["account"], seed_user["scenario"]
+        add_txn(
+            db.session, seed_user, seed_periods[0], "projected bill", "250.00",
+            due_date=date(2026, 1, 8),
+        )
+        db.session.commit()
+        foreign = owner_calendar(seed_second_user["account"])
+
+        with pytest.raises(RuntimeError, match="different owners"):
+            fold_cash_balances(
+                account, basis_for(account, scenario), date(2026, 1, 5),
+                foreign, [date(2026, 1, 15)],
+            )

@@ -42,7 +42,7 @@ from app.services.cash_ledger import (
     live_amounts,
     sum_projected,
 )
-from app.services.pay_calendar import PeriodWindow
+from app.services.pay_calendar import PayCalendar, PeriodWindow
 from app.utils.money import round_money
 
 from ._cash_fold import (
@@ -157,6 +157,7 @@ def cash_period_view(
     account: Account,
     basis: AmountBasis,
     as_of: date,
+    calendar: PayCalendar,
     window: PeriodWindow,
 ) -> CashPeriodView:
     """Return the account's cash column for each period of *window* -- ruling R-K.
@@ -215,6 +216,8 @@ def cash_period_view(
             through (plan step X-au-c2b).
         as_of: The reader's NOW (ruling R-G's clamp floor) -- NOT a valuation
             date; each period is valued at its own ``end_date``.
+        calendar: The owner's pay calendar, which the PLANNED tier clamps each
+            row against (see :func:`~._cash_fold.assemble`).
         window: The pay periods to report, as a slice of the owner's ONE
             derived calendar
             (:meth:`~app.services.balance_at.BalanceContext.reported_periods`).
@@ -231,7 +234,7 @@ def cash_period_view(
         against its folded balance), plus the live override map the projection
         was computed with.
     """
-    return period_view_of(assemble(account, basis, as_of), window)
+    return period_view_of(assemble(account, basis, as_of, calendar), window)
 
 
 def period_view_of(

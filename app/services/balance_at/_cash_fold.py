@@ -110,7 +110,7 @@ from app.services.cash_ledger import (
     sum_projected,
     walk_cash_ledger,
 )
-from app.services.pay_calendar import PeriodWindow
+from app.services.pay_calendar import DerivedPeriod, PayCalendar, PeriodWindow
 from app.utils.dates import attribution_date
 
 from ._fold import sample_cumulative
@@ -173,7 +173,7 @@ class AssembledCashFold:
 
 
 def assemble(
-    account: Account, basis: AmountBasis, as_of: date,
+    account: Account, basis: AmountBasis, as_of: date, calendar: PayCalendar,
 ) -> AssembledCashFold:
     """Walk the account's facts and load its plan -- ONCE, for every reader.
 
@@ -193,9 +193,23 @@ def assemble(
             reservation's entry window it does exactly ONE job: it is the floor
             a still-Projected row's effective date is clamped up to (ruling
             R-G).  It decides WHEN a row lands, never what it is worth.
+        calendar: The OWNER's pay calendar
+            (:meth:`~app.services.balance_at.BalanceContext.calendar`), which
+            :func:`_cash_plan` clamps each planned row against.  **Required,
+            and a calendar rather than the read pass** (pay-calendar plan step
+            C4-a-1): a fold assembled at one scenario beside a context carrying
+            another would value the plan against rows this fold never saw,
+            which is the argument ruling "How the CONTRIBUTION tier learns its
+            periods" already made for ``_asset_fold.resolve`` one module over,
+            and a calendar carries neither a scenario nor a clock so passing
+            one reintroduces nothing.
 
     Returns:
         The :class:`AssembledCashFold`.
+
+    Raises:
+        RuntimeError: A planned row names a pay period this calendar does not
+            hold -- see :func:`_cash_plan`.
     """
     walk = walk_cash_ledger(account.id, basis.scenario_id)
     # The plan load is INDEPENDENT of the walk since plan step X-f3b (ruling
@@ -204,7 +218,7 @@ def assemble(
     # carrying a posting day is now a movement in the walk itself, so the
     # reservation reads the purchase and the clearing rule is only ever asked
     # where the money is replayed.
-    plan = _cash_plan(account, basis, as_of)
+    plan = _cash_plan(account, basis, as_of, calendar)
     day_nets = _planned_day_nets(plan)
     seed, steps = _running_steps(walk, day_nets)
     return AssembledCashFold(
@@ -217,6 +231,7 @@ def fold_cash_balances(
     account: Account,
     basis: AmountBasis,
     as_of: date,
+    calendar: PayCalendar,
     dates: list[date],
 ) -> dict[date, Decimal]:
     """Return the account's folded cash balance at each of *dates*.
@@ -242,6 +257,7 @@ def fold_cash_balances(
         basis: The read pass's amount basis, carrying the scenario whose rows
             are folded (see :func:`assemble`).
         as_of: The reader's NOW (ruling R-G's clamp floor).
+        calendar: The owner's pay calendar (see :func:`assemble`).
         dates: The dates to value the account at, in any order.  Duplicates
             collapse.
 
@@ -249,7 +265,7 @@ def fold_cash_balances(
         ``{date: balance}`` -- one cent-quantized ``Decimal`` per distinct
         requested date.  ``{}`` for an empty *dates*.
     """
-    folded = assemble(account, basis, as_of)
+    folded = assemble(account, basis, as_of, calendar)
     return sample_cumulative(folded.seed, folded.steps, dates)
 
 
@@ -339,6 +355,7 @@ def fold_cash_day_facts(
     account: Account,
     basis: AmountBasis,
     as_of: date,
+    calendar: PayCalendar,
     days: list[date],
 ) -> "CashDaySeries":
     """Return each day's folded balance beside the three tiers that moved it.
@@ -355,6 +372,7 @@ def fold_cash_day_facts(
         account: The account to value (see :func:`assemble`).
         basis: The read pass's amount basis, carrying the scenario.
         as_of: The reader's NOW (ruling R-G's clamp floor).
+        calendar: The owner's pay calendar (see :func:`assemble`).
         days: The days to answer, in any order.  Duplicates collapse.
 
     Returns:
@@ -369,7 +387,7 @@ def fold_cash_day_facts(
     reader wanting the identity to the cent must compare the components rather
     than differencing two rounded balances.
     """
-    folded = assemble(account, basis, as_of)
+    folded = assemble(account, basis, as_of, calendar)
     balances = sample_cumulative(folded.seed, folded.steps, days)
     recorded = _day_sums(
         [(fact.settled_on, fact.delta) for fact in folded.walk.source_facts]
@@ -406,6 +424,7 @@ def cash_period_balances(
     account: Account,
     basis: AmountBasis,
     as_of: date,
+    calendar: PayCalendar,
     window: PeriodWindow,
 ) -> "OrderedDict[int, Decimal]":
     """Return the account's folded balance at each period's END, by period id.
@@ -427,6 +446,7 @@ def cash_period_balances(
         basis: The read pass's amount basis, carrying the scenario whose rows
             are folded (see :func:`assemble`).
         as_of: The reader's NOW (ruling R-G's clamp floor).
+        calendar: The owner's pay calendar (see :func:`assemble`).
         window: The pay periods to value, as a slice of the owner's ONE derived
             calendar
             (:meth:`~app.services.balance_at.BalanceContext.reported_periods`).
@@ -437,7 +457,7 @@ def cash_period_balances(
         order.  EVERY period of *window* is present.
     """
     return _period_balances(
-        assemble(account, basis, as_of), window,
+        assemble(account, basis, as_of, calendar), window,
     )
 
 
@@ -615,8 +635,54 @@ class _CashPlan:
     basis: AmountBasis
 
 
+def _filed_span(calendar: PayCalendar, txn: Transaction) -> DerivedPeriod:
+    """Return the DERIVED span of the paycheck *txn* is filed in.
+
+    **The span comes from the owner's paydays, not from ``txn.pay_period``**
+    (pay-calendar plan step C4-a-1).  The relationship reads
+    ``budget.pay_periods.end_date``, a stored copy of ``lead(start_date) - 1``
+    with nothing reconciling it to the paydays it derives from, so a schedule
+    whose stored ends had drifted clamped a projected row against a span its
+    own calendar disagrees with -- while :func:`_period_balances` two functions
+    up already samples that period at its DERIVED end.  One module, two ends,
+    and pay-calendar finding **P38** is the name for it.  The other two sites
+    that finding listed had already moved (``grid/_mobile_plan.html`` and
+    ``savings_dashboard_service/_net_worth``, both on ``DerivedPeriod`` values
+    since ``C2-f2``), so this is the last of the three and the row closes here.
+
+    Args:
+        calendar: The OWNER's pay calendar.
+        txn: The row to place.  Its ``pay_period_id`` is NOT NULL in the schema,
+            so the lookup is by a real foreign key rather than an optional one.
+
+    Returns:
+        The :class:`~app.services.pay_calendar.DerivedPeriod` carrying
+        ``txn.pay_period_id``.
+
+    Raises:
+        RuntimeError: The calendar does not hold that period.  Since
+            ``pay_period_id`` is a NOT NULL foreign key to a row that exists,
+            the only way to reach this is a calendar derived for a DIFFERENT
+            owner than the one whose account is being folded -- so it is an
+            ownership defect that would otherwise mis-date money silently, and
+            it fails loud rather than skipping the row (which would delete it
+            from the projection) or falling back to the relationship (which
+            would reinstate the stored end this step removes).
+    """
+    period = calendar.period_by_id(txn.pay_period_id)
+    if period is None:
+        raise RuntimeError(
+            f"_cash_fold: transaction id={txn.id} is filed in pay period "
+            f"id={txn.pay_period_id}, which the calendar handed to this fold "
+            f"does not hold.  A calendar is one OWNER's whole saved schedule, "
+            f"so this means the account being folded and the calendar belong "
+            f"to different owners; investigate the caller that paired them."
+        )
+    return period
+
+
 def _cash_plan(
-    account: Account, basis: AmountBasis, as_of: date,
+    account: Account, basis: AmountBasis, as_of: date, calendar: PayCalendar,
 ) -> _CashPlan:
     """Load the account's plan and key each row onto the day it lands on.
 
@@ -634,6 +700,12 @@ def _cash_plan(
     Rejected at the ruling: landing it on its nominal date, which on real data
     (one re-anchor every 2.3 days on Checking) silently deletes nearly every
     unpaid past-due bill within days of its being entered.
+
+    **The SPAN it clamps against is DERIVED, since pay-calendar plan step
+    C4-a-1** -- see :func:`_filed_span`, which is also why this function takes a
+    calendar.  It read ``txn.pay_period`` until then, so this module clamped
+    against a STORED end while :func:`_period_balances` sampled the same period
+    at its derived one.
 
     **The load is separate from the reduction, and that is plan step X-c1's
     doing.**  The rows are kept, not just their per-day totals, because the
@@ -659,11 +731,17 @@ def _cash_plan(
             in and the derivations they are priced through.
         as_of: The reader's NOW -- the floor ruling R-G clamps a landing day up
             to.
+        calendar: The OWNER's pay calendar, which each row's span is read from
+            (:func:`_filed_span`).
 
     Returns:
         The account's :class:`_CashPlan`; its ``rows`` and ``by_day`` are empty
         for an account with no plan, and it carries the pass's basis either way
         so the record is self-describing.
+
+    Raises:
+        RuntimeError: A row names a pay period *calendar* does not hold
+            (:func:`_filed_span`).
     """
     rows = planned_cash_rows(account.id, basis.scenario_id)
     if not rows:
@@ -672,7 +750,7 @@ def _cash_plan(
     not_before = as_of + _ONE_DAY
     by_day: "dict[date, list[Transaction]]" = defaultdict(list)
     for txn in rows:
-        period = txn.pay_period
+        period = _filed_span(calendar, txn)
         nominal = attribution_date(
             txn.due_date, period.start_date, period.end_date,
         )

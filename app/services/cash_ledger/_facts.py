@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import selectinload
 
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
@@ -414,7 +414,7 @@ def planned_cash_rows(
     Returns:
         ``list[Transaction]`` -- every still-Projected contributing row for the
         account in the scenario, unordered (the fold groups them by day), with
-        ``entries`` and ``pay_period`` populated.
+        ``entries`` populated.
     """
     return _unwindowed_contributing_rows(
         account_id, scenario_id, is_projected_clause(Transaction),
@@ -439,11 +439,19 @@ def _unwindowed_contributing_rows(
     the two loaders, not a leaf surface a consumer should reach -- which is also
     what keeps it out of the W9909 registry, structure doing what a fence entry
     would otherwise have to.  Sharing it is not tidiness: the account / scenario
-    scope, the contributing gate, and BOTH eager loads are individually
+    scope, the contributing gate and the eager ``entries`` are individually
     load-bearing (a missing ``selectinload(entries)`` is the seam that shipped two
-    different balances for one row in CRIT-01 / F-009, and the fold reads
-    ``pay_period`` for its attribution clamp), so a second hand-written copy is
-    exactly where one of them would go missing on one half only.
+    different balances for one row in CRIT-01 / F-009), so a second hand-written
+    copy is exactly where one of them would go missing on one half only.
+
+    **It eager-loaded ``pay_period`` too until pay-calendar plan step C4-a-1**,
+    and that JOIN had exactly one reader: the cash fold's attribution clamp,
+    which now reads the span off the owner's DERIVED calendar instead.  Neither
+    half touches the relationship any more -- the settled half reads the
+    ``pay_period_id`` COLUMN and the plan's two downstream reducers
+    (``_cash_periods._budget_legs`` and ``cash_ledger.live_amounts``) read the
+    column and nothing -- so the join went with the reader rather than being
+    left behind for a lazy load nobody triggers.
 
     **The status narrowing is a clause PARAMETER, and stays in SQL.**  Loading the
     whole contributing set and partitioning in Python would be one query instead
@@ -465,14 +473,11 @@ def _unwindowed_contributing_rows(
 
     Returns:
         ``list[Transaction]`` -- the matching rows, unordered, with ``entries``
-        and ``pay_period`` populated.
+        populated.
     """
     return (
         db.session.query(Transaction)
-        .options(
-            joinedload(Transaction.pay_period),
-            selectinload(Transaction.entries),
-        )
+        .options(selectinload(Transaction.entries))
         .filter(
             Transaction.account_id == account_id,
             Transaction.scenario_id == scenario_id,

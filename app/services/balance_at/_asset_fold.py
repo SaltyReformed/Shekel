@@ -762,7 +762,7 @@ def _assemble(
     """
     return resolve(
         account,
-        _cash_fold.assemble(account, ctx.amounts(), ctx.as_of),
+        _cash_fold.assemble(account, ctx.amounts(), ctx.as_of, ctx.calendar()),
         horizon_end,
         inputs,
         ctx.calendar(),
