@@ -1302,9 +1302,9 @@ The Alloy pipeline exposes both the raw Docker container labels (`compose_servic
 | By user ID | `{compose_service="shekel-prod-app"} \| json \| user_id="1"` |
 | Trace a request | `{compose_service="shekel-prod-app"} \| json \| request_id="<uuid>"` |
 
-The `request_id` derived field declared in `datasources.yaml` makes a UUID in any log line clickable
--- it copies the value into a prefilled trace-a-request query so a user-reported `X-Request-Id`
-lookup is one click.
+The `request_id` derived field declared in `datasources.yaml` makes a UUID in any log line
+clickable -- it copies the value into a prefilled trace-a-request query so a user-reported
+`X-Request-Id` lookup is one click.
 
 ### 5.4 Monitoring Stack Management
 
