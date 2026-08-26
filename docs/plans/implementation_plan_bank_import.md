@@ -67,6 +67,7 @@ that it was seen; an owner who states no rules keeps exactly the old workflow.
 | **R-GO** | 2026-08-25 (developer) | **The review panel MARKS only what the app can prove the bank never shows alone, and never guesses.** A row whose figure is not its own to state -- a CC payback, an envelope whose figure is its purchases -- is one the bank accounts for through some other row, and the caption's *a payment your records claim happened and your bank did not make* is false of it. Those rows are ANNOTATED and never withheld: the same card is the hand-build form's row-picker, and **R-GJ** leaves the group match as a parked card payment's only ACT, so dropping the 18 CC Paybacks would have closed the one path that ruling kept open -- which is what this step's own plan sentence, read literally, said to do. **The audit's two named classes are deliberately NOT delivered and this records why**: the 7 envelope-tracked containers holding no entries (`Groceries` `$163.95` .. `Mint Mobile` `$132.69`) and the 10 payroll allowance rows carry no fact saying the bank showed them inside something else, and the only predicates that would claim them -- a row-name list, or `tracks_purchases`, which would silence the alarm on a `Mint Mobile` that is plainly one bank line -- fail in the one direction this caveat may not. They stay under a caption that no longer over-claims of them; being buried among 67 rows is `X-gf`'s. Shipped at `X-gc`. |
 | **R-GP** | 2026-08-25 (developer) | **The destructive-action dialog binds before the DOM it guards.** The listener turning `data-confirm` / `hx-confirm` into the shared modal sat at the bottom of `app.js`, loaded after the whole document, so all 22 armed controls across 17 templates were clickable before their guard existed -- and finding **N-345** records an Undo submitted in that window, which ran with no dialog shown on a 537 KB page. It moves to `app/static/js/confirm.js`, loaded as a classic script in `<head>` and ABOVE the stylesheets (a script following pending `<link rel=stylesheet>` waits on all of them), so no element carrying a confirm attribute can be parsed before the listener exists. Two consequences stated: the htmx half binds on `document` rather than `document.body`, which does not exist yet and which htmx 2.0.4 reaches anyway (`bubbles: true`); and `ask()` falls back to `window.confirm` when Bootstrap has not loaded, which is fail-closed -- the act still cannot happen without an answer. Shipped at `X-gc`. |
 | **R-GQ** | 2026-08-25 (developer) | **The undo's legacy disclosure gap is DEV DATA and is repaired by re-cloning, never by a schema flag.** `planned_removals` short-circuits on an act carrying no creation record, so such an act renders an Undo with no `data-confirm` at all -- measured on the rendered page, **221 Undo forms, 0 with a dialog**. The CODE is correct: `_accept._record` is the one writer of `StatementMatchCreation` and both creating callers pass what they made, so where every act post-dates that relation an empty list means *this act created nothing*, exactly. What is not correct is the dev database: **218 of 221 acts pre-date it, and 91 purchases worth `$4,013.69` were created inside them** (each entry born within 5 seconds of the act naming it, several with their envelopes minted at the same instant). A `creations_recorded` column would read TRUE on every row production ever writes -- production holds 0 acts -- so it would exist only to describe those 218. **Ruled: no column, no interim copy; clone dev from production and re-import, as its own coordinated session.** Until then those acts can orphan their purchase silently, which is the exposure this ruling accepts with its size measured. Owner of the residue is `operator`, in `ledger.md` under **N-345**. |
+| **R-GU** | 2026-08-26 (developer, on measurement) | **WHAT a standing rule may file, and what it must refuse.** Three decisions, each put with the figures from a simulation of `X-ge` over the developer's own 2026 statement, on a throwaway clone reset to his PRE-import books: **378 recorded lines** (the YTD export itself carries 376), of which 130 fall before his pay calendar opens and the matcher explains 137 against his own rows -- those keep their tick -- while **80 lines are reached by his 29 stated rules, `$2,886.13`** -- 28 of the 29 name a container and one is *never a purchase* -- of which **70 file (`$2,324.17`) and 10 are WITHHELD (`$561.96`) by (c)**. **(a) A rule FILES INTO AN ENVELOPE THAT HAS ALREADY CLOSED.** 33 of the 80 / `$911.10` do, and **ZERO** go into one still open, because he settles ahead of the bank -- so a door refusing this would file nothing for Groceries, Gas or Kayla's, which is the case the step exists for. Ruling **R-FX** already admits it on exactly the terms `destinations_for` enforces: the row's recorded figure IS its purchases, so a new one raises that cost by exactly the figure the bank showed and carries the bank's own posting day. Worked: Groceries starting 2026-08-13 records `$499.82` in three hand purchases the matcher pairs, and would take `$57.96` + `$10.89` + `$11.21` of swipes he never recorded, reading `$579.88`. **(b) A *new envelope* answer FILES TOO**, minting the container, rather than waiting for `X-f6c` to give that answer a template identity: 47 of the 80 / `$1,975.03`, and `Amazon` alone is 26 lines / `$1,323.06`. **The 29 envelopes over 11 periods that figure implies can never occur** -- a rule reaches NEW swipe lines only (**R-GI**), so it is what a whole-year BACKFILL would have produced; a fortnightly import touches one period and `MintedEnvelopes` mints one per answer in it. **(c) A rule files only where the pass POSITIVELY finished looking.** Membership of the creatable set is defined by SUBTRACTION -- *no proposal claimed this line* -- which under a human tick is checked by the person reading the screen and under auto-apply is checked by nobody. So the three bounds a pass publishes about its own search WITHHOLD the line, and the receipt says how many and why (`ReviewSet.search_gap_for`): a near miss the tier admitted and declined to choose between (the `$356.61`-for-one-`$178.29` shape, **N-335**), a day the group search skipped as too crowded, and a row the amount model could not price at all. **Two of the three measure 0 on his 378 recorded lines and the first does NOT**, which is the correction two adversarial reviews forced before this shipped: the first build read the bounds a pass PUBLISHES and called that enumeration complete, and it was measured false twice -- once booking N-335's own `$356.61` for one `$178.29` movement. The matcher APPLIES more bounds than it published, so each tier reports its own refusals now, in the module that owns the predicate (`X-ge-1`); nothing re-derives `NEAR_MISS_BOUND` or `DAY_WINDOW` outside its own module, which is **N-322**'s rule, and a tier added later must report or it is not a bound. That is the 10 lines: 5 whose near candidate was thrown out for want of the merchant in its label, and 5 whose EXACT counterpart the 14-day window refused -- one of them his own `Apple Music` row, **one day** out from the `Apple` line the door would otherwise have recorded a second time. **Also ruled, and it is R-FZ(d) from the other side**: a destination this statement PROPOSES as a whole-row match is not open to a rule, because auto-apply files BEFORE the proposal is ticked, so *the proposal wins* has to be reached by withholding rather than by ordering. Rejected for (a): refusing a closed envelope, measured to file 0 lines of 33. Rejected for (c): filing whatever the review screen would offer a create control for, which makes *nothing matched* mean two things the app cannot tell apart. Shipped at `X-ge`. |
 
 **The match predicate is RULED (R-FS) and the measurement that forced its shape is worth carrying.**
 A naive exact-amount matcher plateaus: 36 of 227 bank lines at a same-day tolerance, 119 at
@@ -102,13 +103,11 @@ than a second copy here (rule 16): **N-239** and **N-323**.
         row that HAS a template has a derivation to read (`ck_transactions_amount_ownership`), and
         X-au-e is the step that rebuilds what a templated row's amount is. Building against today's
         shape would mean building it twice.
-
   - [ ] **X-f6g** `refactor(reconcile): a statement-covered account reconciles from statements` --
         the reconcile panel stops offering an account whose statements the owner imports
         (**R-GD(d)**). **It owes a specification pass before it is picked up, and that pass IS the
         first half of the step**: the panel is the balance arc's surface, and what "statement
         coverage" means for a day no import spans is undecided. Nothing here starts by deleting it.
-
   - [ ] **X-f6b** `feat(import): the statement arrives without being fetched` -- the automated
         SOURCE ADAPTER (**R-FP**), RE-SCOPED 2026-08-24: the daily fetch lands on standing rules
         (**R-GH**), never a review queue, and its per-sync balance is the corroboration source the
@@ -124,32 +123,22 @@ than a second copy here (rule 16): **N-239** and **N-323**.
 (**R-GH**..**R-GL**); the argument, option spaces and worked examples are
 `docs/audits/bank_import_redesign/README.md`, and this document does not restate them. The
 retirement leaf -- deleting what the exception queue orphans -- is MINTED when `X-gf` ships, sized
-when reached.
+when reached. **The X-gb..X-ge span is CONDENSED under rule 5** (2026-08-26): its as-built records
+are the three `historical/bank_import_x_g*` files, every finding it carried and did not close is a
+live row in `ledger.md`, and the constraints it leaves a LATER step are on that step's own entry.
 
-- [x] **X-gb** `ec346c46` -- the delete door, **R-GM**, the P-6 repair (`$7,769.58` reversed).
+- [x] **X-gb** `ec346c46` -- the delete door (**R-GM**) and the P-6 repair, `$7,769.58` reversed.
       Closed **N-344**; opened **N-348**.
-
-- [x] **X-gc** `0452eef3` -- the screens stop stating what is false: **R-GN**, **R-GO**, **R-GP**.
-      **N-345** is half open, at `operator`. Both condensed under rule 5 to
-      `historical/bank_import_x_gb_x_gc_as_built_2026-08-25.md`.
-
-- [x] **X-gd** `d1910c95` -- *a merchant answer is a standing rule*: the merchant's IDENTITY
-      (`X-gd-1`) and its STORE (`X-gd-2`). All three condensed under rule 5 to
-      `historical/bank_import_x_gd_as_built_2026-08-26.md`. **What `X-ge` and `X-gf` must obey**: an
-      ANSWERED merchant outlives its lines; a rule is RESTATED and never UN-stated, so there is no
-      delete door and *ask me every time* BARS NOTHING; and `statement_matches.applied_by_rule` is
-      NOT NULL with no default, awaiting `X-ge`.
-
+- [x] **X-gc** `0452eef3` -- three surfaces stopped stating what is false (**R-GN**, **R-GO**,
+      **R-GP**). **N-345** is half open, at `operator`.
+- [x] **X-gd** `d1910c95` -- a merchant answer became a standing RULE: its IDENTITY and its STORE.
 - [x] **X-gd-1** `395b14f7` -- a merchant is a ROW (**R-GR**).
-
-- [x] **X-gd-2** `e7b597da` + `d1910c95` + `154cfcec` -- the rule STORE: four answers told apart by
-      one boolean (**R-GS**), and a match act records whether a rule performed it (**R-GT**). Closed
+- [x] **X-gd-2** `e7b597da` + `d1910c95` + `154cfcec` -- the rule STORE (**R-GS**, **R-GT**). Closed
       **N-353**; opened **N-358**, which is that row's PREDICATE measured false.
-
-- [ ] **X-ge** `feat(import): a rule files a new swipe by itself` -- the auto-apply door (**R-GH**),
-      **MOVES MONEY, OWN PR**: creation only, NEW swipe lines only, every application receipted with
-      X-f6f's undo, and every act touching a hand-made row still a ticked proposal.
-
+- [x] **X-ge** `6d3e3ca1` -- the auto-apply door (**R-GH**), MOVING MONEY with no press, over a
+      matcher that now publishes what it DECLINED to decide rather than only what it matched. What a
+      rule may file and what it must refuse is **R-GU**. Opens **N-359**; condensed to
+      `historical/bank_import_x_ge_as_built_2026-08-26.md`.
 - [ ] **X-gf** `feat(import): the review is an exception queue` -- what remains after rules: new
       merchants, contested lines, group residuals and the ticked proposals, with the permanent
       panels gone. **It carries a finding `X-ga` introduced and the ledger had no headroom to hold**
@@ -161,10 +150,15 @@ when reached.
       badge said out loud. Filtering parked lines out of `awaiting_review_count` is the third option
       and the worst -- the badge would read zero while the screen it links to still lists them,
       which is the figure-disagreeing-with-its-caption shape this arc has closed twice.
-      **`ledger.md` is AT its cap** (240 of a 260 file with 20 lines of headroom required, and no
-      row is closable because the gate holds every owner live), so conventions rule 5's archival
-      pass is owed before the next finding can be filed at all.
-
+      **What `X-gd` left it, carried here when that span was condensed** (rule 5, 2026-08-26): an
+      ANSWERED merchant outlives its lines, so the queue's merchant control is one table read and
+      not a union; and a rule is RESTATED and never UN-stated, so there is no delete door and
+      *ask me every time* BARS NOTHING -- a queue offering to withdraw one would be offering an act
+      that does not exist. It also carries **N-359**, `X-ge`'s: a line a rule WOULD have filed and
+      the pass withheld is, on this screen, indistinguishable from one nobody has answered for.
+      *(This entry claimed `ledger.md` was AT a 260-line cap until 2026-08-26. That cap was DROPPED
+      by developer ruling 2026-08-25 -- a cap on a one-line-per-finding registry is a cap on how
+      many defects the project may have measured -- so the archival pass it said was owed is not.)*
 - [ ] **X-gg** `docs(plans): the envelope-semantics design loop` -- **R-GK**'s owed loop, run WITH
       the developer: filling, closure on coverage, carry-forward and the grid's row identity (whose
       same-name double-render the review measured); it mints the build steps rather than building.
@@ -172,7 +166,6 @@ when reached.
       two-source -- debit swipes from SECU lines, card swipes from card-side charges -- and the
       card-tender entry shape the loop must design over is what CC3c rewrites. Designing over the
       payback shape the card arc deletes is the mistake that withdrew `balance:X-au-i`.
-
 - [ ] **X-gh** `feat(balance): the bank's balance asserts the anchor` -- **R-GL**, designed against
       the post-cutover assertion (after `balance:X-f3c`), with the residue surfaced as an exception
       and the hand true-up demoted to a correction. **The residue is not hypothetical**: `X-gb`
