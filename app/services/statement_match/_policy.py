@@ -40,8 +40,8 @@ from app.enums import TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.category import Category
+from app.models.merchant import Merchant
 from app.models.merchant_destination import MerchantDestination
-from app.models.statement_import import BankStatementLine
 from app.models.transaction_template import TransactionTemplate
 from app.utils.log_events import (
     BUSINESS,
@@ -80,7 +80,14 @@ class MerchantPolicy:
     """One stated answer to "where does this merchant's spending go?".
 
     Attributes:
-        merchant: The bank's own merchant string, which is the key.
+        merchant_id: The :class:`~app.models.merchant.Merchant` this answers
+            for, which is the key (plan step ``bank_import:X-gd-1``).  It was
+            the bank's own string, matched to a line's own copy of it by
+            equality; the merchant is a row now, so the key is its id.
+        merchant: What that merchant is CALLED, carried beside its id because
+            every sentence this module writes names it and the query that read
+            the answer read the name with it.  The same read-model join
+            :attr:`~._offers.BankLine.merchant` is.
         answer: Which of the three it is.
         template_id: The recurring definition to file into, for
             :attr:`PolicyAnswer.TEMPLATE`; ``None`` otherwise.
@@ -89,6 +96,7 @@ class MerchantPolicy:
         category_id: The category to create it under, likewise.
     """
 
+    merchant_id: int
     merchant: str
     answer: PolicyAnswer
     template_id: "int | None" = None
@@ -119,11 +127,15 @@ class MerchantPolicy:
         return self.answer is PolicyAnswer.NEVER
 
     @classmethod
-    def of(cls, row: MerchantDestination) -> "MerchantPolicy":
+    def of(cls, row: MerchantDestination, merchant: str) -> "MerchantPolicy":
         """Return *row* as the value every reader here shares.
 
         Args:
             row: The stored policy.
+            merchant: What the merchant it answers for is called, read in the
+                same statement as the row itself
+                (:func:`policies_for`) -- so no reader here has to go back for
+                a name to put in a sentence.
 
         Returns:
             Its :class:`MerchantPolicy`.  The answer is read off the columns
@@ -137,7 +149,8 @@ class MerchantPolicy:
         else:
             answer = PolicyAnswer.NEVER
         return cls(
-            merchant=row.merchant,
+            merchant_id=row.merchant_id,
+            merchant=merchant,
             answer=answer,
             template_id=row.template_id,
             envelope_name=row.envelope_name,
@@ -177,7 +190,7 @@ class PolicyView:
     resolvable by one caller and refused by the next inside one render.
 
     Attributes:
-        policies: What the owner has answered, by merchant
+        policies: What the owner has answered, by merchant id
             (:func:`policies_for`).
         template_names: What to call each recurring definition a policy on this
             account may name (:func:`offerable_templates`) -- the option list,
@@ -196,7 +209,7 @@ class PolicyView:
             2026-08-19.  Usually empty, and then it costs no query at all.
     """
 
-    policies: "dict[str, MerchantPolicy]"
+    policies: "dict[int, MerchantPolicy]"
     template_names: "dict[int, str]"
     active_categories: "frozenset[int]"
     stale_templates: "dict[int, str]"
@@ -252,83 +265,89 @@ class PolicyView:
 
 def policies_for(
     owner_id: int, account_id: int,
-) -> "dict[str, MerchantPolicy]":
+) -> "dict[int, MerchantPolicy]":
     """Return every policy this owner has stated for this account, by merchant.
+
+    **The merchant's NAME is read in the same statement as its answer** (plan
+    step ``bank_import:X-gd-1``).  Every sentence this module writes names the
+    merchant and the screen prints it beside the control, so a second read for
+    it would be a redundant producer call inside one request -- which this
+    project treats as a DRY violation rather than a cost.
 
     Args:
         owner_id: The user the caller proved owns the account.
         account_id: The account being reviewed.
 
     Returns:
-        ``{merchant: MerchantPolicy}``.  One statement per merchant is
-        structural (``uq_merchant_destinations_owner_account_merchant``), so
-        the mapping cannot lose a row to a collision.
+        ``{merchant_id: MerchantPolicy}``.  One answer per merchant is
+        structural (``uq_merchant_destinations_account_merchant``), so the
+        mapping cannot lose a row to a collision.
     """
     rows = (
-        db.session.query(MerchantDestination)
+        db.session.query(MerchantDestination, Merchant.name)
+        .join(
+            Merchant,
+            db.and_(
+                Merchant.id == MerchantDestination.merchant_id,
+                Merchant.account_id == MerchantDestination.account_id,
+            ),
+        )
         .filter(
             MerchantDestination.user_id == owner_id,
             MerchantDestination.account_id == account_id,
         )
         .all()
     )
-    return {row.merchant: MerchantPolicy.of(row) for row in rows}
+    return {
+        row.merchant_id: MerchantPolicy.of(row, name) for row, name in rows
+    }
 
 
-def statable_merchants(
-    account_id: int, stored: "dict[str, MerchantDestination] | None" = None,
-) -> "frozenset[str]":
-    """Return every merchant a policy on this account may be stated ABOUT.
+def account_merchants(account_id: int) -> "dict[int, str]":
+    """Return every merchant this account's statements have ever named.
 
-    **ONE scope, shared by the section that offers a row and the door that
-    writes one** -- the property :func:`~._candidates.destinations_for` gives a
-    destination, and the reason it is one function rather than two sets is that
-    two drifted the first time they were written.
+    **It was a UNION of two derivations and it is now a table** (plan step
+    ``bank_import:X-gd-1``).  ``statable_merchants`` computed *every merchant
+    this account's recorded lines name* and unioned it with *every merchant
+    already answered for*; the second half existed because deleting an import
+    took a merchant's lines with it and would otherwise have made a stated
+    answer unwithdrawable -- the section renders an answered merchant whichever
+    half it came from, and a check reading only the first half would have
+    refused that submission whole.  An ANSWERED
+    :class:`~app.models.merchant.Merchant` row OUTLIVES its lines, so the union
+    IS this table and the second half has nothing left to add.  The set is
+    exactly that union rather than a superset of it: deleting an import sweeps
+    the merchants no line names and no answer is about
+    (``statement_import._undo._forget_orphan_merchants``), which is the half
+    that preserved nothing.
 
-    Two halves, and the second is not decoration:
-
-    * every merchant this account's RECORDED lines name -- recorded rather than
-      merely unexplained, because a merchant whose every line is already
-      matched is still one the owner may want to answer for, and the next
-      statement will bring more of it;
-    * every merchant this owner has ALREADY answered for here.  Without it a
-      policy would become unwithdrawable the moment its lines went: the section
-      renders an answered merchant whichever half it came from, and a check
-      reading only the first half would refuse that submission whole.  No door
-      in ``app/`` deletes an import today -- that is finding **N-302**, owned by
-      ``X-f6a-4``, the NEXT step in this arc -- so this is a defect one step
-      from live rather than a hypothetical.
+    **What it is still FOR is the sentence, not the scope.**  A rule names a
+    ``merchant_id`` held to this account by
+    ``fk_merchant_destinations_merchant_account``, so a merchant this account
+    has never seen is unwritable rather than refused; this read is what lets
+    :func:`_refuse_unknown_merchants` answer a stale page with a sentence
+    instead of an ``IntegrityError``, and what gives every refusal here a name
+    to print.
 
     Args:
-        account_id: The account being reviewed.  ``bank_statement_lines``
-            carries no ``user_id`` of its own -- it is account-scoped, held to
-            its import's account by a composite key -- so the account IS the
-            ownership statement here, exactly as it is for
-            :func:`~._reads._unmatched_lines`.
-        stored: The owner's policies on this account, where the caller has
-            already read them (:func:`state_policies` has), else ``None`` to
-            read them here.
+        account_id: The account being reviewed.  ``merchants`` carries no
+            ``user_id`` of its own -- it is account-scoped, exactly as
+            ``bank_statement_lines`` is -- so the account IS the ownership
+            statement here.
 
     Returns:
-        The merchants, as a set.  A line naming none contributes nothing.
+        ``{merchant_id: name}``.  **In no stated order**, because both readers
+        index it and neither iterates: the order a screen shows merchants in is
+        :func:`~._section.merchant_section`'s, which sorts by name over a
+        NARROWER set and is graded there.  A promise of order here would be one
+        no caller keeps and no case could catch breaking.
     """
-    recorded = (
-        db.session.query(BankStatementLine.merchant)
-        .filter(
-            BankStatementLine.account_id == account_id,
-            BankStatementLine.merchant.isnot(None),
-        )
-        .distinct()
+    rows = (
+        db.session.query(Merchant.id, Merchant.name)
+        .filter(Merchant.account_id == account_id)
         .all()
     )
-    if stored is None:
-        stored = {
-            row.merchant: row
-            for row in db.session.query(MerchantDestination).filter(
-                MerchantDestination.account_id == account_id,
-            ).all()
-        }
-    return frozenset(row[0] for row in recorded) | frozenset(stored)
+    return dict(rows)
 
 
 def offerable_templates(account_id: int) -> "dict[int, str]":
@@ -406,7 +425,12 @@ class PolicyStatement:
     be a second one that could disagree with it.
 
     Attributes:
-        merchant: Which merchant this answers for.
+        merchant_id: Which merchant this answers for.  **The id and not the
+            name** (plan step ``bank_import:X-gd-1``): the form used to post
+            the bank's own string back, so the door's whole defence against a
+            crafted merchant was a scope comparison in Python; it posts the
+            merchant ROW now, which ``fk_merchant_destinations_merchant_account``
+            holds to this account.
         answer: The answer, or ``None`` to WITHDRAW the policy -- which is a
             real submission rather than an absence, because the control's
             do-nothing option has to be able to mean *forget what I said*.
@@ -415,7 +439,7 @@ class PolicyStatement:
         category_id: Likewise.
     """
 
-    merchant: str
+    merchant_id: int
     answer: "PolicyAnswer | None"
     template_id: "int | None" = None
     envelope_name: "str | None" = None
@@ -480,12 +504,13 @@ def _same_answer(row: MerchantDestination, statement: PolicyStatement) -> bool:
 
 
 def _checked_template(
-    statement: PolicyStatement, templates: "dict[int, str]",
+    statement: PolicyStatement, merchant: str, templates: "dict[int, str]",
 ) -> str:
     """Return the template's name, refusing one this account may not name.
 
     Args:
         statement: What the owner submitted.
+        merchant: What the merchant it answers for is called, for the refusal.
         templates: The account's offerable templates
             (:func:`offerable_templates`).
 
@@ -503,14 +528,16 @@ def _checked_template(
     if named is None:
         raise ValidationError(
             f"There is no recurring envelope on this account for "
-            f"{statement.merchant} to go into -- it may have been deleted or "
+            f"{merchant} to go into -- it may have been deleted or "
             f"turned off.  Reload the page and pick another.  Nothing was "
             f"changed."
         )
     return named
 
 
-def _reject_incomplete_new_envelope(statement: PolicyStatement) -> None:
+def _reject_incomplete_new_envelope(
+    statement: PolicyStatement, merchant: str,
+) -> None:
     """Refuse a NEW ENVELOPE answer stated by halves.
 
     **``_create._reject_incomplete_new_envelope``'s twin, and it was missing.**
@@ -535,6 +562,7 @@ def _reject_incomplete_new_envelope(statement: PolicyStatement) -> None:
 
     Args:
         statement: What the owner submitted.
+        merchant: What the merchant it answers for is called, for the refusal.
 
     Raises:
         ValidationError: When the new-envelope answer is named without both of
@@ -545,13 +573,14 @@ def _reject_incomplete_new_envelope(statement: PolicyStatement) -> None:
     named = (statement.envelope_name or "").strip()
     if not named or statement.category_id is None:
         raise ValidationError(
-            f"A new envelope for {statement.merchant} needs both a name and a "
+            f"A new envelope for {merchant} needs both a name and a "
             f"category.  Nothing was changed for it."
         )
 
 
 def _reject_spending_answer(
-    statement: PolicyStatement, account_payments: "frozenset[str]",
+    statement: PolicyStatement, merchant: str,
+    account_payments: "frozenset[int]",
 ) -> None:
     """Refuse filing a merchant's money as spending when it pays an ACCOUNT.
 
@@ -574,7 +603,8 @@ def _reject_spending_answer(
 
     Args:
         statement: What the owner submitted for one merchant.
-        account_payments: The merchants a source files as paying an account
+        merchant: What that merchant is called, for the refusal.
+        account_payments: The merchant ids a source files as paying an account
             (:attr:`~._bars.CreationBars.account_payments`).
 
     Raises:
@@ -582,14 +612,14 @@ def _reject_spending_answer(
             Refuses THIS statement only -- the pass's other answers land, which
             is what the per-item savepoint is for.
     """
-    if statement.merchant not in account_payments:
+    if statement.merchant_id not in account_payments:
         return
     if statement.answer not in (
         PolicyAnswer.TEMPLATE, PolicyAnswer.NEW_ENVELOPE,
     ):
         return
     raise ValidationError(
-        f"Your bank files {statement.merchant} as a payment to an account you "
+        f"Your bank files {merchant} as a payment to an account you "
         f"hold rather than as spending, so it cannot be filed in a budget "
         f"line -- the money it moved was spent somewhere else and your budget "
         f"already holds it there.  \"Never a purchase\" is the answer that "
@@ -597,7 +627,9 @@ def _reject_spending_answer(
     )
 
 
-def _checked_category(statement: PolicyStatement, owner_id: int) -> Category:
+def _checked_category(
+    statement: PolicyStatement, merchant: str, owner_id: int,
+) -> Category:
     """Return the category the new-envelope answer names, refusing another's.
 
     The IDOR probe every create door in this project performs before a write.
@@ -606,6 +638,7 @@ def _checked_category(statement: PolicyStatement, owner_id: int) -> Category:
 
     Args:
         statement: What the owner submitted.
+        merchant: What the merchant it answers for is called, for the refusal.
         owner_id: Whose categories may be reached.
 
     Returns:
@@ -629,28 +662,60 @@ def _checked_category(statement: PolicyStatement, owner_id: int) -> Category:
     )
     if category is None:
         raise ValidationError(
-            f"That category is not one of yours, so {statement.merchant} "
+            f"That category is not one of yours, so {merchant} "
             f"cannot go under it.  Reload the page and pick another.  Nothing "
             f"was changed."
         )
     return category
 
 
+@dataclass(frozen=True)
+class _Answering:
+    """What ONE pass over the merchant section reads, at one instant.
+
+    **The package's own idiom, applied to the write door** (plan step
+    ``bank_import:X-gd-1``): :class:`PolicyView` makes this argument for the
+    read side and :class:`~._scope.ReviewScope` makes it one tier down.  Every
+    field here is read by :func:`state_policies` before its first write and
+    used by every item of the pass, so threading them as six parameters was
+    six chances for one item to be answered against a fact another item was
+    answered against differently.
+
+    Attributes:
+        owner_id: The user the route proved owns the account.
+        account_id: The account being answered for.
+        stored: The answers already held, by merchant id.  **It is HELD IN
+            STEP as rows are added and withdrawn**, which is why it is a
+            mapping this pass mutates rather than a snapshot: a submission
+            naming one merchant twice must restate the row it just wrote
+            rather than insert a second and raise ``IntegrityError`` past that
+            item's savepoint.
+        names: This account's merchants by id (:func:`account_merchants`),
+            which is both the scope a submitted id is checked against and
+            where every sentence gets the name it prints.
+        templates: The recurring definitions an answer on this account may
+            name (:func:`offerable_templates`).
+        account_payments: The merchants a source files as paying an account
+            the owner holds (ruling **R-GJ**).
+    """
+
+    owner_id: int
+    account_id: int
+    stored: "dict[int, MerchantDestination]"
+    names: "dict[int, str]"
+    templates: "dict[int, str]"
+    account_payments: "frozenset[int]"
+
+
 def _apply_one(
-    statement: PolicyStatement,
-    owner_id: int,
-    account_id: int,
-    stored: "dict[str, MerchantDestination]",
-    templates: "dict[int, str]",
+    statement: PolicyStatement, answering: _Answering,
 ) -> "str | None":
     """Record one statement, and return the sentence for it or ``None``.
 
     Args:
         statement: What the owner submitted for one merchant.
-        owner_id: The user the route proved owns the account.
-        account_id: The account.
-        stored: The policies already held, by merchant.
-        templates: The account's offerable templates.
+        answering: What this pass read and what it has written so far
+            (:class:`_Answering`).
 
     Returns:
         One sentence naming what changed, or ``None`` when nothing did.
@@ -658,7 +723,10 @@ def _apply_one(
     Raises:
         ValidationError: On a template or category this owner may not name.
     """
-    row = stored.get(statement.merchant)
+    merchant = answering.names[statement.merchant_id]
+    stored = answering.stored
+    templates = answering.templates
+    row = stored.get(statement.merchant_id)
     # **UNCHANGED is decided before anything is validated, and the order is the
     # fix rather than a saving.**  A stored answer can stop being offerable
     # under the owner's feet -- a template deactivated through the templates
@@ -675,25 +743,25 @@ def _apply_one(
         if row is None:
             return None
         db.session.delete(row)
-        del stored[statement.merchant]
-        return f"{statement.merchant}: you have not said where these go."
+        del stored[statement.merchant_id]
+        return f"{merchant}: you have not said where these go."
     if statement.answer is PolicyAnswer.TEMPLATE:
-        named = _checked_template(statement, templates)
-        said = f"{statement.merchant} goes in {named}."
+        named = _checked_template(statement, merchant, templates)
+        said = f"{merchant} goes in {named}."
     elif statement.answer is PolicyAnswer.NEW_ENVELOPE:
-        _reject_incomplete_new_envelope(statement)
-        category = _checked_category(statement, owner_id)
+        _reject_incomplete_new_envelope(statement, merchant)
+        category = _checked_category(statement, merchant, answering.owner_id)
         statement = _trimmed(statement)
         said = (
-            f"{statement.merchant} gets a new envelope called "
+            f"{merchant} gets a new envelope called "
             f"{statement.envelope_name}, under {category.display_name}."
         )
     else:
-        said = f"{statement.merchant} is never a purchase."
+        said = f"{merchant} is never a purchase."
     if row is None:
         row = MerchantDestination(
-            user_id=owner_id, account_id=account_id,
-            merchant=statement.merchant,
+            user_id=answering.owner_id, account_id=answering.account_id,
+            merchant_id=statement.merchant_id,
         )
         db.session.add(row)
         # **Held in step as rows are added and deleted**, so a submission
@@ -702,7 +770,7 @@ def _apply_one(
         # savepoint.  Unreachable from the rendered form, which emits one row
         # per merchant; reachable by a crafted body, where the blast radius is
         # the whole pass.  Found by adversarial financial review 2026-08-19.
-        stored[statement.merchant] = row
+        stored[statement.merchant_id] = row
     row.template_id = statement.template_id
     row.envelope_name = statement.envelope_name
     row.category_id = statement.category_id
@@ -759,28 +827,34 @@ def state_policies(
         The :class:`StatedPolicies`.
     """
     stored = {
-        row.merchant: row
+        row.merchant_id: row
         for row in db.session.query(MerchantDestination).filter(
             MerchantDestination.user_id == owner_id,
             MerchantDestination.account_id == account_id,
         ).all()
     }
-    # **The scope check reads the policies THIS door already read.**  It was a
-    # separate function the route called first, which asked
-    # ``merchant_destinations`` a second time inside one request -- a redundant
-    # producer call, which this project treats as a DRY violation rather than a
-    # cost.  Found by adversarial design review 2026-08-19.
-    _refuse_unknown_merchants(statements, account_id, stored)
-    templates = offerable_templates(account_id)
+    # **ONE read of this account's merchants, and it does two jobs.**  It is
+    # the set a submitted id is checked against, and it is where every sentence
+    # below gets the name it prints -- so the door never asks twice for a fact
+    # it already holds, which is the DRY rule this project applies to producer
+    # calls inside one request.  It replaced a THIRD job at plan step
+    # ``bank_import:X-gd-1``: it used to be what made a stored answer correct,
+    # and ``fk_merchant_destinations_merchant_account`` is that now.
+    names = account_merchants(account_id)
+    _refuse_unknown_merchants(statements, names)
     # **Read HERE rather than taken from a caller**, for the reason the
     # templates beside it are: this door reaches nothing a read pass holds, and
     # a fact threaded in across a write boundary would rest on an enumeration
     # of what cannot have changed.  One indexed statement over the account's
     # recorded lines (ruling **R-GJ**, plan step ``bank_import:X-ga``).
-    account_payments = account_payment_merchants(account_id)
+    answering = _Answering(
+        owner_id=owner_id, account_id=account_id, stored=stored, names=names,
+        templates=offerable_templates(account_id),
+        account_payments=account_payment_merchants(account_id),
+    )
     said, refused, unchanged = [], [], 0
     for statement in statements:
-        if statement.answer is None and statement.merchant not in stored:
+        if statement.answer is None and statement.merchant_id not in stored:
             # Not an answer and nothing to withdraw.  The section submits every
             # merchant it renders, so this is most of an ordinary pass -- and
             # counting it as UNCHANGED would make the receipt's own sentence
@@ -798,10 +872,11 @@ def state_policies(
             # reported as no change.  It costs a standing refusal on that one
             # merchant until it is corrected, which is the loud end of a choice
             # whose quiet end is an illegal answer stored forever.
-            _reject_spending_answer(statement, account_payments)
-            sentence = _apply_one(
-                statement, owner_id, account_id, stored, templates,
+            _reject_spending_answer(
+                statement, answering.names[statement.merchant_id],
+                answering.account_payments,
             )
+            sentence = _apply_one(statement, answering)
             # Inside this statement's savepoint, for the reason
             # ``_batch._run``'s flush is inside its own: autoflush would
             # otherwise emit this row's INSERT while the NEXT statement's first
@@ -820,7 +895,7 @@ def state_policies(
             _logger, logging.INFO, EVT_MERCHANT_DESTINATION_STATED, BUSINESS,
             "An owner stated where a merchant's spending goes.",
             user_id=owner_id, account_id=account_id,
-            merchant=statement.merchant,
+            merchant_id=statement.merchant_id,
             answer=statement.answer.value if statement.answer else "withdrawn",
             template_id=statement.template_id,
             category_id=statement.category_id,
@@ -833,43 +908,51 @@ def state_policies(
 
 def _refuse_unknown_merchants(
     statements: "tuple[PolicyStatement, ...]",
-    account_id: int,
-    stored: "dict[str, MerchantDestination]",
+    names: "dict[int, str]",
 ) -> None:
-    """Refuse a statement about a merchant this account may not be asked about.
+    """Refuse a statement about a merchant this account has never seen.
 
-    **The scope check, and it is the whole submission's rather than one
-    item's.**  A merchant outside :func:`statable_merchants` cannot have come
-    from this screen at all -- the section renders a SUBSET of that set -- so a
-    statement naming one is a crafted request rather than a stale page, and
-    there is no pass to salvage.  It is the asymmetry
+    **It is a SENTENCE now, not the guard** (plan step ``bank_import:X-gd-1``).
+    A stated answer names a ``merchant_id``, and
+    ``fk_merchant_destinations_merchant_account`` holds that row to this
+    account -- so a foreign or invented merchant is unwritable rather than
+    refused here.  What this buys is the same thing :func:`_checked_template`
+    buys one refusal over: the constraint arrives as an ``IntegrityError``,
+    which reaches the owner as "Something went wrong" with a logged traceback
+    for what is ordinarily a stale page.
+
+    Until then this WAS the guard.  It compared the submitted string against a
+    DISTINCT over every recorded line, unioned with the answers already stored,
+    and without it the table would have held an answer keyed on any string a
+    caller liked -- inert, but unbounded write amplification against a table
+    with no other ceiling.
+
+    **It is the whole submission's rather than one item's**, and that has not
+    changed: the section renders a SUBSET of this account's merchants, so a
+    statement naming one outside it is a crafted request rather than a stale
+    page, and there is no pass to salvage.  It is the asymmetry
     ``StatementPurchaseSchema`` already states for a malformed payload.
-
-    Without it the table would happily hold a policy for any string a caller
-    liked: a row keyed on a merchant nothing joins is inert, but it is
-    unbounded write amplification against a table with no other ceiling.
 
     Args:
         statements: What the owner submitted.
-        account_id: The account being reviewed.
-        stored: The policies already held, which :func:`state_policies` has
-            already read -- the ANSWERED half of the scope, threaded rather
-            than re-queried.
+        names: This account's merchants by id (:func:`account_merchants`),
+            which :func:`state_policies` has already read.
 
     Raises:
-        ValidationError: When any statement names a merchant outside the scope.
+        ValidationError: When any statement names a merchant outside them.
     """
-    known = statable_merchants(account_id, stored)
-    unknown = sorted(
-        {
-            statement.merchant for statement in statements
-            if statement.merchant not in known
-        }
-    )
+    unknown = {
+        statement.merchant_id for statement in statements
+        if statement.merchant_id not in names
+    }
     if unknown:
+        # **The ids are NOT named back.**  The refusal this replaced quoted the
+        # merchant strings, which were the owner's own words and read as an
+        # explanation; a row id is the app's own surrogate and means nothing to
+        # anybody reading it, so quoting it would be noise that also says how
+        # this account's keys are numbered.
         raise ValidationError(
-            f"Your bank has never shown "
-            f"{', '.join(repr(name) for name in unknown)} on this account, so "
-            f"there is nothing to say about it.  Reload the page.  Nothing was "
-            f"changed."
+            f"{len(unknown)} of the merchants you answered for are not ones "
+            f"your bank has shown on this account, so there is nothing to say "
+            f"about them.  Reload the page.  Nothing was changed."
         )

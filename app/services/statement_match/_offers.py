@@ -504,42 +504,44 @@ class Candidates:
     unpriceable_ids: "tuple[int, ...]"
 
 
-def merchant_label(line) -> str:
-    """Return what to CALL this line's merchant, always non-empty.
+def merchant_label(merchant: "str | None", description: str) -> str:
+    """Return what to CALL a line's merchant, always non-empty.
 
-    The bank's own merchant where the source names one
-    (``bank_statement_lines.merchant``), else the whole description.  **Two
-    consumers, and both need a string rather than an answer**: the new-envelope
-    name box on the review screen, and the description
-    :func:`~._create.create_purchase_from_line` gives the purchase it writes.
-    ``transactions.name`` and ``transaction_entries.description`` are both NOT
-    NULL, and neither door goes through a schema that would supply a default,
-    so the fallback is what makes those writes total.
+    The merchant's own name where the source named one, else the whole
+    description.  **Two consumers, and both need a string rather than an
+    answer**: the new-envelope name box on the review screen, and the
+    description :func:`~._create.create_purchase_from_line` gives the purchase
+    it writes.  ``transactions.name`` and ``transaction_entries.description``
+    are both NOT NULL, and neither door goes through a schema that would supply
+    a default, so the fallback is what makes those writes total.
 
     **It is a LABEL and never a key**, which is the whole distinction plan step
-    ``bank_import:X-f6a-3d`` drew: a merchant destination policy is keyed by
-    the COLUMN, which is ``None`` for a source that names no merchant, so a
-    policy fires on nothing there.  This falls back to the description instead,
-    because a name box cannot show ``None`` -- and if the two were one
-    function, that fallback would become a key and a whole truncated OFX
-    statement would share it.  The predecessor
-    (``merchant_of(description)``) WAS one function, parsing the description at
-    render time; what replaced it is the adapter recording the fact and this
-    reader choosing how to display it.
+    ``bank_import:X-f6a-3d`` drew: a merchant rule is keyed by the merchant
+    ROW, and a source that names none has no row -- so a rule fires on nothing
+    there.  This falls back to the description instead, because a name box
+    cannot show ``None`` -- and if the two were one function, that fallback
+    would become a key and a whole truncated OFX statement would share it.  The
+    predecessor (``merchant_of(description)``) WAS one function, parsing the
+    description at render time; what replaced it is the adapter recording the
+    fact and this reader choosing how to display it.
 
-    **Structurally typed** over :class:`BankLine` and
-    :class:`~app.models.statement_import.BankStatementLine` alike -- each
-    exposes ``merchant`` and ``description`` -- which is
-    :meth:`MatchDays.of`'s idiom: one rule, stated once, over whichever of the
-    two shapes the caller already holds.
+    **It takes the two VALUES it uses** (plan step ``bank_import:X-gd-1``).  It
+    took a line and duck-typed over :class:`BankLine` and
+    :class:`~app.models.statement_import.BankStatementLine`, which each
+    exposed a ``merchant`` string; the ORM row's is a
+    :class:`~app.models.merchant.Merchant` now, so one spelling no longer
+    reaches both -- and a function taking a name and a description says what it
+    needs without either caller having to be a particular shape.
 
     Args:
-        line: A recorded line, in either shape.
+        merchant: What the merchant is called, or ``None`` where the source
+            named none.
+        description: What the bank called the line, verbatim.
 
     Returns:
         The label.
     """
-    return line.merchant or line.description
+    return merchant or description
 
 
 @dataclass(frozen=True)
@@ -558,12 +560,21 @@ class BankLine:
             is carried here rather than re-read at the write door: the
             proposer has to know it too, because whether that write can
             succeed is what decides whether the pairing may be OFFERED.
-        merchant: What the bank NAMES the merchant, or ``None`` where the
-            source names none.  **Carried from the column rather than parsed
-            from :attr:`description`** (plan step ``bank_import:X-f6a-3d``):
-            it is the key a destination policy is stated against, and a reader
-            that derived it would have to be total, which on a source with no
-            merchant field means every line keying one policy.
+        merchant_id: The :class:`~app.models.merchant.Merchant` this line was
+            with, or ``None`` where the source names none.  **This is the KEY**
+            (plan step ``bank_import:X-gd-1``): a stated destination is about
+            this row, so the two sides of that join are one id rather than two
+            copies of one string compared by equality.
+        merchant: What that merchant is CALLED, carried beside its id for the
+            reason every label on this value is carried: the screen prints it
+            and the refusals name it, and re-reading a name a query has already
+            fetched is the N+1 this package pays for at 90 lines a statement.
+            ``None`` exactly when :attr:`merchant_id` is -- both come from the
+            same row, and a source that names no merchant has neither.
+            **Carried from the recorded fact rather than parsed from
+            :attr:`description`** (plan step ``bank_import:X-f6a-3d``): a
+            reader that derived it would have to be total, which on a source
+            with no merchant field means every line keying one rule.
     """
 
     line_id: int
@@ -571,12 +582,13 @@ class BankLine:
     amount: Decimal
     description: str
     transaction_on: "date | None" = None
+    merchant_id: "int | None" = None
     merchant: "str | None" = None
 
     @property
     def merchant_label(self) -> str:
         """Return what to call this line's merchant (:func:`merchant_label`)."""
-        return merchant_label(self)
+        return merchant_label(self.merchant, self.description)
 
     @property
     def states_impossible_days(self) -> bool:

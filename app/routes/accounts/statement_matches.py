@@ -391,22 +391,23 @@ def _submitted_policies(submitted) -> "tuple[PolicyStatement, ...]":
         answer = item["answer"]
         if answer == NOT_SAID:
             statements.append(PolicyStatement(
-                merchant=item["merchant"], answer=None,
+                merchant_id=item["merchant_id"], answer=None,
             ))
         elif answer == NEVER:
             statements.append(PolicyStatement(
-                merchant=item["merchant"], answer=PolicyAnswer.NEVER,
+                merchant_id=item["merchant_id"], answer=PolicyAnswer.NEVER,
             ))
         elif answer == NEW_ENVELOPE:
             statements.append(PolicyStatement(
-                merchant=item["merchant"],
+                merchant_id=item["merchant_id"],
                 answer=PolicyAnswer.NEW_ENVELOPE,
                 envelope_name=item["envelope_name"],
                 category_id=item["category_id"],
             ))
         else:
             statements.append(PolicyStatement(
-                merchant=item["merchant"], answer=PolicyAnswer.TEMPLATE,
+                merchant_id=item["merchant_id"],
+                answer=PolicyAnswer.TEMPLATE,
                 template_id=answer,
             ))
     return tuple(statements)

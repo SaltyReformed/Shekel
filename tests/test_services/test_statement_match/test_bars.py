@@ -59,10 +59,12 @@ from app.services.statement_match._vocabulary import (  # pylint: disable=protec
 from ._builders import (
     a_bank_line,
     a_bars,
+    a_merchant,
     a_policy,
     a_scope,
     a_submission,
     a_transaction,
+    the_merchant_id,
     an_import,
 )
 
@@ -117,7 +119,9 @@ class TestWhichMerchantsAreBarred:
 
         bars = a_bars(seed_user)
 
-        assert bars.bar_for(CARD_MERCHANT) is CreationBar.NEVER_A_PURCHASE
+        assert bars.bar_for(
+            the_merchant_id(seed_user, CARD_MERCHANT),
+        ) is CreationBar.NEVER_A_PURCHASE
 
     def test_a_line_that_PAYS_AN_ACCOUNT_is_barred_with_no_answer_at_all(
         self, app, db, seed_user,
@@ -135,7 +139,7 @@ class TestWhichMerchantsAreBarred:
 
         bars = a_bars(seed_user)
 
-        assert bars.bar_for(CARD_MERCHANT) is (
+        assert bars.bar_for(the_merchant_id(seed_user, CARD_MERCHANT)) is (
             CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD
         )
 
@@ -162,7 +166,7 @@ class TestWhichMerchantsAreBarred:
         a_policy(seed_user, CARD_MERCHANT, template_id=envelope.template_id)
         db.session.flush()
 
-        assert a_bars(seed_user).bar_for(CARD_MERCHANT) is (
+        assert a_bars(seed_user).bar_for(the_merchant_id(seed_user, CARD_MERCHANT)) is (
             CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD
         )
 
@@ -180,7 +184,7 @@ class TestWhichMerchantsAreBarred:
         a_policy(seed_user, "Geico")
         db.session.flush()
 
-        assert a_bars(seed_user).bar_for("Geico") is (
+        assert a_bars(seed_user).bar_for(the_merchant_id(seed_user, "Geico")) is (
             CreationBar.NEVER_A_PURCHASE
         )
 
@@ -197,7 +201,7 @@ class TestWhichMerchantsAreBarred:
         _a_swipe(seed_user, statement)
         db.session.flush()
 
-        assert a_bars(seed_user).bar_for("Food Lion") is None
+        assert a_bars(seed_user).bar_for(the_merchant_id(seed_user, "Food Lion")) is None
 
     def test_a_line_naming_NO_merchant_puts_NOTHING_in_the_bars(
         self, app, db, seed_user,
@@ -286,7 +290,9 @@ class TestTheSourcesLabelOnlyASKS:
         _a_card_payment(seed_user, statement)
         db.session.flush()
 
-        assert a_bars(seed_user).account_payments == frozenset({CARD_MERCHANT})
+        assert a_bars(seed_user).account_payments == frozenset(
+            {a_merchant(seed_user, CARD_MERCHANT).id},
+        )
 
     def test_another_category_from_the_same_source_is_not_one(
         self, app, db, seed_user,
@@ -329,10 +335,11 @@ class TestTheSourcesLabelOnlyASKS:
 
         bars = a_bars(seed_user)
 
-        assert bars.account_payments == frozenset(
-            {CARD_MERCHANT, OLD_CARD_MERCHANT},
-        )
-        assert bars.bar_for(OLD_CARD_MERCHANT) is (
+        assert bars.account_payments == frozenset({
+            a_merchant(seed_user, CARD_MERCHANT).id,
+            a_merchant(seed_user, OLD_CARD_MERCHANT).id,
+        })
+        assert bars.bar_for(the_merchant_id(seed_user, OLD_CARD_MERCHANT)) is (
             CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD
         )
 
@@ -342,7 +349,7 @@ class TestTheSourcesLabelOnlyASKS:
         """The scope, which the composite join is what makes structural.
 
         A policy is stated per account
-        (``uq_merchant_destinations_owner_account_merchant``) and so is the
+        (``uq_merchant_destinations_account_merchant``) and so is the
         evidence behind it: a card payment recorded on another account says
         nothing about what this account's lines are.  The join carries the
         account on BOTH sides (``fk_bank_statement_lines_import_account``), so
@@ -353,9 +360,12 @@ class TestTheSourcesLabelOnlyASKS:
         db.session.flush()
 
         assert a_bars(seed_user).account_payments == frozenset()
-        assert a_bars(seed_second_user).account_payments == frozenset(
-            {CARD_MERCHANT},
-        )
+        assert a_bars(seed_second_user).account_payments == frozenset({
+            a_merchant(
+                seed_second_user, CARD_MERCHANT,
+                account=seed_second_user["account"],
+            ).id,
+        })
 
 
 class TestTheDoorRefusesABarredLine:
@@ -520,7 +530,8 @@ class TestThePolicyDoorRefusesTheAnswerThatContradictsTheBar:
         """Submit one policy statement for the card merchant."""
         return state_policies(
             (PolicyStatement(
-                merchant=CARD_MERCHANT, answer=answer, **fields,
+                merchant_id=a_merchant(seed_user, CARD_MERCHANT).id,
+                answer=answer, **fields,
             ),),
             owner_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
@@ -607,7 +618,8 @@ class TestThePolicyDoorRefusesTheAnswerThatContradictsTheBar:
 
         outcome = state_policies(
             (PolicyStatement(
-                merchant="Food Lion", answer=PolicyAnswer.TEMPLATE,
+                merchant_id=a_merchant(seed_user, "Food Lion").id,
+                answer=PolicyAnswer.TEMPLATE,
                 template_id=envelope.template_id,
             ),),
             owner_id=seed_user["user"].id,

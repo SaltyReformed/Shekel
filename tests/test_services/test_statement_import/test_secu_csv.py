@@ -837,7 +837,7 @@ class TestItRecordsTheMerchantTheBankNAMES:
         """An all-whitespace token is not a name, and here that is a KEY.
 
         A blank merchant would be a policy the owner could neither read on the
-        screen nor restate.  ``ck_bank_statement_lines_merchant_not_blank``
+        screen nor restate.  ``ck_merchants_name_not_blank``
         says the same thing in the database, so the adapter and the table
         cannot drift.
         """
