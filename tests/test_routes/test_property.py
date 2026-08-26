@@ -1054,7 +1054,10 @@ class TestPropertyEquityChartProducer:
             )
             # It runs to the plan's last modelled installment, and the debt is
             # still real there (growing, not zero).
-            plan_end = max(payment.due_date for payment in memoized_plan(loan, ctx))
+            plan_end = max(
+                payment.due_date
+                for payment in memoized_plan(loan, ctx).payments
+            )
             assert last_month == (plan_end.year, plan_end.month)
             assert series.month_balances[last_month][0] > Decimal("240000.00")
 
@@ -1088,9 +1091,14 @@ class TestPropertyEquityChartProducer:
             db.session.commit()
 
             ctx = BalanceContext.build(prop.user_id, as_of=today)
-            assert memoized_plan(loan, ctx) == [], (
+            empty = memoized_plan(loan, ctx)
+            assert empty.payments == [], (
                 "precondition: the whole term and its extension must be past, "
                 "or this does not exercise the empty-plan fallback"
+            )
+            assert empty.charges == [], (
+                "and a plan with no payments charges nothing -- a period the "
+                "plan does not pay in has no accrual (plan step R16-a)"
             )
             figures = balance_at.loan_figures(loan, ctx)
             assert figures.payoff_date is None

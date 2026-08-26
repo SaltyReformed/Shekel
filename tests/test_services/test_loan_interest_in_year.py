@@ -78,16 +78,27 @@ def _plan_projected_interest(loan, ctx, year, *, exclude_slots=frozenset()):
     seed = net_worth_kernel.generate_debt_schedules(
         [loan], ctx,
     )[loan.id].projection_seed
+    plan = loan_plan(loan, ctx)
+    # The CHARGE standing against each accrual period, keyed by the period it
+    # opens.  Since plan step R16-a a month's interest and escrow are charged
+    # once per period rather than once per payment, and this oracle folds
+    # through ``split_payment_cash`` -- the one-payment-per-month composition --
+    # because every plan it grades puts one payment in each period.
+    charged = {
+        (charge.on_date.year, charge.on_date.month): charge
+        for charge in plan.charges
+    }
     balance = seed
     total = ZERO
     for payment in sorted(
-        loan_plan(loan, ctx), key=lambda p: (p.due_date, p.effective_date),
+        plan.payments, key=lambda p: (p.due_date, p.effective_date),
     ):
+        slot = (payment.due_date.year, payment.due_date.month)
+        charge = charged[slot]
         parts = split_payment_cash(
-            payment.cash, balance, payment.annual_rate, payment.escrow,
+            payment.cash, balance, charge.annual_rate, charge.escrow,
         )
         balance = parts.balance_after
-        slot = (payment.due_date.year, payment.due_date.month)
         if payment.effective_date.year == year and slot not in exclude_slots:
             total += parts.interest
     return total
@@ -254,7 +265,7 @@ class TestLoanInterestInYearMerge:
             # vacuously empty plan.
             plan_slots = {
                 (payment.due_date.year, payment.due_date.month)
-                for payment in loan_plan(loan, ctx)
+                for payment in loan_plan(loan, ctx).payments
             }
             assert (2026, 4) not in plan_slots      # P3's slot, de-duped
             assert (2026, 3) in plan_slots          # its uncovered neighbours ARE
@@ -322,7 +333,7 @@ class TestLoanInterestInYearMerge:
             march = (2026, 3)
             plan_slots = {
                 (payment.due_date.year, payment.due_date.month)
-                for payment in loan_plan(loan, ctx)
+                for payment in loan_plan(loan, ctx).payments
             }
             assert march not in plan_slots
 

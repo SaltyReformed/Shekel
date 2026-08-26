@@ -69,9 +69,9 @@ from app.models.account import Account
 from ._context import BalanceContext, _memoize_once, require_scenario
 from ._fold import fold_from_walk
 from . import _kernel
-from ._plan import (
+from ._plan import memoized_plan
+from ._plan_fold import (
     fold_forward,
-    memoized_plan,
     plan_payoff_date,
     plan_required_extra,
 )
@@ -155,7 +155,7 @@ def positions(
       walk) over the loan's source events -- the past that step B2 proves equal to
       the sum-of-postings reader the seam read before the cutover.
     * **A date after the NOW, OR any date for a loan not yet originated by it: the
-      forward PLAN fold** (:func:`~app.services.balance_at._plan.fold_forward` over
+      forward PLAN fold** (:func:`~app.services.balance_at._plan_fold.fold_forward` over
       the memoized :meth:`~app.services.balance_at.BalanceContext.loan_plan`)
       -- the confirmed-present seed
       (:attr:`~app.services.balance_at._kernel.DebtSchedule.projection_seed`) folded
@@ -356,13 +356,13 @@ def loan_payoff_date(account: Account, ctx: BalanceContext) -> date | None:
     present seed (:attr:`~app.services.balance_at._kernel.DebtSchedule.projection_seed`)
     and the SAME memoized forward plan
     (:meth:`~app.services.balance_at.BalanceContext.loan_plan`) and folds
-    them to zero (:func:`~app.services.balance_at._plan.plan_payoff_date`), so the
+    them to zero (:func:`~app.services.balance_at._plan_fold.plan_payoff_date`), so the
     payoff is the date :func:`positions` shows the balance reaching ``0.00`` -- the
     chip, the equity chart, and the payoff cannot disagree about WHETHER the loan
     clears.  (They can differ on the DATE only in one rare edge: an overdue-but-
     projected installment that itself clears the loan folds at its past DUE date
     here but its future EFFECTIVE date in :func:`positions`; see
-    :func:`~app.services.balance_at._plan.plan_payoff_date`.)  DERIVED, never
+    :func:`~app.services.balance_at._plan_fold.plan_payoff_date`.)  DERIVED, never
     stored: it replaces the persisted-from-a-blind-walk copies
     (``LoanState.payoff_date``, ``RecurrenceRule.end_date``) the arc retires (plan
     step C8).
@@ -454,7 +454,7 @@ def memoized_payoff(account: Account, ctx: BalanceContext) -> date | None:
 def loan_required_extra(
     account: Account, ctx: BalanceContext, target_date: date,
 ) -> Decimal | None:
-    """Return the extra per payment *account* needs to be clear by *target_date*.
+    """Return the extra PER MONTH *account* needs to be clear by *target_date*.
 
     The target-date calculator's answer (plan step C8f), composed from the SAME
     confirmed-present seed and the SAME memoized forward plan
@@ -476,10 +476,12 @@ def loan_required_extra(
 
     Returns:
         ``Decimal("0.00")`` when the current plan already clears the loan by
-        *target_date*, the searched per-payment extra when one exists, or ``None``
+        *target_date*, the searched per-MONTH extra when one exists (per ACCRUAL
+        PERIOD since plan step R16-a, which is the ``/mo`` the panel renders), or
+        ``None``
         when the target is unreachable -- no planned payment lands by then (a past
         target, or one before the next installment), or the search exhausted its
-        bound (see :func:`~app.services.balance_at._plan.plan_required_extra`).
+        bound (see :func:`~app.services.balance_at._plan_fold.plan_required_extra`).
 
     Raises:
         ValueError: When ``scenario`` is None, or when *account* is not a

@@ -27,7 +27,7 @@ consumer that legitimately holds a :class:`~app.services.loan_ledger.LoanLedgerW
 only code that turns a walk into money is seam-private.  That is what lets the walk
 shed its fence entry (a walk one call from a balance had to be fenced; a walk that is
 not, does not).  This is the balance-side twin of the forward fold
-(:func:`app.services.balance_at._plan.fold_forward`), which has lived seam-private
+(:func:`app.services.balance_at._plan_fold.fold_forward`), which has lived seam-private
 since step C6a; the two share the one date-sampling core :func:`sample_cumulative`,
 so the past and the future cannot drift on how a running balance is read at a date.
 
@@ -72,7 +72,7 @@ def sample_cumulative(
 
     Both the ACTUAL past fold (:func:`fold_from_walk`, seeded at ``0.00`` over the
     walk's dated principal deltas) and the forward projection fold
-    (:func:`app.services.balance_at._plan.fold_forward`, seeded at the confirmed
+    (:func:`app.services.balance_at._plan_fold.fold_forward`, seeded at the confirmed
     present over the plan's paydowns) sample through here, so the past and the
     future cannot drift on how a running balance is read at a date.
 
@@ -181,7 +181,7 @@ def fold_loan_balances(
 
     **ACTUAL events only.**  It folds what is RECORDED -- the loan's anchors and
     its settled payments -- so it answers the past.  PLANNED payments (the future)
-    are the seam's forward fold (:func:`app.services.balance_at._plan.fold_forward`
+    are the seam's forward fold (:func:`app.services.balance_at._plan_fold.fold_forward`
     over the loan's plan); asked about a future date this holds the last recorded
     balance flat, which is honest for what it knows but is NOT the projection the
     seam shows.  Grade it on the past.

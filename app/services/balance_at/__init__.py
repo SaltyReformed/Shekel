@@ -162,8 +162,11 @@ FROM here, not the other way round.  Inside the package the direction is
 {_asset_contributions, _cash_fold}``, ``_kind_correct -> {_asset_fold,
 _inputs}``,
 ``_liability -> _inputs``, ``_secured_debt -> {_loan_figures, _positions,
-_inputs}``, and ``_loan_figures -> _positions -> _plan`` (the figures' payoff is
-the fold to zero, plan step C8d) -- a DAG with ``_fold`` at the producer floor,
+_inputs}``, ``_loan_figures -> _positions -> {_plan, _plan_fold}`` (the figures'
+payoff is the fold to zero, plan step C8d), and ``{_positions, _loan_interest} ->
+_plan_fold -> {_plan, _fold}`` -- the forward model's BUILD and its FOLD, split
+at plan step R16-a when ``_plan`` passed the line ceiling, with the arrow one-way
+because ``_plan`` imports neither -- a DAG with ``_fold`` at the producer floor,
 so no module imports a sibling that imports it back.  Every loan producer also
 imports ``_resolution`` for the read
 pass's ONE whole-loan read; ``_resolution`` imports only ``_context`` among its
@@ -171,7 +174,7 @@ siblings, plus ``_confirmed_view`` for the confirmed seed it threads into every
 resolution (plan step E1d-b); ``_confirmed_view`` imports ``_context`` and
 ``_fold``, so that sub-chain is a DAG too.  ``_context`` sits at the
 floor, with ``_fold`` and ``_asset_contributions`` -- the three modules that
-import no sibling at runtime.  ``_plan``'s ``PlannedPayment``, ``_resolution``'s
+import no sibling at runtime.  ``_plan``'s ``LoanForwardPlan``, ``_resolution``'s
 ``ResolvedLoan`` and ``_cash_fold``'s ``AssembledCashFold`` are all type-only
 edges typing the caches the seam FILLS, so the arrow from the fourteen modules
 above stays one-way and the cycle finding N-25 names stays open.

@@ -74,7 +74,7 @@ if TYPE_CHECKING:
     # cash fold), so they carry NO runtime edge back -- the sibling cycle a
     # runtime import would close (finding N-25) stays open.
     from ._cash_fold import AssembledCashFold
-    from ._plan import PlannedPayment
+    from ._plan import LoanForwardPlan
     from ._resolution import ResolvedLoan
 
 # What a memo cache's derivation yields.  The five account-keyed caches
@@ -234,7 +234,7 @@ class BalanceContext:  # pylint: disable=too-many-instance-attributes
     loans: "dict[int, ResolvedLoan | None]" = field(
         default_factory=dict, repr=False, compare=False,
     )
-    plans: "dict[int, list[PlannedPayment]]" = field(
+    plans: "dict[int, LoanForwardPlan]" = field(
         default_factory=dict, repr=False, compare=False,
     )
     payoffs: "dict[int, date | None]" = field(
@@ -633,22 +633,32 @@ def _memoize_once(
     two can no longer adopt it.  Neither is per-account, so neither is a
     pairing a caller can state at all.
 
+    **Membership, never truthiness.**  The check is ``account.id not in cache``, not a
+    truthiness test on the value, because a derivation may have a legitimately
+    falsy answer: a ``None`` resolution (not a configured loan) and a ``None``
+    payoff (a loan that never clears).  A truthiness check would re-derive those on
+    EVERY read of every pass -- unbounded, and green under every test that happens
+    to use a configured loan that clears.
+
+    **The PLAN was a third example until plan step R16-a, and how it stopped being
+    one is the better argument for the rule.**  ``loan_plan`` answered ``[]`` for a
+    not-yet-configured or fully-retired loan; it now answers a
+    ``LoanForwardPlan(payments=[], charges=[])``, which is unconditionally TRUTHY.
+    The cache is no longer at risk there -- but a CONSUMER was, and silently:
+    ``_secured_debt._debt_span_upper`` tested ``if not plan`` and took the
+    wrong branch the moment the value stopped being a list, until it became
+    ``if not plan.payments``.  Membership is the rule here for the same reason
+    ``.payments`` is the test there: what these values MEAN is never what
+    ``bool()`` says about them.  *The WALK and the CASH FOLD are dataclass
+    instances and never falsy either, so neither would have caught it --
+    which is why the property is pinned on the primitive rather than on
+    whichever cache a test happened to use.*
+
     **It is not an ownership gate**; whether the requester may see the account
     was decided upstream, and this cannot know that.  What it answers is whether
     the account and the pass describe ONE read -- a question no route can ask,
     because no route knows a context exists.  See
     :class:`~app.exceptions.ForeignAccountError`.
-
-    **Membership, never truthiness.**  The check is ``account.id not in cache``,
-    not a truthiness test on the value, because THREE of the five derivations
-    have a legitimately falsy answer: a ``None`` resolution (not a configured
-    loan), an empty plan (a not-yet-configured or fully-retired loan), and a
-    ``None`` payoff (a loan that never clears).  A truthiness check would
-    re-derive those on EVERY read of every pass -- unbounded, and green under
-    every test that happens to use a loan whose plan is non-empty.  *The other
-    two, the WALK and the CASH FOLD, are dataclass instances and never falsy, so
-    they would not have caught it -- which is why the property is pinned on the
-    primitive rather than on whichever cache a test happened to use.*
 
     **A raising build is not cached.**  ``cache[account.id]`` is assigned only
     from a returned value, so a fail-loud guard inside *build* (the seam's

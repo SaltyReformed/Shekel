@@ -42,8 +42,13 @@ walk needs no fence (plan step D-fold).
 
 ## The modules
 
-* :mod:`._split` -- the ONE split function: how one payment's ACTUAL cash divides
-  into interest / escrow / principal / refund.  Pure.
+* :mod:`._split` -- the ONE split: how one payment's ACTUAL cash divides into
+  interest / escrow / principal / refund.  Pure.  **It is TWO rules since plan
+  step R16-a**, because fusing them made the payment COUNT the clock: charging a
+  month's interest inside the per-payment step means N payments charge N months
+  however far apart they fall.  :func:`apply_payment_cash` is the ALLOCATION
+  alone -- cash against charges already standing -- and :func:`split_payment_cash`
+  is the one-payment-per-month composition that charges a month first.
 * :mod:`._events` -- the event stream: the loan's anchors and its settled
   payments, merged into one chronological order.  Reads no clock.
 * :mod:`._walk` -- the running-balance replay over that stream (the loan's FACTS:
@@ -95,6 +100,7 @@ from ._walk import (
 from ._split import (
     LoanPaymentSplit,
     PaymentCashSplit,
+    apply_payment_cash,
     split_one_payment,
     split_payment_cash,
 )
@@ -109,6 +115,7 @@ __all__ = [
     "LoanPaymentSplit",
     "PaymentCashSplit",
     "anchor_visible_on",
+    "apply_payment_cash",
     "compute_loan_payment_splits",
     "confirmed_shadows_through",
     "dated_deltas",
