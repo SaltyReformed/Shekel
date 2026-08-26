@@ -33,6 +33,8 @@ from app.models.statement_import import (
     BankStatementLine,
     StatementImport,
 )
+from app.models.merchant import Merchant
+from app.models.merchant_destination import MerchantDestination
 from app.models.statement_match import StatementMatch, StatementMatchMember
 from app.services import statement_match
 from app.services.statement_import import delete_import, record_statement
@@ -396,6 +398,108 @@ class TestThePairingOutlivesNoImportThatTaughtIt:
         assert removal.identity_forgotten is False
         assert db.session.query(AccountExternalIdentity).count() == 1
         assert first.import_id == db.session.query(StatementImport).one().id
+
+
+class TestTheMerchantsOutliveTheirLinesONLYWhileTheyAreANSWERED:
+    """The sweep, and the exception that is the whole reason it is narrow.
+
+    Plan step ``bank_import:X-gd-1``, on an adversarial security review of
+    2026-08-25.  A merchant is deliberately NOT removed with the lines that
+    named it, because a stated answer has to stay readable and restatable
+    afterwards -- that property is what retired ``statable_merchants``' second
+    derivation.  **It is a property of ANSWERED merchants**, and applied to all
+    of them it left ``budget.merchants`` with no ceiling at all: upload a file
+    naming any number of unseen merchants, delete the import, keep them,
+    permanently, once per upload.
+
+    Both directions are here because either alone is satisfiable by a wrong
+    rule -- sweeping nothing passes the second, sweeping everything passes the
+    first.
+    """
+
+    def test_a_merchant_NOTHING_still_names_goes_with_the_import(
+        self, app, db, seed_user,
+    ):
+        """The ceiling.  Sweep nothing and this fails."""
+        outcome = _import(seed_user)
+        assert db.session.query(Merchant).count() == 2
+
+        removal = _undo(seed_user, outcome.import_id)
+
+        assert removal.merchants_forgotten == 2
+        assert db.session.query(Merchant).count() == 0
+
+    def test_an_ANSWERED_merchant_STAYS_when_its_lines_go(
+        self, app, db, seed_user,
+    ):
+        """THE firing control for the sweep's ``notin_`` over stated answers.
+
+        Drop that clause and an owner who deletes an import loses every answer
+        they had stated about its merchants -- silently, through a door whose
+        receipt would not even say so, because the rule row goes with the
+        merchant on ``fk_merchant_destinations_merchant_account``.
+        """
+        outcome = _import(seed_user)
+        answered = db.session.query(Merchant).filter(
+            Merchant.name == "Food Lion",
+        ).one()
+        db.session.add(MerchantDestination(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            merchant_id=answered.id,
+        ))
+        db.session.flush()
+
+        removal = _undo(seed_user, outcome.import_id)
+
+        assert removal.merchants_forgotten == 1
+        assert [row.name for row in db.session.query(Merchant).all()] == [
+            "Food Lion",
+        ]
+        assert db.session.query(MerchantDestination).count() == 1
+
+    def test_a_merchant_ANOTHER_SURVIVING_import_names_STAYS(
+        self, app, db, seed_user,
+    ):
+        """The other half of *nothing still names it*, on the line side.
+
+        Two imports over the same span record one set of lines -- the second
+        adds none -- so deleting the second must sweep nothing at all: every
+        merchant is still named by a line the first import owns.
+        """
+        first = _import(seed_user)
+        second = _import(seed_user, file_name="again.csv")
+
+        removal = _undo(seed_user, second.import_id)
+
+        assert removal.merchants_forgotten == 0
+        assert db.session.query(Merchant).count() == 2
+        assert first.import_id == db.session.query(StatementImport).one().id
+
+    def test_it_sweeps_THIS_account_alone(
+        self, app, db, seed_user, seed_second_user,
+    ):
+        """The scope clause, which a destructive statement may not be without.
+
+        Drop ``Merchant.account_id == account_id`` and one owner's import
+        delete takes every unanswered merchant in the database, across every
+        account -- which is the worst shape a missing scope filter can take,
+        because the door is destructive and its receipt would report the count
+        as its own work.
+        """
+        theirs = Merchant(
+            account_id=seed_second_user["account"].id, name="Theirs Alone",
+        )
+        db.session.add(theirs)
+        db.session.flush()
+        outcome = _import(seed_user)
+
+        removal = _undo(seed_user, outcome.import_id)
+
+        assert removal.merchants_forgotten == 2
+        assert [row.name for row in db.session.query(Merchant).all()] == [
+            "Theirs Alone",
+        ]
 
 
 class TestItRefusesWhatIsNotThisOwnersImport:
