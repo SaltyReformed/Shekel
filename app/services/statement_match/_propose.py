@@ -80,14 +80,20 @@ Services-boundary discipline: plain data in, frozen dataclasses out.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 from itertools import combinations
 
 from ._near import near_misses
 from ._offers import BankLine, CandidateRow, MatchProposal, RowKind
-from ._pairing import DAY_WINDOW, day_distance, days_outside, within_window
+from ._pairing import (
+    DAY_WINDOW,
+    day_distance,
+    days_outside,
+    exactly_matched_but_outside_the_window,
+    within_window,
+)
 
 
 #: The largest number of candidate rows a single recorded DAY may hold and
@@ -146,15 +152,33 @@ class ProposedMatches:
             because their bucket held more than :data:`MAX_GROUP_DAY_ROWS`
             candidate rows.  Empty on the developer's own data, where the
             busiest bucket carries 31 against a cap of 32.
-        undecided_near_lines: WHICH lines the NEAR pass admitted a candidate
-            for and then declined to choose between -- because two rows are
-            equally admissible for that line, or because the row it would have
-            named is admissible for another line too.  **The second bound this
-            pass owes an answer for** (plan step ``bank_import:X-f6d-1``): a
-            score that withholds is a bound, and this module has now twice
-            shipped one that read as a clean sweep (findings **N-315**,
-            **N-322**).  Empty on the developer's own data, where all five
-            scored lines resolve.
+        declined_lines: WHICH lines this pass CONSIDERED a candidate for and
+            then declined to conclude about, and the sentence each tier gives
+            for its own refusal.  **The difference between *there is nothing*
+            and *we threw the only candidate away*, which until plan step
+            ``bank_import:X-ge-1`` this type could not express** -- and the
+            distinction is the whole safety of ruling **R-GH**'s automatic
+            door: under a human tick the person reading the screen was the
+            check, and that door has no person.
+
+            **Every tier contributes its OWN refusals, in its own words**
+            (:func:`~._near.near_misses`, :func:`~._pairing
+            .exactly_matched_but_outside_the_window`), which is the only shape
+            that keeps this total: a bound a tier applies and does not put here
+            is one nothing can see, and a reader re-deriving it from a
+            different population is finding **N-322** itself.  A tier added
+            later must report or it is not a bound.
+
+            It carries what ``undecided_near_lines`` carried until that step --
+            a NEAR candidate the tier admitted and would not choose between --
+            plus the two rejections that were swallowed: a near candidate
+            refused for want of the merchant in its label or for the day
+            window, and an EXACT candidate the window refused.  **Measured on
+            the developer's own 378 lines**: the contest is empty and the newly
+            reported rejections touch 12 of the 80 lines a standing rule would
+            file, `$391.77` -- one of them his own `Apple Music` row, one day
+            past the window from the `Apple` line that would have been filed a
+            second time.
 
             **It is the LINE IDS rather than a count since plan step
             ``bank_import:X-f6d-3``.**  A count can only be reported in a panel
@@ -167,7 +191,7 @@ class ProposedMatches:
 
     proposals: "tuple[MatchProposal, ...]"
     crowded_days: "tuple[date, ...]"
-    undecided_near_lines: "frozenset[int]" = frozenset()
+    declined_lines: "dict[int, str]" = field(default_factory=dict)
 
 
 
@@ -762,10 +786,23 @@ def propose(
     spoken_for_rows = {
         (row.kind, row.row_id) for proposal in exact for row in proposal.rows
     }
-    near, undecided = near_misses(
-        [line for line in lines if line.line_id not in spoken_for_lines],
-        [row for row in rows if (row.kind, row.row_id) not in spoken_for_rows],
-    )
+    residue_lines = [
+        line for line in lines if line.line_id not in spoken_for_lines
+    ]
+    residue_rows = [
+        row for row in rows if (row.kind, row.row_id) not in spoken_for_rows
+    ]
+    near, declined = near_misses(residue_lines, residue_rows)
+    # **Each tier reports the bound IT applies, and this is where the reports
+    # are joined** (plan step ``bank_import:X-ge-1``, finding **N-322**'s rule).
+    # The near tier's own refusals are already in ``declined``; the exact
+    # tier's is the day window, which :mod:`._pairing` owns and now publishes.
+    # A near refusal WINS on a line that has both: it is the narrower claim,
+    # naming a figure the app scored rather than one it merely equalled.
+    for line_id, sentence in exactly_matched_but_outside_the_window(
+        residue_lines, residue_rows,
+    ).items():
+        declined.setdefault(line_id, sentence)
     # **The key must survive a ``None`` gap**, which the three-valued
     # ``day_gap`` introduced and a first draft of this sort did not: mixing one
     # undated proposal with one dated one raised ``TypeError`` inside the page
@@ -790,5 +827,5 @@ def propose(
             ),
         )),
         crowded_days=tuple(crowded),
-        undecided_near_lines=undecided,
+        declined_lines=declined,
     )

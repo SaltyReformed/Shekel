@@ -85,6 +85,7 @@ from app.schemas.validation.statements import (
 )
 from app.services.category_service import list_active_categories
 from app.services.statement_match import (
+    Consent,
     HandTotals,
     MatchSubmission,
     NewEnvelope,
@@ -231,6 +232,11 @@ def _submitted_batch(submitted) -> ReviewedBatch:
         The :class:`~app.services.statement_match.ReviewedBatch`.
     """
     return ReviewedBatch(
+        # **A person read this screen and pressed Apply** (ruling **R-GH**).
+        # Stated as a literal because it is a fact about the DOOR rather than
+        # about the payload: no wire value reaches it, and the only other
+        # consent belongs to an import filing under a standing rule.
+        consent=Consent.TICKED,
         matches=tuple(
             MatchSubmission(
                 line_ids=frozenset(item["line_ids"]),

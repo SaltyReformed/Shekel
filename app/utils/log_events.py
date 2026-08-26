@@ -534,6 +534,21 @@ EVT_STATEMENT_BATCH_APPLIED = _register(
     "REFUSED item is counted at all.",
 )
 
+EVT_STATEMENT_RULES_FILED = _register(
+    "statement_rules_filed", BUSINESS,
+    "An import filed NEW swipe lines as purchases under the owner's own "
+    "standing merchant rules, with no press (ruling R-GH, plan step "
+    "bank_import:X-ge).  It MOVES MONEY, and it is the only door in the app "
+    "that does so without an act in the same request: the consent was given "
+    "when the rule was stated.  Its own event beside statement_imported, "
+    "because recording what the bank said and filing it into the budget are "
+    "different acts with different consequences -- the first moves no figure "
+    "and this one does.  ``withheld_count`` is the half a count of what "
+    "landed cannot report: lines a rule ANSWERS FOR that this pass refused to "
+    "file, because it could not finish searching for a counterpart or because "
+    "the destination is one the same statement already explains whole.",
+)
+
 EVT_MERCHANT_RULE_STATED = _register(
     "merchant_rule_stated", BUSINESS,
     "An owner said where one merchant's spending goes on one account -- a "

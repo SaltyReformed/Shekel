@@ -150,6 +150,72 @@ def within_window(row: CandidateRow, line: BankLine) -> bool:
     return first - slack <= line.posted_on <= last + slack
 
 
+#: What the pass SAYS about a line whose exact counterpart the WINDOW refused.
+#:
+#: Written beside the bound that produced it, for the reason
+#: :data:`~._near._DECLINED_SENTENCES` states: a reader composing its own would
+#: be a second statement of what this module decided.
+EXACT_BUT_TOO_FAR: str = (
+    "one of your own rows is for exactly this figure, and it is dated too far "
+    "away for the app to pair them"
+)
+
+
+def exactly_matched_but_outside_the_window(
+    lines: "list[BankLine]", rows: "list[CandidateRow]",
+) -> "dict[int, str]":
+    """Return the lines an EXACT row exists for and the window refused.
+
+    Plan step ``bank_import:X-ge-1``.  **The one bound this module applies that
+    nothing published**, and publishing it is finding **N-322**'s own rule --
+    which this module's header already states in as many words: *a bound only
+    one pass applies is not a bound, it is a disagreement*.
+
+    **An exact figure is the strongest claim the matcher has**, which is why
+    the exact tier needs no corroboration for it (:func:`~._near
+    ._names_the_merchant` states that argument from the other side).  So a line
+    whose figure an unclaimed row matches TO THE CENT, refused only because the
+    two are dated too far apart, is precisely a line the pass had a reason to
+    look harder at -- and until this step it was indistinguishable from a line
+    with no candidate at all.  Under a human tick that cost nothing, because
+    the person reading the screen was the check; ruling **R-GH**'s automatic
+    door removed the person.
+
+    **Measured on the developer's own books 2026-08-26**, over the 80 lines a
+    standing rule would file: 5 lines, `$151.77` -- and one of them is real.
+    An `Apple` line of `-$21.34` posted 2026-07-29 sits **15 days** from his
+    own `Apple Music` row of `$21.34`, one day past :data:`DAY_WINDOW`, so the
+    automatic door would have recorded that subscription a second time.
+
+    **It reports rather than pairs, and the two are different jobs.**  Widening
+    the window would change what the app PROPOSES, which is a claim about
+    evidence that ruling R-GD(b) settled by measurement; this changes only what
+    the app SAYS it declined, which is the conservative direction and needs no
+    such licence.
+
+    Args:
+        lines: The bank lines no proposal explains.
+        rows: The candidate rows no proposal claims.
+
+    Returns:
+        ``{line_id: sentence}``, one entry per line, empty when the window
+        refused no exact pair.  **The FLOOR counts as the window here**:
+        :func:`within_window` refuses a purchase the line predates for a
+        different reason, and both are this module declining a pair it had a
+        figure to consider.
+    """
+    declined: "dict[int, str]" = {}
+    for line in lines:
+        for row in rows:
+            if row.cash_amount != line.amount:
+                continue
+            if within_window(row, line):
+                continue
+            declined[line.line_id] = EXACT_BUT_TOO_FAR
+            break
+    return declined
+
+
 def days_outside(window: "tuple[date, date]", day: date) -> int:
     """Return how far *day* falls OUTSIDE *window*, in days.
 

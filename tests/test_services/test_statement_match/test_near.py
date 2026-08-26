@@ -103,9 +103,16 @@ def _reconciled(row_id, amount, made, asserted):
 
 
 def _offered(lines, rows):
-    """Return ``(proposals, undecided line ids)`` as a list and a set."""
-    proposals, undecided = near_misses(lines, rows)
-    return list(proposals), undecided
+    """Return ``(proposals, the lines this tier DECLINED)`` as a list and a dict.
+
+    **``near_misses`` returns a mapping since plan step ``bank_import:X-ge-1``**
+    -- line id to the sentence this tier gives for its own refusal -- where it
+    returned a bare set of the CONTESTED lines.  The cases below assert
+    membership, which is what they asserted before; the SENTENCES are graded by
+    the cases that name them.
+    """
+    proposals, declined = near_misses(lines, rows)
+    return list(proposals), declined
 
 
 class TestTheDefectThisTierExists:
@@ -129,7 +136,7 @@ class TestTheDefectThisTierExists:
         assert proposals[0].difference == Decimal("0.03")
         assert proposals[0].bank_amount == Decimal("-178.29")
         assert proposals[0].app_amount == Decimal("-178.32")
-        assert undecided == frozenset()
+        assert set(undecided) == set()
 
     def test_the_variance_is_what_the_screen_would_SAY(self):
         """*bank `$178.29`, your row `$178.32`* -- the step's own sentence.
@@ -175,7 +182,7 @@ class TestTheBoundIsRELATIVE:
         )
 
         assert proposals == []
-        assert undecided == frozenset()
+        assert set(undecided) == set()
 
     def test_the_bound_is_the_VALUE_the_measurement_fixed(self):
         """`0.005`, named as a literal, because the VALUE is the decision.
@@ -250,7 +257,14 @@ class TestTheROWMustNAMETheMerchant:
         )
 
         assert proposals == []
-        assert undecided == frozenset()
+        # **...and the tier now SAYS it threw that candidate away** (plan step
+        # ``bank_import:X-ge-1``).  This case asserted `set() == set()` until
+        # then, which is the state that let ruling **R-GH**'s automatic door
+        # file over a row the app already held: refusing to PROPOSE and
+        # refusing to SAY are different acts, and only the first was ever
+        # right.
+        assert set(undecided) == {310}
+        assert "does not name this merchant" in undecided[310]
 
     def test_a_line_naming_NO_merchant_offers_nothing(self):
         """``None`` means *this source names none* and corroborates nothing.
@@ -353,7 +367,15 @@ class TestItOffersNothingTheDoorWouldREFUSE:
         )
 
         assert proposals == []
-        assert undecided == frozenset()
+        # **...and the tier does NOT report it**, which is a measured decision
+        # rather than an oversight (plan step ``bank_import:X-ge-1``).  A row
+        # whose figure is whatever its contents come to is the ordinary shape
+        # here -- every envelope is one -- so publishing it as *the pass
+        # declined a candidate* withheld the very Groceries filing ruling
+        # R-GU exists to perform.  The two refusals this tier DOES publish are
+        # about evidence for the pairing; this one is about the row's own
+        # model.  See ``_near._FIGURE_ADMITTED``.
+        assert set(undecided) == set()
 
     def test_a_TRANSFER_SHADOW_is_not_offered(self):
         """``CLAUDE.md`` transfer invariant 3 holds the two halves equal.
@@ -451,7 +473,7 @@ class TestAContestIsREPORTEDRatherThanSettled:
         )
 
         assert proposals == []
-        assert undecided == frozenset({1})
+        assert set(undecided) == {1}
 
     def test_a_TWO_BASIS_POINT_margin_does_not_decide(self):
         """Adversarial design review 2026-08-22, and the module's own proof.
@@ -471,7 +493,7 @@ class TestAContestIsREPORTEDRatherThanSettled:
         )
 
         assert proposals == []
-        assert undecided == frozenset({1})
+        assert set(undecided) == {1}
 
     def test_a_RECONCILED_span_does_not_let_the_day_decide(self):
         """Adversarial test-quality review 2026-08-22.
@@ -498,7 +520,7 @@ class TestAContestIsREPORTEDRatherThanSettled:
         proposals, undecided = _offered([line], [old, same_day])
 
         assert proposals == []
-        assert undecided == frozenset({1})
+        assert set(undecided) == {1}
 
     def test_ONE_reconciled_purchase_is_still_offered(self):
         """The positive control for the case above.
@@ -518,7 +540,7 @@ class TestAContestIsREPORTEDRatherThanSettled:
 
         assert len(proposals) == 1
         assert proposals[0].rows == (alone,)
-        assert undecided == frozenset()
+        assert set(undecided) == set()
 
     def test_a_row_TWO_lines_admit_goes_to_NEITHER(self):
         """The symmetry, and it is what keeps the offers LEGAL as well.
@@ -535,7 +557,7 @@ class TestAContestIsREPORTEDRatherThanSettled:
         )
 
         assert proposals == []
-        assert undecided == frozenset({1, 2})
+        assert set(undecided) == {1, 2}
 
     def test_an_EXACT_pair_is_not_this_tier_s(self):
         """The exact tiers have already had it, and had it better.
@@ -549,7 +571,7 @@ class TestAContestIsREPORTEDRatherThanSettled:
         )
 
         assert proposals == []
-        assert undecided == frozenset()
+        assert set(undecided) == set()
 
 
 class TestTheTiersInPROPOSE:
@@ -648,7 +670,7 @@ class TestTheTiersInPROPOSE:
         )
 
         assert proposed.proposals == ()
-        assert proposed.undecided_near_lines == frozenset({1})
+        assert set(proposed.declined_lines) == {1}
 
     def test_a_line_the_tier_DECIDED_is_not_reported_as_undecided(self):
         """The control that keeps the assertion above from being a tautology.
@@ -660,7 +682,7 @@ class TestTheTiersInPROPOSE:
         proposed = propose([_line(1, "-178.29")], [_row(1, "-178.32")])
 
         assert len(proposed.proposals) == 1
-        assert proposed.undecided_near_lines == frozenset()
+        assert set(proposed.declined_lines) == set()
 
 
 class TestARowNobodyHasSETTLED:

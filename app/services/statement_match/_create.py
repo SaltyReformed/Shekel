@@ -33,6 +33,17 @@ the app's shape does not depend on whether a category happened to be budgeted.
 picking is what makes this a review rather than an import that rewrites a
 budget.
 
+**...and since plan step ``bank_import:X-ge`` the owner may have picked
+EARLIER** (ruling **R-GH**).  Consent splits by ACT CLASS: a standing merchant
+rule is the owner saying where that merchant's money goes, so an import may
+open this door for a NEW swipe line without a second act -- and every act that
+would MODIFY a row they made by hand still needs its tick, which is
+:func:`~._accept.accept_match`'s door and not this one.  Nothing about the
+purchase changes: the destination is resolved from the same offer set, the
+figure and both days come from the same recorded line, and the act records
+WHICH consent it had (``applied_by_rule``) so an owner reading the receipt can
+tell the two apart and undo either.
+
 **...but some lines have no answer at all, and this door refuses them** (ruling
 **R-GJ**, plan step ``bank_import:X-ga``).  A merchant the owner has answered
 *never a purchase* for, and one a SOURCE files as a payment to a credit card
@@ -55,23 +66,16 @@ route owns the unit of work.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from app import ref_cache
-from app.enums import SettledDayBasisEnum, StatusEnum, TxnTypeEnum
+from app.enums import SettledDayBasisEnum
 from app.exceptions import ValidationError
 from app.extensions import db
-from app.models.category import Category
 from app.models.statement_import import BankStatementLine
 from app.models.transaction import Transaction
-from app.services import (
-    entry_service,
-    posting_service,
-    transaction_service,
-)
-from app.services.scenario_resolver import require_baseline_scenario
+from app.models.transaction_entry import TransactionEntry
+from app.services import entry_service
 from app.services.settle_day import SettleDay
 from app.utils.log_events import (
     BUSINESS,
@@ -81,161 +85,28 @@ from app.utils.log_events import (
 
 from ._accept import MatchContent, record_match
 from ._bars import CreationBars, reject_barred_line
+from ._container import (
+    MintedEnvelopes,
+    close_container,
+    reject_ambiguous_destination,
+    reject_incomplete_new_envelope,
+    resolve_destination,
+)
 from ._resolve import load_lines
 from ._candidates import (
     MatchedSubjects,
     matched_subjects,
     purchase_candidate,
-    unmatched_destinations,
 )
 from ._creations import (
+    CreatedPurchase,
     CreatedSubject,
-    NewEnvelope,
     PurchaseCreation,
-    envelope_answer_key,
 )
 from ._offers import CandidateRow, RowKind, merchant_label
 from ._scope import ReviewScope
 
 _logger = logging.getLogger(__name__)
-
-#: What a created envelope BUDGETS.  Zero, because nothing budgeted it: the
-#: line is spending the plan did not anticipate, and inventing a budget equal to
-#: the spend would make every unplanned purchase look planned.  A projected
-#: envelope holds back ``max(estimated - posted - credit, unposted)``, so with a
-#: purchase that already carries its posting day the reservation is ``0.00`` and
-#: the purchase books its own cash -- the row states what happened and reserves
-#: nothing.
-_NO_BUDGET = Decimal("0.00")
-
-
-@dataclass
-class MintedEnvelopes:
-    """The envelopes ONE request has already created, so a press mints one each.
-
-    Plan step ``bank_import:X-f6a-4``, finding **N-327**, developer ruling
-    2026-08-20.  A merchant rule answering *a new envelope called X* used to
-    mint one PER LINE: measured on the developer's own statement, a ``Lowe's``
-    answer places 4 lines over 3 pay periods, so one press made 4 envelopes,
-    two of them in the SAME period.  No figure was wrong -- each closes at its
-    own purchases -- and what fragmented was the budget.
-
-    **Scoped to ONE REQUEST, and that scope is the design rather than a
-    limitation.**  The cross-STATEMENT half is answered by the SUGGESTION
-    instead (:func:`~._placement._new_envelope_placement` degrades to a
-    ``RECORD_IN`` against a same-named envelope already in the period, which
-    the owner sees printed beside the line and may override).  Only the
-    within-one-press half needs a write-side rule at all, because at render
-    time the envelope this press is about to create does not yet exist for any
-    select to name.
-
-    Keying on the CATEGORY as well as the name and the period is deliberate:
-    two answers naming one word under two categories are two budget lines, and
-    merging them would file spending under a category the owner did not pick.
-
-    **A refused item leaves nothing here, and the CALLER is what makes that
-    true.**  :func:`~._batch.apply_reviewed` remembers an envelope only after
-    the act that made it has RETURNED, so a creation rolled back inside its own
-    SAVEPOINT (ruling **R-FZ**) leaves no entry pointing at a row that no
-    longer exists.  A first implementation remembered inside the create door,
-    one line above the refusal that kills the item -- and the very next line of
-    the sweep then looked up an id the rollback had taken, and died on
-    ``NoneType``.  The registry cannot be written where the write is not yet
-    known to have survived.
-
-    Attributes:
-        by_key: ``{(name, category_id, pay_period_id): transaction_id}`` for
-            what this request has minted.
-    """
-
-    by_key: "dict[tuple[str, int, int], int]"
-
-    @classmethod
-    def none_yet(cls) -> "MintedEnvelopes":
-        """Return the empty registry one request starts with."""
-        return cls(by_key={})
-
-    def envelope_for(
-        self, new_envelope: NewEnvelope, pay_period_id: int,
-    ) -> "int | None":
-        """Return the envelope this request already minted for that answer.
-
-        Args:
-            new_envelope: The answer the owner stated.
-            pay_period_id: The period the purchase is budgeted in.
-
-        Returns:
-            The transaction id, or ``None`` when this request has minted none.
-        """
-        return self.by_key.get(
-            envelope_answer_key(new_envelope, pay_period_id),
-        )
-
-    def remember(
-        self, new_envelope: NewEnvelope, created: "CreatedPurchase",
-    ) -> None:
-        """Record that this request minted an envelope for that answer.
-
-        **Called by the BATCH after the act RETURNED**, never by the door that
-        creates -- see the class docstring for what a first version cost.
-
-        Args:
-            new_envelope: The answer the caller submitted, which it still
-                holds.  Taken as an argument rather than carried out through
-                *created*, because a value threaded through a return only so
-                its own caller can read it back is a round trip.
-            created: What the act did, for the envelope and its period.
-        """
-        self.by_key[
-            envelope_answer_key(new_envelope, created.pay_period_id)
-        ] = created.transaction_id
-
-
-@dataclass(frozen=True)
-class CreatedPurchase:  # pylint: disable=too-many-instance-attributes
-    """What recording one bank line as a purchase did.
-
-    Pylint: too-many-instance-attributes -- **nine because the act genuinely
-    produces nine facts**, with four separate consumers reading disjoint
-    subsets: the structured log takes the three ids and both days, the flash
-    takes the container's label and whether it was created plus the figure and
-    the posting day, the tests take the ids, and
-    :meth:`MintedEnvelopes.remember` takes the period.  ``CandidateRow`` beside
-    it carries the same disable for the same reason.  Splitting the container's
-    fields into a nested value would be the speculative shape rule 13 forbids
-    -- nothing asks for the container alone.
-
-    Attributes:
-        entry_id: The ``budget.transaction_entries`` row now holding the
-            movement.
-        transaction_id: The budget line that contains it.
-        match_id: The ``budget.statement_matches`` act recording that this line
-            IS that purchase, so the line stops being unexplained and a
-            re-import does not re-offer it.
-        envelope_label: What to call the container on screen.
-        envelope_created: Whether that container was created by this act.  The
-            receipt names it, because creating a budget line is a bigger thing
-            to have done than filing a purchase under one that existed.
-        amount: The purchase's own figure, POSITIVE -- what the bank took.
-        posts_on: The day the bank took it.
-        made_on: The day the bank says it was made, which is the purchase's own
-            budget clock and is the posting day where the source states none.
-        pay_period_id: The period the purchase is BUDGETED in, which is the
-            period holding :attr:`made_on`.  Carried out rather than re-derived
-            by a caller: it is resolved once here for both arms, and a second
-            derivation is how the two came to disagree once already.  It is
-            what :meth:`MintedEnvelopes.remember` keys the minted envelope by.
-    """
-
-    entry_id: int
-    transaction_id: int
-    match_id: int
-    envelope_label: str
-    envelope_created: bool
-    amount: Decimal
-    posts_on: date
-    made_on: date
-    pay_period_id: int
 
 
 def _load_line(
@@ -307,335 +178,6 @@ def _made_on(line: BankStatementLine) -> date:
     return line.transaction_on or line.posted_on
 
 
-def _reject_ambiguous_destination(creation: PurchaseCreation) -> None:
-    """Refuse a submission naming both destinations or neither.
-
-    The two arms are exclusive by construction: a purchase has exactly one
-    parent, so "put it in this envelope" and "make an envelope for it" cannot
-    both be the answer.  Stated as a refusal rather than a precedence rule --
-    a door that silently preferred one arm would record something the owner did
-    not ask for.
-
-    Args:
-        creation: What the owner submitted.
-
-    Raises:
-        ValidationError: When both arms or neither are named.
-    """
-    named = sum((
-        creation.transaction_id is not None,
-        creation.new_envelope is not None,
-    ))
-    if named != 1:
-        raise ValidationError(
-            "Choose exactly one place for this purchase: an envelope you "
-            "already have, or a new one.  Nothing was changed."
-        )
-
-
-def _reject_incomplete_new_envelope(creation: PurchaseCreation) -> None:
-    """Refuse a NEW envelope stated by halves.
-
-    A budget line needs a name AND a category: ``transactions.category_id`` is
-    what every spending report groups by, and a row created without one would
-    be invisible to the very analysis the purchase exists to feed.  The name is
-    ``transactions.name``, which is NOT NULL.
-
-    **It is the DOOR's refusal since plan step X-f6a-3c-2, not the schema's.**
-    It was a ``@validates_schema`` rule on ``StatementPurchaseSchema``, which
-    was right while one POST was one act: a nested schema error refuses the
-    WHOLE payload, and once a POST carries a whole reviewed pass that means an
-    owner who picked "a new envelope" on one line and left its category on the
-    form's own default lost every other act they had ticked -- 124 proposals
-    and 90 creations on the developer's own statement.  The ruled failure
-    policy is that a refused item costs only itself, and a rule that can only
-    refuse the whole submission cannot honour it.  Found by adversarial
-    financial review 2026-08-19.
-
-    It fires BEFORE :func:`_owned_category`, which would otherwise answer a
-    missing category with "that category is not one of yours" -- a true
-    sentence about the wrong problem.
-
-    Args:
-        creation: What the owner submitted.
-
-    Raises:
-        ValidationError: When the new-envelope arm is named without both of
-            its own fields.
-    """
-    new = creation.new_envelope
-    if new is None:
-        return
-    if new.name is None or new.category_id is None:
-        raise ValidationError(
-            "A new envelope needs both a name and a category.  Nothing was "
-            "changed."
-        )
-
-
-def _existing_envelope(
-    creation: PurchaseCreation,
-    pay_period_id: int,
-    scope: ReviewScope,
-    matched: MatchedSubjects,
-) -> Transaction:
-    """Return the chosen envelope, refusing one the screen could not offer.
-
-    **Resolved against the pass's own destination set rather than queried
-    directly**, so the set this door may write into is exactly the set the
-    screen may offer -- the same one-scope-for-reader-and-writer property
-    :func:`~._resolve.resolve_rows` rests on.  An envelope belonging to another
-    user, another account, a cancelled or archived row, a settled row whose
-    figure is a stored number, or one already matched to a bank line is not a
-    destination and cannot be reached by crafting a request.
-
-    **The already-matched half is asked of the claims THIS ACT read, not of the
-    scope** (plan step ``bank_import:X-f6a-3c-2``), and on the developer's own
-    data that is 15 lines rather than a hypothetical: 4 envelopes are both
-    named by a proposal and offered as a destination, so a pass that accepts
-    the proposals first leaves 15 creatable lines aimed at an envelope a match
-    now claims.  Asking here is what gives those 15 the sentence about the
-    envelope being gone rather than one about counting money twice from a tier
-    deeper -- and, in the other order, what keeps a purchase out of an envelope
-    whose own figure a match has already fixed.
-
-    **The PERIOD is part of that set and a first version left it out**, so the
-    screen offered the line's own period and the door accepted any of them --
-    which let a crafted request file a swipe into a Groceries envelope
-    eighteen months forward, or raise a closed past envelope's recorded cost in
-    a period the line has nothing to do with.  It also made the two arms
-    disagree with each other: :func:`_create_envelope` has always placed a new
-    row by the day the purchase was MADE.  Found by adversarial security review
-    2026-08-19.
-
-    Args:
-        creation: What the owner submitted.
-        pay_period_id: The period holding the day the purchase was made, which
-            is the only one whose envelopes the screen offers for this line.
-        scope: The pass's derived offer set (:class:`~._scope.ReviewScope`).
-        matched: What this account's matches have already claimed, as of this
-            act.
-
-    Returns:
-        The envelope.
-
-    Raises:
-        ValidationError: When the id names nothing the screen could have
-            offered for this line.
-    """
-    offered = {
-        destination.transaction_id
-        for destination in unmatched_destinations(
-            scope.destinations, matched,
-        )
-        if destination.pay_period_id == pay_period_id
-    }
-    if creation.transaction_id not in offered:
-        raise ValidationError(
-            "That envelope is not one this purchase can go into -- it may "
-            "have been deleted or cancelled, it may already be matched to a "
-            "statement line, or it may have closed at a fixed figure that a "
-            "new purchase cannot change.  Reload the page and pick another.  "
-            "Nothing was changed."
-        )
-    return db.session.get(Transaction, creation.transaction_id)
-
-
-def _owned_category(
-    creation: PurchaseCreation, scope: ReviewScope,
-) -> Category:
-    """Return the category the new envelope will carry, refusing another's.
-
-    The IDOR probe every create route in this project performs before a write:
-    a foreign ``category_id`` satisfies the foreign key -- the row exists -- and
-    would link another user's category onto this owner's budget line.
-
-    Args:
-        creation: What the owner submitted.
-        scope: The pass, which is the ONE statement of whose categories may be
-            reached.
-
-    Returns:
-        The category.
-
-    Raises:
-        ValidationError: When the id names no category of this owner's.
-    """
-    category = (
-        db.session.query(Category)
-        .filter(
-            Category.id == creation.new_envelope.category_id,
-            Category.user_id == scope.owner_id,
-            # ARCHIVED categories are not selectable targets for a new row --
-            # ``category_service.list_active_categories`` is what the picker
-            # renders and it filters on this, so accepting one here would be
-            # the offer-versus-accept drift this door exists to close.
-            Category.is_active.is_(True),
-        )
-        .one_or_none()
-    )
-    if category is None:
-        raise ValidationError(
-            "That category is not one of yours.  Reload the page and pick "
-            "another.  Nothing was changed."
-        )
-    return category
-
-
-def _create_envelope(
-    creation: PurchaseCreation,
-    category: Category,
-    pay_period_id: int,
-    scope: ReviewScope,
-) -> Transaction:
-    """Stage a new, empty envelope for this line's period.
-
-    **Born Projected, budgeting nothing**, which is the two facts a budget line
-    created from a statement can honestly state.  Projected because
-    ``status_seam.apply_status_change`` is the ONE door to a settled status and
-    a row may not be born in one (plan step ``balance:X-aj2`` is where that
-    becomes structural); nothing because the spending was unplanned, and a
-    budget equal to the spend would make it look planned.
-
-    **It is an ENVELOPE (``is_envelope=True``), and that is the whole point of
-    the arm.**  A plain row would be a budget line that is also its own single
-    payment, so the next statement line for the same merchant would have
-    nowhere to go; an envelope can hold that one too, and the row's cost stays
-    the sum of what the bank actually showed.
-
-    It OWNS its amount (``amount_source_id`` NULL beside a stored figure), which
-    is what ``ck_transactions_amount_ownership`` pairs: a row with no template
-    and no transfer has no derivation to read.
-
-    Args:
-        creation: What the owner submitted, for the envelope's name.
-        category: The category the owner picked, already proved theirs.
-        pay_period_id: The period holding the day the purchase was made.
-        scope: The pass, which is the ONE statement of whose account this row
-            belongs to.
-
-    Returns:
-        The staged, flushed :class:`~app.models.transaction.Transaction`.
-    """
-    envelope = Transaction(
-        account_id=scope.account_id,
-        pay_period_id=pay_period_id,
-        # **The BASELINE scenario, unconditionally.**  A what-if scenario is a
-        # hypothesis about money that has not moved, and a bank statement is
-        # the opposite of one: this row records something that already
-        # happened.  Reading the scenario off whatever row the period happened
-        # to hold would file a real movement under a hypothesis the first time
-        # the what-if work lands, which is exactly the class of silent
-        # misplacement ``_candidates`` declines to guess at.
-        scenario_id=require_baseline_scenario(scope.owner_id).id,
-        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-        name=creation.new_envelope.name,
-        category_id=category.id,
-        transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
-        estimated_amount=_NO_BUDGET,
-        is_envelope=True,
-    )
-    db.session.add(envelope)
-    db.session.flush()
-    return envelope
-
-
-def _minted_or_new(
-    creation: PurchaseCreation,
-    category: Category,
-    pay_period_id: int,
-    scope: ReviewScope,
-    minted: MintedEnvelopes,
-) -> "tuple[Transaction, bool]":
-    """Return the envelope this purchase goes in, minting one only if needed.
-
-    **One press mints one envelope per answer per pay period** (finding
-    **N-327**).  A second line reaching the same answer in the same period
-    records into the one the first line made, rather than making another beside
-    it.
-
-    **Recording into it is the act that already ships**, not a new one: it is
-    exactly what :func:`_existing_envelope` does for an envelope the screen
-    offered, including a settled one -- ruling **R-FX** admits a new purchase
-    on a settled row when its recorded figure IS its purchases and the purchase
-    states the day the bank took it, and both hold for a row this door created.
-    Measured 2026-08-20 on a two-line sweep: the envelope's cash leg is
-    ``0.00`` before and after the second purchase, because each purchase
-    carries its own posting day and is its own cash movement.
-
-    **It does NOT re-settle the envelope, and that matches the shipped path.**
-    Recording into an already-settled envelope leaves its close day alone
-    today, and doing otherwise here would give one arm of this door a re-dating
-    rule the other arm does not have.
-
-    Args:
-        creation: What the owner submitted, for the envelope's name.
-        category: The category they picked, already proved theirs.
-        pay_period_id: The period holding the day the purchase was made.
-        scope: The pass, which is the ONE statement of whose account this is.
-        minted: What this REQUEST has already created.
-
-    Returns:
-        ``(envelope, created)`` -- the row, and whether this act made it.
-    """
-    already = minted.envelope_for(creation.new_envelope, pay_period_id)
-    if already is not None:
-        return db.session.get(Transaction, already), False
-    return _create_envelope(creation, category, pay_period_id, scope), True
-
-
-def _close_day(
-    creation: PurchaseCreation,
-    line: BankStatementLine,
-    envelope: Transaction,
-    created: bool,
-) -> "SettleDay | None":
-    """Return the day this envelope should CLOSE on, or ``None`` to leave it.
-
-    Three cases, and the middle one is the correction adversarial review found
-    2026-08-20.
-
-    * a container this act CREATED closes on the day the bank took the money it
-      holds;
-    * a container an EARLIER LINE OF THIS SAME PRESS created closes on the
-      LATEST of those days.  Measured before this arm existed: two lines in one
-      pay period submitted 01-05 then 01-09 left the envelope recording that it
-      closed on **2024-01-05 while holding `$45.00` the bank did not take until
-      01-09** -- and submitting them the other way round recorded 01-09, so the
-      close day was whichever line happened to be filed first.  No figure moved
-      (each purchase carries its own posting day, so the envelope's own cash leg
-      is `0.00` either way), but a row may not record closing before money it
-      holds.  **The LATEST is this arc's own rule for a group** -- a match's day
-      is ``max(posted_on)`` over its lines (``MatchDays.of``) -- applied to the
-      group a press files;
-    * a container that ALREADY EXISTED keeps its own close day.  That is the
-      shipped behaviour of the destination arm and it is deliberate: that row's
-      close is a record the OWNER made, and re-dating it would edit their
-      record rather than complete this press's own.
-
-    Args:
-        creation: What the owner submitted, which says which arm this is.
-        line: The bank line being recorded.
-        envelope: The container the purchase goes in.
-        created: Whether THIS act created it.
-
-    Returns:
-        The day to close on and HOW that day is known
-        (:class:`app.services.settle_day.SettleDay`), or ``None`` when the close
-        is not this act's to write.  The basis is always ``observed`` (plan step
-        **X-az**): every day this function can return is a bank line's own
-        posting day, so a statement is what showed it.
-    """
-    if created:
-        return _observed(line)
-    if creation.transaction_id is not None:
-        return None
-    # The new-envelope arm reusing what an earlier line of this press minted.
-    if envelope.settled_on is not None and line.posted_on <= envelope.settled_on:
-        return None
-    return _observed(line)
-
-
 def _observed(line: BankStatementLine) -> SettleDay:
     """Return *line*'s posting day as a day a bank statement SHOWED.
 
@@ -654,73 +196,6 @@ def _observed(line: BankStatementLine) -> SettleDay:
     return SettleDay(
         day=line.posted_on, basis=SettledDayBasisEnum.OBSERVED,
     )
-
-
-def _close_container(
-    creation: PurchaseCreation,
-    line: BankStatementLine,
-    envelope: Transaction,
-    created: bool,
-) -> None:
-    """Close the container on the day the bank took the money it now holds.
-
-    :func:`_close_day` decides WHETHER and WHICH day; this applies it, through
-    whichever verb the container's own state calls for.  Extracted from
-    :func:`create_purchase_from_line` at plan step ``bank_import:X-ga``, when
-    ruling **R-GJ**'s bar took that function past ``max-locals``: the two
-    honest answers to a design limit are to decompose or to disable, and this
-    block was already one coherent act with one subject -- everything a
-    container's CLOSE needs, and nothing the purchase needs.
-
-    Args:
-        creation: What the owner submitted, which says which arm this is.
-        line: The bank line being recorded.
-        envelope: The container the purchase went in.
-        created: Whether THIS act created it.
-    """
-    close_on = _close_day(creation, line, envelope, created)
-    if close_on is not None and not created:
-        # **A container an EARLIER LINE OF THIS PRESS made, closing again on a
-        # later day.**  ``settle_from_entries`` refuses an already-settled row
-        # by design -- "the seam owns the day, and a caller that genuinely
-        # means *this settled on a different day* corrects it on the row
-        # afterwards" (ruling **R-ED**) -- so the correction goes through the
-        # same identity transition ``_accept._apply_day`` uses for a settled
-        # row a match re-dates: the row's OWN status, a new day.  One verb for
-        # "a settled row's day moved", not a second one here.
-        transaction_service.apply_requested_status(
-            envelope, envelope.status_id, settle_day=close_on,
-        )
-    elif close_on is not None:
-        # **A row created to hold something that has already happened says
-        # so.**  A first version justified this by calling a Projected `$0.00`
-        # row "carry-forward bait that would roll a NEGATIVE leftover", which is
-        # measurably FALSE -- ``carry_forward_service`` clamps its leftover with
-        # ``max(Decimal("0"), budget - entries)`` in both its preview and its
-        # execute arm.  Found by adversarial design review 2026-08-19.
-        #
-        # The real reason is narrower and holds: this row records money that has
-        # ALREADY left the account, and the app's vocabulary for that is the
-        # settled band -- left Projected it would read on the grid as an unpaid
-        # item for money already gone.  Carry-forward would settle it through
-        # this very verb anyway; doing it here dates the close on the day the
-        # bank posted, where carry-forward would date it whenever it next ran.
-        transaction_service.settle_from_entries(
-            envelope, settle_day=close_on,
-        )
-        # **``settle_from_entries`` does NOT reconcile the ledger** -- it is the
-        # envelope PRIMITIVE, and its docstring says carry-forward owes that
-        # reconcile a different moment.  Both of its other callers pair it with
-        # this line (`transaction_service._settle.settle_transaction`,
-        # `carry_forward_service._execute`), and so does this one.  It is a
-        # no-op on today's arithmetic -- `create_entry` already reconciled the
-        # family while the row was Projected, and a close whose every purchase
-        # is posted targets `0.00` -- but a contract kept by a cancellation
-        # nobody asserts is finding **N-318**'s shape, one module over.  Found
-        # by adversarial security review 2026-08-19.
-        posting_service.sync_transaction_postings(
-            envelope, settled=envelope.status.is_settled,
-        )
 
 
 def _made_by_this_act(
@@ -764,43 +239,104 @@ def _made_by_this_act(
     )
 
 
-def _destination(
-    creation: PurchaseCreation,
-    pay_period_id: int,
+def _born_purchase(
+    line: BankStatementLine,
+    envelope: Transaction,
+    made_on: date,
+    observed: SettleDay,
     scope: ReviewScope,
-    matched: MatchedSubjects,
-    minted: MintedEnvelopes,
-) -> "tuple[Transaction, bool]":
-    """Return the budget line this purchase goes in, and whether we made it.
+) -> "TransactionEntry":
+    """Create the purchase this bank line IS, carrying BOTH of its days.
 
-    The two arms of ruling **R-FX**, resolved in one place: an envelope the
-    owner picked from the set the screen offers, or one this door creates for
-    the line.  :func:`_reject_ambiguous_destination` has already refused a
-    submission naming both or neither, so the branch below is a dispatch
-    rather than a preference.
+    Ruling **R-FW**.  Recording them in one ``create_entry`` call rather than
+    creating and then updating is what keeps a purchase the bank has already
+    taken from existing, even briefly, as an outstanding one -- and it is why
+    the match this door records afterwards moves no day: the row already
+    carries the ones the bank stated.
 
     Args:
-        creation: What the owner submitted.
-        pay_period_id: The period holding the day the purchase was made.
-        scope: The pass's derived offer set.
-        matched: What this account's matches have already claimed, as of this
-            act.
-        minted: What this REQUEST has already created.
+        line: The recorded line, already proved recordable.
+        envelope: The container it goes in.
+        made_on: The day the bank says it was MADE, which is the purchase's own
+            budget clock (:func:`_made_on`).
+        observed: The day the bank TOOK it, on the ``observed`` basis (plan step
+            **X-az**) -- the bank line IS why this purchase exists, so its
+            posting day is a day a statement showed rather than a bound or a day
+            the owner typed.  **This is the only door that BORNS a purchase
+            carrying a posting day, and the only one whose basis could never be
+            anything else.**  Taken rather than built, because the container's
+            own close needs the identical value and a second construction is the
+            duplication :func:`_observed` exists to remove.
+        scope: The pass, which is the ONE statement of whose account this is.
 
     Returns:
-        ``(envelope, created)`` -- the row, and whether this act made it.
-
-    Raises:
-        ValidationError: When the named envelope is not one the screen could
-            have offered, or the named category is not this owner's.
+        The staged :class:`~app.models.transaction_entry.TransactionEntry`.
     """
-    if creation.transaction_id is not None:
-        return (
-            _existing_envelope(creation, pay_period_id, scope, matched), False,
-        )
-    return _minted_or_new(
-        creation, _owned_category(creation, scope), pay_period_id, scope,
-        minted,
+    return entry_service.create_entry(
+        transaction_id=envelope.id,
+        user_id=scope.owner_id,
+        details=entry_service.EntryDetails(
+            # **POSITIVE, from the line's own negative figure.**  A purchase is
+            # an expense (``ck_transaction_entries_positive_amount``) and only
+            # money LEAVING can become one (:func:`_load_line`), so the sign
+            # flip is total over everything that reaches here.
+            amount=-Decimal(str(line.amount)),
+            # What the BANK NAMES the merchant, not the whole line
+            # (:func:`~._offers.merchant_label`).  The app's own purchases are
+            # named "Walmart" and "Food Lion", and a purchase called
+            # ``POINT OF SALE DEBIT L340 DATE 08-13 Amazon.com*5H2RA5V...``
+            # would be the only row in the entries list nobody can read.  The
+            # bank's full wording is not lost: it stays on the statement line,
+            # which the match this door records ties to this purchase.
+            # **The LABEL, not the key** (plan step X-f6a-3d): it falls back to
+            # the description for a source that names no merchant, because
+            # ``transaction_entries.description`` is NOT NULL and this door
+            # calls ``create_entry`` directly.
+            description=merchant_label(
+                line.merchant_name, line.description,
+            )[:200],
+            purchased_on=made_on,
+            settle_day=observed,
+        ),
+    )
+
+
+def _match_content(
+    entry: "TransactionEntry",
+    line: BankStatementLine,
+    envelope: Transaction,
+    created: bool,
+) -> MatchContent:
+    """Return what this act ASSERTS and what it BROUGHT INTO EXISTENCE.
+
+    **Two relations, built together because they are decided together** (plan
+    step ``bank_import:X-f6f``, ruling **R-GG**), and read from ONE candidate:
+    :func:`~._candidates.purchase_candidate` prices the row this act just made,
+    and both the membership and the creation record are that same value rather
+    than two derivations of it.
+
+    **No residual, and it can never have one**: this door built the purchase at
+    the line's own figure, so the two sides agree to the cent by construction
+    and there is no difference for ruling **R-FN**'s row to record (plan step
+    ``bank_import:X-f6d-4``).
+
+    **It reads the candidate AFTER the caller has flushed**, which is that
+    step's own rule: a container this door creates is written twice, and the
+    revision an undo compares against has to be the one this act LEFT.
+
+    Args:
+        entry: The purchase this act created, already flushed.
+        line: The bank line it explains.
+        envelope: The budget line it went into.
+        created: Whether THIS act made that budget line.
+
+    Returns:
+        The :class:`~._accept.MatchContent`.
+    """
+    candidate = purchase_candidate(entry)
+    return MatchContent(
+        lines=[line], rows=[candidate],
+        created=_made_by_this_act(candidate, envelope, created),
     )
 
 
@@ -809,6 +345,8 @@ def create_purchase_from_line(
     scope: ReviewScope,
     minted: MintedEnvelopes,
     bars: CreationBars,
+    *,
+    applied_by_rule: bool,
 ) -> CreatedPurchase:
     """Record one bank line as a purchase, and match the line to it.
 
@@ -862,6 +400,20 @@ def create_purchase_from_line(
             once per REQUEST by :func:`~._batch.apply_reviewed`, beside
             *minted*, because nothing inside a batch can restate a rule and
             re-reading it per act would be 90 queries for one statement.
+        applied_by_rule: Whether a STANDING RULE performed this act rather than
+            a person ticking it (ruling **R-GT**, plan step
+            ``bank_import:X-ge``).  **Keyword-only and with no default**, for
+            the reason :func:`~._accept.record_match`'s own flag has neither:
+            its two values are *the owner agreed to this* and *the app did it
+            on their behalf*, so a positional ``False`` says nothing at a call
+            site and a default would let a future door claim consent by
+            omission.  It is the PASS's answer
+            (:attr:`~._batch.Consent.applied_by_rule`) rather than one this
+            door derives -- both of its entrances create the same purchase in
+            the same place, and the only thing that differs is who asked.
+            **This door has TWO entrances since X-ge**: the review screen's own
+            destination select, one line at a time, and an import filing a new
+            swipe under a rule the owner stated.
 
     Returns:
         The :class:`CreatedPurchase`.
@@ -871,8 +423,8 @@ def create_purchase_from_line(
             A 400: every one is reachable by an ordinary owner working from a
             stale page.
     """
-    _reject_ambiguous_destination(creation)
-    _reject_incomplete_new_envelope(creation)
+    reject_ambiguous_destination(creation)
+    reject_incomplete_new_envelope(creation)
     # ONE read of what this account's matches have claimed, for this act:
     # the line refusal, the destination refusal and the double-count guard
     # inside ``record_match`` all narrow with it, so they cannot disagree.
@@ -884,6 +436,11 @@ def create_purchase_from_line(
     # sentence about the answer it gave (ruling **R-GJ**).
     reject_barred_line(line, bars)
     made_on = _made_on(line)
+    # ONE construction of the bank's own day for this act, for the two
+    # writers that need it: the purchase is born carrying it, and the
+    # container may close on it.  A second construction is the
+    # duplication :func:`_observed` exists to remove.
+    observed = _observed(line)
 
     # ONE period for both arms, resolved once: it is where the purchase is
     # BUDGETED, so it decides which envelopes may hold it and which period a
@@ -899,43 +456,12 @@ def create_purchase_from_line(
     # would raise ``check_purchase_date_in_period``'s out-of-period
     # warning on a row this door had just built.
     pay_period_id = scope.period_holding(made_on, "this purchase")
-    envelope, created = _destination(
+    envelope, created = resolve_destination(
         creation, pay_period_id, scope, matched, minted,
     )
 
-    amount = -Decimal(str(line.amount))
-    entry = entry_service.create_entry(
-        transaction_id=envelope.id,
-        user_id=scope.owner_id,
-        details=entry_service.EntryDetails(
-            amount=amount,
-            # What the BANK NAMES the merchant, not the whole line
-            # (:func:`~._offers.merchant_label`).  The app's own purchases are
-            # named "Walmart" and "Food Lion", and a purchase called
-            # ``POINT OF SALE DEBIT L340 DATE 08-13 Amazon.com*5H2RA5V...``
-            # would be the only row in the entries list nobody can read.  The
-            # bank's full wording is not lost: it stays on the statement line,
-            # which the match this door records ties to this purchase.
-            # **The LABEL, not the key** (plan step X-f6a-3d): it falls back to
-            # the description for a source that names no merchant, because
-            # ``transaction_entries.description`` is NOT NULL and this door
-            # calls ``create_entry`` directly.
-            description=merchant_label(
-                line.merchant_name, line.description,
-            )[:200],
-            purchased_on=made_on,
-            # ``observed``: the bank line IS why this purchase exists, so its
-            # posting day is a day a statement showed rather than a bound or a
-            # day the owner typed (plan step **X-az**).  This is the only door
-            # that BORNS a purchase carrying a posting day, and it is the only
-            # one whose basis could never be anything else.  Through
-            # :func:`_observed` rather than constructed here, because this is
-            # the THIRD of its three sites and a second construction is the
-            # duplication that helper exists to remove.
-            settle_day=_observed(line),
-        ),
-    )
-    _close_container(creation, line, envelope, created)
+    entry = _born_purchase(line, envelope, made_on, observed, scope)
+    close_container(creation, observed, envelope, created)
 
     # **The act's own writes are FLUSHED before its creation records are
     # read** (plan step ``bank_import:X-f6f``).  A container this door creates
@@ -945,24 +471,18 @@ def create_purchase_from_line(
     # rather than the one it left, and the undo would then report its own
     # second write as somebody else's edit.
     db.session.flush()
-    candidate = purchase_candidate(entry)
-
-    # **No residual, and it can never have one**: this door built the purchase
-    # at the line's own figure, so the two sides agree to the cent by
-    # construction and there is no difference for ruling **R-FN**'s row to
-    # record (plan step ``bank_import:X-f6d-4``).
     accepted = record_match(
         scope,
-        MatchContent(
-            lines=[line], rows=[candidate],
-            created=_made_by_this_act(candidate, envelope, created),
-        ),
+        _match_content(entry, line, envelope, created),
         matched,
-        # A TICK: this door is entered from the review screen's own destination
-        # select, one line at a time (ruling **R-GT**).  Plan step
-        # ``bank_import:X-ge`` is what gives it a second entrance, and this is
-        # the line that changes there.
-        applied_by_rule=False,
+        # **The PASS's own answer, threaded rather than decided here** (ruling
+        # **R-GT**).  This door has two entrances since plan step
+        # ``bank_import:X-ge`` -- the review screen's destination select and an
+        # import filing a new swipe under a stated rule -- and they build the
+        # identical purchase in the identical place.  The only fact that
+        # differs is who asked, which is why it arrives as an argument instead
+        # of being read off anything here.
+        applied_by_rule=applied_by_rule,
     )
 
     recorded = CreatedPurchase(
@@ -971,7 +491,12 @@ def create_purchase_from_line(
         match_id=accepted.match_id,
         envelope_label=envelope.name,
         envelope_created=created,
-        amount=amount,
+        # **From the ROW, not from a second copy of the arithmetic.**
+        # :func:`_born_purchase` computed the figure from the line and
+        # ``create_entry`` stored it, so reading it back is the one place it is
+        # stated -- and a receipt that recomputed it could report a figure the
+        # database does not hold.
+        amount=entry.amount,
         posts_on=line.posted_on,
         made_on=made_on,
         pay_period_id=pay_period_id,

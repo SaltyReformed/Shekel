@@ -23,7 +23,7 @@ out, no Flask import.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal
 
@@ -45,6 +45,7 @@ from ._offers import (
     MatchProposal,
 )
 from ._bars import CreationBars, ParkedLine
+from ._pairing import DAY_WINDOW
 from ._placement import Placement, placements_for
 from ._rules import RuleView
 from ._propose import propose
@@ -96,7 +97,7 @@ class ReviewBounds:
     the owner was told that somewhere among a hundred lines one had a near
     candidate the page would not choose, with no way to find it.  A bound is
     only a bound if it can be acted on, so it moved onto the LINE
-    (:attr:`ReviewSet.undecided_near_lines`), where the act it should prompt is
+    (:attr:`ReviewSet.declined_lines`), where the act it should prompt is
     already offered -- and the panel keeps the four limits that genuinely
     belong to the PASS rather than to any one line.
     """
@@ -176,9 +177,9 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
     Pylint: too-many-instance-attributes (9/7) -- **nine because the screen
     renders nine distinct things**, not because the value wants splitting.
     Eight are cards the owner reads and acts in; the ninth is
-    :attr:`undecided_near_lines`, which annotates two of them.
+    :attr:`declined_lines`, which annotates two of them.
 
-    The obvious way to satisfy the limit is to fold ``undecided_near_lines``
+    The obvious way to satisfy the limit is to fold ``declined_lines``
     back into :attr:`bounds`, where it lived until plan step
     ``bank_import:X-f6d-3`` -- and that is exactly what the step measured to be
     wrong, because a bound reported in a panel names no line and cannot be
@@ -236,9 +237,13 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             the parked half is parked for want of an answer and this is the
             control that gives one.
         bounds: What this pass did NOT look at (:class:`ReviewBounds`).
-        undecided_near_lines: The ids of the lines the NEAR tier admitted a
-            candidate for and then declined to choose between
-            (:attr:`~._propose.ProposedMatches.undecided_near_lines`).
+        declined_lines: WHAT THIS PASS CONSIDERED and would not conclude
+            about, by line id, in the words of the tier that declined
+            (:attr:`~._propose.ProposedMatches.declined_lines`).  It carried
+            only the near tier's CONTEST until plan step
+            ``bank_import:X-ge-1``; it now carries every rejection a tier makes
+            after admitting the figure, because a bound a tier applies and does
+            not report is one nothing can see.
 
             **It rides on the SET rather than in the bounds panel** (plan step
             ``bank_import:X-f6d-3``).  It was a count under *What this page did
@@ -259,7 +264,7 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
     parked: "tuple[ParkedLine, ...]"
     merchants: MerchantSection
     bounds: ReviewBounds
-    undecided_near_lines: "frozenset[int]" = frozenset()
+    declined_lines: "dict[int, str]" = field(default_factory=dict)
 
     @property
     def placed_by_class(self) -> "dict[str, int]":
@@ -288,6 +293,89 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             if group is not None:
                 counts[group] = counts.get(group, 0) + 1
         return counts
+
+    def search_gap_for(self, line: BankLine) -> "str | None":
+        """Return why this pass cannot say *line* has no counterpart, or ``None``.
+
+        Plan step ``bank_import:X-ge``, developer ruling 2026-08-26, corrected
+        at ``X-ge-1``.  **Membership of :attr:`creatable` is a set defined by
+        SUBTRACTION** -- no proposal claimed the line -- and that is two
+        different facts wearing one name: *the pass looked and there is
+        nothing*, and *the pass threw the only candidate away*.  Under a human
+        tick the difference costs nothing, because the person reading the
+        screen is the check.  Under ruling **R-GH**'s auto-apply there is no
+        person, so it has to be a fact the pass STATES rather than one a reader
+        infers.
+
+        **It READS what the search reports and derives nothing**, which is the
+        whole of the correction ``X-ge-1`` made.  A first version enumerated
+        the bounds :class:`ReviewBounds` and the near tier PUBLISH, and called
+        that enumeration complete; an adversarial review measured it false
+        twice over, because the matcher applies more bounds than it published.
+        Re-deriving them here would have been a third spelling of
+        :data:`~._near.NEAR_MISS_BOUND` and :data:`~._pairing.DAY_WINDOW`
+        outside the modules that own them -- finding **N-322** exactly, which
+        :mod:`._pairing`'s own header predicts in as many words.  So each tier
+        reports its own refusals now (:attr:`~._propose.ProposedMatches
+        .declined_lines`) and this joins them to the two bounds that belong to
+        the PASS rather than to any line.
+
+        **What that makes true:** a tier added later must put its refusals in
+        ``declined_lines`` or they are invisible, which is the same rule the
+        search already keeps for its crowded days -- rather than this function
+        having to be taught about it.
+
+        The three sources, in the order a reader should hear them:
+
+        * what a TIER declined about this line, in that tier's own words: a
+          near candidate it admitted and would not choose between (the
+          `$356.61`-for-one-`$178.29` shape, finding **N-335**), one it refused
+          for want of the merchant in the row's label, one it refused for the
+          day window, and an EXACT candidate the window refused;
+        * a CROWDED day the GROUP search skipped
+          (:attr:`ReviewBounds.crowded_days`), measured within
+          :data:`~._pairing.DAY_WINDOW` of the line because that is the window
+          :func:`~._propose._groups` pairs a line to a bucket across;
+        * a row the amount model could not PRICE at all
+          (:attr:`ReviewBounds.unpriceable_count`).  It is account-wide and so
+          is this refusal: an unpriced row is absent from the candidate set
+          entirely, so there is no line it can be said not to match.
+
+        **Measured on the developer's own 378 recorded lines (2026-08-26):**
+        the last two are ZERO, and the first touches 12 of the 80 lines a
+        standing rule would file -- `$391.77` -- one of which is his own
+        `Apple Music` row sitting one day past the window from an `Apple` line
+        the door would otherwise have recorded a second time.
+
+        Args:
+            line: The bank line, which must be one this pass considered --
+                every caller takes it off :attr:`creatable`.
+
+        Returns:
+            One sentence naming the gap, for the receipt that has to say what
+            it withheld and for the screen that has to say why a line is still
+            there; ``None`` when this pass searched exhaustively for a
+            counterpart to *line* and found none.
+        """
+        declined = self.declined_lines.get(line.line_id)
+        if declined is not None:
+            return declined
+        crowded = [
+            day for day in self.bounds.crowded_days
+            if abs((day - line.posted_on).days) <= DAY_WINDOW
+        ]
+        if crowded:
+            return (
+                f"{crowded[0]} held too many rows for the app to search them "
+                f"for a group that adds up to this line"
+            )
+        if self.bounds.unpriceable_count:
+            return (
+                f"{self.bounds.unpriceable_count} row(s) on this account "
+                f"could not be priced, so the app could not compare them "
+                f"against this line"
+            )
+        return None
 
 
 def _covered_span(account_id: int) -> "tuple[date, date] | None":
@@ -887,5 +975,5 @@ def review_set(scope: ReviewScope) -> ReviewSet:
         # rather than in ``bounds`` because the screen renders it against the
         # LINE it concerns rather than in the panel of things this page did not
         # look at (plan step ``bank_import:X-f6d-3``).
-        undecided_near_lines=proposed.undecided_near_lines,
+        declined_lines=proposed.declined_lines,
     )

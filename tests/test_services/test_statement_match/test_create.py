@@ -135,7 +135,7 @@ def _balance_on(seed_user, day):
     return balance_at.balance_at(seed_user["account"], ctx, day)
 
 
-def _record(seed_user, line, minted=None, **destination):
+def _record(seed_user, line, minted=None, applied_by_rule=False, **destination):
     """Record *line* as a purchase, into whichever destination is named.
 
     Args:
@@ -146,6 +146,13 @@ def _record(seed_user, line, minted=None, **destination):
             one request -- and is what every case here means unless it says
             otherwise.  A case about a SWEEP passes one registry to several
             calls, because that is what one press is.
+        applied_by_rule: Which consent this act had (ruling **R-GT**).
+            **Defaulted here and NOT at the door**, which is the split the door
+            itself argues for: the production signature is keyword-only with no
+            default, so no writer can claim consent by omission, and a HELPER
+            that spelled it at 40 call sites would say nothing at any of them.
+            Every case in this module is the review screen's own destination
+            select unless it says otherwise, which is ``False``.
         **destination: The ``PurchaseCreation`` destination fields.
 
     Returns:
@@ -163,6 +170,7 @@ def _record(seed_user, line, minted=None, **destination):
         # helper handing the door an empty ``CreationBars`` would make every
         # case below blind to ruling R-GJ's refusal.
         a_bars(seed_user),
+        applied_by_rule=applied_by_rule,
     )
 
 
@@ -195,19 +203,27 @@ class TestRecordingALineAddsTheMovement:
             after = _balance_on(seed_user, day + timedelta(days=2))
             assert after == before - Decimal("57.96")
 
-    def test_the_act_is_recorded_as_a_TICK_and_not_as_a_rule(
-        self, app, db, seed_user,
+    @pytest.mark.parametrize("applied_by_rule", [False, True])
+    def test_the_act_records_WHICH_consent_it_had(
+        self, app, db, seed_user, applied_by_rule,
     ):
         """Ruling **R-GT**, at this package's SECOND writer of a match act.
 
         Both doors reach ``record_match``, and ``applied_by_rule`` is
         keyword-only with no default the whole way down, so each states the
-        fact for itself.  Today both state ``False``: this one is entered from
-        the review screen's own per-line destination select, one line at a time
-        under a human press.  **This is the call site plan step
-        ``bank_import:X-ge`` changes**, when the same creation runs under a
-        standing rule at import -- so a case that asserted nothing here would
-        let that step ship without anyone noticing which acts it re-labelled.
+        fact for itself.  **Plan step ``bank_import:X-ge`` is what made this a
+        PAIR**: until it shipped, this door had one entrance -- the review
+        screen's per-line destination select, under a human press -- and stated
+        ``False`` as a literal; it now has a second, an import filing a NEW
+        swipe under a standing rule the owner already gave.
+
+        **BOTH arms, and the false one is not decoration.**  The column is what
+        the receipt and the review screen's badge partition on, so a door that
+        wrote ``True`` for everything would report every act the owner pressed
+        as one the app performed for them -- which is a false claim about
+        consent in the direction that matters, and one no case asserting only
+        the rule arm could see.  The act is otherwise IDENTICAL, which is the
+        point: same purchase, same destination, same days.
         """
         with app.app_context():
             envelope = _closed_from_purchases(seed_user)
@@ -218,11 +234,14 @@ class TestRecordingALineAddsTheMovement:
                 description="POINT OF SALE DEBIT L340 WAL-MART (Walmart)",
             )
 
-            _record(seed_user, line, transaction_id=envelope.id)
+            _record(
+                seed_user, line, transaction_id=envelope.id,
+                applied_by_rule=applied_by_rule,
+            )
             db.session.flush()
 
             assert db.session.query(StatementMatch).one().applied_by_rule is (
-                False
+                applied_by_rule
             )
 
     def test_the_envelope_s_recorded_cost_grows_by_the_purchase(

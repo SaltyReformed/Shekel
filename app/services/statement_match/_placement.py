@@ -28,7 +28,12 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass
 
-from ._creations import NEW_ENVELOPE, NewEnvelope, PurchaseDestination
+from ._creations import (
+    NEW_ENVELOPE,
+    NewEnvelope,
+    PurchaseCreation,
+    PurchaseDestination,
+)
 from ._rules import StandingRule, RuleAnswer, RuleView
 
 
@@ -168,6 +173,50 @@ class Placement:
             return str(self.destination.transaction_id)
         if self.kind is PlacementKind.CREATE_NEW:
             return NEW_ENVELOPE
+        return None
+
+    def creation_for(self, line_id: int) -> "PurchaseCreation | None":
+        """Return this placement as the act the create door performs.
+
+        **The TICK and the RULE reach one write through one derivation** (plan
+        step ``bank_import:X-ge``, ruling **R-GH**).  :attr:`select_value`
+        answers what the owner's own control would be set to and this answers
+        what an import files without one, and the two are the same decision
+        stated twice unless one of them is derived from the other: a rule that
+        auto-applied into a destination the sweep would not have ticked would
+        be a second answer to *where does this merchant's money go*, on the
+        door that moves it.
+
+        **The two arms are exactly** :class:`~._creations.PurchaseCreation`'s,
+        and stating them here rather than in the caller is what keeps the
+        ambiguous shape unbuildable: ``_create._reject_ambiguous_destination``
+        refuses a submission naming both arms or neither, and a caller
+        assembling the value by hand is a caller that can assemble one of
+        those.
+
+        Args:
+            line_id: The bank line this placement is for.  Taken rather than
+                carried on the placement, because a placement is what a rule
+                comes to for *a* line and the same value is built per line by
+                :func:`placements_for`; a stored id would be a second copy of
+                the key its own caller already holds.
+
+        Returns:
+            The :class:`~._creations.PurchaseCreation`, or ``None`` for an
+            :attr:`PlacementKind.UNRESOLVED` placement -- a rule that does not
+            reach this line names no destination, so there is no act to
+            perform.  ``None`` exactly where :attr:`select_value` is ``None``,
+            which is the property the pair is graded as.
+        """
+        if self.kind is PlacementKind.RECORD_IN:
+            return PurchaseCreation(
+                line_id=line_id,
+                transaction_id=self.destination.transaction_id,
+            )
+        if self.kind is PlacementKind.CREATE_NEW:
+            return PurchaseCreation(
+                line_id=line_id, new_envelope=self.new_envelope,
+            )
         return None
 
 

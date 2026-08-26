@@ -15,13 +15,22 @@ could keep.  ``delete_statement_import`` is the human's hands.  It destroys what
 the BANK said and moves no money: a settle day an accepted match wrote is the
 app's own record and stays.
 
-**It records and does not reconcile, and the page says so.**  Nothing here
-touches a transaction, a purchase, a status or a balance: an import writes
-``budget.bank_statement_lines`` and stops.  Matching a recorded line to the
-app's own rows, and correcting a ``settled_on`` from it, is the next leaf
-(``X-f6a-2``).  Telling the user that plainly is part of the design rather than
-a caveat -- an import screen that looked like it reconciled would be read as
-having reconciled.
+**It RECORDS, and since plan step ``bank_import:X-ge`` it also FILES what the
+owner has already decided** (ruling **R-GH**).  Recording still moves no
+figure: :func:`~app.services.statement_import.record_statement` writes
+``budget.bank_statement_lines`` and stops.  What moves one is the second act in
+the same request -- :func:`~app.services.statement_match.file_new_swipes` turns
+each NEW swipe line whose merchant carries a standing rule into a purchase in
+the destination that rule names, dated by the bank, receipted on this page with
+the one-click undo ruling **R-GG** built.  **Consent for that was given when
+the rule was stated**, which is R-GH's whole sentence; every act that would
+MODIFY a row the owner made by hand -- re-date, re-price, settle, group-match
+-- is still a proposal on the review screen (``X-f6a-2``) needing its tick.
+
+**The page says which of the two it is doing**, and that is part of the design
+rather than a caveat: it said "This records what your bank said. It changes no
+balance." until this step, a sentence that would have become false the first
+time a rule fired.
 
 **Why it lives in the accounts package.**  A statement is a fact about ONE
 account, the account is how ownership is checked, and the mapping from a bank's
@@ -50,7 +59,11 @@ from flask import flash, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from app.enums import StatementBalanceEvidenceEnum, StatementSourceEnum
-from app.exceptions import StatementImportError, ValidationError
+from app.exceptions import (
+    BaselineMissingError,
+    StatementImportError,
+    ValidationError,
+)
 from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts._statement_doors import (
     StatementDoorContext,
@@ -71,11 +84,20 @@ from app.services.statement_import import (
     record_statement,
     recorded_span,
 )
+from app.services.pay_calendar import PayCalendarError
+from app.services.statement_match import (
+    RECEIPT_LIMIT,
+    ReviewScope,
+    RuleFiling,
+    file_new_swipes,
+    rule_filed_acts,
+)
 from app.utils.auth_helpers import require_owner
 from app.utils.log_events import (
     BUSINESS,
     EVT_STATEMENT_IMPORT_DELETED,
     EVT_STATEMENT_IMPORTED,
+    EVT_STATEMENT_RULES_FILED,
     log_event,
 )
 
@@ -113,6 +135,21 @@ def statements(account_id):
         imports=import_history(current_user.id, account_id),
         lines=recent_lines(account_id),
         evidence_copy=EVIDENCE_COPY,
+        # **The receipt ruling R-GH asks for, and it is a READ** (plan step
+        # ``bank_import:X-ge``).  What a standing rule filed is stored -- the
+        # purchase, the match naming it, and ``applied_by_rule`` saying a rule
+        # performed it -- so this is here rather than in the flash the import
+        # sets: a flash cannot carry an Undo control, it rides in the signed
+        # session cookie which this screen's sibling has already measured
+        # overflowing, and it is gone on the next page load.  An owner who
+        # comes back tomorrow to check what their rules have been doing sees
+        # the same list.
+        filed_by_rules=rule_filed_acts(current_user.id, account_id),
+        # The BOUND, stated once (in the service) and rendered rather than
+        # spelled a second time in the markup: the card says how many it
+        # shows, and a template literal would be a second copy of a number
+        # only one of the two could keep true.
+        filed_limit=RECEIPT_LIMIT,
     )
 
 
@@ -336,13 +373,103 @@ def _import_flash(outcome):
     )
 
 
+def _counted(reasons: "list[str]") -> str:
+    """Return *reasons* as one sentence, de-duplicated and counted.
+
+    **Forty copies of one sentence is not forty facts** -- the rule
+    :func:`~app.routes.accounts._statement_doors.refusal_sentence` already
+    applies to a schema's own errors, applied here to the reasons a filing pass
+    gives.  It is what bounds this flash: the search bounds are a closed set of
+    four sentences and a door's refusal repeats across every line it refuses,
+    so a pass over a whole year's statement still says each thing once.
+
+    Args:
+        reasons: One sentence per line, in the pass's own order, with
+            repetitions.
+
+    Returns:
+        The sentences joined, each carrying how many lines gave it, in first
+        sighting order.  Empty string for no reasons, so a caller can splice it
+        without a guard.
+    """
+    counts: "dict[str, int]" = {}
+    for reason in reasons:
+        counts[reason] = counts.get(reason, 0) + 1
+    return "; ".join(
+        reason if count == 1 else f"{reason} ({count} lines)"
+        for reason, count in counts.items()
+    )
+
+
+def _filing_sentence(filing) -> str:
+    """Return what the import receipt says about the owner's standing rules.
+
+    **It names MONEY and not only a count** (ruling **R-GD(a)**'s rule, on the
+    one act in this app nobody presses): a receipt for work the owner did not
+    ask for in this request has to say what it moved, or it is a consent to an
+    amount nobody stated.
+
+    **It says what was WITHHELD in the same breath**, because a bound that
+    says nothing about what it dropped reads as a clean sweep -- the sentence
+    :class:`~app.services.statement_match.ReviewBounds` is built around.  A
+    line a rule answers for and this pass would not file is not a silence: it
+    is the difference between *your rules ran* and *your rules ran on some of
+    it*.
+
+    Args:
+        filing: The :class:`~app.services.statement_match.RuleFiling`.
+
+    Returns:
+        One or more sentences, or the empty string for a pass with nothing to
+        report -- which is every re-import of an overlapping span, because it
+        records no fresh line and a rule fires on nothing else (**R-GI**).
+    """
+    if filing.says_nothing:
+        return ""
+    if filing.unavailable is not None:
+        return f"  Your standing rules did not run: {filing.unavailable}."
+    parts = []
+    if filing.outcome.applied:
+        envelopes = (
+            f", creating {filing.outcome.envelopes_created} budget line(s) to "
+            f"hold them"
+            if filing.outcome.envelopes_created else ""
+        )
+        # **The card below is BOUNDED and this sentence may not promise it is
+        # not.**  A first version read "each one is listed under 'Filed by your
+        # rules' below and can be undone there", which the step's own
+        # measurement makes false by 60 on the developer's first real import:
+        # 80 lines file and ``RECEIPT_LIMIT`` shows 20.  The place every act is
+        # listed without a bound is the review screen's accepted-matches panel,
+        # so that is where the sentence sends an owner who wants all of them.
+        parts.append(
+            f"  Your standing rules filed {filing.filed_count} of them as "
+            f"purchases worth {filing.filed_total:+,.2f}{envelopes}.  The most "
+            f"recent are under 'Filed by your rules' below, each with an undo; "
+            f"every one of them is on the review screen."
+        )
+    if filing.withheld:
+        parts.append(
+            f"  {len(filing.withheld)} line(s) your rules answer for were "
+            f"left for you to review instead: "
+            f"{_counted([item.reason for item in filing.withheld])}."
+        )
+    if filing.outcome.refused:
+        parts.append(
+            f"  {filing.outcome.refused_count} line(s) your rules answer for "
+            f"could not be filed: "
+            f"{_counted([item.reason for item in filing.outcome.refused])}."
+        )
+    return "".join(parts)
+
+
 @accounts_bp.route(
     "/accounts/<int:account_id>/statements", methods=["POST"],
 )
 @login_required
 @require_owner
 def import_statement(account_id):
-    """Record an uploaded statement against this account.
+    """Record an uploaded statement, and file what standing rules answer for.
 
     Every refusal the service can raise is a :class:`StatementImportError`
     subclass carrying a sentence written for the person who uploaded the file,
@@ -352,16 +479,41 @@ def import_statement(account_id):
     whole thing back -- which is what makes "nothing was imported", the phrase
     every one of those messages ends with, true rather than reassuring.
 
-    **The success event is emitted AFTER the commit**, not by the service: a
-    business event asserting "a bank statement was recorded" must not sit in
-    the log when the transaction that would have recorded it failed.
+    **This door MOVES MONEY since plan step ``bank_import:X-ge``** (ruling
+    **R-GH**), and it is the only one in the app that does so without an act
+    in the same request.  Recording a statement still moves no figure; what
+    moves one is :func:`~app.services.statement_match.file_new_swipes`, which
+    turns the NEW swipe lines the owner has already stated a rule for into
+    purchases in the destinations those rules name.  Consent was given when the
+    rule was stated, every application is receipted with the one-click undo
+    ruling **R-GG** built, and every act that would MODIFY a row the owner made
+    by hand is still a proposal on the review screen needing its tick.
+
+    **TWO acts, ONE unit of work, in this order.**  The scope is derived AFTER
+    the import has staged its lines -- a pass built before them cannot see the
+    swipes the rules are for -- and the whole request commits once, so a
+    failure outside a designed refusal leaves neither the lines nor the
+    purchases.  ``ReviewScope.build``'s own two failures are deliberately not
+    caught: they mean the pay calendar cannot be resolved or no scenario can
+    price a row, states in which every money surface is already unreachable,
+    and recording a statement is IDEMPOTENT -- so the owner repairs the setup
+    and imports the same file again at no cost, which is a better trade than a
+    silently half-run import.
+
+    **The success events are emitted AFTER the commit**, not by the services: a
+    business event asserting "a bank statement was recorded" -- or that money
+    was filed under a rule -- must not sit in the log when the transaction that
+    would have done it failed.  The filing has its OWN event beside the
+    import's, because they are different acts with different consequences.
 
     Args:
         account_id: The account to import into.
 
     Returns:
         A redirect back to the statements page, with a flash saying what
-        happened.
+        happened.  The filed lines themselves are on that page, listed with
+        their undo controls, rather than in the flash: a flash cannot carry a
+        form, and it is gone on the next load.
     """
     account = load_cash_account_or_404(account_id)
     target = url_for("accounts.statements", account_id=account_id)
@@ -385,19 +537,83 @@ def import_statement(account_id):
     # many times over in list overhead.
     payload = upload.read()
 
-    def _report(outcome):
-        """Log the business event and return the flash, AFTER the commit.
+    def _file_under_rules(outcome):
+        """Return what standing rules filed, or why they could not be asked.
 
-        The event asserting "a bank statement was recorded" must not sit in the
-        log when the transaction that would have recorded it failed, which is
-        why it is here rather than in the service.
+        **Recording what the bank said does not depend on the budget being
+        derivable, and this arm is the whole of what makes that true.**
+        ``ReviewScope.build`` raises ``PayCalendarError`` when the owner's
+        paydays cannot define a calendar -- two on one day is enough, and
+        NOTHING registers a handler for it, so it reaches the browser as a bare
+        500 -- and ``BaselineMissingError`` when no scenario can price a row.
+        Neither is a fact about the statement.  Letting either propagate would
+        roll the import back and tell the owner nothing, on a page whose own
+        GET renders perfectly well without a calendar: ``statements()`` builds
+        no scope at all.
+
+        **It does not contradict ruling R-BW**, which sends a request whose
+        ANSWER needs a baseline to the setup-recovery page.  This request's
+        answer is *what did the import record*, and that needs none; what is
+        undefined is the FILING, and saying so is the honest report of it.
 
         Args:
-            outcome: The :class:`~app.services.statement_import.ImportOutcome`.
+            outcome: What :func:`record_statement` just did.
+
+        Returns:
+            The :class:`~app.services.statement_match.RuleFiling`.
+        """
+        try:
+            scope = ReviewScope.build(current_user.id, account.id)
+        except (PayCalendarError, BaselineMissingError):
+            _logger.warning(
+                "user_id=%d imported into account %d and the standing rules "
+                "could not be consulted: the pass could not be derived",
+                current_user.id, account_id, exc_info=True,
+            )
+            return RuleFiling.could_not_run(
+                "your pay calendar or your baseline scenario could not be "
+                "worked out, and a rule files into a budget the app has to be "
+                "able to derive. Your bank's lines are recorded either way -- "
+                "fix that and import the same file again, which is safe"
+            )
+        return file_new_swipes(scope, outcome.import_id)
+
+    def _record_and_file():
+        """Record the file, then file what standing rules answer for.
+
+        Both acts, in the ONE unit of work the caller commits.  The scope is
+        built HERE rather than by the service beneath it -- only a route builds
+        a read pass -- and it is built after :func:`record_statement` has
+        staged its lines, because those lines are what the rules are for.
+
+        Returns:
+            ``(ImportOutcome, RuleFiling)``.
+        """
+        outcome = record_statement(
+            account_id=account.id,
+            user_id=current_user.id,
+            source=source,
+            file_name=upload.filename,
+            payload=payload,
+        )
+        return outcome, _file_under_rules(outcome)
+
+    def _report(result):
+        """Log both business events and return the flash, AFTER the commit.
+
+        An event asserting "a bank statement was recorded" -- or that money was
+        filed under a standing rule -- must not sit in the log when the
+        transaction that would have done it failed, which is why both are here
+        rather than in the services.
+
+        Args:
+            result: ``(ImportOutcome, RuleFiling)`` from
+                :func:`_record_and_file`.
 
         Returns:
             ``(message, category)``.
         """
+        outcome, filing = result
         log_event(
             _logger, logging.INFO, EVT_STATEMENT_IMPORTED, BUSINESS,
             "Recorded a bank statement.",
@@ -408,7 +624,26 @@ def import_statement(account_id):
             period_start=outcome.period_start.isoformat(),
             period_end=outcome.period_end.isoformat(),
         )
-        return _import_flash(outcome)
+        # **Only when it did something**, which is what keeps the log honest
+        # about the act rather than about the door: a re-import of an
+        # overlapping span records no fresh line, so no rule can fire on it,
+        # and an event saying a pass filed nothing on every such import would
+        # be the noise that makes the ones that DID file unfindable.
+        if not filing.says_nothing:
+            log_event(
+                _logger, logging.INFO, EVT_STATEMENT_RULES_FILED, BUSINESS,
+                "Standing rules filed new swipe lines at import.",
+                user_id=current_user.id,
+                account_id=account.id,
+                import_id=outcome.import_id,
+                filed_count=filing.filed_count,
+                filed_total=str(filing.filed_total),
+                envelopes_created=filing.outcome.envelopes_created,
+                refused_count=filing.outcome.refused_count,
+                withheld_count=len(filing.withheld),
+            )
+        message, category = _import_flash(outcome)
+        return f"{message}{_filing_sentence(filing)}", category
 
     return run_statement_door(
         StatementDoorContext(
@@ -420,17 +655,11 @@ def import_statement(account_id):
             log_args=(current_user.id, account_id),
             flash_message=(
                 "Something went wrong saving this statement.  Nothing was "
-                "imported."
+                "imported, and nothing was filed."
             ),
             target=target,
         ),
-        lambda: record_statement(
-            account_id=account.id,
-            user_id=current_user.id,
-            source=source,
-            file_name=upload.filename,
-            payload=payload,
-        ),
+        _record_and_file,
         _report,
     )
 
@@ -483,7 +712,7 @@ def _removal_flash(account_id: int, removal) -> tuple:
     # balance-neutral and a report that said only "N matches undone" would
     # hide it.
     removed_rows = (
-        f"  {removal.rows_removed} row(s) the review had created from those "
+        f"  {removal.rows_removed} row(s) created from those "
         f"lines were removed with them, worth {removal.cash_removed:+,.2f}."
         if removal.rows_removed else ""
     )
