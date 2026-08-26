@@ -561,7 +561,7 @@ def day_detail(
             DayLine(
                 amount=line.amount,
                 description=line.description,
-                merchant=line.merchant,
+                merchant=line.merchant_name,
                 matched=matched,
             )
             for line, matched in _lines_on(account.id, day)

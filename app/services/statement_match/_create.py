@@ -920,7 +920,9 @@ def create_purchase_from_line(
             # the description for a source that names no merchant, because
             # ``transaction_entries.description`` is NOT NULL and this door
             # calls ``create_entry`` directly.
-            description=merchant_label(line)[:200],
+            description=merchant_label(
+                line.merchant_name, line.description,
+            )[:200],
             purchased_on=made_on,
             # ``observed``: the bank line IS why this purchase exists, so its
             # posting day is a day a statement showed rather than a bound or a

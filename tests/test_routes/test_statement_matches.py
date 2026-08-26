@@ -59,6 +59,7 @@ from app.services.statement_match import _batch as statement_match_batch
 from app.utils.money import round_money
 from tests.test_services.test_statement_match._builders import (
     a_bank_line,
+    a_merchant,
     a_purchase,
     a_reviewed_token,
     a_transaction,
@@ -225,7 +226,7 @@ def _merchants_url(account_id):
     return f"/accounts/{account_id}/statements/review/merchants"
 
 
-def _policy(index, merchant, *, answer, name="", category_id=""):
+def _policy(index, merchant_id, *, answer, name="", category_id=""):
     """Return the form fields ONE merchant row of the policy section submits.
 
     **Every control the row renders**, whichever answer was picked, because a
@@ -234,7 +235,8 @@ def _policy(index, merchant, *, answer, name="", category_id=""):
 
     Args:
         index: The row's rendered position, which is what keys its fields.
-        merchant: The merchant string the hidden input carries.
+        merchant_id: The merchant ROW the hidden input carries (plan step
+            ``bank_import:X-gd-1``); it was the bank's own string until then.
         answer: ``"unset"`` (I have not said), ``"never"``, ``"new"``, or
             ``"t:<template_id>"``.
         name: What the envelope-name box carries.
@@ -245,7 +247,7 @@ def _policy(index, merchant, *, answer, name="", category_id=""):
     """
     return {
         f"policy-{index}": str(answer),
-        f"policy_merchant-{index}": merchant,
+        f"policy_merchant-{index}": str(merchant_id),
         f"policy_name-{index}": name,
         f"policy_category-{index}": str(category_id),
     }
@@ -2578,7 +2580,10 @@ class TestTheMerchantPolicySection:
 
         response = auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, "Amazon", answer=f"t:{envelope.template_id}"),
+            data=_policy(
+                0, a_merchant(seed_user, "Amazon").id,
+                answer=f"t:{envelope.template_id}",
+            ),
         )
 
         assert response.status_code == 200
@@ -2606,7 +2611,10 @@ class TestTheMerchantPolicySection:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, "Amazon", answer=f"t:{envelope.template_id}"),
+            data=_policy(
+                0, a_merchant(seed_user, "Amazon").id,
+                answer=f"t:{envelope.template_id}",
+            ),
         )
 
         response = auth_client.get(_review_url(seed_user["account"].id))
@@ -2637,7 +2645,10 @@ class TestTheMerchantPolicySection:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, "Amazon", answer=f"t:{envelope.template_id}"),
+            data=_policy(
+                0, a_merchant(seed_user, "Amazon").id,
+                answer=f"t:{envelope.template_id}",
+            ),
         )
 
         # THE RENDERED form, submitted untouched -- which is what pressing
@@ -2673,7 +2684,10 @@ class TestTheMerchantPolicySection:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, "Amazon", answer=f"t:{envelope.template_id}"),
+            data=_policy(
+                0, a_merchant(seed_user, "Amazon").id,
+                answer=f"t:{envelope.template_id}",
+            ),
         )
         body = auth_client.get(
             _review_url(seed_user["account"].id),
@@ -2716,7 +2730,10 @@ class TestTheMerchantPolicySection:
 
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, "Capital One Credit Card", answer="never"),
+            data=_policy(
+                0, a_merchant(seed_user, "Capital One Credit Card").id,
+                answer="never",
+            ),
         )
         response = auth_client.get(_review_url(seed_user["account"].id))
         # WHITESPACE-NORMALISED, because a rendered sentence wraps: asserting
@@ -2780,14 +2797,17 @@ class TestTheMerchantPolicySection:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, "Alpha", answer=f"t:{envelope.template_id}"),
+            data=_policy(
+                0, a_merchant(seed_user, "Alpha").id,
+                answer=f"t:{envelope.template_id}",
+            ),
         )
 
         response = auth_client.post(
             _merchants_url(seed_user["account"].id),
             data=_pass(
-                _policy(0, "Alpha", answer=f"t:{envelope.template_id}"),
-                _policy(1, "Beta", answer="never"),
+                _policy(0, a_merchant(seed_user, "Alpha").id, answer=f"t:{envelope.template_id}"),
+                _policy(1, a_merchant(seed_user, "Beta").id, answer="never"),
             ),
         )
         body = " ".join(response.data.decode().split())
@@ -2805,7 +2825,7 @@ class TestTheMerchantPolicySection:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, "Lowe's", answer="new", name="Yard & Garden",
+            data=_policy(0, a_merchant(seed_user, "Lowe's").id, answer="new", name="Yard & Garden",
                          category_id=category.id),
         )
 
@@ -2841,7 +2861,10 @@ class TestTheMerchantPolicySection:
 
         response = auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, "Amazon", answer=f"t:{foreign.template_id}"),
+            data=_policy(
+                0, a_merchant(seed_user, "Amazon").id,
+                answer=f"t:{foreign.template_id}",
+            ),
         )
 
         assert response.status_code == 200
@@ -2864,13 +2887,61 @@ class TestTheMerchantPolicySection:
         _a_line(seed_user)
         db.session.commit()
 
+        # An id no merchant on this account carries.  It used to be a STRING
+        # this account's lines had never named; since plan step
+        # ``bank_import:X-gd-1`` the hidden input carries a row, so what a
+        # crafted body can name is another account's merchant or a number that
+        # is nobody's -- and the sentence is what both get instead of an
+        # ``IntegrityError`` reaching the owner as "Something went wrong".
         response = auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, "Nowhere Ltd", answer="never"),
+            data=_policy(0, 9_999_999, answer="never"),
         )
 
         assert response.status_code == 400
-        assert b"never shown" in response.data
+        assert b"not ones your bank has shown" in response.data
+
+    def test_ANOTHER_ACCOUNTS_real_merchant_is_INDISTINGUISHABLE_from_no_one(
+        self, auth_client, db, seed_user, seed_second_user,
+    ):
+        """THE anti-oracle property, on the wire, which nothing asserted.
+
+        This project's security rule is 404 for both *not found* and *not
+        yours*; on a form FIELD the same rule is that a real id belonging to
+        somebody else and an id belonging to nobody must be answered
+        identically.  Split the refusal to be more helpful -- *that merchant is
+        on another account* -- and the screen becomes an existence oracle over
+        a global surrogate key.
+
+        It holds today because ``_refuse_unknown_merchants`` builds its set
+        from a dict MISS against this account's own merchants and reports only
+        a count; an adversarial security review of 2026-08-25 found the
+        property itself graded nowhere, and the service-tier case beside it
+        posts a foreign id past the route, the schema and the door.
+        """
+        _an_envelope(seed_user)
+        _a_line(seed_user)
+        theirs = a_merchant(
+            seed_second_user, "Theirs Alone",
+            account=seed_second_user["account"],
+        )
+        db.session.commit()
+
+        real = auth_client.post(
+            _merchants_url(seed_user["account"].id),
+            data=_policy(0, theirs.id, answer="never"),
+        )
+        nobodys = auth_client.post(
+            _merchants_url(seed_user["account"].id),
+            data=_policy(0, 9_999_999, answer="never"),
+        )
+
+        assert real.status_code == nobodys.status_code == 400
+        assert real.data == nobodys.data
+        from app.models.merchant_destination import (  # pylint: disable=import-outside-toplevel
+            MerchantDestination,
+        )
+        assert db.session.query(MerchantDestination).count() == 0
 
     def test_a_CRAFTED_answer_is_refused_rather_than_a_500(
         self, auth_client, db, seed_user,
@@ -2887,7 +2958,10 @@ class TestTheMerchantPolicySection:
 
         response = auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, "Amazon", answer="t:007"),
+            data=_policy(
+                0, a_merchant(seed_user, "Amazon").id,
+                answer="t:007",
+            ),
         )
 
         assert response.status_code == 400
@@ -2903,7 +2977,10 @@ class TestTheMerchantPolicySection:
         """
         response = auth_client.post(
             _merchants_url(seed_second_user["account"].id),
-            data=_policy(0, "Amazon", answer="never"),
+            data=_policy(
+                0, a_merchant(seed_user, "Amazon").id,
+                answer="never",
+            ),
         )
 
         assert response.status_code == 404
@@ -2926,7 +3003,7 @@ class TestTheMerchantPolicySection:
         auth_client.post(
             _merchants_url(seed_user["account"].id),
             data=_policy(
-                0, "Lowe's", answer="new", name="Yard & Garden",
+                0, a_merchant(seed_user, "Lowe's").id, answer="new", name="Yard & Garden",
                 category_id=category.id,
             ),
         )
@@ -2969,13 +3046,19 @@ class TestTheMerchantPolicySection:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, "Amazon", answer=f"t:{envelope.template_id}"),
+            data=_policy(
+                0, a_merchant(seed_user, "Amazon").id,
+                answer=f"t:{envelope.template_id}",
+            ),
         )
         assert db.session.query(MerchantDestination).count() == 1
 
         response = auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, "Amazon", answer="unset"),
+            data=_policy(
+                0, a_merchant(seed_user, "Amazon").id,
+                answer="unset",
+            ),
         )
 
         assert response.status_code == 200
@@ -3005,7 +3088,10 @@ class TestTheMerchantPolicySection:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, "Amazon", answer=f"t:{envelope.template_id}"),
+            data=_policy(
+                0, a_merchant(seed_user, "Amazon").id,
+                answer=f"t:{envelope.template_id}",
+            ),
         )
 
         page = auth_client.get(
@@ -3080,7 +3166,10 @@ class TestTheMerchantPolicySection:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, "Amazon", answer=f"t:{closed.template_id}"),
+            data=_policy(
+                0, a_merchant(seed_user, "Amazon").id,
+                answer=f"t:{closed.template_id}",
+            ),
         )
 
         body = " ".join(auth_client.get(
@@ -3112,10 +3201,10 @@ class TestTheMerchantPolicySection:
         auth_client.post(
             _merchants_url(seed_user["account"].id),
             data=_pass(
-                _policy(0, "Alpha", answer=f"t:{envelope.template_id}"),
-                _policy(1, "Beta", answer="new", name="Beta Fund",
+                _policy(0, a_merchant(seed_user, "Alpha").id, answer=f"t:{envelope.template_id}"),
+                _policy(1, a_merchant(seed_user, "Beta").id, answer="new", name="Beta Fund",
                         category_id=category.id),
-                _policy(2, "Gamma", answer="never"),
+                _policy(2, a_merchant(seed_user, "Gamma").id, answer="never"),
             ),
         )
 
@@ -3154,7 +3243,10 @@ class TestTheMerchantPolicySection:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, "Amazon", answer=f"t:{envelope.template_id}"),
+            data=_policy(
+                0, a_merchant(seed_user, "Amazon").id,
+                answer=f"t:{envelope.template_id}",
+            ),
         )
         db.session.query(TransactionTemplate).filter(
             TransactionTemplate.id == envelope.template_id,
@@ -3197,8 +3289,8 @@ class TestTheMerchantPolicySection:
         auth_client.post(
             _merchants_url(seed_user["account"].id),
             data=_pass(
-                _policy(0, "Alpha", answer=f"t:{template_id}"),
-                _policy(1, "Beta", answer="new", name="Beta Fund",
+                _policy(0, a_merchant(seed_user, "Alpha").id, answer=f"t:{template_id}"),
+                _policy(1, a_merchant(seed_user, "Beta").id, answer="new", name="Beta Fund",
                         category_id=category.id),
             ),
         )
@@ -3236,7 +3328,7 @@ class TestTheScreenSaysWhichLineWouldCREATE:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, "Lowe's", answer="new", name="Yard & Garden",
+            data=_policy(0, a_merchant(seed_user, "Lowe's").id, answer="new", name="Yard & Garden",
                          category_id=category.id),
         )
 
@@ -3365,7 +3457,7 @@ class TestALineThatMayNeverBecomeAPurchase:
         response = auth_client.post(
             _merchants_url(seed_user["account"].id),
             data=_policy(
-                0, "Capital One Credit Card",
+                0, a_merchant(seed_user, "Capital One Credit Card").id,
                 answer=f"t:{envelope.template_id}",
             ),
         )
@@ -3402,7 +3494,10 @@ class TestALineThatMayNeverBecomeAPurchase:
 
         response = auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, "Capital One Credit Card", answer="never"),
+            data=_policy(
+                0, a_merchant(seed_user, "Capital One Credit Card").id,
+                answer="never",
+            ),
         )
         body = " ".join(response.data.decode().split())
 
@@ -3411,7 +3506,9 @@ class TestALineThatMayNeverBecomeAPurchase:
             MerchantDestination,
         )
         stored = db.session.query(MerchantDestination).one()
-        assert stored.merchant == "Capital One Credit Card"
+        assert stored.merchant_id == a_merchant(
+            seed_user, "Capital One Credit Card",
+        ).id
         assert stored.template_id is None
         assert stored.envelope_name is None
 
@@ -3435,7 +3532,10 @@ class TestALineThatMayNeverBecomeAPurchase:
         stale[f"destination-{line.id}"] = str(envelope.id)
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, "Capital One Credit Card", answer="never"),
+            data=_policy(
+                0, a_merchant(seed_user, "Capital One Credit Card").id,
+                answer="never",
+            ),
         )
 
         response = auth_client.post(
@@ -3464,7 +3564,10 @@ class TestALineThatMayNeverBecomeAPurchase:
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
-            data=_policy(0, "Capital One Credit Card", answer="never"),
+            data=_policy(
+                0, a_merchant(seed_user, "Capital One Credit Card").id,
+                answer="never",
+            ),
         )
 
         page = auth_client.get(

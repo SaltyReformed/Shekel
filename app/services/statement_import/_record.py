@@ -6,14 +6,19 @@ its lines compared against what is already recorded, and only then is anything
 staged.  So a refused import writes no new line without depending on the
 rollback.
 
-**The claim is about INSERTS and not about the session, and a wider version of
-it was left standing here once.**  The reconciliation walks group by group and
-:func:`_absorb_gained_facts` fills a recorded row's NULLs as it goes, so a
-refusal raised on group *k* leaves groups 1..*k*-1 dirty in the session and it
-is the route's rollback that discards them.  Nothing is lost by that -- those
-writes only ever ADD a fact the file states -- but "leaves the database exactly
-as it was without depending on the rollback" was true of the old per-line loop
-and is not true of this one.  Found by adversarial financial review 2026-08-20.
+**The claim is about the SESSION too, and it was not until plan step
+``bank_import:X-gd-1``.**  The reconciliation walks group by group, and
+:func:`_absorb_gained_facts` used to fill a recorded row's NULLs as it went --
+so a refusal raised on group *k* left groups 1..*k*-1 dirty in the session and
+it was the route's rollback that discarded them.  Nothing was lost by that,
+because those writes only ever ADD a fact the file states, but "leaves the
+database exactly as it was without depending on the rollback" was true of the
+older per-line loop and was not true of that one (found by adversarial
+financial review 2026-08-20).  :func:`_reconcile` now DECIDES the whole
+partition and returns it; the absorbing happens beside the staging, after the
+last refusal, so the session is untouched by a refused import.  The change was
+forced -- a merchant is a row now, and a row cannot be resolved for a file that
+is about to be refused -- and the older claim is what it restores.
 
 **Nothing here moves a figure.**  Recording what a bank said is separable from
 deciding which of the app's own rows it explains, and that separation is the
@@ -59,6 +64,7 @@ from ._line import (
     group_key,
     pair_by_statement,
 )
+from ._merchants import resolve_merchants
 
 
 @dataclass(frozen=True)
@@ -201,6 +207,7 @@ def _refuse_restatement(
 
 def _absorb_gained_facts(
     line: StatementLine, recorded: BankStatementLine,
+    merchants: "dict[str, int]",
 ) -> None:
     """Fill in what a later export states and the recorded row does not.
 
@@ -223,6 +230,10 @@ def _absorb_gained_facts(
     Args:
         line: The incoming line the file states.
         recorded: The line already held, paired to it by wording.
+        merchants: This pass's merchant rows by name
+            (:func:`~._merchants.resolve_merchants`), TOTAL over every name a
+            line here can carry -- :func:`_merchant_words`' second half is what
+            puts them in it.
     """
     if recorded.running_balance is None and line.running_balance is not None:
         recorded.running_balance = line.running_balance
@@ -250,15 +261,38 @@ def _absorb_gained_facts(
     # and a disagreement cannot arrive here anyway: this merchant is read from
     # the same cell as ``description``, which the pairing that produced this
     # pair matched on.
-    if recorded.merchant is None and line.merchant:
-        recorded.merchant = line.merchant
+    if recorded.merchant_id is None and line.merchant:
+        recorded.merchant_id = merchants[line.merchant]
 
 
-def _fresh_lines(
+@dataclass(frozen=True)
+class _Reconciled:
+    """What comparing a file against the record DECIDED, before any write.
+
+    Plan step ``bank_import:X-gd-1``.  :func:`_reconcile` used to write as it
+    decided, calling :func:`_absorb_gained_facts` inside its own loop, so a
+    refusal on a later group left earlier ones dirty in the session -- the
+    caveat the module docstring carried.  Both halves of the decision are
+    values now, and the writes happen together after the last refusal.
+
+    Attributes:
+        fresh: The lines to write, with their ordinals, in the file's own
+            order.
+        absorbing: Every ``(incoming, recorded)`` pair whose recorded row this
+            file may fill a NULL on (:func:`_absorb_gained_facts`), in group
+            order.  It is a PAIR and not a row because what is absorbed comes
+            from the incoming line.
+    """
+
+    fresh: "list[KeyedLine]"
+    absorbing: "list[tuple[StatementLine, BankStatementLine]]"
+
+
+def _reconcile(
     lines: "list[StatementLine]",
     already: "dict[tuple[date, Decimal], list[BankStatementLine]]",
-) -> "list[KeyedLine]":
-    """Return the lines not already recorded, refusing any restatement.
+) -> _Reconciled:
+    """Decide what this file adds and what it fills in, refusing a restatement.
 
     **The partition is total and it is decided per GROUP**, not per line.  Every
     incoming line either pairs with one the app already holds -- by the wording
@@ -268,18 +302,26 @@ def _fresh_lines(
     that decision (:func:`~._line.pair_by_statement`); it is minted for the
     fresh lines afterwards (:func:`~._line.fresh_ordinals`).
 
+    **It DECIDES and does not write** (plan step ``bank_import:X-gd-1``).  It
+    absorbed as it went until then, which put a write ahead of a refusal this
+    same loop can still raise; now the caller writes both halves after the
+    file's last refusal, which is what lets a merchant word be resolved to a
+    row for a file that is going to be recorded rather than for one that is
+    about to be refused.
+
     Args:
         lines: The file's lines, in the file's own order.
         already: What is recorded over the same span, grouped by day and
             amount.
 
     Returns:
-        The lines to write, with their ordinals, in the file's own order.
+        The :class:`_Reconciled` decision.
 
     Raises:
         StatementLineConflict: When a recorded line is restated differently.
     """
     fresh: "list[tuple[int, KeyedLine]]" = []
+    absorbing: "list[tuple[StatementLine, BankStatementLine]]" = []
     for key, indexes in group_indexes(lines).items():
         recorded = already.get(key, [])
         pairing = pair_by_statement(
@@ -292,9 +334,9 @@ def _fresh_lines(
                 recorded[pairing.unclaimed[0]],
             )
         for incoming_index, recorded_index in pairing.held:
-            _absorb_gained_facts(
+            absorbing.append((
                 lines[indexes[incoming_index]], recorded[recorded_index],
-            )
+            ))
         ordinals = fresh_ordinals(
             (row.sequence_in_group for row in recorded), len(pairing.fresh),
         )
@@ -310,11 +352,42 @@ def _fresh_lines(
     # order and their members in file order, so the concatenation is already
     # close -- but "already close" is not an order, and the staged rows' ids
     # are what ``recent_lines`` breaks ties on.
-    return [keyed for _, keyed in sorted(fresh, key=lambda pair: pair[0])]
+    return _Reconciled(
+        fresh=[keyed for _, keyed in sorted(fresh, key=lambda pair: pair[0])],
+        absorbing=absorbing,
+    )
+
+
+def _merchant_words(reconciled: _Reconciled) -> "set[str]":
+    """Return every merchant word this pass will need a row for.
+
+    **Both halves, and the second is not decoration**: a re-import fills a
+    recorded line's merchant where the first adapter could not name one
+    (:func:`_absorb_gained_facts`), so a word that appears on NO fresh line can
+    still be written.  Asking only about the fresh half would leave that arm
+    indexing a mapping the word is not in.
+
+    Args:
+        reconciled: What :func:`_reconcile` decided.
+
+    Returns:
+        The words, as a set.  A line naming none contributes nothing, which is
+        the source saying it names none.
+    """
+    words = {
+        keyed.line.merchant for keyed in reconciled.fresh
+        if keyed.line.merchant
+    }
+    words.update(
+        line.merchant for line, recorded in reconciled.absorbing
+        if recorded.merchant_id is None and line.merchant
+    )
+    return words
 
 
 def _stage_lines(
     account_id: int, import_id: int, fresh: "list[KeyedLine]",
+    merchants: "dict[str, int]",
 ) -> None:
     """Stage one :class:`BankStatementLine` per fresh line.
 
@@ -322,6 +395,10 @@ def _stage_lines(
         account_id: The account being imported into.
         import_id: The import that is recording them.
         fresh: The lines to write.
+        merchants: This pass's merchant rows by name
+            (:func:`~._merchants.resolve_merchants`), TOTAL over every word a
+            fresh line names -- :func:`_merchant_words` is what puts them in
+            it, so this indexes rather than defaulting.
     """
     for keyed in fresh:
         line = keyed.line
@@ -332,12 +409,46 @@ def _stage_lines(
             transaction_on=line.transaction_on,
             amount=line.amount,
             description=line.description,
-            merchant=line.merchant,
+            # ``None`` where the source names none, which keys no rule -- the
+            # direction a missing fact has to fail in.
+            merchant_id=(
+                merchants[line.merchant] if line.merchant else None
+            ),
             source_category=line.source_category,
             external_id=line.external_id,
             sequence_in_group=keyed.sequence_in_group,
             running_balance=line.running_balance,
         ))
+
+
+def _write_records(
+    account_id: int, import_id: int, reconciled: _Reconciled,
+) -> None:
+    """Write everything this file adds to the record, in one merchant pass.
+
+    **The three writes that share one fact, kept together because of it** (plan
+    step ``bank_import:X-gd-1``).  A merchant WORD becomes a merchant ROW here
+    and nowhere else (:func:`~._merchants.resolve_merchants`); a re-import then
+    fills the merchant a recorded row is missing, and every fresh line names
+    one.  Splitting them would mean resolving the same words twice or threading
+    a mapping across the door, and the two callers are two lines apart.
+
+    **It runs after the last refusal**, which is what the module's opening
+    claim rests on: this is the first statement that INSERTS, and a file about
+    to be refused leaves nothing behind without depending on the rollback.
+
+    One statement for the whole pass, not one per line: the developer's own
+    year-to-date export is 361 lines naming 62 merchants.
+
+    Args:
+        account_id: The account being imported into.
+        import_id: The import recording the fresh lines.
+        reconciled: What :func:`_reconcile` decided this file adds and fills.
+    """
+    merchants = resolve_merchants(account_id, _merchant_words(reconciled))
+    for line, recorded in reconciled.absorbing:
+        _absorb_gained_facts(line, recorded, merchants)
+    _stage_lines(account_id, import_id, reconciled.fresh, merchants)
 
 
 def record_statement(
@@ -382,8 +493,7 @@ def record_statement(
         StatementLineConflict: A recorded line is restated.
     """
     parsed = parse_statement(source, payload)
-    lines = parsed.lines
-    verify_running_balance(lines)
+    verify_running_balance(parsed.lines)
 
     source_id = ref_cache.statement_source_id(source)
     identity_is_new = verify_identity(
@@ -396,17 +506,19 @@ def record_statement(
     # them from the extremes means a future adapter that forgets to sort
     # produces a correct span rather than a backwards one that trips
     # ``ck_statement_imports_period_ordered`` and surfaces as a database error.
-    period_start = min(line.posted_on for line in lines)
-    period_end = max(line.posted_on for line in lines)
-    already = _recorded_groups(account_id, period_start, period_end)
+    period_start = min(line.posted_on for line in parsed.lines)
+    period_end = max(line.posted_on for line in parsed.lines)
 
-    fresh = _fresh_lines(lines, already)
+    reconciled = _reconcile(
+        parsed.lines,
+        _recorded_groups(account_id, period_start, period_end),
+    )
     # Read BEFORE the import row exists, so the walk sees only what was
     # recorded before this act -- and resolve the anchor here, with the other
     # refusals, because an unexplained balance must refuse the file rather
     # than be discovered after its lines are staged.
     balance = resolve_anchor(
-        lines,
+        parsed.lines,
         parsed.stated_balance,
         parsed.stated_balance_on,
         recorded_opening_before(account_id, period_start),
@@ -426,8 +538,8 @@ def record_statement(
         file_digest=hashlib.sha256(payload).hexdigest(),
         period_start=period_start,
         period_end=period_end,
-        line_count=len(lines),
-        recorded_count=len(fresh),
+        line_count=len(parsed.lines),
+        recorded_count=len(reconciled.fresh),
         # The bank's OWN claim, verbatim, beside what this import worked out
         # about it.  The claim and the day it is FOR are two facts (ruling
         # **R-GF**): SECU writes the figure as of the export INSTANT and
@@ -446,7 +558,7 @@ def record_statement(
     # must exist before they are staged.
     db.session.flush()
 
-    _stage_lines(account_id, statement_import.id, fresh)
+    _write_records(account_id, statement_import.id, reconciled)
     # **Every anchor these fresh lines undercut is RELEASED**, and it happens
     # after the staging so the earliest fresh day is known.  An anchor solved
     # before a line at or before its own day was recorded was solved without
@@ -454,18 +566,18 @@ def record_statement(
     # days early under a *corroborated* badge because of it.  This import's
     # OWN anchor is not among them: it was solved against its own complete
     # line list, so it accounts for every line staged here.
-    if fresh:
+    if reconciled.fresh:
         release_anchors_from(
             account_id,
-            min(keyed.line.posted_on for keyed in fresh),
+            min(keyed.line.posted_on for keyed in reconciled.fresh),
             except_import_id=statement_import.id,
         )
     db.session.flush()
 
     return ImportOutcome(
         import_id=statement_import.id,
-        line_count=len(lines),
-        recorded_count=len(fresh),
+        line_count=len(parsed.lines),
+        recorded_count=len(reconciled.fresh),
         period_start=period_start,
         period_end=period_end,
         balance=balance,

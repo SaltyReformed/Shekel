@@ -129,7 +129,8 @@ def _named_for(lines) -> str:
         The composed name, cut to :data:`_NAME_LIMIT`.
     """
     latest = max(lines, key=lambda line: (line.posted_on, line.id))
-    return f"{_NAME_PREFIX}: {merchant_label(latest)}"[:_NAME_LIMIT]
+    named = merchant_label(latest.merchant_name, latest.description)
+    return f"{_NAME_PREFIX}: {named}"[:_NAME_LIMIT]
 
 
 #: The last clause of every refusal this module writes.  One spelling, because

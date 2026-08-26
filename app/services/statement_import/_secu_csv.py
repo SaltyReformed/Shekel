@@ -137,7 +137,7 @@ _STATED_DAY = re.compile(r"\bDATE (\d{2})-(\d{2})\b")
 #: where the stated day is on 182.  Anchored at the end of the cell, so an
 #: earlier ``(...)`` inside the bank's own wording is not a candidate and there
 #: is never more than one.  The 100 matches
-#: ``bank_statement_lines.merchant``'s own width; the longest the developer's
+#: ``budget.merchants.name``'s own width; the longest the developer's
 #: export carries is 28 (``Department of motor vehicles``).
 _MERCHANT = re.compile(r"\(([^()]{1,100})\)\s*$")
 
@@ -533,8 +533,9 @@ def _stated_merchant(description: str) -> "str | None":
     # An all-whitespace token is not a name, and here that matters more than it
     # did for a display default: this string is a policy's KEY, and a blank one
     # would be a rule the owner could neither read nor restate.
-    # ``ck_bank_statement_lines_merchant_not_blank`` says the same thing in the
-    # database, so the two cannot drift.
+    # ``ck_merchants_name_not_blank`` says the same thing in the database --
+    # on ``budget.merchants`` since plan step ``bank_import:X-gd-1``, where the
+    # string now lives once -- so the two cannot drift.
     return found.group(1).strip() or None
 
 

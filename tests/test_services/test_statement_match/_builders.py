@@ -20,6 +20,7 @@ from app.enums import (
 )
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
+from app.models.merchant import Merchant
 from app.models.merchant_destination import MerchantDestination
 from app.models.pay_period import PayPeriod
 from app.models.statement_import import BankStatementLine, StatementImport
@@ -30,6 +31,7 @@ from app.services.cash_ledger import amount_basis
 from app.services.statement_match import (
     CreationBars,
     MatchSubmission,
+    PolicyStatement,
     ReviewScope,
     ReviewedRow,
     RowKind,
@@ -249,6 +251,46 @@ def an_import(seed_user, account=None):
     return statement
 
 
+def a_merchant(seed_user, name, *, account=None, account_id=None):
+    """Stage and return the merchant row *name* names, creating it once.
+
+    **Built through the ORM, like everything else here**, so a broken
+    ``statement_import._merchants.resolve_merchants`` cannot also build the
+    fixture a reader test would have caught it with -- the rule
+    :func:`a_policy` already states.
+
+    **Get-or-create, because a merchant is per ACCOUNT and a test states its
+    name several times.**  Two lines from one merchant are two lines and ONE
+    merchant, and a builder that inserted twice would fail
+    ``uq_merchants_account_name`` -- which is the fixture reproducing the
+    production identity rather than working around it.
+
+    Args:
+        seed_user: The seeded user bundle.
+        name: What the source calls the merchant.
+        account: The account whose statements name it; the seeded checking one
+            by default.
+        account_id: Its id, where the caller holds that instead -- a bank line
+            carries its import's ``account_id`` and no account object.
+
+    Returns:
+        The staged :class:`~app.models.merchant.Merchant`.
+    """
+    if account_id is None:
+        account_id = (account or seed_user["account"]).id
+    found = (
+        db.session.query(Merchant)
+        .filter(Merchant.account_id == account_id, Merchant.name == name)
+        .one_or_none()
+    )
+    if found is not None:
+        return found
+    row = Merchant(account_id=account_id, name=name)
+    db.session.add(row)
+    db.session.flush()
+    return row
+
+
 def a_bank_line(
     seed_user, statement, *, amount="-180.00", posted_on=None,
     description="ACH DEBIT DUKEENERGY", sequence_in_group=0,
@@ -269,9 +311,13 @@ def a_bank_line(
             (179 of 361 lines) and because a fixture that always states one
             would never exercise :attr:`~._offers.BankLine.happened_on`'s
             fallback.
-        merchant: What the bank NAMES the merchant, or ``None`` for a source
-            naming none -- which is the DEFAULT, and it is a fixture decision
-            worth stating.  **It is NOT derived from *description* here.**  A
+        merchant: What the source NAMES the merchant, as a string, or ``None``
+            for a source naming none -- which is the DEFAULT, and it is a
+            fixture decision worth stating.  The string is resolved to a
+            :class:`~app.models.merchant.Merchant` row here
+            (:func:`a_merchant`), so a test states the name it means and the
+            fixture reproduces the production identity.  **It is NOT
+            derived from *description* here.**  A
             builder that re-ran the adapter's own parse would move with it, so
             a change to that parse would shift the fixture and the assertion
             together and grade nothing; the parse is graded where it belongs,
@@ -303,13 +349,86 @@ def a_bank_line(
         transaction_on=transaction_on,
         amount=Decimal(amount),
         description=description,
-        merchant=merchant,
+        merchant_id=(
+            None if merchant is None
+            else a_merchant(
+                seed_user, merchant, account_id=statement.account_id,
+            ).id
+        ),
         source_category=source_category,
         sequence_in_group=sequence_in_group,
     )
     db.session.add(line)
     db.session.flush()
     return line
+
+
+def the_merchant_id(seed_user, name, *, account=None):
+    """Return the id of the merchant *name* names, refusing to create one.
+
+    **:func:`a_merchant` is get-or-create and it FLUSHES**, so calling it
+    inside an assertion writes to the database from a comparison -- and, worse,
+    quietly supplies the row whose absence the case may be about.  Both
+    adversarial reviews of 2026-08-25 flagged the shape.  This is the read-only
+    half: a case ARRANGES with :func:`a_merchant` and ASSERTS with this one, so
+    an assertion can only ever observe.
+
+    Args:
+        seed_user: The seeded user bundle.
+        name: What the source calls the merchant.
+        account: The account whose merchants to look in; the seeded checking
+            one by default.
+
+    Returns:
+        Its :class:`~app.models.merchant.Merchant` id.
+
+    Raises:
+        AssertionError: When this account holds no such merchant -- which is
+            the failure the case wanted to see, named rather than papered over
+            by a fixture minting one.
+    """
+    account_id = (account or seed_user["account"]).id
+    found = (
+        db.session.query(Merchant.id)
+        .filter(Merchant.account_id == account_id, Merchant.name == name)
+        .one_or_none()
+    )
+    assert found is not None, (
+        f"no merchant named {name!r} on account {account_id} -- the code "
+        f"under test did not create it"
+    )
+    return found[0]
+
+
+def a_statement(seed_user, merchant, answer=None, *, account=None, **fields):
+    """Return the submission a test makes ABOUT *merchant*, by name.
+
+    **The door takes a merchant ROW ID** (plan step ``bank_import:X-gd-1``), and
+    a case that spelled one inline would be asserting against a number instead
+    of against a merchant.  This resolves the name the same way the screen
+    does -- to the row -- so a case still reads as *say where Amazon goes*.
+
+    **It CREATES the merchant where the case has staged no line naming it**
+    (:func:`a_merchant`), which is what makes it wrong for the two cases that
+    grade the scope refusal: those need an id this account does NOT have, and
+    they state one directly.
+
+    Args:
+        seed_user: The seeded user bundle.
+        merchant: What the source calls the merchant.
+        answer: The :class:`~app.services.statement_match.PolicyAnswer`, or
+            ``None`` to withdraw.
+        account: The account it governs; the seeded checking one by default.
+        **fields: ``template_id`` / ``envelope_name`` / ``category_id``, as the
+            answer needs them.
+
+    Returns:
+        The :class:`~app.services.statement_match.PolicyStatement`.
+    """
+    return PolicyStatement(
+        merchant_id=a_merchant(seed_user, merchant, account=account).id,
+        answer=answer, **fields,
+    )
 
 
 def a_policy(
@@ -324,7 +443,10 @@ def a_policy(
 
     Args:
         seed_user: The seeded user bundle.
-        merchant: The bank's own merchant string, which is the key.
+        merchant: What the source calls the merchant.  Resolved to the
+            :class:`~app.models.merchant.Merchant` row that IS the key
+            (:func:`a_merchant`), creating it where this test has staged
+            no line naming it.
         template_id: The recurring definition to file into, for the TEMPLATE
             answer.
         envelope_name: What to call the envelope to create, for the
@@ -341,7 +463,7 @@ def a_policy(
     row = MerchantDestination(
         user_id=seed_user["user"].id,
         account_id=(account or seed_user["account"]).id,
-        merchant=merchant,
+        merchant_id=a_merchant(seed_user, merchant, account=account).id,
         template_id=template_id,
         envelope_name=envelope_name,
         category_id=category_id,

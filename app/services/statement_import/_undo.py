@@ -88,6 +88,8 @@ from decimal import Decimal
 
 from app.exceptions import ValidationError
 from app.extensions import db
+from app.models.merchant import Merchant
+from app.models.merchant_destination import MerchantDestination
 from app.models.statement_import import BankStatementLine, StatementImport
 from app.services.statement_match import release_match
 
@@ -142,6 +144,8 @@ class ImportRemoval:  # pylint: disable=too-many-instance-attributes
         identity_forgotten: Whether the source-account pairing went too, which
             happens exactly when this was the account's LAST import from that
             source.
+        merchants_forgotten: Merchants this account has been left with no
+            reason to remember (:func:`_forget_orphan_merchants`).
     """
 
     import_id: int
@@ -152,8 +156,99 @@ class ImportRemoval:  # pylint: disable=too-many-instance-attributes
     matches_released: int
     anchors_released: int
     identity_forgotten: bool
+    merchants_forgotten: int
     rows_removed: int
     cash_removed: Decimal
+
+
+@dataclass(frozen=True)
+class _Doomed:
+    """What an import WAS, read while its row still exists.
+
+    Every fact this door's receipt needs about the import itself, taken before
+    the delete -- which is the ordering the door's own docstring rests on:
+    afterwards the row is gone and an attribute read off a deleted instance is
+    a property of the session rather than of the database.
+
+    Attributes:
+        source_id: Which adapter recorded it, for the identity reclamation.
+        file_name: What it was uploaded as, so the flash names what went.
+        period_start: The earliest day it covered.
+        period_end: The latest.
+    """
+
+    source_id: int
+    file_name: str
+    period_start: date
+    period_end: date
+
+    @classmethod
+    def of(cls, statement_import: StatementImport) -> "_Doomed":
+        """Return the four facts *statement_import* is about to stop stating.
+
+        Args:
+            statement_import: The import this door is about to delete.
+
+        Returns:
+            Its :class:`_Doomed`.
+        """
+        return cls(
+            source_id=statement_import.source_id,
+            file_name=statement_import.file_name,
+            period_start=statement_import.period_start,
+            period_end=statement_import.period_end,
+        )
+
+
+def _forget_orphan_merchants(account_id: int) -> int:
+    """Delete this account's merchants that nothing has a reason to remember.
+
+    Plan step ``bank_import:X-gd-1``, on an adversarial security review of
+    2026-08-25.  A merchant is created by an import and is deliberately NOT
+    removed with the lines that named it: a stated answer must stay readable
+    and restatable after its lines are gone, which is the property that retired
+    ``statable_merchants``' second derivation.  **That reason is about
+    ANSWERED merchants, and only those.**  A merchant with no surviving line
+    AND no stated answer preserves nothing -- ``merchant_section`` does not
+    render it, no rule is keyed on it, and nothing else can reach it.
+
+    **Without this the table has no ceiling at all**, which is precisely the
+    hazard ``_policy._refuse_unknown_merchants`` was written for and which
+    moved one table over when the rule's key became a foreign key: an owner
+    uploading a file naming N unseen merchants and then deleting the import
+    reclaims the lines and keeps the merchants, permanently, once per upload.
+    The identity reclamation beside it
+    (:func:`~._identity.forget_identity_if_last`) makes the same trade for the
+    same reason.
+
+    Run AFTER the import and its lines are gone, so *surviving* means what it
+    says.
+
+    Args:
+        account_id: The account whose merchants to sweep.  Scoped like every
+            other read here; a merchant is per-account.
+
+    Returns:
+        How many were removed, for the receipt.
+    """
+    named_by_a_line = (
+        db.session.query(BankStatementLine.merchant_id)
+        .filter(BankStatementLine.account_id == account_id)
+        .filter(BankStatementLine.merchant_id.isnot(None))
+    )
+    answered_for = (
+        db.session.query(MerchantDestination.merchant_id)
+        .filter(MerchantDestination.account_id == account_id)
+    )
+    return (
+        db.session.query(Merchant)
+        .filter(
+            Merchant.account_id == account_id,
+            Merchant.id.notin_(named_by_a_line),
+            Merchant.id.notin_(answered_for),
+        )
+        .delete(synchronize_session=False)
+    )
 
 
 def _owned_import(
@@ -261,10 +356,7 @@ def delete_import(
             delete with it rather than leaving an import half undone.
     """
     statement_import = _owned_import(import_id, owner_id, account_id)
-    source_id = statement_import.source_id
-    file_name = statement_import.file_name
-    period_start = statement_import.period_start
-    period_end = statement_import.period_end
+    doomed = _Doomed.of(statement_import)
 
     # Counted, and the EARLIEST day among them taken, before the cascade
     # removes them: what an anchor rests on is the lines themselves, so the
@@ -309,17 +401,19 @@ def delete_import(
     )
     db.session.flush()
 
-    identity_forgotten = forget_identity_if_last(account_id, source_id)
+    identity_forgotten = forget_identity_if_last(account_id, doomed.source_id)
+    merchants_forgotten = _forget_orphan_merchants(account_id)
     db.session.flush()
 
     return ImportRemoval(
         import_id=import_id,
-        file_name=file_name,
-        period_start=period_start,
-        period_end=period_end,
+        file_name=doomed.file_name,
+        period_start=doomed.period_start,
+        period_end=doomed.period_end,
         lines_removed=lines_removed,
         matches_released=matches_released,
         identity_forgotten=identity_forgotten,
+        merchants_forgotten=merchants_forgotten,
         anchors_released=anchors_released,
         rows_removed=rows_removed,
         cash_removed=cash_removed,

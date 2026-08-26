@@ -70,12 +70,12 @@ ACCOUNT_PAYMENT_CATEGORIES = {
 }
 
 
-def account_payment_merchants(account_id: int) -> "frozenset[str]":
+def account_payment_merchants(account_id: int) -> "frozenset[int]":
     """Return the merchants this account's sources file as card payments.
 
     ONE statement over the account's whole recorded history rather than over
     this pass's leftovers, and the reason is the reason
-    :func:`~._policy.statable_merchants` reads recorded lines too: a merchant
+    :func:`~._policy.account_merchants` spans the whole account too: a merchant
     whose every line is already matched is still one the owner may want to
     answer for, and the next statement will bring more of it.
 
@@ -97,10 +97,10 @@ def account_payment_merchants(account_id: int) -> "frozenset[str]":
         account_id: The account being reviewed.
 
     Returns:
-        The merchants, as a set.  A line naming none contributes nothing --
-        a policy cannot be keyed on it, so neither can a bar, and
-        :meth:`~._bars.CreationBars.bar_for` is total over ``None`` BECAUSE of
-        this filter rather than beside it.
+        The merchant ROW IDS, as a set (plan step ``bank_import:X-gd-1``).  A
+        line naming none contributes nothing -- a rule cannot be keyed on it,
+        so neither can a bar, and :meth:`~._bars.CreationBars.bar_for` is total
+        over ``None`` BECAUSE of this filter rather than beside it.
     """
     filed_as = [
         db.and_(
@@ -110,7 +110,7 @@ def account_payment_merchants(account_id: int) -> "frozenset[str]":
         for source, categories in ACCOUNT_PAYMENT_CATEGORIES.items()
     ]
     rows = (
-        db.session.query(BankStatementLine.merchant)
+        db.session.query(BankStatementLine.merchant_id)
         .join(
             StatementImport,
             db.and_(
@@ -120,7 +120,7 @@ def account_payment_merchants(account_id: int) -> "frozenset[str]":
         )
         .filter(
             BankStatementLine.account_id == account_id,
-            BankStatementLine.merchant.isnot(None),
+            BankStatementLine.merchant_id.isnot(None),
             db.or_(*filed_as),
         )
         .distinct()

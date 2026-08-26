@@ -173,7 +173,6 @@ class Placement:
 
 def _template_placement(
     policy: MerchantPolicy,
-    merchant: str,
     offered: "list[PurchaseDestination]",
     template_names: "dict[int, str]",
 ) -> Placement:
@@ -195,8 +194,10 @@ def _template_placement(
       module does not make guesses.
 
     Args:
-        policy: The stated answer, whose ``template_id`` is not ``None``.
-        merchant: The line's merchant.
+        policy: The stated answer, whose ``template_id`` is not ``None``.  It
+            carries the merchant's NAME too (plan step ``bank_import:X-gd-1``),
+            so the sentence and the placement name the same merchant by
+            construction rather than because two arguments agreed.
         offered: The destinations open to THIS line -- already narrowed to its
             own pay period and to what no match has claimed.
         template_names: What to call each template, for the sentence.
@@ -204,6 +205,7 @@ def _template_placement(
     Returns:
         The :class:`Placement`.
     """
+    merchant = policy.merchant
     matches = [
         destination for destination in offered
         if destination.template_id == policy.template_id
@@ -236,7 +238,6 @@ def _template_placement(
 
 def _new_envelope_placement(
     policy: MerchantPolicy,
-    merchant: str,
     offered: "list[PurchaseDestination]",
     view: PolicyView,
 ) -> Placement:
@@ -264,8 +265,9 @@ def _new_envelope_placement(
     already produced, which is exactly why it may not be papered over now.
 
     Args:
-        policy: The stated answer, whose ``answer`` is ``NEW_ENVELOPE``.
-        merchant: The line's merchant.
+        policy: The stated answer, whose ``answer`` is ``NEW_ENVELOPE``.  It
+            carries the merchant's NAME too, for the reason
+            :func:`_template_placement` states.
         offered: The destinations open to THIS line -- already narrowed to its
             own pay period and to what no match has claimed.
         view: What the owner has said and what it can resolve against.
@@ -273,6 +275,7 @@ def _new_envelope_placement(
     Returns:
         The :class:`Placement`.
     """
+    merchant = policy.merchant
     if policy.category_id not in view.active_categories:
         return Placement(
             merchant=merchant, kind=PlacementKind.UNRESOLVED,
@@ -324,19 +327,19 @@ def _new_envelope_placement(
 
 
 def placements_for(
-    merchant: "str | None",
+    merchant_id: "int | None",
     view: PolicyView,
     offered: "list[PurchaseDestination]",
 ) -> "Placement | None":
     """Return what the owner's policy comes to for ONE creatable line.
 
     Args:
-        merchant: The line's merchant, or ``None`` where the source names
-            none -- which keys no policy at all, so the answer is ``None``.
-            **That is the whole reason the merchant is a nullable COLUMN**
-            (plan step X-f6a-3d): a reader that fell back to the description
-            would key one policy for every truncated line a second adapter
-            records and fire it on all of them.
+        merchant_id: The line's merchant row, or ``None`` where the source
+            names none -- which keys no policy at all, so the answer is
+            ``None``.  **That is the whole reason the merchant is a nullable
+            fact** (plan step X-f6a-3d): a reader that fell back to the
+            description would key one policy for every truncated line a second
+            adapter records and fire it on all of them.
         view: What the owner has said and what it can resolve against
             (:class:`PolicyView`).
         offered: The destinations open to this line, in its own pay period.
@@ -353,13 +356,13 @@ def placements_for(
         a total function may not fall through a stored answer into
         :func:`_template_placement` with a ``NULL`` template id.
     """
-    if merchant is None:
+    if merchant_id is None:
         return None
-    policy = view.policies.get(merchant)
+    policy = view.policies.get(merchant_id)
     if policy is None:
         return None
     if policy.answer is PolicyAnswer.NEVER:
         return None
     if policy.answer is PolicyAnswer.NEW_ENVELOPE:
-        return _new_envelope_placement(policy, merchant, offered, view)
-    return _template_placement(policy, merchant, offered, view.template_names)
+        return _new_envelope_placement(policy, offered, view)
+    return _template_placement(policy, offered, view.template_names)
