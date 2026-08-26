@@ -39,15 +39,28 @@ PostgreSQL refuses, which is what makes the boundary structural rather than a
 convention: a GET that writes fails loudly on its first write statement instead
 of quietly costing its own render the snapshot.
 
-**What ``READ ONLY`` does NOT refuse**, measured against this project's own
-PostgreSQL rather than assumed: ``pg_advisory_xact_lock`` succeeds inside one
-(and assigns no transaction id), and so does ``SELECT ... FOR UPDATE``.  So the
-two primitives whose correctness this module's argument turns on are exactly
-the two the guardrail cannot see.  Neither is reachable from a query today --
-``lock_user_writes`` is GET-reachable only inside :func:`write_transaction`,
-where the mode is already a command's, and ``with_for_update`` only from POST
-doors -- but "a render cannot take a lock" is a census, not a guarantee, and
-saying otherwise would be the claim rather than the code being wrong.
+**What ``READ ONLY`` does NOT refuse is ONE mechanism, and naming it exactly is
+the point.**  Measured statement by statement, each in its own transaction:
+``pg_advisory_xact_lock`` SUCCEEDS inside a read-only transaction and assigns no
+transaction id, while every row-lock strength is refused -- ``FOR UPDATE``,
+``FOR SHARE``, ``FOR NO KEY UPDATE`` and ``FOR KEY SHARE`` all raise ``cannot
+execute ... in a read-only transaction``, which covers
+``credit_workflow``'s ``with_for_update(key_share=True)``.
+
+So the gap is advisory locks alone: a render that took
+:func:`app.services.user_write_lock.lock_user_writes` would block every writer
+for that owner for the length of the page and then read from a frozen snapshot,
+with nothing raising.  Not reachable today -- that function is GET-reachable
+only inside :func:`write_transaction`, where the mode is already a command's --
+but that is a census rather than a guarantee, and it is the one hole this
+setting cannot close for itself.
+
+*This paragraph claimed ``FOR UPDATE`` was allowed too, until a peer session
+re-measured it.  The first measurement taken here had it right and an
+adversarial review contradicted it; the review was believed over the
+measurement, which is the failure this project's own rule names -- if you
+cannot cite it you cannot claim it, and a citation is the statement you ran,
+not the report you were handed.*
 
 **Why the mode is bound at ``after_begin`` and not in a before-request hook.**
 ``SET TRANSACTION`` must precede the transaction's first statement, and
