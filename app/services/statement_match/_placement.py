@@ -346,23 +346,30 @@ def placements_for(
 
     Returns:
         The :class:`Placement`, or ``None`` when nothing is placed -- which is
-        two facts this function deliberately does not distinguish, because
-        neither puts anything beside the line's own control: the owner has not
-        stated a rule for this merchant, or they have stated *never a
-        purchase*.  **The second is a BAR, not a placement** (ruling **R-GJ**):
-        it is answered by :meth:`~._bars.CreationBars.bar_for`, which
+        three facts this function deliberately does not distinguish, because
+        none of them puts anything beside the line's own control: the owner has
+        not stated a rule for this merchant, they have stated *ask me every
+        time*, or they have stated *never a purchase*.  **The last is a BAR,
+        not a placement** (ruling **R-GJ**): it is answered by
+        :meth:`~._bars.CreationBars.bar_for`, which
         :func:`~._reads._creatable_lines` asks first, so a line carrying that
-        answer never reaches here at all.  The arm below stands anyway, because
-        a total function may not fall through a stored answer into
-        :func:`_template_placement` with a ``NULL`` template id.
+        answer never reaches here at all.
+
+    **The dispatch names the answers that PLACE and falls through to nothing**,
+    which is the direction that matters: the two container answers are asked
+    for by name and everything else returns ``None``.  It used to be written
+    the other way round -- name the answers that place nothing, fall through to
+    :func:`_template_placement` -- and that shape put a fifth answer one edit
+    away from being resolved as a template with a ``NULL`` template id.  Ruling
+    **R-GS** added the fourth answer, which is exactly that edit.
     """
     if merchant_id is None:
         return None
     rule = view.rules.get(merchant_id)
     if rule is None:
         return None
-    if rule.answer is RuleAnswer.NEVER:
-        return None
+    if rule.answer is RuleAnswer.TEMPLATE:
+        return _template_placement(rule, offered, view.template_names)
     if rule.answer is RuleAnswer.NEW_ENVELOPE:
         return _new_envelope_placement(rule, offered, view)
-    return _template_placement(rule, offered, view.template_names)
+    return None

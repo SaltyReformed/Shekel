@@ -274,6 +274,7 @@ class TestTheUpgradeBackfill:
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             merchant_id=ghost.id,
+            never_a_purchase=True,
         ))
         _to_the_pre_migration_state(db)
         # ...and now the merchant has no line at all, which is the state a
@@ -346,6 +347,7 @@ class TestTheDowngradeRestoresTheStrings:
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             merchant_id=named.id,
+            never_a_purchase=True,
         ))
         _to_the_pre_migration_state(db)
         _upgrade(db)

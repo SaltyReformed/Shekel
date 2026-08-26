@@ -18,6 +18,8 @@ from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType, TransactionType, Status
 from app.models.scenario import Scenario
 from app.models.transaction import Transaction
+from app.models.merchant import Merchant
+from app.models.merchant_rule import MerchantRule
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
@@ -1685,3 +1687,170 @@ class TestCategoryArchiveDelete:
                 f"still present in /templates/new category dropdown; "
                 f"got options {category_options!r}"
             )
+
+
+class TestACategoryAStandingMERCHANTRULEFilesUnderIsInUse:
+    """Plan step ``bank_import:X-gd-2``, on a gap that predates it.
+
+    ``category_has_usage`` counted templates and transactions only, so a
+    category referenced ONLY by a merchant rule's *new envelope* answer read as
+    unused -- and a "no" here is what permits a PERMANENT delete.
+    ``fk_merchant_rules_category_owner`` cascades, so the rule went with it,
+    under a flash reading "permanently deleted" that said nothing about the
+    answer the owner lost.
+
+    **The cascade itself is right** and is not what changed: an answer naming a
+    category that no longer exists is not an answer, and ``RESTRICT`` was
+    refused as finding **N-302**'s dead end.  What was wrong is a door calling
+    the category unused while a stored decision used it -- and ruling **R-GS**
+    sharpens that, because a rule row is never un-stated by the owner, so a
+    silent cascade would be the only way one could vanish.
+
+    Measured on the developer's dev database 2026-08-26: 12 new-envelope rules
+    naming 6 distinct categories, every one of them ALSO used by a template or
+    a transaction -- so the path is reachable and has not yet fired.
+    """
+
+    def _a_rule_filing_under(self, seed_user, category):
+        """Stage a *new envelope* rule naming *category*, and return it.
+
+        Args:
+            seed_user: The seeded user bundle.
+            category: The category the answer files under.
+
+        Returns:
+            The staged :class:`~app.models.merchant_rule.MerchantRule`.
+        """
+        merchant = Merchant(
+            account_id=seed_user["account"].id, name="Public Library",
+        )
+        db.session.add(merchant)
+        db.session.flush()
+        rule = MerchantRule(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            merchant_id=merchant.id,
+            envelope_name="Library Fines",
+            category_id=category.id,
+            never_a_purchase=False,
+        )
+        db.session.add(rule)
+        db.session.commit()
+        return rule
+
+    def test_the_helper_counts_it(self, app, db, seed_user):
+        """The predicate itself, on a category nothing ELSE references."""
+        with app.app_context():
+            category = Category(
+                user_id=seed_user["user"].id,
+                group_name="Temp",
+                item_name="Only A Rule Uses This",
+            )
+            db.session.add(category)
+            db.session.flush()
+            self._a_rule_filing_under(seed_user, category)
+
+            assert category_has_usage(
+                category.id, seed_user["user"].id,
+            ) is True
+
+    def test_the_delete_door_ARCHIVES_it_and_keeps_the_rule(
+        self, app, auth_client, db, seed_user,
+    ):
+        """The consequence, at the door where the money-shaped loss happened.
+
+        The category survives as archived and the owner's answer survives with
+        it -- which is the state ``_new_envelope_placement`` already designs
+        for, reporting *the category you filed it under is archived* rather
+        than filing money somewhere nobody named.
+        """
+        with app.app_context():
+            category = Category(
+                user_id=seed_user["user"].id,
+                group_name="Temp",
+                item_name="Only A Rule Uses This",
+            )
+            db.session.add(category)
+            db.session.flush()
+            rule = self._a_rule_filing_under(seed_user, category)
+            rule_id, category_id = rule.id, category.id
+
+            response = auth_client.post(
+                f"/categories/{category_id}/delete", follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert b"archived" in response.data
+            surviving = db.session.get(Category, category_id)
+            assert surviving is not None
+            assert surviving.is_active is False
+            assert db.session.get(MerchantRule, rule_id) is not None
+
+    def test_a_category_NO_rule_names_is_still_permanently_deleted(
+        self, app, auth_client, db, seed_user,
+    ):
+        """The firing control: the new clause narrows, it does not block.
+
+        Without it the two cases above would be satisfied by a helper that
+        answered True for everything, which would make permanent deletion
+        unreachable for every category on the account.
+        """
+        with app.app_context():
+            category = Category(
+                user_id=seed_user["user"].id,
+                group_name="Temp",
+                item_name="Nothing Uses This",
+            )
+            db.session.add(category)
+            db.session.commit()
+            category_id = category.id
+
+            response = auth_client.post(
+                f"/categories/{category_id}/delete", follow_redirects=True,
+            )
+
+            assert response.status_code == 200
+            assert db.session.get(Category, category_id) is None
+
+    def test_ANOTHER_owners_rule_does_not_make_it_in_use(
+        self, app, db, seed_user, seed_second_user,
+    ):
+        """The scope clause, which every predicate in this helper carries.
+
+        Categories are user-scoped and the check must not cross user
+        boundaries: a stranger's rule naming an id must not make this owner's
+        category undeletable, which would be a stranger holding a door shut.
+        """
+        with app.app_context():
+            category = Category(
+                user_id=seed_user["user"].id,
+                group_name="Temp",
+                item_name="Only A Rule Uses This",
+            )
+            db.session.add(category)
+            db.session.flush()
+            merchant = Merchant(
+                account_id=seed_second_user["account"].id, name="Their Shop",
+            )
+            db.session.add(merchant)
+            db.session.flush()
+            theirs = Category(
+                user_id=seed_second_user["user"].id,
+                group_name="Temp",
+                item_name="Theirs",
+            )
+            db.session.add(theirs)
+            db.session.flush()
+            db.session.add(MerchantRule(
+                user_id=seed_second_user["user"].id,
+                account_id=seed_second_user["account"].id,
+                merchant_id=merchant.id,
+                envelope_name="Theirs",
+                category_id=theirs.id,
+                never_a_purchase=False,
+            ))
+            db.session.commit()
+
+            assert category_has_usage(
+                category.id, seed_user["user"].id,
+            ) is False

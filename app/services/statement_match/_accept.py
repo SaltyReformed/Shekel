@@ -108,7 +108,7 @@ route owns the unit of work.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
 
@@ -604,11 +604,10 @@ def _reject_drifted_under_the_act(
 
 
 def _record(
-    owner_id: int,
-    account_id: int,
-    lines: "list[BankStatementLine]",
-    rows: "list[CandidateRow]",
-    created: "tuple[CreatedSubject, ...]" = (),
+    scope: ReviewScope,
+    content: "MatchContent",
+    *,
+    applied_by_rule: bool,
 ) -> StatementMatch:
     """Stage the match act, one member per subject, one creation per new row.
 
@@ -620,22 +619,39 @@ def _record(
     envelope beside its own purchase counts the same money twice, which
     :func:`_reject_parent_and_its_own_purchase` refuses outright.
 
+    **It takes the SCOPE rather than an owner and an account**, which is the
+    correction :func:`record_match` above it already made and this function was
+    the last to be owed: both are ``scope``'s fields, and two arguments a
+    caller unpacks by hand are two chances to pair one act's owner with another
+    act's account.
+
     Args:
-        owner_id: The user the act belongs to.
-        account_id: The account both sides belong to.
-        lines: The bank lines it explains.
-        rows: The app rows it names.
-        created: Every app row THIS ACT brought into existence, whether or not
-            it is also a member.  Each records the subject's revision as this
-            act leaves it
-            (``budget.statement_match_creations.created_version_id``), which is
-            what lets :func:`~._release.release_match` remove a row nobody has
-            touched and refuse one the owner has since made their own.
+        scope: The pass, which is the one statement of whose account this act
+            is on.
+        content: What this act is MADE OF, as it will be RECORDED -- the
+            members and the creations FINAL, with a group's minted residual
+            already among them (:func:`record_match` puts it there).  It is the
+            same :class:`MatchContent` the caller took, so nothing here decides
+            what the act contains.
+        applied_by_rule: Whether a standing rule performed this act rather than
+            a person ticking it (ruling **R-GT**).  **Keyword-only and with no
+            default**, because it is a boolean argument whose two values are
+            *the owner agreed to this* and *the app did it on their behalf*: a
+            positional ``False`` at a call site says nothing, and a default
+            would let a future door claim consent by omission.  It reaches the
+            column as it arrives; nothing here derives it, because which rule
+            fired is derivable from the matched line and whether ANY rule fired
+            is not (ruling **R-GT**'s own argument against a foreign key).
 
     Returns:
         The staged, flushed :class:`~app.models.statement_match.StatementMatch`.
     """
-    match = StatementMatch(account_id=account_id, user_id=owner_id)
+    account_id = scope.account_id
+    lines, rows, created = content.lines, content.rows, content.created
+    match = StatementMatch(
+        account_id=account_id, user_id=scope.owner_id,
+        applied_by_rule=applied_by_rule,
+    )
     db.session.add(match)
     # The members and creations carry the act's id in a composite key, so the
     # act must exist before they are staged.
@@ -713,6 +729,8 @@ def record_match(
     scope: ReviewScope,
     content: MatchContent,
     matched: MatchedSubjects,
+    *,
+    applied_by_rule: bool,
 ) -> AcceptedMatch:
     """Record that these bank lines ARE these app rows, and move the day.
 
@@ -763,6 +781,17 @@ def record_match(
             agreed to.
         matched: What this account's matches have already claimed, as of this
             act.
+        applied_by_rule: Whether a standing rule performed this act rather than
+            a person ticking it (ruling **R-GT**).  **Keyword-only, required,
+            and with no default anywhere on this path.**  Every act today is a
+            tick, so a default of ``False`` would be correct at both of this
+            function's callers and would still be the wrong shape: the fact it
+            records is who consented, and a door added later that simply did
+            not think about consent would then record that the owner had given
+            it.  The one value this app cannot afford to infer is the one it
+            would infer.  Plan step ``bank_import:X-ge`` is the first writer of
+            ``True``; until then this is a fact stated four times and false
+            four times, which is what it is.
 
     Returns:
         The :class:`AcceptedMatch`.
@@ -837,11 +866,16 @@ def record_match(
     members = rows if minted is None else [*rows, minted]
     _reject_drifted_under_the_act(scope, lines, members, sides)
     match = _record(
-        scope.owner_id, scope.account_id, lines, members,
-        created=(
-            content.created if minted is None
-            else (*content.created, CreatedSubject.of(minted))
+        scope,
+        replace(
+            content,
+            rows=members,
+            created=(
+                content.created if minted is None
+                else (*content.created, CreatedSubject.of(minted))
+            ),
         ),
+        applied_by_rule=applied_by_rule,
     )
 
     accepted = AcceptedMatch(
@@ -920,4 +954,8 @@ def accept_match(
             residual=submission.accepted_difference,
         ),
         matched,
+        # A TICK, always: this door exists because a person reviewed a proposal
+        # and pressed Apply (ruling **R-FP**, amended by **R-GH** for the
+        # CREATE class only).  No rule reaches it.
+        applied_by_rule=False,
     )

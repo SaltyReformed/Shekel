@@ -8,7 +8,7 @@ writable.
 **What the promotion moved, and therefore what has to be graded here.**  A
 merchant was a 100-character STRING kept twice -- on
 ``bank_statement_lines.merchant`` and on ``merchant_rules.merchant`` --
-joined by equality, with ``statement_match._rules._refuse_unknown_merchants``
+joined by equality, with ``statement_match._stating._refuse_unknown_merchants``
 as the only thing between a crafted body and a stored answer keyed on a
 merchant this account had never seen.  Three things carry that now, and each is
 a case below: the identity key, the composite foreign keys, and the fact that a
@@ -197,6 +197,7 @@ class TestWhatDeletingOneCosts:
             user_id=seed_second_user["user"].id,
             account_id=account.id,
             merchant_id=line.merchant_id,
+            never_a_purchase=True,
         ))
         db.session.flush()
         assert db.session.query(Merchant).filter(
@@ -257,6 +258,7 @@ class TestARuleIsAboutAMerchantOfItsOwnAccount:
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             merchant_id=theirs.id,
+            never_a_purchase=True,
         ))
 
         with pytest.raises(Exception) as caught:

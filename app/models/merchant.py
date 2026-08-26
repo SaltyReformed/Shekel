@@ -15,7 +15,7 @@ decision, and a subject that two tables agree about is a row.
 **What the promotion actually buys, stated so it can be checked.**
 
   * The scope check stops being load-bearing.  A rule could name any string a
-    caller liked, and ``statement_match._rules._refuse_unknown_merchants``
+    caller liked, and ``statement_match._stating._refuse_unknown_merchants``
     was the only thing between that and a stored row; it compared the
     submission against a DISTINCT over every recorded line.  A rule now names
     a ``merchant_id``, and ``fk_merchant_rules_merchant_account``

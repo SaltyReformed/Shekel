@@ -212,9 +212,14 @@
      exactly what ruling R-FZ removed when it found 78 of 91 lines defaulting
      onto envelopes closed at a fixed figure.
 
-     An answer is restated or withdrawn at any time -- "I have not said"
-     deletes it -- because a rule is a statement about today's budget rather
-     than a judgement. #}
+     AN ANSWER IS RESTATED FREELY AND IS NEVER UN-STATED (ruling R-GS, plan
+     step bank_import:X-gd-2).  "I have not said" used to be the withdrawal --
+     picking it deleted the row -- and there is no withdrawal now: the owner
+     who wants no standing answer for a merchant picks "ask me every time",
+     which is an answer.  So that first option is rendered ONLY on a merchant
+     with no rule, where it is what the control opens on and means "still not
+     said"; an answered merchant is never offered it, because there is no act
+     behind it. #}
   {% if review.merchants.merchants %}
   <form method="post"
         action="{{ url_for('accounts.state_merchant_rules', account_id=account.id) }}"
@@ -245,6 +250,13 @@
           once you have given it, no control on this page can record those lines
           as purchases, and they move to <em>Payments waiting for their
           home</em> below.
+        </p>
+        <p class="text-body-secondary small mb-0">
+          Pick <em>ask me every time</em> for a merchant you would rather decide
+          about case by case. It is an answer like the others -- it just says
+          you do not want a standing one. <strong>An answer can always be
+          changed and is never taken away</strong>: once you have said something
+          about a merchant, this list keeps showing what you said.
         </p>
       </div>
       <div class="table-responsive">
@@ -300,7 +312,14 @@
                     <select class="form-select form-select-sm"
                             name="rule-{{ idx }}" data-rule
                             aria-label="Where {{ row.merchant }} goes">
-                      <option value="unset"{% if not row.rule %} selected{% endif %}>-- I have not said --</option>
+                      {# ONLY where there is no rule.  It is the control's
+                         opening state and it submits "state nothing"; on an
+                         answered merchant it would be an option with no act
+                         behind it, because a rule is never un-stated
+                         (ruling R-GS). #}
+                      {% if not row.rule %}
+                      <option value="unset" selected>-- I have not said --</option>
+                      {% endif %}
                       {% for template_id, template_name in review.merchants.templates %}
                       <option value="t:{{ template_id }}"{% if row.rule and row.rule.template_id == template_id %} selected{% endif %}>
                         {{ template_name }}
@@ -321,6 +340,10 @@
                       </option>
                       {% endif %}
                       <option value="new"{% if row.rule and row.rule.is_new_envelope %} selected{% endif %}>-- a new envelope --</option>
+                      {# THE FOURTH ANSWER (ruling R-GS).  Asked through its
+                         own property rather than by comparing a string,
+                         exactly as the two beside it are. #}
+                      <option value="ask"{% if row.rule and row.rule.is_always_ask %} selected{% endif %}>-- ask me every time --</option>
                       <option value="never"{% if row.rule and row.rule.is_never %} selected{% endif %}>-- never a purchase --</option>
                     </select>
                   </div>

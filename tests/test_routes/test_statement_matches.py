@@ -3024,18 +3024,24 @@ class TestTheStandingRuleSection:
         assert f'<option value="{category.id}" selected>' in control
         assert control.count("selected") == 1
 
-    def test_a_stated_rule_can_be_WITHDRAWN_from_the_screen(
+    def test_a_stated_rule_is_REVOKED_by_answering_ask_me_every_time(
         self, auth_client, db, seed_user,
     ):
-        """THE FIRING CONTROL for naming the do-nothing arm.
+        """THE FIRING CONTROL for revocation, over the wire.
 
-        The control's default value used to be the empty string, which
-        ``BaseSchema``'s ``@pre_load`` normalizer drops -- so ``required=True``
-        read a withdrawal as a missing answer and refused it, and a rule
-        could be restated but never taken back.  That matters beyond tidiness:
-        a rule is a statement about today's budget, and when the credit-card
-        arc gives Capital One its own account the Checking-side answer stops
-        being right.
+        **This case replaced ``test_a_stated_rule_can_be_WITHDRAWN_from_the_
+        screen``**, which posted ``unset`` and asserted the row was gone.
+        Ruling **R-GS** (developer, 2026-08-25) removed the withdrawal: a rule
+        is only ever restated, and *ask me every time* is the answer that
+        revokes a destination.  What the case exists for is unchanged -- a rule
+        is a statement about today's budget, and when the credit-card arc gives
+        Capital One its own account the Checking-side answer stops being right,
+        so the owner must be able to take a destination back from this screen.
+
+        The named-arm point the old case also made is kept and moved to the new
+        value: ``BaseSchema``'s ``@pre_load`` normalizer drops every ``""`` a
+        form submits, so an arm spelled as an absence is an arm that never
+        arrives.
         """
         from app.models.merchant_rule import (  # pylint: disable=import-outside-toplevel
             MerchantRule,
@@ -3051,7 +3057,51 @@ class TestTheStandingRuleSection:
                 answer=f"t:{envelope.template_id}",
             ),
         )
-        assert db.session.query(MerchantRule).count() == 1
+        assert db.session.query(MerchantRule).one().template_id == (
+            envelope.template_id
+        )
+
+        response = auth_client.post(
+            _merchants_url(seed_user["account"].id),
+            data=_rules(
+                0, a_merchant(seed_user, "Amazon").id,
+                answer="ask",
+            ),
+        )
+
+        assert response.status_code == 200
+        row = db.session.query(MerchantRule).one()
+        assert row.template_id is None
+        # ...and NOT the other container-less answer.  A revocation that landed
+        # on *never a purchase* would bar every future line from this merchant,
+        # which is the opposite of what the owner asked for.
+        assert row.never_a_purchase is False
+
+    def test_answering_UNSET_for_a_merchant_that_HAS_a_rule_changes_nothing(
+        self, auth_client, db, seed_user,
+    ):
+        """A rule is never un-stated, including by a stale page (**R-GS**).
+
+        The screen renders *I have not said* only where there is no rule, so a
+        browser cannot send this -- but a page rendered before the rule existed
+        can, and a crafted body always can.  It has to be a NO-OP rather than a
+        delete, because the delete is the door ruling R-GS removed and this is
+        the only remaining way to reach it.
+        """
+        from app.models.merchant_rule import (  # pylint: disable=import-outside-toplevel
+            MerchantRule,
+        )
+
+        envelope = _an_envelope(seed_user)
+        _a_line(seed_user)
+        db.session.commit()
+        auth_client.post(
+            _merchants_url(seed_user["account"].id),
+            data=_rules(
+                0, a_merchant(seed_user, "Amazon").id,
+                answer=f"t:{envelope.template_id}",
+            ),
+        )
 
         response = auth_client.post(
             _merchants_url(seed_user["account"].id),
@@ -3062,7 +3112,9 @@ class TestTheStandingRuleSection:
         )
 
         assert response.status_code == 200
-        assert db.session.query(MerchantRule).count() == 0
+        assert db.session.query(MerchantRule).one().template_id == (
+            envelope.template_id
+        )
 
     def test_submitting_the_RENDERED_form_UNCHANGED_records_nothing(
         self, auth_client, db, seed_user,
@@ -3267,6 +3319,106 @@ class TestTheStandingRuleSection:
             data=_rule_form_controls(page),
         )
         assert db.session.query(MerchantRule).count() == 1
+
+    def test_an_UNANSWERED_merchant_opens_on_I_have_not_said(
+        self, auth_client, db, seed_user,
+    ):
+        """What a browser submits for a merchant with no rule.
+
+        The half of ruling **R-GS** that has to keep working: *I have not said*
+        is still the control's opening state where nothing has been said, and
+        it still means *state nothing*.  Read off the page rather than
+        asserted from the template, because what is under test is the value a
+        browser would post.
+        """
+        _an_envelope(seed_user)
+        _a_line(seed_user)
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+
+        assert _rule_form_controls(page)["rule-0"] == "unset"
+
+    def test_an_ANSWERED_merchant_is_NOT_offered_I_have_not_said(
+        self, auth_client, db, seed_user,
+    ):
+        """Ruling **R-GS**: there is no act behind that option once a rule exists.
+
+        It used to be the WITHDRAWAL, and a rule is never un-stated now, so the
+        option is not rendered at all -- an option whose submission does
+        nothing is a control that says the owner may take an answer back when
+        they may not.
+
+        **What a browser would submit is asserted beside its absence**, because
+        those are two different failures: dropping the option from the markup
+        while leaving the select unselected would make a browser post the FIRST
+        option instead, which is a real envelope and would silently re-aim the
+        rule.
+        """
+        envelope = _an_envelope(seed_user)
+        _a_line(seed_user)
+        db.session.commit()
+        auth_client.post(
+            _merchants_url(seed_user["account"].id),
+            data=_rules(
+                0, a_merchant(seed_user, "Amazon").id,
+                answer=f"t:{envelope.template_id}",
+            ),
+        )
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+        marker = page.index('name="rule-0"')
+        control = page[marker:page.index("</select>", marker)]
+
+        assert 'value="unset"' not in control
+        assert _rule_form_controls(page)["rule-0"] == (
+            f"t:{envelope.template_id}"
+        )
+
+    def test_ASK_ME_EVERY_TIME_is_offered_and_round_trips(
+        self, auth_client, db, seed_user,
+    ):
+        """The fourth answer, end to end through the screen (**R-GS**).
+
+        It is the answer that looks most like the absence of one, so the arm
+        that would be missed is the RENDER: a control that stored *ask me every
+        time* and then displayed something else would send the owner's next
+        Save somewhere they never chose.
+        """
+        from app.models.merchant_rule import (  # pylint: disable=import-outside-toplevel
+            MerchantRule,
+        )
+
+        _an_envelope(seed_user)
+        _a_line(seed_user)
+        db.session.commit()
+        auth_client.post(
+            _merchants_url(seed_user["account"].id),
+            data=_rules(
+                0, a_merchant(seed_user, "Amazon").id, answer="ask",
+            ),
+        )
+        assert db.session.query(MerchantRule).one().never_a_purchase is False
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+
+        assert "-- ask me every time --" in page
+        assert _rule_form_controls(page)["rule-0"] == "ask"
+
+        # ...and posting the page straight back changes nothing, which is what
+        # says the render and the door agree about which answer this is.
+        response = auth_client.post(
+            _merchants_url(seed_user["account"].id),
+            data=_rule_form_controls(page),
+        )
+        assert b"Nothing changed" in response.data
+        assert db.session.query(MerchantRule).one().never_a_purchase is False
 
     def test_the_sweep_is_rendered_PER_CLASS_and_names_its_counts(
         self, auth_client, db, seed_user,

@@ -165,12 +165,27 @@ def _merchant_summary(
         Its :class:`MerchantSummary`, carrying a label for a stored template
         that has stopped being offerable so the control can show the answer it
         holds.
+
+    **The label is derived from "is it offerable", not from "is it in
+    :attr:`~._rules.RuleView.stale_templates`", and the difference is what
+    makes the option TOTAL** (plan step ``bank_import:X-gd-2``).  The two sets
+    agree on every row the database can hold -- a rule's template is on this
+    account by ``fk_merchant_rules_template_account``, and the stale read is
+    over exactly the non-offerable ids -- but they are two reads, so a template
+    hard-deleted between them is offerable in neither and named by neither.
+    A select with no option carrying its stored value displays and submits its
+    FIRST, and this step changed what that first option is: it used to be
+    *I have not said*, which withdrew the rule, and *I have not said* is no
+    longer rendered for an answered merchant, so the first option is now a real
+    envelope and the silent outcome would be a rule RE-AIMED at one the owner
+    never picked.  :meth:`~._rules.RuleView.label_for` is total, so asking it
+    whenever the answer is not offerable leaves no case with no option.
     """
     rule = view.rules.get(merchant_id)
-    stale = (
+    unofferable = (
         rule is not None
         and rule.template_id is not None
-        and rule.template_id in view.stale_templates
+        and rule.template_id not in view.template_names
     )
     return MerchantSummary(
         merchant_id=merchant_id,
@@ -179,7 +194,7 @@ def _merchant_summary(
         line_count=waiting.count,
         total=waiting.total,
         stale_template_label=(
-            view.stale_templates[rule.template_id] if stale else None
+            view.label_for(rule.template_id) if unofferable else None
         ),
         pays_an_account=bars.pays_an_account(merchant_id),
     )

@@ -228,6 +228,29 @@ class TestABalancedMatchIsRecorded:
         assert {m.bank_statement_line_id for m in members} == {line.id, None}
         assert {m.transaction_id for m in members} == {txn.id, None}
 
+    def test_a_reviewed_act_is_recorded_as_a_TICK_and_not_as_a_rule(
+        self, app, db, seed_user,
+    ):
+        """Ruling **R-GT**, at the door rather than at the column.
+
+        This is the reviewed-pass door: a row here exists because a person read
+        a proposal and pressed Apply, which is the whole of ruling **R-FP**'s
+        surviving half.  ``applied_by_rule`` is NOT NULL with no default, so
+        the fact is stated at the call site or nothing is written at all -- and
+        what it must state HERE is ``False``.  Plan step ``bank_import:X-ge``
+        builds the door that states ``True``; measured on the developer's dev
+        database 2026-08-26, all 221 recorded acts are ticks.
+        """
+        statement = an_import(seed_user)
+        line = a_bank_line(seed_user, statement)
+        txn = a_transaction(seed_user, amount="180.00")
+
+        accepted = _submit(seed_user, lines=[line], transactions=[txn])
+
+        assert db.session.get(
+            StatementMatch, accepted.match_id,
+        ).applied_by_rule is False
+
 
 class TestTheGroupMustSum:
     """The developer's ruling of 2026-08-17, and finding **N-239**'s own data.

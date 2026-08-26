@@ -73,6 +73,7 @@ from app.routes.accounts._statement_doors import (
 from app.routes.accounts._cash_page import load_cash_account_or_404
 from app.schemas.validation import form_payload
 from app.schemas.validation.statements import (
+    ALWAYS_ASK,
     NEVER,
     NEW_ENVELOPE,
     NOT_SAID,
@@ -372,11 +373,22 @@ def apply_statement_review(account_id):
 def _submitted_rules(submitted) -> "tuple[RuleSubmission, ...]":
     """Return the loaded payload as the statements the service records.
 
-    **The wire's four values become the service's three answers plus a
-    withdrawal**, and the mapping happens HERE because it is a fact about the
-    FORM rather than about the domain: the service's
-    :class:`~app.services.statement_match.RuleAnswer` has no member for "not
-    said", since not having said something is the absence of a row.
+    **The wire's five values become the service's four answers, and the fifth
+    becomes NOTHING** (ruling **R-GS**, plan step ``bank_import:X-gd-2``).  The
+    mapping happens HERE because it is a fact about the FORM rather than about
+    the domain: the service's
+    :class:`~app.services.statement_match.RuleAnswer` has no member for *I have
+    not said*, since not having said something is the absence of a row.
+
+    **:data:`~app.schemas.validation.statements.NOT_SAID` is DROPPED rather
+    than carried as a null answer.**  It used to travel to the door as
+    ``answer=None`` and mean *withdraw*, so the door had a delete arm and an
+    optional answer; there is no withdrawal now, so a submission that states
+    nothing is an item with nothing in it.  Dropping it here is what lets
+    :class:`~app.services.statement_match.RuleSubmission` require its answer,
+    which is what makes an answer-less rule row unconstructible one tier down.
+    It is most of an ordinary pass: the section submits every merchant it
+    renders, and a merchant with no rule submits this.
 
     Args:
         submitted: What :class:`~app.schemas.validation.statements
@@ -384,18 +396,20 @@ def _submitted_rules(submitted) -> "tuple[RuleSubmission, ...]":
 
     Returns:
         One :class:`~app.services.statement_match.RuleSubmission` per merchant
-        the section rendered, in the order it rendered them.
+        the section rendered AND ANSWERED FOR, in the order it rendered them.
     """
     statements = []
     for item in submitted["rules"]:
         answer = item["answer"]
         if answer == NOT_SAID:
-            statements.append(RuleSubmission(
-                merchant_id=item["merchant_id"], answer=None,
-            ))
-        elif answer == NEVER:
+            continue
+        if answer == NEVER:
             statements.append(RuleSubmission(
                 merchant_id=item["merchant_id"], answer=RuleAnswer.NEVER,
+            ))
+        elif answer == ALWAYS_ASK:
+            statements.append(RuleSubmission(
+                merchant_id=item["merchant_id"], answer=RuleAnswer.ALWAYS_ASK,
             ))
         elif answer == NEW_ENVELOPE:
             statements.append(RuleSubmission(

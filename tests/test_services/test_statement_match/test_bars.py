@@ -582,14 +582,20 @@ class TestTheRuleDoorRefusesTheAnswerThatContradictsTheBar:
         assert len(outcome.refused) == 1
         assert db.session.query(MerchantRule).count() == 0
 
-    def test_NEVER_and_a_WITHDRAWAL_are_both_still_taken(
+    def test_NEVER_and_ALWAYS_ASK_are_both_still_taken(
         self, app, db, seed_user,
     ):
         """THE FIRING CONTROL: the door refuses two answers, not four.
 
-        Both of these are TRUE of such a merchant, so both stay legal --
-        without this case a door that refused every answer would satisfy the
-        two above.
+        Both of these are TRUE of a merchant a source files as a payment to an
+        account the owner holds -- it is never spending, and there is nothing
+        standing to apply to it -- so both stay legal.  Without this case a
+        door that refused EVERY answer would satisfy the two above.
+
+        **The second arm was a WITHDRAWAL until ruling R-GS** (plan step
+        ``bank_import:X-gd-2``), which replaced the withdrawal with *ask me
+        every time*.  What the case grades is unchanged: ruling **R-GJ** bars
+        the two SPENDING answers and leaves the rest alone.
         """
         statement = an_import(seed_user)
         _a_card_payment(seed_user, statement)
@@ -597,11 +603,13 @@ class TestTheRuleDoorRefusesTheAnswerThatContradictsTheBar:
 
         stated = self._state(seed_user, RuleAnswer.NEVER)
         assert stated.refused == ()
-        assert db.session.query(MerchantRule).count() == 1
+        assert db.session.query(MerchantRule).one().never_a_purchase is True
 
-        withdrawn = self._state(seed_user, None)
-        assert withdrawn.refused == ()
-        assert db.session.query(MerchantRule).count() == 0
+        asked = self._state(seed_user, RuleAnswer.ALWAYS_ASK)
+        assert asked.refused == ()
+        # The row STAYS -- it is restated, not removed -- and it is the other
+        # container-less answer, which no longer bars the line.
+        assert db.session.query(MerchantRule).one().never_a_purchase is False
 
     def test_an_ORDINARY_merchant_may_still_be_given_an_envelope(
         self, app, db, seed_user,

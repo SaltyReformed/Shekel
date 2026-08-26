@@ -451,14 +451,20 @@ class StatementPurchaseSchema(BaseSchema):
 
 
 class RuleAnswerField(fields.Field):
-    """Which of the four things the rule control's one select can say.
+    """Which of the five things the rule control's one select can say.
 
     **One field because the owner makes one choice**, exactly as
     :class:`PurchaseDestination` is one field: the control is a single
-    ``<select>`` whose options are *I have not said*, each recurring envelope
-    on the account, *a new envelope*, and *never a purchase*.  Splitting it
-    into an id plus an implied arm is what let a form name two destinations at
-    once one leaf earlier.
+    ``<select>`` whose options are each recurring envelope on the account, *a
+    new envelope*, *ask me every time*, *never a purchase*, and -- on a
+    merchant with no rule only -- *I have not said*.  Splitting it into an id
+    plus an implied arm is what let a form name two destinations at once one
+    leaf earlier.
+
+    **Four of the five are ANSWERS and the fifth is the absence of one**
+    (ruling **R-GI**).  This field grades the wire and does not know the
+    difference; the route is where :data:`NOT_SAID` stops being a value and
+    becomes an item that is simply not submitted to the door.
 
     **The id half is exactly as strict as :class:`RowId`**, through the same
     :func:`~app.utils.digit_strings.parse_row_id`: after the ``t:`` prefix,
@@ -480,13 +486,13 @@ class RuleAnswerField(fields.Field):
             **kwargs: Marshmallow's contract, unused.
 
         Returns:
-            :data:`NOT_SAID`, :data:`NEVER`, :data:`NEW_ENVELOPE`, or the
-            ``int`` id of a recurring definition.
+            :data:`NOT_SAID`, :data:`NEVER`, :data:`ALWAYS_ASK`,
+            :data:`NEW_ENVELOPE`, or the ``int`` id of a recurring definition.
 
         Raises:
             ValidationError: When *value* is none of those.
         """
-        if value in (NOT_SAID, NEVER, NEW_ENVELOPE):
+        if value in (NOT_SAID, NEVER, ALWAYS_ASK, NEW_ENVELOPE):
             return value
         if not isinstance(value, str) or not value.startswith(
             _TEMPLATE_VALUE_PREFIX,
@@ -647,23 +653,28 @@ class StatementBatchSchema(Schema):
             )
 
 
-#: What the rule control submits when the owner has not answered for a
-#: merchant, which is its DEFAULT -- and, when a rule already exists, what
-#: WITHDRAWS it.
+#: What the rule control submits for a merchant the owner has not answered
+#: for, which is that row's DEFAULT.  It means *state nothing about this
+#: merchant*: the route drops such an item before the service sees it, so no
+#: row is written and none is removed.
+#:
+#: **It is rendered ONLY on a merchant with no rule** (ruling **R-GS**, plan
+#: step ``bank_import:X-gd-2``).  It used to be the WITHDRAWAL as well -- pick
+#: it on an answered merchant and the row was deleted -- and there is no
+#: withdrawal now: *ask me every time* (:data:`ALWAYS_ASK`) is the answer that
+#: replaced it, and a rule row once made is only ever restated.  A crafted body
+#: submitting this for an answered merchant therefore changes nothing rather
+#: than un-stating an answer, which is the direction the absence of a delete
+#: door has to fail in.
 #:
 #: **A NAMED arm rather than the empty string, and the first draft of this
 #: constant WAS the empty string and was unreachable.**  ``BaseSchema``'s
 #: ``@pre_load`` normalizer drops every ``""`` a form submits, because for an
-#: ordinary optional control that means *untouched*; here it means *forget what
-#: I said*, so the drop turned ``required=True`` into "this answer is missing"
-#: and made a rule restatable but never withdrawable.  Caught by this
-#: package's own wire test.  It is the same correction plan step X-f6a-3c-2
-#: made to :data:`NEW_ENVELOPE` -- an arm is STATED, never inferred from an
-#: absence -- and the reason it bit here and not on
-#: :data:`LEAVE_ALONE` is that the two mean different things: leaving a LINE
-#: alone is not an act and :func:`_creation_items` drops it before the schema
-#: sees it, while not answering for a MERCHANT is an act that has to reach the
-#: door.
+#: ordinary optional control that means *untouched*; here it means something
+#: the door has to be able to read, so the drop turned ``required=True`` into
+#: "this answer is missing".  Caught by this package's own wire test.  It is
+#: the same correction plan step X-f6a-3c-2 made to :data:`NEW_ENVELOPE` -- an
+#: arm is STATED, never inferred from an absence.
 NOT_SAID: str = "unset"
 
 #: What it submits for *never a purchase*.  A NAMED arm rather than an absence,
@@ -671,6 +682,17 @@ NOT_SAID: str = "unset"
 #: owner has not said" are different answers and the screen shows them
 #: differently, so the wire has to be able to tell them apart.
 NEVER: str = "never"
+
+#: What it submits for *ask me every time*, ruling **R-GS**'s fourth answer.
+#:
+#: **It is a different value from :data:`NOT_SAID` even though the two have the
+#: same effect on money today**, and that is the whole reason it exists: one is
+#: a question the owner still owes an answer to and the other is a question
+#: they have answered.  Collapsing them onto one wire value would make the
+#: answer unsayable, which is precisely the mistake :data:`NEVER` exists not to
+#: repeat -- and the screen that asks for rules
+#: (``bank_import:X-gf``'s exception queue) reads exactly this difference.
+ALWAYS_ASK: str = "ask"
 
 #: The prefix a submitted rule answer carries, keyed by the merchant's own
 #: rendered POSITION rather than by the merchant itself.  It was keyed by

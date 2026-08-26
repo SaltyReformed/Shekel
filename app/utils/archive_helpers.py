@@ -22,6 +22,7 @@ covers every current and future settled status without enumeration.
 from app.extensions import db
 from app.models.journal_entry import Posting
 from app.models.ledger_account import LedgerAccount
+from app.models.merchant_rule import MerchantRule
 from app.models.pay_period import PayPeriod
 from app.models.ref import Status
 from app.models.transaction import Transaction
@@ -153,23 +154,44 @@ def account_has_ledger_postings(account_id: int) -> bool:
 
 
 def category_has_usage(category_id: int, user_id: int) -> bool:
-    """Check if a category is in use by templates or transactions.
+    """Check if a category is in use by templates, transactions or rules.
 
-    Performs a two-part check: (1) any TransactionTemplate with matching
-    category_id and user_id, and (2) any Transaction with matching
-    category_id joined to PayPeriod filtered by user_id.  Short-circuits
-    after templates if found, avoiding the more expensive transaction join.
+    Performs a three-part check: (1) any TransactionTemplate with matching
+    category_id and user_id, (2) any Transaction with matching category_id
+    joined to PayPeriod filtered by user_id, and (3) any standing merchant
+    rule whose *new envelope* answer files under it.  Short-circuits in that
+    order, cheapest first, so the transaction join is only paid for when the
+    two indexed reads either side of it find nothing.
 
     The user_id scoping is critical -- categories are user-scoped, and
     the check must not cross user boundaries.
+
+    **The third part was added at plan step ``bank_import:X-gd-2``, and it is
+    about what ``delete_category`` does with the answer.**  A "no" here is what
+    permits a PERMANENT delete, and ``fk_merchant_rules_category_owner``
+    cascades -- so a category no template and no transaction used, but that one
+    merchant rule filed under, was destroyed together with the rule, under a
+    flash reading "permanently deleted" that said nothing about the rule.  The
+    cascade itself is right (an answer naming a category that no longer exists
+    is not an answer); what was wrong was a door calling the category unused
+    while a stored decision used it.  Ruling **R-GS** makes that worse rather
+    than better: a rule row is never un-stated by the owner, so a silent
+    cascade would be the only way one could vanish.  Measured on the
+    developer's dev database, 2026-08-26: 12 new-envelope rules naming 6
+    distinct categories, every one of them also used by a template or a
+    transaction -- so the path is reachable and has not yet fired.
+
+    **A rule carries a ``user_id`` of its own**, held equal to its account's
+    owner by ``fk_merchant_rules_owner``, so this scopes on the same column the
+    two clauses above do rather than joining through the account.
 
     Args:
         category_id: The Category.id to check.
         user_id: The user who owns the category (for ownership scoping).
 
     Returns:
-        True if any templates or transactions reference this category
-        for the given user.
+        True if any templates, transactions or standing merchant rules
+        reference this category for the given user.
     """
 
     # Check templates first -- cheap query with direct user_id column.
@@ -180,6 +202,17 @@ def category_has_usage(category_id: int, user_id: int) -> bool:
     ).scalar()
 
     if has_templates:
+        return True
+
+    # ...then the merchant rules, for the same reason and at the same cost:
+    # a direct user_id column, before the join below is paid for.
+    has_rules = db.session.query(
+        db.session.query(MerchantRule).filter_by(
+            category_id=category_id, user_id=user_id,
+        ).exists()
+    ).scalar()
+
+    if has_rules:
         return True
 
     # Check transactions -- requires join through PayPeriod for user scoping.

@@ -702,6 +702,7 @@ class TestTheDrillDownSaysWhatIsALREADYEXPLAINED:
             match = StatementMatch(
                 account_id=seed_user["account"].id,
                 user_id=seed_user["user"].id,
+                applied_by_rule=False,
             )
             db.session.add(match)
             db.session.flush()

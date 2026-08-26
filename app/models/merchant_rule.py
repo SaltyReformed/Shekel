@@ -34,12 +34,24 @@ money and nothing here can: a rule is read to SUGGEST, and the only thing
 that records a purchase is an explicit destination on one specific line
 (developer ruling, 2026-08-19; see :class:`MerchantRule`).
 
-**A rule is restated and withdrawn freely, and is expected to be.**  It is a
-statement about today's shape of the budget, not a judgement: when the credit
-card arc gives Capital One its own account, the Checking-side line stops being
-"not a purchase" and becomes a payment to MATCH against the card's payback row,
-and the card account gets rules of its own -- which is why the key carries
-the account.
+**A rule is RESTATED freely and is never UN-stated** (ruling **R-GS**, plan step
+``bank_import:X-gd-2``).  It is a statement about today's shape of the budget,
+not a judgement: when the credit card arc gives Capital One its own account,
+the Checking-side line stops being "not a purchase" and becomes a payment to
+MATCH against the card's payback row, and the card account gets rules of its
+own -- which is why the key carries the account.  What used to be a WITHDRAWAL
+-- delete the row, return the merchant to *you have not said* -- is now the
+fourth answer, *ask me every time*: the owner who wants no standing answer for
+a merchant has DECIDED that, and a decision is a row.  There is no delete door.
+
+**A cascade may still remove a rule, and that is not a contradiction.**  Both
+subject keys below are ``ON DELETE CASCADE``, so hard-deleting the template or
+the category an answer names takes the answer with it -- because an answer
+naming a row that no longer exists is not an answer, which is the same reason
+``RESTRICT`` was refused (finding **N-302**).  R-GS governs what the OWNER may
+do at the control; referential integrity is a different subject.  What the
+cascade must not do is happen SILENTLY behind a door that says the subject is
+unused, which is why ``archive_helpers.category_has_usage`` counts this table.
 """
 
 from app.extensions import db
@@ -54,22 +66,46 @@ class MerchantRule(AccountScopedMixin, UserScopedMixin, TimestampMixin,
                    db.Model):
     """Where this owner has said one merchant's spending goes on one account.
 
-    **THREE ANSWERS, and they are the complete set rather than a menu.**  A
-    budget line either has a period-independent identity or it does not: a
-    recurring one is generated from a ``budget.transaction_templates`` row and
-    that template IS its identity across every period, while an ad-hoc one
-    exists in a single period and nowhere else.  So *where does this merchant
-    go* can be answered in exactly three ways:
+    **FOUR ANSWERS, and they are the complete set rather than a menu** (ruling
+    **R-GI**).  A budget line either has a period-independent identity or it
+    does not: a recurring one is generated from a
+    ``budget.transaction_templates`` row and that template IS its identity
+    across every period, while an ad-hoc one exists in a single period and
+    nowhere else.  So *where does this merchant go* can be answered in exactly
+    four ways:
 
     1. **a TEMPLATE** -- file into whatever row that template generated in the
        line's OWN pay period;
     2. **a NEW ENVELOPE** -- create one for the line's period, with this name
        and this category;
-    3. **never a purchase** -- all three columns NULL.
+    3. **never a purchase** -- no container, :attr:`never_a_purchase` true;
+    4. **ask me every time** -- no container, :attr:`never_a_purchase` false.
 
-    A fourth state is the absence of a row: the owner has not said.  It is
-    distinct from (3) and the screen says so differently, which is the whole
-    point of storing (3) at all.
+    A FIFTH state is the absence of a row: the owner has not said.  It is
+    distinct from (4) -- *I have not decided* against *I have decided not to
+    have a standing answer* -- and the difference is what a rule-covered import
+    reads: (4) stops the screen asking the owner to state a rule, and no row at
+    all does not.
+
+    **The four are told apart by the COLUMNS plus one boolean** (ruling
+    **R-GS**).  A stored discriminator was refused on two grounds.  It would be
+    a second statement of what the columns already say, which is
+    ``statement_match._rules.RuleAnswer.of``'s own argument; and a CHECK cannot
+    reference a ``ref`` row's id, so a ref-keyed answer could sit on a row
+    whose columns contradicted it -- readable only under the sole-writer trust
+    contract ``ledger_accounts.kind_id`` accepts and documents.  The boolean is
+    also the shape that SURVIVES plan step ``bank_import:X-f6c`` collapsing (2)
+    into a template id, where a ref table would need a data migration.
+
+    **The boolean asserts the CONSEQUENTIAL answer, not the harmless one**, and
+    that direction is the point: a row whose optional columns are all empty and
+    whose flag is false is *ask me every time*, which files nothing and bars
+    nothing.  Pointing it the other way would have made the same row mean
+    *never a purchase* -- the answer that stops a bank line ever becoming a
+    purchase -- so any future path that failed to state the flag would fail
+    into a money decision the owner never made.  The column carries NO default
+    for the same reason: a writer that omits it gets a NOT NULL violation
+    rather than an answer chosen by the schema.
 
     **Why not the envelope, and why not its NAME.**  Measured on the
     developer's own data 2026-08-19: the 24 unexplained Amazon lines fall in
@@ -100,6 +136,15 @@ class MerchantRule(AccountScopedMixin, UserScopedMixin, TimestampMixin,
             asked about* is that table rather than a union of two derivations.
         template_id -- answer (1), else NULL.
         envelope_name / category_id -- answer (2), else both NULL.
+        never_a_purchase -- answer (3) when true.  It is the DISCRIMINATOR for
+            the two answers that name no container, so on answers (1) and (2)
+            it is pinned false by ``ck_merchant_rules_one_answer`` rather than
+            merely expected to be.  **A bar and not a suggestion**: a merchant
+            answered this way has no create-a-purchase arm anywhere -- not on
+            the screen, not in the sweep and not at the door
+            (:class:`~app.services.statement_match._bars.CreationBar`, ruling
+            **R-GJ**) -- which is why the answers that BAR and the answers that
+            SUGGEST are told apart structurally and not by a caption.
         created_at / updated_at -- when it was first stated and last restated
             (:class:`~app.models.mixins.TimestampMixin`).  A rule is EDITED
             in place rather than superseded by a new row, because it answers
@@ -127,16 +172,25 @@ class MerchantRule(AccountScopedMixin, UserScopedMixin, TimestampMixin,
             "account_id", "merchant_id",
             name="uq_merchant_rules_account_merchant",
         ),
-        # THE THREE SHAPES, spelled as three shapes.  A count-the-NULLs form
+        # THE FOUR SHAPES, spelled as three shapes because the last two share
+        # their columns and differ only in the flag.  A count-the-NULLs form
         # (``ck_statement_match_members_one_subject``'s) cannot say this:
-        # answer (2) sets TWO columns and answer (3) sets none, so what has to
-        # be constrained is which COMBINATIONS are legal rather than how many
-        # columns are filled.
+        # answer (2) sets TWO columns and answers (3) and (4) set none, so what
+        # has to be constrained is which COMBINATIONS are legal rather than how
+        # many columns are filled.
+        #
+        # **The flag is pinned FALSE on both container answers**, which is what
+        # keeps ``RuleAnswer.of``'s reading total: without it a row could name a
+        # template AND claim never-a-purchase, and the two readers that ask the
+        # question in different orders -- ``of`` reads the container first,
+        # ``CreationBars`` reads the flag -- would answer differently about the
+        # same row.  One is a suggestion and the other bars a purchase, so that
+        # disagreement is a money disagreement.
         db.CheckConstraint(
             "(template_id IS NOT NULL AND envelope_name IS NULL "
-            "AND category_id IS NULL) "
+            "AND category_id IS NULL AND NOT never_a_purchase) "
             "OR (template_id IS NULL AND envelope_name IS NOT NULL "
-            "AND category_id IS NOT NULL) "
+            "AND category_id IS NOT NULL AND NOT never_a_purchase) "
             "OR (template_id IS NULL AND envelope_name IS NULL "
             "AND category_id IS NULL)",
             name="ck_merchant_rules_one_answer",
@@ -217,6 +271,14 @@ class MerchantRule(AccountScopedMixin, UserScopedMixin, TimestampMixin,
     template_id = db.Column(db.Integer)
     envelope_name = db.Column(db.String(200))
     category_id = db.Column(db.Integer)
+    # **No default, server-side or Python-side, and that is deliberate.**  It
+    # is the one column here whose absence would be silently answerable: the
+    # three above are the answer's own subject and a row missing all of them is
+    # a legal answer, so nothing raises on their behalf.  With no default a
+    # writer that does not state this one gets a NOT NULL violation at flush,
+    # which is loud, rather than *ask me every time* -- or, had the flag been
+    # named the other way round, *never a purchase*.
+    never_a_purchase = db.Column(db.Boolean, nullable=False)
 
     # **No relationships, deliberately.**  Both arms are reached through a
     # COMPOSITE key whose other half comes from a mixin, so a relationship here
@@ -232,7 +294,8 @@ class MerchantRule(AccountScopedMixin, UserScopedMixin, TimestampMixin,
             if self.template_id is not None
             else f"new={self.envelope_name!r}"
             if self.envelope_name is not None
-            else "never"
+            else "never" if self.never_a_purchase
+            else "ask"
         )
         return (
             f"<MerchantRule account={self.account_id} "

@@ -447,6 +447,7 @@ class TestTheMerchantsOutliveTheirLinesONLYWhileTheyAreANSWERED:
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             merchant_id=answered.id,
+            never_a_purchase=True,
         ))
         db.session.flush()
 

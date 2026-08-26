@@ -958,6 +958,11 @@ def create_purchase_from_line(
             created=_made_by_this_act(candidate, envelope, created),
         ),
         matched,
+        # A TICK: this door is entered from the review screen's own destination
+        # select, one line at a time (ruling **R-GT**).  Plan step
+        # ``bank_import:X-ge`` is what gives it a second entrance, and this is
+        # the line that changes there.
+        applied_by_rule=False,
     )
 
     recorded = CreatedPurchase(

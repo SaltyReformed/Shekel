@@ -229,7 +229,7 @@ class CreationBars:
         cls,
         owner_id: int,
         account_id: int,
-        rules: dict[str, StandingRule] | None = None,
+        rules: dict[int, StandingRule] | None = None,
     ) -> "CreationBars":
         """Derive the bars for one pass over one account.
 

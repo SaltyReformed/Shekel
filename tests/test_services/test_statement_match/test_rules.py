@@ -48,11 +48,21 @@ from app.services.statement_match import (
 from app.services.statement_match._placement import (  # pylint: disable=protected-access
     placements_for,
 )
+from app.services.statement_match._section import (  # pylint: disable=protected-access
+    merchant_section,
+)
+from app.services.statement_match._bars import (  # pylint: disable=protected-access
+    CreationBars,
+)
 from app.services.statement_match._rules import (  # pylint: disable=protected-access
-    _refuse_unknown_merchants,
+    _named_templates,
     active_category_ids,
     offerable_templates,
     rules_for,
+)
+from app.services.statement_match._stating import (  # pylint: disable=protected-access
+    _columns_of,
+    _refuse_unknown_merchants,
 )
 
 from ._builders import (
@@ -522,15 +532,21 @@ class TestStatingAndRestatingARule:
         assert len(rows) == 1
         assert rows[0].template_id == second.template_id
 
-    def test_answering_NOT_SAID_WITHDRAWS_a_rule(
+    def test_ALWAYS_ASK_replaces_a_rule_rather_than_deleting_it(
         self, app, db, seed_user,
     ):
-        """The control's do-nothing option has to be able to mean forget it.
+        """Ruling **R-GS**: a rule is restated, never un-stated.
 
-        A rule is a statement about today's budget rather than a judgement --
-        when the credit-card arc gives Capital One its own account, the
-        Checking-side answer stops being right.  Without this arm an answer
-        could be restated but never taken back.
+        **This case replaced ``test_answering_NOT_SAID_WITHDRAWS_a_rule``**,
+        which asserted the row COUNT went to zero.  The behaviour it graded was
+        withdrawn by the developer on 2026-08-25: the control's do-nothing
+        option used to delete the row and return the merchant to *you have not
+        said*, and *ask me every time* is what replaced it.  The reason the
+        withdrawal existed is unchanged and is still met -- when the credit-card
+        arc gives Capital One its own account the Checking-side answer stops
+        being right -- but taking an answer BACK and saying *I want no standing
+        answer* are different statements, and only the second survives a screen
+        that has to know which merchants it may still ask about.
         """
         envelope = a_transaction(
             seed_user, name="Groceries", is_envelope=True,
@@ -539,30 +555,97 @@ class TestStatingAndRestatingARule:
         db.session.flush()
 
         recorded = self._state(
-            db, seed_user, a_statement(seed_user, "Amazon"),
+            db, seed_user,
+            a_statement(seed_user, "Amazon", RuleAnswer.ALWAYS_ASK),
         )
         db.session.flush()
 
         assert len(recorded.stated) == 1
-        assert db.session.query(MerchantRule).count() == 0
+        row = db.session.query(MerchantRule).one()
+        assert row.template_id is None
+        assert row.envelope_name is None
+        assert row.category_id is None
+        # ...and NOT the other container-less answer, which is the whole of
+        # what the flag is for: *never a purchase* would BAR every line this
+        # merchant ever shows.
+        assert row.never_a_purchase is False
 
-    def test_withdrawing_a_rule_that_was_never_stated_changes_nothing(
+    def test_ALWAYS_ASK_on_an_unanswered_merchant_STATES_it(
         self, app, db, seed_user,
     ):
-        """Every untouched merchant submits this, so it must be a no-op.
+        """It is an answer even where there was nothing to replace.
 
-        Twenty-one rows submit on every pass and most carry "I have not said".
-        Counting each as a change would make the receipt useless.
+        The other half of the fourth answer, and the one that separates it from
+        the absence of a row: an owner who has never answered for a merchant
+        and picks *ask me every time* has DECIDED something, and the exception
+        queue ``bank_import:X-gf`` builds reads exactly that difference to
+        decide whether to prompt them again.
         """
         recorded = self._state(
-            db, seed_user, a_statement(seed_user, "Amazon"),
+            db, seed_user,
+            a_statement(seed_user, "Amazon", RuleAnswer.ALWAYS_ASK),
+        )
+        db.session.flush()
+
+        assert recorded.stated == ("Amazon: ask me every time.",)
+        row = db.session.query(MerchantRule).one()
+        assert row.never_a_purchase is False
+        assert RuleAnswer.of(row) is RuleAnswer.ALWAYS_ASK
+
+    def test_restating_ALWAYS_ASK_is_reported_as_UNCHANGED(
+        self, app, db, seed_user,
+    ):
+        """The fourth answer restates like the other three.
+
+        The section submits every merchant it renders, so an ordinary pass is
+        mostly no-ops; a receipt reading "1 recorded" with no denominator would
+        read as though the rest had failed.  This is the arm that would have
+        been missed by writing the flag but not comparing it -- the row would
+        be rewritten to the value it already held and reported as a change on
+        every single Save.
+        """
+        a_rule(seed_user, "Amazon", always_ask=True)
+        db.session.flush()
+
+        recorded = self._state(
+            db, seed_user,
+            a_statement(seed_user, "Amazon", RuleAnswer.ALWAYS_ASK),
         )
 
         assert recorded.stated == ()
-        # NOT counted as "already answered for": it was never answered for, and
-        # the receipt's sentence about the unchanged ones would be false of it.
-        assert recorded.unchanged_count == 0
-        assert db.session.query(MerchantRule).count() == 0
+        assert recorded.unchanged_count == 1
+
+    def test_NEVER_and_ALWAYS_ASK_are_DIFFERENT_answers_to_the_door(
+        self, app, db, seed_user,
+    ):
+        """The two share every column, so only the flag tells them apart.
+
+        **The case a "same answer" comparison written over the three container
+        columns would pass while being wrong**: it would find nothing changed
+        between *never a purchase* and *ask me every time* and leave a bar
+        standing that the owner had just lifted.  Both directions, because a
+        comparison can be blind in one.
+        """
+        a_rule(seed_user, "Amazon")
+        db.session.flush()
+
+        lifted = self._state(
+            db, seed_user,
+            a_statement(seed_user, "Amazon", RuleAnswer.ALWAYS_ASK),
+        )
+        db.session.flush()
+
+        assert lifted.unchanged_count == 0
+        assert db.session.query(MerchantRule).one().never_a_purchase is False
+
+        restored = self._state(
+            db, seed_user,
+            a_statement(seed_user, "Amazon", RuleAnswer.NEVER),
+        )
+        db.session.flush()
+
+        assert restored.stated == ("Amazon is never a purchase.",)
+        assert db.session.query(MerchantRule).one().never_a_purchase is True
 
 
 class TestWhatTheWriteDoorRefuses:
@@ -979,10 +1062,16 @@ class TestALineDatedMadeAfterItPosted:
 
 
 class TestTheTableRefusesWhatIsNotAnAnswer:
-    """The three CHECKs, each shown refusing a row the ORM would happily write."""
+    """The CHECKs, each shown refusing a row the ORM would happily write."""
 
     def _row(self, db, seed_user, **columns):
-        """Stage a rule row with these columns and flush it."""
+        """Stage a rule row with these columns and flush it.
+
+        ``never_a_purchase`` is NOT NULL with no default, so it is stated here
+        or nothing reaches the CHECK under test at all -- ``False`` unless the
+        case names it, which is what every container answer carries.
+        """
+        columns.setdefault("never_a_purchase", False)
         row = MerchantRule(
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
@@ -1066,6 +1155,7 @@ class TestTheTableRefusesWhatIsNotAnAnswer:
             user_id=seed_user["user"].id,
             account_id=seed_user["account"].id,
             merchant_id=theirs.id,
+            never_a_purchase=True,
         )
         db.session.add(row)
         with pytest.raises(Exception) as caught:
@@ -1787,3 +1877,353 @@ class TestTheScreenSaysWhichLineCREATESTheEnvelope:
             if line.placement is not None and line.placement.creates
         ]
         assert joining == [False, False]
+
+
+class TestTheFourAnswersRoundTrip:
+    """What an answer WRITES and what a row READS BACK are one mapping.
+
+    ``_columns_of`` turns an answer into four columns and ``RuleAnswer.of``
+    turns four columns back into an answer.  They are inverse functions stated
+    twice, which is the shape a fifth answer breaks by being added to one side
+    only -- so what is graded is the round trip over EVERY member rather than
+    four hand-picked cases, and a member added to the enum without a column
+    mapping fails here on the day it is added.
+    """
+
+    def test_every_answer_reads_back_as_itself(self, app, db, seed_user):
+        """All four, driven off the enum rather than off a list here.
+
+        ``for answer in RuleAnswer`` is the point: a list re-typed in this file
+        would go stale exactly when the mapping did.
+        """
+        envelope = a_transaction(
+            seed_user, name="Groceries", is_envelope=True,
+        )
+        category = seed_user["categories"]["Groceries"]
+        fields = {
+            RuleAnswer.TEMPLATE: {"template_id": envelope.template_id},
+            RuleAnswer.NEW_ENVELOPE: {
+                "envelope_name": "Lowe's", "category_id": category.id,
+            },
+            RuleAnswer.NEVER: {},
+            RuleAnswer.ALWAYS_ASK: {},
+        }
+        assert set(fields) == set(RuleAnswer), (
+            "a RuleAnswer member with no case here is one this round trip "
+            "does not grade"
+        )
+
+        for answer in RuleAnswer:
+            merchant = a_merchant(seed_user, f"Merchant {answer.value}")
+            row = MerchantRule(
+                user_id=seed_user["user"].id,
+                account_id=seed_user["account"].id,
+                merchant_id=merchant.id,
+                **_columns_of(RuleSubmission(
+                    merchant_id=merchant.id, answer=answer, **fields[answer],
+                )),
+            )
+            db.session.add(row)
+            # Flushed one at a time so the CHECK grades each shape on its own:
+            # a batch would report the first violation and say nothing about
+            # the rest.
+            db.session.flush()
+
+            assert RuleAnswer.of(row) is answer
+
+    def test_a_field_belonging_to_ANOTHER_answer_is_not_written(
+        self, app, db, seed_user,
+    ):
+        """A submission that pairs an answer with the wrong arm states nothing.
+
+        ``state_rules`` is exported from the package, so its input is a public
+        contract: a caller that built *never a purchase* while leaving a
+        ``template_id`` on the value would, under a mapping that copied all
+        four columns, store a TEMPLATE row whose own stated answer said
+        otherwise.  ``ck_merchant_rules_one_answer`` would not catch it --
+        template-and-nothing-else is a legal shape -- so the refusal has to be
+        that the field is never read.
+        """
+        envelope = a_transaction(
+            seed_user, name="Groceries", is_envelope=True,
+        )
+
+        columns = _columns_of(RuleSubmission(
+            merchant_id=1, answer=RuleAnswer.NEVER,
+            template_id=envelope.template_id,
+            envelope_name="Lowe's",
+            category_id=seed_user["categories"]["Groceries"].id,
+        ))
+
+        assert columns == {
+            "template_id": None,
+            "envelope_name": None,
+            "category_id": None,
+            "never_a_purchase": True,
+        }
+
+
+class TestTheFlagIsPinnedOnTheContainerAnswers:
+    """``ck_merchant_rules_one_answer``'s new term, shown refusing a row.
+
+    Without it a row could name a template AND claim *never a purchase*, and
+    the two readers that ask in different orders would disagree:
+    ``RuleAnswer.of`` looks at the container first and calls it a TEMPLATE,
+    while ``CreationBars`` looks at the flag and bars the line.  One suggests
+    a destination and the other forbids one, on the same row.
+    """
+
+    def _row(self, db, seed_user, **columns):
+        """Stage a rule row with these columns and flush it."""
+        row = MerchantRule(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            merchant_id=a_merchant(seed_user, "Amazon").id,
+            **columns,
+        )
+        db.session.add(row)
+        db.session.flush()
+        return row
+
+    def test_a_TEMPLATE_answer_claiming_never_is_unwritable(
+        self, app, db, seed_user,
+    ):
+        """The contradiction, on the arm that names a recurring envelope."""
+        envelope = a_transaction(
+            seed_user, name="Groceries", is_envelope=True,
+        )
+
+        with pytest.raises(Exception) as caught:
+            self._row(
+                db, seed_user, template_id=envelope.template_id,
+                never_a_purchase=True,
+            )
+
+        assert "ck_merchant_rules_one_answer" in str(caught.value)
+
+    def test_a_NEW_ENVELOPE_answer_claiming_never_is_unwritable(
+        self, app, db, seed_user,
+    ):
+        """...and on the arm that creates one."""
+        with pytest.raises(Exception) as caught:
+            self._row(
+                db, seed_user, envelope_name="Lowe's",
+                category_id=seed_user["categories"]["Groceries"].id,
+                never_a_purchase=True,
+            )
+
+        assert "ck_merchant_rules_one_answer" in str(caught.value)
+
+    def test_BOTH_container_less_shapes_are_writable(
+        self, app, db, seed_user,
+    ):
+        """The firing control: the CHECK closes a contradiction, not an answer.
+
+        Without this the two cases above would be satisfied by a constraint
+        that refused the flag outright, which would make *never a purchase*
+        unwritable -- the answer worth `-$7,412.94` on the developer's own
+        statement.
+        """
+        assert self._row(
+            db, seed_user, never_a_purchase=True,
+        ).never_a_purchase is True
+
+        db.session.rollback()
+
+        assert self._row(
+            db, seed_user, never_a_purchase=False,
+        ).never_a_purchase is False
+
+    def test_a_row_that_STATES_no_flag_is_unwritable(
+        self, app, db, seed_user,
+    ):
+        """NOT NULL with no default, and this is what that buys.
+
+        A writer that does not state the answer gets a refusal rather than one
+        the schema picked for it.  ``never_a_purchase`` is the only column here
+        whose absence nothing else would catch: a row with no container is a
+        legal answer, so the three columns beside it raise nothing on its
+        behalf.
+        """
+        with pytest.raises(Exception) as caught:
+            self._row(db, seed_user)
+
+        assert "never_a_purchase" in str(caught.value)
+
+
+class TestAlwaysAskPlacesNothing:
+    """The fourth answer reaches the line's own control with no suggestion.
+
+    It is the answer that means *I do not want a standing one*, so a placement
+    would be the app answering a question the owner reserved for themselves.
+    """
+
+    def test_it_offers_no_placement(self, app, db, seed_user):
+        """...and the line is still CREATABLE, which is the other half.
+
+        *ask me every time* is not a bar: the line keeps its own destination
+        select, exactly as an unanswered merchant's does.  A dispatch that
+        treated the fourth answer like *never a purchase* would silently
+        remove the very control this answer exists to send the owner back to.
+        """
+        a_transaction(seed_user, name="Groceries", is_envelope=True)
+        statement = an_import(seed_user)
+        a_bank_line(
+            seed_user, statement, amount="-25.00", merchant="Amazon",
+        )
+        a_rule(seed_user, "Amazon", always_ask=True)
+        db.session.commit()
+
+        review = review_set(a_scope(seed_user))
+
+        assert len(review.creatable) == 1
+        assert review.creatable[0].placement is None
+
+    def test_it_does_not_fall_through_to_the_TEMPLATE_arm(
+        self, app, db, seed_user,
+    ):
+        """The dispatch asked directly, past the screen that renders it.
+
+        ``placements_for`` used to name the answers that place NOTHING and fall
+        through to the template arm, so a fourth answer resolved as a template
+        with a ``NULL`` id.  Asked here rather than only through
+        ``review_set`` because a raise inside a read pass is a 500, and a 500
+        is not a value this control could assert about.
+        """
+        merchant = a_merchant(seed_user, "Amazon")
+        a_rule(seed_user, "Amazon", always_ask=True)
+        db.session.flush()
+        view = RuleView.build(
+            seed_user["user"].id, seed_user["account"].id,
+        )
+
+        assert placements_for(merchant.id, view, []) is None
+
+
+class TestNamingAStoredTemplateIsScopedToTheAccount:
+    """Finding **N-353**, closed here.
+
+    ``_named_templates`` selected by id alone and the NAME it returns is
+    rendered on this control.  Nothing reachable leaked -- a rule's template is
+    held to its account by ``fk_merchant_rules_template_account`` -- but that
+    is safety by derivation over an open set of future callers, and the caller
+    already holds the account.
+    """
+
+    def test_ANOTHER_accounts_template_is_not_named(
+        self, app, db, seed_user, seed_second_user,
+    ):
+        """The scope clause, shown withholding a name it would have returned.
+
+        Asked at the function rather than through ``RuleView`` because a rule
+        naming a foreign template is UNWRITABLE, so the leak is only reachable
+        by a future caller -- which is exactly what the finding says, and
+        exactly why the guard has to be local.
+        """
+        theirs = a_transaction(
+            seed_second_user, name="Their Envelope", is_envelope=True,
+        )
+        db.session.flush()
+
+        assert _named_templates(
+            {theirs.template_id}, seed_user["account"].id,
+        ) == {}
+
+    def test_THIS_accounts_template_IS_named(
+        self, app, db, seed_user,
+    ):
+        """The firing control: the clause narrows, it does not empty.
+
+        Without it the case above would pass against a function that returned
+        nothing at all -- and the name it returns is what a stale answer's
+        option carries, so an empty answer here is a select that submits the
+        wrong template.
+        """
+        mine = a_transaction(seed_user, name="Groceries", is_envelope=True)
+        db.session.flush()
+
+        assert _named_templates(
+            {mine.template_id}, seed_user["account"].id,
+        ) == {mine.template_id: "Groceries"}
+
+
+class TestTheControlAlwaysCarriesTheAnswerItHOLDS:
+    """A select with no option for its stored value submits its FIRST one.
+
+    ``RuleView`` reads the offerable templates and the stale ones in two
+    statements, so a template deleted between them is named by NEITHER: not
+    offerable, and not in ``stale_templates``.  On every row the database can
+    hold the two agree -- ``fk_merchant_rules_template_account`` keeps a rule's
+    template on its account, and the hard-delete door cascades the rule away
+    with it -- so the gap is the window between the two reads, which is why it
+    is produced HERE and not through the screen.
+
+    **Plan step ``bank_import:X-gd-2`` is what made it matter.**  The first
+    option used to be *I have not said*, and falling onto it silently WITHDREW
+    the rule; that option is no longer rendered for an answered merchant, so
+    the first option is now a real recurring envelope and the silent outcome
+    would be a rule RE-AIMED at a destination the owner never picked.
+    """
+
+    def test_a_template_named_by_NEITHER_read_still_gets_a_label(
+        self, app, db, seed_user,
+    ):
+        """The totality property, asked of the row the screen renders.
+
+        ``label_for`` is total by design; what is graded is that
+        ``_merchant_summary`` ASKS it whenever the answer is not offerable,
+        rather than only when the stale read happened to find a name.
+        """
+        merchant = a_merchant(seed_user, "Amazon")
+        rule = StandingRule(
+            merchant_id=merchant.id, merchant="Amazon",
+            answer=RuleAnswer.TEMPLATE, template_id=9_999,
+        )
+        view = RuleView(
+            rules={merchant.id: rule},
+            template_names={},
+            active_categories=frozenset(),
+            stale_templates={},
+        )
+
+        section = merchant_section(
+            [], view,
+            CreationBars(never=frozenset(), account_payments=frozenset()),
+        )
+
+        assert len(section.merchants) == 1
+        assert section.merchants[0].stale_template_label == (
+            "a recurring envelope"
+        )
+
+    def test_an_OFFERABLE_template_gets_no_stale_label(
+        self, app, db, seed_user,
+    ):
+        """The firing control: the label is for answers the list cannot show.
+
+        Without it the case above would be satisfied by labelling every
+        template answer, which would render a duplicate option beside the real
+        one -- two options carrying the same value, one of them saying the
+        envelope is no longer offered when it is.
+        """
+        envelope = a_transaction(
+            seed_user, name="Groceries", is_envelope=True,
+        )
+        merchant = a_merchant(seed_user, "Amazon")
+        rule = StandingRule(
+            merchant_id=merchant.id, merchant="Amazon",
+            answer=RuleAnswer.TEMPLATE, template_id=envelope.template_id,
+        )
+        view = RuleView(
+            rules={merchant.id: rule},
+            template_names={envelope.template_id: "Groceries"},
+            active_categories=frozenset(),
+            stale_templates={},
+        )
+
+        section = merchant_section(
+            [], view,
+            CreationBars(never=frozenset(), account_payments=frozenset()),
+        )
+
+        assert section.merchants[0].stale_template_label is None
