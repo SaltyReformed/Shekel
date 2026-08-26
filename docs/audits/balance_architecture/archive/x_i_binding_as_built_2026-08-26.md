@@ -30,6 +30,86 @@ already written.
 
 Closed **N-353**; opened **N-358** and **N-359**.
 
+### Corrected at `4dddfe73` -- WHERE the decision is taken
+
+CI on PR #134 reported this as a cost: `test_no_baseline_policy`'s `url_map` sweep blew its 30 s
+budget at 25.38 s, and a per-statement tally put the step at **+2,954 statements over 444
+requests**, a 52% increase. The cost was a symptom of a CORRECTNESS defect.
+
+`765daebd` decided the mode in a `before_request` hook, and Flask calls those in REGISTRATION
+order: `setup_logging`'s `_attach_request_id` is registered first and reads `current_user`. So the
+request's first statement -- and the transaction carrying it -- ran at `READ COMMITTED` before any
+mode existed; the boundary then threw that transaction away, and the render's real snapshot was its
+SECOND. Everything the first one read was outside the snapshot the page is computed against, which
+is **N-353** with a smaller blast radius rather than a different defect.
+
+Two of the module's own claims were false with it: that the boundary was a TEST-FIDELITY property,
+and that its opening hook "is a no-op on every request" in production. Both were untrue for the
+same reason, so a discarded transaction, a refusal probe and a doubled user load were on every
+production GET.
+
+The decision moved to `request_started`, which `Flask.full_dispatch_request` sends immediately
+before `preprocess_request` (`flask/app.py:914-915`), so it precedes every before-request hook by
+Flask's own dispatch order rather than by an order this module polices. The receiver is a
+module-level function because blinker holds receivers WEAKLY: a closure defined inside
+`register_transaction_boundary` would be collected when that call returned and the signal would
+silently stop firing.
+
+**And a query stopped being told who is ACTING.** `READ ONLY` refuses every write to an audited
+table, so no trigger in a query's transaction can fire and nothing can read `app.current_user_id`
+-- three `set_config` round trips per authenticated GET with no reader. The actor binds through one
+door now (`db_transaction.bind_request_actor`), which also removed one key with two spellings in
+two modules: `logging_config` wrote `g.shekel_audit_actor` as a literal while `db_transaction` read
+it through `_ACTOR_KEY`. The teardown retires the actor with the mode, because under the shared app
+context of the test client an actor left on `g` signed every row the test body went on to write --
+which neither production nor the `SET LOCAL` this replaced ever did.
+
+The `+889 SELECT auth.users` the cost brief could not account for:
+`flask_login/mixins.py`'s `UserMixin.is_authenticated` returns `self.is_active`, and
+`app/models/user.py:100` makes `is_active` a real column, so reading it on an instance the
+boundary's rollback expired issues a SELECT -- twice per request, with the rollback between the two
+hooks that read it.
+
+Measured. One authenticated `GET /settings`, statement by statement: **15 statements to 10**, the
+boundary and actor machinery within it **7 to 2**. Over the sweep file at `-n 0`: **8,624 to 6,331**
+against `dev`'s 5,670, so **78%** of the regression is removed; the 549 remaining `SET TRANSACTION`
+are one per query transaction and are the guarantee itself. Wall clock under this project's
+CI-shaped harness (pytest pinned to 4 cores with `taskset` at `-n 12` over `tests/test_routes/`,
+the method `pytest.ini` records), for the arm that timed out: **1.18 s** on `dev`, **3.24 s** at
+`765daebd`, **2.11 s** here -- and `pytest.ini` independently records 1.17 s for that arm on `dev`
+under the same harness, which is what makes the reading trustworthy.
+
+Four controls, each shown FAILING at `c92a8313`. The load-bearing one asserts EVERY transaction of
+a GET is one snapshot rather than that some transaction was read-only -- on `765daebd` a
+`GET /settings` observes `[('read committed','off'), ('repeatable read','on')]`. It needed a
+`db.session.rollback()` as SETUP to reproduce a production request's starting state; without it the
+control passed against the defect it exists to catch, found by running it both ways.
+
+The residual is **N-364**, which is the sweep's own shape and not this step's.
+
+## `balance:X-i3-b` -- the accommodations (`1feb0930`)
+
+The three live accommodations for "under `READ COMMITTED` the two reads can differ" narrowed to the
+COMMAND each still describes. None deleted: `_candidates`' period-id scope is ALSO the ownership
+scope, and `_scope.period_holding` pairs two different REQUESTS (a line is OFFERED by the GET and
+PLACED by a POST), which no per-request snapshot could reconcile.
+
+The census was re-taken and found more than the specification named: eleven statements across nine
+`app/` modules plus one script, including three query-reachable sites the step never listed
+(`_scope`'s `ReviewScope.calendar` and `period_holding`, `_reads.awaiting_review_count`) and one
+claim `X-i3-a` had FALSIFIED -- `anchor_service`'s lock-then-reread justified itself with "READ
+COMMITTED, verified as the default on dev, test and production, with no override anywhere", and
+there is an override now. It rests on something stronger than a census: the function WRITES, and
+the override applies only to transactions PostgreSQL would refuse a write in.
+
+Request-kind reachability was measured rather than assumed. `ReviewScope.build` has one GET call
+site and FOUR POSTs, so the `statement_match` accommodations hold for exactly the four doors that
+move money. `awaiting_review_count` is the one that goes fully dead -- its only caller is
+`grid/page._bank_control`, whose only caller is the `/grid` GET -- and its DRY reason survives
+untouched.
+
+Opened **N-364**.
+
 ## `balance:X-i4` -- the binding (`79a1730c`)
 
 A read pass BINDS the account it values (ruling **R-GV**). `_context._memoize_once` -- the one

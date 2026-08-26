@@ -23,12 +23,12 @@ signpost.
 
 | | | detail |
 |---|---|---|
-| **just landed** | **X-i4** -- a read pass BINDS the account it values. `_cash_fold.assemble` and its four siblings took the account and the pass's own derivations as INDEPENDENT arguments that agreed only because each call site named one `ctx` two or three times, while `BalanceContext` pinned a `user_id` it never checked -- and a mis-pairing would have folded another owner's balance ASSERTIONS, which `cash_anchor_facts` scopes by account alone. The rule lives in `_memoize_once`, the one primitive creating per-account pass state, so it is a precondition rather than a fence; the fold is memoized there too (42 walks to 8 on the dev database). Two adversarial reviews each found the first build had made that cache PUBLIC, which is a running total, and each measured the bypass. Ruling **R-GV**. Closed **N-354**; opened **N-360**-**N-363** | Section 5 |
+| **just landed** | **X-i3 CLOSED, with its own first leaf corrected.** `X-i3-b` narrowed every accommodation for "under READ COMMITTED the two reads can differ" to the COMMAND it still describes, deleting none: one is also an ownership scope, and one pairs two different REQUESTS, which no per-request snapshot could reconcile. Its re-taken census found three query-reachable sites the step never named and one claim `X-i3-a` had FALSIFIED -- `anchor_service` justified its lock-then-reread with "no override anywhere", and there is an override now. **And `X-i3-a` itself was corrected at `4dddfe73`**: it decided a request's kind in a `before_request` hook, which is not the first thing a request does, so a render's FIRST transaction ran at READ COMMITTED and was then discarded -- a correctness defect that reached CI as a 30-second timeout. The decision is taken on `request_started` now, and a query is no longer told who is ACTING, because READ ONLY means no trigger in it can fire. Opened **N-364** | Section 5, `archive/x_i_binding_as_built_2026-08-26.md` |
 | **in flight** | Nothing. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app`. What to pick up next is `../../plans/steps.md`'s first row | Section 5 |
 | **what changed the plan** | **X-f3 DECOMPOSED and X-f6 moved AHEAD of the cutover** (developer, 2026-08-13), because two of R-EB's premises were refuted by measurement against the developer's own YTD bank exports: the residual it would classify is dominated by date misplacement rather than by spending (lag-1 autocorrelation `-0.306`; bank-anchored untracked spend `$2,096.37`, not the `$15,413.71` gross), and an assertion is **not** the closing balance for its civil day (17 of 55 equal the bank's closing; only 30% of 110 matched movements carry the day the bank posted them). What X-f3 needed was never the import surface but CLEARING FACTS -- rulings **R-FL**..**R-FO** here and **R-FP** in the import arc. **X-f5 is superseded** by X-f3c | Section 3.3, Section 4 |
 | **blocked on you** | What to do next is `../../plans/steps.md`'s first row, never this section. Six `developer-decision` / `operator` rows carry this arc's open questions (`ledger.md`); the one this change ADDS is **R-FO**, the modelled half of the cutover -- whether a Roth / Traditional / 401(k) / Property true-up books to a per-account `investment_return` account (`$10,623.66` measured) or stays on `anchor_equity` with its own step. Stated as a recommendation, not a decision. Outside this arc, the recurrence arc's X-an-a sequencing ruling is still open | Section 4, R-FO |
 | **complementary arcs** | TWO, neither part of this arc and neither pausing it: the recurrence redesign (block 9) and the pay calendar (block 10). **The pay calendar's `C2` IS this arc's `X-l`**, and also recurrence `R-F12` -- one commit under three names, so whoever builds it must satisfy all three specifications | `implementation_plan_recurrence_redesign.md`, `implementation_plan_pay_calendar.md` |
-| **the live lesson** | **A memo is a test of whether the code around it obeys the contract the memo was always documented to have -- and the FIRST thing it tests is the docstring that justified the caches beside it.** X-i4 only extended `BalanceContext`'s existing rule to the one account-keyed derivation it did not yet hold, and four tests failed instantly, each reusing one pass across a commit. Nothing in `app/` was doing it. Then it added the fold as a fourth PUBLIC cache without re-reading the paragraph 70 lines below saying public caches are public BECAUSE they carry no balance-at-T -- and an `AssembledCashFold` is a running total. W9910 sees imports, `protected-access` sees underscores, and W9909 scopes methods; a dataclass FIELD is none of those | Section 5, X-i4 |
+| **the live lesson** | **A rule that must run FIRST cannot be installed by a mechanism whose order somebody else decides.** `X-i3-a` put its decision in a `before_request` hook, which Flask calls in REGISTRATION order, and `setup_logging`'s hook is registered earlier and reads `current_user` -- so the guarantee arrived one transaction late, in production as much as under the test client, and its own docstring asserted the opposite in two places. Nothing graded the ordering, because nothing could: the defect is invisible to every reader of that module and lives in a third one. The fix was to stop having an order at all (`request_started` precedes every before-request hook by Flask's dispatch code), and the control that catches a regression asserts EVERY transaction of a GET is one snapshot rather than that some transaction was read-only | Section 5, X-i3-a |
 | **resuming cold** | Branch from `dev`; whether it leads `main` is a MEASUREMENT (`git log --oneline origin/main..dev`). Read the repo's migration head from `alembic_version` rather than from prose, and rebuild the test template only if you add a migration. **Pass `TEST_DB_PREFIX=<name>` when another checkout may be running the suite**, put the venv on `PATH` (`scripts/test.sh` execs bare `pytest`) and keep it ACTIVE for `git commit` (pre-commit hooks are `language: system`). The registries have their own gate: `pytest tools/plan_gate -c /dev/null -q`. Two REFERENCE tags, neither a rebase candidate: `xd-attempt-1-parked-n155` (X-d) and `xx-attempt-1-held-rde` (X-x) | `../../plans/verification.md` |
 
 Section 5 is the work that remains and Section 4 the rulings that govern it; `archive/` is what
@@ -691,23 +691,11 @@ hides.
     contribution load costs `2.7 -> 14.8 ms` per render entry, so shipping X-j first ships that
     regression and then removes it. Forks for its trace: which salary profile a historical read
     picks when several are active, and whether deductions resolve at the read date.
-  * [ ] **X-i3 THE SNAPSHOT** -- the DECOMPOSED parent, split into two leaves 2026-08-26 when the
-    trace refuted WHERE the snapshot is taken (ruling **R-GU**). A pass cannot take it:
-    `apply_statement_review` and `loan_recurrence_sync` build one BEFORE they write, so nothing at
-    that tier tells a render from a write's decision basis without a second constructor -- `X-i4`'s
-    defect in the step that removes `X-i3`'s. And a snapshot before a write is a MONEY BUG:
-    `user_write_lock`'s lock-then-reread needs READ COMMITTED (`anchor_service.py:586`), so one
-    re-arms **R-EN**'s `$4,000.00`-against-`$1,000.00` divergence. The boundary is the REQUEST.
-  * [x] **X-i3-a THE BOUNDARY** `765daebd` -- a request is a QUERY or a COMMAND and its transaction says which. Closed **N-353**; opened **N-358**, **N-359**.
-  * [ ] **X-i3-b THE ACCOMMODATIONS** -- retire what a query can no longer construct. THREE are
-    live: a read ORDER (`pay_calendar/_loader.py:100`), a query scoped by the calendar's own ids
-    (`statement_match/_candidates.py:600`), and the class adversarial financial review found beside
-    it (`:770`). *The fourth this step named, `generation_schedule.py:97`, is PROSE about a check
-    `C2-f3c` already deleted -- corrected 2026-08-26.* Each states "under READ COMMITTED the two
-    reads can differ", now true of COMMANDS only. A NARROWING, not a deletion: `_candidates`'
-    scoping is also the ownership scope. Re-take the census -- `bank_import:X-gd-2` renamed
-    `_policy.py` and the merchant door under it.
+  * [x] **X-i3 THE SNAPSHOT** `1feb0930` -- the DECOMPOSED parent, ticked with `X-i3-b`, its last leaf (ruling **R-GU**).
+  * [x] **X-i3-a THE BOUNDARY** `765daebd`, corrected at `4dddfe73` -- a request is a QUERY or a COMMAND and its transaction says which. Closed **N-353**; opened **N-358**, **N-359**.
+  * [x] **X-i3-b THE ACCOMMODATIONS** `1feb0930` -- each accommodation for "the two reads can differ" narrowed to the COMMAND it still describes. Opened **N-364**.
   * [x] **X-i4 THE BINDING** `79a1730c` -- `_memoize_once` takes the `Account` and refuses a foreign one. Ruling **R-GV**. Closed **N-354**; opened **N-360**-**N-363**.
+  * These four are as built in `archive/x_i_binding_as_built_2026-08-26.md`, which carries what `4dddfe73` corrected: `X-i3-a` decided a request's kind in a `before_request` hook, which is not the first thing a request does, so a render's FIRST transaction ran at `READ COMMITTED` and was then discarded -- a correctness defect rather than the cost CI reported.
   * [ ] **X-i5 THE COMMAND'S RENDER** -- **N-358**. A mutation route's re-render rides the
     transaction its writes are in, so it reads at READ COMMITTED and is the one render `X-i3-a` does
     not cover; it also keeps `X-i3-b` a NARROWING rather than a deletion. The shape is the one
@@ -859,6 +847,18 @@ hides.
   PROSE beside itself -- four blocker cells carry `(the container ticks at #N)` unparsed, one of them
   stale on `dev` before anyone touched it. **(c)** An archive reference resolves BOTH ways, needing TWO
   arms: 30 citations / 1 dangling to a file never added, 20 archived files / 1 unindexed. 2026-08-26.
+* [ ] **X-bd** `test(routes): the url_map sweep's arms are sized, not named` -- closes **N-364**,
+  whose row carries the measurements. **Root: the sweep is SPLIT by account KIND, and a kind is not
+  a size.** The account-less arm is 54 routes against ~20 per kind arm and absorbs nearly all the
+  growth, since most new routes take no account id, while `pytest.ini`'s `timeout = 30` -- a HANG
+  detector calibrated on "slowest known test is ~3s" -- does not move. **Two remedies are already
+  refused**: raising the timeout hides a growth curve rather than bounding one, and `-n 4` was
+  measured and REJECTED in `pytest.ini` (it halves per-test wall clock and costs 52% MORE total,
+  because these workers block on the database rather than on CPU). It owes the AXIS first -- arms
+  partitioning the same URL set by a rule whose largest member is bounded -- with the coverage arm's
+  `{row[1] for row in urls} == set(_SWEEP_ARMS)` rewritten to grade it, that assertion being the
+  only thing between a re-split and a silently un-graded route. It is not a performance step: a gate
+  that reddens for reasons unrelated to what it grades is a gate that gets disabled.
 * [ ] **X-al** `fix(pylint): a duplicate-code disable that suppresses nothing is a finding` --
   closes **N-154**. `useless-suppression` is enabled precisely so a stale disable is reported, and
   it is BLIND to a `duplicate-code` one -- measured both directions: removing a disable left
