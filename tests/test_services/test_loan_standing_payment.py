@@ -308,7 +308,7 @@ class TestEstimatedTierPricing:
 
         plan = loan_plan(account, ctx)
 
-        estimated = [payment for payment in plan if payment.is_estimated]
+        estimated = [p for p in plan.payments if p.is_estimated]
         assert estimated, "the loan has no rows, so every slot is ESTIMATED"
         assert {payment.cash for payment in estimated} == {under}
 
@@ -328,11 +328,18 @@ class TestEstimatedTierPricing:
 
         plan = loan_plan(account, ctx)
 
-        estimated = [payment for payment in plan if payment.is_estimated]
+        estimated = [p for p in plan.payments if p.is_estimated]
         assert estimated
         for payment in estimated:
             assert payment.cash == Decimal("1910.95")
-            assert payment.escrow == Decimal("616.99")
+        # The escrow is the ACCRUAL's since plan step R16-a -- a month impounds
+        # it, not a payment -- and the pair the allocator takes is still
+        # (this cash, that charge).  A tier calling its escrow 0.00 would route
+        # the escrow into principal exactly as before, so the assertion moves
+        # with the value rather than weakening.
+        assert {charge.escrow for charge in plan.charges} == {
+            Decimal("616.99"),
+        }
 
     def test_a_derived_installment_takes_the_contract_plus_escrow_and_extra(
         self, seed_user, db,  # pylint: disable=unused-argument
@@ -347,7 +354,7 @@ class TestEstimatedTierPricing:
 
         plan = loan_plan(account, ctx)
 
-        estimated = [payment for payment in plan if payment.is_estimated]
+        estimated = [p for p in plan.payments if p.is_estimated]
         assert estimated
         # The stored 1.00 base is NOT read; the contract's P&I is.
         expected = contractual_pi + Decimal("616.99") + Decimal("100.00")
@@ -366,10 +373,12 @@ class TestEstimatedTierPricing:
 
         plan = loan_plan(account, ctx)
 
-        estimated = [payment for payment in plan if payment.is_estimated]
+        estimated = [p for p in plan.payments if p.is_estimated]
         assert estimated
         assert estimated[0].cash == contractual_pi + Decimal("616.99")
-        assert estimated[0].escrow == Decimal("616.99")
+        assert {charge.escrow for charge in plan.charges} == {
+            Decimal("616.99"),
+        }
 
 
 class TestPayoffDoesNotMoveWithMaterialisation:

@@ -23,7 +23,7 @@ branch.**  Every date is answered off a single running total
 * the **PLANNED** steps -- the still-Projected rows, each landing at
   ``max(its attribution date, as_of + 1 day)`` (ruling R-G: "a plan cannot have
   already happened").  The cash twin of
-  :func:`app.services.balance_at._plan.fold_forward`.  See :func:`_cash_plan`
+  :func:`app.services.balance_at._plan_fold.fold_forward`.  See :func:`_cash_plan`
   and :func:`_planned_day_nets`.
 
 **Three readers of that ONE row set** (plan steps X-c1 / X-c2b2, ruling R-K).
