@@ -456,12 +456,22 @@ def test_the_cache_stores_on_membership_not_truthiness():
 
     ``_memoize_once`` -- the ONE primitive both forward memos
     (``memoized_plan`` / ``memoized_payoff``) fill through -- tests
-    ``key not in cache``, never the value's truthiness, because both derivations
-    have a legitimately falsy answer: an empty plan (a not-yet-configured or
-    retired loan) and a ``None`` payoff (a loan that never clears).  A truthiness
-    check would rebuild those on EVERY read of every pass, unbounded and green
-    under any test that happens to use a loan with a non-empty plan.  Pinned
-    directly on the shared primitive, so it holds for the payoff cache too.
+    ``key not in cache``, never the value's truthiness, because a derivation may
+    have a legitimately falsy answer: a ``None`` payoff (a loan that never
+    clears).  A truthiness check would rebuild that on EVERY read of every pass,
+    unbounded and green under any test that happens to use a loan that clears.
+    Pinned directly on the shared primitive, so it holds for the payoff cache
+    too.
+
+    **The empty PLAN stopped being the second example at plan step R16-a**, and
+    the docstring said otherwise until an adversarial merge review found it one
+    site over from where it had already been corrected
+    (``_context._memoize_once``).  ``loan_plan`` answered ``[]``; it now answers
+    a ``LoanForwardPlan(payments=[], charges=[])``, which is unconditionally
+    TRUTHY.  This test is unaffected -- the primitive is generic and its
+    ``_build_empty`` below returns a real ``[]`` -- but the CLAIM about the plan
+    was false, and a falsy-answer example that is no longer falsy is how the
+    rule it argues for gets dropped by the next reader.
     """
     cache: dict[int, list] = {}
     builds = []
