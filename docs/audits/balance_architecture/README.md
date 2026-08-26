@@ -299,8 +299,9 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
 
 * [x] **X-f1** `8d812662` a settle carries the day the money moved; absorbs **S2-b**. Fourteen leaves
   in `archive/…2026-08-04.md` 1a. Did NOT close **N-173** (**X-f6a**'s).
-*Nine more of this span's shipped steps left here 2026-08-13 under rule 5 -- X-an, X-f2 with its
-four leaves, X-aq, X-as and X-ap -- their records already condensed in `archive/`.*
+
+*NINE of this span's shipped steps left under rule 5 -- X-an, X-f2's four leaves, X-aq, X-as and X-ap
+on 2026-08-13; X-f1 with five others on 2026-08-26 (`archive/five_shipped_steps_2026-08-26.md`).*
 
 * [ ] **X-ax** `fix(carry-forward): a rollover is reconciled against the source it divided` --
   closes **N-249**. **MOVES MONEY.** Carry-forward splits one budget across two periods: it settles
@@ -418,15 +419,9 @@ hides.
   `is_envelope` re-pricing measured while tracing it (`$181.58` to `$500.00` through the popover's
   own Save) is NOT the ground: ruling **R-FK** accepted that class for SALARY at `$13,499.89`
   (**N-261**) and put its remedy at the write DOOR.
-* [x] **X-au-a** `81138fb8` a recurring definition's amount is an effective-dated series: the model,
-  the ONE write door, the read-and-correct panel, and the backfill mining what the rows record.
-  **44 templates, 47 versions, 625 minable rows reproduced with 0 mismatches** on a production
-  clone. Opened **N-244**..**N-247**, and its two obligations on a later leaf are those rows.
-* [x] **X-au-b** `81ad02d1` the TOTAL dispatch over the five amount rules, in
-  `cash_ledger/_amount_source.py` -- a module INSIDE that package (developer, 2026-08-12).
-  **997 of 997 rows on a production clone agree with what the app publishes, 0 refusals, `$0.00`
-  drift.** **What a LATER leaf must obey**: a derived row's answer must be INVARIANT under a change
-  to its own amount column -- agreement alone cannot see this resolver. Opened **N-252**, **N-253**.
+  **Two obligations RESTATED from leaves archived 2026-08-26**, binding the leaves that REMAIN: a
+  derived row's answer must be INVARIANT under a change to its own amount column, agreement being
+  blind to the resolver (X-au-b); and the basis is REQUIRED on both `settle_amount` twins, pinned once in `cash_ledger.baseline_amount_basis` (X-au-j).
 * [ ] **X-au-c** the amount model's SEAM -- the DECOMPOSED parent of three leaves (developer,
   2026-08-12), because the census this step's own specification demanded as its first act came back
   at ~25 code reads across 15 modules and it is not one session's work. The split puts the schema
@@ -484,12 +479,6 @@ hides.
   while `loan_payment_service._manual_shadow_amount:660` reads `shadow.estimated_amount` under a
   docstring asserting that column is "NOT NULL, always the generated base" -- manual-mode loan
   payments would be broken for the whole interval between the two leaves.
-* [x] **X-au-j** `cc7679a7` BOTH read passes hold ONE amount basis, closing **N-295**, **N-309**,
-  **N-252** and **N-323**. `$0.00`; what goes is K profile lookups and K loan resolves per pass.
-  **What a LATER leaf must obey**: the basis is a REQUIRED parameter on both `settle_amount` twins,
-  because an optional one leaves the expensive shape as what a caller gets by saying nothing -- how
-  this cost regrew after X-au-c2b closed it one tier down; and the BASELINE pin is stated once, in
-  `cash_ledger.baseline_amount_basis`, so what-if scenarios move every surface in ONE edit.
 
 * [ ] **X-au-h** `refactor(transactions): is_override says one thing` -- closes **N-238**. The flag
   carries FOUR facts, not the two the first draft named, and an adversarial review found the other
@@ -717,6 +706,25 @@ hides.
     contribution load costs `2.7 -> 14.8 ms` per render entry, so shipping X-j first ships that
     regression and then removes it. Forks for its trace: which salary profile a historical read
     picks when several are active, and whether deductions resolve at the read date.
+  * [ ] **X-i3 THE SNAPSHOT** -- one pass, one SNAPSHOT. The context memoizes its calendar and loads
+    rows in LATER statements, and READ COMMITTED gives each its own, so a pass can value rows against
+    a calendar OLDER than they are. **Nine sites reason about this in their own words, FOUR of them
+    independent discoveries with four different accommodations**: `pay_calendar/_loader.py:100`
+    ORDERS two reads so the loser narrows rather than refuses; `statement_match/_candidates.py:600`
+    scopes a query by the calendar's own ids so `period_by_id` "cannot answer `None`" -- the exact
+    state `pay_calendar:C4-a-1` hit and cannot copy, `planned_cash_rows` being ruled unwindowable at a
+    measured `$150,000.00`; `:770` is that class found by adversarial financial review; and
+    `generation_schedule.py:97` carried a runtime CHECK over two reads. **Ruled 2026-08-25 (developer):
+    UNCONSTRUCTIBLE at REPEATABLE READ, not accommodated a fifth time.** A read-only transaction never
+    serialize-fails so the guarantee is free, but FOUR GET handlers WRITE (`grid/page.py:588`,
+    `dashboard.py:224`, `accounts/detail.py:819`, `auth/mfa.py:300`) and the trace decides whether the
+    pass opens its own transaction after those commit, or the render stops writing first.
+  * [ ] **X-i4 THE BINDING** -- the pass BINDS the account it values. `_cash_fold.assemble` and its
+    four siblings take the account and the pass's own calendar as two INDEPENDENT arguments, agreeing
+    only because both name one `ctx` -- "an argument a caller can get wrong is a defect, not a
+    contract", which this seam cites three times and then reproduces, and `BalanceContext` pins a
+    `user_id` it never checks against the account. **Ruled 2026-08-25 (developer)**: the pass hands
+    out the fold and refuses a foreign account there, so the pairing cannot be stated wrongly.
 * [ ] **X-j** `feat(balance): one account, one answer -- or a row that explains the difference` --
   closes **N-87**, **N-90**, and **N-83**'s DISPLAY half. **This step is the OWN RULING R-AK
   deferred, and its title does not presuppose the outcome.** R-AK ruled the dashboard, the pulse and
@@ -744,12 +752,7 @@ hides.
   `ValidationError` handler so a refused write 500s on extend and unarchive. The money consequence
   is on a balance screen: a shadow generated past a bound that later moves EARLIER keeps its
   checking-side expense leg.
-* [x] **X-l -- the pay calendar answers any date.** `4f134bf4`. ONE step under THREE names: this
-  row, `pay_calendar:C2` and `recurrence:R-F12`. The calendar is DERIVED from the owner's paydays
-  and is total past the last stored one, so no consumer improvises; the specifications and the
-  as-built are the pay-calendar document's section 4. Closed **N-128** (at `C2-c`). **It did NOT
-  close N-82 or N-79's far half and this row claimed it would**, so both were re-pointed at the
-  tick -- N-79 to **X-m**, N-82 to a stated developer decision.
+* [x] **X-l -- the pay calendar answers any date.** `4f134bf4`. ONE step under three names, so rule 11 keeps its row while its record left for `archive/five_shipped_steps_2026-08-26.md`.
 * [ ] **X-m** `refactor(growth): the projection engine takes its axis, not its boundaries` -- closes
   **N-86**. **Root: `growth_engine.project_balance` takes a derived boundary as an ARGUMENT its
   caller must compute to match the window the caller also passes**, and nothing checks that they
@@ -937,12 +940,9 @@ hides.
   per function whether its prose moves to the ENUM, where the meaning belongs. It rewrites a
   surface 98 modules import, so it takes its own PR.
 
-* [x] **X-az** `488e8dd2` a settle day says HOW it is known, closing **N-332**, opening **N-334**.
-  `settled_day_basis_id` on BOTH tables carrying `settled_on`, a `SettleDay(day, basis)` through
-  every door, `ck_transactions_settle_day_needs_basis` renamed `..._needs_a_record` (it is the
-  FIGURE's). `$0.00`. **A LATER leaf must obey**: the pairing is a BICONDITIONAL, not this
-  section's implication -- a day and its basis share ONE lifetime; and a form-RESUBMITTED day is an
-  ECHO that may not restate its basis, which cost `$4,173.07` over 59 of 66 rows before it did.
+*X-az left 2026-08-26 (`archive/five_shipped_steps_2026-08-26.md`); its obligation is RESTATED because
+a later leaf must obey it -- the settle-day pairing is a BICONDITIONAL, a day and its basis share ONE
+lifetime, and a RESUBMITTED day is an ECHO that may not restate its basis (`$4,173.07`, 59 of 66).*
 
 ## 6. The findings ledger
 

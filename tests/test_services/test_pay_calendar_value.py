@@ -937,6 +937,125 @@ class TestAWindowIsAViewAndKeepsTheRealEnds:
             calendar().overlapping(date(2026, 2, 1), date(2026, 1, 1))
 
 
+class TestCurrentAndFuture:
+    """"How many paychecks are left", counting the one the day falls in.
+
+    Plan step **C4**, finding **P70**: the rolling top-up compared its target
+    against a ``PayPeriod.end_date >= as_of`` count in SQL, which was the last
+    query in ``pay_period_admin`` naming a column plan step C4 drops.  The rule
+    is this method now, so it is graded here rather than only through the door.
+    """
+
+    def test_the_period_containing_the_day_is_counted(self):
+        """"Keep N ahead" counts the current period as one of the N.
+
+        The boundary is INCLUSIVE at both ends of the current period: asked on
+        a period's own last covered day it is still counted, and asked on the
+        day after, it is not.  Both are asserted, because a reader off by one
+        passes the first alone.
+        """
+        cal = calendar()
+        assert [p.period_id for p in cal.current_and_future(date(2026, 1, 15))] == [
+            10, 11, 12, 13,
+        ]
+        assert [p.period_id for p in cal.current_and_future(date(2026, 1, 16))] == [
+            11, 12, 13,
+        ]
+
+    def test_it_reads_the_DERIVED_end_and_not_the_cadence_projection(self):
+        """Graded on ``OFF_CADENCE``, where the two rules disagree.
+
+        On ``BIWEEKLY`` ``lead(start) - 1`` and ``start + cadence - 1`` give
+        the same day, so an assertion written there passes against the defect
+        it is meant to catch.  Here the 01-16 period ends 01-19 (the day before
+        the 01-20 payday) and NOT 01-29 (its own payday plus a cadence), so a
+        count taken on 01-20 drops it -- and a reader using the projection
+        would keep it.
+
+        The second assertion is a SEPARATE defect's control and is why one day
+        is not enough: on 01-20 a reader comparing ``start_date`` instead of
+        the end gives the same ``[12]`` and passes.  On 01-17 -- a day INSIDE
+        the 01-16 period rather than on a payday -- the end rule keeps that
+        period and the start rule drops it, so the two days together pin both.
+        """
+        cal = calendar(OFF_CADENCE)
+        assert [p.period_id for p in cal.current_and_future(date(2026, 1, 20))] == [
+            12,
+        ]
+        assert [p.period_id for p in cal.current_and_future(date(2026, 1, 17))] == [
+            11, 12,
+        ]
+
+    def test_past_the_horizon_it_ANSWERS_empty_where_overlapping_REFUSES(self):
+        """The one behaviour that makes this its own producer.
+
+        ``overlapping(day, horizon())`` is the same question with its bounds
+        written out, and it is the wrong door: past the horizon those bounds
+        cross, which that producer treats as a caller defect because an empty
+        range and a crossed one are indistinguishable in ITS answer.  Here they
+        are not -- "every paycheck has already ended" is exactly the state the
+        rolling top-up exists to repair, so it must come back as a count of
+        zero rather than as a 500 on ``/grid`` and ``/dashboard``.
+
+        The control is the pair: the refusal is shown FIRING on the same
+        calendar and the same day, so this cannot pass by both doors being
+        lenient.
+        """
+        cal = calendar()
+        past_horizon = date(2026, 2, 27)
+        assert cal.horizon() == date(2026, 2, 26)
+        assert len(cal.current_and_future(past_horizon)) == 0
+        with pytest.raises(PayCalendarError, match="ends before it starts"):
+            cal.overlapping(past_horizon, cal.horizon())
+
+    def test_an_empty_calendar_answers_an_empty_window(self):
+        """An owner with no payday has no paycheck left, which is not an error."""
+        assert len(PayCalendar.from_paydays([], None, 7).current_and_future(
+            date(2026, 1, 2),
+        )) == 0
+
+    @pytest.mark.parametrize("name,paydays,cadence", SHAPES + [
+        # The one shape ``SHAPES`` omits and the only one on which this
+        # claim BITES: an unsaved candidate BETWEEN two saved paydays is
+        # where ``saved()`` legitimately leaves a hole and a slice cannot
+        # (ledger row **P39**).  Naming it in the docstring and not running
+        # it was found by an adversarial review of plan step C4.
+        ("an INTERIOR unsaved candidate", WITH_INTERIOR_UNSAVED, 14),
+    ])
+    def test_the_result_is_a_SUFFIX_of_the_calendar_on_every_shape(
+        self, name, paydays, cadence,
+    ):
+        """A slice of a tiling tiles, so no shape can produce a gapped window.
+
+        The window type refuses a hole, and this producer FILTERS rather than
+        slicing an index range -- so the claim that it cannot leave one rests
+        on the ends ascending with the paydays.  That is asserted directly
+        here, over every shape the payday model can express including the
+        interior unsaved candidate on which ``saved()`` legitimately refuses.
+
+        **Each period is probed on its LAST covered day as well as its first,
+        and the last is what carries the case.**  Probing openings alone made
+        this vacuous against a reader comparing ``start_date``: asking on a
+        payday, "starts on or after it" and "ends on or after it" name the same
+        suffix, and a mutation run measured this test passing on that defect.
+        A period's own end is INSIDE it, so only the end rule keeps it there.
+
+        Args:
+            name: The shape's name, for the failure message.
+            paydays: Its ``(period_id, payday)`` pairs.
+            cadence: Its cadence.
+        """
+        cal = calendar(paydays, cadence)
+        for period in cal.periods:
+            expected = [
+                p for p in cal.periods if p.period_index >= period.period_index
+            ]
+            for probe in (period.start_date, period.end_date):
+                assert list(cal.current_and_future(probe)) == expected, (
+                    name, period.period_index, probe,
+                )
+
+
 class TestTheWindowTypeEnforcesItsOwnTwoInvariants:
     """Ledger rows **P24** and **P32**, made properties of the type (C2-c).
 

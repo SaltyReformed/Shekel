@@ -45,6 +45,7 @@ from app.models.transfer import Transfer
 from app.schemas.validation.pay_periods import CADENCE_DAYS_FORM_MIN
 from app.services import (
     pay_period_admin,
+    pay_period_rolling,
     pay_period_write,
     pay_schedule_service,
     transfer_service,
@@ -938,7 +939,7 @@ class TestACoverageWithdrawalIsAccepted:
             )
             db.session.commit()
 
-            created = pay_period_admin.top_up_rolling_window(
+            created = pay_period_rolling.top_up_rolling_window(
                 user_id, as_of=date(2026, 1, 5),
             )
             db.session.commit()

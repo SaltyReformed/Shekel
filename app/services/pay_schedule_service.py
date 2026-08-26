@@ -60,6 +60,54 @@ def get_schedule(user_id: int) -> PaySchedule | None:
     )
 
 
+def reread_schedule(user_id: int) -> PaySchedule:
+    """Return the user's schedule row, RE-READ rather than remembered.
+
+    **For a caller that has taken the per-user advisory lock after loading the
+    row and must not trust what it loaded** (plan step **C4**).  Every writer
+    of ``cadence_days`` takes that lock, so a batch committing between a
+    caller's first read and its lock acquisition leaves the caller's instance
+    stale by exactly one write -- which matters wherever the cadence decides a
+    figure, because it dictates the LAST pay period's derived end.
+
+    **A second :func:`get_schedule` would NOT fix that, and would read as
+    though it had.**  The query runs, but SQLAlchemy returns the
+    identity-mapped instance with its ORIGINAL attribute values; that is the
+    same trap :func:`upsert_schedule` spells ``populate_existing`` for after
+    its Core upsert, and taking an advisory lock through the session expires
+    nothing either.  Naming the re-read is what keeps the next caller from
+    writing the version that silently does nothing.
+
+    Args:
+        user_id: The owning user's id.
+
+    Returns:
+        The user's :class:`PaySchedule`, with every attribute re-read.
+
+    Raises:
+        ValidationError: The user has no schedule row.  Refused rather than
+            answered ``None`` because this door's callers have ALREADY
+            established that a row exists and hold the lock that protects it;
+            no ``app/`` door deletes one, so absence here is a broken
+            invariant rather than a state to branch on.
+    """
+    schedule = (
+        db.session.query(PaySchedule)
+        .filter_by(user_id=user_id)
+        .populate_existing()
+        .one_or_none()
+    )
+    if schedule is None:
+        raise ValidationError(
+            f"user {user_id} has no budget.pay_schedule row to re-read.  This "
+            f"door is called under the per-user write lock by a caller that "
+            f"has already read one, and no door in app/ deletes a schedule "
+            f"row, so reaching this means the row was removed outside the "
+            f"application."
+        )
+    return schedule
+
+
 def reject_out_of_range_cadence(cadence_days: int) -> None:
     """Refuse a cadence ``ck_pay_schedule_cadence_range`` would refuse.
 

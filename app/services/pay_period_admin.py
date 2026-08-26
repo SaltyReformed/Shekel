@@ -23,22 +23,23 @@ may be deleted or rebuilt.  Truncate and regenerate consult it before
 touching anything; the settings UI renders its result as a per-period
 lock badge.
 
-**No door here DECIDES on an ORM ``PayPeriod`` since plan step C2-f3b**, and
-that is the narrow claim rather than "this module holds none": three of the four
-doors still receive ``list[PayPeriod]`` back from ``pay_period_write`` and hand
-it to ``period_population``, which is the writer's OUTPUT and not an input to
-any decision here.  What each door DECIDES on is the owner's schedule read ONCE
-through ``pay_calendar.calendar_for``, in
-:class:`~app.services.pay_calendar.DerivedPeriod` values -- so no decision here
-reads ``end_date`` or ``period_index``, the two columns plan step **C4** drops.
-What the doors hand the writer is the set of ``budget.pay_periods.id`` values to
-retire; the ORM read that feeds the write lives in that writer.
-``_future_period_count`` is the one query left here naming a dropped column, and
-it is C4's: it sits on the ROLLING TOP-UP, which ``/grid`` and ``/dashboard``
-call BEFORE they open their read pass (deliberately -- the pass must see rows
-this creates), so it cannot share a calendar with one, and deriving a second per
-render is the defect ledger rows **P68** and **P69** record.  Recorded as
-**P70**.
+**The ROLLING TOP-UP left at plan step C4** for
+:mod:`app.services.pay_period_rolling`, and the seam is the one this docstring
+already drew: the four doors here are DESTRUCTIVE and user-initiated, while the
+top-up is an opportunistic appender ``/grid`` and ``/dashboard`` run on every
+render.  Finding **P31** is what forced it -- this module reached 991 of
+pylint's 1,000-line ceiling, so the next correction would have had to delete
+prose to fit, which is that finding's own sentence.
+
+**Nothing here reads ``end_date`` or ``period_index``, the two columns plan step
+C4 drops -- and since C4's FIRST commit that is the WHOLE module rather than the
+narrow claim it was** (finding **P70**).  Every door decides on the owner's
+schedule read once through ``pay_calendar``, in
+:class:`~app.services.pay_calendar.DerivedPeriod` values.  Three of the four
+doors still RECEIVE ``list[PayPeriod]`` back from ``pay_period_write`` and hand
+it to ``period_population`` -- the writer's OUTPUT, not an input to any decision
+here.  What the doors hand the writer is the set of ``budget.pay_periods.id`` to
+retire.
 
 **Each door resolves "today" ONCE, as the OWNER's civil day**
 (``utils.dates.display_today``), and both halves of that are plan step C2-f3b's.
@@ -88,7 +89,6 @@ from app.services import (
     account_posting_service,
     loan_posting_service,
     pay_period_write,
-    pay_schedule_service,
     user_write_lock,
 )
 from app.services._recurrence_common import log_resource_access_denied
@@ -733,118 +733,6 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
     # balance its latest assertion declares.
     account_posting_service.resync_user_account_anchor_postings(user_id)
     return new_periods
-
-
-def top_up_rolling_window(user_id, as_of=None):
-    """Generate periods to keep the rolling window N ahead of today.
-
-    The on-request continuous-mode top-up, called from the grid and
-    dashboard entry points (the only routes that consume future
-    periods).  No scheduler exists, so the window is refilled lazily on
-    page load.
-
-    Cheap and idempotent.  When rolling is disabled (or the user has no
-    schedule row) it does ZERO write work and takes NO lock -- one tiny
-    schedule read.  Otherwise it counts the current-and-future periods
-    (``end_date >= as_of``, which INCLUDES the period containing
-    ``as_of``, so "keep N ahead" counts the current period as one of the
-    N) and, only if short of the target, takes the per-user advisory
-    lock, RE-COUNTS under it (another request may have just filled the
-    window), and appends exactly the deficit via
-    :func:`extend_pay_periods` (which repopulates the new periods).
-
-    Correctness against a duplicate payday comes from
-    ``UNIQUE(user_id, start_date)``; the lock + re-count is the UX
-    layer that lets a racing loser cleanly create nothing instead of
-    hitting that constraint as a 500.
-
-    **It passes no cadence, and that is not a saving of one argument.**  It
-    used to hand ``extend_pay_periods`` the schedule row's own
-    ``cadence_days``, which is exactly what ``resolve_cadence`` answers for an
-    owner who has a row -- and this function returns before the append unless
-    one exists.  A redundant pass-through of a value the callee re-reads is a
-    second place for the two to come apart; plan step C3-b deleted the
-    parameter at every door (finding **P29**).
-
-    Args:
-        user_id: The owning user's id.
-        as_of: Reference date for "current and future".  Defaults to the
-            OWNER's civil day (``utils.dates.display_today``) rather than the
-            process clock, ruled 2026-08-19 with the lock classifier's -- this
-            counts the owner's remaining paychecks, so it is their day that
-            decides how many there are.  Both live callers (``/grid`` and
-            ``/dashboard``) pass none.
-
-    Returns:
-        The number of pay periods created (0 when rolling is disabled,
-        the window is already full, or a concurrent top-up filled it
-        first).
-    """
-    if as_of is None:
-        as_of = display_today()
-
-    schedule = pay_schedule_service.get_schedule(user_id)
-    if schedule is None or not schedule.rolling_enabled:
-        return 0
-
-    target = schedule.rolling_target_periods
-    if _future_period_count(user_id, as_of) >= target:
-        return 0
-
-    # A deficit exists: serialize concurrent top-ups, then re-count under
-    # the lock so a request that lost the race re-reads a now-full window
-    # and creates nothing.
-    user_write_lock.lock_user_writes(user_id)
-    deficit = target - _future_period_count(user_id, as_of)
-    if deficit <= 0:
-        return 0
-
-    # No handler.  This is an opportunistic write on a READ path -- ``/grid``
-    # and ``/dashboard`` call it with no handler of their own -- so anything
-    # raised here is a 500 on both of the app's main screens.
-    #
-    # The FORWARD-ONLY floor passes by construction: the batch continues the
-    # stored cadence and every payday it records falls after the last existing
-    # one.  That is the only refusal this comment can prove, and a first draft
-    # of it claimed all of them -- caught by an adversarial review of the
-    # coverage-rule deletion, which reached the 500 by running it.
-    # ``reject_unmaterialisable_batch`` still refuses a STORED cadence below
-    # ``MIN_MATERIALISABLE_CADENCE_DAYS``, and ``ck_pay_schedule_cadence_range``
-    # admits 1, so a legacy owner holding one 500s here on both screens,
-    # permanently.  That is ledger row **pay_calendar:P33**, owned by C4 -- the
-    # step that drops the stored ``end_date`` this floor exists to protect and
-    # legalises a one-day cycle -- and it is NOT swallowed here meanwhile,
-    # because the state is a schedule this app cannot render rather than a
-    # refusal to shrug off.  The refusal that USED to reach this line (the
-    # coverage rule, deleted 2026-08-11) was swallowed with a WARNING, and an
-    # opportunistic writer needing a swallow was the clearest evidence that
-    # rule did not belong on a read path.
-    return len(extend_pay_periods(user_id, deficit))
-
-
-def _future_period_count(user_id, as_of):
-    """Count the user's current-and-future periods (``end_date >= as_of``).
-
-    Includes the period containing ``as_of`` (the current period), so
-    this is the count the rolling target is compared against: "keep N
-    ahead" counts the current period as one of the N.
-
-    Args:
-        user_id: The owning user's id.
-        as_of: The reference date.
-
-    Returns:
-        The number of periods whose ``end_date`` is on or after
-        ``as_of``.
-    """
-    return (
-        db.session.query(PayPeriod.id)
-        .filter(
-            PayPeriod.user_id == user_id,
-            PayPeriod.end_date >= as_of,
-        )
-        .count()
-    )
 
 
 def _regenerate_keep_through_period(
