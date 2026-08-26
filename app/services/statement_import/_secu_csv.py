@@ -16,8 +16,19 @@ else: no database, no clock, no request, no matching.
   carries up to 96 characters including the merchant, and the CSV description
   STARTS WITH the OFX name on 306 of 306 shared lines -- the same statement,
   one of them cut short.
-* The CSV carries the bank's own category and, when the export option is
-  ticked, a per-line RUNNING BALANCE.  The OFX carries neither.
+* The CSV carries the bank's own category and, where the export offers it, a
+  per-line RUNNING BALANCE.  The OFX carries neither.  **SECU stopped offering
+  that column** between the developer's 2026-07-19 and 2026-08-16 pulls, and
+  the boundary is exactly there: the 07-19 pull on disk carries ``Running
+  Balance`` (and a ``Daily Balance`` twin of the same statement), while every
+  pull from 2026-08-16 onward carries no balance column at all -- their header
+  is ``Date, Account, Account Number, Account Type, Description, Check #,
+  Category, Memo, Credit, Debit``.  Both shapes are therefore live on this
+  developer's disk, which is why the column is READ where present and
+  PRESCRIBED nowhere (plan step ``bank_import:X-gc``).  **A first census for
+  that step looked only in the top level of ``~/Downloads`` and reported that
+  no export carried the column at all**; the four chained files are one
+  directory down.
 * The OFX's one advantage is ``FITID``.  It buys nothing measurable: the
   positional identity key reproduced the ``FITID`` key exactly across two
   exports twelve days apart (:func:`~._line.group_key`).
@@ -29,8 +40,8 @@ they occupy the SAME column index with DIFFERENT meanings: index 10 reads
 where the latter is populated only on each day's last line.  A positional read
 silently reinterprets one as the other -- and on a span whose days each hold a
 single transaction it would pass every check while meaning something else.
-:func:`_bind_columns` refuses ``Daily Balance`` by name and says which option to
-tick.
+:func:`_bind_columns` refuses ``Daily Balance`` by name and names an export
+this adapter CAN read.
 
 **The file states itself twice more, and BOTH are required here.**  A CSV export
 ends with a TOTALS row -- ``Category`` reading ``Totals:``, a ``Memo`` reading
@@ -38,7 +49,8 @@ ends with a TOTALS row -- ``Category`` reading ``Totals:``, a ``Memo`` reading
 trap: it parses as a transaction and would import as a fabricated
 ``+$43,597.96`` / ``-$43,213.56`` line dated nowhere.  The gift: it grades the
 parse.  **This adapter REFUSES a file without it**, because it is the only
-cross-check that survives when the running-balance option is not ticked -- and
+cross-check that survives on a file carrying no running balance -- which is
+every export SECU has published since 2026-08-16 -- and
 it is the last row of the file, which is exactly what a truncated or interrupted
 download loses.  All six of the developer's real exports carry it.
 
@@ -238,9 +250,10 @@ def _bind_columns(header: "list[str]") -> "dict[str, int]":
     if _RUNNING_BALANCE not in index and _DAILY_BALANCE in index:
         raise StatementParseError(
             f"This export carries a '{_DAILY_BALANCE}' column, which states "
-            f"only each DAY's closing balance and not each line's.  Re-export "
-            f"with '{_RUNNING_BALANCE}' instead, so the import can check the "
-            f"file against itself.  Nothing was imported."
+            f"only each DAY's closing balance and not each line's, so it "
+            f"cannot be read as one.  Re-export with no balance column at "
+            f"all: a file carrying none imports fine, and its own 'Totals:' "
+            f"row still checks the parse.  Nothing was imported."
         )
     bound = {name: index[name] for name in _REQUIRED_COLUMNS}
     if _RUNNING_BALANCE in index:

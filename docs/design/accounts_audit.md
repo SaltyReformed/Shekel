@@ -146,7 +146,8 @@ shows all account types, not just savings, and `/accounts` is a separate managem
   `inline_anchor_update`, optimistic `version_id` lock, `app/routes/accounts/anchor.py:50-198`), and
   edit / archive / unarchive / hard-delete routes (`accounts/crud.py:285-646`). Hard-delete is
   fresh-login gated (`@fresh_login_required()`, `crud.py:505`) and confirmed through the shared
-  `data-confirm` modal (`app/static/js/app.js:447-471`).
+  `data-confirm` modal (`app/static/js/confirm.js`, loaded in `<head>` since plan step
+  `bank_import:X-gc`).
 - **Divergence:** management is a second screen reached from the dashboard, and the mobile balance
   cell is deliberately read-only there (`accounts/list.html` note) to avoid double-rendering the
   editable cell.

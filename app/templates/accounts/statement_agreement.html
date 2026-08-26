@@ -130,9 +130,9 @@
       <strong>No statement here places a balance on a day</strong>, so the two
       running balances cannot be levelled against each other and the last two
       columns are empty. The day-by-day comparison does not need one -- it
-      compares what moved, which your lines say on their own. To get the
-      balance columns, export once with your bank's running-balance option
-      ticked.
+      compares what moved, which your lines say on their own. The balance
+      columns fill in as soon as one recorded statement states a balance its
+      own lines can reach.
     </p>
     {% else %}
     <p class="mb-0 small text-muted">
@@ -150,9 +150,11 @@
       leave a gap between it and them. Import the missing span and they fill in.
       {% endif %}
       {% if anchor_assumed %}
-      <strong>Nothing has confirmed that figure</strong>, so the whole bank
-      column could be uniformly wrong by however much it is out. Export once
-      with your bank's running-balance option ticked and it can be checked.
+      Nothing has confirmed that figure, so the whole bank column could be
+      uniformly wrong by however much it is out. Only a statement that proves
+      its own balance -- one carrying a running balance beside every line --
+      can confirm it; a later statement continuing from this one inherits its
+      strength rather than raising it.
       {% endif %}
       {% if agreement.constant_offset is not none and agreement.constant_offset != 0 %}
       <br>

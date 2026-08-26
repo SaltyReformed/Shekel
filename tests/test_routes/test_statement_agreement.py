@@ -57,6 +57,33 @@ def _day_url(account_id, day):
     return f"/accounts/{account_id}/statements/agreement/day?day={day}"
 
 
+def _an_account_with_no_anchor(db, seed_user):
+    """Return a second cash account holding a statement that states no balance.
+
+    The books-vs-bank page renders its two balance paragraphs in mutually
+    exclusive states, so a test that has to read BOTH needs two accounts.  This
+    is the state both of the developer's first two real imports are in.
+
+    Args:
+        db: The session fixture.
+        seed_user: The seeded user bundle.
+
+    Returns:
+        The staged :class:`~app.models.account.Account`.
+    """
+    account = Account(
+        user_id=seed_user["user"].id,
+        account_type_id=seed_user["account"].account_type_id,
+        name="Second Checking",
+    )
+    db.session.add(account)
+    db.session.flush()
+    _seed_import(
+        db, account, stated=None, lines=[(date(2026, 3, 2), "-60.00")],
+    )
+    return account
+
+
 def _row_for(body, day):
     """Return the rendered ``<tr>`` for one day of the table.
 
@@ -272,6 +299,44 @@ class TestThePageSaysWhatTheStepIsOBLIGEDToSay:
 
         assert b"Nothing has confirmed that figure" in response.data
         assert b"uncorroborated" in response.data
+
+    def test_NEITHER_paragraph_prescribes_the_export_option_SECU_dropped(
+        self, auth_client, db, seed_user, seed_periods,
+    ):
+        """Plan step X-gc: this page told the owner to tick an option twice.
+
+        Both of its balance paragraphs ended in "export once with your bank's
+        running-balance option ticked" -- the no-anchor one, to explain how to
+        fill the two empty columns, and the assumed-anchor one, to explain how
+        the figure could be checked.  SECU removed that option; all four of the
+        developer's exports on disk 2026-08-25 carry no balance column at all.
+
+        **Both states are driven in one test because they are ONE defect** --
+        the same dead instruction, twice -- and each arm renders only in its
+        own state, so a single-state test would grade half of it.
+        """
+        _seed_import(
+            db, seed_user["account"], stated="1000.00",
+            effective_on=date(2026, 3, 3), evidence=_UNCORROBORATED,
+            lines=[(date(2026, 3, 3), "-40.00")],
+        )
+        db.session.commit()
+        with_anchor = auth_client.get(
+            _url(seed_user["account"].id)
+        ).get_data(as_text=True)
+
+        # ...and the other arm, on an account whose file states no balance.
+        other = _an_account_with_no_anchor(db, seed_user)
+        db.session.commit()
+        without_anchor = auth_client.get(
+            _url(other.id)
+        ).get_data(as_text=True)
+
+        assert "Nothing has confirmed that figure" in with_anchor
+        assert "No statement here places a balance on a day" in without_anchor
+        for body in (with_anchor, without_anchor):
+            assert "running-balance option" not in body
+            assert "option ticked" not in body
 
     def test_a_PROVED_anchor_is_not_captioned_as_an_assumption(
         self, auth_client, db, seed_user, seed_periods,

@@ -80,14 +80,24 @@ from ._integrity import opening_balance
 class ImportedBalance:
     """A file's balance CLAIM and what the import made of it, as one value.
 
-    **Its four fields are the four columns, and its nullability is their three
-    CHECK constraints** -- ``ck_statement_imports_stated_balance_paired``,
-    ``ck_statement_imports_balance_evidence_paired`` and
+    **Four of its five fields are the four columns, and their nullability is
+    the three CHECK constraints** -- ``ck_statement_imports_stated_balance_
+    paired``, ``ck_statement_imports_balance_evidence_paired`` and
     ``ck_statement_imports_anchor_needs_a_claim``.  One value rather than four
     parameters threaded through the door, its receipt and the page, because
-    every one of those surfaces needs the same four facts together and a
-    reader that had to test them separately would be re-deriving what the
-    schema already states.
+    every one of those surfaces needs the same facts together and a reader that
+    had to test them separately would be re-deriving what the schema already
+    states.
+
+    **The fifth, :attr:`day_is_solved`, is stored NOWHERE and that is a stated
+    limit rather than an oversight** (plan step ``bank_import:X-gc``).  It
+    records HOW this import reached its day, which only the resolve knows, and
+    it is not derivable afterwards: an assumed day is
+    ``min(period_end, stated_balance_on)``, and a SOLVED day can land on that
+    same value by coincidence, so a reader comparing the stored columns would
+    call a proven placement a guess.  So the receipt -- which holds this value
+    -- can say it and the imports TABLE, which reads stored rows, cannot.
+    Giving it a column is a schema decision this step did not take.
 
     Attributes:
         stated: The figure the file's header claims, verbatim.
@@ -102,12 +112,30 @@ class ImportedBalance:
             :class:`~app.enums.StatementBalanceEvidenceEnum` member -- the
             WEAKEST link in the chain behind it.  ``None`` exactly when
             :attr:`effective_on` is.
+        day_is_solved: Whether :attr:`effective_on` was WORKED OUT from a
+            balance the app already held, rather than assumed.  ``False`` for
+            an unplaced figure and for the third arm of :func:`resolve_anchor`,
+            which has nothing to solve against and takes the file's last line.
+
+            **The two are not the same quality of fact, and the evidence ladder
+            does not separate them.**  ``uncorroborated`` is minted BOTH by a
+            solve against an unconfirmed opening -- where the day is proven and
+            only the chain behind the figure is weak -- and by the arm that
+            guesses the day outright.  A receipt reading the level alone
+            reports those identically, which is what
+            :func:`~app.routes.accounts.statements._import_flash` was measured
+            doing on 2026-08-25: the developer's 2026-01-02..2026-03-31 export,
+            whose header names a day **145 days** past its last line and
+            `$255.41` from what its own 139 lines imply, reported as an
+            ordinary success when it was an account's FIRST import.  Ruling **R-GN**
+            (2026-08-25): a guessed day is what earns the warning.
     """
 
     stated: Decimal
     stated_on: date
     effective_on: date | None
     evidence: StatementBalanceEvidenceEnum | None
+    day_is_solved: bool = False
 
     @property
     def is_anchored(self) -> bool:
@@ -400,6 +428,8 @@ def resolve_anchor(
         reach the day it claims gets a value with ``effective_on`` and
         ``evidence`` both ``None`` -- the claim recorded, the anchor
         undetermined, which is the honest absence rather than a guess.
+        :attr:`~ImportedBalance.day_is_solved` says which of the three arms
+        answered: the first two WORK OUT a day, the third assumes one.
 
     Raises:
         StatementBalanceUnexplained: When the file carries a per-line running
@@ -429,6 +459,7 @@ def resolve_anchor(
             **claim,
             effective_on=solved,
             evidence=StatementBalanceEvidenceEnum.FILE_CHAIN,
+            day_is_solved=True,
         )
     if recorded is not None:
         # What the account already holds decides, and no failure to solve is
@@ -441,13 +472,21 @@ def resolve_anchor(
             **claim,
             effective_on=solved,
             evidence=None if solved is None else recorded.evidence,
+            day_is_solved=solved is not None,
         )
     # Nothing constrains it, which is what a FIRST import is.  The figure is
     # taken as the balance after the file's last line -- what the bank means
     # when nothing is pending -- bounded by the day the header names, because
     # a balance cannot be effective on a day the bank had not reached.
+    #
+    # **This arm ASSUMES a day rather than solving one, and it says so**
+    # (``day_is_solved=False``, the constructor's default made explicit here
+    # because this is the one place the answer is False for a PLACED figure).
+    # Its evidence level cannot carry that: the arm above mints the same
+    # ``uncorroborated`` for a day it PROVED against an unconfirmed opening.
     return ImportedBalance(
         **claim,
         effective_on=min(lines[-1].posted_on, stated_balance_on),
         evidence=StatementBalanceEvidenceEnum.UNCORROBORATED,
+        day_is_solved=False,
     )

@@ -247,11 +247,12 @@ def resolve_loan(
             ``loan_payment_settings``; ``Decimal("0.00")`` when none), applied
             to every forward month of the committed schedule so the payoff date,
             total interest, and forward balances reflect the real plan (step 8).
-            The summary read path (``balance_at._resolution.resolved_loan``) loads
-            it centrally via
-            :func:`recurring_transfer_query.loan_standing_extra_for_account` and
-            threads it into the resolve; a direct caller (e.g. the ``date.max``
-            probe) may leave it ``0.00``.
+            The summary read path (``balance_at._resolution.resolved_loan``)
+            loads the loan's WHOLE standing payment centrally via
+            :func:`recurring_transfer_query.standing_payment` -- the forward
+            plan needs the definition and not just this field of it, since plan
+            step R7d-a -- and threads this term into the resolve; a direct
+            caller (e.g. the ``date.max`` probe) may leave it ``0.00``.
 
     Returns:
         A :class:`LoanState` with the four resolver fields.

@@ -17,7 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from app.extensions import db
 from app.models.loan_payment_settings import LoanPaymentSettings
 from app.models.transfer_template import TransferTemplate
-from app.services.loan_payment_service import loan_payment_config
+from app.services.recurring_transfer_query import loan_payment_config
 from tests._test_helpers import create_account_of_type
 
 

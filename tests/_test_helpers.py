@@ -4592,6 +4592,95 @@ def make_transfer_template(db_session, seed_user, to_account, amount="200.00"):
     return template
 
 
+def make_loan_payment_template(
+    db_session, seed_user, loan_account, amount="200.00", *,
+    derive_from_loan=True, extra_principal="0.00", cadence=None,
+    fires_on_day=None,
+):
+    """Create the recurring transfer a LOAN payment actually is.
+
+    :func:`make_transfer_template`'s loan-shaped sibling, and the difference is
+    the ``budget.loan_payment_settings`` row.  ``routes/loan/payment_transfer.py``
+    writes one on every loan payment IT creates -- it is what carries the MODE
+    (``derive_from_loan``) and the standing overpayment -- so a fixture pointing
+    the generic builder at a loan builds a definition the LOAN's own door would
+    never leave behind.
+
+    **A settings-less recurring transfer into a loan is still REACHABLE**, and
+    an adversarial review of plan step R7d-a corrected an earlier version of
+    this paragraph that said otherwise: ``POST /transfers`` offers every active
+    account as a destination and attaches no settings row
+    (``routes/transfers/templates.py``), and production holds ZERO
+    ``loan_payment_settings`` rows, so it is the state the developer's own two
+    loans are in.  What is unreachable is that state arising from the loan
+    dashboard's create-transfer button, which is the door these fixtures stand
+    in for.
+
+    **It went unnoticed while nothing read the definition for an unmaterialised
+    installment.**  R7d-a made the forward plan price every installment no row
+    covers from the loan's own standing payment, so the generic builder's
+    arbitrary base -- ``$200.00``, named "To Savings" -- started meaning "this
+    is what the owner pays the mortgage", and six tests whose docstrings state
+    the CONTRACTUAL figure began asserting against a loan being paid a fifth of
+    it.  The numbers were right; the fixture was not.
+
+    Defaults to DERIVE mode, which is what the loan dashboard's own
+    create-transfer button writes: the payment IS the loan's P&I plus escrow
+    plus any standing extra, so the *amount* is a snapshot and no test has to
+    keep it in step with the loan's terms.  Pass ``derive_from_loan=False`` to
+    build the MANUAL payment an owner types a figure for.
+
+    Args:
+        db_session: The test ``db.session``.
+        seed_user: The ``seed_user`` fixture dict (supplies the owner and the
+            checking account the payment leaves from).
+        loan_account: The destination loan account.
+        amount: The template's stored ``default_amount``.  In derive mode this
+            is the snapshot a generated row carries and the live derivation
+            supersedes; in manual mode it is the figure the owner stated.
+        derive_from_loan: The settings row's mode.
+        extra_principal: The settings row's standing monthly overpayment.
+        cadence: The :class:`~tests.oracles.recurrence_baseline.ShapeCadence`
+            to author.  ``None`` -- the default -- authors the every-paycheck
+            rule :func:`make_transfer_template` authors, which is what the
+            fixtures this replaced carried.  A loan payment created through
+            ``routes/loan/payment_transfer.py`` is MONTH-unit, so a test about
+            that door states ``MONTHLY`` here.
+        fires_on_day: The day of the month a calendar *cadence* first fires on,
+            forwarded to :func:`make_cadence_rule`.
+
+    Returns:
+        The flushed ``TransferTemplate``, its ``recurrence_rule`` set.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.models.loan_payment_settings import LoanPaymentSettings
+    from app.models.transfer_template import TransferTemplate
+
+    template = TransferTemplate(
+        user_id=seed_user["user"].id,
+        from_account_id=seed_user["account"].id,
+        to_account_id=loan_account.id,
+        name=f"Loan Payment {loan_account.id}",
+        default_amount=Decimal(amount),
+    )
+    # Attached through the relationship so it flushes with the template, the
+    # way the route attaches it.
+    template.settings = LoanPaymentSettings(
+        derive_from_loan=derive_from_loan,
+        extra_principal=Decimal(extra_principal),
+    )
+    db_session.add(template)
+    db_session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    if cadence is None:
+        make_every_period_rule(db_session, template)
+    else:
+        make_cadence_rule(template, cadence, fires_on_day=fires_on_day)
+    return template
+
+
 def make_appreciating_account(seed_user, db_session, anchor_period, balance, rate):
     """Create a Property account (APPRECIATING) with AssetAppreciationParams.
 

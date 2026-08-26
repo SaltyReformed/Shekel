@@ -712,7 +712,7 @@ def _loan_payment_answer(txn, basis: AmountBasis) -> Decimal:
     """Rule 4: a loan payment's shadow is worth what the loan says it costs.
 
     Two arms, one per MODE, and the mode is read off the settings row
-    (``loan_payment_service.loan_payment_config``) rather than inferred from
+    (``recurring_transfer_query.loan_payment_config``) rather than inferred from
     which map the row turned up in:
 
     * **derive mode** -- the cash is P&I plus the escrow in effect on the
@@ -770,7 +770,7 @@ def _loan_payment_answer(txn, basis: AmountBasis) -> Decimal:
     # this module's load path, the same reason ``amount_basis`` imports it at
     # call time.
     # pylint: disable=import-outside-toplevel
-    from app.services.loan_payment_service import loan_payment_config
+    from app.services.recurring_transfer_query import loan_payment_config
     derive, extra = loan_payment_config(txn.transfer.template)
     if derive:
         live = basis.loans.derive_cash(

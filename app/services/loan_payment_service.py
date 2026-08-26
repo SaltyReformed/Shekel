@@ -67,6 +67,7 @@ from app.services.loan_loaders import (
     loan_payment_due_date,
     query_shadow_income,
 )
+from app.services.recurring_transfer_query import loan_payment_config
 from app.utils.balance_predicates import is_projected
 from app.utils.money import round_money
 
@@ -700,43 +701,6 @@ def _manual_shadow_amount(
     if not isinstance(base, Decimal):
         base = Decimal(str(base))
     return round_money(base + extra_principal)
-
-
-def loan_payment_config(template: TransferTemplate) -> tuple[bool, Decimal]:
-    """Return ``(derive_from_loan, extra_principal)`` for a transfer template.
-
-    The single accessor for a recurring transfer's loan-payment settings
-    (:class:`~app.models.loan_payment_settings.LoanPaymentSettings`, decision B),
-    which live in a 1:1 table rather than on the generic template.  A template
-    with NO settings row is not a loan payment: ``derive_from_loan`` defaults
-    ``False`` and ``extra_principal`` ``Decimal("0.00")``, so the live-derive and
-    overpayment machinery stays dormant for every investment contribution and
-    generic transfer.  The ``settings`` relationship must already be loaded by
-    the caller (the readers ``joinedload`` it) so this stays a pure in-memory
-    read with no N+1.
-
-    **It became PUBLIC at plan step X-au-b**, and the alternative was a second
-    copy.  The amount resolver
-    (:mod:`app.services.cash_ledger._amount_source`) has to know which MODE a
-    loan payment is in before it can price it -- a derive-mode payment resolves
-    from the loan, a manual one from its definition plus this ``extra`` -- and
-    reading ``template.settings`` there would be a second spelling of the
-    row-absent defaults this function exists to state once.  An adversarial
-    review found the resolver answering a manual payment two different ways for
-    want of exactly this.
-
-    Args:
-        template: The :class:`~app.models.transfer_template.TransferTemplate`
-            whose loan-payment settings to read.
-
-    Returns:
-        ``(derive_from_loan, extra_principal)`` -- the settings row's values, or
-        ``(False, Decimal("0.00"))`` when the template has no settings row.
-    """
-    settings = template.settings
-    if settings is None:
-        return False, Decimal("0.00")
-    return settings.derive_from_loan, Decimal(str(settings.extra_principal))
 
 
 @dataclass(frozen=True)

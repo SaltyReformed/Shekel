@@ -76,21 +76,21 @@ exists to end.
 
 4. **Every document is capped, and a cap is a FORCING FUNCTION rather than a ceiling sized to fit
    the work.** Raising a cap is not the answer when it binds; rule 5 is. Current caps live in the
-   gate's own constants. *(No registry was capped at all until 2026-08-11 -- rule 3's sentence one
-   rule over -- and `ledger.md` had reached 166 rows unforced.)*
-   **`ledger.md` is the ONE exception and carries no LINE cap** (developer ruling 2026-08-25): one
-   finding is one line there, so the cap capped how many defects the project was allowed to have
-   MEASURED, and the fourth time it bound it pushed two into code docstrings --
-   **a gate may not refuse to record a defect somebody has measured.** Holding it instead: the
-   per-ROW cap below, a runaway backstop, and rule 3 on the BACKLOG, stated per arc in its header
-   and gate-checked, so the pile is READ rather than bumped into. Rule 5 could never relieve it:
-   rule 1 already guarantees no row names a shipped step, so a completed span has always already
-   left. **`ledger.md` also has a per-ROW cap, rule 14's twin for the ledger** -- a row had reached
-   3,536 characters against a 409-character median, which is the arc document's argument living in
-   the registry. **The overflow goes to the OWNING STEP's specification**, never deletion.
+   gate's own constants. *(No registry was capped until 2026-08-11; `ledger.md` had reached 166.)*
+   **`ledger.md` and `steps.md` carry no LINE cap** (developer rulings, both 2026-08-25), on ONE
+   argument made twice: a line cap on a registry holding ONE LINE PER THING caps how many of that
+   thing the project may have -- defects MEASURED, leaves DECOMPOSED -- so **a gate may not refuse
+   to record a defect somebody has measured, or work somebody has decomposed.** The ledger's was
+   raised three times and the fourth time it bound it pushed two findings into code docstrings; the
+   index's bound on `recurrence:R7d`'s seven-leaf split, with no shipped row free to archive.
+   Holding them: a per-ROW cap each (the ledger's below, the index's rule 14's description cap), a
+   runaway backstop each, and rule 3's counts, which with rule 14's dense ranks are what a file's
+   length was ever a proxy for. **The ledger's per-ROW cap is rule 14's twin**: a row had reached
+   3,536 characters against a 409-character median -- the arc document's argument living in the
+   registry -- and **the overflow goes to the OWNING STEP's specification**, never deletion.
    **`lessons.md` is capped too, and its retirement path is its own**: a lesson MECHANIZED into a
-   gate stops being a lesson, and its line moves to that gate's rationale. An append-only file
-   nobody finishes reading loses its lessons as completely as deleting them would.
+   gate stops being a lesson and its line moves to that gate's rationale, because an append-only
+   file nobody finishes reading loses its lessons as completely as deleting them would.
 
 5. **The only legal way back under a cap is to archive a COMPLETED span**, condensed to one line per
    step: its id, its commit and what it closed. Never trim a live step's specification to fit.
