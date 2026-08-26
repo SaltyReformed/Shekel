@@ -30,7 +30,12 @@ from app.models.scenario import Scenario
 from app.models.transaction import Transaction
 from app.models.user import User, UserSettings
 from app.services.auth_service import hash_password
-from app.services import account_service, pay_period_admin, pay_schedule_service
+from app.services import (
+    account_service,
+    pay_period_admin,
+    pay_period_rolling,
+    pay_schedule_service,
+)
 from tests._test_helpers import assert_pay_period_invariants, linked_ledger_total
 from app.services import cash_ledger
 from app.utils.dates import display_today
@@ -579,7 +584,7 @@ class TestConcurrentRollingTopUp:
         self._enable_rolling(db.session, user_id, target=5)
 
         def _topup():
-            created = pay_period_admin.top_up_rolling_window(user_id)
+            created = pay_period_rolling.top_up_rolling_window(user_id)
             db.session.commit()
             return created
 
@@ -618,7 +623,7 @@ class TestConcurrentRollingTopUp:
         self._enable_rolling(db.session, user_id, target=5)
 
         def _topup():
-            pay_period_admin.top_up_rolling_window(user_id)
+            pay_period_rolling.top_up_rolling_window(user_id)
             db.session.commit()
 
         def _extend():

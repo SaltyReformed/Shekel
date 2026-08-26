@@ -1,0 +1,182 @@
+"""
+Shekel Budget App -- The rolling pay-period window.
+
+The ONE opportunistic, non-destructive schedule writer, split out of
+``pay_period_admin`` at plan step **C4** (ledger row **P31**).  That module
+holds the four DESTRUCTIVE doors -- extend, truncate, regenerate, reset -- each
+of which a user initiates and each of which can take money's paycheck away from
+it.  This one is none of those things: nothing asks for it, ``/grid`` and
+``/dashboard`` call it on every render, and all it may do is APPEND paydays the
+owner's own stored cadence already implies.
+
+**The split is a SHAPE rather than a size fix, and the size is how it was
+found.**  ``pay_period_admin``'s own module docstring named its subject as "the
+lock classifier and extend / truncate / regenerate" and did not mention the
+top-up, which is the seam stated and then not drawn.  It stood at 991 of
+pylint's 1,000-line ceiling, so plan step C4's first commit -- ONE reader moved
+off a dropped column -- could not fit, and the room would have come from
+deleting prose.  That is finding **P31** exactly: "answered the ceiling by
+trimming prose rather than by having a shape".
+
+Flask-isolated, like the module it left: it takes and returns plain data, never
+imports ``request`` / ``session``, and never commits (the route owns the
+transaction).  It DECIDES and delegates -- every row it adds goes through
+``pay_period_admin.extend_pay_periods`` and thence ``pay_period_write``, the one
+place in ``app/`` that changes ``budget.pay_periods``.  The dependency runs one
+way: this module imports that one, and nothing there reaches back.
+
+**Nothing here reads ``end_date`` or ``period_index``**, the two columns plan
+step C4 drops, which is the property ``TestTheDestructiveDoorsHoldNoDerivedColumn``
+grades over both modules.
+"""
+
+from datetime import date
+
+from app.services import pay_period_admin, pay_schedule_service, user_write_lock
+from app.services.pay_calendar import calendar_at_cadence
+from app.utils.dates import display_today
+
+
+def top_up_rolling_window(user_id, as_of=None):
+    """Generate periods to keep the rolling window N ahead of today.
+
+    The on-request continuous-mode top-up, called from the grid and
+    dashboard entry points (the only routes that consume future
+    periods).  No scheduler exists, so the window is refilled lazily on
+    page load.
+
+    Cheap and idempotent.  When rolling is disabled (or the user has no
+    schedule row) it does ZERO write work and takes NO lock -- one tiny
+    schedule read.  Otherwise it counts the current-and-future periods
+    (those whose DERIVED end falls on or after ``as_of``, which INCLUDES
+    the period containing ``as_of``, so "keep N ahead" counts the current
+    period as one of the N) and, only if short of the target, takes the
+    per-user advisory lock, RE-READS the schedule and RE-COUNTS under it
+    (another request may have just filled the window or moved the
+    cadence), and appends exactly the deficit via
+    :func:`~app.services.pay_period_admin.extend_pay_periods` (which
+    repopulates the new periods).
+
+    Correctness against a duplicate payday comes from
+    ``UNIQUE(user_id, start_date)``; the lock + re-count is the UX
+    layer that lets a racing loser cleanly create nothing instead of
+    hitting that constraint as a 500.
+
+    **It passes no cadence, and that is not a saving of one argument.**  It
+    used to hand ``pay_period_admin.extend_pay_periods`` the schedule row's own
+    ``cadence_days``, which is exactly what ``resolve_cadence`` answers for an
+    owner who has a row -- and this function returns before the append unless
+    one exists.  A redundant pass-through of a value the callee re-reads is a
+    second place for the two to come apart; plan step C3-b deleted the
+    parameter at every door (finding **P29**).
+
+    Args:
+        user_id: The owning user's id.
+        as_of: Reference date for "current and future".  Defaults to the
+            OWNER's civil day (``utils.dates.display_today``) rather than the
+            process clock, ruled 2026-08-19 with the lock classifier's -- this
+            counts the owner's remaining paychecks, so it is their day that
+            decides how many there are.  Both live callers (``/grid`` and
+            ``/dashboard``) pass none.
+
+    Returns:
+        The number of pay periods created (0 when rolling is disabled,
+        the window is already full, or a concurrent top-up filled it
+        first).
+    """
+    if as_of is None:
+        as_of = display_today()
+
+    schedule = pay_schedule_service.get_schedule(user_id)
+    if schedule is None or not schedule.rolling_enabled:
+        return 0
+
+    target = schedule.rolling_target_periods
+    if _future_period_count(user_id, schedule.cadence_days, as_of) >= target:
+        return 0
+
+    # A deficit exists: serialize concurrent top-ups, then re-count under
+    # the lock so a request that lost the race re-reads a now-full window
+    # and creates nothing.
+    user_write_lock.lock_user_writes(user_id)
+    # The schedule is RE-READ under the lock for the same reason the count is
+    # re-taken: it was loaded before the lock, the only writer of
+    # ``cadence_days`` takes this lock, and the count derives the LAST
+    # period's end from that cadence -- so a stale one moves a period in or
+    # out of the answer.  ``reread_schedule`` rather than ``get_schedule``
+    # because the identity map would otherwise return the original values;
+    # that door's docstring carries the argument.  The target is read from
+    # the same re-read row, so the deficit is one snapshot rather than two.
+    schedule = pay_schedule_service.reread_schedule(user_id)
+    deficit = schedule.rolling_target_periods - _future_period_count(
+        user_id, schedule.cadence_days, as_of,
+    )
+    if deficit <= 0:
+        return 0
+
+    # No handler.  This is an opportunistic write on a READ path -- ``/grid``
+    # and ``/dashboard`` call it with no handler of their own -- so anything
+    # raised here is a 500 on both of the app's main screens.
+    #
+    # The FORWARD-ONLY floor passes by construction: the batch continues the
+    # stored cadence and every payday it records falls after the last existing
+    # one.  That is the only refusal this comment can prove, and a first draft
+    # of it claimed all of them -- caught by an adversarial review of the
+    # coverage-rule deletion, which reached the 500 by running it.
+    # ``reject_unmaterialisable_batch`` still refuses a STORED cadence below
+    # ``MIN_MATERIALISABLE_CADENCE_DAYS``, and ``ck_pay_schedule_cadence_range``
+    # admits 1, so a legacy owner holding one 500s here on both screens,
+    # permanently.  That is ledger row **pay_calendar:P33**, owned by C4 -- the
+    # step that drops the stored ``end_date`` this floor exists to protect and
+    # legalises a one-day cycle -- and it is NOT swallowed here meanwhile,
+    # because the state is a schedule this app cannot render rather than a
+    # refusal to shrug off.  The refusal that USED to reach this line (the
+    # coverage rule, deleted 2026-08-11) was swallowed with a WARNING, and an
+    # opportunistic writer needing a swallow was the clearest evidence that
+    # rule did not belong on a read path.
+    return len(pay_period_admin.extend_pay_periods(user_id, deficit))
+
+
+def _future_period_count(user_id: int, cadence_days: int, as_of: date) -> int:
+    """Count the user's current-and-future periods (those not ended by *as_of*).
+
+    Includes the period containing ``as_of``, so this is the count the rolling
+    target is compared against: "keep N ahead" counts the current period as one
+    of the N.  The rule is
+    :meth:`~app.services.pay_calendar.PayCalendar.current_and_future`.
+
+    **It DERIVES the ends rather than reading them** (plan step C4, finding
+    **P70**): this was the module's last query naming a column plan step C4
+    drops -- ``PayPeriod.end_date >= as_of``, counted in SQL -- and no period
+    end is named here now at all, which is the property
+    ``TestTheDestructiveDoorsHoldNoDerivedColumn`` grades.
+
+    **It loads at the cadence the caller HOLDS rather than calling**
+    :func:`~app.services.pay_calendar.calendar_for`, which would re-read the
+    schedule row :func:`top_up_rolling_window` already has.  It cannot take a
+    read pass's calendar instead -- ``/grid`` and ``/dashboard`` run the top-up
+    BEFORE they open one, deliberately, so that pass sees the rows this
+    creates.
+
+    **What that costs, stated rather than absorbed** (adversarial review,
+    2026-08-25).  It is the same ONE query the ``COUNT(*)`` was, and the
+    schedule read ledger rows **P68** and **P69** record is not doubled -- but
+    the render now runs the DERIVATION twice, where the SQL count ran it not at
+    all.  That second derivation is unavoidable while the top-up precedes the
+    pass, so it is pinned rather than removed:
+    ``test_one_read_pass_per_render.test_a_rolling_owner_derives_TWICE_and_that_is_the_bound``
+    holds it at exactly two.  Its cost is a payday set and N frozen dataclasses
+    rather than one integer -- 62 rows on production, immaterial there and
+    growing with an owner's history, which is the axis nothing bounds.
+
+    Args:
+        user_id: The owning user's id.
+        cadence_days: Days between paydays, from the caller's own schedule row.
+            Read only for the LAST period's end, so a wrong one can move
+            exactly one period in or out of this count.
+        as_of: The reference date.
+
+    Returns:
+        The number of periods whose DERIVED end is on or after ``as_of``.
+    """
+    return len(calendar_at_cadence(user_id, cadence_days).current_and_future(as_of))
