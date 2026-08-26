@@ -487,15 +487,16 @@ no NULL-the-column census can see because the difference is in what the next sav
 leaf unless named. `_recurrence_preview` is NOT one -- it composes from `request.args` and its
 control is `disabled` when locked, so it renders "never ends" already. Ruling **R-R34**.
 
-**What the resolver deletes.** Nine of the ten `sync_recurring_payment_bounds` call sites go whole
--- `params.py:330` / `:448`, `escrow_rates.py:170`, `payment_transfer.py:251` / `:277` / `:344` /
-`:418`, `_loan_posting.py:306` / `:387` -- and with them the double sync at create, the "idempotent
-WITHIN a day" caveat, and the stale bound D35 measures. **The census is of the CLOSING bound only**:
-all ten also call `_sync_loan_cadence`, whose write repairs three shapes a `payment_day` edit misses
--- `create_params` calls no sync, a PAY-SCHEDULE change moves a `PERIOD`-unit rule's resolved bound
-(**D39**'s shape), and a cadence-unit edit moves `nominal_day`. After R7d the opening bound has
-THREE writers: `params.py:190`, `bind_rule_to_loan` at `payment_transfer.py:250` and
-`transfers/_instances.py:222`. Decide what repairs those three before deleting the path.
+**What the resolver deletes.** Nine of the ten `sync_recurring_payment_bounds` call sites go
+whole -- `params.py:330` / `:448`, `escrow_rates.py:170`, `payment_transfer.py:251` / `:277` /
+`:344` / `:418`, `_loan_posting.py:306` / `:387` -- and with them the double sync at create, the
+"idempotent WITHIN a day" caveat, and the stale bound D35 measures.
+**The census is of the CLOSING bound only**: all ten also call `_sync_loan_cadence`, whose write
+repairs three shapes a `payment_day` edit misses -- `create_params` calls no sync, a PAY-SCHEDULE
+change moves a `PERIOD`-unit rule's resolved bound (**D39**'s shape), and a cadence-unit edit moves
+`nominal_day`. After R7d the opening bound has THREE writers: `params.py:190`, `bind_rule_to_loan`
+at `payment_transfer.py:250` and `transfers/_instances.py:222`. Decide what repairs those three
+before deleting the path.
 
 **`owns_validity_window` SPLITS; it is not deleted.** It is one predicate because
 `_recurrence_form_refusals` states ONE writer owns both bounds -- a premise R-R29 makes false. It
@@ -630,8 +631,8 @@ that has none. Whatever this step rules, it states the value honestly at both si
       stored row's date would move at all -- only which paycheck the occurrence places into.
       **RULED 2026-08-16 (R-R26)**: "non-business day" is weekends plus the eleven US federal
       holidays DERIVED as rules rather than seeded as rows, which needs no per-year migration and
-      composes with the nth-weekday machinery R8-c builds. The shift applies to the CASH date only
-      -- a bill due Aug 1 paid Friday because Aug 1 is a Sunday still satisfies the Aug 1
+      composes with the nth-weekday machinery R8-c builds. The shift applies to the CASH date
+      only -- a bill due Aug 1 paid Friday because Aug 1 is a Sunday still satisfies the Aug 1
       installment, so `due_on` is never shifted. `RecurrenceSpec` carries no `shift` field today and
       `resolve` hardcodes `NONE`; 46 of 46 live rules carry `none`. Finding **F-4** (the PAY
       SCHEDULE's own holiday shift) is a different question and stays separate.
@@ -757,10 +758,10 @@ nothing; that record names all three hashes, and says why `R-F1` stayed.
 
 `budget.pay_schedule` holds one fact, `cadence_days`, and every payday is a fixed-length walk from
 the anchor. Semi-monthly pay is not: it is the 1st and the 15th (or the 15th and the last day), and
-`round(365.2425 / 15) = 24` gives an owner the right COUNT with paydays that drift through the month
--- Jan 1, Jan 16, Jan 31, Feb 15. **Monthly already carries the identical limitation** (a 30-day
-walk is not "the 1st"), and pay-calendar finding **F-4** records that `pay_periods` stores NOMINAL
-paydays generally, so this is one shape rather than a semi-monthly special case.
+`round(365.2425 / 15) = 24` gives an owner the right COUNT with paydays that drift through the
+month -- Jan 1, Jan 16, Jan 31, Feb 15. **Monthly already carries the identical limitation** (a
+30-day walk is not "the 1st"), and pay-calendar finding **F-4** records that `pay_periods` stores
+NOMINAL paydays generally, so this is one shape rather than a semi-monthly special case.
 
 The step gives the schedule a cadence KIND -- fixed-days, or one/two days of the month -- and
 branches THREE producers on it: `pay_period_write.record_paydays` (which spaces a batch),
@@ -810,6 +811,7 @@ option survives. **11 of the developer's 12 live deductions carry `24`**, the mo
 least, so the migration has real rows to re-express.
 
 **Its own ruling first**: whether the mode becomes a `ref` table, whether "skip the 3rd paycheck"
-generalises to "skip the Nth" or is retired, and what the three live values become. No figure moves
--- nothing computes from the number -- so it is a migration and a form change rather than a money
-step. Sequenced behind **R14**, which re-opens the same table for what a deduction is PRICED from.
+generalises to "skip the Nth" or is retired, and what the three live values become. No figure
+moves -- nothing computes from the number -- so it is a migration and a form change rather than a
+money step. Sequenced behind **R14**, which re-opens the same table for what a deduction is PRICED
+from.

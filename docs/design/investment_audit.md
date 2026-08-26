@@ -476,9 +476,9 @@ balance at horizon $X". Verified live: $82,145.47.
 
 Developer-accepted 2026-07-06 on the real Empower 401(k) (both themes). The whole rebuild -- band
 grammar, the growth chip reconciling to the cent (+$119.22 on $181.59 contributed), the
-projection_end verdict state ($82,145.47), the two acceptance-drive bug fixes, and the kernel split
--- is accepted. The investment / retirement detail page is the LAST account type in the Fable 5
-overhaul; all account types now carry the Steel Ink + cockpit treatment. Committed to `dev`; ships
+projection_end verdict state ($82,145.47), the two acceptance-drive bug fixes, and the kernel
+split -- is accepted. The investment / retirement detail page is the LAST account type in the Fable
+5 overhaul; all account types now carry the Steel Ink + cockpit treatment. Committed to `dev`; ships
 to prod with the next `dev` -> `main` PR.
 
 Accepted implementation note (not a defect): the on-page balance true-up is the click-to-edit

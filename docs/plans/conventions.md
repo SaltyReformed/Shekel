@@ -36,10 +36,10 @@ shapes.
 **A step's SPECIFICATION is argument, not registry.** `steps.md` carries the ORDER and one sentence
 per step; the 82 open specifications in one file would be ~1,150 lines, which is the master document
 this structure exists to avoid.
-**The sentence is not a stub of the specification, it is the whole answer to "what is this step"**
--- rule 14 grades it, because an index that answers that question with a fragment sends the reader
-to a second document to learn what they came for, which is the cross-referencing this structure
-exists to end.
+**The sentence is not a stub of the specification, it is the whole answer to "what is this step"** --
+rule 14 grades it, because an index that answers that question with a fragment sends the reader to a
+second document to learn what they came for, which is the cross-referencing this structure exists to
+end.
 
 ## The rules
 
@@ -76,18 +76,17 @@ exists to end.
 
 4. **Every document is capped, and a cap is a FORCING FUNCTION rather than a ceiling sized to fit
    the work.** Raising a cap is not the answer when it binds; rule 5 is. Current caps live in the
-   gate's own constants. *(No registry was capped until 2026-08-11; `ledger.md` had reached 166.)*
-   **`ledger.md` and `steps.md` carry no LINE cap** (developer rulings, both 2026-08-25), on ONE
-   argument made twice: a line cap on a registry holding ONE LINE PER THING caps how many of that
-   thing the project may have -- defects MEASURED, leaves DECOMPOSED -- so **a gate may not refuse
-   to record a defect somebody has measured, or work somebody has decomposed.** The ledger's was
-   raised three times and the fourth time it bound it pushed two findings into code docstrings; the
-   index's bound on `recurrence:R7d`'s seven-leaf split, with no shipped row free to archive.
-   Holding them: a per-ROW cap each (the ledger's below, the index's rule 14's description cap), a
-   runaway backstop each, and rule 3's counts, which with rule 14's dense ranks are what a file's
-   length was ever a proxy for. **The ledger's per-ROW cap is rule 14's twin**: a row had reached
-   3,536 characters against a 409-character median -- the arc document's argument living in the
-   registry -- and **the overflow goes to the OWNING STEP's specification**, never deletion.
+   gate's own constants. **`ledger.md` and `steps.md` carry no LINE cap** (developer rulings, both
+   2026-08-25), on ONE argument made twice: a line cap on a registry holding ONE LINE PER THING caps
+   how many of that thing the project may have -- defects MEASURED, leaves DECOMPOSED -- so **a gate
+   may not refuse to record a defect somebody has measured, or work somebody has decomposed.** The
+   ledger's was raised three times and the fourth time pushed two findings into code docstrings; the
+   index's bound on `recurrence:R7d`'s seven-leaf split with no shipped row free to archive. Holding
+   them: a per-ROW cap each (the ledger's below, the index's rule 14's description cap), a runaway
+   backstop each, and rule 3's counts, which with rule 14's dense ranks are what a file's length was
+   ever a proxy for. **The ledger's per-ROW cap is rule 14's twin**: a row had reached 3,536
+   characters against a 409-character median, the arc document's argument living in the registry,
+   and **the overflow goes to the OWNING STEP's specification**, never deletion.
    **`lessons.md` is capped too, and its retirement path is its own**: a lesson MECHANIZED into a
    gate stops being a lesson and its line moves to that gate's rationale, because an append-only
    file nobody finishes reading loses its lessons as completely as deleting them would.
@@ -159,12 +158,13 @@ exists to end.
     **The acyclicity arm is why this rule exists.** "`R6` ships WITH `X-an`" was carried by three
     documents until 2026-08-09, when building `X-an`'s first leaf showed it unsatisfiable: `R6`
     reads a column `R5` creates, and `R5` waits on `X-f4`, three steps behind `X-an` with a
-    moves-money PR between them. `steps.md` had recorded `R6 blocked by balance:X-an`, and nothing
+    moves-money PR between them. `steps.md` had recorded `R6 blocked by balance:X-an` and nothing
     reconciled the two --
     **the column was parsed into `StepRow.blocked` and never read by any arm**, so every edge in it
     was decoration. An unsatisfiable ordering claim is not a scheduling preference; it is work that
-    cannot be done in the order the plan states. **A DECOMPOSITION is NOT an edge in that column**
-    -- rule 2 already puts it in the id -- but it is graded by a sixth arm:
+    cannot be done in the order the plan states.
+    **A DECOMPOSITION is NOT an edge in that column** -- rule 2 already puts it in the id -- but it
+    is graded by a sixth arm:
     **a step that DECLARES itself "the DECOMPOSED parent" may not be SHIPPED while a leaf is open**,
     which is rule 2's own sentence made a predicate. The parent set is DECLARED and only the leaf
     set is derived, and that asymmetry is the design: deriving BOTH by id prefix claims `R-F1` as

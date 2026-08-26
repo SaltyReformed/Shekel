@@ -188,9 +188,9 @@ Decided 2026-07-02 (developer ruling). Locked.
    copy simply points at the cockpit's editor is a Loop A presentation call.
 6. **Layout direction: A "Cockpit band"** (Loop A round-1 pick, 2026-07-02): hero + horizon chips
    - trend chart in one banded canvas, continuing the dashboard/cockpit hero-band grammar.
-   Round 2 explores where the promoted parameters surface lives (resident card below the band vs inline
-   in the band) and gives the checking variant an "Open grid" call to action, since the grid is
-   checking's detail home.
+   Round 2 explores where the promoted parameters surface lives (resident card below the band vs
+   inline in the band) and gives the checking variant an "Open grid" call to action, since the grid
+   is checking's detail home.
 7. **Parameters live in a card BELOW the band** (Loop A round-2 pick, 2026-07-02): the in-band
    variant was rejected as too crowded. Final anatomy, whole family: band = hero + honest anchored
    caption, horizon chips (with the done-tinted "Interest, next 12 mo" chip for `has_interest`
