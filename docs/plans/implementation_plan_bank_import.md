@@ -141,10 +141,10 @@ the constraints it leaves a LATER step are on that step's own entry.
       hand-made row, as ONE list of unexplained bank lines grouped by the DECISION each poses rather
       than the three cards that partition them by MECHANISM -- outflow-that-may-be-recorded,
       outflow-that-is-barred, inflow-that-may-be-recorded -- when the question all three pose is the
-      same: *is this money my books already hold, or is it new?* (**R-HB**).
-      **The hand-build match form moves to a surface of its own** (**R-HC**), on the argument
-      **R-GX** made about the register: it is not an exception, it is the TOOL three exceptions send
-      the owner to, and each of them links to it. Closes **N-374**.
+      same: *is this money my books already hold, or is it new?* (**bank_import:R-HB**).
+      **The hand-build match form moves to a surface of its own** (**bank_import:R-HC**), on the
+      argument **R-GX** made about the register: it is not an exception, it is the TOOL three
+      exceptions send the owner to, and each of them links to it. Closes **N-374**.
       **Measured through the real route on the developer's own data 2026-08-27**, after `X-gf-3a`:
       the review body renders **146,907 bytes** of which that form's two pick lists are
       **89,247, or 61%** -- 22,830 for 27 bank lines and 66,417 for 67 rows -- against 1 unanswered

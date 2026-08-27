@@ -132,6 +132,14 @@ def search_gap(
     already keeps for its crowded days -- rather than this function having to
     be taught about it.
 
+    **Why the answer is per LINE and not a count in a panel**: ruling
+    **R-GD**'s third amendment withdrew the reviewed line's candidate LIST
+    because no bound made one anything but noise -- 0 of 18 inspected correct
+    -- and moved what survives onto the line itself, which is the ground plan
+    step ``bank_import:X-f6d-3`` acted on and ``X-gf-3a`` extended to the rule
+    verdict beside it.  A bound reported in a panel names no line and cannot be
+    acted on.
+
     The three sources, in the order a reader should hear them:
 
     * what a TIER declined about this line, in that tier's own words: a near
