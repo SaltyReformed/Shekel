@@ -783,7 +783,10 @@ hides.
   measured 0 against 4. **But 11 of 36 rows carry no tail id and only 6 of those are rulings**: the
   rest are a `---` separator, a `Shipped / superseded decisions` section label, and rows whose
   subject is a decision recorded elsewhere. So this step CLASSIFIES rows before it parses them; a
-  reader that assumes every table row is a ruling mints ids for separators. Two `app/` docstrings cite a pay-calendar ruling by its PROSE
+  reader that assumes every table row is a ruling mints ids for separators. **The tail rule is a
+  PARSE and not a proof**: it says nothing about those 11, and it holds because every row written so
+  far follows the convention rather than because anything enforces it, so the eyeball pass over the
+  residue is the part that cannot be dropped. One of the 11 is **N-372**. Two `app/` docstrings cite a pay-calendar ruling by its PROSE
   NAME and must gain the minted id in the same commit. It also moves the 23 over-cap rows'
   overflow to their owning steps' specifications, which is rule 4's own remedy.
 * [ ] **X-ao-3** `feat(plan-gate): a bare citation of an ambiguous id fails` -- closes **N-217**,
