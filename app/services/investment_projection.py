@@ -738,7 +738,7 @@ def build_contribution_timeline(
             contribution_date=contribution.payday,
             amount=contribution.amount,
             # Transfer-based: determined by the row's settlement status
-            # (Paid/Settled=True, Projected=False), resolved at the boundary.
+            # (Paid/Received=True, Projected=False), resolved at the boundary.
             is_confirmed=contribution.is_confirmed,
         ))
 

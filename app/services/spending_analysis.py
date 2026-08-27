@@ -109,7 +109,7 @@ def query_settled_expenses(
 ) -> list[Transaction]:
     """Load settled expense transactions for one account over given periods.
 
-    Filters: settled status only (Paid/Received/Settled -- so Cancelled and
+    Filters: settled status only (Paid/Received -- so Cancelled and
     Credit, which are not settled, are excluded), expense type only, not
     deleted, one account, one scenario, and ``pay_period_id`` in
     *period_ids*.  Transfer shadows are included: they are ordinary

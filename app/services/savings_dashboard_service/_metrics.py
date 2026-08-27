@@ -399,7 +399,7 @@ def _recent_settled_expenses_monthly(
     # a row that has SETTLED, which answers from the settlement it RECORDED
     # (plan step X-au-c3) rather than from its plan -- and loads only the rows
     # that are summed.  ``settled_status_ids()`` is exactly the ``is_settled``
-    # set it replaces (``ref_seeds``: Paid, Received, Settled).
+    # set it replaces (``ref_seeds``: Paid, Received).
     recent_txns = (
         db.session.query(Transaction)
         .filter(

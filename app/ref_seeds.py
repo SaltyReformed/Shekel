@@ -102,7 +102,6 @@ _REF_TABLE_SEEDS = (
         {"name": "Received",  "is_settled": True,  "is_immutable": True,  "excludes_from_balance": False},
         {"name": "Credit",    "is_settled": False, "is_immutable": True,  "excludes_from_balance": True},
         {"name": "Cancelled", "is_settled": False, "is_immutable": True,  "excludes_from_balance": True},
-        {"name": "Settled",   "is_settled": True,  "is_immutable": True,  "excludes_from_balance": False},
     ]),
     ("FilingStatus", [
         "single", "married_jointly", "married_separately",

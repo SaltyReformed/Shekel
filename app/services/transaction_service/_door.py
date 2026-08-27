@@ -127,9 +127,15 @@ def apply_requested_status(
     # status changes on the floor** -- measured, not reasoned: a row moving
     # Paid -> Settled (the archive) while carrying a corrected figure recorded
     # the figure, returned, and left the row Paid, answering 200.  The archive
-    # is offered by the popover's own Status dropdown beside the Actual box, so
-    # a user correcting a figure on the way to filing the row away silently got
-    # only half of what they asked for.  The revert direction failed the same
+    # WAS offered by the popover's own Status dropdown beside the Actual box,
+    # so a user correcting a figure on the way to filing the row away silently
+    # got only half of what they asked for.  (That status is deleted at plan
+    # step **balance:X-am**; the measurement is quoted as it was taken.  What it
+    # established is about the DOOR -- two independent facts in one request are
+    # not alternatives -- and the popover still posts a status beside the Actual
+    # box on every Save, so the composition it forced is still live.)
+    #
+    # The revert direction failed the same
     # way one step further out: a service caller reverting a settled row while
     # naming a figure recorded it, posted the ledger difference, and never
     # reverted -- booking money for a row it had just been told had not moved.

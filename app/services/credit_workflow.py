@@ -478,10 +478,15 @@ def unmark_credit(transaction_id, user_id):
          called as a final policy choke point so any future caller
          that adds a new ``Status`` row -- or any code path that
          skips the bespoke guard -- still cannot push a row through
-         an illegal transition.  ``Settled -> Projected`` is the
-         transition the state machine refuses; the bespoke guard
-         above already excludes that case but the redundancy makes
-         the policy explicit at the database boundary.
+         an illegal transition.  **After plan step balance:X-am this
+         verifier can no longer refuse any RECOGNISED status here**, and that
+         is worth stating rather than leaving a reader to find: this call site
+         only ever asks for ``Projected``, and every state in the transaction
+         map now has an edge to it.  What the check still catches is a corrupt
+         current ``status_id``, and a future status added without that edge --
+         which is what defense in depth is for.  It named
+         ``Settled -> Projected`` until X-am deleted that status, and that
+         refusal really did fire here.
 
     Args:
         transaction_id: The ID of the credited transaction.

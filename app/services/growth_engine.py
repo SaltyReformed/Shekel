@@ -82,7 +82,7 @@ class ContributionRecord:
             represents a period where no contribution was made (only
             growth accrues) -- not the same as a missing entry, which
             falls back to periodic_contribution.
-        is_confirmed: True if the contribution is Paid/Settled
+        is_confirmed: True if the contribution is Paid/Received
             (historical fact).  False if Projected (future commitment).
     """
 

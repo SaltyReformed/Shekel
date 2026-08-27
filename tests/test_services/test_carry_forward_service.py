@@ -137,15 +137,18 @@ class TestCarryForwardUnpaid:
             assert txn.pay_period_id == seed_periods[1].id
 
     def test_settled_status_not_moved(self, app, db, seed_user, seed_periods):
-        """Transactions with 'settled' status are not carried forward.
+        """Transactions in the RECEIVED status are not carried forward.
 
-        The 'settled' status was added in WU-05. It is a terminal status
-        (done/received -> settled) and must not be moved.
+        Specimen was ``Settled`` -- the terminal archive added in WU-05 --
+        until plan step **balance:X-am** deleted that status.  Carry-forward
+        moves PROJECTED rows and nothing else (``is_projected_clause``), so
+        every other status is the same specimen; ``Received`` is the one this
+        class was otherwise missing.
         """
         with app.app_context():
             txn = _create_transaction(
-                seed_user, seed_periods, status_name="Settled",
-                name="Settled Bill",
+                seed_user, seed_periods, status_name="Received",
+                name="Received Paycheck",
             )
             original_period_id = txn.pay_period_id
 
@@ -192,14 +195,20 @@ class TestCarryForwardUnpaid:
             assert txn.scenario_id == original_scenario_id
 
     def test_all_statuses_comprehensive(self, app, db, seed_user, seed_periods):
-        """All 6 statuses plus soft-deleted: only non-deleted projected moves.
+        """All 5 statuses plus soft-deleted: only non-deleted projected moves.
 
-        Creates one transaction for each status (projected, done, received,
-        credit, cancelled, settled) plus one projected+deleted. Verifies
-        exactly 1 transaction moves and 6 remain in the source period.
+        Creates one transaction for each status (projected, paid, received,
+        credit, cancelled) plus one projected+deleted. Verifies
+        exactly 1 transaction moves and 5 remain in the source period.
+
+        It was 6 and 6 until plan step **balance:X-am** deleted the terminal
+        ``Settled`` archive.  The list is written out rather than derived from
+        ``StatusEnum`` deliberately: a status added to the enum should make
+        somebody decide whether carry-forward moves it, and a self-updating
+        list would answer that question silently.
         """
         with app.app_context():
-            statuses = ["Projected", "Paid", "Received", "Credit", "Cancelled", "Settled"]
+            statuses = ["Projected", "Paid", "Received", "Credit", "Cancelled"]
             original_ids = {}
 
             for status_name in statuses:
@@ -237,16 +246,16 @@ class TestCarryForwardUnpaid:
             assert len(target_txns) == 1
             assert target_txns[0].name == "Status-Projected"
 
-            # Source period retains 6 transactions (5 non-projected + 1 deleted).
+            # Source period retains 5 transactions (4 non-projected + 1 deleted).
             source_txns = (
                 db.session.query(Transaction)
                 .filter_by(pay_period_id=seed_periods[0].id)
                 .all()
             )
-            assert len(source_txns) == 6
+            assert len(source_txns) == 5
 
             # Verify each non-moved transaction is still in the source.
-            for status_name in ["Paid", "Received", "Credit", "Cancelled", "Settled"]:
+            for status_name in ["Paid", "Received", "Credit", "Cancelled"]:
                 txn = db.session.get(Transaction, original_ids[status_name])
                 assert txn.pay_period_id == seed_periods[0].id, (
                     f"{status_name} transaction should stay in source period"
@@ -1377,7 +1386,7 @@ def _create_envelope_txn(
     that hand-place rows rather than driving the engine.  Defaults to
     the template's default amount and Projected status.
 
-    A row built in a SETTLED status carries the whole record -- the day, the
+    A row built in a settled status carries the whole record -- the day, the
     figure and how that figure is known -- through the one door a bare-built
     fixture uses (``_test_helpers.settlement_columns``); *settled_amount* is a
     figure a human typed, which makes it a ``corrected`` record, and with none
