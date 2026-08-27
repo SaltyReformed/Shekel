@@ -33,15 +33,19 @@ to find.  The 2026-08-16 layer ruling (``pay_calendar:C11``) puts
 ``BalanceContext.build`` at the HTTP boundary and nowhere below it; this module
 is that boundary for the four doors above.
 
-**TWO other write paths in ``app/`` create pay periods and do NOT come here**,
-named so this docstring is a census rather than an impression.
-``auth_service.register_user`` records the new owner's first schedule, which is
-correct twice over: no template can exist yet, and the baseline scenario is
-created AFTER that call, so a repopulation would return 0 on ``ctx.scenario is
-None``.  ``POST /pay-periods/generate`` records a schedule too -- and its
-forward-only rule accepts any payday past the owner's last, so on an owner who
-already has one it is an EXTEND that skips every template.  That is ledger row
-**D57**'s sibling **D58**, PRE-EXISTING and not this step's to fix.
+**FIVE HTTP doors reach this function** -- extend, regenerate, reset, generate,
+and the rolling top-up through ``/grid`` and ``/dashboard`` -- and naming them
+is the census, not an impression.  ``POST /pay-periods/generate`` was the one
+that did NOT until this step: it reads as first-time-only and is not, because
+``record_paydays``' forward-only rule accepts any payday past the owner's last,
+so on an owner who already had a schedule it appended periods and skipped every
+template (ledger row **D58**, pre-existing, closed here).
+
+**ONE write path in ``app/`` creates pay periods and does not come here**, and
+it is correct twice over: ``auth_service.register_user`` records the new
+owner's first schedule, where no template can exist yet AND the baseline
+scenario is created after that call, so a repopulation would return 0 on
+``ctx.scenario is None``.
 
 There is ONE spelling of it here rather than five at the call sites, because
 the ordering rule is one rule and five copies are five places for it to come

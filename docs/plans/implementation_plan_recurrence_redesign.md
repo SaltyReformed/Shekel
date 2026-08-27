@@ -278,20 +278,18 @@ passed with every refusal accepted.
 (`VERIFY_DEV_DATABASE`); the `ref` ids a `TEMPLATE` copy carries are identical either way, which is
 exactly what made the mismatch invisible.
 
-- [ ] **R17 -- a pay period's recurring rows AGREE with its definitions** (findings **D57**,
-      **D58**). Two faces of one key. `should_skip_period` asks whether
-      `(template, period, scenario)` holds a row while the occurrence walk names the period an
-      occurrence's own DATE falls in, so a row moved to a neighbouring paycheck empties the period
-      its occurrence names and the next whole-schedule generate writes a second one; and the
-      GENERATE route appends periods it populates none of.
-      **`pay_calendar:C5b` is the RULED remedy for this predicate** -- row `pay_calendar:P16`,
-      2026-08-09, "make `should_skip_period` occurrence-aware" -- and is its UNDER-generation face,
-      one paycheck owing a template twice, so R17 replaces nothing and must say on shipping what is
-      left for `C5b`. **R5 is the structural fix and R17 is AHEAD of both** (developer, 2026-08-27):
-      `occurs_on` answers "has this occurrence got a row" whatever period holds it, and until then
-      the predicate cannot ask at all. What R17 owes is the interim answer that does not have to be
-      un-taught -- the skip question asked about the OCCURRENCE -- and what a pass does with a row
-      it cannot identify. **MOVES MONEY, OWN PR.**
+- [ ] **R17 -- a MOVED row's period is not RE-FILLED** (**D57** carries the measurement).
+      `should_skip_period` asks whether `(template, period, scenario)` holds a row while the
+      occurrence walk names the period an occurrence's own DATE falls in, so a row moved to a
+      neighbouring paycheck empties the period its occurrence names and the next whole-schedule
+      generate writes a second one. **`pay_calendar:C5b` is the RULED remedy for this predicate** --
+      row `pay_calendar:P16`, 2026-08-09, "make `should_skip_period` occurrence-aware" -- and is its
+      UNDER-generation face, one paycheck owing a template twice, so R17 replaces nothing and must
+      say on shipping what is left for `C5b`. **R5 is the structural fix and R17 is AHEAD of both**
+      (developer, 2026-08-27): `occurs_on` answers "has this occurrence got a row" whatever period
+      holds it, and until then the predicate cannot ask at all. What R17 owes is the interim answer
+      that does not have to be un-taught -- the skip question asked about the OCCURRENCE -- and what
+      a pass does with a row it cannot identify. **MOVES MONEY, OWN PR.**
 
 - [ ] **R5 -- a generated row carries THREE dates, in three places.**
 
@@ -457,10 +455,10 @@ a money-adjacent form) or stays locked for a value nothing stores. R7d-f decides
       call so no caller could get between them.
 
 - [x] **R7d-c-1 -- the generate pass CARRIES the read pass, and the ROUTE opens it.** `61d81c7f`,
-      ruling **R-R38**. `GenerationSchedule` takes a `BalanceContext` and DERIVES its calendar, so
-      the schedule a rule resolves against and the pass its bound resolves in cannot disagree; the
-      extend / regenerate / reset doors RECORD and return, and `routes/_period_population` opens the
-      pass between the paydays and the rows. `$0.00` through all three generate doors.
+      ruling **R-R38**. `GenerationSchedule` takes a `BalanceContext` and DERIVES its calendar, and
+      the five doors that create a pay period RECORD and return, so `routes/_period_population`
+      opens the pass between the paydays and the rows. `$0.00` through all three generate doors.
+      Closed **D58**, found by that caller census: the GENERATE route populated nothing.
 
 - [ ] **R7d-c-2 -- GENERATION takes the resolver.** Both engines' `resolve_generation_plan` applies
       `loan_payment_window`'s answer over the rule's own bound. **MOVES MONEY**: today it creates

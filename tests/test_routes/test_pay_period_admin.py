@@ -11,7 +11,7 @@ future-period setup is deterministic.  See
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -739,17 +739,20 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
     its siblings grade the two halves separately; this grades that the doors
     call both.
 
-    Five doors create a pay period: extend, regenerate and reset directly, and
-    the rolling top-up through ``GET /grid`` and ``GET /dashboard``.
-    ``POST /pay-periods/generate`` is the SIXTH and is deliberately not here.
-    It populates nothing, and **that is a live defect rather than a
-    first-time-only door**: ``record_paydays``' forward-only rule accepts any
-    payday past the owner's last, so on an owner who already has a schedule it
-    appends periods and skips every template -- measured through this same HTTP
-    door at 3 appended periods holding 0 template rows. It is PRE-EXISTING,
-    unchanged by ruling **R-R38**, and filed as ledger row **D58** with a
-    ruling owed on whether the call lands in that route or the door stops
-    accepting the payday. A case here would pin today's defect as behaviour.
+    SIX doors create a pay period through HTTP: extend, regenerate, reset and
+    generate directly, and the rolling top-up through ``GET /grid`` and
+    ``GET /dashboard``. The sixth, ``POST /pay-periods/generate``, populated
+    NOTHING until this step -- ledger row **D58**, pre-existing and found by
+    censusing the writers R-R38 split. It reads as a first-time-only door and
+    is not: ``record_paydays``' forward-only rule accepts any payday past the
+    owner's last, so on an owner who already had a schedule it appended
+    periods and skipped every template, measured through this same HTTP door
+    at 3 appended periods holding 0 template rows.
+
+    The seventh writer, ``auth_service.register_user``, has no HTTP door of
+    its own here and is correct as it stands: no template can exist at
+    registration, and the baseline scenario is created after that call, so a
+    repopulation would return 0 on ``ctx.scenario is None``.
     """
 
     _AMOUNT = Decimal("1200.00")
@@ -878,6 +881,46 @@ class TestEveryDoorThatCreatesAPeriodPopulatesIt:
             periods = all_periods(seed_user["user"].id)
             assert len(periods) == 4
             self._assert_each_period_holds_the_rent(db.session, periods)
+
+    def test_the_generate_route_populates_what_it_appends(
+        self, app, db, auth_client, seed_user,
+    ):
+        """POST /pay-periods/generate fills the periods it records.
+
+        **Ledger row D58, and the fixture is the shape that made it a defect
+        rather than a no-op**: the owner ALREADY has a schedule and an active
+        template, which is the state ``record_paydays``' forward-only rule
+        admits and which this door used to append into without generating a
+        row. A brand-new owner cannot exercise it -- nothing to generate.
+        """
+        with app.app_context():
+            _future_periods(db.session, seed_user, count=3)
+            make_expense_template(db.session, seed_user, amount="1200.00")
+            db.session.commit()
+            before = {p.id for p in all_periods(seed_user["user"].id)}
+            latest = max(p.start_date for p in all_periods(seed_user["user"].id))
+
+            resp = auth_client.post(
+                "/pay-periods/generate",
+                data={
+                    "start_date": (latest + timedelta(days=14)).isoformat(),
+                    "num_periods": "3",
+                    "cadence_days": "14",
+                },
+            )
+            assert resp.status_code == 302
+
+            db.session.expire_all()
+            appended = [
+                p for p in all_periods(seed_user["user"].id)
+                if p.id not in before
+            ]
+            assert len(appended) == 3, (
+                f"the door appended {len(appended)} periods, not 3; the "
+                f"forward-only rule must have refused, and then this case "
+                f"grades nothing"
+            )
+            self._assert_each_period_holds_the_rent(db.session, appended)
 
     def _rolling_deficit(self, db_session, seed_user, target=5):
         """A rolling owner short of *target*, holding an every-period template."""

@@ -32,8 +32,8 @@ beside them count ROWS THAT STEP MUST DEAL WITH rather than rulings it will cont
 only ONE of pay_calendar's 33 carries an id of its own -- and `credit_card` (8) spells it as a
 numbered LIST under a heading. Those 79 need ids MINTED and prose parsed row by row rather than
 lifted, and a first pass mis-attributed four recurrence ids by regex, which is why they are their
-own step. **The two nouns do not compose**: five of recurrence's 36 are not rulings at all
-(**balance:N-372**), so lifting it adds nearer 31 plus 6 minted, and pay_calendar's 33 has had no
+own step. **The two nouns do not compose**: five of recurrence's 38 are not rulings at all
+(**balance:N-372**), so lifting it adds nearer 33 plus 6 minted, and pay_calendar's 33 has had no
 such classification yet. The gate reconciles this sentence against the registry AND the arc
 documents both ways, so an arc cannot sit half moved.
 

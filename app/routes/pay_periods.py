@@ -93,6 +93,20 @@ def generate():
             num_periods=data["num_periods"],
             cadence_days=data["cadence_days"],
         )
+        # POPULATE, like every other door that creates a pay period (ruling
+        # **R-R38**), and this door needed saying out loud: it reads as
+        # first-time-only and is not.  ``record_paydays``' forward-only rule
+        # accepts any payday AFTER the owner's last, so on an owner who
+        # already has a schedule this behaved as an extend that skipped every
+        # template -- measured through this route at 3 appended periods
+        # holding 0 template rows, with "Generate pay periods" one click away
+        # in the main nav on every screen.  That was ledger row **D58**, found
+        # by censusing the five writers this step split and closed here.
+        #
+        # A genuinely NEW owner is unaffected twice over: no template can
+        # exist yet, and this route is reachable only once they have an
+        # account, so the pass finds nothing to generate.
+        populate_new_periods(current_user.id, periods)
     except ValidationError as exc:
         # Forward-only rule (ruling R-PC1, plan step C3-b): a payday that would
         # land BETWEEN two existing ones is rejected.  Surfaced on the
@@ -105,11 +119,12 @@ def generate():
         # the date one is what is left.  Widen either field and this line
         # starts rendering a cadence message under the date box.
         #
-        # The rollback is what makes the 422 clean.  ``record_paydays`` now
-        # runs every refusal BEFORE its first durable statement, so there is
-        # nothing staged to discard on this path -- but the response below
-        # re-renders a form, and a rendered response should not sit on a unit
-        # of work whose emptiness depends on reading the writer.
+        # The rollback is what makes the 422 clean.  ``record_paydays`` runs
+        # every refusal BEFORE its first durable statement, so nothing is
+        # staged when IT is the raiser -- but the populate above it can raise
+        # after flushing, and the response below re-renders a form, which
+        # should not sit on a unit of work whose emptiness depends on reading
+        # a writer.
         db.session.rollback()
         return render_template(
             "pay_periods/generate.html",
