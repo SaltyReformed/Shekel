@@ -1,10 +1,12 @@
 """Score the app's rendered cash balance against the BANK's own daily closing.
 
-The instrument behind ruling **R-GW** (``docs/audits/balance_architecture/README.md``
+The instrument behind ruling **balance:R-GW** (``docs/audits/balance_architecture/README.md``
 Section 4), and it exists as a committed script rather than as a number in a
 planning document because ``conventions.md`` rule 6 says a measurement is named
 by its COMMAND: a figure copied into prose goes stale invisibly, and the four
-places R-GW's evidence appears would each have gone stale separately.
+places that ruling's evidence appears would each have gone stale separately.
+**Cited with its ARC** because `bank_import:R-GW` was minted the same day on
+another branch: a bare id here names two rulings, which is finding **N-367**.
 
 **What it answers.**  Two arms, over the days an account's records and a bank
 export both cover:
