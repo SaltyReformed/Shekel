@@ -43,13 +43,13 @@ side: both were unblocked and they shared no file.
 pairing two inside one arc, check that neither names a module the other deletes. A row marked
 **MOVES MONEY** takes its own PR either way, so it is never the second lane.
 
-**The rank is a DECISION, not a derivation.** 65 of these steps are legal to start right now, so the
+**The rank is a DECISION, not a derivation.** 66 of these steps are legal to start right now, so the
 dependency graph alone cannot say which comes next; the sequence below follows each arc's own stated
 sequencing -- the balance README's ten blocks, and each plan's section 0.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**172 steps, 137 open.** The dependency graph holds 102 edges over 67 rows.
+**174 steps, 138 open.** The dependency graph holds 102 edges over 67 rows.
 
 ## The order
 
@@ -113,8 +113,8 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | balance | X-e | -- | Re-take the census the column deletions made historical, then resolve what remains: two callerless public seam entries and a falsified de-duplication rationale. Carries **N-96**, **N-85**, **N-180**. | #56 | -- | NOW |
 | balance | X-ab | -- | Give the posting path ONE asset-vs-liability rule instead of asking X-z's question a second time, and decide what a re-class does to accounts already carrying postings. Closes **N-122**. | #57 | -- | NOW |
 | balance | X-ac | -- | Stop the cockpit reducing `_sum_liquid_balances` twice per render and publishing the answer under two context keys. Closes **N-121**. | #58 | -- | NOW |
-| balance | X-ao-2 | -- | Lift the remaining 77 rulings -- `recurrence`'s 36 and `pay_calendar`'s 33, whose ids sit in PROSE beside cross-references to other rulings, and `credit_card`'s 8, which are a numbered LIST -- MINTING an id for each of the 45 that have none, and move the 23 over-cap rows' overflow to their owning steps' specifications. Closes **balance:N-370**. | #59 | -- | NOW |
-| balance | X-ao-3 | -- | Grade every ruling CITATION so a bare id that two arcs both define fails, which is what makes `(arc, id)` safe rather than merely legal, over the 1,763 bare citations in `app/` and the 654 in live `docs/`. Closes **N-217**, **N-367**. | #60 | -- | after #59 / balance:X-ao-2 |
+| balance | X-ao-2b | -- | Re-home the argument of every `rulings.md` row over the 2,000-character cap -- 25 rows holding 43,855 characters of overflow -- to the AS-BUILT record of the step that shipped the ruling, or to that step's live specification where it has not shipped (**balance:R-HD**), deleting `LIFTED_ROWS_OVER_CAP` with the last of them. Closes **balance:N-370**. | #59 | -- | NOW |
+| balance | X-ao-3 | -- | Grade every ruling CITATION so a bare id that two arcs both define fails, which is what makes `(arc, id)` safe rather than merely legal, over the 1,763 bare citations in `app/` and the 654 in live `docs/`. Closes **N-217**, **N-367**. | #60 | -- | NOW / balance:X-ao-2a (shipped; the citation arm needs every ruling in the registry, which is the lift and not the overflow) |
 | balance | X-ag | -- | Build the instrument that refuses lax digit acceptance, shown FIRING on a planted defect; both earlier method-name designs were refuted by measurement. Closes **N-139**. | #61 | -- | NOW |
 | balance | X-ah | -- | Rule each of the 34 `request.args.get(..., type=int)` sites and parse them like every other id, with a second rule that admits a meaningful zero. Closes **N-142**. | #62 | -- | NOW |
 | balance | X-bb | -- | Close the plan gate's loop on its OWN corpus in five arms -- a control may not derive its specimen from a live row, a value the gate derives may not be restated in prose beside itself, and an archive reference must resolve in BOTH directions -- because every arm grades the planning documents and nothing grades the gate against them. Closes **N-355**-**N-357**, **N-366**, **N-367**. | #63 | -- | NOW |
@@ -186,6 +186,7 @@ the order is workable.
 
 | arc | id | also | what this step does | order | commit | starts |
 | --- | --- | --- | --- | --- | --- | --- |
+| balance | X-ao-2 | -- | The DECOMPOSED parent of the last three arcs' lift, split 2026-08-27 (**balance:R-HB**) because the step's own sentence carried two nouns and only the first is a lift: the rulings move, and then the argument of every over-cap row goes home. | container | -- | ticks with #59 |
 | balance | X-ao | -- | The DECOMPOSED parent of the rulings registry: the arc documents' RULINGS tables were spelled THREE ways across five documents and `tools/plan_gate` parsed none of them, so a ruling id resolving to two rulings was invisible to every gate. | container | -- | ticks with #60 |
 | bank_import | X-gf | -- | The DECOMPOSED parent of the review-screen rebuild, split 2026-08-27 into the disposition hole its model leaves open, the queue-versus-register split, and the exception queue proper. Carries **N-358**, **N-349** and **N-359**. | container | -- | ticks with #6 |
 | bank_import | X-gd | -- | Promote a stated merchant answer from a suggestion to a standing RULE (**R-GI**), which the developer decomposed on 2026-08-25 into the merchant's own identity and the store that keys on it. | SHIPPED | `d1910c95` | -- |
@@ -198,6 +199,7 @@ the order is workable.
 | balance | X-ad | -- | The DECOMPOSED parent of the pay calendar a new user can actually enter, split 2026-08-10 (**R-EZ**) into the door that CREATES a calendar and the door that GROWS it. | container | -- | ticks with #35 |
 | balance | X-i | -- | The DECOMPOSED parent of the one-read-pass work: nine ledger rows with one root cause. | container | -- | ticks with #116 |
 | balance | X-i3 | -- | The DECOMPOSED parent of the one-snapshot work, split 2026-08-26 when the trace refuted WHERE the snapshot is taken -- the boundary is the REQUEST rather than the read pass -- ticked with X-i3-b, its last leaf. | SHIPPED | `1feb0930` | -- |
+| balance | X-ao-2a | -- | The last three arcs' rulings became rows in `rulings.md` keyed `(arc, id)` -- 81 lifted, 51 ids MINTED -- and the map of arcs that had not moved was DELETED for a predicate on a ruling DECLARATION's shape, which needs no arc to have been remembered. Closes **N-372**; opened **N-376**, **N-377**. | SHIPPED | `91f95f43` | -- |
 | balance | X-l | pay_calendar:C2 / recurrence:R-F12 | The DECOMPOSED parent under its BALANCE name of "the pay calendar answers any date". Closed **N-128** (at `C2-c`). It claimed **N-82** and **N-79**'s far half and delivered NEITHER, so both were re-pointed at the tick rather than closed. | SHIPPED | `4f134bf4` | -- |
 | pay_calendar | C2 | balance:X-l / recurrence:R-F12 | The DECOMPOSED parent under its PAY-CALENDAR name: one calendar value answers every "which period" question, RULED on three forks 2026-08-10. | SHIPPED | `4f134bf4` | -- |
 | recurrence | R-F12 | pay_calendar:C2 / balance:X-l | The DECOMPOSED parent under its RECURRENCE name: one `PeriodCalendar`, not three period-containing searches. Closes **F-12**. | SHIPPED | `4f134bf4` | -- |
