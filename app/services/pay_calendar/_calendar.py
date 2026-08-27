@@ -125,11 +125,14 @@ draft of this paragraph claimed otherwise (ledger row **P24**).
 1,000-line ceiling has twice measured.  At plan step **C2-c** the shared
 SEARCHES moved to :mod:`._searches` and the view type to :mod:`._window`; at
 plan step **C2-f3b** the five VIEW PRODUCERS moved to :mod:`._views` and the
-forward projection to :func:`~._derive.project_period_after`, this file standing
-at 999 of the 1,000 permitted -- ONE line of headroom (ledger row **P64**; the
-1002 that row records was a transient inside C2-f3a's build, resolved before
-that commit, and an earlier draft of this sentence read it as a committed
-state).  The dependency runs one way through
+forward projection to :func:`~._derive.project_period_after` (ledger row
+**P64**; the 1002 that row records was a transient inside C2-f3a's build,
+resolved before that commit, and an earlier draft of this sentence read it as a
+committed state).  **No line count is quoted here, and that is the correction
+plan step R16-b-1 made**: this paragraph claimed "999 of the 1,000 permitted --
+ONE line of headroom" and the file had been 890 for some time, so a stale number
+was arguing for a constraint that was not binding.  ``pylint`` measures it on
+every commit; a copy in prose does not.  The dependency runs one way through
 all five -- ``_derive`` -> ``_searches`` -> ``_window`` -> ``_views`` -> this --
 so a search, a view producer, a view and the calendar itself cannot answer one
 question differently.
