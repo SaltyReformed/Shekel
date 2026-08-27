@@ -156,7 +156,7 @@ the constraints it leaves a LATER step are on that step's own entry.
       review body from 578,523 bytes to 149,103 and `review_set` from 146 SQL statements to 7, a
       cost the IMPORT path paid too. Closed **N-358** -- three by-id reads of RENDERED user data
       became composite-FK relationships, so the account travels in the JOIN and `accepted_groups`
-      fell from 139 statements to 7 -- and **N-349**. Opened **N-371**, **N-372**.
+      fell from 139 statements to 7 -- and **N-349**. Opened **bank_import:N-371**, **N-372**.
 - [ ] **X-gf-3** `feat(import): the review is an exception queue` -- what remains once the register
       leaves: contested lines, group residuals and every proposal touching a hand-made row, ordered
       by what the decision IS. Closes **N-359**: a line a standing rule WOULD have filed and the
