@@ -126,7 +126,7 @@ def envelope_answer_key(
     **The one spelling of "the same envelope this answer means"**, and it lives
     here beside :class:`NewEnvelope` because the two callers are in different
     packages' modules: :class:`~._create.MintedEnvelopes` writes it as a press
-    mints envelopes, and :func:`~._reads._marked_joining` reads it to say which
+    mints envelopes, and :func:`~._leftovers._marked_joining` reads it to say which
     line CREATES and which JOINS.  A first version spelled the tuple twice, in
     those two modules, which is exactly the silent drift a key stated once
     prevents -- a mismatch converges nothing and raises nothing.
@@ -316,4 +316,68 @@ class CreatedPurchase:  # pylint: disable=too-many-instance-attributes
     amount: Decimal
     posts_on: date
     made_on: date
+    pay_period_id: int
+
+
+@dataclass(frozen=True)
+class IncomeCreation:
+    """What the owner submitted to record one bank line as an income row.
+
+    Ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``.  **One id and nothing
+    else**, and the emptiness is the design rather than a stub: a purchase
+    needs a container to be filed against and asks the owner which
+    (:class:`PurchaseCreation`), while a deposit reserves nothing, so there is
+    no arm to choose between and no name or category to state.  The figure and
+    the day come from the recorded LINE inside the same transaction, so a stale
+    page cannot commit a number the bank did not state.
+
+    **It is a value rather than a bare id, for the reason its sibling is one**:
+    the batch carries two lists of acts, and a list of ints beside a list of
+    submissions is a shape a caller can pass to the wrong door.  Whose account
+    this is, is the :class:`~._scope.ReviewScope`'s -- one statement, which the
+    route proved once.
+
+    Attributes:
+        line_id: The bank line to record.
+    """
+
+    line_id: int
+
+
+@dataclass(frozen=True)
+class RecordedIncome:
+    """What recording one bank line as an income row did.
+
+    Ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``.  :class:`CreatedPurchase`
+    without the container half and without the second clock: the row this act
+    creates is filed under nothing and IS the movement, so it has neither a
+    budget line to name nor a day it was "made" apart from the day the bank
+    credited it.
+
+    Attributes:
+        transaction_id: The ``budget.transactions`` row now holding the
+            movement, born uncategorized so the ledger books it to the
+            per-owner Uncategorized fallback.
+        match_id: The ``budget.statement_matches`` act recording that this line
+            IS that row, so the line stops being unexplained and a re-import
+            does not re-offer it.
+        label: What the row is called on screen, as the candidate constructor
+            renders it -- taken from the priced row rather than recomposed, so
+            the receipt names what the grid will show.
+        amount: The row's signed cash effect, POSITIVE -- what the bank paid
+            in.  Already the bank's own direction, so a receipt prints it
+            without a second convention.
+        posts_on: The day the bank credited it, which is the row's settle day
+            and the day its pay period is resolved from.
+        pay_period_id: The period the row is budgeted in, which is the period
+            holding :attr:`posts_on`.  Carried out rather than re-derived,
+            because it was resolved once BEFORE the write and a second
+            derivation is how two answers to one question get made.
+    """
+
+    transaction_id: int
+    match_id: int
+    label: str
+    amount: Decimal
+    posts_on: date
     pay_period_id: int

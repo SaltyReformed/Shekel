@@ -81,7 +81,8 @@ from app.extensions import db
 from ._accept import accept_match
 from ._bars import CreationBars
 from ._create import MintedEnvelopes, create_purchase_from_line
-from ._creations import PurchaseCreation
+from ._creations import IncomeCreation, PurchaseCreation
+from ._income import record_income_from_line
 from ._scope import ReviewScope
 from ._submission import MatchSubmission
 
@@ -140,6 +141,14 @@ class ReviewedBatch:
             submitted -- they are the same act and reach the same door, so they
             are one list rather than two.
         creations: The bank lines the owner named a destination for.
+        incomes: The bank lines of money COMING IN the owner ticked to record
+            (ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``).  **Its own
+            list beside *creations*, because they reach different doors and
+            write different shapes**: a purchase is filed against a container
+            the submission names, and an income row is filed against nothing
+            and names only its line.  One list discriminated by the sign of a
+            figure the submission does not carry would have to read the
+            database to know which door an item meant.
         consent: Who agreed to these acts (:class:`Consent`, ruling **R-GH**).
             **Required, with no default**, for the reason
             :func:`~._accept.record_match` gives its own keyword-only flag: the
@@ -150,6 +159,7 @@ class ReviewedBatch:
 
     matches: "tuple[MatchSubmission, ...]"
     creations: "tuple[PurchaseCreation, ...]"
+    incomes: "tuple[IncomeCreation, ...]"
     consent: Consent
 
     def __post_init__(self) -> None:
@@ -167,24 +177,42 @@ class ReviewedBatch:
         A TICKED batch carrying no items at all is legal and ordinary -- it is
         what an untouched form posts -- so nothing here counts.
 
+        **A rule pass may not carry an INCOME either** (ruling **bank_import:R-GW**,
+        plan step ``bank_import:X-gf-1``), and that is a second sentence rather
+        than a widening of the first: a merchant rule says where that
+        merchant's SPENDING goes, so there is no answer it could hold that
+        means *record this deposit*.  The door itself already refuses -- it is
+        called with ``applied_by_rule=False`` as a literal -- and this is the
+        same fact at the tier where a caller could assemble the batch that
+        contradicts it, exactly as the match arm is.
+
         Raises:
             ValueError: When a :attr:`Consent.STANDING_RULE` batch names a
-                match.  **A programming error rather than a designed refusal**,
-                so it is not a ``ValidationError``: no wire value reaches this
-                field, the route states it as a literal, and there is no
-                sentence to write for an owner who cannot have caused it.
+                match or an income.  **A programming error rather than a
+                designed refusal**, so it is not a ``ValidationError``: no wire
+                value reaches this field, the route states it as a literal, and
+                there is no sentence to write for an owner who cannot have
+                caused it.
         """
-        if self.consent is Consent.STANDING_RULE and self.matches:
+        if self.consent is not Consent.STANDING_RULE:
+            return
+        if self.matches:
             raise ValueError(
                 "A standing rule may create a row from a new bank swipe and "
                 "may not modify a row the owner made by hand (R-GH), so a "
                 "rule-consented batch cannot carry a match."
             )
+        if self.incomes:
+            raise ValueError(
+                "A merchant rule says where that merchant's SPENDING goes "
+                "(R-GI), so no rule can mean 'record this deposit' (bank_import:R-GW), "
+                "and a rule-consented batch cannot carry an income."
+            )
 
     @property
     def item_count(self) -> int:
         """Return how many acts this batch asks for."""
-        return len(self.matches) + len(self.creations)
+        return len(self.matches) + len(self.creations) + len(self.incomes)
 
 
 @dataclass(frozen=True)
@@ -247,8 +275,12 @@ class RefusedItem:
 class BatchOutcome:  # pylint: disable=too-many-instance-attributes
     """What a whole reviewed pass did.
 
-    Pylint: too-many-instance-attributes (10/7) -- **ten because a pass
-    receipt has ten things to say.**  ``repriced_count`` is what stopped this
+    Pylint: too-many-instance-attributes (11/7) -- **eleven because a pass
+    receipt has eleven things to say.**  ``deposited_count`` is the newest
+    (ruling **bank_import:R-GW**) and it is here for ``repriced_count``'s reason: without
+    it a pass that recorded a deposit reports through ``recorded_count``,
+    whose caption says *as a purchase*, or through nothing at all.
+    ``repriced_count`` is what stopped this
     panel rendering *"Nothing moved."* over a rewritten figure (2026-08-22),
     and dropping a count to satisfy a limit is how that sentence came to be
     false.  The last two are the residual pair, which names money this pass
@@ -280,6 +312,17 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
         recorded_count: How many bank lines became a purchase the app did not
             have.
         envelopes_created: How many budget lines the pass created to hold one.
+        deposited_count: How many bank lines of money COMING IN became an
+            uncategorized income row (ruling **bank_import:R-GW**).  **Its own count and
+            not folded into** :attr:`recorded_count`, whose sentence on the
+            receipt is *recorded as a purchase your records did not have* --
+            false of a deposit, and a count whose caption is false of half its
+            members is what this arc has now corrected three times.  **No
+            TOTAL beside it, unlike the residual pair**, and the asymmetry is
+            the netting: a residual is signed either way, so seven at
+            `+$0.05` against one at `-$0.35` net to a figure that says
+            nothing, while every deposit is POSITIVE by the door's own refusal
+            and the itemisation names each one's figure.
         residual_count: How many matched GROUPS had their difference recorded
             as an ordinary uncategorized row (plan step
             ``bank_import:X-f6d-4``, ruling **R-FN**).
@@ -301,6 +344,7 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
     repriced_count: int
     recorded_count: int
     envelopes_created: int
+    deposited_count: int
     residual_count: int
     residual_total: Decimal
 
@@ -319,6 +363,7 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
             applied=(), refused=(),
             settled_count=0, corrected_count=0, redated_count=0,
             repriced_count=0, recorded_count=0, envelopes_created=0,
+            deposited_count=0,
             residual_count=0, residual_total=Decimal("0.00"),
         )
 
@@ -349,6 +394,13 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
             or self.repriced_count
             or self.residual_count
             or self.recorded_count
+            # **Recording a deposit MOVES MONEY** (ruling **bank_import:R-GW**), so it
+            # belongs here for the reason ``repriced_count`` was added: a pass
+            # whose only act was one would otherwise render *"Nothing moved."*
+            # over a row it had just created and settled.  Every arm of this
+            # test has to name every effect, which is why the class is stated
+            # rather than left to whoever adds the next count.
+            or self.deposited_count
         )
 
 
@@ -445,11 +497,37 @@ def _created_summary(recorded) -> str:
     )
 
 
+def _income_summary(recorded) -> str:
+    """Return the sentence describing what recording one deposit did.
+
+    **It names no container and no second day, because the row has neither**
+    (ruling **bank_import:R-GW**).  ``_created_summary`` beside it names both because a
+    purchase is filed against something that reserves for it and carries a
+    budget clock of its own; an income row IS the movement, so the day the bank
+    credited it is the only day there is.
+
+    **It says the row has no category**, which is the one thing about it the
+    owner has to act on later: the money is recorded correctly and filed
+    nowhere, and a receipt that did not say so would leave the owner to find
+    out from the grid.
+
+    Args:
+        recorded: The :class:`~._creations.RecordedIncome`.
+
+    Returns:
+        The sentence.
+    """
+    return (
+        f"Recorded ${recorded.amount:,.2f} your bank paid in on "
+        f"{recorded.posts_on} as {recorded.label}, with no category yet."
+    )
+
+
 @dataclass
 class _Tally:  # pylint: disable=too-many-instance-attributes
     """The running receipt one pass builds.
 
-    Pylint: too-many-instance-attributes (10/7) -- it accumulates exactly
+    Pylint: too-many-instance-attributes (11/7) -- it accumulates exactly
     the counters :class:`BatchOutcome` publishes, so it carries that
     class's disable for that class's reason.
 
@@ -465,6 +543,7 @@ class _Tally:  # pylint: disable=too-many-instance-attributes
     repriced: int = 0
     recorded: int = 0
     envelopes: int = 0
+    deposited: int = 0
     residuals: int = 0
     residual_total: Decimal = Decimal("0.00")
 
@@ -642,6 +721,25 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
             amount=-recorded.amount,
         ))
 
+    for income in batch.incomes:
+        line_ids = (income.line_id,)
+        deposited = _run(
+            tally, line_ids,
+            lambda i=income: record_income_from_line(i, scope),
+        )
+        if deposited is None:
+            continue
+        tally.deposited += 1
+        tally.applied.append(AppliedItem(
+            line_ids=line_ids, summary=_income_summary(deposited),
+            # **Already the BANK's own direction.**  An income row's cash
+            # effect is POSITIVE and so is the line it was built from
+            # (``_income._load_line`` refuses anything else by name), so unlike
+            # the purchase arm above there is no sign to flip -- and flipping
+            # one here would report a deposit as a withdrawal.
+            amount=deposited.amount,
+        ))
+
     outcome = BatchOutcome(
         applied=tuple(tally.applied),
         refused=tuple(tally.refused),
@@ -651,6 +749,7 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
         repriced_count=tally.repriced,
         recorded_count=tally.recorded,
         envelopes_created=tally.envelopes,
+        deposited_count=tally.deposited,
         residual_count=tally.residuals,
         residual_total=tally.residual_total,
     )

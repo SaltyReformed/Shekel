@@ -56,6 +56,7 @@ from app.routes.accounts import statement_matches as statement_matches_route
 from app.services import auth_service, entry_service
 from app.services.statement_match import RowKind
 from app.services.statement_match import _batch as statement_match_batch
+from app.utils.dates import display_today
 from app.utils.money import round_money
 from tests.test_services.test_statement_match._builders import (
     a_bank_line,
@@ -322,7 +323,15 @@ def _apply_form_controls(page):
     idea of the default rather than the template's.
     """
     reader = _RuleFormReader(
-        prefixes=("destination-", "envelope_name-", "category_id-", "apply"),
+        prefixes=(
+            "destination-", "envelope_name-", "category_id-", "apply",
+            # Ruling **bank_import:R-GW**'s tick.  It is in this list for the SAME reason
+            # the destination select is: an untouched Apply must write no
+            # deposit either, and the only honest way to check that is to read
+            # what the template rendered.  An unticked checkbox is dropped by
+            # the reader above, so its absence here IS the assertion.
+            "record_income-",
+        ),
     )
     reader.feed(page)
     return reader.controls
@@ -2129,6 +2138,280 @@ class TestTheReleasePost:
         assert b"you have edited that row since" in page
         assert b"Undo removes" not in page
         assert b"data-confirm=" not in page
+
+
+class TestTheDepositArmOnTheWire:
+    """Ruling **bank_import:R-GW** end to end: what the template renders, the door takes.
+
+    The service suite grades the door and the review set; this closes the loop
+    the project's own lesson names -- *a form submits every control it renders,
+    and a hand-picked payload shipped a primary arm that was DEAD in a
+    browser*.  A checkbox name and a Marshmallow field name have no
+    compile-time relationship at all.
+    """
+
+    @staticmethod
+    def _a_deposit(seed_user, amount="0.15", posted_on=None):
+        """Record one unexplained line of money coming IN.
+
+        Args:
+            seed_user: The seeded user bundle.
+            amount: Signed, POSITIVE into the account.
+            posted_on: The day the bank credited it.
+
+        Returns:
+            The staged line.
+        """
+        return a_bank_line(
+            seed_user, an_import(seed_user), amount=amount,
+            posted_on=posted_on or seed_user["bootstrap_period"].start_date,
+            description="DIVIDEND EARNED (Dividend Earned)",
+            merchant="Dividend Earned",
+        )
+
+    def test_the_page_renders_a_tick_for_an_unexplained_deposit(
+        self, auth_client, db, seed_user,
+    ):
+        """The control has to EXIST before anything else here means anything."""
+        line = self._a_deposit(seed_user)
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+
+        assert f'name="record_income-{line.id}"' in page
+        assert "Money that arrived and your records do not hold" in page
+
+    def test_an_UNTOUCHED_apply_records_no_deposit(
+        self, auth_client, db, seed_user,
+    ):
+        """R-FP over the new arm, read off the template rather than typed.
+
+        The tick is not in the submitted payload because a browser drops an
+        unticked checkbox -- so its ABSENCE from ``submitted`` is the
+        assertion, and the row count is what proves the absence mattered.
+        """
+        self._a_deposit(seed_user)
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+        submitted = _apply_form_controls(page)
+        response = auth_client.post(
+            _review_url(seed_user["account"].id), data=submitted,
+        )
+
+        assert not [
+            name for name in submitted if name.startswith("record_income-")
+        ]
+        assert response.status_code == 200
+        assert db.session.query(StatementMatch).count() == 0
+        assert db.session.query(Transaction).count() == 0
+
+    def test_a_TICKED_deposit_is_recorded_and_the_receipt_says_so(
+        self, auth_client, db, seed_user,
+    ):
+        """The scraped form plus the one tick a browser would add."""
+        line = self._a_deposit(seed_user, amount="0.15")
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+        submitted = _apply_form_controls(page)
+        # What ticking the box in a browser does, and nothing else.
+        submitted[f"record_income-{line.id}"] = "record"
+        response = auth_client.post(
+            _review_url(seed_user["account"].id), data=submitted,
+        )
+
+        assert response.status_code == 200
+        row = db.session.query(Transaction).one()
+        assert row.estimated_amount == Decimal("0.15")
+        assert row.category_id is None
+        body = response.data.decode()
+        assert "recorded as money that arrived" in body
+        assert "Nothing moved." not in body
+
+    def test_a_recorded_deposit_LEAVES_the_card(
+        self, auth_client, db, seed_user,
+    ):
+        """The answer IS the screen, so the line must be gone from it."""
+        line = self._a_deposit(seed_user)
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+        submitted = _apply_form_controls(page)
+        submitted[f"record_income-{line.id}"] = "record"
+        body = auth_client.post(
+            _review_url(seed_user["account"].id), data=submitted,
+        ).data.decode()
+
+        assert f'name="record_income-{line.id}"' not in body
+
+    def test_a_line_PAST_the_calendar_renders_a_SENTENCE_and_no_tick(
+        self, auth_client, db, seed_user,
+    ):
+        """A control whose submission can never succeed is not rendered.
+
+        The door refuses a day no saved period covers, so the screen says so
+        instead -- the *chooser whose submission always fails* shape this
+        package has closed five times.
+        """
+        beyond = seed_user["bootstrap_period"].end_date + timedelta(days=400)
+        line = self._a_deposit(seed_user, posted_on=beyond)
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+
+        assert f'name="record_income-{line.id}"' not in page
+        assert f"No pay period covers {beyond}" in page
+
+    def test_the_ROW_IT_CREATES_renders_on_the_screens_that_show_rows(
+        self, auth_client, db, seed_user,
+    ):
+        """A NULL-category transaction is a shape this app has never held.
+
+        Measured 2026-08-27 on the developer's own dev database: **0 of 1,044**
+        transactions carry a NULL ``category_id``, and the only other writer of
+        one is a matched group's residual (**R-FN**), which production has
+        never run either.  So this door is about to make an unrendered row
+        shape ORDINARY, and "does the grid survive it" is this step's question
+        rather than the grid's.
+
+        A FIRING control: it fails on a ``500`` from any surface that assumes a
+        row has a category, which is the whole class of defect it exists for.
+        """
+        line = self._a_deposit(seed_user)
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+        submitted = _apply_form_controls(page)
+        submitted[f"record_income-{line.id}"] = "record"
+        auth_client.post(_review_url(seed_user["account"].id), data=submitted)
+
+        assert db.session.query(Transaction).one().category_id is None
+        for url in (
+            "/grid",
+            f"/accounts/{seed_user['account'].id}/details",
+            _review_url(seed_user["account"].id),
+        ):
+            assert auth_client.get(url).status_code == 200, url
+
+    def test_the_SAFEGUARD_renders_where_the_books_already_hold_income(
+        self, auth_client, db, seed_user,
+    ):
+        """The sentence that stands between the owner and a duplicate.
+
+        Measured on the developer's own data: three payroll deposits worth
+        `$7,838.92` render no near-miss sentence, because their app rows sit
+        outside every matcher tier's bound -- so this is the only per-line
+        signal they get, and a route case is what says it reaches the page.
+        """
+        a_transaction(
+            seed_user, name="Salary", amount="2473.38", income=True,
+        )
+        line = self._a_deposit(seed_user, amount="2600.00")
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+
+        assert "This pay period already holds 1 income row(s)" in page
+        assert "Salary" in page
+        assert f'name="record_income-{line.id}"' in page
+
+    def test_the_safeguard_is_SILENT_on_the_lines_the_step_exists_for(
+        self, auth_client, db, seed_user,
+    ):
+        """A `$0.15` dividend cannot be a `$2,473.38` salary row.
+
+        The other half of the same control: an alarm on every row is the one
+        that teaches an owner to stop reading alarms.
+        """
+        a_transaction(
+            seed_user, name="Salary", amount="2473.38", income=True,
+        )
+        self._a_deposit(seed_user, amount="0.15")
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+
+        assert "This pay period already holds" not in page
+
+    def test_a_line_the_bank_dates_in_the_FUTURE_renders_no_tick(
+        self, auth_client, db, seed_user,
+    ):
+        """A control whose submission can never succeed is not rendered.
+
+        Pay periods project about two years forward, so a future-dated line
+        resolves a pay period and used to render a tick -- which the settle
+        verb then refused (**R-EJ**) only AFTER the door had written and
+        settled the row.  Found by adversarial financial review 2026-08-27.
+        """
+        ahead = display_today() + timedelta(days=3)
+        line = self._a_deposit(seed_user, posted_on=ahead)
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+
+        assert f'name="record_income-{line.id}"' not in page
+        assert "has not happened yet" in page
+
+    def test_a_FUTURE_line_forced_through_the_door_writes_NOTHING(
+        self, auth_client, db, seed_user,
+    ):
+        """The door's half, which a stale page or a crafted body reaches.
+
+        The refusal has to fire BEFORE the row exists.  It fired after until
+        2026-08-27, so a refused act left a settled `$0.15` income row for the
+        batch's SAVEPOINT to take back -- a dependency this package declines,
+        and one a caller outside the batch does not have at all.
+        """
+        ahead = display_today() + timedelta(days=3)
+        line = self._a_deposit(seed_user, posted_on=ahead)
+        db.session.commit()
+
+        response = auth_client.post(
+            _review_url(seed_user["account"].id),
+            data={f"record_income-{line.id}": "record"},
+        )
+
+        assert response.status_code == 200
+        assert "has not happened yet" in response.data.decode()
+        assert db.session.query(Transaction).count() == 0
+        assert db.session.query(StatementMatch).count() == 0
+
+    def test_ANOTHER_owners_line_is_refused(
+        self, auth_client, db, seed_user, second_user,
+    ):
+        """A firing control against an IDOR on a door that MOVES MONEY."""
+        theirs = a_bank_line(
+            second_user, an_import(second_user), amount="500.00",
+        )
+        db.session.commit()
+
+        response = auth_client.post(
+            _review_url(seed_user["account"].id),
+            data={f"record_income-{theirs.id}": "record"},
+        )
+
+        assert response.status_code == 200
+        assert db.session.query(Transaction).count() == 0
+        assert db.session.query(StatementMatch).count() == 0
 
 
 class TestItRefusesAnotherUsersAccount:

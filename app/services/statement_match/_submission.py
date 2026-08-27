@@ -212,7 +212,7 @@ class ReviewedRow:
         a ``Decimal()`` or an unpack that could raise past this function, which
         is what a form door needs in an application whose error handlers
         register no ``ValueError`` arm.  ``apply=%C2%B2`` was a 500 on this
-        very screen once (:func:`~app.schemas.validation.statements._sort_key`),
+        very screen once (:func:`~app.schemas.validation._helpers.order_token_key`),
         and this is the same lesson one field over.
 
         Args:

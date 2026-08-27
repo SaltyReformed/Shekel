@@ -197,7 +197,7 @@ class CreationBars:
     for.
 
     **It is NOT carried on the** :class:`~._scope.ReviewScope`, for the reason
-    :func:`~._reads._leftovers` states about the rules themselves: the
+    :func:`~._leftovers._leftovers` states about the rules themselves: the
     rule-stating route derives its scope ONCE, BEFORE its write, and a reader
     taking these off the scope would show the answers that pass had just
     replaced.  The batch door builds one per REQUEST instead, exactly as it
@@ -338,7 +338,7 @@ class ParkedLine:
     at all.  Naming one where a group does leave it is ruling **R-FN**'s
     machinery, already built at ``X-f6d-4``.
 
-    **It is NOT a** :class:`~._reads.CreatableLine` **with the controls turned
+    **It is NOT a** :class:`~._leftovers.CreatableLine` **with the controls turned
     off.**  That value carries the destinations a line may be recorded into and
     the placement suggesting one of them, and a parked line has neither -- a
     record that carried empty versions of both would be a control one Jinja

@@ -673,12 +673,14 @@ class TestNoIdFieldWasMissed:
         envelope the owner never picked, whose rows are then offered for every
         line that merchant ever posts.
         """
-        from app.schemas.validation.statements import (  # pylint: disable=import-outside-toplevel
+        from app.schemas.validation.merchant_rules import (  # pylint: disable=import-outside-toplevel
             ALWAYS_ASK,
             NEVER,
-            NEW_ENVELOPE,
             NOT_SAID,
             RuleAnswerField,
+        )
+        from app.schemas.validation.statements import (  # pylint: disable=import-outside-toplevel
+            NEW_ENVELOPE,
         )
 
         field = RuleAnswerField()
