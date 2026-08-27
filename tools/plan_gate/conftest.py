@@ -18,6 +18,7 @@ from __future__ import annotations
 import pytest
 
 import _registry as registry
+import _rulings as rulings
 
 
 @pytest.fixture(name="stage")
@@ -51,5 +52,26 @@ def _stage_arc(tmp_path, monkeypatch):
         target = tmp_path / source.name
         target.write_text(text.replace(old, new, 1))
         monkeypatch.setitem(registry.ARC_DOCS, arc, target)
+
+    return _apply
+
+
+@pytest.fixture(name="stage_rulings")
+def _stage_rulings(tmp_path, monkeypatch):
+    """Return a helper that mutates a RULINGS copy and re-points the module.
+
+    Its own fixture rather than a third key on ``stage`` because the path lives
+    on :mod:`_rulings` -- the registry's predicates were split out of
+    :mod:`_registry` when that module reached pylint's ceiling, and a fixture
+    that monkeypatched the wrong module would stage a defect the arm never
+    reads and report the control green.
+    """
+
+    def _apply(old: str, new: str) -> None:
+        text = rulings.RULINGS.read_text()
+        assert old in text, f"control anchor {old!r} is not in the real rulings.md"
+        target = tmp_path / rulings.RULINGS.name
+        target.write_text(text.replace(old, new, 1))
+        monkeypatch.setattr(rulings, "RULINGS", target)
 
     return _apply
