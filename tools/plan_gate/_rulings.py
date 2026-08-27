@@ -275,7 +275,7 @@ def unmigrated_arc_counts() -> dict[str, int]:
     under its own.  Header and separator rows are excluded, which is not a
     detail: a separator counted as a ruling is how this session first read 37
     recurrence rows where the document holds 36, and a ROW that is not an
-    entry is finding **N-372**.
+    entry is finding **balance:N-372**.
 
     Returns:
         ``{arc: count}`` for every arc still holding its own table.

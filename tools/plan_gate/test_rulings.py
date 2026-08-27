@@ -440,7 +440,7 @@ class TestThePreambleDoesNotDecay:
         """The error that read 37 recurrence rows where the document holds 36.
 
         A ``|---|---|`` separator and a ``| fork | ruling |`` header are table
-        STRUCTURE, not entries.  Counting one is the same class as **N-372**,
+        STRUCTURE, not entries.  Counting one is the same class as **balance:N-372**,
         the section label rendered as a row -- and it is how this session first
         quoted a number back to a peer that neither document held.
         """

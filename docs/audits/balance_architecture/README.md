@@ -770,9 +770,9 @@ hides.
   `../../plans/rulings.md`, keyed `(arc, id)`, byte-identical and graded, under ruling **R-GZ**.
   Rule 4 applies whole: no LINE cap, and `RULINGS_ROW_CAP` is the swap that lets that be true.
   Repaired `bank_import:R-FW` (four cells in a three-column table since 2026-08-18) and the gate
-  hook's own `files:` pattern, YAML-folded so one document matched nothing. Opened **N-370**,
-  **N-371**; carries the citation arm to `X-ao-3`.
-* [ ] **X-ao-2** `feat(plan-gate): the last three arcs take the one grammar` -- closes **N-370**.
+  hook's own `files:` pattern, YAML-folded so one document matched nothing. Opened **balance:N-370**,
+  **balance:N-371**; carries the citation arm to `X-ao-3`.
+* [ ] **X-ao-2** `feat(plan-gate): the last three arcs take the one grammar` -- closes **balance:N-370**.
   The remaining 77: `recurrence`'s 36 and `pay_calendar`'s 33 state a ruling `| fork | ruling |`
   with the id in PROSE beside cross-references to OTHER rulings -- a regex mis-attributed four
   recurrence ids on the first pass, which is why this is its own step -- and `credit_card`'s 8 are
@@ -786,7 +786,7 @@ hides.
   reader that assumes every table row is a ruling mints ids for separators. **The tail rule is a
   PARSE and not a proof**: it says nothing about those 11, and it holds because every row written so
   far follows the convention rather than because anything enforces it, so the eyeball pass over the
-  residue is the part that cannot be dropped. One of the 11 is **N-372**. Two `app/` docstrings cite a pay-calendar ruling by its PROSE
+  residue is the part that cannot be dropped. One of the 11 is **balance:N-372**. Two `app/` docstrings cite a pay-calendar ruling by its PROSE
   NAME and must gain the minted id in the same commit. It also moves the 23 over-cap rows'
   overflow to their owning steps' specifications, which is rule 4's own remedy.
 * [ ] **X-ao-3** `feat(plan-gate): a bare citation of an ambiguous id fails` -- closes **N-217**,
@@ -803,6 +803,7 @@ hides.
   PROSE beside itself -- four blocker cells carry `(the container ticks at #N)` unparsed, one of them
   stale on `dev` before anyone touched it. **(c)** An archive reference resolves BOTH ways, needing TWO
   arms: 30 citations / 1 dangling to a file never added, 20 archived files / 1 unindexed. 2026-08-26.
+  **N-367's fourth instance, 2026-08-27, is this step's sharpest specimen and it is on the FINDING side.** `balance:X-ao-1` and `bank_import:X-gf-2` each minted `N-371` and `N-372` within hours, on two unpushed branches, **while the two sessions were actively corresponding about N-367 and had already reserved RULING ids with each other**. Awareness is not a control: neither branch was fetchable, so neither census could see the other, and the reservation habit covered the ids we had discussed rather than the class. What made it survivable is rule 10's asymmetry -- the gate passes with all four rows present and only a bare citation is lost -- which is exactly the property the ruling side does NOT have.
 * [ ] **X-bd** `test(routes): the url_map sweep's arms are sized, not named` -- closes **N-364**,
   whose row carries the measurements. **Root: the sweep is SPLIT by account KIND, and a kind is not
   a size** -- the account-less arm is 54 routes against ~20 per kind arm and absorbs nearly all the
