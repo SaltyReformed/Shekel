@@ -125,11 +125,14 @@ draft of this paragraph claimed otherwise (ledger row **P24**).
 1,000-line ceiling has twice measured.  At plan step **C2-c** the shared
 SEARCHES moved to :mod:`._searches` and the view type to :mod:`._window`; at
 plan step **C2-f3b** the five VIEW PRODUCERS moved to :mod:`._views` and the
-forward projection to :func:`~._derive.project_period_after`, this file standing
-at 999 of the 1,000 permitted -- ONE line of headroom (ledger row **P64**; the
-1002 that row records was a transient inside C2-f3a's build, resolved before
-that commit, and an earlier draft of this sentence read it as a committed
-state).  The dependency runs one way through
+forward projection to :func:`~._derive.project_period_after` (ledger row
+**P64**; the 1002 that row records was a transient inside C2-f3a's build,
+resolved before that commit, and an earlier draft of this sentence read it as a
+committed state).  **No line count is quoted here, and that is the correction
+plan step R16-b-1 made**: this paragraph claimed "999 of the 1,000 permitted --
+ONE line of headroom" and the file had been 890 for some time, so a stale number
+was arguing for a constraint that was not binding.  ``pylint`` measures it on
+every commit; a copy in prose does not.  The dependency runs one way through
 all five -- ``_derive`` -> ``_searches`` -> ``_window`` -> ``_views`` -> this --
 so a search, a view producer, a view and the calendar itself cannot answer one
 question differently.
@@ -139,7 +142,7 @@ clock.  Every answer is a pure function of the paydays and the cadence the
 caller supplies.
 """
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
@@ -165,6 +168,7 @@ from ._views import (
     current_and_future_window,
     index_window,
     overlapping_window,
+    projected_paychecks,
     projection_axis_window,
     saved_window,
 )
@@ -815,6 +819,80 @@ class PayCalendar:
             crossed as a caller defect.
         """
         return current_and_future_window(self.periods, day)
+
+    def paychecks_from(self, day: date) -> "Iterator[DerivedPeriod]":
+        """Yield every paycheck that has not ENDED before *day*, saved then projected.
+
+        :meth:`current_and_future`'s TOTAL companion -- it yields that window and
+        then keeps going -- and the pairing is the one :meth:`span_containing`
+        already makes against :meth:`period_containing`:
+        the saved producer answers where the schedule reaches, this one keeps
+        answering past it at the owner's own cadence.  A caller walking a
+        CADENCE rather than reading a window needs that, because an owner goes
+        on being paid after the last payday anyone has saved -- the schedule's
+        horizon is a MATERIALISATION boundary, not a fact about how often the
+        money arrives.
+
+        **Plan step R16-b-1 added it because its absence was a silent wrong
+        answer**, not a missing convenience.  ``recurrence.occurrences(...,
+        through=X)`` walked ``self.periods`` for the ``PERIOD`` unit, so it
+        returned fewer dates than *X* asked for and raised nothing: measured on
+        a production clone (2026-08-27), an every-paycheck rule asked through
+        ``2036-01-01`` answered 62 dates ending ``2028-07-27`` against the 255
+        that owner is actually paid in the window, the last ``2035-12-20``.  A consumer
+        folding those occurrences into money -- the balance seam's ESTIMATED
+        loan tier, plan step R16-b-2 -- would under-generate by seven years and
+        report a payoff that never comes.
+
+        **FINITE**, because :func:`~._views.projected_paychecks` stops at
+        :data:`~app.utils.dates.CALENDAR_DATE_MAX` -- so a consumer that forgets
+        to stop pulling terminates instead of hanging, and the ordinary stop is
+        its own window (``recurrence._occurrence._bounded``, the one place a
+        bound is applied).  Finite is not SMALL: the length is
+        ``(CALENDAR_DATE_MAX - horizon) / cadence_days``, which is about 1,950
+        paychecks at a fourteen-day cadence and about 27,300 at the
+        one-day cadence ``budget.pay_schedule`` legally admits.
+
+        **It COMPOSES the two producers and steps nothing itself**, which is
+        this section's own rule: the saved half is
+        :func:`~._views.current_and_future_window` and the continuation is
+        :func:`~._views.projected_paychecks`, where the argument for each lives.
+        That second one is a function because it was two loops --
+        :func:`~._views.axis_window` walked the same recurrence to a requested
+        day -- and every projected paycheck it yields carries ``period_id =
+        None`` with a ``period_index`` continuing the saved sequence, so a phase
+        test spans the seam and a caller needing a foreign key target still
+        cannot mistake one for a saved row.
+
+        Args:
+            day: The first day the sequence covers.  A paycheck qualifies when
+                it has not ENDED before it, so the one *day* falls IN is the
+                first yielded -- the same admission test
+                :meth:`current_and_future` applies.  A *day* below
+                :meth:`opening_bound` yields the whole schedule rather than
+                projecting backwards (the 2026-08-10 ruling: before the first
+                payday there is no paycheck).
+
+        Yields:
+            :class:`~._derive.DerivedPeriod` values, ``start_date`` ascending,
+            saved where the schedule reaches and projected beyond it, up to the
+            last paycheck OPENING within the application's calendar.  Nothing
+            at all for a calendar with no payday, which is the same answer
+            :meth:`current_and_future` gives them.
+        """
+        # The saved half is :meth:`current_and_future` itself, not a second
+        # statement of its admission test: "has not ENDED before this day" is
+        # written once, in :func:`~._views.current_and_future_window`, and both
+        # methods ask it there.  Two copies of one predicate is the shape ledger
+        # row **P6** counted seven of, and it is what makes the equality between
+        # these two producers structural rather than a coincidence two
+        # comprehensions happen to share.
+        yield from current_and_future_window(self.periods, day)
+        yield from (
+            period
+            for period in projected_paychecks(self.periods, self.cadence_days)
+            if period.end_date >= day
+        )
 
     def overlapping(self, first_day: date, last_day: date) -> PeriodWindow:
         """Return every SAVED period overlapping ``[first_day, last_day]``.

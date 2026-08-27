@@ -45,11 +45,67 @@ Boundary discipline (``CLAUDE.md``): no Flask symbol, no database session, no
 clock.  Every answer is a pure function of the arguments a caller supplies.
 """
 
+from collections.abc import Iterator
+from itertools import takewhile
 from datetime import date, timedelta
+
+from app.utils.dates import CALENDAR_DATE_MAX
 
 from ._derive import DerivedPeriod, PayCalendarError, project_period_after
 from ._searches import final_covered_day, materialised_periods, opening_payday
 from ._window import PeriodWindow
+
+
+def projected_paychecks(
+    periods: "tuple[DerivedPeriod, ...]", cadence_days: "int | None",
+) -> "Iterator[DerivedPeriod]":
+    """Yield the paychecks that follow the SAVED schedule, at the owner's cadence.
+
+    **The ONE loop that steps the forward continuation**, and it is a function
+    because it was two (plan step **R16-b-1**).  :func:`axis_window` walked it to
+    a requested ``last_day`` and
+    :meth:`~._calendar.PayCalendar.paychecks_from` walked it to the end of the
+    application's calendar; the two are the same recurrence with different stop
+    conditions, and a second implementation of "where does the next paycheck
+    land" is exactly the class ledger row **P6** counted seven of.
+    :func:`~._derive.project_period_after` already holds the ARITHMETIC; what
+    lives here is the ITERATION, so a caller states only where it stops.
+
+    LAZY, and that is a requirement rather than a style: ``cadence_days`` is
+    user-selectable 1..365, so this sequence runs to roughly 27,300 paychecks at
+    a one-day cadence against ~1,950 at fourteen. A caller that wants a tuple
+    takes one (:func:`axis_window`); a caller walking a cadence pulls what it
+    needs and stops.
+
+    It is BOUNDED at :data:`~app.utils.dates.CALENDAR_DATE_MAX`, which every
+    consumer inherits: past that date this application has no calendar to name a
+    payday in, and stepping on would leave ``date``'s own domain. That is the
+    same disposition :func:`app.services.recurrence._months.walk_months` takes,
+    and the reason :data:`~app.utils.dates.CALENDAR_DATE_MAX` exists -- its own
+    comment names this projection as the ``OverflowError`` it was introduced
+    for.
+
+    Args:
+        periods: The owner's SAVED periods, ``start_date`` ascending.  Only the
+            last one is read; an EMPTY tuple yields nothing, which is also the
+            only state in which *cadence_days* may be ``None``
+            (:func:`~._derive.derive_periods` enforces that pairing).
+        cadence_days: Days between paydays.
+
+    Yields:
+        :class:`~._derive.DerivedPeriod` values, ``start_date`` ascending,
+        beginning with the paycheck after the last saved one.  Each carries
+        ``period_id = None`` and a ``period_index`` continuing the saved
+        sequence, so the two halves tile and a phase test spans the seam.
+    """
+    horizon = final_covered_day(periods)
+    if horizon is None:
+        return
+    opens_at = horizon + timedelta(days=1)
+    while opens_at <= CALENDAR_DATE_MAX:
+        period = project_period_after(periods, cadence_days, opens_at)
+        yield period
+        opens_at = period.end_date + timedelta(days=1)
 
 
 def saved_window(
@@ -305,17 +361,18 @@ def axis_window(
     horizon = final_covered_day(periods)
     if horizon is None or last_day <= horizon:
         return saved
-    projected = []
-    period = project_period_after(
-        periods, cadence_days, horizon + timedelta(days=1),
-    )
-    while period.start_date <= last_day:
-        if period.end_date >= first_day:
-            projected.append(period)
-        period = project_period_after(
-            periods, cadence_days, period.end_date + timedelta(days=1),
+    # The CONTINUATION is :func:`projected_paychecks`; this states only where
+    # the axis stops.  ``itertools.takewhile`` rather than a hand-rolled loop
+    # so the stop condition is the whole of what this function adds.
+    projected = tuple(
+        period
+        for period in takewhile(
+            lambda paycheck: paycheck.start_date <= last_day,
+            projected_paychecks(periods, cadence_days),
         )
-    return PeriodWindow(periods=saved.periods + tuple(projected))
+        if period.end_date >= first_day
+    )
+    return PeriodWindow(periods=saved.periods + projected)
 
 
 def projection_axis_window(

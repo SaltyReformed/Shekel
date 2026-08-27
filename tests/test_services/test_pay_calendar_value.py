@@ -39,6 +39,7 @@ has no clock; a test that gave it one would be testing the fixture.
 """
 
 from datetime import date, timedelta
+from itertools import islice
 
 import pytest
 
@@ -50,6 +51,7 @@ from app.services.pay_calendar import (
     containing_period,
     latest_started_period,
 )
+from app.utils.dates import CALENDAR_DATE_MAX
 
 #: A contiguous biweekly schedule -- production's shape, four paydays of it.
 #: Ids are deliberately not 0-based so a test cannot pass by confusing an id
@@ -1053,6 +1055,159 @@ class TestCurrentAndFuture:
             for probe in (period.start_date, period.end_date):
                 assert list(cal.current_and_future(probe)) == expected, (
                     name, period.period_index, probe,
+                )
+
+
+class TestPaychecksFromContinuesPastTheSavedSchedule:
+    """:meth:`PayCalendar.paychecks_from`, plan step **R16-b-1**.
+
+    ``current_and_future``'s TOTAL companion: the saved producer answers where
+    the schedule reaches, this one keeps naming paydays past it at the owner's
+    cadence.  It exists because its absence was a SILENT wrong answer one
+    package over -- ``recurrence._occurrence._period_walk`` iterated the saved
+    periods, so ``occurrences(..., through=X)`` returned fewer dates than *X*
+    asked for and raised nothing.
+
+    Graded HERE and not only through that consumer.  A producer tested only
+    through the thing that calls it is the hole plan step R16-a's adversarial
+    review measured: replacing ``_charges_for`` wholesale left 5,427 tests
+    green, because every control built its input by hand.
+    """
+
+    def test_the_saved_run_ends_exactly_where_the_saved_producer_does(self):
+        """The saved prefix is ``current_and_future``, and the SEAM is graded.
+
+        The equality itself is structural since this method yields
+        ``current_and_future_window`` rather than restating its admission test,
+        so asserting only that would grade nothing.  What is graded here is the
+        JOIN: the saved run is exactly as long as the saved producer's answer,
+        and the very next value is a PROJECTION that continues it -- adjacent,
+        one ordinal on, and carrying no ``period_id``.  A composition that
+        dropped a saved period, repeated one, or restarted the projection at the
+        wrong payday fails on the element after the prefix, which is the one
+        place the two halves meet.
+        """
+        for name, paydays, cadence in SHAPES:
+            cal = calendar(paydays, cadence)
+            for probe in (cal.opening_bound(), cal.horizon()):
+                saved = list(cal.current_and_future(probe))
+                assert len(saved) > 0, (name, probe)
+                run = list(islice(cal.paychecks_from(probe), len(saved) + 1))
+                assert run[:-1] == saved, (name, probe)
+                seam, last_saved = run[-1], saved[-1]
+                assert seam.period_id is None, (name, probe)
+                assert seam.end_is_projected, (name, probe)
+                assert seam.start_date == last_saved.end_date + timedelta(days=1), (
+                    name, probe, last_saved, seam,
+                )
+                assert seam.period_index == last_saved.period_index + 1, (
+                    name, probe,
+                )
+
+    def test_it_projects_at_the_cadence_once_the_saved_run_ends(self):
+        """Past the horizon the paydays continue, marked as projections.
+
+        The dates are computed from the last SAVED payday plus 14n rather than
+        read off the value: ``BIWEEKLY`` ends at ``2026-02-13`` (index 3), so
+        the next two paychecks open ``2026-02-27`` and ``2026-03-13`` at
+        indices 4 and 5.  ``period_id`` is ``None`` on both, which is what
+        stops a caller writing a projection into a foreign key.
+        """
+        cal = calendar()
+        first_six = list(islice(cal.paychecks_from(date(2026, 1, 2)), 6))
+
+        assert [p.period_id for p in first_six] == [10, 11, 12, 13, None, None]
+        assert [p.period_index for p in first_six] == [0, 1, 2, 3, 4, 5]
+        assert [p.start_date for p in first_six[4:]] == [
+            date(2026, 2, 27), date(2026, 3, 13),
+        ]
+        assert [p.end_date for p in first_six[4:]] == [
+            date(2026, 3, 12), date(2026, 3, 26),
+        ]
+        assert all(p.end_is_projected for p in first_six[4:])
+
+    def test_asked_far_past_the_horizon_it_opens_at_the_covering_paycheck(self):
+        """The projection is arithmetic, so a distant opening costs one step.
+
+        ``2030-01-01`` is 101 cadences past ``BIWEEKLY``'s last payday
+        (``2026-02-13 + 14 x 101 = 2029-12-28``, which is why the index is
+        ``3 + 101``).  The
+        first value yielded is the paycheck COVERING that day -- opening
+        ``2029-12-28`` at index 104 -- rather than the sequence walking there a
+        fortnight at a time and yielding every paycheck in between.
+        """
+        cal = calendar()
+        first = next(iter(cal.paychecks_from(date(2030, 1, 1))))
+
+        assert first.start_date == date(2029, 12, 28)
+        assert first.end_date == date(2030, 1, 10)
+        assert first.period_index == 104
+        assert first.period_id is None
+        # It COVERS the day asked for -- the admission test is "has not ended
+        # before it", so the covering paycheck qualifies and is the first.
+        assert first.start_date <= date(2030, 1, 1) <= first.end_date
+
+    def test_a_day_below_the_opening_bound_yields_the_whole_schedule(self):
+        """Nothing is projected BACKWARDS (the 2026-08-10 ruling).
+
+        Before an owner's first payday there is no paycheck, so a *day* under
+        the opening bound cannot pull earlier ones into existence -- it simply
+        admits every paycheck there is, starting at the first saved one.
+        """
+        cal = calendar()
+        taken = list(islice(cal.paychecks_from(date(2020, 1, 1)), 5))
+
+        assert [p.period_id for p in taken] == [10, 11, 12, 13, None]
+        assert taken[0].start_date == date(2026, 1, 2)
+
+    def test_an_owner_with_no_payday_is_answered_nothing(self):
+        """An empty calendar has no last payday to continue from.
+
+        The same answer :meth:`PayCalendar.current_and_future` gives them, and
+        the reason the ``cadence_days is None`` beside an empty payday set is
+        never read: the sequence returns before the projection.
+        """
+        empty = PayCalendar.from_paydays([], None, 7)
+
+        assert list(empty.paychecks_from(date(2026, 1, 1))) == []
+        assert len(empty.current_and_future(date(2026, 1, 1))) == 0
+
+    def test_the_sequence_is_finite_and_stops_at_the_apps_last_calendar_day(self):
+        """It ENDS, so a consumer that forgets to stop pulling does not hang.
+
+        Bounded at :data:`~app.utils.dates.CALENDAR_DATE_MAX` exactly as
+        ``recurrence._months.walk_months`` is -- the comment on that constant
+        names THIS projection as the ``OverflowError`` it was introduced for.
+        ``2026-02-13 + 14 x 1953 = 2100-12-24``; the next payday, ``2101-01-07``,
+        lies outside the calendar this application can express and is never
+        named.
+        """
+        cal = calendar()
+        every = list(cal.paychecks_from(date(2026, 1, 2)))
+
+        assert every[-1].start_date == date(2100, 12, 24)
+        assert every[-1].period_index == 1956
+        assert len(every) == 1957
+        assert all(p.start_date <= CALENDAR_DATE_MAX for p in every)
+
+    def test_every_paycheck_is_ascending_and_adjacent(self):
+        """The projected run tiles exactly as the saved run does.
+
+        The tiling invariant :class:`PayCalendar` makes structural for its
+        saved periods has to hold across the seam too, or a consumer walking
+        this sequence would meet a gap or an overlap at the horizon -- the
+        states ledger row **P25** and three retired runtime fences are about.
+        Asserted over every shape, and the seam is inside the slice taken.
+        """
+        for name, paydays, cadence in SHAPES:
+            cal = calendar(paydays, cadence)
+            run = list(islice(cal.paychecks_from(cal.opening_bound()), 12))
+            for earlier, later in zip(run, run[1:]):
+                assert earlier.end_date + timedelta(days=1) == later.start_date, (
+                    name, earlier, later,
+                )
+                assert later.period_index == earlier.period_index + 1, (
+                    name, earlier, later,
                 )
 
 
