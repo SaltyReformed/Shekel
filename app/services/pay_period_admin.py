@@ -675,9 +675,10 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
     **The other direction is what R7d-c-2 makes load-bearing.**  The wipe
     CASCADE-deletes the loan's genesis entries, so the OLD order generated
     against an EMPTIED loan ledger and the new one generates against the
-    re-posted ledger.  Nothing on today's generation path reads a loan -- all
-    four of its reads off the schedule are ``schedule.calendar`` -- so the
-    change is invisible now.  From R7d-c-2 the pass folds the loan to bound a
+    re-posted ledger.  Nothing on today's generation path reads a loan: its
+    reads off the schedule are FOUR of ``schedule.calendar`` and TWO of
+    ``schedule.write_period_ids``, which is the whole set, so the change is
+    invisible now.  From R7d-c-2 the pass folds the loan to bound a
     payment, and then generating before the re-sync would fold a ledger the
     wipe had emptied.  The new order is the one that survives that step.
     The new cadence is persisted by step 4's writer rather than by a line of
