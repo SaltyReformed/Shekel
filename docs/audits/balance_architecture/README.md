@@ -830,16 +830,12 @@ hides.
   ruled here and must be shown FIRING on a planted stale disable. **FIFTEEN live `duplicate-code`
   disables remain in `app/` and not one has been re-measured** (4 in `models/`, 5 in `routes/`, 6 in
   `services/`). The step's first deliverable is the census.
-* [ ] **X-am** `refactor(status): the settled band has two members, not three` -- closes **N-177**.
-  The `Settled` status carries **0 rows on both tables in production** and no writer anywhere assigns
-  it; its only door is the status `<select>` in the two full-edit popovers. **It is in scope because
-  it is a member of the set the cash walk folds on**: `settled_status_ids()` is `{Paid, Received,
-  Settled}` and every reader consumes the SET, never the member, so the balance engine cannot tell
-  the three apart. Its whole distinct meaning is one line of the transition map (`settled: {settled}`,
-  terminal, no revert). **The step must decide whether that meaning is wanted at all** -- a
-  deliberate archive lock is a defensible feature and an unreachable one is dead vocabulary; today it
-  is the second wearing the first's clothes. Its trace owes: whether any row anywhere has ever
-  carried it, and what a delete does to the state machine's two maps.
+* [x] **X-am** `7b0ddae8` -- the `Settled` ARCHIVE is DELETED (**R-HA**): it was ABSORBING and
+  REACHABLE, so a row entered it from one dropdown and no door led out, while the DELETE control on
+  the same card still removed it. Closed **N-177**; as-built in `archive/x_am_as_built_2026-08-27.md`.
+  **What it pins is a CONJUNCTION** -- no state both reachable and absorbing -- not *no terminal
+  states*, which would contradict `credit_card` locked ruling 5. **CC3b must obey it**: a terminal
+  `Credit` re-arms the destroy-but-not-correct asymmetry `deletion_refusal` still permits.
 
 ### Phase E2 -- the super-package boundary (runs LAST; Phase G runs inside it, ruling **R-DQ**)
 
