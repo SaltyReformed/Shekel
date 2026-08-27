@@ -446,7 +446,21 @@ class TestThePreambleDoesNotDecay:
         """
         text = rulings.ARC_DOCS["recurrence"].read_text()
         assert "|---|---|" in text, "the specimen separator is not in the real table"
-        assert rulings.unmigrated_arc_counts()["recurrence"] == 36
+        inside, pipe_lines = False, 0
+        for line in text.splitlines():
+            if inside and line.startswith("## "):
+                break
+            if line.startswith(rulings.ARC_RULING_HEADINGS["recurrence"]):
+                inside = True
+                continue
+            if inside and line.strip().startswith("|"):
+                pipe_lines += 1
+        counted = rulings.unmigrated_arc_counts()["recurrence"]
+        assert counted == pipe_lines - 2, (
+            f"{pipe_lines} lines begin with a pipe and {counted} were counted; "
+            f"exactly TWO -- the header and the separator -- are structure "
+            f"rather than entries"
+        )
 
 
     def test_a_count_the_preamble_omits_is_caught(self, stage_rulings):
