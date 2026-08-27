@@ -65,7 +65,8 @@ def compute_income_statement(
 
     **The window's PERIOD comes from the caller's calendar** (plan step
     C2-f3a), which is a REQUIRED parameter for the reason the contribution
-    tier's is (ruling "How the CONTRIBUTION tier learns its periods"): the
+    tier's is (ruling **R-PC19**, "How the CONTRIBUTION tier learns its
+    periods"): the
     route that calls this already derives one for its own ``<select>``, so
     resolving a second here made the heading and the option the reader picked
     it from two reads of one table on one render.

@@ -168,7 +168,7 @@ assertions only 17 equal the bank's closing balance for their day, and of 110 mo
 bank lines on exact amount only 33 (30%) carry the day the bank posted them. The steps that
 carry it are below; their sequence is `../../plans/steps.md`'s.
 
-## 4. Decisions that govern the remaining work
+## 4. The rulings
 
 **This arc's rulings are in `../../plans/rulings.md`, rows whose `arc` is `balance`.** They moved
 there at `X-ao-1` with `bank_import`'s, and the reason is one this document could not fix for

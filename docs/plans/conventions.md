@@ -85,8 +85,8 @@ end.
    (the ledger's below, the index's rule 14's, the rulings registry's the ledger's own 2,000), a
    runaway backstop each, and rule 3's counts. **The ledger's per-ROW cap is rule 14's twin**: a row
    reached 3,536 characters against a 409-character median, the arc document's argument living in
-   the registry, and **the overflow goes to the OWNING STEP's specification**, never deletion --
-   owed for the 23 rows `X-ao-1` lifted over that cap, `balance:N-370`.
+   the registry, and **the overflow goes to the step that OWNS the ruling** -- its AS-BUILT record
+   where that step shipped, its live specification where it has not (R-HD). 24 rows owe it (N-370).
    **`lessons.md` is capped too, and its retirement path is its own**: a lesson MECHANIZED into a
    gate stops being a lesson and its line moves to that gate's rationale, because an append-only
    file nobody finishes reading loses its lessons as completely as deleting them would.
@@ -123,9 +123,9 @@ end.
    asking. Where a fix must follow another step to be decided correctly it is SEQUENCED behind it
    with the reason stated -- which is a schedule, and is what a deferral is not.
 
-9. **A ruling is recorded as the RULE and its date, one line, under its arc.** The key is
+9. **A ruling is recorded as the RULE and its date, one line, in `rulings.md`.** The key is
    `(arc, id)`, so two arcs may hold one bare id and a citation of an ambiguous one MUST name its
-   arc (rule 10, **N-367**). `rulings.md` holds the arcs it names; the rest until `balance:X-ao-2`.
+   arc (rule 10, **N-367**). Since `balance:X-ao-2` no arc document DECLARES one; each points.
 
 10. **The arc is a COLUMN, never a prefix.** The key is `(arc, id)` and it is unique across the
     corpus. Bare ids keep their exact spelling, because a rename would orphan every citation in
