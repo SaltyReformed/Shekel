@@ -506,6 +506,14 @@ def file_new_swipes(scope: ReviewScope, import_id: int) -> RuleFiling:
         ReviewedBatch(
             matches=(),
             creations=tuple(creations),
+            # **A rule NEVER files a deposit** (ruling **R-GW**): a merchant
+            # answer says where that merchant's SPENDING goes, so there is no
+            # answer it could hold that means *record this money coming in*.
+            # Stated as an empty tuple rather than defaulted, for the reason
+            # the empty match tuple above is: ``__post_init__`` refuses either
+            # on a rule-consented batch, and this is where a future arm would
+            # have to decide rather than inherit.
+            incomes=(),
             # **A rule is the consent** (**R-GH**), which is what
             # ``ReviewedBatch.__post_init__`` holds the empty match tuple above
             # to: the acts a rule may not perform are exactly the acts that

@@ -27,6 +27,7 @@ from app.schemas.validation._helpers import (
     BaseSchema,
     RowId,
     _normalize_empty_inputs,
+    order_token_key,
 )
 from app.services.statement_import import supported_sources
 from app.services.statement_match import (
@@ -34,7 +35,7 @@ from app.services.statement_match import (
     ReviewedRow,
     parse_figure,
 )
-from app.utils.digit_strings import is_ascii_digits, parse_row_id
+from app.utils.digit_strings import parse_row_id
 
 
 def _source_values() -> list[str]:
@@ -105,6 +106,15 @@ _MAX_MATCH_MEMBERS: int = 100
 #: in principle offer more acts than this; the owner is told to apply the pass
 #: in two rather than having half of what they ticked dropped without a word.
 _MAX_BATCH_ITEMS: int = 500
+
+#: The prefix a submitted match item carries.  Its INDEX is the rendered
+#: position of the proposal it came from, so the ids of the item the owner
+#: ticked travel with the tick rather than being re-derived server-side -- the
+#: POST records exactly the ids the form submitted (ruling **R-FP**), and a
+#: proposal re-derived after the fact could differ from the one that was
+#: reviewed.
+_MATCH_PREFIX = "match-"
+
 
 #: What the destination select submits when the owner picks "a new envelope".
 #: A NAMED arm rather than an absent id, and that is plan step X-f6a-3c-2's
@@ -450,144 +460,35 @@ class StatementPurchaseSchema(BaseSchema):
     category_id = RowId(required=False, load_default=None)
 
 
-class RuleAnswerField(fields.Field):
-    """Which of the five things the rule control's one select can say.
+class StatementIncomeSchema(BaseSchema):
+    """Validate ONE bank line becoming an income row (ruling **R-GW**).
 
-    **One field because the owner makes one choice**, exactly as
-    :class:`PurchaseDestination` is one field: the control is a single
-    ``<select>`` whose options are each recurring envelope on the account, *a
-    new envelope*, *ask me every time*, *never a purchase*, and -- on a
-    merchant with no rule only -- *I have not said*.  Splitting it into an id
-    plus an implied arm is what let a form name two destinations at once one
-    leaf earlier.
+    **One line id and nothing else, and the emptiness is the design.**  Its
+    sibling :class:`StatementPurchaseSchema` needs a destination because a
+    purchase is filed against a container the owner chooses between; an income
+    row is filed against nothing, so there is no arm to name and no name or
+    category to state.  The figure and the day come from the recorded LINE
+    inside the same transaction (:mod:`app.services.statement_match._income`),
+    so a stale page cannot commit a number the bank did not state.
 
-    **Four of the five are ANSWERS and the fifth is the absence of one**
-    (ruling **R-GI**).  This field grades the wire and does not know the
-    difference; the route is where :data:`NOT_SAID` stops being a value and
-    becomes an item that is simply not submitted to the door.
+    **A one-field schema still earns its place** rather than the list holding
+    bare ids: it is what refuses a forged ``line_id`` -- a negative, a
+    thousand-digit string, a word -- through the same :class:`RowId` every
+    other id on this pass is graded by, and it is the shape a second fact
+    about a deposit would be added to.
 
-    **The id half is exactly as strict as :class:`RowId`**, through the same
-    :func:`~app.utils.digit_strings.parse_row_id`: after the ``t:`` prefix,
-    ``'٧'``, ``' 7 '``, ``'+7'``, ``'0_7'``, ``'007'``, ``'-7'`` and ``'0'``
-    name no template here either.
+    **Which lines may be recorded this way is the DOOR's question, not this
+    schema's**: that the line is on this account, that nothing already claims
+    it, and that it is money ARRIVING are all facts about the database rather
+    than about the submission, and a nested error here would refuse the ENTIRE
+    pass -- the failure mode :class:`StatementPurchaseSchema` records having
+    cost 124 proposals and 90 creations once.
     """
 
-    default_error_messages = {
-        "invalid": "That is not somewhere a merchant's spending can go.",
-    }
-
-    def _deserialize(self, value, attr, data, **kwargs):
-        """Return the answer *value* names.
-
-        Args:
-            value: The submitted value.
-            attr: The field name being loaded (marshmallow's contract).
-            data: The whole payload being loaded (marshmallow's contract).
-            **kwargs: Marshmallow's contract, unused.
-
-        Returns:
-            :data:`NOT_SAID`, :data:`NEVER`, :data:`ALWAYS_ASK`,
-            :data:`NEW_ENVELOPE`, or the ``int`` id of a recurring definition.
-
-        Raises:
-            ValidationError: When *value* is none of those.
-        """
-        if value in (NOT_SAID, NEVER, ALWAYS_ASK, NEW_ENVELOPE):
-            return value
-        if not isinstance(value, str) or not value.startswith(
-            _TEMPLATE_VALUE_PREFIX,
-        ):
-            raise self.make_error("invalid")
-        row_id = parse_row_id(value[len(_TEMPLATE_VALUE_PREFIX):])
-        if row_id is None:
-            raise self.make_error("invalid")
-        return row_id
-
-
-class MerchantRuleSchema(BaseSchema):
-    """Validate ONE merchant's stated destination.
-
-    **It states no owner and no account**, for the reason
-    :class:`StatementPurchaseSchema` states none: whose account this is, is
-    the route's one proved statement.
-
-    **The merchant is an ID and is exactly as strict as every other id here**
-    (plan step ``bank_import:X-gd-1``).  It was free text from a BANK, so the
-    schema could say nothing about it at all and the whole defence was a scope
-    comparison in the service.  A merchant is a row now:
-    :class:`RowId` refuses ``'٧'``, ``' 7 '``, ``'+7'``, ``'007'``, ``'-7'``
-    and ``'0'`` before the service is asked, and
-    ``fk_merchant_rules_merchant_account`` refuses a well-formed id that
-    is not this account's.
-
-    **The name and the category are PARAMETERS OF ONE ANSWER**, like
-    ``StatementPurchaseSchema``'s, and whether that answer is COMPLETE is the
-    service's question rather than this schema's -- for the same reason, one
-    door over: a ``@validates_schema`` rule refuses the WHOLE payload, and this
-    payload carries every merchant on the account.
-    """
-
-    @pre_load
-    def strip_empty_strings(self, data, **kwargs):
-        """Drop empty inputs; map empties on nullable fields to None."""
-        return _normalize_empty_inputs(self, data)
-
-    merchant_id = RowId(
+    line_id = RowId(
         required=True,
-        error_messages={"required": "Which merchant is this about?"},
+        error_messages={"required": "Which statement line are you recording?"},
     )
-    answer = RuleAnswerField(
-        required=True,
-        error_messages={"required": "Where should this merchant's spending go?"},
-    )
-    envelope_name = fields.String(
-        required=False, load_default=None,
-        validate=validate.Length(min=1, max=200),
-    )
-    category_id = RowId(required=False, load_default=None)
-
-
-class MerchantRuleBatchSchema(Schema):
-    """Validate ONE pass over the rule section: every merchant it renders.
-
-    Plan step ``bank_import:X-f6a-3d``.  **A plain
-    :class:`marshmallow.Schema`, not a
-    :class:`~app.schemas.validation._helpers.BaseSchema`**, for the reason
-    :class:`StatementBatchSchema` is: that base drops a FORM's ``csrf_token``
-    with ``unknown = EXCLUDE``, and this schema never sees a form --
-    :func:`rule_payload` has already turned one into a list.  Inheriting it
-    would silently swallow a key this schema does not declare.
-    """
-
-    class Meta:
-        """Refuse an unknown key rather than dropping it silently."""
-
-        unknown = RAISE
-
-    rules = fields.List(
-        fields.Nested(MerchantRuleSchema), required=False,
-        load_default=list,
-    )
-
-    @validates_schema
-    def validate_pass_is_not_too_large(self, data, **kwargs):
-        """Refuse a submission answering for more merchants than one may carry.
-
-        Args:
-            data: The deserialized payload.
-            **kwargs: Marshmallow's context, unused.
-
-        Raises:
-            ValidationError: When it names more than :data:`_MAX_RULE_ITEMS`.
-        """
-        total = len(data.get("rules", ()))
-        if total > _MAX_RULE_ITEMS:
-            raise ValidationError(
-                f"That is {total:,} merchants to answer for at once, and this "
-                f"page records at most {_MAX_RULE_ITEMS:,}.  Nothing was "
-                f"changed.",
-                field_name="rules",
-            )
 
 
 class StatementBatchSchema(Schema):
@@ -627,6 +528,15 @@ class StatementBatchSchema(Schema):
         fields.Nested(StatementPurchaseSchema), required=False,
         load_default=list,
     )
+    #: The lines of money COMING IN the owner ticked (ruling **R-GW**).  **Its
+    #: own list rather than a third arm of ``creations``**: that schema
+    #: REQUIRES a destination, and an income row has none, so folding them
+    #: would mean a required field that is meaningless for half its members --
+    #: and the two reach different doors writing different shapes.
+    incomes = fields.List(
+        fields.Nested(StatementIncomeSchema), required=False,
+        load_default=list,
+    )
 
     @validates_schema
     def validate_pass_is_not_too_large(self, data, **kwargs):
@@ -643,7 +553,14 @@ class StatementBatchSchema(Schema):
             ValidationError: When the pass names more than
                 :data:`_MAX_BATCH_ITEMS` acts in total.
         """
-        total = len(data.get("matches", ())) + len(data.get("creations", ()))
+        total = (
+            len(data.get("matches", ()))
+            + len(data.get("creations", ()))
+            # **Every kind of act, and the sum is why this arm is stated over
+            # a list rather than per field**: a third list with its own
+            # ceiling would admit half again as much work as the bound says.
+            + len(data.get("incomes", ()))
+        )
         if total > _MAX_BATCH_ITEMS:
             raise ValidationError(
                 f"That is {total:,} things to apply at once, and this page "
@@ -653,93 +570,26 @@ class StatementBatchSchema(Schema):
             )
 
 
-#: What the rule control submits for a merchant the owner has not answered
-#: for, which is that row's DEFAULT.  It means *state nothing about this
-#: merchant*: the route drops such an item before the service sees it, so no
-#: row is written and none is removed.
-#:
-#: **It is rendered ONLY on a merchant with no rule** (ruling **R-GS**, plan
-#: step ``bank_import:X-gd-2``).  It used to be the WITHDRAWAL as well -- pick
-#: it on an answered merchant and the row was deleted -- and there is no
-#: withdrawal now: *ask me every time* (:data:`ALWAYS_ASK`) is the answer that
-#: replaced it, and a rule row once made is only ever restated.  A crafted body
-#: submitting this for an answered merchant therefore changes nothing rather
-#: than un-stating an answer, which is the direction the absence of a delete
-#: door has to fail in.
-#:
-#: **A NAMED arm rather than the empty string, and the first draft of this
-#: constant WAS the empty string and was unreachable.**  ``BaseSchema``'s
-#: ``@pre_load`` normalizer drops every ``""`` a form submits, because for an
-#: ordinary optional control that means *untouched*; here it means something
-#: the door has to be able to read, so the drop turned ``required=True`` into
-#: "this answer is missing".  Caught by this package's own wire test.  It is
-#: the same correction plan step X-f6a-3c-2 made to :data:`NEW_ENVELOPE` -- an
-#: arm is STATED, never inferred from an absence.
-NOT_SAID: str = "unset"
-
-#: What it submits for *never a purchase*.  A NAMED arm rather than an absence,
-#: for the reason :data:`NEW_ENVELOPE` is one: "the owner said never" and "the
-#: owner has not said" are different answers and the screen shows them
-#: differently, so the wire has to be able to tell them apart.
-NEVER: str = "never"
-
-#: What it submits for *ask me every time*, ruling **R-GS**'s fourth answer.
-#:
-#: **It is a different value from :data:`NOT_SAID` even though the two have the
-#: same effect on money today**, and that is the whole reason it exists: one is
-#: a question the owner still owes an answer to and the other is a question
-#: they have answered.  Collapsing them onto one wire value would make the
-#: answer unsayable, which is precisely the mistake :data:`NEVER` exists not to
-#: repeat -- and the screen that asks for rules
-#: (``bank_import:X-gf``'s exception queue) reads exactly this difference.
-ALWAYS_ASK: str = "ask"
-
-#: The prefix a submitted rule answer carries, keyed by the merchant's own
-#: rendered POSITION rather than by the merchant itself.  It was keyed by
-#: position because a merchant was free TEXT from a bank -- spaces, apostrophes
-#: and parentheses -- and a field name built from it could not be split back
-#: apart reliably.  A merchant is a ROW as of plan step ``bank_import:X-gd-1``,
-#: so ``rule-<merchant_id>`` would now split as cleanly as
-#: ``destination-<id>`` does; the position key is KEPT because nothing depends
-#: on it being unforgeable -- the merchant id travels in
-#: :data:`_RULE_MERCHANT_PREFIX` and is what the door acts on -- and changing
-#: it would be churn on a control ``bank_import:X-gf`` rebuilds whole.
-_RULE_PREFIX = "rule-"
-_RULE_MERCHANT_PREFIX = "rule_merchant-"
-_RULE_NAME_PREFIX = "rule_name-"
-_RULE_CATEGORY_PREFIX = "rule_category-"
-
-#: What a TEMPLATE answer's value is prefixed with, so one control can carry
-#: three kinds of answer without a second field saying which kind it is.  The
-#: id half is read through the same :func:`~app.utils.digit_strings.parse_row_id`
-#: every other row id on this screen goes through.
-_TEMPLATE_VALUE_PREFIX = "t:"
-
-#: The most merchants one submission of the rule section may answer for.
-#: **A separate ceiling from :data:`_MAX_BATCH_ITEMS`, and the distinction is
-#: the subject rather than a second copy of one rule.**  That one bounds MONEY
-#: acts, each of which runs a settle door and costs about 10 ms; a rule
-#: statement writes at most one small row and moves nothing, and the section
-#: submits every merchant it renders -- so most of a real pass is no-ops.
-#: Bounded by what an account can actually show: the developer's own 361-line
-#: export names 59 distinct merchants, and ``_secu_csv.MAX_LINES`` caps an
-#: import at 20,000 lines.  2,000 is far past any real statement and still
-#: refuses a body inventing merchants.
-_MAX_RULE_ITEMS: int = 2000
-
-#: The prefix a submitted match item carries.  Its INDEX is the rendered
-#: position of the proposal it came from, so the ids of the item the owner
-#: ticked travel with the tick rather than being re-derived server-side -- the
-#: POST records exactly the ids the form submitted (ruling **R-FP**), and a
-#: proposal re-derived after the fact could differ from the one that was
-#: reviewed.
-_MATCH_PREFIX = "match-"
-
 #: The prefix a submitted destination carries, keyed by its BANK LINE's id
 #: rather than by a position.  ``reconcile.py``'s ``settled_amount-<id>`` boxes
 #: are keyed the same way and for the same reason its comment gives: paired
 #: arrays would depend on the browser submitting several lists in the same
 #: order, which is a property of the document rather than of the form.
+#: What a line's RECORD-AS-INCOME checkbox is named with (ruling **R-GW**,
+#: plan step ``bank_import:X-gf-1``).  A checkbox rather than a select, because
+#: there is nothing to choose between: an income row is filed against no
+#: container, so the only question is whether to record it.  **A browser
+#: submits a checkbox only when it is TICKED**, so an untouched control does
+#: not appear in the form at all -- which is what makes R-FP's "nothing is
+#: applied that the owner did not accept" structural here rather than a
+#: default that has to be got right, the way :data:`LEAVE_ALONE` is for the
+#: select beside it.
+_INCOME_PREFIX = "record_income-"
+
+#: What a submitted destination carries, keyed by its BANK LINE's id.  Keyed
+#: that way rather than by a rendered position because a destination names one
+#: LINE, and paired arrays would depend on the browser submitting several lists
+#: of equal length -- which a crafted body need not do.
 _DESTINATION_PREFIX = "destination-"
 _ENVELOPE_NAME_PREFIX = "envelope_name-"
 _CATEGORY_PREFIX = "category_id-"
@@ -783,7 +633,7 @@ def _match_items(form) -> list:
     """
     getlist = form.getlist
     items = []
-    for raw in sorted(set(getlist("apply")), key=_sort_key):
+    for raw in sorted(set(getlist("apply")), key=order_token_key):
         item = {
             "line_ids": getlist(f"{_MATCH_PREFIX}{raw}-line_ids"),
             "rows": getlist(f"{_MATCH_PREFIX}{raw}-rows"),
@@ -793,53 +643,6 @@ def _match_items(form) -> list:
             item["residual"] = residual
         items.append(item)
     return items
-
-
-#: The most digits a submitted ordering token may carry and still be READ as a
-#: number.  A rendered proposal's index is bounded by :data:`_MAX_BATCH_ITEMS`
-#: and a bank line's key by a 32-bit serial, so nine is far past anything this
-#: application emits -- and the bound is what licenses the ``int()`` below.
-#: :func:`~app.utils.digit_strings.is_ascii_digits` is TRUE for an arbitrarily
-#: long run of digits, which CPython then refuses to convert
-#: (``sys.get_int_max_str_digits()``, 4,300), and that module's own docstring
-#: says so in as many words: *"a true answer does NOT license ``int()``"*.
-_MAX_ORDER_DIGITS: int = 9
-
-
-def _sort_key(raw: str) -> tuple:
-    """Return a total order over submitted ordering tokens.
-
-    Numeric where the token is a number this application could have emitted,
-    lexical otherwise -- so the applied order is the rendered order, which is
-    what the receipt reads down, and so **no submitted string can raise here**.
-
-    **``str.isdigit`` is the wrong predicate and this project already owns
-    that fact** (:mod:`app.utils.digit_strings`, plan step X-ae, finding
-    **N-136**): it is true for 888 characters, 128 of which make ``int()``
-    raise -- ``'\N{SUPERSCRIPT TWO}'`` among them.  A first draft of this
-    function used it and claimed in its own docstring that a crafted
-    submission "cannot raise a ``TypeError`` inside a sort", which guarded the
-    wrong exception one token before reintroducing ``ValueError``.  There is no
-    ``ValueError`` arm in ``app/error_handlers.py``, so ``apply=%C2%B2`` was a
-    500 on the door that applies a whole reviewed pass.  Found by adversarial
-    security review 2026-08-19.
-
-    **It is NOT :func:`~app.utils.digit_strings.parse_row_id`**, and the
-    difference is the domain rather than the strictness: this token is an
-    ORDINAL, not a row id, so ``0`` is a legitimate value -- it is the first
-    rendered proposal and the hand-build form's own hidden index -- where
-    ``parse_row_id`` refuses it by design.  Reading these through that function
-    would push the first item of every pass to the end.
-
-    Args:
-        raw: A submitted ``apply`` value, or a ``destination-`` field's key.
-
-    Returns:
-        Its sort key.  Every ``str`` has one.
-    """
-    if is_ascii_digits(raw) and len(raw) <= _MAX_ORDER_DIGITS:
-        return (0, int(raw), "")
-    return (1, 0, raw)
 
 
 def _creation_items(form) -> list:
@@ -854,7 +657,8 @@ def _creation_items(form) -> list:
     names put line 100 between 10 and 2, because ``destination-100`` sorts
     lexically -- and the receipt this order becomes is meant to read down the
     page, which the screen renders in bank-line order.  So the KEY is what is
-    sorted, through the same :func:`_sort_key` the ticks use.
+    sorted, through the same
+    :func:`~app.schemas.validation._helpers.order_token_key` the ticks use.
 
     Args:
         form: The request's ``MultiDict``.
@@ -869,7 +673,7 @@ def _creation_items(form) -> list:
         if field.startswith(_DESTINATION_PREFIX)
     ]
     items = []
-    for key in sorted(keys, key=_sort_key):
+    for key in sorted(keys, key=order_token_key):
         destination = form[f"{_DESTINATION_PREFIX}{key}"]
         if destination == LEAVE_ALONE:
             continue
@@ -882,46 +686,37 @@ def _creation_items(form) -> list:
     return items
 
 
-def rule_payload(form) -> dict:
-    """Return one pass over the rule section as :class:`MerchantRuleBatchSchema` loads it.
+def _income_items(form) -> list:
+    """Return the inflow lines the form ticked, in bank-line order.
 
-    **The form shape lives HERE, beside the schema that grades it**, for the
-    reason :func:`batch_payload` gives.
+    Ruling **R-GW**, plan step ``bank_import:X-gf-1``.  **Presence IS the
+    tick**: a browser submits a checkbox only when it is ticked, so an item
+    here exists exactly when the owner ticked one, and there is no do-nothing
+    value to drop the way :data:`LEAVE_ALONE` is dropped from the select
+    beside it.
 
-    **Every merchant the section rendered submits an item, including the ones
-    the owner did not touch.**  There is no way to tell an untouched control
-    from a deliberately-repeated answer on the wire, and inventing one -- a
-    hidden "what it was" field -- would be a value the submitter could forge
-    into a write nobody asked for.  The SERVICE compares each answer against
-    what is stored and reports only what changed, which is the same question
-    asked where the answer is actually known.
+    **The VALUE is never read**, and that is deliberate rather than lax: the
+    only fact the wire carries is which line was ticked, which is in the field
+    NAME, so a submitted value has nothing to say and reading one would invent
+    a second thing a forged body could vary.
+
+    **The order is the LINE's**, through the same
+    :func:`~app.schemas.validation._helpers.order_token_key` the ticks and
+    the destinations use, because the receipt this order becomes is meant to
+    read down the page.
 
     Args:
         form: The request's ``MultiDict``.
 
     Returns:
-        ``{"rules": [...]}``.  Raw strings: the schema is what reads them.
+        One ``{"line_id": ...}`` per ticked line, ascending by its line key.
+        A raw string: the schema is what reads it.
     """
     keys = [
-        field[len(_RULE_PREFIX):] for field in form.keys()
-        if field.startswith(_RULE_PREFIX)
+        field[len(_INCOME_PREFIX):] for field in form.keys()
+        if field.startswith(_INCOME_PREFIX)
     ]
-    items = []
-    for key in sorted(keys, key=_sort_key):
-        merchant = form.get(f"{_RULE_MERCHANT_PREFIX}{key}")
-        if merchant is None:
-            # A rule answer with no merchant beside it names nothing.  It is
-            # dropped rather than refused because it is unreachable from this
-            # screen -- the two fields are rendered together -- and because a
-            # crafted body naming an answer for nobody has asked for nothing.
-            continue
-        items.append({
-            "merchant_id": merchant,
-            "answer": form[f"{_RULE_PREFIX}{key}"],
-            "envelope_name": form.get(f"{_RULE_NAME_PREFIX}{key}", ""),
-            "category_id": form.get(f"{_RULE_CATEGORY_PREFIX}{key}", ""),
-        })
-    return {"rules": items}
+    return [{"line_id": key} for key in sorted(keys, key=order_token_key)]
 
 
 def batch_payload(form) -> dict:
@@ -941,9 +736,10 @@ def batch_payload(form) -> dict:
         form: The request's ``MultiDict``.
 
     Returns:
-        ``{"matches": [...], "creations": [...]}``.
+        ``{"matches": [...], "creations": [...], "incomes": [...]}``.
     """
     return {
         "matches": _match_items(form),
         "creations": _creation_items(form),
+        "incomes": _income_items(form),
     }

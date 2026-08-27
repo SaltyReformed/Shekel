@@ -30,17 +30,19 @@ from werkzeug.datastructures import MultiDict
 
 from app.services.statement_match import ReviewedRow, RowKind
 
-from app.schemas.validation.statements import (  # pylint: disable=protected-access
+from app.schemas.validation.merchant_rules import (  # pylint: disable=protected-access
     _MAX_RULE_ITEMS,
     ALWAYS_ASK,
-    LEAVE_ALONE,
     NEVER,
-    NEW_ENVELOPE,
     NOT_SAID,
     MerchantRuleBatchSchema,
+    rule_payload,
+)
+from app.schemas.validation.statements import (
+    LEAVE_ALONE,
+    NEW_ENVELOPE,
     StatementBatchSchema,
     batch_payload,
-    rule_payload,
 )
 
 
@@ -551,7 +553,11 @@ class TestTheBatchSchemaRefusesWhatItDoesNotDeclare:
             ("csrf_token", "x"),
         ])))
 
-        assert loaded == {"matches": [], "creations": []}
+        # SPELLED OUT rather than derived from the schema's own field list:
+        # deriving it would make this a tautology, and the whole point is that
+        # a THIRD kind of act (ruling **R-GW**'s incomes) added on one side
+        # and not the other is caught here.
+        assert loaded == {"matches": [], "creations": [], "incomes": []}
 
 
 class TestTheRuleSectionOnTheWire:
@@ -679,7 +685,7 @@ class TestTheRuleSectionOnTheWire:
         ``apply=%C2%B2`` was a 500 on the money door until plan step
         X-f6a-3c-2, because ``str.isdigit`` is true for 888 characters and
         ``int()`` refuses 128 of them.  These keys are sorted through the same
-        ``_sort_key``, so the fix covers them -- and this is what says so.
+        ``order_token_key``, so the fix covers them -- and this is what says so.
         """
         payload = rule_payload(_form(
             [("rule-\N{SUPERSCRIPT TWO}", NEVER),

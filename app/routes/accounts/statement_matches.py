@@ -72,21 +72,24 @@ from app.routes.accounts._statement_doors import (
 )
 from app.routes.accounts._cash_page import load_cash_account_or_404
 from app.schemas.validation import form_payload
-from app.schemas.validation.statements import (
+from app.schemas.validation.merchant_rules import (
     ALWAYS_ASK,
     NEVER,
-    NEW_ENVELOPE,
     NOT_SAID,
     MerchantRuleBatchSchema,
+    rule_payload,
+)
+from app.schemas.validation.statements import (
+    NEW_ENVELOPE,
     StatementBatchSchema,
     StatementMatchReleaseSchema,
     batch_payload,
-    rule_payload,
 )
 from app.services.category_service import list_active_categories
 from app.services.statement_match import (
     Consent,
     HandTotals,
+    IncomeCreation,
     MatchSubmission,
     NewEnvelope,
     RuleAnswer,
@@ -262,6 +265,13 @@ def _submitted_batch(submitted) -> ReviewedBatch:
             )
             for item in submitted["creations"]
         ),
+        # **The lines of money COMING IN the owner ticked** (ruling **R-GW**).
+        # One id each and nothing to unpack: an income row is filed against no
+        # container, so there is no arm to read out of the submission.
+        incomes=tuple(
+            IncomeCreation(line_id=item["line_id"])
+            for item in submitted["incomes"]
+        ),
     )
 
 
@@ -344,7 +354,14 @@ def apply_statement_review(account_id):
         "A reviewed statement pass was applied.",
         user_id=current_user.id,
         account_id=account_id,
-        item_count=len(submitted["matches"]) + len(submitted["creations"]),
+        item_count=(
+            len(submitted["matches"])
+            + len(submitted["creations"])
+            # **Every kind of act this pass carried** (ruling **R-GW**).  A
+            # count that named two of three kinds would make the audit trail
+            # disagree with ``applied_count`` for any pass holding a deposit.
+            + len(submitted["incomes"])
+        ),
         applied_count=outcome.applied_count,
         refused_count=outcome.refused_count,
         settled_count=outcome.settled_count,
@@ -360,6 +377,10 @@ def apply_statement_review(account_id):
         residual_total=str(outcome.residual_total),
         recorded_count=outcome.recorded_count,
         envelopes_created=outcome.envelopes_created,
+        # **The third money effect** (ruling **R-GW**): a deposit recorded here
+        # is a row the app did not hold at all, in the opposite direction from
+        # ``recorded_count``.  Named for the reason the two above it were.
+        deposited_count=outcome.deposited_count,
     )
 
     # A FRESH scope for the ANSWER, and only on the path that WROTE.  The pass

@@ -102,6 +102,21 @@
            different questions and the total nets: the count is how many rows
            are now waiting for a category, the total is how much money reached
            the Uncategorized bucket. #}
+        {# THE DEPOSIT LINE (ruling R-GW).  The comment ABOVE belongs to the
+           residual block further down, which this one was inserted in front
+           of; both are read together and neither describes the other.  Its own sentence beside the
+           recorded-as-a-purchase one above, and never folded into it: that
+           line reads "recorded as a purchase your records did not have",
+           which is FALSE of money coming in, and a count whose caption is
+           false of half its members is what this panel has already been
+           corrected for twice. #}
+        {% if outcome.deposited_count %}
+        {# ONE LINE in the source on purpose, the rule its siblings above
+           follow: Jinja keeps the newlines and the indentation it is given,
+           so a sentence wrapped here is a sentence no test can assert as a
+           sentence -- and this one is a MONEY receipt. #}
+        <li>{{ outcome.deposited_count }} bank line(s) recorded as money that arrived and your records did not hold. They have no category yet.</li>
+        {% endif %}
         {% if outcome.residual_count %}
         <li>
           {{ outcome.residual_count }} difference(s) totalling
@@ -633,7 +648,9 @@
        to record as new, and the owner is the one who knows which.
 
        Inflows are absent: a purchase is an expense, so a deposit or a card
-       refund can only ever be matched to a row.
+       refund is not one.  Since ruling R-GW they have a card of their own
+       below -- "Money that arrived and your records do not hold" -- and
+       before it they had no act on this screen at all.
 
        THE SELECT IS THE TICK (developer ruling, 2026-08-19).  Its default is
        "leave this line alone", so a line is recorded only where the owner
@@ -878,6 +895,142 @@
     </div>
     {% endif %}
 
+    {# ── Money that arrived and your records do not hold ─────────────── #}
+    {# RULING R-GW, plan step bank_import:X-gf-1.  THIS CARD MOVES MONEY.
+
+       It is the mirror of the create card above, on the direction that had no
+       door at all.  A deposit is not a purchase -- a purchase is an expense
+       (ck_transaction_entries_positive_amount) -- so the create door refuses
+       one, and a match needs a row of yours on the other side.  Measured on
+       the developer's own data: EIGHT unmatched inflows are smaller than the
+       smallest row the form below offers ($39.54), so no row and no sum of
+       rows can equal one, and every match that would dispose of one asserts a
+       falsehood.  They sat in the awaiting-review count forever.
+
+       THE TICK IS THE WHOLE CONTROL, and there is no select because there is
+       nothing to choose between: an income row is filed against no container.
+       A browser submits a checkbox only when it is ticked, so an untouched
+       line is not in the submission at all -- R-FP is structural here rather
+       than a default that has to be got right.
+
+       THE WARNING IS THE POINT OF THE CARD, not decoration.  SEVEN of the
+       sixteen inflows on the developer's own statement are PAYROLL deposits
+       his app already holds as two or three rows each, and recording one here
+       would book $2,573.42 of income the books already carry.
+
+       TWO signals render per line and the second is why this card is safe.
+       The pass's own near-miss reason (search_gap_for) fires only where some
+       TIER admitted a candidate and threw it away -- measured at 4 of these
+       16, and it MISSES three payroll deposits worth $7,838.92 whose app rows
+       sit $39 outside any tier's bound.  So the card also states what the
+       books already hold for that line's own pay period
+       (income_already_recorded_in), which is a FACT about the period rather
+       than a candidate for the line -- the distinction R-GD's third amendment
+       turns on.  Before it, those three rendered a bare one-click tick with
+       only the paragraph above between the owner and a duplicate, which is
+       the "a warning paragraph is not a door" shape R-GJ measured $7,412.94
+       going through. #}
+    {% if review.recordable_inflows %}
+    <div class="card mb-3">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-box-arrow-in-down"></i> Money that arrived and your records do not hold</span>
+        <span class="badge text-bg-secondary">{{ review.recordable_inflows | length }}</span>
+      </div>
+      <div class="card-body">
+        <p class="text-body-secondary small mb-0">
+          These are every line of money COMING IN that no match above explains.
+          Ticking one records it as income you did not have, dated the day your
+          bank paid it in. It lands with <strong>no category</strong>, because
+          the app does not know what it was -- give it one whenever you do.
+        </p>
+        <p class="text-body-secondary small mb-0">
+          <strong>Check the match form below first.</strong> A paycheck your
+          records already hold as two or three rows is money you HAVE recorded,
+          and ticking it here would count it twice. This is for money nothing of
+          yours accounts for: a dividend, a refund, a deposit you never budgeted.
+        </p>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0">
+          <thead>
+            <tr>
+              <th scope="col" class="text-center">Record</th>
+              <th scope="col">Your bank says</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in review.recordable_inflows %}
+            <tr>
+              <td class="text-center">
+                {% if not item.withheld %}
+                <input class="form-check-input" type="checkbox"
+                       name="record_income-{{ item.line.line_id }}" value="record"
+                       id="income-{{ item.line.line_id }}"
+                       aria-label="Record this deposit as income">
+                {% endif %}
+              </td>
+              <td>
+                {# The LABEL is rendered only where its input is.  A `for=` that
+                   names no control is a dangling label, which is what the
+                   withheld rows had while the condition sat on the input
+                   alone. #}
+                {% if not item.withheld %}<label for="income-{{ item.line.line_id }}" class="mb-0">{% endif %}
+                  <span class="fw-semibold">{{ money(item.line.amount) }}</span>
+                  <span class="text-body-secondary">{{ item.line.posted_on }}</span>
+                {% if not item.withheld %}</label>{% endif %}
+                <div class="small text-body-secondary">{{ item.line.description }}</div>
+                {% if item.withheld %}
+                {# NO CONTROL, and the SERVER's sentence instead -- never a
+                   Jinja branch on the two arms, which is the rule
+                   ParkedLine.reason states: a template restating a partition
+                   is a second place for it to be wrong.  The door refuses both
+                   (a day no saved period covers, and a day that has not
+                   happened yet), so a tick here would be a control whose
+                   submission can never succeed. #}
+                <div class="small text-warning-emphasis mt-1">
+                  <i class="bi bi-exclamation-triangle"></i>
+                  {{ item.withheld }}
+                </div>
+                {% endif %}
+                {% set held = review.income_already_recorded_in(item.line) %}
+                {% if held %}
+                {# WHAT THE BOOKS ALREADY HOLD for this line's pay period.
+                   Server-derived and NAMED, so the owner can find the rows in
+                   the match form below rather than being told to go looking.
+                   It is not a suggestion that this deposit IS them. #}
+                <div class="small text-warning-emphasis mt-1">
+                  <i class="bi bi-exclamation-triangle"></i>
+                  This pay period already holds {{ held.rows | length }} income row(s) totalling {{ money(held.total) }} that no line explains{% for row in held.rows %}{% if loop.first %}: {% else %}, {% endif %}{{ row.label }} {{ money(row.cash_amount) }}{% endfor %}. If this deposit is those, match it below instead of recording it here.
+                </div>
+                {% endif %}
+                {% set gap = review.search_gap_for(item.line) %}
+                {% if gap %}
+                {# The pass's OWN sentence (plan step X-ge-1), rendered where
+                   the cheap wrong act is: recording a deposit the app already
+                   holds is the duplicate this arc measures at $356.61 for one
+                   $178.29 movement, in the other direction. #}
+                <div class="small text-warning-emphasis mt-1">
+                  <i class="bi bi-exclamation-triangle"></i>
+                  Before recording this as new income, check the match form
+                  below: {{ gap }}.
+                </div>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="card-footer small text-body-secondary">
+        A recorded deposit goes in with no category, so it shows under
+        Uncategorized Income until you file it. Undoing its match removes the
+        row again -- unless you have edited it since, including giving it a
+        category, in which case it is your record and the undo says so rather
+        than deleting your work.
+      </div>
+    </div>
+    {% endif %}
+
     <div class="d-flex justify-content-end align-items-center gap-2 mb-3">
       <span class="htmx-indicator text-body-secondary small">
         <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
@@ -986,7 +1139,7 @@
      a property of the document.  Merge them, or add an hx-include, and
      _match_items would union proposal 0's hidden ids with this group's ticks
      into ONE submission naming rows the owner never grouped.  A non-numeric
-     index cannot collide with a rendered position, and _sort_key already sorts
+     index cannot collide with a rendered position, and order_token_key already sorts
      it last.  Named by adversarial test-quality review 2026-08-19. #}
   <form method="post" id="hand-build-form"
         action="{{ url_for('accounts.apply_statement_review', account_id=account.id) }}"
@@ -1049,8 +1202,9 @@
                          the REMEDY is: this form is how an owner asserts a
                          pairing the score would not guess (ruling R-FP).  One
                          fact on the review set, two renders -- the danger and
-                         the fix are in different cards, and an inflow reaches
-                         only this one. #}
+                         the fix are in different cards.  It was "an inflow
+                         reaches only this one" until ruling R-GW gave a
+                         deposit a card of its own, which renders it too. #}
                       {% set gap = review.search_gap_for(line) %}
                       {% if gap %}
                       <div class="text-warning-emphasis">

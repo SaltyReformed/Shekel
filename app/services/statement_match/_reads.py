@@ -23,7 +23,7 @@ out, no Flask import.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
@@ -38,19 +38,17 @@ from ._candidates import (
     unmatched_destinations,
     unmatched_rows,
 )
-from ._creations import PurchaseDestination, envelope_answer_key
 from ._offers import (
     BankLine,
     CandidateRow,
     MatchProposal,
 )
-from ._bars import CreationBars, ParkedLine
+from ._bars import ParkedLine
+from ._leftovers import CreatableLine, RecordableInflow, leftovers
 from ._pairing import DAY_WINDOW
-from ._placement import Placement, placements_for
-from ._rules import RuleView
 from ._propose import propose
 from ._scope import ReviewScope
-from ._section import MerchantSection, merchant_section
+from ._section import MerchantSection
 
 
 @dataclass(frozen=True)
@@ -126,48 +124,59 @@ class ReviewBounds:
 
 
 @dataclass(frozen=True)
-class CreatableLine:
-    """One bank OUTFLOW the app has no row for, and where it could go.
+class IncomeAlreadyRecorded:
+    """The unexplained INCOME the books already hold for one deposit's period.
 
-    Plan step ``bank_import:X-f6a-3b``, ruling **R-FS**'s third shape.  These
-    are the lines the matcher can never explain, because the app records a
-    period's groceries as one envelope and the bank records every swipe:
-    measured on the developer's own statement **91** unmatched outflows survive
-    every proposal, of which 74 are card swipes worth `$3,383.49` -- the case
-    R-FS names -- and 17 are ACH debits the app may already hold in another
-    shape, which the screen SAYS rather than filtering on the bank's prose.
+    Ruling **R-GW**, added after this step's own adversarial review measured
+    what the card was really protected by.  **Recording a deposit the books
+    already hold is the only way this door can double-count money**, and the
+    per-line safeguard the card was written around -- the pass's own near-miss
+    sentence (:meth:`ReviewSet.search_gap_for`) -- fires only where some TIER
+    admitted a candidate and declined it.  Measured on the developer's own
+    data 2026-08-27: it fires on **4 of 16** recordable inflows, and the three
+    it misses hardest are `$2,612.98`, `$2,612.97` and `$2,612.97` payroll
+    deposits -- **`$7,838.92`** -- each sitting in a pay period whose books
+    hold a `$2,473.38` salary row nothing explains.  Those rendered a bare
+    one-click tick, with only a card-level paragraph between the owner and a
+    duplicate; *a warning paragraph is not a door* is what ruling **R-GJ**
+    measured `$7,412.94` going through.
+
+    **It is a FACT and not a candidate**, which is the distinction ruling
+    **R-GD**'s third amendment turns on: that amendment withdrew the reviewed
+    line's candidate LIST because no bound made one anything but noise -- 0 of
+    18 inspected correct.  This names no candidate and scores nothing.  It
+    answers *does your budget already hold income in this pay period that no
+    bank line explains*, which is a question about the PERIOD, and it is the
+    question whose answer decides whether recording this is a duplicate.
+
+    **The one narrowing is a PROOF, not a threshold**, and it is the same
+    argument ruling **R-GW** rests on: a deposit SMALLER than the smallest
+    unexplained income row in its period cannot be any subset of them, because
+    every one of them is positive and already exceeds it.  So the five
+    dividends of `$0.12`-`$0.22` and the three card refunds of `$11.73`-
+    `$28.29` -- the eight lines this whole step exists for -- say nothing,
+    while every payroll deposit does.  Measured on the developer's own data
+    2026-08-27: **8 of 16** recordable inflows warn, against 4 of 16 for
+    ``search_gap_for`` alone, and the three payroll deposits worth `$7,838.92`
+    that had NO per-line signal now have one.
+
+    **The obvious alternative tightening is refused**: warn only where the
+    rows could SUM to this line is measured false on the shape it exists for --
+    the 2026-03-26 payroll deposit is `$2,573.42` and its period's two rows
+    come to `$2,573.38`, **four cents short**, which is finding **N-239**
+    exactly.  A bound that misses the case it was built for is the tolerance
+    this arc refuses; a bound that only drops what provably cannot match is
+    not one.
 
     Attributes:
-        line: The bank's own record of the movement.
-        pay_period_id: The period covering the day the bank says it was MADE,
-            or ``None`` when no saved period does -- which is what a line
-            older than the owner's first payday looks like.  The MADE day and
-            not the posting day, because a purchase's budget clock is
-            ``purchased_on`` and a swipe made on a period's last day and posted
-            on the next period's first belongs to the budget it was made under.
-        destinations: The budget lines it could become a purchase against, in
-            that period.  EMPTY is a real answer and the screen must say so
-            rather than rendering a chooser with nothing in it: on the
-            developer's own data the 2026-03-26 period holds three envelopes and
-            all three closed at a fixed figure, so 8 lines worth `$662.13` have
-            no existing destination and a NEW envelope is the only arm open to
-            them.
-        placement: What the owner's stated MERCHANT RULE comes to for this
-            line (:class:`~._placement.Placement`), or ``None`` when they have not
-            said where this merchant goes -- which is a different answer from
-            "they said never" and the screen says it differently.  Plan step
-            ``bank_import:X-f6a-3d``.
-            **It is a SUGGESTION and never a tick**: the destination select
-            still opens on *leave this line alone*, and what turns a placement
-            into an act is the owner pressing the sweep.  A remembered
-            destination that arrived already selected would be a default
-            pointing at money, which is what ruling **R-FZ** removed.
+        rows: The unexplained income rows whose pay period covers the day the
+            bank credited this deposit, in the order the offer set holds them.
+        total: What they come to, POSITIVE, so the screen states the figure
+            without arithmetic in a template.
     """
 
-    line: BankLine
-    pay_period_id: "int | None"
-    destinations: "tuple[PurchaseDestination, ...]"
-    placement: Placement | None = None
+    rows: "tuple[CandidateRow, ...]"
+    total: Decimal
 
 
 @dataclass(frozen=True)
@@ -220,7 +229,9 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             are different acts on the same fact and the owner is the one who
             knows which it is.  Inflows are absent -- a purchase is an expense
             (``ck_transaction_entries_positive_amount``), so a deposit or a
-            card refund can only ever be matched to a row.  **A line that
+            card refund is not one; since ruling **R-GW** it has a door of its
+            own instead (:attr:`recordable_inflows`), and until then it had
+            none at all.  **A line that
             ruling R-GJ bars is not here** -- it is in :attr:`parked` -- so this
             list is exactly the lines a create control may be rendered for,
             and the screen cannot render one for a line the door would refuse.
@@ -231,6 +242,20 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             card that they have not answered for at all.  They are still in
             ``unmatched``, so the group-match arm the ruling leaves open is
             reached exactly as it was.
+        recordable_inflows: The unmatched INFLOW lines, each with the period
+            that would hold it (:class:`RecordableInflow`, ruling **R-GW**).
+            The mirror of ``creatable`` on the direction that had no door at
+            all until plan step ``bank_import:X-gf-1``: an inflow is not a
+            purchase, so the create arm refuses one, and a match needs an app
+            row on the other side -- which left `$58.87` of the developer's own
+            deposits, in eight lines, with no act the screen could offer.
+            Like ``creatable`` this is a SUBSET of ``unmatched`` and not a
+            partition: the same deposit is offered here as something to RECORD
+            and in the hand-build form as something to MATCH, because those are
+            different acts on one fact.  **Nothing is barred out of it**: ruling
+            **R-GJ**'s bars are about SPENDING the budget already holds in
+            another shape, and no answer a merchant control can hold says
+            anything about a deposit.
         merchants: The rule control (:class:`~._section.MerchantSection`) --
             where this account's merchants go, and what the owner has already
             said.  **It counts** ``parked`` **beside** ``creatable``, because
@@ -262,6 +287,7 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
     accepted: "tuple[AcceptedGroup, ...]"
     creatable: "tuple[CreatableLine, ...]"
     parked: "tuple[ParkedLine, ...]"
+    recordable_inflows: "tuple[RecordableInflow, ...]"
     merchants: MerchantSection
     bounds: ReviewBounds
     declined_lines: "dict[int, str]" = field(default_factory=dict)
@@ -293,6 +319,51 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             if group is not None:
                 counts[group] = counts.get(group, 0) + 1
         return counts
+
+    def income_already_recorded_in(
+        self, line: BankLine,
+    ) -> "IncomeAlreadyRecorded | None":
+        """Return what the books already hold for *line*'s period, or ``None``.
+
+        The per-line safeguard on the deposit card
+        (:class:`IncomeAlreadyRecorded`).  **A method over
+        :attr:`unmatched_rows` rather than a field on
+        :class:`~._leftovers.RecordableInflow`**, because those rows are
+        derived AFTER the leftovers are split -- and a value built from a
+        second read of them could disagree with the list the hand-build form
+        renders, which is where the owner is being sent.
+
+        **The period is tested by the row's own SPAN**, which is what a
+        candidate carries (``expected_on`` .. ``expected_through``), rather
+        than by a pay-period id the row does not publish.  The span IS the
+        period, so the two are the same test asked of the value that has it.
+
+        Args:
+            line: A recordable inflow's bank line.
+
+        Returns:
+            The :class:`IncomeAlreadyRecorded`, or ``None`` when this period's
+            books hold no unexplained income at all -- which is the state that
+            makes recording safe, and the screen says nothing rather than
+            saying it is fine.
+        """
+        day = line.posted_on
+        rows = tuple(
+            row for row in self.unmatched_rows
+            if row.cash_amount > 0
+            and row.expected_on <= day <= row.expected_through
+        )
+        # **A deposit smaller than the SMALLEST of them cannot be any subset of
+        # them**, every one being positive -- so there is nothing for the owner
+        # to check and a sentence here would be the warning-on-every-row shape
+        # this package measures money going through.  A PROOF rather than a
+        # bound: it drops only what cannot match, at any tolerance.
+        if not rows or line.amount < min(row.cash_amount for row in rows):
+            return None
+        return IncomeAlreadyRecorded(
+            rows=rows,
+            total=sum((row.cash_amount for row in rows), Decimal("0.00")),
+        )
 
     def search_gap_for(self, line: BankLine) -> "str | None":
         """Return why this pass cannot say *line* has no counterpart, or ``None``.
@@ -348,8 +419,16 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
         the door would otherwise have recorded a second time.
 
         Args:
-            line: The bank line, which must be one this pass considered --
-                every caller takes it off :attr:`creatable`.
+            line: The bank line, which must be one this pass considered.
+                **THREE surfaces take it off three different lists**, and the
+                claim that "every caller takes it off :attr:`creatable`" was
+                already false when it was written: the create card reads it off
+                :attr:`creatable`, the hand-build form off :attr:`unmatched`
+                (which is the only one an inflow used to reach), and since
+                ruling **R-GW** the deposit card off
+                :attr:`recordable_inflows`.  What every caller does share is
+                that the line was in THIS pass, which is what makes
+                :attr:`declined_lines` answerable for it.
 
         Returns:
             One sentence naming the gap, for the receipt that has to say what
@@ -572,183 +651,6 @@ def _as_bank_line(row: BankStatementLine) -> BankLine:
     )
 
 
-def _creatable_lines(
-    calendar, unmatched: "list[BankLine]",
-    destinations: "list[PurchaseDestination]",
-    view: RuleView,
-    bars: CreationBars,
-) -> "tuple[tuple[CreatableLine, ...], tuple[ParkedLine, ...], int]":
-    """Split the unmatched OUTFLOWS into what may be recorded and what may not.
-
-    **A line the bank dates MADE after it POSTED is not one of them** (finding
-    **N-325**, developer ruling 2026-08-19).  ``entry_service.create_entry``
-    refuses a purchase whose money left before it was spent, so such a line's
-    destination chooser is a control whose submission can never succeed; it is
-    counted on :class:`ReviewBounds` instead, beside every other thing this
-    pass did not look at.  The rejected remedy was clamping the purchase day to
-    the earlier of the two, which decides which day the app believes when the
-    bank contradicts itself -- the substitution ruling **R-FW** refused one
-    clock over.  The predicate is
-    :attr:`~._offers.BankLine.states_impossible_days`, stated once because
-    :func:`~._pairing.within_window` asks it too.
-
-    Args:
-        calendar: The owner's
-            :class:`~app.services.pay_calendar.PayCalendar`, which places each
-            line.  Taken rather than loaded, so one request holds ONE calendar
-            (:func:`review_set`).
-        unmatched: The bank lines inside the calendar no proposal explains.
-        destinations: Every offerable budget line
-            (:func:`~._candidates.destinations_for`, narrowed by
-            :func:`~._candidates.unmatched_destinations`), read ONCE for the
-            whole pass and grouped here rather than
-            re-queried per line -- a redundant producer call inside one request
-            is this project's DRY violation rather than a cost.
-        view: What the owner has said and what it can resolve against
-            (:class:`~._rules.RuleView`).
-        bars: Which of this account's merchants may not become purchases, and
-            why (:class:`~._bars.CreationBars`, ruling **R-GJ**).  **Asked
-            BEFORE a destination is resolved**, because a barred line has no
-            destination to resolve one against: the placement machinery answers
-            *which budget line would this go in*, and for these the answer is
-            that none may, which is a refusal rather than a suggestion.
-
-    Returns:
-        ``(creatable, parked, impossible_day_count)`` -- one
-        :class:`CreatableLine` per offerable outflow a create control may be
-        rendered for, one :class:`~._bars.ParkedLine` per outflow ruling
-        **R-GJ** bars, both in the order the lines were given, and how many
-        were declined for dating their own purchase after their own posting.
-        The per-period destination tuple is SHARED by every line in that
-        period, so a statement with 91 outflows over 11 periods builds 11
-        tuples rather than 91.
-    """
-    outflows = [line for line in unmatched if line.amount < 0]
-    impossible = [line for line in outflows if line.states_impossible_days]
-    offerable = [line for line in outflows if not line.states_impossible_days]
-    if not offerable:
-        return (), (), len(impossible)
-    # ONE pass over the destinations, and ONE placement per line.  Both were
-    # asked twice: the grouping rescanned every destination once per period,
-    # and each line placed itself once for its id and again for its lookup --
-    # 182 calls for 91 outflows.  A redundant producer call inside one request
-    # is this project's DRY violation rather than a cost.
-    by_period: "dict[int, list[PurchaseDestination]]" = {}
-    for destination in destinations:
-        by_period.setdefault(destination.pay_period_id, []).append(destination)
-    creatable: "list[CreatableLine]" = []
-    parked: "list[ParkedLine]" = []
-    for line in offerable:
-        # ONE ask of the bar per line, and its answer is what routes the line:
-        # a second ask -- once to partition and once to word the sentence -- is
-        # the redundant producer call this module already refuses above.
-        barred_by = bars.bar_for(line.merchant_id)
-        if barred_by is not None:
-            parked.append(ParkedLine(line=line, barred_by=barred_by))
-            continue
-        creatable.append(_one_creatable(
-            line, _period_id_for(calendar, line.happened_on), by_period, view,
-        ))
-    return _marked_joining(creatable), tuple(parked), len(impossible)
-
-
-def _marked_joining(
-    creatable: "list[CreatableLine]",
-) -> "tuple[CreatableLine, ...]":
-    """Flag each line that would JOIN an envelope an earlier line creates.
-
-    **A press mints ONE envelope per answer per pay period**
-    (:class:`~._create.MintedEnvelopes`, finding **N-327**), so the second and
-    later lines of one new-envelope answer file into the first one's envelope
-    rather than making more beside it.  The screen has to say that BEFORE the
-    press, and this is the only reader that sees more than one line at a time
-    -- ``placements_for`` resolves one line against its own period and cannot
-    know what another line in the same pass will do.
-
-    Walked in the order the lines are given, which is the order the sweep
-    applies them, so under the SWEEP -- which ticks a whole class -- the line
-    left unflagged is the one that creates.
-
-    **It reads what is OFFERED, not what the owner will tick**, and the
-    distinction is real: every select opens on *leave this line alone*, so if
-    they hand-pick a flagged line and leave the unflagged one alone, the line
-    told "an earlier line here already creates it" is the line that creates.
-    The outcome is still one envelope per answer per period, so no money turns
-    on it; what the sentence can be wrong about is WHICH line does the
-    creating.  Named by two adversarial reviews 2026-08-20.
-
-    Args:
-        creatable: The pass's offerable outflows, in order.
-
-    Returns:
-        The same lines, with :attr:`~._placement.Placement.joins_new` set on
-        every one after the first for its answer and period.
-    """
-    creating: "set[tuple[str, int, int]]" = set()
-    marked = []
-    for line in creatable:
-        placement = line.placement
-        if placement is not None and placement.creates:
-            key = envelope_answer_key(
-                placement.new_envelope, line.pay_period_id,
-            )
-            if key in creating:
-                line = replace(
-                    line, placement=replace(placement, joins_new=True),
-                )
-            creating.add(key)
-        marked.append(line)
-    return tuple(marked)
-
-
-def _one_creatable(
-    line: BankLine,
-    period_id: "int | None",
-    by_period: "dict[int, list[PurchaseDestination]]",
-    view: RuleView,
-) -> CreatableLine:
-    """Return one offerable outflow with its destinations and its placement.
-
-    Args:
-        line: The bank line.
-        period_id: The pay period covering the day it was MADE, or ``None``.
-        by_period: The offerable destinations, grouped by period.
-        view: What the owner has said and what it can resolve against.
-
-    Returns:
-        Its :class:`CreatableLine`.  A line no saved period covers gets NO
-        placement, because a rule resolves into a destination and there is no
-        period here for one to be in -- the create door refuses such a line by
-        name (``_create._period_holding``), so suggesting anything for it would
-        be the chooser-that-cannot-succeed shape again.
-    """
-    offered = by_period.get(period_id, [])
-    return CreatableLine(
-        line=line,
-        pay_period_id=period_id,
-        destinations=tuple(offered),
-        placement=(
-            None if period_id is None
-            else placements_for(line.merchant_id, view, offered)
-        ),
-    )
-
-
-def _period_id_for(calendar, day: date) -> "int | None":
-    """Return the SAVED pay period covering *day*, or ``None``.
-
-    Args:
-        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`.
-        day: The day the bank says the purchase was made.
-
-    Returns:
-        Its period id, or ``None`` when no saved period covers it -- a line
-        older than the owner's first payday, or past the generated horizon.
-    """
-    period = calendar.period_containing(day)
-    return None if period is None else period.period_id
-
-
 def _split_at_calendar_open(
     recorded: "list[BankStatementLine]", opens: "date | None",
 ) -> "tuple[list[BankStatementLine], list[BankStatementLine]]":
@@ -830,80 +732,6 @@ def _rows_the_bank_never_showed(
     )
 
 
-@dataclass(frozen=True)
-class _Leftovers:
-    """What this pass could not explain, placed against the owner's rule.
-
-    Four facts one derivation produces that travel together, which is the
-    argument :class:`~._offers.Candidates` and
-    :class:`~._propose.ProposedMatches` already make in this package: a caller
-    holding the offerable lines without the count of the ones declined would
-    render a list that reads as complete.
-
-    Private, because what leaves this module is :class:`ReviewSet`.
-
-    Attributes:
-        creatable: The offerable unexplained outflows a create control may be
-            rendered for, each with its placement.
-        parked: The offerable unexplained outflows ruling **R-GJ** bars, each
-            with the reason (:class:`~._bars.ParkedLine`).
-        merchants: The rule control's rows and option list.
-        impossible_day_count: How many outflows were declined for being dated
-            MADE after they POSTED (finding **N-325**).
-    """
-
-    creatable: "tuple[CreatableLine, ...]"
-    parked: "tuple[ParkedLine, ...]"
-    merchants: MerchantSection
-    impossible_day_count: int
-
-
-def _leftovers(
-    scope: ReviewScope,
-    unmatched: "list[BankLine]",
-    destinations: "list[PurchaseDestination]",
-) -> _Leftovers:
-    """Return the unexplained outflows placed against the owner's rule.
-
-    **What the owner has SAID is read HERE, not carried on the scope**, for the
-    same reason the claims are (plan step ``bank_import:X-f6a-3d``): a pass can
-    restate a rule, and this screen is re-rendered after the door that does,
-    so a reader taking it off the scope would show the answers the pass had
-    just replaced.  Ruling **R-GJ**'s bars are read at the same instant and for
-    the same reason -- one of them IS an answer, and the other is the absence
-    of one -- and from the answers this view has already read, so one request
-    asks ``merchant_rules`` once.
-
-    Args:
-        scope: The pass's derived offer set.
-        unmatched: The bank lines inside the calendar no proposal explains.
-        destinations: The budget lines still open to a new purchase.
-
-    Returns:
-        The :class:`_Leftovers`.
-    """
-    view = RuleView.build(scope.owner_id, scope.account_id)
-    bars = CreationBars.build(
-        scope.owner_id, scope.account_id, rules=view.rules,
-    )
-    creatable, parked, impossible_days = _creatable_lines(
-        scope.calendar, unmatched, destinations, view, bars,
-    )
-    return _Leftovers(
-        creatable=creatable,
-        parked=parked,
-        # **Both halves**, because a merchant is parked for want of an answer
-        # and this control is the only place one is given: counting only the
-        # creatable half would refuse the act and hide the door that permits
-        # it.
-        merchants=merchant_section(
-            [item.line for item in creatable] + [item.line for item in parked],
-            view, bars,
-        ),
-        impossible_day_count=impossible_days,
-    )
-
-
 def _unexplained(
     bank_lines: "list[BankLine]", proposals: "tuple[MatchProposal, ...]",
 ) -> "list[BankLine]":
@@ -961,7 +789,7 @@ def review_set(scope: ReviewScope) -> ReviewSet:
     proposed = propose(bank_lines, offerable)
     proposals = proposed.proposals
     unmatched = _unexplained(bank_lines, proposals)
-    leftovers = _leftovers(
+    parts = leftovers(
         scope, unmatched,
         unmatched_destinations(scope.destinations, matched),
     )
@@ -972,9 +800,10 @@ def review_set(scope: ReviewScope) -> ReviewSet:
             offerable, proposals, account_id,
         ),
         accepted=tuple(accepted_groups(scope.owner_id, account_id)),
-        creatable=leftovers.creatable,
-        parked=leftovers.parked,
-        merchants=leftovers.merchants,
+        creatable=parts.creatable,
+        parked=parts.parked,
+        recordable_inflows=parts.recordable_inflows,
+        merchants=parts.merchants,
         bounds=ReviewBounds(
             calendar_opens=opens,
             before_calendar_count=len(before),
@@ -988,7 +817,7 @@ def review_set(scope: ReviewScope) -> ReviewSet:
             # could name a day too crowded to search that had been searched.
             crowded_days=proposed.crowded_days,
             unpriceable_count=len(candidates.unpriceable_ids),
-            impossible_day_count=leftovers.impossible_day_count,
+            impossible_day_count=parts.impossible_day_count,
         ),
         # **The near tier's own bound, published by the pass that applied it**,
         # for the reason the crowded days beside it are: a reader re-deriving

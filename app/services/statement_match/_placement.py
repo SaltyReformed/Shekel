@@ -104,7 +104,7 @@ class Placement:
             value is unchanged -- one press mints one envelope per answer per
             period (:class:`~._create.MintedEnvelopes`) -- and what this flag
             buys is that the SCREEN says so before the press rather than after
-            it.  Set by :func:`~._reads._creatable_lines`, which is the only
+            it.  Set by :func:`~._leftovers._creatable_lines`, which is the only
             reader that sees more than one line at a time.
         unresolved_reason: One sentence saying why the rule does not reach
             this line, for :attr:`PlacementKind.UNRESOLVED`.
@@ -401,7 +401,7 @@ def placements_for(
         time*, or they have stated *never a purchase*.  **The last is a BAR,
         not a placement** (ruling **R-GJ**): it is answered by
         :meth:`~._bars.CreationBars.bar_for`, which
-        :func:`~._reads._creatable_lines` asks first, so a line carrying that
+        :func:`~._leftovers._creatable_lines` asks first, so a line carrying that
         answer never reaches here at all.
 
     **The dispatch names the answers that PLACE and falls through to nothing**,
