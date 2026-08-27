@@ -422,7 +422,10 @@ class TestThePreambleDoesNotDecay:
     def test_a_stale_per_arc_count_is_caught(self, stage_rulings):
         """The decay the recurrence session predicted, planted."""
         actual = rulings.unmigrated_arc_counts()["recurrence"]
-        stage_rulings(f"`recurrence` ({actual})", f"`recurrence` ({actual + 1})")
+        text = rulings.RULINGS.read_text()
+        anchor = next(m.group(0) for m in rulings.UNMIGRATED_RX.finditer(text)
+                      if m.group("arc") == "recurrence")
+        stage_rulings(anchor, anchor.replace(str(actual), str(actual + 1)))
         assert any("recurrence holds" in p
                    for p in rulings.unmigrated_count_violations())
 
@@ -444,3 +447,33 @@ class TestThePreambleDoesNotDecay:
         text = rulings.ARC_DOCS["recurrence"].read_text()
         assert "|---|---|" in text, "the specimen separator is not in the real table"
         assert rulings.unmigrated_arc_counts()["recurrence"] == 36
+
+
+    def test_a_count_the_preamble_omits_is_caught(self, stage_rulings):
+        """An UNSTATED count is not a clean one.
+
+        A pattern that matches nothing reads as "no claim is made" and passes.
+        That is not hypothetical here: `rumdl fmt` re-wrapped the preamble and
+        put a newline between an arc name and its count, and this arm went
+        silently blind rather than red -- the exact failure its sibling count
+        arm was written against, reproduced by a formatter.
+        """
+        text = rulings.RULINGS.read_text()
+        anchor = next(m.group(0) for m in rulings.UNMIGRATED_RX.finditer(text)
+                      if m.group("arc") == "credit_card")
+        stage_rulings(anchor, "`credit_card` no longer says")
+        assert any("states no count for credit_card" in p
+                   for p in rulings.unmigrated_count_violations())
+
+    def test_the_count_survives_a_line_break(self, stage_rulings):
+        """A formatter may wrap between the arc name and its count.
+
+        The mechanism, graded directly rather than through its effect: the
+        arm reads whitespace, so re-flowing the paragraph cannot silence it.
+        """
+        text = rulings.RULINGS.read_text()
+        anchor = next(m.group(0) for m in rulings.UNMIGRATED_RX.finditer(text)
+                      if m.group("arc") == "recurrence")
+        stage_rulings(anchor, anchor.replace("` (", "`\n("))
+        assert "recurrence" in rulings.unmigrated_arc_counts()
+        assert not rulings.unmigrated_count_violations()

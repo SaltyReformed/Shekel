@@ -262,7 +262,7 @@ def declared_arc_counts() -> dict[str, int]:
 
 #: The preamble's parenthesised count for each arc that has NOT moved, plus
 #: the total it derives from them.
-UNMIGRATED_RX = re.compile(r"`(?P<arc>[a-z_]+)` \((?P<count>\d+)\)")
+UNMIGRATED_RX = re.compile(r"`(?P<arc>[a-z_]+)`\s+\((?P<count>\d+)\)")
 UNMIGRATED_TOTAL_RX = re.compile(r"Those (?P<total>\d+) need ids")
 
 
@@ -317,11 +317,24 @@ def unmigrated_count_violations() -> list[str]:
     """
     text = RULINGS.read_text()
     actual = unmigrated_arc_counts()
+    stated = {arc: int(n) for arc, n in UNMIGRATED_RX.findall(text)
+              if arc in actual}
+    missing = sorted(set(actual) - set(stated))
+    if missing:
+        # A pattern that matches nothing reads as "no claim is made" and
+        # passes, which is the failure mode this module's own count arm was
+        # written against.  It happened here: `rumdl fmt` re-wrapped the
+        # preamble, putting a newline between an arc name and its count, and
+        # the arm went silently blind to it rather than red.
+        return [
+            f"rulings.md states no count for {arc}, which has not moved -- "
+            f"conventions.md rule 3, and an unstated count is not a clean one"
+            for arc in missing
+        ]
     problems = [
-        f"rulings.md says {arc} holds {int(stated)} rulings and its document "
+        f"rulings.md says {arc} holds {count} rulings and its document "
         f"holds {actual[arc]} (conventions.md rule 3)"
-        for arc, stated in UNMIGRATED_RX.findall(text)
-        if arc in actual and int(stated) != actual[arc]
+        for arc, count in stated.items() if count != actual[arc]
     ]
     total = UNMIGRATED_TOTAL_RX.search(text)
     if total is not None and int(total.group("total")) != sum(actual.values()):
