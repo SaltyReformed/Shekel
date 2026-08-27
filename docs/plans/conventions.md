@@ -5,12 +5,12 @@ balance README Section 9, the recurrence plan's Section 7, the pay-calendar plan
 near-identical wording, which is the same denormalization the arcs keep finding in the code. The
 credit-card plan had none at all and drifted furthest.
 
-**Rules 1-4, 7 and 10-16 are PREDICATES**, graded by `tools/plan_gate/` through a pre-commit hook
+**Rules 1-4, 7 and 9-16 are PREDICATES**, graded by `tools/plan_gate/` through a pre-commit hook
 scoped to these documents and the CI step that runs the custom pylint checkers -- so EDITING a
 planning document is what runs the gate.
-**Rules 5, 6's "replaced, never appended" half, 8 and 9 are DISCIPLINES.** Saying which is which is
-the point: a safety that is not a predicate is not a safety, and labelling a discipline as one is
-the failure being guarded against.
+**Rules 5, 6's "replaced, never appended" half and 8 are DISCIPLINES.** Saying which is which is the
+point: a safety that is not a predicate is not a safety, and labelling a discipline as one is the
+failure being guarded against.
 
 ## The shape
 
@@ -18,6 +18,7 @@ the failure being guarded against.
 |---|---|---|
 | `ledger.md` | every open finding in every arc | registry |
 | `steps.md` | every step IN EXECUTION ORDER, one line each, plus the unruled forks | registry |
+| `rulings.md` | every developer ruling, `arc` a COLUMN | registry |
 | `conventions.md` | this file | registry |
 | `verification.md` | what "done" means for a step in any arc: the oracle discipline | registry |
 | `lessons.md` | what this project has already paid to learn | registry |
@@ -27,11 +28,9 @@ the failure being guarded against.
 | `implementation_plan_credit_card.md` | the credit-card arc's | argument |
 | `implementation_plan_bank_import.md` | the statement importer's, split out 2026-08-13 | argument |
 
-**Merge what shares KEYS; split what shares only a READER.** Findings and steps alias across arcs,
-so they are one table each. A root cause, its evidence, its target model and its rejected
-alternatives are an argument about ONE subject that shares no key with any other arc, so they stay
-split -- and so do RULINGS, which are arc-local and whose three source tables have three different
-shapes.
+**Merge what shares KEYS; split what shares only a READER.** Findings, steps and RULINGS are one
+table each -- the third sat in THREE grammars across five documents no gate parsed, which is how
+`R-EX` and `R-GW` each named two rulings. An arc's own argument shares no key, so THAT stays split.
 
 **A step's SPECIFICATION is argument, not registry.** `steps.md` carries the ORDER and one sentence
 per step; the 82 open specifications in one file would be ~1,150 lines, which is the master document
@@ -57,8 +56,9 @@ end.
    **Step ids are append-only** -- a decomposition appends a suffix, and nothing is renumbered for
    readability, because ids are cited in commit messages, code comments and archived records.
 
-3. **A registry that states its own size has that number CHECKED.** Four sentences carry six numbers
-   and the gate grades all six: `ledger.md`'s `**The ledger stands at N rows.**`, and `steps.md`'s
+3. **A registry that states its own size has that number CHECKED.** Six sentences carry nine numbers
+   and the gate grades all nine: `ledger.md`'s `**The ledger stands at N rows.**`, `rulings.md`'s
+   total AND its per-arc counts (a dropped row hides behind a corrected total), and `steps.md`'s
    `**N steps, M open.**`, `holds N edges over M rows` and
    `N of these steps are legal to start right now`.
    **The fourth was added 2026-08-11 and was stale when the arm was written** -- it read 38 against
@@ -76,17 +76,17 @@ end.
 
 4. **Every document is capped, and a cap is a FORCING FUNCTION rather than a ceiling sized to fit
    the work.** Raising a cap is not the answer when it binds; rule 5 is. Current caps live in the
-   gate's own constants. **`ledger.md` and `steps.md` carry no LINE cap** (developer rulings, both
-   2026-08-25), on ONE argument made twice: a line cap on a registry holding ONE LINE PER THING caps
-   how many of that thing the project may have -- defects MEASURED, leaves DECOMPOSED -- so **a gate
-   may not refuse to record a defect somebody has measured, or work somebody has decomposed.** The
-   ledger's was raised three times and the fourth time pushed two findings into code docstrings; the
-   index's bound on `recurrence:R7d`'s seven-leaf split with no shipped row free to archive. Holding
-   them: a per-ROW cap each (the ledger's below, the index's rule 14's description cap), a runaway
-   backstop each, and rule 3's counts, which with rule 14's dense ranks are what a file's length was
-   ever a proxy for. **The ledger's per-ROW cap is rule 14's twin**: a row had reached 3,536
-   characters against a 409-character median, the arc document's argument living in the registry,
-   and **the overflow goes to the OWNING STEP's specification**, never deletion.
+   gate's own constants. **`ledger.md`, `steps.md` and `rulings.md` carry no LINE cap** (developer
+   rulings 2026-08-25 and 2026-08-27): a cap on ONE LINE PER THING caps how many of that thing the
+   project may have -- defects MEASURED, leaves DECOMPOSED, decisions TAKEN -- so
+   **a gate may not refuse to record work somebody has done.** The ledger's was raised three times,
+   the fourth pushing two findings into code docstrings; the index's bound on `recurrence:R7d`.
+   Holding them: **a per-ROW cap each, which makes dropping the line cap a SWAP and not a removal**
+   (the ledger's below, the index's rule 14's, the rulings registry's the ledger's own 2,000), a
+   runaway backstop each, and rule 3's counts. **The ledger's per-ROW cap is rule 14's twin**: a row
+   reached 3,536 characters against a 409-character median, the arc document's argument living in
+   the registry, and **the overflow goes to the OWNING STEP's specification**, never deletion --
+   owed for the 23 rows `X-ao-1` lifted over that cap, `balance:N-370`.
    **`lessons.md` is capped too, and its retirement path is its own**: a lesson MECHANIZED into a
    gate stops being a lesson and its line moves to that gate's rationale, because an append-only
    file nobody finishes reading loses its lessons as completely as deleting them would.
@@ -123,9 +123,9 @@ end.
    asking. Where a fix must follow another step to be decided correctly it is SEQUENCED behind it
    with the reason stated -- which is a schedule, and is what a deferral is not.
 
-9. **A ruling is recorded as the RULE and its date, one line, in its own arc's document.** The
-   deliberation belongs in the commit that ships it. Rulings are arc-local: no ruling has ever
-   aliased across arcs, which is why they are the one registry-shaped thing that stays split.
+9. **A ruling is recorded as the RULE and its date, one line, under its arc.** The key is
+   `(arc, id)`, so two arcs may hold one bare id and a citation of an ambiguous one MUST name its
+   arc (rule 10, **N-367**). `rulings.md` holds the arcs it names; the rest until `balance:X-ao-2`.
 
 10. **The arc is a COLUMN, never a prefix.** The key is `(arc, id)` and it is unique across the
     corpus. Bare ids keep their exact spelling, because a rename would orphan every citation in

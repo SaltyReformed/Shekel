@@ -61,6 +61,7 @@ Taken 2026-08-05 (developer):
 | **What an installment NO ROW covers is priced at** | **What the loan's own recurring payment SAYS it costs, resolved AS OF that installment, and the contract only where the definition states no price.** A payment that states none -- DERIVE mode, where the stored figure is a snapshot of the contract -- costs the contractual P&I plus that installment's escrow plus the standing extra, which is what the mode MEANS. One that states a price costs what its VERSION SERIES says on the installment's own due date, plus the extra. **Never `default_amount`**: an adversarial review measured that scalar reaching backwards, because `_resync_scalar` puts it on the NEWEST price stated rather than the price on a date, so a `$700.00` Van payment effective 2028-01-01 priced every 2026 installment at `$700.00` and moved the derived payoff six installments EARLY once the future rows were absent -- the under-generating direction this arc exists to close, re-entered by the step closing it. The ESTIMATED tier read the CONTRACT for every uncovered slot whatever the definition said, so "what will this loan be paid in month M" had two answers and which one the fold used depended on whether the row had been WRITTEN yet: measured on a production clone, a Van payment standing at `$300.00` against a `$531.94` contractual installment resolved its recurrence bound to `2029-02-22` at the moment `regenerate_pay_periods` generates against `2030-02-22` before and after, twelve payments the owner owes. The same two answers switched the projection at the materialised HORIZON -- the owner's figure inside it, the servicer's past it. One rule closes both, and the payoff stops depending on materialisation at all, which is the loop R7d must break before it can stop storing the bound. `$0.00` on the developer's data, where both templates state exactly P&I + escrow. R-R33, ruled 2026-08-25 (developer); shipped as R7d-a** |
 | **How far a step that stops STORING a derived value reaches** | **To every reader that inherits the column, one leaf each.** R7d's specification censused the ten WRITERS of a loan payment's closing bound and no readers; measured by setting `end_date` NULL on both live rules, SIX surfaces read it -- generation, `recurring_view` / `describe`, `obligations_aggregator.has_ended`, the form's locked "Ends" control, `_recurrence_form_refusals`' inverted-window check and `_recurrence_preview` -- and with the column NULL every one of them reads "never ends". For `has_ended` that means a RETIRED loan's payment never leaves `/obligations` or the `/savings` emergency-fund baseline, `$2,442.89` a month across the two live loans. Shipping the resolver behind generation alone would delete a cache while leaving five surfaces reading its corpse. R7d therefore DECOMPOSES into seven leaves. R-R34, ruled 2026-08-25 (developer)** |
 | **What a contractual month owes a definition whose cadence is not monthly** | **Nothing, because a month is not what a definition owes anything TO.** Interest is charged because TIME passed and escrow because a month began; a payment moves cash on whatever date its definition names. They are separate EVENTS, and once they are the cadence question is deleted rather than answered: a second payment inside one accrual period clears no fresh charge and pays pure principal. Fusing them made the payment COUNT the clock -- measured on a production clone, 30 payments of `$531.94` fourteen days apart and 30 a month apart charge the identical `$1,096.34`, split for split, and that fact needs no accrual convention to state. **The alternatives were weighed over ONE stream, named so the figures re-derive**: a `$531.94` definition firing every 14 days from `2026-09-04` against the Van's `$14,745.51` seed at 5.668%, accruing from `2026-08-26`. Per-occurrence answers `2027-10-01` / `$493.34` and the actual/365 truth over the same stream is `2027-10-01` / `$467.51` -- the DATE exactly right. Aggregating the month's occurrences into one payment charges the SAME `$493.34` (this fold charges per period either way) and dates the payoff `2027-10-22`, **21 days late**, because it moves the month's whole cash to the contractual day. The cadence's monthly EQUIVALENT can never show a three-payment month, and elapsed-day accrual is a different CONVENTION (D52) rather than a different fold. R-R36, ruled 2026-08-26 (developer); owned by R16-a** |
+| **Whether the ESTIMATED tier may read a definition's stored closing bound** | **It must HONOUR it, so the COLUMN must first hold one fact, and the ORDER changes rather than the rule.** Ignoring a field an owner entered was refused outright (developer): a closing bound is a real input to "what will this loan be paid", and a rule that skips it models money the owner has said will not move. But `budget.recurrence_rules.end_date` holds TWO facts today -- what an owner authored, and a snapshot of the derived payoff that `sync_recurring_payment_bounds` writes from ten call sites. **What tells them apart is `owns_validity_window`, and reading it here is the remedy R-R35 already refused**: it ends `active.id == template.id`, so asking it puts `active_recurring_transfer_template`'s `.order_by(id).first()` back on the PRICING path -- the tie-break four remedies were rejected to delete -- and it answers "owned" for a no-baseline owner whose bound nothing wrote (its own docstring, and finding **D49**).  An adversarial review of this ruling measured the first draft's "nothing marks which" false; this is the ground that survives it. The column is written at MUTATION time while the fold moves with the CLOCK, so the two agree only between events: measured on a production clone, rule 48 stored `2029-02-22` against a fold answering `2029-03-22` on 2026-08-25, and the Van's `2026-08-22` payment SETTLING on 2026-08-26 -- nobody touching the app -- is what brought them back into step. So the `R7d` reader leaves and the writer deletion move AHEAD of the sum -- `steps.md` holds the order and this does not restate it -- putting every reader of the derived bound on `loan_payment_window` and then NULLing the column, after which the bound is honoured unconditionally and there is no rule left to state.  **What that migration must not do is erase an AUTHORED bound**, which "NULL for every loan payment" as specified would on a loan holding a second definition: finding **D56**. R-R37, ruled 2026-08-27 (developer); owned by R16-b-2 |
 | **WHICH recurring transfer into a loan the derived bound is FOR** | **Every one of them, so the question is deleted rather than answered.** `loan_payment_window` takes the DEFINITION, not the loan, and the step's originally specified `(account, ctx)` is superseded: asking "when does this LOAN's payment stop" forces a prior question -- which of the recurring transfers into the loan IS its payment -- that nothing in the schema answers, so `active_recurring_transfer_template` tie-breaks it on `id`. Four remedies were put to the developer (a pointer on the loan, the settings row as the identity, refusing a second transfer, and writing the tie-break down) and ALL FOUR WERE REFUSED as band-aids on a search that should not exist. The measurement behind the refusal: the SETTLED fold (`loan_loaders.query_shadow_income`) and the PLANNED tier (`balance_at._plan.loan_plan` via `projected_income_shadows`) both already sum EVERY transfer into the loan account with no template filter, and `loan_ledger.split_payment_cash` already routes anything above interest + escrow to principal -- so "every transfer into a loan is a payment against it" is the app's own rule at two tiers of three, and the ESTIMATED tier is the single outlier that picks one. Each definition stops when the loan does, because past payoff that same split routes the whole cash to `excess` (a Refund). What this does NOT settle is the outlier: pricing an uncovered installment from ONE picked definition where its siblings sum is the half of D47 that survives, re-pointed to R16. Measured on a production clone: a `$200.00`/mo transfer into the Mortgage created before the real `$1,910.95` one wins the tie-break and drives the derived payoff `2048-12-01` -> `None`, against a `$616.99` monthly escrow it does not cover; with the resolver, BOTH definitions answer the same window. R-R35, ruled 2026-08-25 (developer); shipped as R7d-b** |
 | **How a definition's ACCOUNT change reaches the transfers it already generated** | **IN PLACE, through the one write door, which learns to move a transfer's endpoints.** A generated transfer derives SIX columns from its template and `transfer_service.update_transfer` could write FOUR, so the two account columns reached their rows only by the sweep DELETING and re-creating every one of them -- measured on a production clone at 51 of 62 rows re-pointed as a side effect of a rebuild -- while a NON-repeating template's identical edit was REFUSED outright, because nothing could carry it. That is a limit of the door, not a rule about transfers, so the door moves the parent and both shadow rows now, re-deriving each leg's display name and reconciling the ledger on both sides; `NON_REPEATING_ACCOUNTS_ARE_FIXED` is DELETED and one edit stops meaning two things. A row holding the owner's own records is still RETAINED rather than moved, which is R-R19 unchanged: its settled figure is what moved between the OLD accounts and its statement link is scoped BY account. R-R32, ruled 2026-08-20 (developer); shipped as R10-b** |
 
@@ -266,8 +267,9 @@ arc's own new prose. **A step's behaviour change is stated by measurement, not b
 draft entry claimed it changed nothing at the developer's cadence, and an adversarial review
 disproved it -- the four `bounds.*` shapes that moved are on the BIWEEKLY schedule, and every live
 loan-payment rule carries the `end_date` that moved them. Against production it moves nothing: 46
-live rules, 866 generated rows, byte-identical under both engines. Half A = R1-R4, R7a-1 through
-R7c, R8 (+ the Half-A part of R9); Half B = R5, R6 (see section 0).
+live rules, 866 generated rows, byte-identical under both engines. Half A = R1-R4, R7a-1 (archived,
+`historical/recurrence_completed_span_as_built_2026-08-27.md`) through R7c, R8; Half B = R5, R6
+(section 0).
 
 **Any step that changes the recurrence form's controls runs
 `tests/manual/verify_recurrence_form.py`.** A standing mandate for this arc, hoisted here at R7c-c
@@ -348,12 +350,6 @@ accounted for in `historical/recurrence_as_built_2026-08-14.md` and the last two
 | `R7b-4` | `67f013c8` | The opening bound becomes a DATE and the `Every N Periods` phase a derivation of it. Closed **D2**, **D30** |
 | `R7c-a` | `370a30cc` (migration `f2a94c7e1b60`) | The two-axis columns land NULLABLE, backfilled and dual-written, read by nobody. Closed **D12** |
 | `R7c-b` | `900e761a` (migration `b6d41f0a9c27`) | Every reader and the form move onto them; four columns tighten to NOT NULL. Closed **D10**, **D21**, **D24**, **D28**, **D31** |
-
-- [x] **R7a-1 -- the Recurrence cell is one function.** `6fed14af`. Over `(interval, unit)`, so a
-      cadence nothing authors yet reads correctly. Closed **D17**.
-
-- [x] **R7a-2a -- the paycheck count is per owner.** `003e3657`. `PAY_PERIODS_PER_YEAR` deleted for
-      `PayCadence`'s derivation. Opened **F-16**, **F-17**.
 
 - [x] **R7c -- THE CUTOVER, the DECOMPOSED parent of three leaves.** `ee35bca7`, ticked with
       `R7c-c`, its last leaf. Split 2026-08-14 (**R-R18**) as expand / migrate / contract, so the
@@ -448,10 +444,9 @@ those five and settles its fork. One bound costs 62 ms / 20 ms on a FRESH pass, 
 
 - [x] **R7d-b -- the RESOLVER exists, and nothing reads it.** `0462dc38`, ruling **R-R35**.
       `loan_payment_window(template, ctx)` answers `ClosesOn` / `Indefinite` / `EMPTY`, the sum type
-      a nullable date could not carry. R-R35 took its SUBJECT from the loan to the DEFINITION; the
-      window's VALUE still reaches the tie-break through `standing_payment`, which is D47's
-      surviving half. `$0.00`, and it answers the Van's `2029-02-22` where the column says
-      `2029-01-22`. Re-scoped **D47**; opened **D48**, **D49**, **D50**.
+      a nullable date could not carry. R-R35 took its SUBJECT from the loan to the DEFINITION; its
+      VALUE still reaches the tie-break through `standing_payment`, D47's surviving half. `$0.00`.
+      Re-scoped **D47**; opened **D48**, **D49**, **D50**.
 
 - [ ] **R7d-c -- GENERATION takes the resolver, and the read pass reaches it.**
 
@@ -675,19 +670,15 @@ is unreviewable.
 completed span to `historical/recurrence_findings_span_as_built_2026-08-17.md` (rule 5) when
 `bank_import:X-f6a-2` needed the room. Each closed one `F-` finding on its own commit and blocked
 nothing; that record names all three hashes, and says why `R-F1` stayed.
-
-- [x] **R-F1 -- the lagging `ref` identity sequences are in step.** `44b25ad3`, migration
-      `c7f3a9d1e864`. Closed **F-1**. Account: `historical/recurrence_as_built_2026-08-15.md`. It
-      was held in the index for a plan-gate control that NAMED it; `pay_calendar:C2-f3e` made that
-      control DERIVE its specimen (`_staging.a_prefix_trap`) and closed **D42**, so it is held no
-      longer.
+**`R-F1`, `R7a-1` and `R7a-2a` all left on 2026-08-27** (rule 5) to
+`historical/recurrence_completed_span_as_built_2026-08-27.md`, which RE-GREPS each candidate's own
+predicate rather than inheriting one.
 
 - [x] **R-F10 -- delete the gap machinery.** `fe365de1`. Closed **F-10**; the LOSS survives as
       `pay_calendar:P16`. Account archived to `historical/recurrence_as_built_2026-08-15.md`.
 
 - [x] **R-F12 -- one `PeriodCalendar`, not three period-containing searches.** `4f134bf4`. Closed
-      **F-12**, as `pay_calendar:C2` / `balance:X-l` -- one commit under three names. An AST census
-      found SIX implementations, not the three this entry once claimed.
+      **F-12**, as `pay_calendar:C2` / `balance:X-l`; an AST census found SIX, not three.
 
 - [x] **R-F16 -- ONE producer for "how often am I paid".** `4258ce28`, migration `f2b7c40d918e`.
       `salary_profiles.pay_periods_per_year` dropped; the engine takes a `PayrollBasis`, so a
@@ -762,23 +753,35 @@ from.
 
 - [x] **R16-a -- the forward fold charges TIME, not payments.** `e8baa3c0`, ruling **R-R36**.
       `apply_payment_cash` allocates against charges already standing; `loan_plan` returns
-      `LoanForwardPlan(payments, charges)` and `_plan_fold` walks them merged, a charge before any
-      payment sharing its date. `$0.00` -- 776 production figures and 4,000 differential trials
-      identical -- and the corpus CANNOT see it, so the controls are the two-payments-in-one-month
-      tests. Opened **D51**, **D52**, **D53**, **D54**, **D55**.
+      `LoanForwardPlan(payments, charges)`, walked merged with a charge before any payment sharing
+      its date. `$0.00` over 776 figures and 4,000 differential trials; the corpus could not see it,
+      so the controls are the two-payments-in-one-month tests. Opened **D51**-**D55**.
 
-- [ ] **R16-b -- the ESTIMATED tier SUMS every definition, on each one's OWN cadence** (findings
-      **D47**, **D48**).
+- [ ] **R16-b -- the DECOMPOSED parent of the summing.** Split into TWO leaves 2026-08-27
+      (**R-R37**); the sum waits on `end_date` holding one fact. Carries **D47**, **D48**, **D53**.
+
+- [x] **R16-b-1 -- the occurrence walk stops TRUNCATING at the saved horizon.** `1b818135`.
+      `PayCalendar.paychecks_from` composes `current_and_future_window` with a `projected_paychecks`
+      continuation `axis_window` stepped a second copy of. 255 dates against 62 through
+      `2036-01-01`, and every production READ DOOR byte-identical over all 43 live rules HEAD vs
+      branch (clone, 2026-08-27); the 776 loan figures prove nothing here, `balance_at` not
+      importing this package at all.
+
+- [ ] **R16-b-2 -- the ESTIMATED tier SUMS every definition, on each one's OWN cadence** (findings
+      **D47**, **D48**, **D53**).
 
 **One tier of three asks a question the other two do not.** The SETTLED fold
 (`loan_loaders.query_shadow_income`) and the PLANNED tier (via `projected_income_shadows`) take
 every transfer into the loan ACCOUNT with no template filter, and `split_payment_cash` routes
 anything above interest + escrow to principal. Only `standing_installment_cash` prices from ONE,
 picked by `active_recurring_transfer_template`'s `.order_by(id).first()`.
-**Re-measured 2026-08-26 and it is worse than D47 recorded**: re-pointing the real `$500.00`
-every-paycheck Emergency Fund sweep at the Mortgage (id 1, no forcing needed) prices every uncovered
-installment at `$500.00` against a `$616.99` escrow -- the balance GROWS to `$1,059,869.99` and the
-payoff reads `None`, where summing each definition's own occurrences answers `2036-04-01`.
+**Re-measured 2026-08-27 on `feat/r16-b`, fresh clone, `as_of` 2026-08-27**: re-pointing the real
+`$500.00` every-paycheck sweep at the Mortgage (id 1, no forcing) prices every uncovered installment
+at `$500.00` against a `$616.99` escrow -- the payoff reads `None` and the balance GROWS to
+`$1,059,869.99` by 2053-12-01, where summing each definition's occurrences on the contract's charge
+calendar answers `2034-10-01`, which a closed-form amortization of the same stream independently
+lands in the same month as. **The `2036-04-01` recorded 2026-08-26 does not reproduce** under that
+prototype.
 
 **After R16-a the cadence is not a special case** -- each definition emits its occurrences into the
 payment stream -- **but the CHARGE CALENDAR must move with it, and that is this step's real work**
@@ -789,30 +792,29 @@ collapses the charge set with the payment set -- a quarterly loan payment, autho
 `POST /transfers`, folds 40 charges where the contract owes 120 and reports `$367.98` of interest
 against `$1,096.34`. The charge calendar therefore comes off the payments and onto the loan's own
 contractual installment sequence here, and **D53 is ruled here rather than at R16-c** for the same
-reason. `MONTH` / `WEEK` / `YEAR` are pure date walks needing no calendar; the `PERIOD` unit needs
-one past the saved horizon, which `PayCalendar.projection_axis` projects at the owner's cadence and
-`_period_walk` does not reach -- **and `occurrences()` TRUNCATES there in silence**: asked through
-`2036-01-01` on the live schedule it returns 62 dates ending `2028-07-27` and raises nothing, so a
-naive walk to payoff under-generates by seven years. A second escrow-INCLUSIVE definition also has
-to be told from an extra-principal payment, since only the first clears the period's escrow. It
-takes the tie-break off the PRICING path -- `standing_payment` and `StandingPayment`'s singular
-shape -- and does **not** delete the query: three loan-side readers legitimately need ONE row (the
-dashboard's extra-principal prefill and the two routes that MUTATE a settings row), and the
-investment dashboard's "has a recurring contribution" is a different question again. Which row those
-three write is **D49**.
+reason. The `PERIOD` unit needed a walk that reaches past the saved horizon, which is what
+**R16-b-1 shipped** -- until it, `occurrences()` truncated there in silence and a naive walk to
+payoff under-generated by seven years. A second escrow-INCLUSIVE definition also has to be told from
+an extra-principal payment, since only the first clears the period's escrow. It takes the tie-break
+off the PRICING path -- `standing_payment` and `StandingPayment`'s singular shape -- and does
+**not** delete the query: three loan-side readers legitimately need ONE row (the dashboard's
+extra-principal prefill and the two routes that MUTATE a settings row), and the investment
+dashboard's "has a recurring contribution" is a different question again. Which row those three
+write is **D49**.
 
-- [ ] **R16-c -- the PAST and the FUTURE become ONE walk** (findings **D51**, **D53**).
+- [ ] **R16-c -- the PAST and the FUTURE become ONE walk** (finding **D51**).
 
 `loan_ledger._walk._replay_events` and `balance_at._plan_fold._split_plan` are two running-balance
 implementations sharing only the split, and the first still charges a month per settled PAYMENT --
 which the posting ledger then POSTS. One walk over anchors + charges + payments, `as_of` marking
 where recorded fact becomes projection, deletes the second rather than fixing it twice.
-**It must first rule what an ELAPSED period with no payment charges (D53)**: charging it makes a
-delinquent balance grow, against this seam's own "an overdue slot with no record ... holds flat"
-(B-9), which ruled what an unpaid installment PAYS and never what an unpaid month CHARGES.
-**MOVES POSTED MONEY, OWN PR.** It also owes **D54** (a month the SEED already charged is charged
-again by the plan) and **D55** (the accrual period is the CALENDAR month where the contract's is the
-installment month -- `$1,629.94` on which side of a boundary an extra payment falls).
+**D53 is answered at `R16-b-2` and this step inherits the answer** -- the CONTRACT charges every
+forward period (**R-R37**), repealing "an overdue slot with no record ... holds flat" (B-9) for the
+FUTURE half, which ruled what an unpaid installment PAYS and never what an unpaid month CHARGES.
+What this step owes is the same rule for the PAST. **MOVES POSTED MONEY, OWN PR.** It also owes
+**D54** (a month the SEED already charged is charged again by the plan) and **D55** (the accrual
+period is the CALENDAR month where the contract's is the installment month -- `$1,629.94` on which
+side of a boundary an extra payment falls).
 
 - [ ] **R16-d -- the accrual CONVENTION becomes a value on the loan** (finding **D52**).
 

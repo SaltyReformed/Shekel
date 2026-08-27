@@ -201,12 +201,15 @@ next.** Start there and nowhere else: it holds every step in every arc IN EXECUT
 sentence each. **The next step is the first row of its order table.** A row whose `starts` column
 reads `NOW` can be picked up today whatever its rank, which is how two steps run in parallel.
 
-Three more registries sit beside it, all in `docs/plans/`: `ledger.md` is every open finding in
-every arc and every row names a live owner; `conventions.md` is the 15 rules all of it is held to;
-`lessons.md` is what this project has already paid to learn. Each arc's argument, rulings and step
-specifications stay in its own document: `docs/audits/balance_architecture/README.md` (balance), and
-`implementation_plan_*.md` for recurrence, pay_calendar and credit_card. `steps.md` names which
-document and section holds a given step's detail.
+Four more registries sit beside it, all in `docs/plans/`: `ledger.md` is every open finding in every
+arc and every row names a live owner; `rulings.md` is every developer ruling, keyed `(arc, id)` with
+the arc a COLUMN; `conventions.md` is the 16 rules all of it is held to; `lessons.md` is what this
+project has already paid to learn. Each arc's argument and step specifications stay in its own
+document: `docs/audits/balance_architecture/README.md` (balance), and `implementation_plan_*.md` for
+recurrence, pay_calendar, credit_card and bank_import. `steps.md` names which document and section
+holds a given step's detail. **Rulings moved OUT of the arc documents at `balance:X-ao-1`;
+`recurrence`, `pay_calendar` and `credit_card` still hold their own until `X-ao-2`, and `rulings.md`
+says in its preamble which arcs it holds.**
 
 **Anything under an `archive/` or `historical/` directory is a HISTORICAL RECORD and governs
 nothing** -- every such file says so on its first line. Cite one for how a decision came to be,
