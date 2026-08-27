@@ -50,14 +50,25 @@ in.
 **The gate that WOULD be structural is a layer predicate** -- "no module under
 ``app/services/**`` calls ``BalanceContext.build``", the pass built at the HTTP
 boundary and nowhere below it (adversarial design review, 2026-08-16).  That is
-not a name list and it is the right end state; **FIVE service modules stand
-between here and it**, re-measured 2026-08-18 with
+not a name list and it is the right end state; **SIX service modules stand
+between here and it**, re-measured 2026-08-27 with
 ``grep -rl "BalanceContext\\.build(" app/services/`` -- the trailing paren
 matters, because the bare name also matches docstrings recording calls that
 were deleted.  They are ``calendar_service``,
 ``investment_dashboard_service/_context``,
-``investment_dashboard_service/_orchestrator``, ``loan_recurrence_sync`` and
-``tax_report_service``.
+``investment_dashboard_service/_orchestrator``, ``loan_recurrence_sync``,
+``period_population`` and ``tax_report_service``.
+
+**The count went UP at recurrence plan step R7d-c-1**, and that is a fork
+rather than a regression: ``period_population`` opens a pass AFTER the write
+it repopulates, because a pass taken from above holds the pre-write calendar
+and -- from R7d-c-2 -- the pre-write LOAN, which nothing catches.
+``pay_calendar:C11`` states two remedies for exactly this ("the rule carves it
+out or takes it from its caller") and rules NEITHER, so the fork is registered
+in ``steps.md`` rather than settled by whichever module was written last.
+The paragraph above said FIVE and named five until this step; an adversarial
+review found it stale in the file this step edits, which is the residue rule's
+own case.
 
 **This paragraph named EIGHT and three of the names were already wrong**, which
 is why it now carries its date.  It listed
@@ -128,6 +139,7 @@ from app.models.ref import FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.services import account_resolver, pay_schedule_service
 from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
     counting_calls,
     counting_read_passes,
@@ -344,6 +356,62 @@ class TestOneReadPassPerRender:
         assert counter["n"] == 1, (
             f"/ opened {counter['n']} read passes; the route builds one and "
             "both the pulse region and the position tracks must take it"
+        )
+
+    @pytest.mark.parametrize("path", ["/grid", "/"])
+    def test_a_rolling_owner_opens_TWO_passes_and_that_is_the_bound(
+        self, app, db, auth_client, seed_user, seed_periods_today, path,
+    ):
+        """With rolling ON and the window SHORT, these renders open TWO.
+
+        **A +1 recurrence plan step R7d-c-1 introduced, pinned here so a later
+        session does not read it as a regression.**  The rolling top-up can
+        CREATE pay periods, and the repopulation it runs opens the read pass
+        the generate engines resolve against (``period_population``): a pass
+        taken from the render would hold the PRE-write calendar, and from plan
+        step R7d-c-2 the pre-write LOAN as well.  The top-up runs inside its
+        own ``write_transaction()`` and commits BEFORE the route builds the
+        render's pass, exactly so the render sees what it wrote -- so the two
+        passes are two database states, not two clocks on one screen, which is
+        the defect every other case in this class grades.
+
+        **TWO is the bound.**  A third would mean a producer below the render's
+        pass opening one, which is the class's whole subject; a second pass
+        inside the top-up would mean the repopulation rebuilding one per
+        template.
+
+        **The deficit is asserted, not assumed.**  With the target below the
+        periods the owner already has, ``top_up_rolling_window`` returns before
+        ``extend_pay_periods`` and this case would silently grade the
+        rolling-OFF path -- which every other test here already covers.
+
+        Args:
+            path: The render to count, as a URL.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            _seed_dashboard_owner(db, seed_user, seed_periods_today)
+            before = len(calendar_for(user_id).saved())
+            pay_schedule_service.set_rolling(
+                user_id, enabled=True, target_periods=before + 3,
+            )
+            db.session.commit()
+
+        with counting_read_passes() as counter:
+            resp = auth_client.get(path)
+
+        assert resp.status_code == 200
+        with app.app_context():
+            after = len(calendar_for(seed_user["user"].id).saved())
+        assert after > before, (
+            f"the top-up appended nothing ({before} -> {after} periods), so "
+            f"this case graded the rolling-OFF path"
+        )
+        assert counter["n"] == 2, (
+            f"{path} opened {counter['n']} read passes for a rolling owner "
+            f"whose window was short; the repopulation opens one AFTER its "
+            f"write and the route opens the render's, so anything above two "
+            f"is a producer below the render's pass opening its own"
         )
 
     def test_dashboard_fragments_open_one_read_pass_each(
