@@ -397,3 +397,50 @@ class TestTheHalfMigrationCannotHideARowLoss:
         monkeypatch.setitem(rulings.ARC_DOCS, "balance", target)
         assert any("does not name rulings.md" in p
                    for p in rulings.migration_violations())
+
+
+class TestThePreambleDoesNotDecay:
+    """Rule 3 over the arcs that have NOT moved yet.
+
+    The registry's preamble states a count for each unmigrated arc and a total
+    derived from them.  Those are DERIVED VALUES BESIDE NO RECONCILER -- the
+    root cause three of these arcs exist to remove -- and they shipped that way
+    in the first draft.  The recurrence session named the decay before it
+    happened: its 36 becomes 37 when PR #138 merges and 38 after `R7d-c-1`.
+    """
+
+    def test_every_unmigrated_count_matches_its_document(self):
+        """Counted from the documents, never from the sentence."""
+        assert not rulings.unmigrated_count_violations()
+
+    def test_the_counts_are_taken_from_the_three_documents(self):
+        """The arcs counted are exactly the arcs declared unmoved."""
+        assert set(rulings.unmigrated_arc_counts()) == set(
+            rulings.ARC_RULING_HEADINGS
+        )
+
+    def test_a_stale_per_arc_count_is_caught(self, stage_rulings):
+        """The decay the recurrence session predicted, planted."""
+        actual = rulings.unmigrated_arc_counts()["recurrence"]
+        stage_rulings(f"`recurrence` ({actual})", f"`recurrence` ({actual + 1})")
+        assert any("recurrence holds" in p
+                   for p in rulings.unmigrated_count_violations())
+
+    def test_a_stale_derived_total_is_caught(self, stage_rulings):
+        """The total is derived from three counts and decays with any of them."""
+        total = sum(rulings.unmigrated_arc_counts().values())
+        stage_rulings(f"Those {total} need ids", f"Those {total + 1} need ids")
+        assert any("still to be lifted" in p
+                   for p in rulings.unmigrated_count_violations())
+
+    def test_a_separator_row_is_not_counted_as_a_ruling(self):
+        """The error that read 37 recurrence rows where the document holds 36.
+
+        A ``|---|---|`` separator and a ``| fork | ruling |`` header are table
+        STRUCTURE, not entries.  Counting one is the same class as **N-372**,
+        the section label rendered as a row -- and it is how this session first
+        quoted a number back to a peer that neither document held.
+        """
+        text = rulings.ARC_DOCS["recurrence"].read_text()
+        assert "|---|---|" in text, "the specimen separator is not in the real table"
+        assert rulings.unmigrated_arc_counts()["recurrence"] == 36

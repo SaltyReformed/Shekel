@@ -260,6 +260,79 @@ def declared_arc_counts() -> dict[str, int]:
     }
 
 
+#: The preamble's parenthesised count for each arc that has NOT moved, plus
+#: the total it derives from them.
+UNMIGRATED_RX = re.compile(r"`(?P<arc>[a-z_]+)` \((?P<count>\d+)\)")
+UNMIGRATED_TOTAL_RX = re.compile(r"Those (?P<total>\d+) need ids")
+
+
+def unmigrated_arc_counts() -> dict[str, int]:
+    """Return how many rulings each UNMIGRATED arc's own document holds.
+
+    Counted from the documents, not from the preamble.  ``recurrence`` and
+    ``pay_calendar`` state a ruling as a two-cell table row under their
+    ``## Rulings`` heading; ``credit_card`` states one as a numbered list item
+    under its own.  Header and separator rows are excluded, which is not a
+    detail: a separator counted as a ruling is how this session first read 37
+    recurrence rows where the document holds 36, and a ROW that is not an
+    entry is finding **N-372**.
+
+    Returns:
+        ``{arc: count}`` for every arc still holding its own table.
+    """
+    counts: dict[str, int] = {}
+    for arc, heading in ARC_RULING_HEADINGS.items():
+        rows, inside = 0, False
+        for line in ARC_DOCS[arc].read_text().splitlines():
+            if inside and line.startswith("## "):
+                break
+            if line.startswith(heading):
+                inside = True
+                continue
+            if not inside:
+                continue
+            if re.match(r"^\d+\.\s+\*\*", line):
+                rows += 1
+            elif line.strip().startswith("|"):
+                cells = [c.strip() for c in re.split(r"(?<!\\)\|", line)[1:-1]]
+                if cells and cells[0] != "fork" and not set(
+                        "".join(cells)) <= set("-: "):
+                    rows += 1
+        counts[arc] = rows
+    return counts
+
+
+def unmigrated_count_violations() -> list[str]:
+    """Return every stale count the preamble states about an UNMIGRATED arc.
+
+    **A derived value beside no reconciler is the root cause three of these
+    arcs exist to remove**, and the first draft of this registry shipped four
+    of them in its own preamble: a parenthesised count per unmoved arc and the
+    total derived from those.  The recurrence session then said, correctly,
+    that its 36 becomes 37 when PR #138 merges and 38 after that -- two moves
+    already known about, in prose nothing graded.
+
+    Returns:
+        One message per count that disagrees with the document it describes.
+    """
+    text = RULINGS.read_text()
+    actual = unmigrated_arc_counts()
+    problems = [
+        f"rulings.md says {arc} holds {int(stated)} rulings and its document "
+        f"holds {actual[arc]} (conventions.md rule 3)"
+        for arc, stated in UNMIGRATED_RX.findall(text)
+        if arc in actual and int(stated) != actual[arc]
+    ]
+    total = UNMIGRATED_TOTAL_RX.search(text)
+    if total is not None and int(total.group("total")) != sum(actual.values()):
+        problems.append(
+            f"rulings.md says {total.group('total')} rulings are still to be "
+            f"lifted and the three documents hold {sum(actual.values())} "
+            f"(conventions.md rule 3)"
+        )
+    return problems
+
+
 def key_violations() -> list[str]:
     """Return every way a row fails to name exactly one ruling.
 
