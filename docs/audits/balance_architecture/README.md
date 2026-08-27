@@ -325,13 +325,13 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   * [ ] **X-f3c** the DECOMPOSED parent of THE CUTOVER, re-decomposed 2026-08-27 (**R-GW**, with
     **R-GX** and **R-GY**, the two rulings its first draft owed). Carries **N-172**, **N-174**.
     * [x] **X-f3c-1** `2dad8512` -- the assertion RESET left the kind-blind walk (**R-J**) for `balance_at._assertions`, so `walk_cash_ledger` yields FACTS and each fold applies the policy its own kind needs. Byte-identical.
-    * [ ] **X-f3c-2** `feat(accounts): opening equity is a fact, not a position` -- **R-GX**, whole:
-      a stored opening equity with its own write door seeded at today's derived value, R-I's
-      compensator gone with the special case it existed for, `is_opening`'s POSITIONAL read no
-      longer defining the constant every balance rests on, and the table gaining the
-      `before_update` / `before_delete` refusal its two siblings carry -- which re-shapes the
-      assertion fixtures that UPDATE a row to pin an instant. Closes **N-287** and NOT **N-275**,
-      whose `$436.05` R-GX leaves standing for an operator to restate.
+    * [ ] **X-f3c-2** `feat(accounts): opening equity is a fact, not a position` -- **R-GX**: a
+      stored opening equity in a SATELLITE `budget.account_openings`, on the `loan_params` pattern
+      (developer 2026-08-27 -- a column on `accounts` is NULLABLE for the two LOANS, a rule the
+      schema cannot state since the kind lives on `ref.account_types`, and it would sit where
+      **R-EH** deleted a cached balance), seeded at the derived value so the migration moves `$0.00`.
+      R-I's compensator goes with it, `is_opening` stops defining the constant, and the assertion
+      table gains its siblings' append-only refusal. Closes **N-287**, not **N-275**.
     * [ ] **X-f3c-3** `feat(cash): the app says what it cannot explain` -- the account's
       OUTSTANDING DIFFERENCE (`latest asserted - (opening equity + SUM(postings))`, ONE figure per
       account and not a per-assertion correction) derived off the fold and displayed beside whether
