@@ -1446,6 +1446,7 @@ class TestTheReceiptNamesIt:
 
         outcome = statement_match.apply_reviewed(
             statement_match.ReviewedBatch(
+                consent=statement_match.Consent.TICKED,
                 matches=(a_submission(
                     scope, lines=[line], transactions=[salary, allowance],
                     residual="0.05",
@@ -1497,6 +1498,7 @@ class TestTheReceiptNamesIt:
 
         outcome = statement_match.apply_reviewed(
             statement_match.ReviewedBatch(
+                consent=statement_match.Consent.TICKED,
                 matches=(
                     a_submission(
                         scope, lines=[deposit],

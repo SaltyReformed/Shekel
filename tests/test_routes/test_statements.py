@@ -24,13 +24,18 @@ import pytest
 from app.models.account import Account
 from app.models.ref import AccountType
 from app.models.statement_import import BankStatementLine, StatementImport
+from app.models.statement_match import StatementMatch as statement_match_model
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User, UserSettings
 from app.services import auth_service, entry_service, statement_match
 from tests._test_helpers import create_settled_cash_transaction
 from tests.test_services.test_statement_import import _csv_builder as build
-from tests.test_services.test_statement_match._builders import a_submission
+from tests.test_services.test_statement_match._builders import (
+    a_rule,
+    a_submission,
+    a_transaction,
+)
 
 _ENTRIES = [
     (date(2026, 3, 2), "-25.00", "POINT OF SALE DEBIT L340 COFFEE"),
@@ -140,20 +145,39 @@ class TestThePageReadsForItsOwner:
         assert response.status_code == 200
         assert b"Import a statement" in response.data
 
-    def test_it_says_the_import_changes_no_balance(
+    def test_it_says_which_of_the_two_things_it_does(
         self, auth_client, seed_user,
     ):
         """The page's own claim about itself, asserted rather than assumed.
 
         An import screen that looked like it reconciled would be READ as having
-        reconciled -- and at this leaf it does not, so the sentence saying so
-        is part of the deliverable rather than decoration.
+        reconciled, so the sentence saying so has always been part of the
+        deliverable.  **Plan step ``bank_import:X-ge`` made HALF of it false**:
+        recording still moves no figure, and a standing rule now files a new
+        swipe as a purchase in the same request (ruling **R-GH**), so a page
+        claiming only *it changes no balance* would be claiming the opposite of
+        what happened to the owner's money.
+
+        **Both halves are asserted, and the second is why this case was
+        rewritten rather than left alone.**  The old assertion was
+        ``b"changes no balance" in response.data``, and the replacement copy
+        still contains that phrase -- about the RECORDING half -- so the case
+        went on passing while the sentence it was written to grade had gone.
+        A test that survives the change it exists to catch is not a test.
         """
         response = auth_client.get(
             f"/accounts/{seed_user['account'].id}/statements"
         )
+        body = response.data
 
-        assert b"changes no balance" in response.data
+        # The recording half, unchanged.
+        assert b"That part changes no balance" in body
+        # ...and the half X-ge added, which is what MOVES money.
+        assert b"files what you have already\n    decided" in body
+        assert b"standing" in body and b"filed as a purchase" in body
+        # ...and the protective half R-GH keeps: nothing touches a row the
+        # owner made without their tick.
+        assert b"is never\n    done for you" in body
 
     def test_an_account_with_nothing_recorded_says_so(
         self, auth_client, seed_user,
@@ -280,6 +304,162 @@ class TestTheImportPost:
 
         db.session.expire_all()
         assert db.session.query(StatementImport).count() == 1
+
+    def test_a_rule_covered_swipe_is_FILED_by_the_import_itself(
+        self, auth_client, db, seed_user,
+    ):
+        """Ruling **R-GH** through the real door, and it MOVES MONEY.
+
+        The whole point of the step: the owner stated once where Food Lion
+        goes, uploads an export, and the swipe is a Groceries purchase before
+        they have pressed anything else.  The receipt says so, names the
+        figure, and the page lists the act with its undo.
+
+        **The second line is a payroll DEPOSIT the same file carries**, so this
+        cannot pass on a door that filed everything it saw: money coming in can
+        never be a purchase.
+        """
+        with auth_client.application.app_context():
+            envelope = a_transaction(
+                seed_user, name="Groceries", amount="500.00",
+                is_envelope=True,
+            )
+            a_rule(seed_user, "Coffee", template_id=envelope.template_id)
+            envelope_id = envelope.id
+            db.session.commit()
+
+        response = _upload(
+            auth_client, seed_user["account"].id,
+            _payload(entries=[
+                (date(2024, 1, 8), "-25.00",
+                 "POINT OF SALE DEBIT L340 COFFEE HOUSE (Coffee)"),
+                (date(2024, 1, 9), "1500.00",
+                 "ACH DEPOSIT TOWN OF CLAYTON  PAYROLL"),
+            ]),
+        )
+
+        assert response.status_code == 200
+        toasts = _flash_toasts(response.get_data(as_text=True))
+        assert any(
+            "filed 1 of them as purchases worth -25.00" in message
+            for _, message in toasts
+        ), toasts
+        assert db.session.query(TransactionEntry).filter(
+            TransactionEntry.transaction_id == envelope_id,
+        ).count() == 1
+        # ...and the act is on the page, with the control that takes it back.
+        assert b"Filed by your rules" in response.data
+        assert b"match_id" in response.data
+
+    def test_an_import_whose_rules_file_NOTHING_says_nothing_about_them(
+        self, auth_client, db, seed_user,
+    ):
+        """The control that stops the receipt sentence appearing always.
+
+        An ordinary import for an owner who has stated no rule files nothing,
+        and a receipt claiming a filing pass on every upload would be noise on
+        the one screen whose sentences have to be read.
+        """
+        response = _upload(auth_client, seed_user["account"].id, _payload())
+
+        toasts = _flash_toasts(response.get_data(as_text=True))
+        assert toasts, "the import receipt itself is missing"
+        assert not any(
+            "your standing rules" in message.lower()
+            for _, message in toasts
+        ), toasts
+        # The receipt CARD, which is a different surface from the banner's
+        # explanation of what a rule would do.
+        assert b'<i class="bi bi-signpost-split"></i> Filed by your rules' \
+            not in response.data
+        assert db.session.query(TransactionEntry).count() == 0
+
+    def test_the_filing_is_COMMITTED_with_the_import(
+        self, auth_client, db, seed_user,
+    ):
+        """ONE unit of work: the lines and the purchases land together.
+
+        The route commits once, so an import whose filing died outside a
+        designed refusal would leave neither -- which is what makes the receipt
+        an account of what happened rather than a hope.
+        """
+        with auth_client.application.app_context():
+            envelope = a_transaction(
+                seed_user, name="Groceries", amount="500.00",
+                is_envelope=True,
+            )
+            a_rule(seed_user, "Coffee", template_id=envelope.template_id)
+            db.session.commit()
+
+        _upload(
+            auth_client, seed_user["account"].id,
+            _payload(entries=[
+                (date(2024, 1, 8), "-25.00",
+                 "POINT OF SALE DEBIT L340 COFFEE HOUSE (Coffee)"),
+            ]),
+        )
+
+        db.session.expire_all()
+        assert db.session.query(StatementImport).count() == 1
+        assert db.session.query(TransactionEntry).count() == 1
+        assert db.session.query(statement_match_model).filter(
+            statement_match_model.applied_by_rule.is_(True),
+        ).count() == 1
+
+    def test_a_BUDGET_the_app_cannot_derive_still_records_the_bank_s_lines(
+        self, auth_client, db, seed_user,
+    ):
+        """Found by adversarial security review 2026-08-26.
+
+        `ReviewScope.build` raises for two setup states -- `PayCalendarError`
+        when the owner's paydays cannot define a calendar, and
+        `BaselineMissingError` when no scenario can price a row.  **Nothing
+        registers a handler for the first**, so before this arm existed a
+        broken calendar reached the browser as a bare 500 AND rolled the whole
+        unit of work back, losing the import.
+
+        Recording what the bank said has no dependency on either.  The page's
+        own GET proves it: `statements()` builds no scope at all and renders
+        perfectly well.  So the lines land, the rules report that they could
+        not run, and the owner is told what to fix.
+
+        **The baseline arm is the one this drives**, because it is the one
+        ordinary data can reach: `uq_pay_periods_user_start` makes two paydays
+        on one day UNWRITABLE, so the calendar's own tie arm cannot be built
+        through the schema.  Both are caught by the same `except`, on the same
+        line, so the case that reaches one grades the arm for both.
+        """
+        with auth_client.application.app_context():
+            envelope = a_transaction(
+                seed_user, name="Groceries", amount="500.00",
+                is_envelope=True,
+            )
+            a_rule(seed_user, "Coffee", template_id=envelope.template_id)
+            # What `BaselineMissingError`'s own message calls "the data was
+            # changed outside the app": the owner has scenarios and none of
+            # them is the baseline.
+            seed_user["scenario"].is_baseline = False
+            db.session.commit()
+
+        response = _upload(
+            auth_client, seed_user["account"].id,
+            _payload(entries=[
+                (date(2024, 1, 8), "-25.00",
+                 "POINT OF SALE DEBIT L340 COFFEE HOUSE (Coffee)"),
+            ]),
+        )
+
+        assert response.status_code == 200
+        toasts = _flash_toasts(response.get_data(as_text=True))
+        assert any(
+            "did not run" in message for _, message in toasts
+        ), toasts
+        db.session.expire_all()
+        # The BANK's lines are recorded...
+        assert db.session.query(BankStatementLine).count() == 1
+        assert db.session.query(StatementImport).count() == 1
+        # ...and nothing was filed into the budget.
+        assert db.session.query(TransactionEntry).count() == 0
 
     def test_a_missing_file_is_refused_without_a_500(
         self, auth_client, db, seed_user,
@@ -936,16 +1116,22 @@ class TestTheDeletePost:
 
         assert "undoes 1 accepted match(es)" in body
 
-    def test_it_DESTROYS_what_the_review_created_and_says_so(
+    def test_it_DESTROYS_what_was_created_from_those_lines_and_says_so(
         self, auth_client, db, seed_user,
     ):
         """Plan step **bank_import:X-f6f**, ruling **R-GG**, amending R-GB.
 
-        A row the review pass created from one of these lines exists only
-        because that line did, so destroying the line while keeping it leaves
-        a movement in the books that nothing accounts for.  It goes with the
-        line -- which means this act MOVES MONEY where R-GB said it could not,
-        and both the confirmation and the receipt have to say so.
+        A row created from one of these lines exists only because that line
+        did, so destroying the line while keeping it leaves a movement in
+        the books that nothing accounts for.  It goes with the line -- which
+        means this act MOVES MONEY where R-GB said it could not, and both
+        the confirmation and the receipt have to say so.
+
+        **The wording stopped saying *the review* created it at plan step
+        ``bank_import:X-ge``**, and that is a correction rather than a
+        rewording: a row destroyed here may have been filed by a standing
+        RULE at import, which nobody reviewed.  What the sentence must be
+        right about is the count and the figure, and both are unchanged.
 
         Driven through the two real POSTs: import, record the `-$25.00` coffee
         line as a purchase in a new envelope, then delete the import.
@@ -983,7 +1169,7 @@ class TestTheDeletePost:
         listing = auth_client.get(
             f"/accounts/{seed_user['account'].id}/statements"
         ).get_data(as_text=True)
-        assert "DESTROYS 2 row(s) the review created" in listing
+        assert "DESTROYS 2 row(s) created from those lines" in listing
         assert "-$25.00" in listing
 
         recorded = db.session.query(StatementImport).one()
@@ -992,7 +1178,7 @@ class TestTheDeletePost:
         )
 
         body = response.get_data(as_text=True)
-        assert "2 row(s) the review had created" in body
+        assert "2 row(s) created from those " in body
         assert "-25.00" in body
         db.session.expire_all()
         assert db.session.query(TransactionEntry).count() == 0

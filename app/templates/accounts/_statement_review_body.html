@@ -1,4 +1,5 @@
 {% from "_money_macros.html" import money %}
+{% from "accounts/_statement_undo_macros.html" import undo_match %}
 
 {# THE WHOLE REVIEWABLE SURFACE, and the batch POST's own answer.
 
@@ -228,7 +229,11 @@
         hx-swap="outerHTML show:top"
         hx-disabled-elt="find button[type=submit]">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <div class="card mb-3">
+    {# The id is what the statements page links to when it explains that a
+       stated rule files a new swipe by itself (plan step bank_import:X-ge):
+       the sentence names the control that gives consent, so the link has to
+       reach the control rather than the top of a 14,527-pixel page. #}
+    <div class="card mb-3" id="merchant-rules">
       <div class="card-header d-flex justify-content-between align-items-center">
         <span><i class="bi bi-signpost-split"></i> Where your merchants go</span>
         <span class="badge text-bg-secondary">
@@ -729,24 +734,27 @@
                 <span class="small text-body-secondary">(made {{ item.line.transaction_on }})</span>
                 {% endif %}
                 <div class="small text-body-secondary">{{ item.line.description }}</div>
-                {% if item.line.line_id in review.undecided_near_lines %}
+                {% set gap = review.search_gap_for(item.line) %}
+                {% if gap %}
                 {# THE WARNING, on the line rather than in a panel at the foot
-                   of the page (plan step bank_import:X-f6d-3).  The near-miss
-                   score WITHHOLDS where it cannot choose -- two of your rows
-                   equally close to this line, or the row it would name fits
-                   another line just as well -- and until this step that was a
-                   COUNT under "what this page did not look at", which named no
-                   line and so could not be acted on.
+                   of the page (plan step bank_import:X-f6d-3).  It belongs
+                   HERE because this card is where the wrong act is cheapest:
+                   recording a line the app already holds in another shape is
+                   the duplicate finding N-335 measures, at $356.61 for one
+                   $178.29 movement.
 
-                   It belongs HERE because this card is where the wrong act is
-                   cheapest: recording a line the app already holds in another
-                   shape is the duplicate finding N-335 measures, at $356.61
-                   for one $178.29 movement. #}
+                   **The SENTENCE is the pass's own** (plan step X-ge-1).  It
+                   was one hardcoded line about the near tier's contest, which
+                   was the only rejection the pass published; every tier
+                   reports its own now -- a candidate refused for want of the
+                   merchant, one refused for the day window, an exact figure
+                   the window refused -- and the same derivation is what
+                   ruling R-GH's automatic door withholds on, so the screen and
+                   that door cannot describe one limit two ways. #}
                 <div class="small text-warning-emphasis mt-1">
                   <i class="bi bi-exclamation-triangle"></i>
-                  One of your rows is very close to this on the amount, but not
-                  one this page would pick for you. Check the match form below
-                  before recording this as new spending.
+                  Before recording this as new spending, check the match form
+                  below: {{ gap }}.
                 </div>
                 {% endif %}
               </td>
@@ -1043,10 +1051,11 @@
                          fact on the review set, two renders -- the danger and
                          the fix are in different cards, and an inflow reaches
                          only this one. #}
-                      {% if line.line_id in review.undecided_near_lines %}
+                      {% set gap = review.search_gap_for(line) %}
+                      {% if gap %}
                       <div class="text-warning-emphasis">
                         <i class="bi bi-exclamation-triangle"></i>
-                        A row of yours is very close to this on the amount.
+                        {{ gap | capitalize }}.
                       </div>
                       {% endif %}
                     </td>
@@ -1204,6 +1213,19 @@
             <td class="text-nowrap">{{ group.posts_on }}</td>
             <td class="text-end fw-semibold text-nowrap">{{ money(group.amount) }}</td>
             <td class="small">
+              {# WHO agreed to this act (ruling R-GT, plan step
+                 bank_import:X-ge).  `applied_by_rule` is the one fact about a
+                 match that is not derivable from what it names, which is that
+                 ruling's own argument for storing it -- and a fact written and
+                 never seen is the shape this arc keeps finding.  It is a badge
+                 on the acts nobody pressed rather than on the ones they did,
+                 because the tick is the norm and the rule is the exception a
+                 reader is checking for. #}
+              {% if group.applied_by_rule %}
+              <span class="badge text-bg-secondary mb-1">
+                <i class="bi bi-signpost-split"></i> filed by your rule
+              </span>
+              {% endif %}
               {% for description in group.descriptions %}
               <div class="text-body-secondary">{{ description }}</div>
               {% endfor %}
@@ -1219,47 +1241,7 @@
               {% endfor %}
             </td>
             <td class="text-end">
-              {% if group.removes.refusal %}
-              {# The undo would be REFUSED, so the row says so instead of
-                 listing removals it will not perform.  Same derivation as the
-                 door (`planned_removals`), which is the whole point: a panel
-                 promising a removal the button refuses is the disagreement
-                 one derivation exists to prevent. #}
-              <div class="small text-warning-emphasis mb-1">
-                Undo is refused: {{ group.removes.refusal }}
-              </div>
-              {% elif group.removes.rows %}
-              <div class="small text-warning-emphasis mb-1">
-                Undo removes {{ group.removes.rows | length }} row(s) this
-                match created{% if group.removes.moves_money %},
-                {{ money(group.removes.cash_amount) }} of recorded
-                money{% endif %}:
-                {% for removal in group.removes.rows %}
-                <div>{{ removal.label }}{% if removal.is_container %}
-                  (the budget line it was filed under){% endif %}</div>
-                {% endfor %}
-              </div>
-              {% endif %}
-              {# `data-confirm` is the project's own destructive-action
-                 pattern; base.html includes the modal and confirm.js sets the
-                 body with textContent, so a row LABEL taken from a bank line
-                 cannot inject. It is attached only where the undo would destroy a
-                 record -- a match between rows that already existed removes
-                 nothing, and a confirmation on a reversible act trains the
-                 owner to click through the one that is not. The figure is the
-                 SERVICE's (`planned_removals`), the same derivation the door
-                 acts on, so the sentence cannot promise what the button will
-                 not do. #}
-              <form method="post"
-                    action="{{ url_for('accounts.release_statement_match', account_id=account.id) }}"
-                    {% if group.removes.rows %}
-                    data-confirm="Undo this match? It puts {{ group.descriptions | length }} statement line(s) back among the unexplained, and it REMOVES the {{ group.removes.rows | length }} row(s) this match created{% if group.removes.moves_money %}, worth {{ money(group.removes.cash_amount) }} of money the app currently records{% endif %}. Settle dates on rows the match only re-dated are NOT changed."
-                    {% endif %}>
-                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                <input type="hidden" name="match_id" value="{{ group.match_id }}">
-                <button type="submit"
-                        class="btn btn-sm {% if group.removes.rows %}btn-outline-danger{% else %}btn-outline-secondary{% endif %}">Undo</button>
-              </form>
+              {{ undo_match(account, group) }}
             </td>
           </tr>
           {% endfor %}

@@ -71,6 +71,7 @@ route owns the unit of work.
 
 from __future__ import annotations
 
+import enum
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -83,6 +84,37 @@ from ._create import MintedEnvelopes, create_purchase_from_line
 from ._creations import PurchaseCreation
 from ._scope import ReviewScope
 from ._submission import MatchSubmission
+
+
+class Consent(enum.Enum):
+    """WHO agreed to the acts in one batch (ruling **R-GH**).
+
+    Plan step ``bank_import:X-ge``.  **Consent splits by ACT CLASS and a
+    standing rule is consent**, so a pass through this door is one of exactly
+    two things and never a mixture: a person read a screen and ticked, or a
+    rule the owner stated earlier fired on lines an import had just recorded.
+
+    **It is an enum rather than the boolean the column holds**, and the reason
+    is that the two are not the same fact at the same grain.
+    ``budget.statement_matches.applied_by_rule`` records what performed ONE
+    act (ruling **R-GT**); this records what assembled a WHOLE pass, and it is
+    the thing the pass's own refusal is keyed on
+    (:meth:`ReviewedBatch.__post_init__`).  Deriving the column from it in one
+    place -- :attr:`applied_by_rule` -- is what keeps a batch from being
+    described one way and recorded another.
+    """
+
+    TICKED = "ticked"
+    STANDING_RULE = "standing_rule"
+
+    @property
+    def applied_by_rule(self) -> bool:
+        """Return what this consent writes to ``applied_by_rule``.
+
+        The ONE mapping from a pass's consent to the column ruling **R-GT**
+        stores per act, so a door cannot record a rule's work as a tick.
+        """
+        return self is Consent.STANDING_RULE
 
 
 @dataclass(frozen=True)
@@ -108,10 +140,46 @@ class ReviewedBatch:
             submitted -- they are the same act and reach the same door, so they
             are one list rather than two.
         creations: The bank lines the owner named a destination for.
+        consent: Who agreed to these acts (:class:`Consent`, ruling **R-GH**).
+            **Required, with no default**, for the reason
+            :func:`~._accept.record_match` gives its own keyword-only flag: the
+            two values are *the owner agreed to this* and *the app did it on
+            their behalf*, and a default would let a door claim the first by
+            omission -- which is consent laundered rather than recorded.
     """
 
     matches: "tuple[MatchSubmission, ...]"
     creations: "tuple[PurchaseCreation, ...]"
+    consent: Consent
+
+    def __post_init__(self) -> None:
+        """Refuse a rule pass carrying a MATCH.
+
+        **Ruling R-GH's boundary, made unrepresentable rather than maintained**
+        (plan step ``bank_import:X-ge``).  A rule is consent for CREATING a row
+        from a new bank swipe; every act that modifies a row the owner made by
+        hand -- re-date, re-price, settle, group-match -- keeps its tick, and
+        those are exactly the acts :func:`~._accept.accept_match` performs.
+        That door hardcodes ``applied_by_rule=False`` and says no rule reaches
+        it; this is the same sentence one tier up, where a caller could
+        otherwise assemble the batch that contradicts it.
+
+        A TICKED batch carrying no items at all is legal and ordinary -- it is
+        what an untouched form posts -- so nothing here counts.
+
+        Raises:
+            ValueError: When a :attr:`Consent.STANDING_RULE` batch names a
+                match.  **A programming error rather than a designed refusal**,
+                so it is not a ``ValidationError``: no wire value reaches this
+                field, the route states it as a literal, and there is no
+                sentence to write for an owner who cannot have caused it.
+        """
+        if self.consent is Consent.STANDING_RULE and self.matches:
+            raise ValueError(
+                "A standing rule may create a row from a new bank swipe and "
+                "may not modify a row the owner made by hand (R-GH), so a "
+                "rule-consented batch cannot carry a match."
+            )
 
     @property
     def item_count(self) -> int:
@@ -134,10 +202,23 @@ class AppliedItem:
             design review 2026-08-19.
         summary: One sentence saying what it did, written by the door that did
             it.
+        amount: What the BANK moved on the lines this act explains, signed on
+            the bank's own convention -- negative for money leaving.  **ONE
+            convention across both item kinds, and stating it is the whole
+            point of the field**: a match's own figure is already the bank's
+            (:attr:`~._accept.AcceptedMatch.amount`) and a creation's is the
+            PURCHASE's, which is positive because a purchase is an expense, so
+            a field that took each door's native sign would total two
+            directions at once.  Added at plan step ``bank_import:X-ge``,
+            because a receipt for acts nobody pressed has to name money and
+            not only a count -- ruling **R-GD(a)**'s rule one door over: a
+            consent naming a count and no figure is a consent to an amount
+            nobody stated.
     """
 
     line_ids: "tuple[int, ...]"
     summary: str
+    amount: Decimal
 
 
 @dataclass(frozen=True)
@@ -222,6 +303,24 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
     envelopes_created: int
     residual_count: int
     residual_total: Decimal
+
+    @classmethod
+    def nothing(cls) -> "BatchOutcome":
+        """Return the outcome of a pass that performed no act at all.
+
+        **Not the same as a pass that was never run**, which is why it is a
+        value rather than a ``None`` its callers branch on: a rule pass over an
+        import that recorded no fresh line HAS run and found nothing to do, and
+        an import whose rules could not be consulted has not
+        (:class:`~._filing.RuleFiling`).  Both hold one of these; only the
+        second carries a reason beside it.
+        """
+        return cls(
+            applied=(), refused=(),
+            settled_count=0, corrected_count=0, redated_count=0,
+            repriced_count=0, recorded_count=0, envelopes_created=0,
+            residual_count=0, residual_total=Decimal("0.00"),
+        )
 
     @property
     def applied_count(self) -> int:
@@ -502,6 +601,9 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
             tally.residual_total += accepted.residual
         tally.applied.append(AppliedItem(
             line_ids=line_ids, summary=_match_summary(accepted),
+            # Already the BANK's own signed figure over the lines this act
+            # names, which is this field's stated convention.
+            amount=accepted.amount,
         ))
 
     for creation in batch.creations:
@@ -510,6 +612,12 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
             tally, line_ids,
             lambda c=creation: create_purchase_from_line(
                 c, scope, minted, bars,
+                # **The PASS's consent, not the item's** (ruling **R-GT**,
+                # plan step ``bank_import:X-ge``).  Which rule fired is
+                # derivable from the matched line; that a rule fired at all is
+                # not, and it is a fact about how this whole batch was
+                # assembled rather than about any one line in it.
+                applied_by_rule=batch.consent.applied_by_rule,
             ),
         )
         if recorded is None:
@@ -525,6 +633,13 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
         tally.envelopes += 1 if recorded.envelope_created else 0
         tally.applied.append(AppliedItem(
             line_ids=line_ids, summary=_created_summary(recorded),
+            # **NEGATED, onto the bank's convention.**
+            # ``CreatedPurchase.amount`` is the purchase's own figure and a
+            # purchase is an expense, so it is POSITIVE
+            # (``ck_transaction_entries_positive_amount``) -- and this door
+            # only ever creates one from a line whose own amount was negative
+            # (``_create._load_line`` refuses an inflow by name).
+            amount=-recorded.amount,
         ))
 
     outcome = BatchOutcome(

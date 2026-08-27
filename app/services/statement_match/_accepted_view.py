@@ -38,7 +38,12 @@ from app.utils.log_events import (
     log_event,
 )
 
-from ._release import PlannedRemovals, acts_of, planned_removals
+from ._release import (
+    PlannedRemovals,
+    acts_of,
+    planned_removals,
+    warm_subjects,
+)
 from ._sides import MatchSides
 
 _logger = logging.getLogger(__name__)
@@ -67,8 +72,25 @@ class AcceptedRow:
 
 
 @dataclass(frozen=True)
-class AcceptedGroup:
+class AcceptedGroup:  # pylint: disable=too-many-instance-attributes
     """One accepted match, as the screen lists it.
+
+    Pylint: ``too-many-instance-attributes`` (8/7) -- **eight because the two
+    surfaces that render an act read eight disjoint facts about it**, not
+    because the value wants splitting.  The eighth is
+    :attr:`applied_by_rule`, which arrived with plan step ``bank_import:X-ge``
+    and is the whole reason ruling **R-GT** stores a column at all: WHICH rule
+    fired is derivable from the matched line, and THAT one fired is not, so a
+    reader that could not see it could not tell an act the owner pressed from
+    one the app performed for them.  Dropping a field to meet a limit is what
+    :class:`~._accept.AcceptedMatch`'s own disable records the cost of: the
+    receipt said *"Nothing moved."* over a rewritten figure.  The obvious
+    grouping -- :attr:`agrees` beside :attr:`removes` beside this -- is three
+    facts a template reads separately and one condition each, so a nested value
+    would be the speculative shape ``CLAUDE.md`` rule 13 forbids.
+    :class:`~._creations.PurchaseDestination`, :class:`~._offers.CandidateRow`,
+    :class:`~._creations.CreatedPurchase` and
+    :class:`~._batch.BatchOutcome` carry the same disable for the same reason.
 
     Attributes:
         match_id: The act, so the screen can offer to release it.
@@ -87,6 +109,23 @@ class AcceptedGroup:
             one thing and the button do another, and this button destroys
             records.  It is empty for every match between rows that already
             existed, which is most of them.
+        applied_by_rule: Whether a STANDING RULE performed this act rather than
+            a person ticking it (ruling **R-GT**, plan step
+            ``bank_import:X-ge``).  **The column exists so that this can be
+            SHOWN**: it is the one fact about an act that is not derivable from
+            what the act names, which is R-GT's own argument for storing it and
+            against a foreign key to the rule row -- and a fact written and
+            never seen is the shape this arc keeps finding.  It is what lets
+            the import receipt list exactly the acts nobody pressed, and what
+            lets the review screen say which of its accepted matches the owner
+            agreed to line by line.  **No default, which is the discipline every
+            other link in this chain keeps**: ``ReviewedBatch.consent``,
+            ``create_purchase_from_line``'s keyword-only flag and the column
+            itself all refuse one, because the two values are *the owner agreed
+            to this* and *the app did it on their behalf* -- and a default
+            claims the first by omission.  It defaulted to ``False`` until an
+            adversarial security review named it, 2026-08-26: the DISPLAY half
+            of a consent fact may no more assume consent than the writing half.
         agrees: Whether the match still HOLDS -- which is three questions, not
             one, and a first draft asked only the first.  Every row still
             carries ``posts_on``; the act still names at least one row; and the
@@ -106,16 +145,28 @@ class AcceptedGroup:
     rows: "tuple[AcceptedRow, ...]"
     agrees: bool
     removes: PlannedRemovals
+    applied_by_rule: bool
 
 
 def accepted_groups(
-    owner_id: int, account_id: int,
+    owner_id: int, account_id: int, match_ids: "set[int] | None" = None,
 ) -> "list[AcceptedGroup]":
     """Return this account's accepted matches, newest first.
 
     Args:
         owner_id: The user whose matches to list.
         account_id: The account.
+        match_ids: The acts to describe, or ``None`` for all of this
+            account's.  **It is :func:`~._release.acts_of`'s own parameter,
+            surfaced rather than reimplemented** (plan step
+            ``bank_import:X-ge``): the import receipt names a SUBSET -- the
+            acts a standing rule performed -- and a caller filtering this
+            function's output instead would load and value every act on the
+            account to render twenty, which is the unbounded fold an
+            adversarial review measured at 475 queries one reader over.  An
+            empty set means no act, and returns nothing rather than
+            everything, which is that function's rule and the only reading
+            that does not turn a filter into its own opposite.
 
     Returns:
         One :class:`AcceptedGroup` per act.  A group whose rows no longer carry
@@ -128,9 +179,25 @@ def accepted_groups(
     # created decides what the Undo control would take back.  It narrows by
     # the owner as well as the account, which is the pair the write door
     # itself uses.
-    matches = acts_of(owner_id, account_id)
+    matches = acts_of(owner_id, account_id, match_ids)
     if not matches:
         return []
+
+    # **The creations' SUBJECTS, warmed in two statements before the fold**
+    # (plan step ``bank_import:X-ge``).  :func:`planned_removals` reaches each
+    # with ``db.session.get``, which is the right shape for the DOOR and the
+    # wrong one for a reader folding many acts -- measured by the helper's own
+    # docstring at 478 queries and 0.458 s over 230 acts against 9 and 0.039 s.
+    # ``removals_by_match`` has warmed since it was written; this fold, which
+    # is the same fold, did not, and it looked cheap only because 218 of the
+    # developer's 221 acts pre-date the creations relation and short-circuit.
+    # **Every act from X-ge on carries one**, and this reader is now on the
+    # IMPORT path, so the difference stopped being a slow page.
+    #
+    # ``warmed`` is read for its LIFETIME rather than its value: SQLAlchemy's
+    # identity map holds WEAK references, so a warm nothing points at is
+    # collected before the fold reaches it.
+    warmed = warm_subjects([match for match in matches if match.creations])
 
     member_rows = [member for match in matches for member in match.members]
     lines = _by_id(BankStatementLine, {
@@ -207,7 +274,11 @@ def accepted_groups(
             rows=tuple(rows),
             agrees=_still_holds(rows, match_lines, posts_on),
             removes=planned_removals(match),
+            applied_by_rule=match.applied_by_rule,
         ))
+    # The warm is held until HERE, past the last ``planned_removals``, for the
+    # reason the comment at the top of this function gives.
+    del warmed
     return groups
 
 

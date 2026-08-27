@@ -706,8 +706,15 @@ def acts_of(
     ).all()
 
 
-def _warm_subjects(matches: "list[StatementMatch]") -> list:
+def warm_subjects(matches: "list[StatementMatch]") -> list:
     """Load every creation's SUBJECT into the session in two statements.
+
+    **PUBLIC because it has two callers in this package** (plan step
+    ``bank_import:X-ge``): :func:`removals_by_match` here, and
+    :func:`~._accepted_view.accepted_groups`, which is the same fold and
+    went without it -- the package's convention is that a name reached
+    from another module is public rather than borrowed through an
+    underscore.
 
     :func:`planned_removals` reaches each subject with ``db.session.get``,
     which is the right shape for the DOOR -- one act, one or two rows -- and
@@ -798,7 +805,7 @@ def removals_by_match(
         match for match in acts_of(owner_id, account_id, match_ids)
         if match.creations
     ]
-    warmed = _warm_subjects(matches)
+    warmed = warm_subjects(matches)
     planned = {match.id: planned_removals(match) for match in matches}
     # ``warmed`` is read for its LIFETIME rather than its value, and the
     # ``del`` is what says so: SQLAlchemy's identity map holds WEAK references,

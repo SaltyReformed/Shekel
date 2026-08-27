@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 
 from ._offers import CandidateRow, RowKind
 
@@ -269,3 +270,50 @@ class CreatedSubject:
         return cls(
             kind=row.kind, row_id=row.row_id, version_id=row.version_id,
         )
+
+
+@dataclass(frozen=True)
+class CreatedPurchase:  # pylint: disable=too-many-instance-attributes
+    """What recording one bank line as a purchase did.
+
+    Pylint: too-many-instance-attributes -- **nine because the act genuinely
+    produces nine facts**, with four separate consumers reading disjoint
+    subsets: the structured log takes the three ids and both days, the flash
+    takes the container's label and whether it was created plus the figure and
+    the posting day, the tests take the ids, and
+    :meth:`MintedEnvelopes.remember` takes the period.  ``CandidateRow`` beside
+    it carries the same disable for the same reason.  Splitting the container's
+    fields into a nested value would be the speculative shape rule 13 forbids
+    -- nothing asks for the container alone.
+
+    Attributes:
+        entry_id: The ``budget.transaction_entries`` row now holding the
+            movement.
+        transaction_id: The budget line that contains it.
+        match_id: The ``budget.statement_matches`` act recording that this line
+            IS that purchase, so the line stops being unexplained and a
+            re-import does not re-offer it.
+        envelope_label: What to call the container on screen.
+        envelope_created: Whether that container was created by this act.  The
+            receipt names it, because creating a budget line is a bigger thing
+            to have done than filing a purchase under one that existed.
+        amount: The purchase's own figure, POSITIVE -- what the bank took.
+        posts_on: The day the bank took it.
+        made_on: The day the bank says it was made, which is the purchase's own
+            budget clock and is the posting day where the source states none.
+        pay_period_id: The period the purchase is BUDGETED in, which is the
+            period holding :attr:`made_on`.  Carried out rather than re-derived
+            by a caller: it is resolved once here for both arms, and a second
+            derivation is how the two came to disagree once already.  It is
+            what :meth:`MintedEnvelopes.remember` keys the minted envelope by.
+    """
+
+    entry_id: int
+    transaction_id: int
+    match_id: int
+    envelope_label: str
+    envelope_created: bool
+    amount: Decimal
+    posts_on: date
+    made_on: date
+    pay_period_id: int

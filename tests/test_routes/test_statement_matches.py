@@ -661,11 +661,18 @@ class TestTheReviewPage:
         # what the owner reads.
         said = " ".join(body.decode().split())
 
+        # **The SENTENCE is the pass's own since plan step
+        # ``bank_import:X-ge-1``**, where it was one line hardcoded in the
+        # template.  That mattered because every tier reports its own refusals
+        # now -- a candidate refused for want of the merchant, one refused for
+        # the day window, an exact figure the window refused -- and ruling
+        # R-GH's automatic door withholds on the SAME derivation, so a screen
+        # composing its own wording would describe one limit two ways.
         # ON the line in the create card, where the WRONG act is cheapest...
-        assert "not one this page would pick for you" in said
-        assert "before recording this as new spending" in said
+        assert "Before recording this as new spending" in said
+        assert "would not choose between the candidates for you" in said
         # ...and on the line in the hand-build list, where the RIGHT one is.
-        assert "A row of yours is very close to this on the amount." in said
+        assert "One of your own rows is close enough to this" in said
         # ...and NOT as a bare number in the bounds panel any more.
         assert "line(s) have a row of yours" not in said
         assert b'data-proposal-class=' not in body

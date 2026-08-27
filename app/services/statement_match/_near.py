@@ -28,6 +28,7 @@ database, no clock, no request.
 
 from __future__ import annotations
 
+import enum
 import re
 from collections import defaultdict
 from decimal import Decimal
@@ -58,6 +59,83 @@ from ._pairing import day_distance, within_window
 #: front of the owner unasked: `$0.09` on a `$18.64` swipe, `$12.87` on a
 #: `$2,573` paycheck line.
 NEAR_MISS_BOUND: Decimal = Decimal("0.005")
+
+
+class NearRefusal(enum.Enum):
+    """Why this tier declined to offer one pair (plan step ``X-ge-1``).
+
+    **A tier reports the bound it APPLIES, and this is the vocabulary it
+    reports in** -- finding **N-322**'s rule, which this module's own header
+    already states for the day window one tier over: *a bound only one pass
+    applies is not a bound, it is a disagreement*.  Until plan step
+    ``bank_import:X-ge-1`` every one of these was swallowed, so *the tier threw
+    the only candidate away* and *there was no candidate* left this module
+    looking identical -- which cost nothing while a person read the screen and
+    became a silent double count when ruling **R-GH** removed them.
+
+    **Not all five are published, and :data:`_FIGURE_ADMITTED` is where that
+    is decided and argued.**  What a reader of *did the pass have a reason to
+    look harder at this line* needs are the two that admitted the FIGURE and
+    then refused on EVIDENCE about the pairing.
+    """
+
+    EXACT = "exact"
+    FIGURE_NOT_ITS_OWN = "figure_not_its_own"
+    TOO_FAR = "too_far"
+    OUTSIDE_THE_WINDOW = "outside_the_window"
+    NO_MERCHANT = "no_merchant"
+
+
+#: The refusals worth PUBLISHING, in the order a reader should hear them.
+#:
+#: **The TWO that admitted the FIGURE and then refused on evidence**, which is
+#: what makes them bounds on this tier rather than its subject.  The other
+#: three are deliberately absent and each for its own reason:
+#:
+#: * :attr:`NearRefusal.TOO_FAR` -- a row whose figure is unrelated is not a
+#:   candidate the pass declined, it is a row with nothing to do with the line;
+#: * :attr:`NearRefusal.EXACT` belongs to the tier BEFORE this one, which
+#:   either paired it or published its own refusal
+#:   (:func:`~._pairing.exactly_matched_but_outside_the_window`) -- reporting
+#:   it here as well would be the same bound spelled twice;
+#: * :attr:`NearRefusal.FIGURE_NOT_ITS_OWN` -- **and this one is a MEASURED
+#:   exclusion rather than an argument.**  A row whose figure is whatever its
+#:   contents come to is the ORDINARY shape on this screen: every envelope is
+#:   one, and an envelope's own cash leg lands near some line's figure
+#:   constantly.  Publishing it withheld the Groceries case ruling
+#:   **`bank_import:R-GU`** exists to file -- caught by this step's own
+#:   controls 2026-08-26 -- and it
+#:   is outside the 12-of-80 the ruling was measured on.  What makes it
+#:   different from the two above is that the tier is not declining EVIDENCE
+#:   about the pairing; it is saying the row cannot be re-priced, which is a
+#:   fact about the row's own model.
+_FIGURE_ADMITTED: "tuple[NearRefusal, ...]" = (
+    NearRefusal.OUTSIDE_THE_WINDOW,
+    NearRefusal.NO_MERCHANT,
+)
+
+#: What the pass SAYS about each thing it declined to conclude, for the owner.
+#:
+#: **One sentence per reason, written here beside the test that produced it**
+#: rather than by whoever reads the report -- a reader composing its own would
+#: be a second statement of what this tier decided, which is the shape the
+#: enum above exists to remove.  ``None`` is the CONTEST, which is the tier
+#: admitting a candidate and declining to choose between candidates.
+_DECLINED_SENTENCES: "dict[NearRefusal | None, str]" = {
+    None: (
+        "one of your own rows is close enough to this to be the same "
+        "movement, and the app would not choose between the candidates for you"
+    ),
+    NearRefusal.NO_MERCHANT: (
+        "one of your own rows is close enough to this to be the same "
+        "movement, and it does not name this merchant, so the app would not "
+        "claim they are the same"
+    ),
+    NearRefusal.OUTSIDE_THE_WINDOW: (
+        "one of your own rows is close enough to this to be the same "
+        "movement, and it is dated too far away for the app to pair them"
+    ),
+}
 
 
 def _names_the_merchant(line: BankLine, row: CandidateRow) -> bool:
@@ -206,18 +284,57 @@ def _is_a_near_miss(line: BankLine, row: CandidateRow) -> bool:
     Returns:
         Whether this pair may be offered at all.
     """
+    return _refusal_for(line, row) is None
+
+
+def _refusal_for(
+    line: BankLine, row: CandidateRow,
+) -> "NearRefusal | None":
+    """Return WHY this pair may not be offered, or ``None`` when it may.
+
+    **:func:`_is_a_near_miss`'s own body, made to say which test refused**
+    (plan step ``bank_import:X-ge-1``).  Nothing about the decision changed;
+    what changed is that the tier can now REPORT a rejection it used to
+    swallow, which is finding **N-322**'s rule -- *the search reports its own
+    bound rather than a reader re-deriving it from a different population* --
+    applied to the one bound of this tier's that nothing published.
+
+    **Why that matters here and did not before.**  Every rejection below is
+    correct for a PROPOSAL: an inexact claim needs a second fact, and the
+    merchant is the only independent one a line carries.  It is not correct as
+    the sole input to a WITHHOLDING decision, because withholding is the
+    conservative direction and corroboration fails in the permissive one -- so
+    a line whose only near candidate was thrown out HERE was indistinguishable
+    from a line with no candidate at all, and ruling **R-GH**'s automatic door
+    then filed over it.  Measured through the real producers 2026-08-26: one
+    `$178.32` row labelled ``Groceries`` against a `-$178.29` Food Lion line
+    booked `$356.61` for one movement, which is finding **N-335**'s own
+    figures.
+
+    Args:
+        line: The recorded bank line.
+        row: The candidate row.
+
+    Returns:
+        The :class:`NearRefusal`, or ``None`` when the pair is admissible.
+        **The ORDER of the tests is the order of the answer**, which is what
+        makes the report readable: a pair refused on the figure is not also
+        reported as uncorroborated.
+    """
     if row.cash_amount == line.amount:
-        return False
+        return NearRefusal.EXACT
     if not row.figure_is_correctable:
-        return False
+        return NearRefusal.FIGURE_NOT_ITS_OWN
     # **Multiplied rather than divided**, so the bound is exact at every
     # magnitude: ``0.005 * 178.29`` is representable and ``0.03 / 178.29`` is
     # not.  Nothing here needs the ratio itself.
     if abs(line.amount - row.cash_amount) > NEAR_MISS_BOUND * abs(line.amount):
-        return False
+        return NearRefusal.TOO_FAR
+    if not within_window(row, line):
+        return NearRefusal.OUTSIDE_THE_WINDOW
     if not _names_the_merchant(line, row):
-        return False
-    return within_window(row, line)
+        return NearRefusal.NO_MERCHANT
+    return None
 
 
 def near_misses(
@@ -265,12 +382,26 @@ def near_misses(
     """
     by_line: "dict[int, list[CandidateRow]]" = defaultdict(list)
     by_row: "dict[tuple[RowKind, int], list[int]]" = defaultdict(list)
+    # **What this tier ADMITTED on the figure and then refused on something
+    # else**, collected in the same walk (plan step ``bank_import:X-ge-1``).
+    # One walk rather than two, because a second pass asking
+    # :func:`_refusal_for` again would be the redundant producer call this
+    # package treats as a defect -- and because two walks are two places for
+    # the predicate to be applied to different populations, which is finding
+    # **N-322** exactly.
+    refused: "dict[int, NearRefusal]" = {}
     for line in lines:
         for row in rows:
-            if not _is_a_near_miss(line, row):
-                continue
-            by_line[line.line_id].append(row)
-            by_row[(row.kind, row.row_id)].append(line.line_id)
+            refusal = _refusal_for(line, row)
+            if refusal is None:
+                by_line[line.line_id].append(row)
+                by_row[(row.kind, row.row_id)].append(line.line_id)
+            elif refusal in _FIGURE_ADMITTED:
+                # FIRST wins, so one line reports one reason -- and the
+                # narrower reason wins where a line has both, because
+                # ``_FIGURE_ADMITTED`` is ordered and this only fills an empty
+                # slot.
+                refused.setdefault(line.line_id, refusal)
 
     proposals = []
     for line in lines:
@@ -291,4 +422,14 @@ def near_misses(
     decided = {
         proposal.lines[0].line_id for proposal in proposals
     }
-    return proposals, frozenset(by_line) - decided
+    declined = {
+        line_id: _DECLINED_SENTENCES[refusal]
+        for line_id, refusal in refused.items()
+        if line_id not in decided and line_id not in by_line
+    }
+    for line_id in frozenset(by_line) - decided:
+        # A CONTEST beats any single-pair refusal on the same line: the tier
+        # admitted a candidate and would not choose, which is a stronger thing
+        # to say than that it threw a different one away.
+        declined[line_id] = _DECLINED_SENTENCES[None]
+    return proposals, declined

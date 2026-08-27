@@ -47,6 +47,7 @@ from app.services.statement_match import (
     RuleAnswer,
     RuleSubmission,
     PurchaseCreation,
+    Consent,
     ReviewedBatch,
     review_set,
     state_rules,
@@ -386,6 +387,7 @@ class TestTheDoorRefusesABarredLine:
         return statement_match.create_purchase_from_line(
             self._creation(seed_user, line), a_scope(seed_user),
             _create.MintedEnvelopes.none_yet(), a_bars(seed_user),
+            applied_by_rule=False,
         )
 
     def test_a_NEVER_line_is_refused_and_NOTHING_is_written(
@@ -476,6 +478,7 @@ class TestTheDoorRefusesABarredLine:
                 PurchaseCreation(line_id=line.id, transaction_id=999_999),
                 a_scope(seed_user),
                 _create.MintedEnvelopes.none_yet(), a_bars(seed_user),
+                applied_by_rule=False,
             )
 
         assert "never a purchase" in str(refusal.value)
@@ -500,7 +503,7 @@ class TestABarredItemCostsOnlyItself:
         db.session.commit()
 
         outcome = statement_match.apply_reviewed(
-            ReviewedBatch(matches=(), creations=(
+            ReviewedBatch(consent=Consent.TICKED, matches=(), creations=(
                 PurchaseCreation(line_id=barred.id, new_envelope=NewEnvelope(
                     name=CARD_MERCHANT,
                     category_id=seed_user["categories"]["Groceries"].id,
@@ -773,6 +776,7 @@ class TestWhatTheScreenShowsInstead:
 
         outcome = statement_match.apply_reviewed(
             ReviewedBatch(
+                consent=Consent.TICKED,
                 matches=(a_submission(
                     scope, lines=[line], transactions=[first, second],
                 ),),

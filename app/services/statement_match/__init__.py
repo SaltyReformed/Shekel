@@ -47,6 +47,17 @@ The public surface, and what each piece is for:
   purchase* only withheld a sweep value, and one YTD pass recorded
   **`$7,412.94`** of card payments the app already held as ``CC Payback`` rows
   through the select printed beneath the warning.
+* :func:`file_new_swipes` -- the door an IMPORT opens, and the only one in the
+  app that MOVES MONEY without a press (ruling **R-GH**, plan step
+  ``bank_import:X-ge``).  Consent splits by ACT CLASS: a standing merchant rule
+  is the owner saying once where that merchant's money goes, so a NEW swipe
+  line the rule answers for becomes a purchase at import; every act that
+  MODIFIES a row they made by hand keeps its tick, which is
+  :func:`accept_match`'s door.  It files a SUBSET of what :func:`review_set`
+  offers a create control for and can never widen it, and
+  :func:`rule_filed_acts` is the receipt -- derived from what was stored
+  (``applied_by_rule``, **R-GT**) rather than flashed, so every filed line
+  still carries :func:`release_match`'s one-click undo after a reload.
 * :func:`destinations_for` -- the budget lines that door may write into, which
   is the SAME set the screen offers, and :func:`matched_subjects` /
   :func:`unmatched_destinations`, which are the one statement of what an
@@ -103,16 +114,18 @@ from ._release import (
     release_match,
     removals_by_match,
 )
-from ._batch import BatchOutcome, ReviewedBatch, apply_reviewed
+from ._batch import BatchOutcome, Consent, ReviewedBatch, apply_reviewed
+from ._container import MintedEnvelopes
 from ._candidates import (
     candidates_for,
     destinations_for,
     matched_subjects,
     unmatched_destinations,
 )
-from ._create import CreatedPurchase, create_purchase_from_line
+from ._create import create_purchase_from_line
 from ._creations import (
     NEW_ENVELOPE,
+    CreatedPurchase,
     NewEnvelope,
     PurchaseCreation,
     PurchaseDestination,
@@ -159,9 +172,17 @@ from ._reads import (
 )
 from ._section import MerchantSection, MerchantSummary
 from ._scope import ReviewScope
+from ._filing import (
+    RECEIPT_LIMIT,
+    RuleFiling,
+    WithheldLine,
+    file_new_swipes,
+    rule_filed_acts,
+)
 
 __all__ = [
     "NEW_ENVELOPE",
+    "RECEIPT_LIMIT",
     "AcceptedGroup",
     "AcceptedMatch",
     "AcceptedRow",
@@ -173,12 +194,14 @@ __all__ = [
     "CreatedPurchase",
     "CreationBar",
     "CreationBars",
+    "Consent",
     "HandTotals",
     "DAY_WINDOW",
     "NEAR_MISS_BOUND",
     "MatchDays",
     "StandingRule",
     "MerchantSection",
+    "MintedEnvelopes",
     "MerchantSummary",
     "MatchProposal",
     "MatchSubmission",
@@ -189,6 +212,7 @@ __all__ = [
     "PlannedRemoval",
     "PlannedRemovals",
     "RuleAnswer",
+    "RuleFiling",
     "RuleSubmission",
     "RuleView",
     "ProposedMatches",
@@ -202,6 +226,7 @@ __all__ = [
     "ReviewedRow",
     "RowKind",
     "StatedRules",
+    "WithheldLine",
     "accept_match",
     "account_merchants",
     "apply_reviewed",
@@ -211,6 +236,7 @@ __all__ = [
     "corrected_purchase_day",
     "create_purchase_from_line",
     "destinations_for",
+    "file_new_swipes",
     "matched_subjects",
     "parse_figure",
     "merchant_label",
@@ -219,6 +245,7 @@ __all__ = [
     "release_match",
     "removals_by_match",
     "review_set",
+    "rule_filed_acts",
     "state_rules",
     "unmatched_destinations",
 ]

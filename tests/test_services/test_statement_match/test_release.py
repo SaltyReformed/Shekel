@@ -54,6 +54,7 @@ from app.models.statement_match import (
 from app.services.statement_match import (
     NewEnvelope,
     PurchaseCreation,
+    Consent,
     ReviewedBatch,
 )
 from tests._test_helpers import settlement_if_settling
@@ -95,6 +96,7 @@ def _record(seed_user, line, minted=None, **destination):
         a_scope(seed_user),
         minted if minted is not None else _create.MintedEnvelopes.none_yet(),
         a_bars(seed_user),
+        applied_by_rule=False,
     )
 
 
@@ -299,7 +301,7 @@ class TestOnePressRecordsONEContainer:
         second_line = _a_swipe(seed_user, sequence=1, amount="-18.64")
 
         outcome = statement_match.apply_reviewed(
-            ReviewedBatch(matches=(), creations=(
+            ReviewedBatch(consent=Consent.TICKED, matches=(), creations=(
                 PurchaseCreation(
                     line_id=first_line.id, new_envelope=answer,
                 ),

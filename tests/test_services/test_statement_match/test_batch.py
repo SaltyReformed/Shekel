@@ -41,6 +41,7 @@ from app.services.statement_match import (
     MatchSubmission,
     NewEnvelope,
     PurchaseCreation,
+    Consent,
     ReviewedBatch,
 )
 
@@ -77,6 +78,7 @@ def _batch(seed_user, matches=(), creations=()):
     """
     return statement_match.apply_reviewed(
         ReviewedBatch(
+            consent=Consent.TICKED,
             matches=tuple(matches),
             creations=tuple(creations),
         ),
@@ -981,6 +983,7 @@ def test_a_scope_serves_the_screen_and_the_doors_alike(app, db, seed_user):
         assert len(review.proposals) == 1
         proposal = review.proposals[0]
         outcome = statement_match.apply_reviewed(ReviewedBatch(
+            consent=Consent.TICKED,
             matches=(MatchSubmission(
                 line_ids=frozenset(
                     bank.line_id for bank in proposal.lines
@@ -1162,7 +1165,10 @@ class TestABatchBooksWhatTheSameActsBookOneAtATime:
 
             batched = _db.session.begin_nested()
             outcome = statement_match.apply_reviewed(
-                ReviewedBatch(matches=matches, creations=creations),
+                ReviewedBatch(
+                    consent=Consent.TICKED,
+                    matches=matches, creations=creations,
+                ),
                 a_scope(seed_user),
             )
             _db.session.flush()
@@ -1202,6 +1208,7 @@ class TestABatchBooksWhatTheSameActsBookOneAtATime:
                 singly_did.append(statement_match.create_purchase_from_line(
                     creation, a_scope(seed_user),
                     _create.MintedEnvelopes.none_yet(), a_bars(seed_user),
+                    applied_by_rule=False,
                 ))
                 _db.session.flush()
             singly = self._money(db, seed_user, account)
@@ -1652,6 +1659,7 @@ class TestConvergingMovesTheSameMoneyAsNotConverging:
             statement_match.create_purchase_from_line(
                 creation, a_scope(seed_user),
                 _create.MintedEnvelopes.none_yet(), a_bars(seed_user),
+                applied_by_rule=False,
             )
             _db.session.flush()
         assert _db.session.execute(_db.text(

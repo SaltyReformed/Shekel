@@ -565,6 +565,7 @@ class TestKeptRowsCountsWhatSURVIVES:
             a_scope(seed_user),
             _create.MintedEnvelopes.none_yet(),
             a_bars(seed_user),
+            applied_by_rule=False,
         )
         db.session.flush()
         return line, created
@@ -701,6 +702,7 @@ class TestReleasingAnActDoesNotWithdrawTwice:
             a_scope(seed_user),
             _create.MintedEnvelopes.none_yet(),
             a_bars(seed_user),
+            applied_by_rule=False,
         )
         db.session.flush()
 
