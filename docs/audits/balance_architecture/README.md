@@ -766,14 +766,12 @@ hides.
   and N-220 closed 2026-08-14** (`d8aed644`); the `steps.md` row went on citing N-220 until this
   decomposition. **The RULING it waited for is `balance:R-GZ`** (developer, 2026-08-27): rulings
   take ONE grammar, in one registry keyed `(arc, id)`.
-* [ ] **X-ao-1** `feat(plan-gate): a ruling id resolves to one ruling` -- carries **N-370**. Lifts
-  the two arcs already spelling a ruling `| ruling | date | what was ruled |` with an id in every
-  row: `balance`'s 74 and `bank_import`'s 31, byte-identical, into `../../plans/rulings.md`. It is
-  a REGISTRY, so rule 4 applies as the 2026-08-25 precedent applies it -- no LINE cap, and the
-  per-ROW cap that replaced one. The migration is DECLARED in the preamble and graded both ways, so
-  no arc can sit half moved. Also repairs `bank_import:R-FW`, four cells in a three-column table
-  since 2026-08-18, and the `files:` pattern of the hook that runs this gate, folded across two
-  YAML lines so `implementation_plan_bank_import.md` matched nothing.
+* [x] **X-ao-1** `b8f1c862` -- `balance`'s 74 rulings and `bank_import`'s 31 lifted into
+  `../../plans/rulings.md`, keyed `(arc, id)`, byte-identical and graded, under ruling **R-GZ**.
+  Rule 4 applies whole: no LINE cap, and `RULINGS_ROW_CAP` is the swap that lets that be true.
+  Repaired `bank_import:R-FW` (four cells in a three-column table since 2026-08-18) and the gate
+  hook's own `files:` pattern, YAML-folded so one document matched nothing. Opened **N-370**,
+  **N-371**; carries the citation arm to `X-ao-3`.
 * [ ] **X-ao-2** `feat(plan-gate): the last three arcs take the one grammar` -- closes **N-370**.
   The remaining 77: `recurrence`'s 36 and `pay_calendar`'s 33 state a ruling `| fork | ruling |`
   with the id in PROSE beside cross-references to OTHER rulings -- a regex mis-attributed four
