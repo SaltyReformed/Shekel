@@ -24,9 +24,9 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.services.balance_at import BalanceContext
 from app.services import carry_forward_service
 from app.services.row_valuation import settled_figure
-from app.services.pay_calendar import calendar_for
 
 
 def _make_adhoc(seed_user, period, *, is_envelope=False, companion_visible=False,
@@ -528,7 +528,7 @@ class TestAdhocEnvelopeCarryForward:
 
             carry_forward_service.carry_forward_unpaid(
                 source.id, target.id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 

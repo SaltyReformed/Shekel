@@ -245,7 +245,7 @@ class TestStartBoundIsSynced:
         with auth_client.application.app_context():
             transfer_recurrence.regenerate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
                 effective_from=seed_periods[0].start_date,
             )
@@ -437,7 +437,7 @@ class TestNoPaymentGeneratesBeforeTheLoan:
         with auth_client.application.app_context():
             transfer_recurrence.regenerate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
                 effective_from=seed_periods[0].start_date,
             )

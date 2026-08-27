@@ -51,9 +51,8 @@ from app.schemas.validation import (
     end_bound_before_start_message,
 )
 from app.services import loan_loaders, loan_recurrence_sync, transfer_recurrence
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
-from app.services.pay_calendar import calendar_for
-from app.services.scenario_resolver import require_baseline_scenario
 from app.utils.auth_helpers import get_or_404
 
 logger = logging.getLogger(__name__)
@@ -356,6 +355,11 @@ def generate_transfers_for_all_periods(
     answered by the one application-level handler, which rolls the pending
     create back and renders the repair.
 
+    **The scenario and the schedule come off ONE read pass since plan step
+    R7d-c-1**, where they were a ``require_baseline_scenario`` beside a
+    ``calendar_for``.  ``BalanceContext.scenario_id`` makes the same R-BW
+    refusal with the same exception, so the raise below is unchanged.
+
     Args:
         template: The flushed :class:`TransferTemplate` whose recurrence
             rule drives generation.
@@ -370,11 +374,15 @@ def generate_transfers_for_all_periods(
             today -- registration writes one and nothing deletes one -- which
             is why this changes no live behaviour.
     """
-    scenario = require_baseline_scenario(current_user.id)
+    ctx = BalanceContext.build(current_user.id)
+    # Dereferenced BEFORE the schedule is built, so the R-BW refusal still
+    # runs ahead of any derivation -- argument evaluation is left to right, so
+    # naming it inline would derive the owner's calendar and then raise.
+    scenario_id = ctx.scenario_id
     transfer_recurrence.generate_for_template(
         template,
-        GenerationSchedule.for_calendar(calendar_for(current_user.id)),
-        scenario.id,
+        GenerationSchedule.for_pass(ctx),
+        scenario_id,
         effective_from=effective_from,
     )
 

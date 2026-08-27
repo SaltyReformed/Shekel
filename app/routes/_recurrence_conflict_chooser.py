@@ -39,9 +39,8 @@ from flask_login import current_user
 
 from app.exceptions import RecurrenceConflict
 from app.extensions import db
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
-from app.services.pay_calendar import calendar_for
-from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.digit_strings import parse_row_id
 
 
@@ -485,16 +484,22 @@ def regenerate_or_conflict_chooser(
         rule, no conflict, a non-amount edit, an edit that cleared the
         recurrence, or a conflict already resolved from Apply).
     """
-    scenario = get_baseline_scenario(current_user.id)
-    if scenario is None:
+    # ONE read pass for the edit: it pins the owner, the day and the baseline
+    # scenario, and its calendar is the one derivation the regeneration
+    # resolves against (plan step R7d-c-1).  It replaces a
+    # ``get_baseline_scenario`` beside a ``calendar_for`` -- two spellings of
+    # what one pass holds, and the pair every construction site of a
+    # ``GenerationSchedule`` was carrying.
+    ctx = BalanceContext.build(current_user.id)
+    if ctx.scenario is None:
         return None
     if template.recurrence_rule is None and not before.had_recurrence_rule:
         return None
-    schedule = GenerationSchedule.for_calendar(calendar_for(current_user.id))
+    schedule = GenerationSchedule.for_pass(ctx)
     decisions = parse_conflict_decisions(request.form)
     try:
         kind.regenerate_fn(
-            template, schedule, scenario.id, effective_from=effective_from,
+            template, schedule, ctx.scenario_id, effective_from=effective_from,
         )
     except RecurrenceConflict as conflict:
         if decisions is not None:

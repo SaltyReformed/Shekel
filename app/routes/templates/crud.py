@@ -37,13 +37,12 @@ from app.services import (
     recurrence_engine,
     template_amount_service,
 )
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
-from app.services.pay_calendar import calendar_for
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (
     STALE_ACTION_MESSAGE,
@@ -377,14 +376,15 @@ def create_template():
         template, template.default_amount, effective_on=display_today(),
     )
 
-    # Auto-generate transactions from the rule into future periods.
+    # Auto-generate transactions from the rule into future periods.  ONE read
+    # pass carries the baseline scenario and the owner's schedule (plan step
+    # R7d-c-1), where this held a ``get_baseline_scenario`` beside a
+    # ``calendar_for`` -- the two facts a pass already pins.
     if rule:
-        scenario = get_baseline_scenario(current_user.id)
-        if scenario:
+        ctx = BalanceContext.build(current_user.id)
+        if ctx.scenario is not None:
             recurrence_engine.generate_for_template(
-                template,
-                GenerationSchedule.for_calendar(calendar_for(current_user.id)),
-                scenario.id,
+                template, GenerationSchedule.for_pass(ctx), ctx.scenario_id,
             )
 
     db.session.commit()
@@ -804,14 +804,13 @@ def unarchive_template(template_id):
             txn, settled=txn.status.is_settled,
         )
 
-    # Regenerate to fill in any missing future periods.
+    # Regenerate to fill in any missing future periods, on the one read pass
+    # this restore's generate runs in (plan step R7d-c-1).
     if template.recurrence_rule:
-        scenario = get_baseline_scenario(current_user.id)
-        if scenario:
+        ctx = BalanceContext.build(current_user.id)
+        if ctx.scenario is not None:
             recurrence_engine.generate_for_template(
-                template,
-                GenerationSchedule.for_calendar(calendar_for(current_user.id)),
-                scenario.id,
+                template, GenerationSchedule.for_pass(ctx), ctx.scenario_id,
                 effective_from=date.today(),
             )
 

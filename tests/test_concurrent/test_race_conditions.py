@@ -586,7 +586,7 @@ class TestConcurrentRollingTopUp:
         def _topup():
             created = pay_period_rolling.top_up_rolling_window(user_id)
             db.session.commit()
-            return created
+            return len(created)
 
         created_a, created_b = _run_concurrent(app, _topup, _topup)
 

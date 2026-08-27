@@ -24,6 +24,7 @@ from flask import Blueprint, redirect, render_template, request, url_for
 from flask_login import current_user, login_required
 
 from app.db_transaction import write_transaction
+from app.routes._period_population import populate_new_periods
 from app.services import dashboard_service, pay_period_rolling
 from app.services.balance_at import BalanceContext
 from app.services.savings_dashboard_service import DebtSummary
@@ -228,8 +229,15 @@ def page():
     # ``grid.index`` states at its own call: this render is a query and its
     # transaction is one read-only snapshot, so the append is committed here
     # and the pass below snapshots a database that already holds it.
+    #
+    # The top-up APPENDS and this fills what it appended (ruling **R-R38**):
+    # the door leaves the new paydays empty, and the pass their recurring rows
+    # are resolved in is opened here, after they exist.  It opens NOTHING when
+    # nothing was appended, which is every render but the rare short-window
+    # one -- so the render below still holds this page's ONE read pass.
     with write_transaction():
-        pay_period_rolling.top_up_rolling_window(current_user.id)
+        appended = pay_period_rolling.top_up_rolling_window(current_user.id)
+        populate_new_periods(current_user.id, appended)
 
     balance_ctx = BalanceContext.build(current_user.id)
     section = dashboard_service.resolve_section(balance_ctx)

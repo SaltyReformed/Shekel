@@ -52,6 +52,7 @@ from app.utils.period_projections import (
     offered_spans,
 )
 
+from app.routes._period_population import populate_new_periods
 from app.routes.grid._bp import grid_bp
 from app.routes.grid._shared import (
     _accrual_row_label,
@@ -607,8 +608,15 @@ def index():
     # append.  The block writes, commits, and the read pass below then takes
     # its snapshot of a database that already holds the new periods -- which is
     # the ordering this route always needed and stated in prose.
+    #
+    # The top-up APPENDS and this fills what it appended (ruling **R-R38**):
+    # the door leaves the new paydays empty, and the pass their recurring rows
+    # are resolved in is opened here, after they exist.  It opens NOTHING when
+    # nothing was appended, which is every render but the rare short-window
+    # one -- so this page still holds ONE read pass on the render path.
     with write_transaction():
-        pay_period_rolling.top_up_rolling_window(user_id)
+        appended = pay_period_rolling.top_up_rolling_window(user_id)
+        populate_new_periods(user_id, appended)
 
     ctx = _resolve_grid_context(
         user_id, request.args, current_user.settings,
