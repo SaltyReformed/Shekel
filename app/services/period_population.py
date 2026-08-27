@@ -2,8 +2,9 @@
 Shekel Budget App -- Pay-Period Template Population
 
 Fills a set of pay periods with each active template's recurring rows --
-transactions AND transfers -- in one pass.  This is the orchestrator the
-extend and regenerate operations run after creating new, empty periods.
+transactions AND transfers -- in one pass.  This is the orchestrator the ROUTE
+runs after the extend, regenerate, reset or rolling-top-up door has created
+new, empty periods; until ruling **R-R38** those doors ran it themselves.
 
 It lives in its own module rather than inside either recurrence engine
 because it must call BOTH: the transaction engine
@@ -13,49 +14,38 @@ already imports the transaction engine, so co-locating this orchestrator
 with either one would create an import cycle; a neutral module that
 imports both (and is imported by neither) keeps the graph acyclic.
 
-**It OPENS the generate pass's read context.**  ``pay_calendar:C11``'s layer
-predicate is "no module under ``app/services/**`` calls
-``BalanceContext.build``", and it carves out a WRITER; this module joins that
-carve-out, on the ground that a pass opened by a writer AFTER its own write is
-not a second read pass but the first one that can see the write.  **The count
-is SIX modules and this is the sixth, not "one of two"** -- a first draft of
-this paragraph said two and an adversarial review of plan step R7d-c-1
-measured it: ``calendar_service``, ``investment_dashboard_service/_context``
-and ``/_orchestrator``, ``loan_recurrence_sync``, ``tax_report_service`` and
-this one.  C11 empties the first five; this one is the exception its predicate
-must name, and **that carve-out is a FORK C11 states and does not rule** ("the
-rule carves it out or takes it from its caller"), so it is registered in
-``steps.md``'s cross-arc forks table rather than settled here.
+**It TAKES the generate pass's read context and never builds one** (ruling
+**R-R38**).  A first build of plan step R7d-c-1 had this module call
+``BalanceContext.build`` itself, on the ground that a pass opened by a writer
+AFTER its own write is the first one that can see the write.  The developer
+refused that as a band-aid: the ROOT CAUSE is that ``extend_pay_periods``
+performed a write and then a READ-DEPENDENT write in one call, so no caller
+could get between them, and a module opening its own pass is what a caller
+with no seam has to do.  The doors SPLIT instead -- each records its paydays
+and returns, and the route opens the pass and calls this -- so the ordering
+that matters (the pass is resolved AFTER the periods exist and BEFORE the rows
+do) is the shape of the code rather than a paragraph, and
+``pay_calendar:C11``'s layer predicate ("no module under ``app/services/**``
+calls ``BalanceContext.build``") needs no carve-out for this module.
 
-The alternative -- taking a pass from the caller -- was measured wrong here in
-two ways.  The calendar half fails LOUDLY *for the constructor this module
-uses*: every caller creates pay periods immediately before calling this, and a
-pass whose calendar memo was filled before that write does not hold the new
-ids, which ``GenerationSchedule.__post_init__`` refuses.  (It does NOT catch
-the same mistake through ``for_pass``, whose window is the calendar itself --
-see that method's own docstring.)  The LOAN half fails
-SILENTLY, and that is the deciding one: from plan step R7d-c-2 a loan payment's
+**What the stale-pass hazard actually was**, kept here because the rule that
+answers it is now the call ORDER at the route and nothing in the type system
+restates it.  A pass built BEFORE the pay-period write holds the pre-write
+calendar -- which :meth:`~app.services.generation_schedule.GenerationSchedule.__post_init__`
+refuses for ``for_period_ids``, because the new ids are not in it -- and the
+pre-write LOAN, which nothing catches: from plan step R7d-c-2 a loan payment's
 closing bound is a fold over the loan's forward plan, and a pass memoizes each
 loan's resolution for its whole life.  Measured on a production clone
 (2026-08-27): with a pass built first, deleting the Van Loan's 5 already-due
 transfers moved its derived payoff ``2029-02-22`` -> ``2029-04-22`` on a FRESH
 pass while the pre-write pass went on answering ``2029-02-22``, and nothing
-raised -- the stale date came back as a figure.  **No caller of this function
-can make that particular delete**, and an adversarial review measured it after
-a first draft claimed both destructive doors did: ``regenerate_pay_periods``
-KEEPS every period that has started, which is where all five of those rows sit,
-and ``reset_pay_periods`` is refused outright for an owner holding settled
-rows.  What survives is the MECHANISM -- a pass memoizes a loan for its whole
-life and nothing reconciles it -- and the rule that a writer opens its pass
-after its write is what keeps a future caller from having to discover that.
-There is also no pass to take on
-one of the four paths in: ``/grid`` and ``/dashboard`` run the rolling top-up
-inside their own ``write_transaction()`` and build the render's pass only
-afterwards, precisely so the render sees the periods the top-up committed.
+raised -- the stale date came back as a figure.
 
 Flask-isolated: takes and returns plain data, flushes via the engines,
 never commits.
 """
+
+from collections.abc import Iterable
 
 from app.extensions import db
 from app.models.transaction_template import TransactionTemplate
@@ -66,16 +56,18 @@ from app.services.generation_schedule import GenerationSchedule
 from app.services.recurrence_engine import generate_for_template
 
 
-def populate_periods_from_active_templates(user_id, period_ids):
+def populate_periods_from_active_templates(
+    ctx: BalanceContext, period_ids: Iterable[int],
+) -> int:
     """Generate recurring transactions AND transfers into a set of periods.
 
-    The repopulation step extend and regenerate run after creating new,
-    empty periods.  ``pay_period_write.record_paydays`` creates blank periods
-    and does NOT call the recurrence engine, so a freshly-appended period has
-    none of its rent / paychecks / recurring transfers until this runs.
-    This re-runs BOTH engines -- transactions and transfers, so a new
-    period never silently misses a recurring transfer -- over the
-    specific ``periods``, into the user's baseline scenario (multi-scenario
+    The repopulation step extend, regenerate and reset run after creating
+    new, empty periods.  ``pay_period_write.record_paydays`` creates blank
+    periods and does NOT call the recurrence engine, so a freshly-appended
+    period has none of its rent / paychecks / recurring transfers until this
+    runs.  This re-runs BOTH engines -- transactions and transfers, so a new
+    period never silently misses a recurring transfer -- over the specific
+    *period_ids*, into the owner's baseline scenario (multi-scenario
     repopulation is reserved for later).
 
     Both engines' shared ``should_skip_period`` skips any period that
@@ -91,7 +83,7 @@ def populate_periods_from_active_templates(user_id, period_ids):
     rows and stored a third paycheck $502.45 low on production; the
     measurements live in
     :class:`~app.services.generation_schedule.GenerationSchedule`.  The
-    owner's calendar is derived ONCE here and the batch states only the
+    owner's calendar is derived ONCE, on *ctx*, and the batch states only the
     window.
 
     **ONE read pass serves every template** (plan step R7d-c-1), so the batch
@@ -115,10 +107,11 @@ def populate_periods_from_active_templates(user_id, period_ids):
     only, so within one batch the order is not observable and sharing the pass
     is a cost and single-derivation argument rather than a correctness one.
 
-    **The pass is opened HERE, after the write** -- see the module docstring
-    for why it may not be taken from the caller.  The calendar it derives is
-    therefore the post-write one, which is the value that must hold
-    *period_ids*, and a pass built any earlier could not.
+    **The pass is TAKEN, and the caller owes it the ordering** -- built after
+    the write that created *period_ids* -- which is ruling **R-R38** and the
+    module docstring carries the argument.  The route layer states that order
+    once, in :func:`app.routes._period_population.populate_new_periods`, and
+    every door's caller reads it from there.
 
     **It takes IDS and forwards no boundary since pay-calendar plan step
     C2-f3c.**  It took ORM rows, read two things off them -- ``.id`` for the
@@ -133,7 +126,16 @@ def populate_periods_from_active_templates(user_id, period_ids):
     directly, as the unarchive paths already do.
 
     Args:
-        user_id: The owning user's id.
+        ctx: The read pass this generation runs inside -- the owner, the
+            pinned ``as_of``, the baseline scenario, and the memos every
+            derivation on the pass shares.  It must have been built AFTER the
+            write that created *period_ids*, or
+            :meth:`~app.services.generation_schedule.GenerationSchedule.__post_init__`
+            refuses the window.  An owner with no baseline scenario is a
+            no-op: ``ctx.scenario`` (the nullable) rather than
+            ``ctx.scenario_id`` (which raises), because that has always been
+            this path's answer -- ruling R-R30 decides the FORM READ path and
+            leaves this one alone.
         period_ids: The ``budget.pay_periods.id`` values to populate.  Must
             already be flushed, and must be this owner's -- both are what
             ``pay_period_write.record_paydays`` returns.  An empty set is a
@@ -144,18 +146,7 @@ def populate_periods_from_active_templates(user_id, period_ids):
         transfers; a transfer counts once, not its two shadow rows).
     """
     window = frozenset(period_ids)
-    if not window:
-        return 0
-
-    # The baseline scenario is read as one of the pass's three pins rather
-    # than through a second lookup beside it: ``BalanceContext.build``
-    # resolves it, and it is the same resolution every producer this pass
-    # reaches will read.  ``scenario`` (the nullable) rather than
-    # ``scenario_id`` (which raises), because an owner with no baseline is a
-    # no-op here and always has been -- ruling R-R30 decides the FORM READ
-    # path and leaves this one alone.
-    ctx = BalanceContext.build(user_id)
-    if ctx.scenario is None:
+    if not window or ctx.scenario is None:
         return 0
 
     schedule = GenerationSchedule.for_period_ids(ctx, window)
@@ -163,7 +154,7 @@ def populate_periods_from_active_templates(user_id, period_ids):
     created = 0
     txn_templates = (
         db.session.query(TransactionTemplate)
-        .filter_by(user_id=user_id, is_active=True)
+        .filter_by(user_id=ctx.user_id, is_active=True)
         .all()
     )
     for template in txn_templates:
@@ -173,7 +164,7 @@ def populate_periods_from_active_templates(user_id, period_ids):
 
     transfer_templates = (
         db.session.query(TransferTemplate)
-        .filter_by(user_id=user_id, is_active=True)
+        .filter_by(user_id=ctx.user_id, is_active=True)
         .all()
     )
     for template in transfer_templates:

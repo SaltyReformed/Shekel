@@ -136,9 +136,15 @@ class GenerationSchedule:
             derivation on the pass shares.  It answers what the schedule
             half of a pass needs (:attr:`calendar`) and, from plan step
             R7d-c-2, what a loan payment's DERIVED closing bound is.  It is
-            TAKEN and never built here: the 2026-08-16 ruling makes the route
-            (or a writer opening its own pass after its write) the only door
-            that calls ``BalanceContext.build``.
+            TAKEN and never built here: the 2026-08-16 ruling and ruling
+            **R-R38** together make the ROUTE the only layer that opens a
+            GENERATE pass, including on a write path -- the doors that create
+            pay periods split so the route can open it between their write and
+            the generation.  That is narrower than "only the route calls
+            ``BalanceContext.build``", which is ``pay_calendar:C11``'s end
+            state and not true yet: five modules under ``app/services/`` still
+            call it, one of them (``loan_recurrence_sync``) as C11's own
+            carve-out.
         write_period_ids: The ``budget.pay_periods.id`` values this pass may
             write into, and always a subset of :attr:`calendar`'s materialised
             periods.  Ids rather than periods because that is the only question
@@ -178,8 +184,10 @@ class GenerationSchedule:
         somewhere else -- the new ids are not in the stale calendar, so
         :meth:`__post_init__` refuses the value with
         :class:`~app.exceptions.RecurrenceWindowError` before a single row is
-        generated.  ``period_population`` is the caller this matters for, and
-        it constructs AFTER the write.
+        generated.  The repopulation paths are the ones this matters for, and
+        the pass they run in is opened by
+        :func:`app.routes._period_population.populate_new_periods` -- after
+        the door that recorded the periods has returned (ruling **R-R38**).
 
         **:meth:`for_pass` CANNOT catch it, and an adversarial review of plan
         step R7d-c-1 measured that after a first draft of this paragraph
@@ -192,8 +200,9 @@ class GenerationSchedule:
         unreachable today is not this type -- it is that none of the six
         ``for_pass`` callers creates a pay period, and all six build the pass
         and use it in the same breath.  A caller that ever does both owes
-        itself a pass opened after its write, exactly as
-        ``period_population`` does.
+        itself a pass opened after its write, exactly as the repopulation
+        paths take one from
+        :func:`app.routes._period_population.populate_new_periods`.
 
         Returns:
             The owner's :class:`~app.services.pay_calendar.PayCalendar`.

@@ -72,6 +72,7 @@ from app.models.ref import CalcMethod, DeductionTiming, FilingStatus
 from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
+from app.routes._period_population import populate_new_periods
 from app.services import pay_period_write, period_population, recurrence_engine
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
@@ -84,6 +85,7 @@ from tests._test_helpers import (
     make_cadence_rule,
     make_transfer_template,
     payroll_basis,
+    populate_in_a_fresh_pass,
     seed_fica_config,
     seed_state_tax_config,
     seed_tax_bracket_set,
@@ -193,9 +195,10 @@ def _placements(template, scenario_id):
 def _append_period(seed_user, seed_periods):
     """Append one 14-day pay period after the seeded schedule.
 
-    Reproduces what ``pay_period_admin.extend_pay_periods`` creates before it
-    calls ``period_population``: a flushed batch of new periods, and nothing
-    else changed.
+    Reproduces exactly what ``pay_period_admin.extend_pay_periods`` returns: a
+    flushed batch of new, EMPTY periods, and nothing else changed.  The
+    repopulation is the caller's second call since ruling **R-R38**, which is
+    what :func:`_populate` runs.
 
     Args:
         seed_user: The ``seed_user`` fixture dict.
@@ -284,9 +287,7 @@ class TestAnExtendDoesNotDuplicateAMonthlyFirstRow:
             )
 
             appended = _append_period(seed_user, seed_periods)
-            period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, {p.id for p in appended},
-            )
+            populate_in_a_fresh_pass(seed_user["user"].id, {p.id for p in appended})
             db.session.flush()
 
             after = _rows(template, scenario_id)
@@ -323,14 +324,10 @@ class TestAnExtendDoesNotDuplicateAMonthlyFirstRow:
             # Two appends: 2026-05-22 (May, covered) then 2026-06-05, which
             # opens June.
             first = _append_period(seed_user, seed_periods)
-            period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, {p.id for p in first},
-            )
+            populate_in_a_fresh_pass(seed_user["user"].id, {p.id for p in first})
             second = _append_period(seed_user, seed_periods + first)
             assert second[0].start_date == date(2026, 6, 5)
-            period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, {p.id for p in second},
-            )
+            populate_in_a_fresh_pass(seed_user["user"].id, {p.id for p in second})
             db.session.flush()
 
             after = _rows(template, scenario_id)
@@ -445,9 +442,7 @@ class TestTheStartPeriodBoundSurvivesTheWindow:
                 starts_on=seed_periods[5].start_date,
             )
 
-            period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, {p.id for p in seed_periods[2:4]},
-            )
+            populate_in_a_fresh_pass(seed_user["user"].id, {p.id for p in seed_periods[2:4]})
             db.session.flush()
 
             assert _rows(template, scenario_id) == {}
@@ -1197,9 +1192,7 @@ class TestTheTransferEngineTakesTheSameSchedule:
             assert may_starts() == [date(2026, 5, 8)]
 
             appended = _append_period(seed_user, seed_periods)
-            period_population.populate_periods_from_active_templates(
-                seed_user["user"].id, {p.id for p in appended},
-            )
+            populate_in_a_fresh_pass(seed_user["user"].id, {p.id for p in appended})
             db.session.flush()
 
             assert may_starts() == [date(2026, 5, 8)]
@@ -1477,6 +1470,15 @@ class TestTheGeneratePassTakesTheReadPass:
         baseline scenario once per definition, and -- from plan step R7d-c-2 --
         re-fold every destination loan once per definition.  The count is ONE
         for the batch.
+
+        **The counted call is the ROUTE's half since ruling R-R38**, and what
+        the count grades moved with it.  The producer cannot open a second pass
+        any more -- it takes one and has no constructor -- so "one per batch
+        rather than one per template" is now a property of the SIGNATURE.  What
+        this case still measures is that ``populate_new_periods`` opens exactly
+        one for the batch rather than looping the doors' periods and opening
+        one each, which no signature prevents.  Counting the producer alone
+        would read ZERO and grade nothing.
         """
         with app.app_context():
             for index in range(6):
@@ -1498,11 +1500,7 @@ class TestTheGeneratePassTakesTheReadPass:
             new_ids = {period.id for period in created}
 
             with counting_read_passes() as passes:
-                written = (
-                    period_population.populate_periods_from_active_templates(
-                        seed_user["user"].id, new_ids,
-                    )
-                )
+                written = populate_new_periods(seed_user["user"].id, created)
             assert written >= 7, (
                 f"the count was taken over a repopulation that wrote {written} "
                 f"rows; SEVEN definitions were seeded across the two engines "

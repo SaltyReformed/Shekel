@@ -50,25 +50,27 @@ in.
 **The gate that WOULD be structural is a layer predicate** -- "no module under
 ``app/services/**`` calls ``BalanceContext.build``", the pass built at the HTTP
 boundary and nowhere below it (adversarial design review, 2026-08-16).  That is
-not a name list and it is the right end state; **SIX service modules stand
+not a name list and it is the right end state; **FIVE service modules stand
 between here and it**, re-measured 2026-08-27 with
 ``grep -rl "BalanceContext\\.build(" app/services/`` -- the trailing paren
 matters, because the bare name also matches docstrings recording calls that
 were deleted.  They are ``calendar_service``,
 ``investment_dashboard_service/_context``,
-``investment_dashboard_service/_orchestrator``, ``loan_recurrence_sync``,
-``period_population`` and ``tax_report_service``.
+``investment_dashboard_service/_orchestrator``, ``loan_recurrence_sync`` and
+``tax_report_service``.  ``pay_calendar:C11`` closes them.
 
-**The count went UP at recurrence plan step R7d-c-1**, and that is a fork
-rather than a regression: ``period_population`` opens a pass AFTER the write
-it repopulates, because a pass taken from above holds the pre-write calendar
-and -- from R7d-c-2 -- the pre-write LOAN, which nothing catches.
-``pay_calendar:C11`` states two remedies for exactly this ("the rule carves it
-out or takes it from its caller") and rules NEITHER, so the fork is registered
-in ``steps.md`` rather than settled by whichever module was written last.
-The paragraph above said FIVE and named five until this step; an adversarial
-review found it stale in the file this step edits, which is the residue rule's
-own case.
+**The count went UP at recurrence plan step R7d-c-1 and came back DOWN inside
+the same step**, which is worth the two sentences because the intermediate
+state is committed.  Its first half had ``period_population`` open a pass
+AFTER the write it repopulates, on the ground that a pass taken from above
+holds the pre-write calendar and -- from R7d-c-2 -- the pre-write LOAN, which
+nothing catches.  The developer refused that as a band-aid (ruling **R-R38**):
+the root cause was that ``extend_pay_periods`` did a write and then a
+read-dependent write in ONE call, so no caller could get between them.  Its
+second half SPLIT the doors, so the route opens the pass between the two
+writes, ``period_population`` takes one and builds none, and C11's predicate
+needs no carve-out for it.  The paragraph above said FIVE, then SIX, and is
+five again.
 
 **This paragraph named EIGHT and three of the names were already wrong**, which
 is why it now carries its date.  It listed
@@ -366,19 +368,26 @@ class TestOneReadPassPerRender:
 
         **A +1 recurrence plan step R7d-c-1 introduced, pinned here so a later
         session does not read it as a regression.**  The rolling top-up can
-        CREATE pay periods, and the repopulation it runs opens the read pass
-        the generate engines resolve against (``period_population``): a pass
-        taken from the render would hold the PRE-write calendar, and from plan
-        step R7d-c-2 the pre-write LOAN as well.  The top-up runs inside its
-        own ``write_transaction()`` and commits BEFORE the route builds the
+        CREATE pay periods, and the recurring rows generated into them are
+        resolved in a read pass of their own: a pass taken from the render
+        would hold the PRE-write calendar, and from plan step R7d-c-2 the
+        pre-write LOAN as well.  The top-up runs inside its own
+        ``write_transaction()`` and commits BEFORE the route builds the
         render's pass, exactly so the render sees what it wrote -- so the two
         passes are two database states, not two clocks on one screen, which is
         the defect every other case in this class grades.
 
+        **The second pass is opened by the ROUTE**, in
+        :func:`app.routes._period_population.populate_new_periods`, and not by
+        the producer: ruling **R-R38** split the doors so the ordering is the
+        order of two calls at the HTTP boundary.  What that changes for this
+        count is nothing -- it was two before the split and is two after -- and
+        what it changes for the census in the module docstring is one module.
+
         **TWO is the bound.**  A third would mean a producer below the render's
         pass opening one, which is the class's whole subject; a second pass
-        inside the top-up would mean the repopulation rebuilding one per
-        template.
+        inside the repopulation would mean it rebuilding one per template
+        (``test_one_read_pass_serves_the_whole_repopulation``).
 
         **The deficit is asserted, not assumed.**  With the target below the
         periods the owner already has, ``top_up_rolling_window`` returns before

@@ -26,10 +26,19 @@ each builds its schedule differently:
   read-only consumer of the same preamble.
 
 **It compiles and runs on BOTH sides**, which standard 3 requires: the
-constructor names and the carry-forward keyword changed in this step, so every
-call is dispatched on the signature actually present rather than on which tree
-this is, and the side it detected is printed as the first line.  That line is
-the only one expected to differ -- diff from line 2.
+constructor names, the carry-forward keyword and -- in the leaf's SECOND half
+(ruling **R-R38**) -- whether ``extend_pay_periods`` populates at all changed
+in this step, so every call is dispatched on what is actually present rather
+than on which tree this is, and the side it detected is printed as the first
+line.  That line is the only one expected to differ -- diff from line 2.
+
+**The second half is why DOOR 1 has two spellings.**  The door used to record
+the paydays and generate the recurring rows in one call; it now records and
+returns, and the ROUTE opens the read pass and populates.  A harness that
+called only the door would print an empty DOOR 1 on the branch and read as
+"the extend stopped generating" -- which is true of the door and false of the
+operation.  So it runs whichever composition the tree has, and what it diffs
+is the rows an EXTEND produces end to end.
 
 **Nothing it prints carries a sequence-assigned id.**  A period is named by its
 PAYDAY and a carry-forward plan by its row's NAME and figures, because
@@ -89,6 +98,14 @@ _CF_KW = (
     ).parameters
     else "calendar"
 )
+
+# The SECOND half of R7d-c-1 (ruling R-R38) splits the extend door: it records
+# the paydays and the ROUTE populates them.  Import rather than name-check,
+# because the module is what does or does not exist.
+try:
+    from app.routes._period_population import populate_new_periods
+except ImportError:  # the door still populates itself (pre-R-R38 tree)
+    populate_new_periods = None
 
 
 def whole_schedule(user_id):
@@ -151,7 +168,8 @@ def dump_rows(label, txn_ids, xfer_ids, payday_of):
 app = create_app()
 with app.app_context():
     print(f"# side: schedule takes {'PASS' if _TAKES_PASS else 'CALENDAR'}; "
-          f"carry-forward keyword is {_CF_KW!r}")
+          f"carry-forward keyword is {_CF_KW!r}; extend door "
+          f"{'SPLITS' if populate_new_periods is not None else 'populates'}")
     scenario = get_baseline_scenario(USER_ID)
     print(f"# baseline scenario: {scenario.id}")
 
@@ -166,6 +184,8 @@ with app.app_context():
     before_txn = {i for (i,) in db.session.query(Transaction.id)}
     before_xfer = {i for (i,) in db.session.query(Transfer.id)}
     new_periods = pay_period_admin.extend_pay_periods(USER_ID, 20)
+    if populate_new_periods is not None:
+        populate_new_periods(USER_ID, new_periods)
     db.session.flush()
     after_txn = {i for (i,) in db.session.query(Transaction.id)}
     after_xfer = {i for (i,) in db.session.query(Transfer.id)}
