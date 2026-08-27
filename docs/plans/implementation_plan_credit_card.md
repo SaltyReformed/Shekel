@@ -41,11 +41,15 @@ real forward model, this is the ONE place that changes").
 ## The rulings
 
 **This arc's rulings are in `rulings.md`, rows whose `arc` is `credit_card`.** They moved there at
-`balance:X-ao-2` with `recurrence`'s and `pay_calendar`'s, finishing what `X-ao-1` began: a ruling
+`balance:X-ao-2a` with `recurrence`'s and `pay_calendar`'s, finishing what `X-ao-1` began: a ruling
 id came from ONE global sequence spelled across five arc documents in THREE grammars, and
 `tools/plan_gate` parsed none of them. The key is `(arc, id)`, and NO arc document states a ruling
-now -- which the gate grades as the SHAPE of a declaration rather than from a list of arcs, so it
-cannot go blind to one nobody remembered to add.
+now. The gate grades that as the SHAPE of a declaration rather than from a list of arcs, and
+reconciles the arc map against `docs/plans/` so a SIXTH plan document nobody added to it fails
+rather than being passed over. **What it still cannot see is a dated block of decisions with no IDS,
+under a heading that does not say `rulings`** -- which is this corpus's own historical shape with
+one word changed. The arm that would close it is "an arc document names no ruling id that has no
+registry row", and **N-376** is why it cannot be built yet.
 
 **This arc had never had an id scheme at all**, which is what made it the sharpest case for the
 lift: the eight locked rulings of 2026-07-19 were a numbered LIST under a heading, cited only as
@@ -180,7 +184,7 @@ two-way migration arm exists to refuse.
       `credit: {credit}` terminal; minimal template/JS cutover (`data-can-charge`, `c` key, palette,
       badges' predicates); Alembic migration with in-migration backfill: per LIVE pair -- resolve
       target card (single; multiple -> lowest sort_order; zero -> CREATE the card inline per ruling
-      6), set provenance, retarget, status Paid + documented `paid_at` derivation, emit balanced
+      **R-CC6**), set provenance, retarget, status Paid + documented `paid_at` derivation, emit balanced
       settled postings in-migration (loan-backfill precedent), delete payback; frozen settled pairs
       untouched; downgrade restores via provenance. Rework `test_credit_workflow.py` +
       `test_c19_credit_payback_unique.py` (port lock/concurrency shapes). Reports move (settled
@@ -189,9 +193,9 @@ two-way migration arm exists to refuse.
       -> `entry_card_charge.py`: maintains ONE settled card-side EXPENSE = credit-entry sum (same
       period/scenario/category, provenance set), linked via the RENAMED `card_charge_for_id` +
       partial unique index + `TransactionEntry.card_charge_id`; `is_credit -> is_card_tender`
-      (ruling **R-CC7**; `Review:` lines; renames in the same migration). The 2x2 sync matrix
-      carries over under the shared lock; sum==0 reverse-and-delete. `_signed_cash_leg` /
-      `_credit_entry_sum` semantics unchanged (docstrings updated). Migrate live entry paybacks;
+      (ruling **R-CC7**; `Review:` lines; index/constraint renames in the same migration). The 2x2
+      sync matrix carries over under the shared lock; sum==0 reverse-and-delete. `_signed_cash_leg`
+      / `_credit_entry_sum` semantics unchanged (docstrings updated). Migrate live entry paybacks;
       delete `credit_workflow.py` whole. Oracles: hand-computed $500/$120 split tender (checking leg
       $380, card row $120 at the entries' settle instant), toggle shrink/grow, last-entry deletion
       reversal, migration up+down. HARD REQUIREMENT: the companion flow survives intact (see the

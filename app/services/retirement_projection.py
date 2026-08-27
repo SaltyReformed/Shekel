@@ -80,10 +80,11 @@ class RetirementProjectionContext:
     ``period_containing`` is a bisect over it -- so two callers threaded values
     a third could have re-derived and nothing reconciled the two.  That is the
     shape ruling **R-PC11** ("How the seam learns WHICH periods to report")
-    deleted at plan step C2-c one tier down, and the same measurement applies: BOTH callers
-    filled the pair from the same pass, so the only thing the arguments could
-    express was a mismatch.  :func:`_periods` and :func:`_current_period` read
-    them off :attr:`balance_ctx` at the two places that ask.
+    deleted at plan step C2-c one tier down, and the same measurement applies:
+    BOTH callers filled the pair from the same pass, so the only thing the
+    arguments could express was a mismatch.  :func:`_periods` and
+    :func:`_current_period` read them off :attr:`balance_ctx` at the two places
+    that ask.
 
     Attributes:
         balance_ctx: The read pass this projection runs in -- the owner, the

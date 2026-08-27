@@ -204,7 +204,7 @@ class TestTheMigrationCannotSitHalfDone:
         """The finished state, which is what replaced the map.
 
         ``ARC_RULING_HEADINGS`` listed the arcs that had not moved and was
-        read in both directions while the migration ran.  ``X-ao-2`` emptied
+        read in both directions while the migration ran.  ``X-ao-2a`` emptied
         and DELETED it: there is no half-moved state left to describe, and an
         arc that never enters a map is invisible to every arm that reads one.
         """
@@ -234,6 +234,8 @@ class TestTheMigrationCannotSitHalfDone:
         "| **A new fork** | **The answer. R-R99, ruled 2026-08-27** |",
         "**Ruling R-R99 (2026-08-27): the answer.** Because of the evidence.",
         "The bound is derived, R-PC99, archived -- see the as-built record.",
+        "The bound is derived, R-R99, taken 2026-09-01 (developer).",
+        "The bound is derived, R-R99 ruled 2026-09-01 (developer).",
     ])
     def test_a_ruling_declared_in_an_arc_document_is_caught(
             self, declaration, tmp_path, monkeypatch):
@@ -243,6 +245,13 @@ class TestTheMigrationCannotSitHalfDone:
         that sat in section 4 PROSE, outside every table, while ``steps.md``
         cited it as ``R13``'s.  No table arm could see it and no heading map
         would have looked there.
+
+        **The last two were GREEN until an adversarial review wrote them.**
+        The pattern required a comma before the verb and admitted exactly two
+        verbs, both accidents of how the corpus happened to be phrased -- so
+        ``taken`` and a missing comma each walked past it.  What the same
+        review's other four probes show the arm still cannot see is stated at
+        :data:`_rulings.RULING_DECLARATION_RX` rather than left here.
         """
         target = tmp_path / "recurrence.md"
         target.write_text(
@@ -278,6 +287,8 @@ class TestTheMigrationCannotSitHalfDone:
         "1. **Re-account model.** Marking a purchase Credit MOVES it.",
         "- **A charged expense stays visible in place** on the source grid.",
         "| **A fork** | **An answer** |",
+        "1. Re-account model: marking a purchase Credit MOVES it.",
+        "- A charged expense stays visible in place on the source grid.",
     ])
     def test_a_pointer_section_that_states_rulings_is_caught(
             self, stated, tmp_path, monkeypatch):
@@ -288,6 +299,12 @@ class TestTheMigrationCannotSitHalfDone:
         weeks: the residual-table arm read table HEADERS, so that arc could
         have kept its whole registry through the lift with every other arm
         green.  The first specimen is one of those eight, verbatim in shape.
+
+        **The last two specimens carry NO bold**, and they are here because a
+        mutation run measured the cost of demanding it: the arm required a
+        bold-led list item, its docstring claimed "no list item", and reverting
+        the widening left all 285 tests green.  ``credit_card``'s eight
+        happened to be bold; nothing makes the next block bold.
         """
         text = registry.ARC_DOCS["credit_card"].read_text()
         marker = "## The rulings\n"
@@ -296,6 +313,64 @@ class TestTheMigrationCannotSitHalfDone:
         target.write_text(text.replace(marker, f"{marker}\n{stated}\n", 1))
         monkeypatch.setitem(registry.ARC_DOCS, "credit_card", target)
         assert any("it is a POINTER" in p for p in rulings.migration_violations())
+
+    def test_rulings_stated_under_a_subsection_of_the_pointer_are_caught(
+            self, tmp_path, monkeypatch):
+        """A section's body includes its subsections, which nothing graded.
+
+        :func:`_rulings._sections` argues for exactly this in its own
+        docstring -- "a rulings POINTER that grew a `### ...` block of
+        decisions underneath must read as part of the pointer, or the arm
+        refusing a list under this heading looks at the wrong lines" -- and an
+        adversarial review's mutation run found TWO ways to break it that the
+        whole suite passed: ending every section at the next heading of any
+        level, and dropping the deeper-heading walk entirely.  A property a
+        docstring argues for hardest and nothing exercises is a claim, not a
+        control.
+        """
+        text = registry.ARC_DOCS["credit_card"].read_text()
+        marker = "## The rulings\n"
+        assert marker in text, "the pointer section this control needs is gone"
+        buried = (f"{marker}\n### The re-account decisions\n\n"
+                  "1. **Re-account model.** Marking a purchase Credit MOVES it.\n"
+                  "2. **Full statement cycle.** A statement is DERIVED.\n")
+        target = tmp_path / "credit_card.md"
+        target.write_text(text.replace(marker, buried, 1))
+        monkeypatch.setitem(registry.ARC_DOCS, "credit_card", target)
+        assert any("it is a POINTER" in p for p in rulings.migration_violations())
+
+    def test_a_fenced_example_is_not_a_ruling_and_does_not_hide_one(
+            self, tmp_path, monkeypatch):
+        """Fences, in BOTH directions, which this module was blind to.
+
+        A ``#``-led line inside a fence ended the pointer section early, so
+        decisions written after it were invisible to every arm here; and a
+        fenced EXAMPLE of a forbidden declaration was reported as one, so a
+        document could not illustrate the shape it must not use.
+        ``_registry.arc_checkboxes`` and ``_plan_gate._section`` already
+        carried this in prose and ``_duplication`` already imported the
+        helper; this module was the third caller and the only one that did not.
+        """
+        text = registry.ARC_DOCS["credit_card"].read_text()
+        marker = "## The rulings\n"
+        hidden = (f"{marker}\n```text\n# a comment line inside a fence\n```\n\n"
+                  "1. **A decision.** Something ruled.\n")
+        target = tmp_path / "hidden.md"
+        target.write_text(text.replace(marker, hidden, 1))
+        monkeypatch.setitem(registry.ARC_DOCS, "credit_card", target)
+        assert any("it is a POINTER" in p for p in rulings.migration_violations()), (
+            "a fenced heading-shaped line truncated the section and hid the list"
+        )
+
+        example = (f"{marker}\n```text\n"
+                   "**Ruling R-CC99 (2026-08-27): never write this here.**\n```\n")
+        other = tmp_path / "example.md"
+        other.write_text(text.replace(marker, example, 1))
+        monkeypatch.setitem(registry.ARC_DOCS, "credit_card", other)
+        assert not [p for p in rulings.migration_violations()
+                    if "DECLARES a ruling" in p], (
+            "a fenced illustration of the forbidden shape is not a declaration"
+        )
 
     def test_a_rulings_section_that_points_nowhere_is_caught(self, tmp_path,
                                                             monkeypatch):
@@ -321,7 +396,7 @@ class TestTheMigrationCannotSitHalfDone:
 
         Over every arc, because the balance README carried a heading no
         anchored pattern matched -- ``## 4. Decisions that govern the
-        remaining work`` -- until ``X-ao-2`` renamed it. An arm that grades
+        remaining work`` -- until ``X-ao-2a`` renamed it. An arm that grades
         four arcs and reports on five is the failure this whole registry is
         an instance of.
         """
@@ -334,6 +409,27 @@ class TestTheMigrationCannotSitHalfDone:
         assert any("carries no rulings section" in p
                    for p in rulings.migration_violations())
 
+    def test_a_sixth_arc_document_nobody_mapped_is_caught(self, tmp_path,
+                                                          monkeypatch):
+        """The half of the map that survived deleting the map.
+
+        Three pointer sections say the gate "cannot go blind to one nobody
+        remembered to add".  An adversarial review measured that false: both
+        halves of :func:`migration_violations` iterate ``ARC_DOCS``, a
+        hardcoded dict, so a sixth arc plan created and never added to it was
+        invisible to every arm -- the per-arc map was gone and the map of
+        WHICH DOCUMENTS ARE ARCS was not.
+        """
+        plans = tmp_path / "plans"
+        plans.mkdir()
+        for path in registry.PLANS.glob("implementation_plan_*.md"):
+            (plans / path.name).write_text(path.read_text())
+        (plans / "implementation_plan_envelopes.md").write_text(
+            "# The envelope arc\n\n## The rulings\n\nSee `rulings.md`.\n")
+        monkeypatch.setattr(rulings, "PLANS", plans)
+        assert any("no ARC_DOCS entry names it" in p
+                   for p in rulings.migration_violations())
+
     def test_an_arc_the_preamble_omits_is_caught(self, stage_rulings):
         """The set-defined-by-omission shape, which this corpus has paid for.
 
@@ -342,8 +438,10 @@ class TestTheMigrationCannotSitHalfDone:
         as "not moved yet".
         """
         declared = _declaration()
-        stage_rulings(declared,
-                      re.sub(r",\s*`credit_card` 12", "", declared))
+        counts = rulings.declared_arc_counts()
+        fragment = f"`credit_card` {counts['credit_card']}"
+        assert fragment in declared, fragment
+        stage_rulings(declared, re.sub(rf",\s*{re.escape(fragment)}", "", declared))
         assert any("rulings.md does not declare it" in p
                    for p in rulings.migration_violations())
 
@@ -394,17 +492,33 @@ class TestTheLiftLostNothing:
         The point of the pair key, stated as a control: before this file the
         collision was invisible to every gate; now it is a row-level fact a
         reader can enumerate, which is what X-ao-3 grades citations against.
+
+        **The assertion is a PROPERTY of R-GU, not a CENSUS of the registry.**
+        It read ``ambiguous == {"R-GU": ...}`` until an adversarial review
+        simulated the merge that was already in flight: another session had
+        minted ``bank_import:R-HB`` and ``R-HC`` beside this branch's
+        ``balance:R-HB`` and ``R-HC``, which rule 10 makes LEGAL and which
+        every other arm here correctly passes.  Only the census literal went
+        red, and the only way to make it green would have been to edit it --
+        the exact shape :class:`TestTheLiftLostNothing` rejects by name a few
+        lines above, arriving in the file that rejects it.
         """
         by_id: dict[str, set[str]] = {}
         for row in rulings.ruling_rows():
             by_id.setdefault(row.bare_ident, set()).add(row.arc)
         ambiguous = {i: a for i, a in by_id.items() if len(a) > 1}
-        assert ambiguous == {"R-GU": {"balance", "bank_import"}}, ambiguous
+        assert ambiguous.get("R-GU") == {"balance", "bank_import"}, ambiguous
         assert not rulings.key_violations()
 
 
 class TestTheArmsThatHadNoControl:
     """Every arm proven to FAIL, including the three that never had a companion.
+
+    One member here is NOT an arm proven to fail --
+    :meth:`test_the_map_that_replaced_these_two_controls_is_gone` records what
+    two deleted controls used to grade and asserts their subject is gone. It
+    sits here because this is where those two controls were, and moving it
+    would leave the reader of a diff no trace of why they went.
 
     This module's opening claim -- that every arm here has a companion that
     plants the defect and asserts it fires -- was FALSE for three arms when it
@@ -429,7 +543,7 @@ class TestTheArmsThatHadNoControl:
                    for p in rulings.key_violations())
 
     def test_the_map_that_replaced_these_two_controls_is_gone(self):
-        """Their subject was ``ARC_RULING_HEADINGS`` and X-ao-2 deleted it.
+        """Their subject was ``ARC_RULING_HEADINGS`` and X-ao-2a deleted it.
 
         Both graded the map against itself -- an arc dropped from it, and an
         entry that outlived its table -- and both were real while a migration
@@ -453,11 +567,12 @@ class TestRuleFourAppliesToThisFileToo:
         lifted verbatim; rule 5 forbids trimming a live specification to fit,
         and rule 4's own remedy sends the overflow to the as-built record of
         the step that shipped the ruling, or to that step's live specification
-        when it has not shipped -- which is ``X-ao-2b``.  Recording WHICH rows
-        rather than exempting them is what keeps a NEW over-cap row a failure.
+        when it has not shipped -- which is ``X-ao-2b``.  Recording which rows
+        AND HOW WIDE, rather than exempting them, is what keeps a new over-cap
+        row, a finished row and a SWOLLEN one all failures.
         """
         assert not rulings.row_width_violations()
-        over = {row.key for row in rulings.ruling_rows()
+        over = {row.key: row.width for row in rulings.ruling_rows()
                 if row.width > rulings.RULINGS_ROW_CAP}
         assert over == rulings.LIFTED_ROWS_OVER_CAP
 
@@ -484,12 +599,27 @@ class TestRuleFourAppliesToThisFileToo:
         assert any(f"{widest.key} is recorded in LIFTED_ROWS_OVER_CAP" in p
                    for p in rulings.row_width_violations())
 
+    def test_a_debt_row_that_grew_is_caught(self, stage_rulings):
+        """The hole membership alone left, which the docstring denied.
+
+        An adversarial review measured it: with the debt recorded as a SET of
+        keys, ``bank_import:R-GD`` could go from 16,087 characters to 32,000
+        and every arm stayed green, while the constant's own note claimed
+        "both directions fail".  A width per key is what makes that true.
+        """
+        widest = max(rulings.ruling_rows(), key=lambda r: r.width)
+        row = next(line for line in rulings.RULINGS.read_text().splitlines()
+                   if line.startswith(f"| {widest.arc} | {widest.bare_ident} |"))
+        stage_rulings(row, _with_cell(row, 4, widest.rule + " x" * 4000))
+        assert any(f"{widest.key} is" in p and "and the debt records" in p
+                   for p in rulings.row_width_violations())
+
     def test_the_cap_is_the_ledger_s_own_number(self):
         """Not a number fitted to today's file, which rule 4 forbids."""
         assert rulings.RULINGS_ROW_CAP == registry.LEDGER_ROW_CAP
 
     def test_the_widest_lifted_row_is_the_one_recorded(self):
-        """16,087 characters against a 529-character median.
+        """16,087 characters against a 542.5-character median over 190 rows.
 
         Named so the debt has a face: it is the arc document's argument living
         in the registry, which is the sentence LEDGER_ROW_CAP was written for.
@@ -500,7 +630,15 @@ class TestRuleFourAppliesToThisFileToo:
 
 
 class TestTheHalfMigrationCannotHideARowLoss:
-    """The three states two adversarial reviews used to break the first draft."""
+    """The states two adversarial reviews used to break the first draft.
+
+    It said THREE and holds two: the residual-table case moved to
+    :meth:`TestTheMigrationCannotSitHalfDone.test_an_arc_keeping_a_rulings_table_is_caught`,
+    which runs it over every arc and every grammar instead of over one arc,
+    and the count stayed behind.  Naming that here rather than deleting the
+    sentence, because a stated count that outlives what it counts is the
+    defect class this whole arc exists to remove.
+    """
 
     def test_a_dropped_row_is_caught_even_when_the_total_is_corrected(
             self, stage_rulings):
@@ -534,7 +672,7 @@ class TestThePreambleDoesNotDecay:
     This class used to grade a parenthesised count per UNMIGRATED arc and a
     total derived from them -- derived values beside no reconciler, which is
     the root cause three of these arcs exist to remove, and they shipped that
-    way in the first draft.  ``X-ao-2`` deleted the sentence and the arms with
+    way in the first draft.  ``X-ao-2a`` deleted the sentence and the arms with
     it: with no arc left unmoved there is nothing to count, and what remains
     is the per-arc declaration, which :class:`TestTheLiftLostNothing` grades.
     """
@@ -556,8 +694,10 @@ class TestThePreambleDoesNotDecay:
         that read it went silently blind rather than red.
         """
         declared = _declaration()
-        assert "`credit_card` 12" in declared
-        stage_rulings(declared, declared.replace("`credit_card` 12",
-                                                 "`credit_card`\n12"))
-        assert rulings.declared_arc_counts().get("credit_card") == 12
+        count = rulings.declared_arc_counts()["credit_card"]
+        fragment = f"`credit_card` {count}"
+        assert fragment in declared, fragment
+        stage_rulings(declared, declared.replace(fragment,
+                                                 f"`credit_card`\n{count}"))
+        assert rulings.declared_arc_counts().get("credit_card") == count
         assert not rulings.migration_violations()

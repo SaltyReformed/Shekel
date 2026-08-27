@@ -208,7 +208,7 @@ project has already paid to learn. Each arc's argument and step specifications s
 document: `docs/audits/balance_architecture/README.md` (balance), and `implementation_plan_*.md` for
 recurrence, pay_calendar, credit_card and bank_import. `steps.md` names which document and section
 holds a given step's detail. **Every arc's rulings are in `rulings.md`, keyed `(arc, id)`, since
-`balance:X-ao-2`; no arc document states one, and each carries a `The rulings` pointer instead.**
+`balance:X-ao-2a`; no arc document states one, and each carries a `The rulings` pointer instead.**
 
 **Anything under an `archive/` or `historical/` directory is a HISTORICAL RECORD and governs
 nothing** -- every such file says so on its first line. Cite one for how a decision came to be,

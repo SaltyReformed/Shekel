@@ -230,7 +230,7 @@ class TestALiveDocumentDoesNotDeclareItsOwnSectionsDead:
         """The rulings registry records superseded rulings by design.
 
         Four rulings read this way -- ``R-R3``'s subtype superseded by
-        ``R-R13`` is one, and since ``balance:X-ao-2`` it is a row in
+        ``R-R13`` is one, and since ``balance:X-ao-2a`` it is a row in
         ``rulings.md`` rather than a row in this document.  An arm keying on
         the bare word would report every one of them, which is a gate nobody
         keeps, and the specimen is planted in an arc document because that is

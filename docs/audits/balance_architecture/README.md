@@ -772,23 +772,55 @@ hides.
   Repaired `bank_import:R-FW` (four cells in a three-column table since 2026-08-18) and the gate
   hook's own `files:` pattern, YAML-folded so one document matched nothing. Opened **balance:N-370**,
   **balance:N-371**; carries the citation arm to `X-ao-3`.
-* [ ] **X-ao-2** `feat(plan-gate): the last three arcs take the one grammar` -- closes **balance:N-370**.
-  The remaining 77: `recurrence`'s 36 and `pay_calendar`'s 33 state a ruling `| fork | ruling |`
-  with the id in PROSE beside cross-references to OTHER rulings -- a regex mis-attributed four
-  recurrence ids on the first pass, which is why this is its own step -- and `credit_card`'s 8 are
-  a numbered list. 45 need an id MINTED; `pay_calendar` continues `R-PC1`, whose scheme exists and
-  is cited three times from `app/`. **The recurrence table's id is in its row's CLOSING clause**
-  (`R-Rnn, ruled DATE; shipped as <step>`) and a cross-reference to another ruling never sits
-  there -- keying on the tail resolves all four ids the naive first-id-in-text read claimed twice,
-  measured 0 against 4. **But 11 of 36 rows carry no tail id and only 6 of those are rulings**: the
-  rest are a `---` separator, a `Shipped / superseded decisions` section label, and rows whose
-  subject is a decision recorded elsewhere. So this step CLASSIFIES rows before it parses them; a
-  reader that assumes every table row is a ruling mints ids for separators. **The tail rule is a
-  PARSE and not a proof**: it says nothing about those 11, and it holds because every row written so
-  far follows the convention rather than because anything enforces it, so the eyeball pass over the
-  residue is the part that cannot be dropped. One of the 11 is **balance:N-372**. Two `app/` docstrings cite a pay-calendar ruling by its PROSE
-  NAME and must gain the minted id in the same commit. It also moves the 23 over-cap rows'
-  overflow to their owning steps' specifications, which is rule 4's own remedy.
+* [ ] **X-ao-2** -- the DECOMPOSED parent, split 2026-08-27 (**balance:R-HB**) because the step's own
+  sentence carried two nouns and only the first is a lift. Its second, the over-cap overflow, was
+  measured unsatisfiable as rule 4 literally states it before the split rather than after: rule 4
+  sends the overflow to the owning step's SPECIFICATION, and `bank_import` alone owns 36,901 of the
+  43,855 characters against a document with 49 lines of headroom.
+* [x] **X-ao-2a** `91f95f43` -- `recurrence`'s, `pay_calendar`'s and `credit_card`'s rulings lifted
+  into `../../plans/rulings.md` keyed `(arc, id)`: 81 rows, 51 ids MINTED, proven lossless per row
+  in BOTH directions. `ARC_RULING_HEADINGS` DELETED for a predicate on a ruling DECLARATION's shape;
+  `LIFTED_ROWS_OVER_CAP` re-keyed from a COUNT to a SET, which is the direction a count could not
+  see. Closes **N-372**, whose own count it corrected. Rulings **balance:R-HB**, **balance:R-HC**, **balance:R-HD**; opened
+  **N-376**, **N-377**. As-built in the commit and its merge, `7a95e40e`.
+* [ ] **X-ao-2b** `docs(plans): an over-cap ruling's argument goes to its own step` -- closes
+  **balance:N-370**. The 25 rows over `RULINGS_ROW_CAP` hold 43,855 characters of overflow against
+  a 542.5-character median over the registry's 190 rows, and `bank_import:R-GD`
+  alone is 16,087. **The destination is RULED
+  (balance:R-HD)**: the AS-BUILT record of the step that shipped the ruling, or that step's live
+  specification where it has not shipped -- which is what this registry's own first sentence
+  already said and nothing graded. Measured 2026-08-27: NINE of `bank_import`'s 14 (`R-FV`, `R-FW`,
+  `R-FX`, `R-FY`, `R-GB`, `R-GC`, `R-GF`, `R-GJ`, `R-GG`; 14,949 characters) are cited by no step
+  entry in that document at all, live or shipped, because the spans that owned them were archived
+  under rule 5 -- and every one of the nine is already cited by an as-built record that exists.
+  **The OWNER is this step's first task, not its input**: 17 of the 25 rows name no step of their
+  own arc at all and only TWO name a SHIPPED one, so it is determined per row from the row's text,
+  from the arc-document entries that cite it, and from the row's own git history. **That third
+  source DECAYS and the refs that stop it decaying are named here rather than left to be found**
+  (the recurrence session, 2026-08-27): `git log -S` keys on the row's TEXT, and both lifts
+  rewrote every row, so a search against today's text lands on the lift rather than on the commit
+  that took the ruling. The pre-lift text is at `b8f1c862~1` for `balance` (74 rows) and
+  `bank_import` (31), and at `91f95f43~1` for `recurrence` (37), `pay_calendar` (33) and
+  `credit_card` (8); `recurrence:R-R38` landed on dev between the two lifts and its pre-lift text
+  is at `107add57`. Searching from those refs still resolves -- `R-R38` lands on `f7b0ce16`, whose
+  SUBJECT names `R-R38` and whose body names `R7d-c-1` at line 31, so the search finds the commit
+  and the owner is one line inside it rather than in the subject. Two specimens bound the work at
+  both ends. `bank_import:R-GD`, the widest row at 14,087 over, is NOT archive-bound: it is cited
+  inside LIVE entries TWICE, as `**R-GD(d)**` at `implementation_plan_bank_import.md:78` and as a
+  plain `**R-GD**` at :139, so rule 4's literal remedy applies and its argument goes to that step's
+  specification. **A peer census reported it uncited and the reason offered for that miss was also
+  wrong** -- a `**R-xx**`-only matcher finds the plain form at :139 -- so what is established here
+  is the disposition, not the diagnosis. And `recurrence:R-R38`'s owner `R7d-c-1` HAS shipped
+  and has no as-built record at all, so one is written (by the recurrence session, offered
+  2026-08-27)
+  before the row is cut -- which is rule 5's own archive path, and **N-371** applies to it: adding
+  an archived document runs no commit-time gate.
+  **Cutting a row is a REVIEWED EDIT per ruling, never a truncation to fit** (rule 5), and the
+  instrument this step owes is the lift's verifier INVERTED: every sentence removed from a row must
+  resolve to text in the named as-built record, checked BEFORE the row is cut. Without that, "the
+  argument is in the archive" is an assertion about a file nobody re-opens, and `R-GD`'s 14,087
+  characters of overflow is where a silent loss would be least visible. The step ends with
+  `LIFTED_ROWS_OVER_CAP` deleted rather than emptied.
 * [ ] **X-ao-3** `feat(plan-gate): a bare citation of an ambiguous id fails` -- closes **N-217**,
   **N-367**. What makes `(arc, id)` SAFE rather than merely legal: every `R-xx` cited in `app/` or
   `docs/` resolves to exactly one ruling, and a bare citation of an id two arcs both define is a

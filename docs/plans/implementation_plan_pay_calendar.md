@@ -21,11 +21,15 @@ registries are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
 ## The rulings
 
 **This arc's rulings are in `rulings.md`, rows whose `arc` is `pay_calendar`.** They moved there at
-`balance:X-ao-2` with `recurrence`'s and `credit_card`'s, finishing what `X-ao-1` began: a ruling id
-came from ONE global sequence spelled across five arc documents in THREE grammars, and
+`balance:X-ao-2a` with `recurrence`'s and `credit_card`'s, finishing what `X-ao-1` began: a ruling
+id came from ONE global sequence spelled across five arc documents in THREE grammars, and
 `tools/plan_gate` parsed none of them. The key is `(arc, id)`, and NO arc document states a ruling
-now -- which the gate grades as the SHAPE of a declaration rather than from a list of arcs, so it
-cannot go blind to one nobody remembered to add.
+now. The gate grades that as the SHAPE of a declaration rather than from a list of arcs, and
+reconciles the arc map against `docs/plans/` so a SIXTH plan document nobody added to it fails
+rather than being passed over. **What it still cannot see is a dated block of decisions with no IDS,
+under a heading that does not say `rulings`** -- which is this corpus's own historical shape with
+one word changed. The arm that would close it is "an arc document names no ruling id that has no
+registry row", and **N-376** is why it cannot be built yet.
 
 **Thirty-two of this arc's thirty-three rulings had no id at all**, which is why the lift was its
 own step: only `R-PC1`, the forward-only rule, could be cited, and it is cited from `app/` three

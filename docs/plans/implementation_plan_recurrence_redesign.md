@@ -22,24 +22,33 @@ section 0 states its two options. Section 4 is the steps; the findings, the inde
 ## The rulings
 
 **This arc's rulings are in `rulings.md`, rows whose `arc` is `recurrence`.** They moved there at
-`balance:X-ao-2` with `pay_calendar`'s and `credit_card`'s, finishing what `X-ao-1` began: a ruling
+`balance:X-ao-2a` with `pay_calendar`'s and `credit_card`'s, finishing what `X-ao-1` began: a ruling
 id came from ONE global sequence spelled across five arc documents in THREE grammars, and
 `tools/plan_gate` parsed none of them. The key is `(arc, id)`, and NO arc document states a ruling
-now -- which the gate grades as the SHAPE of a declaration rather than from a list of arcs, so it
-cannot go blind to one nobody remembered to add.
+now. The gate grades that as the SHAPE of a declaration rather than from a list of arcs, and
+reconciles the arc map against `docs/plans/` so a SIXTH plan document nobody added to it fails
+rather than being passed over. **What it still cannot see is a dated block of decisions with no IDS,
+under a heading that does not say `rulings`** -- which is this corpus's own historical shape with
+one word changed. The arm that would close it is "an arc document names no ruling id that has no
+registry row", and **N-376** is why it cannot be built yet.
 
 **What the lift changed here is not only the location.** SEVEN rows carried no id and were minted
-`R-R39`-`R-R45`; the `R-R28` PARAGRAPH in section 4 became a row like any other, having been cited
-by `steps.md` as `R13`'s ruling while sitting outside every table; and `R-R7`, whose row was a
-POINTER at `historical/recurrence_evidence_2026-08-11.md`, is a row under the id it already had,
-because rule 5 forbids a live sentence depending on an archived one. Four rows stated no rule of
-their own: the anchor-day supersession folded into `R-R13`, the ruling it is about, and the
-pay-period HOLE is `pay_calendar`'s `R-PC2`, recorded once (rule 16).
+`R-R39`-`R-R45`, and TWO carried no DATE: `R-R7`'s 2026-08-05 is stated by
+`historical/recurrence_evidence_2026-08-11.md` and its row landed in `35622cfb`, and `R-R10`'s
+2026-08-07 is stated by `historical/recurrence_as_built_2026-08-05.md` and its row landed in
+`8e289a1b` -- measured rather than assumed, as `pay_calendar`'s two were. the `R-R28` PARAGRAPH in
+section 4 became a row like any other, having been cited by `steps.md` as `R13`'s ruling while
+sitting outside every table; and `R-R7`, whose row was a POINTER at
+`historical/recurrence_evidence_2026-08-11.md`, is a row under the id it already had, because rule 5
+forbids a live sentence depending on an archived one -- a row that stated no rule of its own and DID
+become one. THREE others stated none and did not: the anchor-day supersession folded into `R-R13`,
+the ruling it is about; the pay-period HOLE is `pay_calendar`'s `R-PC2`, recorded once (rule 16);
+and the archive label is the paragraph below.
 
 **Ten decisions were archived on 2026-08-08** to `historical/recurrence_as_built_2026-08-08.md`: the
 `Once` retirement, R2 and R4 sequencing, the wrong stored paycheck, bound semantics, the
 `Monthly First` and period-unit anchors, write-door enforcement, and the two `R-R12` superseded.
-That sentence was a table ROW until `balance:X-ao-2` -- a section LABEL inside a registry, which is
+That sentence was a table ROW until `balance:X-ao-2a` -- a section LABEL inside a registry, which is
 finding **balance:N-372** and is why it is prose here rather than a row there.
 
 ---
@@ -630,7 +639,7 @@ still re-pins; and an unreadable `alembic_version` is treated as unsafe. Each ar
 which is the standard the arc's own verification file sets. Closes **D41**.
 
 **The semi-monthly case is ruling `R-R28`**, which lives in `rulings.md` like every other and is
-cited by step **R13** below. It was a PARAGRAPH here until `balance:X-ao-2` -- outside this
+cited by step **R13** below. It was a PARAGRAPH here until `balance:X-ao-2a` -- outside this
 document's own rulings table, so the lift that read the tables would have left it behind.
 
 **`R-D33` and `R9` left this index on 2026-08-19** with their `steps.md` rows, archived as one
