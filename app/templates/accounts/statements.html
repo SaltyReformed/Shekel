@@ -40,6 +40,10 @@
        reports and never gates, so it is an ordinary link rather than a step
        in a flow. #}
     <a class="btn btn-sm btn-outline-secondary"
+       href="{{ url_for('accounts.statement_register', account_id=account.id) }}">
+      <i class="bi bi-check2-square"></i> Already decided
+    </a>
+    <a class="btn btn-sm btn-outline-secondary"
        href="{{ url_for('accounts.statement_agreement', account_id=account.id) }}">
       <i class="bi bi-clipboard-data"></i> Books vs bank
     </a>
@@ -61,7 +65,7 @@
     Importing a statement stores the bank's own lines so the app has a record
     of when money actually moved. That part changes no balance. A new swipe
     from a merchant you have given a
-    <a href="{{ url_for('accounts.review_statements', account_id=account.id) }}#merchant-rules">standing
+    <a href="{{ url_for('accounts.statement_register', account_id=account.id) }}#merchant-rules">standing
     rule</a> is <em>also</em> filed as a purchase where that rule says it goes
     -- listed below, and undoable one at a time. Anything that would change a
     row you made yourself -- its date, its amount, marking it paid -- is never
@@ -275,17 +279,19 @@
    is rendered, and this list says the same thing tomorrow.
 
    The undo control is `_statement_undo_macros.undo_match`, shared with the
-   review screen's accepted-matches panel: the figure it names and the figure
-   the door removes come from ONE derivation (`planned_removals`), and two
-   copies of that markup would put the guarantee one edit away from being false
-   on one of the two pages. #}
+   register's accepted-matches list: the figure it names and the figure the
+   door removes come from ONE derivation (`planned_removals`), and two copies
+   of that markup would put the guarantee one edit away from being false on one
+   of the two pages.  It posts to THIS page's own release door and comes back
+   here (plan step bank_import:X-gf-2) -- it used to post to the review
+   screen's, which threw the reader onto a different page mid-receipt. #}
 {% if filed_by_rules %}
 <div class="card mt-3">
   <div class="card-header d-flex justify-content-between align-items-center">
     <span>
       <i class="bi bi-signpost-split"></i> Filed by your rules
       <span class="text-muted small">-- {{ filed_limit }} most recent, newest
-      first; every one is on the review screen</span>
+      first; every one is on the page of what you have already decided</span>
     </span>
     <span class="badge text-bg-secondary">{{ filed_by_rules | length }}</span>
   </div>
@@ -320,7 +326,7 @@
             {% endfor %}
           </td>
           <td class="text-end">
-            {{ undo_match(account, group) }}
+            {{ undo_match(url_for('accounts.release_filed_match', account_id=account.id), group) }}
           </td>
         </tr>
         {% endfor %}
@@ -333,8 +339,10 @@
     purchase it created and puts the bank line back among the unexplained on
     the
     <a href="{{ url_for('accounts.review_statements', account_id=account.id) }}">review
-    screen</a>, which is where an Undo takes you. To stop a merchant filing
-    itself, change its answer to <em>ask me every time</em> there.
+    screen</a>; the Undo itself leaves you here. To stop a merchant filing
+    itself, change its answer to <em>ask me every time</em> on
+    <a href="{{ url_for('accounts.statement_register', account_id=account.id) }}#merchant-rules">what
+    you have already decided</a>.
   </div>
 </div>
 {% endif %}

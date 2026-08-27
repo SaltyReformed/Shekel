@@ -864,7 +864,7 @@ class TestEveryBoundThePassPublishesWITHHOLDS:
     def _a_review(**bounds):
         """Return a ReviewSet publishing *bounds* and nothing else."""
         return ReviewSet(
-            proposals=(), unmatched=(), unmatched_rows=(), accepted=(),
+            proposals=(), unmatched=(), unmatched_rows=(),
             creatable=(), parked=(), recordable_inflows=(),
             merchants=MerchantSection(merchants=(), templates=()),
             bounds=ReviewBounds(

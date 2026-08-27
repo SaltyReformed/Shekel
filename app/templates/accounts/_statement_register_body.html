@@ -1,0 +1,285 @@
+{% from "_money_macros.html" import money %}
+{% from "accounts/_merchant_rule_macros.html" import merchant_answer_cell, merchant_name_cell %}
+{% from "accounts/_statement_undo_macros.html" import undo_match %}
+
+{# WHAT HAS ALREADY BEEN DECIDED, and the rule pass's own answer.
+
+   Plan step bank_import:X-gf-2, ruling bank_import:R-GX.  It is a partial
+   rather than part of the page because saving an answer ANSWERS WITH THIS: the
+   receipt at the top says what changed and the control below is re-rendered
+   from the state that save left.  One template, so what htmx swaps in after a
+   POST cannot drift from what a reload shows.
+
+   THE ONE CONTROL HERE THAT MOVES MONEY IS THE UNDO.  Stating a merchant
+   answer moves none and can move none (the developer's ruling of 2026-08-19):
+   a rule is read to SUGGEST, and only a destination submitted for one specific
+   line on the review screen records a purchase.  Releasing a match removes the
+   rows that act created (ruling R-GG), which is why every press confirms
+   (ruling bank_import:R-GY).
+
+   Context: account, register (StatementRegister), categories, show_all,
+   rules (StatedRules or None), error (a sentence or None). #}
+
+<div id="statement-register-body">
+
+  {# ── What the last rule pass recorded ───────────────────────────────── #}
+  {% if error %}
+  <div class="alert alert-danger d-flex gap-2 align-items-start" role="alert">
+    <i class="bi bi-x-octagon mt-1"></i>
+    <div>{{ error }}</div>
+  </div>
+  {% endif %}
+
+  {% if rules %}
+  <div class="card mb-3 border-{% if rules.refused %}warning{% else %}success{% endif %}">
+    <div class="card-header">
+      <i class="bi bi-signpost-split"></i> Where your merchants go
+    </div>
+    <div class="card-body">
+      {% if rules.stated %}
+      <ul class="mb-0 small">
+        {% for said in rules.stated %}
+        <li class="mb-1">{{ said }}</li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="mb-0 text-body-secondary">
+        Nothing changed -- every answer was already what you had said.
+      </p>
+      {% endif %}
+      {% if rules.unchanged_count %}
+      {# The DENOMINATOR.  The control submits every merchant it renders, so
+         most of a real pass is no-ops; "2 recorded" with nothing beside it
+         would read as though the other 27 had failed. #}
+      <p class="mt-2 mb-0 small text-body-secondary">
+        {{ rules.unchanged_count }} other merchant(s) were already answered
+        for and were left as they are. This changed no money.
+      </p>
+      {% else %}
+      <p class="mt-2 mb-0 small text-body-secondary">This changed no money.</p>
+      {% endif %}
+    </div>
+    {% if rules.refused %}
+    <div class="card-body border-top">
+      <p class="fw-semibold mb-2">These were not recorded:</p>
+      <ul class="mb-0 small">
+        {% for reason in rules.refused %}
+        <li class="mb-1">{{ reason }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {# ── Where your merchants go ────────────────────────────────────────── #}
+  {# THE REGISTER'S RULE CONTROL.  Every answer the owner has given, whether or
+     not any of that merchant's lines are still waiting -- which is what makes
+     an answer changeable after the lines that prompted it are gone.
+
+     IT COUNTS NO WAITING LINES, and the absence is deliberate: counting them
+     is the review PASS's work, this page does not run one, and a column
+     reading "none right now" over nine parked lines would be false.  The queue
+     counts lines; the register holds answers.
+
+     AN ANSWER IS NEVER TAKEN AWAY (ruling R-GS).  "-- I have not said --" is
+     the opening state of a control nobody has answered, and every row here has
+     been answered, so it is not offered -- the macro asks the row itself, and
+     no flag decides it. #}
+  {% if register.merchants.merchants %}
+  {# THE SAVE KEEPS THE VIEW.  `all` rides on the door's own URL because the
+     bound is part of the surface: without it a Save pressed while showing
+     every act answers with the bounded list, and the record collapses under
+     the owner mid-read.  `url_for` drops a None argument, so the ordinary
+     render posts the plain URL. #}
+  {% set save_url = url_for('accounts.restate_merchant_rules', account_id=account.id, all=1 if show_all else None) %}
+  <form method="post"
+        action="{{ save_url }}"
+        hx-post="{{ save_url }}"
+        hx-target="#statement-register-body"
+        hx-swap="outerHTML show:top"
+        hx-disabled-elt="find button[type=submit]">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    {# The id is what the statements page links to when it explains that a
+       stated rule files a new swipe by itself (plan step bank_import:X-ge):
+       the sentence names the control that gives consent, so the link has to
+       reach the control. #}
+    <div class="card mb-3" id="merchant-rules">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-signpost-split"></i> Where your merchants go</span>
+        <span class="badge text-bg-secondary">
+          {{ register.merchants.merchants | length }} answered
+        </span>
+      </div>
+      <div class="card-body">
+        <p class="text-body-secondary small mb-0">
+          These are the answers you have already given. A new swipe from one of
+          these merchants is filed where you said, at import, without asking.
+          <strong>Changing an answer here moves no money</strong> -- it changes
+          where the NEXT swipe goes. Anything already recorded stays where it
+          is until you undo it.
+        </p>
+        <p class="text-body-secondary small mb-0">
+          <strong>An answer is never taken away, only changed.</strong> If you
+          would rather decide about a merchant case by case, say <em>ask me
+          every time</em> -- that is an answer too, and its lines come back to
+          the review screen for you to place one at a time.
+        </p>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0">
+          <thead>
+            <tr>
+              <th scope="col">Merchant</th>
+              <th scope="col">Goes in</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in register.merchants.merchants %}
+            <tr>
+              <td>{{ merchant_name_cell(row, loop.index0) }}</td>
+              <td>
+                {{ merchant_answer_cell(row, loop.index0, register.merchants.templates, categories) }}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div class="card-footer d-flex justify-content-between align-items-center">
+        <span class="small text-body-secondary">
+          Saving this records no purchase and changes no balance.
+        </span>
+        <span>
+          <span class="htmx-indicator text-body-secondary small">
+            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+            Saving...
+          </span>
+          <button type="submit" class="btn btn-outline-primary btn-sm">
+            Save where my merchants go
+          </button>
+        </span>
+      </div>
+    </div>
+  </form>
+  {% else %}
+  {# THE ANCHOR IS ON BOTH BRANCHES.  The statements page links to
+     `#merchant-rules` to explain what a standing rule does, and an owner who
+     has stated none is exactly the owner following that link -- so an id that
+     existed only where there were answers landed nowhere for the reader who
+     most needed it. #}
+  <div class="card mb-3" id="merchant-rules">
+    <div class="card-header">
+      <i class="bi bi-signpost-split"></i> Where your merchants go
+    </div>
+    <div class="card-body text-body-secondary">
+      You have not said where any merchant's spending goes yet. The
+      <a href="{{ url_for('accounts.review_statements', account_id=account.id) }}">review
+      screen</a> asks about each merchant it has an unexplained line for, and
+      what you answer there appears here.
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Accepted matches ───────────────────────────────────────────────── #}
+  <div class="card" id="accepted-matches">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span><i class="bi bi-check2-square"></i> Accepted matches</span>
+      <span class="badge text-bg-secondary">
+        {{ register.accepted.shown | length }}{% if register.accepted.withheld_count %} of {{ register.accepted.shown | length + register.accepted.withheld_count }}{% endif %}
+      </span>
+    </div>
+    {# WHAT CAN UNMAKE ONE OF THESE WITHOUT TOUCHING IT (finding N-349).  Four
+       doors elsewhere in the app delete a row a match names -- deleting a
+       template's rows, archiving statements in bulk, retiring paydays, and the
+       recurrence retire sweep -- and each leaves the act standing with one
+       fewer row and no word said.  The act is not corrupt: it explains less
+       than it claims, and the honest answer is to re-review it.  So they are
+       sorted to the TOP of this list rather than left where their date put
+       them, and this says what put them there. #}
+    {% if register.accepted.shown %}
+    <div class="card-body border-bottom small text-body-secondary">
+      A match can stop holding without anybody touching it: deleting a
+      recurring definition's rows, archiving statements in bulk or retiring a
+      payday removes a row the match names, and the match is then explaining
+      less than it says. Those are marked and sorted to the top here. Undo one
+      to put its statement lines back among the unexplained.
+    </div>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle mb-0">
+        <tbody>
+          {% for group in register.accepted.shown %}
+          <tr {% if not group.agrees %}class="table-warning"{% endif %}>
+            <td class="text-nowrap">{{ group.posts_on }}</td>
+            <td class="text-end fw-semibold text-nowrap">{{ money(group.amount) }}</td>
+            <td class="small">
+              {# WHO agreed to this act (ruling R-GT, plan step
+                 bank_import:X-ge).  `applied_by_rule` is the one fact about a
+                 match that is not derivable from what it names, which is that
+                 ruling's own argument for storing it -- and a fact written and
+                 never seen is the shape this arc keeps finding.  It is a badge
+                 on the acts nobody pressed rather than on the ones they did,
+                 because the tick is the norm and the rule is the exception a
+                 reader is checking for. #}
+              {% if group.applied_by_rule %}
+              <span class="badge text-bg-secondary mb-1">
+                <i class="bi bi-signpost-split"></i> filed by your rule
+              </span>
+              {% endif %}
+              {% if not group.agrees %}
+              <div class="text-warning-emphasis">
+                This match no longer holds -- re-review it.
+              </div>
+              {% endif %}
+              {% for description in group.descriptions %}
+              <div class="text-body-secondary">{{ description }}</div>
+              {% endfor %}
+              {% for row in group.rows %}
+              <div>
+                {{ row.label }}
+                {% if not row.agrees %}
+                <span class="text-warning-emphasis">
+                  -- now dated {{ row.settled_on or 'not recorded' }}, not the bank's day
+                </span>
+                {% endif %}
+              </div>
+              {% endfor %}
+            </td>
+            <td class="text-end">
+              {{ undo_match(url_for('accounts.release_from_register', account_id=account.id), group) }}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if register.accepted.withheld_count %}
+    {# THE BOUND, SAID (ruling bank_import:R-GX).  A truncated list that does
+       not say it is truncated is a page claiming to be the whole record, and
+       this is the only surface where an act can be found and undone.  Every
+       act that no longer holds is above whatever this says. #}
+    <div class="card-footer small">
+      <a href="{{ url_for('accounts.statement_register', account_id=account.id, all=1) }}">
+        Show the other {{ register.accepted.withheld_count }} accepted match(es)
+      </a>
+      -- the newest are listed above, and any that no longer hold are always
+      listed whatever their age.
+    </div>
+    {% elif show_all %}
+    <div class="card-footer small text-body-secondary">
+      Every accepted match on this account is listed.
+    </div>
+    {% endif %}
+    <div class="card-footer small text-body-secondary">
+      Undoing a match puts those statement lines back among the unexplained. It
+      does not put the dates back -- your bank is still the best record of when
+      that money moved. It DOES remove rows the match itself created: a
+      purchase recorded from a bank line, a recorded difference, and the budget
+      line created to hold a purchase where nothing else is filed under it.
+    </div>
+    {% else %}
+    <div class="card-body text-body-secondary">Nothing accepted yet.</div>
+    {% endif %}
+  </div>
+
+</div>

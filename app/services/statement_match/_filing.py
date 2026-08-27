@@ -264,8 +264,8 @@ def rule_filed_acts(
     after a reload, still there tomorrow, and identical whether the owner
     arrived from the import they just performed or from the menu.
 
-    **It is the accepted-matches panel's OWN value type**
-    (:class:`~._accepted_view.AcceptedGroup`), narrowed.  That panel already
+    **It is the REGISTER's OWN value type**
+    (:class:`~._accepted_view.AcceptedGroup`), narrowed.  That list already
     answers everything a receipt item needs -- what the bank showed, what an
     Undo would remove and what that is worth, and whether the act still holds
     -- from :func:`~._release.planned_removals`, which is the door's own
@@ -494,9 +494,13 @@ def file_new_swipes(scope: ReviewScope, import_id: int) -> RuleFiling:
     # rather than leaving to the general path because that derivation is not
     # free on the WRITE door: measured on the developer's own account
     # 2026-08-26, ``ReviewScope.build`` plus ``review_set`` is 0.59-0.75 s and
-    # 202 queries, and the accepted-matches half of it grows with every act the
-    # account accumulates.  These two cover every import that has nothing to do,
-    # which is every re-import the owner performs.
+    # 202 queries.  **The second half of that reason has been retired**: it
+    # read "and the accepted-matches half of it grows with every act the
+    # account accumulates", which plan step ``bank_import:X-gf-2`` made false
+    # by taking the accepted acts out of ``review_set`` altogether.  What
+    # survives is the candidate derivation, which grows with the account's ROWS
+    # and is the bulk of that figure.  These two cover every import that has
+    # nothing to do, which is every re-import the owner performs.
     fresh = _fresh_line_ids(scope.account_id, import_id)
     if not fresh or not _has_a_container_rule(scope.owner_id, scope.account_id):
         return RuleFiling(outcome=BatchOutcome.nothing(), withheld=())

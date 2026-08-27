@@ -56,6 +56,7 @@ from tests._test_helpers import settlement_if_settling
 from app.services.statement_match import _create  # pylint: disable=protected-access
 
 from ._builders import (
+    accepted_acts,
     a_bank_line,
     a_bars,
     a_basis,
@@ -344,7 +345,7 @@ class TestRecordingALineAddsTheMovement:
             after = statement_match.review_set(a_scope(seed_user))
             assert line.id not in {ln.line_id for ln in after.unmatched}
             assert recorded.match_id in {
-                group.match_id for group in after.accepted
+                group.match_id for group in accepted_acts(seed_user)
             }
 
 

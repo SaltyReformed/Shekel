@@ -1,0 +1,121 @@
+{# THE RULE ROW, stated ONCE for the two controls that render it.
+
+   Plan step bank_import:X-gf-2, ruling bank_import:R-GX.  Two surfaces ask
+   where a merchant's spending goes: the review QUEUE, for a merchant nobody
+   has answered for, and the REGISTER, where an answer already given is
+   changed.  What they ask is identical -- the same four answers, the same
+   option list, the same two fields belonging to one of the options -- and what
+   differs is only which merchants each renders and what sits beside them.  So
+   the row is a macro, and the tables around it are each surface's own.
+
+   The one difference INSIDE the row needs no flag, which is why there is not
+   one: "-- I have not said --" is rendered only where there is no rule
+   (ruling R-GS), so the queue always shows it and the register never does,
+   from the same markup asking the same question of its own row.
+
+   The INDEX is passed rather than read off `loop`: a Jinja macro does not see
+   its caller's loop variable, and the field names are what pair a merchant id
+   with the answer submitted for it. #}
+
+{% macro merchant_name_cell(row, idx) %}
+<span class="fw-semibold">{{ row.merchant }}</span>
+{# THE KEY IS THE MERCHANT ROW, not its name (plan step bank_import:X-gd-1).
+   The name posted back until then, so the door's only defence against a
+   merchant this account has never shown was a comparison in Python; the id is
+   held to this account by fk_merchant_rules_merchant_account. #}
+<input type="hidden" name="rule_merchant-{{ idx }}"
+       value="{{ row.merchant_id }}">
+{# WHY TWO OF THIS ROW'S OPTIONS ARE REFUSED (ruling R-GJ, plan step
+   bank_import:X-ga).  A merchant a source files as a payment to an account the
+   owner holds has no create-a-purchase arm and no answer opens one, so a
+   recurring envelope or a new one is refused by the door.  Saying so HERE is
+   what keeps that refusal from being the first they hear of it -- the "chooser
+   whose submission can never succeed" shape this package has now closed four
+   times. #}
+{% if row.pays_an_account %}
+<div class="small text-body-secondary">
+  <i class="bi bi-arrow-left-right"></i>
+  Your bank files this as a payment to an account you hold, not as spending, so
+  its lines cannot be recorded as purchases. <em>Never a purchase</em> is the
+  answer that fits.
+</div>
+{% endif %}
+{% endmacro %}
+
+{% macro merchant_answer_cell(row, idx, templates, categories) %}
+<div class="row g-2 align-items-center" data-rule-row>
+  <div class="col-12 col-lg-5">
+    <select class="form-select form-select-sm"
+            name="rule-{{ idx }}" data-rule
+            aria-label="Where {{ row.merchant }} goes">
+      {# ONLY where there is no rule.  It is the control's opening state and it
+         submits "state nothing"; on an answered merchant it would be an option
+         with no act behind it, because a rule is never un-stated
+         (ruling R-GS). #}
+      {% if not row.rule %}
+      <option value="unset" selected>-- I have not said --</option>
+      {% endif %}
+      {% for template_id, template_name in templates %}
+      <option value="t:{{ template_id }}"{% if row.rule and row.rule.template_id == template_id %} selected{% endif %}>
+        {{ template_name }}
+      </option>
+      {% endfor %}
+      {# A STORED answer whose template has stopped being offerable --
+         deactivated, or no longer an envelope -- still has to be shown,
+         because a select with no selected option displays and submits its
+         FIRST, which is "I have not said": the screen would have reported a
+         rule as unanswered and the next Save would have silently withdrawn it.
+         Rendered as its own option so the form round-trips it, and
+         re-submitting it unchanged is a no-op rather than a refusal. #}
+      {% if row.unofferable.template %}
+      <option value="t:{{ row.rule.template_id }}" selected>
+        {{ row.unofferable.template }} -- no longer offered
+      </option>
+      {% endif %}
+      <option value="new"{% if row.rule and row.rule.is_new_envelope %} selected{% endif %}>-- a new envelope --</option>
+      {# THE FOURTH ANSWER (ruling R-GS).  Asked through its own property
+         rather than by comparing a string, exactly as the two beside it are. #}
+      <option value="ask"{% if row.rule and row.rule.is_always_ask %} selected{% endif %}>-- ask me every time --</option>
+      <option value="never"{% if row.rule and row.rule.is_never %} selected{% endif %}>-- never a purchase --</option>
+    </select>
+  </div>
+  <div class="col-12 col-lg-4{% if not (row.rule and row.rule.is_new_envelope) %} d-none{% endif %}"
+       data-rule-new-field>
+    <input class="form-control form-control-sm" type="text"
+           name="rule_name-{{ idx }}" maxlength="200"
+           value="{{ row.rule.envelope_name if row.rule and row.rule.is_new_envelope else row.merchant }}"
+           aria-label="Name for the envelope to create">
+  </div>
+  <div class="col-12 col-lg-3{% if not (row.rule and row.rule.is_new_envelope) %} d-none{% endif %}"
+       data-rule-new-field>
+    <select class="form-select form-select-sm"
+            name="rule_category-{{ idx }}"
+            aria-label="Category for the envelope to create">
+      {# NO default, for the reason the create form's own category select has
+         none: the category is what every spending report groups by, so an
+         envelope filed under whichever one sorts first is a misclassification
+         nobody chose. #}
+      {% set answered = row.rule.category_id if row.rule and row.rule.is_new_envelope else None %}
+      <option value=""{% if not answered %} selected{% endif %}>-- choose a category --</option>
+      {% for category in categories %}
+      <option value="{{ category.id }}"{% if answered == category.id %} selected{% endif %}>{{ category.display_name }}</option>
+      {% endfor %}
+      {# A STORED answer whose category has been ARCHIVED, for the reason the
+         stale TEMPLATE option above exists: the picker renders active
+         categories only, so without an option of its own the select carries no
+         selected value and a browser submits its FIRST -- the empty one. That
+         reaches the door as a new-envelope answer with no category and is
+         REFUSED, so a Save aimed at one merchant printed a refusal for another,
+         every pass, naming the wrong half. Archiving is what
+         category_has_usage now produces where a permanent delete used to
+         cascade the rule away, so this is live state rather than a
+         hypothetical (plan step bank_import:X-gd-2). #}
+      {% if row.unofferable.category %}
+      <option value="{{ row.rule.category_id }}" selected>
+        {{ row.unofferable.category }} -- archived
+      </option>
+      {% endif %}
+    </select>
+  </div>
+</div>
+{% endmacro %}

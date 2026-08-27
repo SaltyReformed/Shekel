@@ -2,22 +2,40 @@
 
 {# The UNDO control for one accepted match, stated ONCE for its two readers.
 
-   Plan step bank_import:X-ge.  The review screen's accepted-matches panel has
-   rendered this since X-f6f (ruling R-GG), and the statements page's "filed by
-   your rules" receipt renders the identical act -- so it is a macro rather than
-   a second copy.  The reason is not tidiness: what this markup states is a
-   DESTRUCTION and its figure, and the whole point of taking both from the
-   release door's own derivation (`planned_removals`) is that a control cannot
-   promise what the button will not do.  Two copies of the sentence would put
-   that guarantee one edit away from being false on one of the two pages.
+   Plan step bank_import:X-ge.  The register lists every accepted act and the
+   statements page receipts the ones a standing rule filed at import, and both
+   render this identical control -- so it is a macro rather than a second copy.
+   The reason is not tidiness: what this markup states is a DESTRUCTION and its
+   figure, and the whole point of taking both from the release door's own
+   derivation (`planned_removals`) is that a control cannot promise what the
+   button will not do.  Two copies of the sentence would put that guarantee one
+   edit away from being false on one of the two pages.
+
+   THE ACTION IS A PARAMETER (plan step bank_import:X-gf-2), because the door
+   returns the owner to the page they pressed it on and the URL is what says
+   which page that is.  Both surfaces posted to one route until then, and it
+   redirected to the review screen -- which after this step lists no accepted
+   match at all.
+
+   EVERY PRESS CONFIRMS (ruling bank_import:R-GY, developer 2026-08-27).  The
+   dialog was attached only where the undo also removed rows the act had
+   created, on the argument that a confirmation over a reversible act trains
+   the owner to click through the one that is not.  Measured on his own data:
+   0 of 221 accepted matches were in that state, so all 221 buttons fired on
+   one click.  Undoing moves no money and leaves settle days alone, and what it
+   destroys is still a record -- which bank lines ARE which rows, and whether a
+   rule filed the act rather than a person -- rebuildable only by matching it
+   again by hand.  So the dialog is always there and its WORDING is what
+   varies: the destruction it names is the one that press performs.
+
+   The one press with no dialog is the one that performs nothing: an act whose
+   undo would be REFUSED destroys nothing, and a confirmation before a refusal
+   is the dialog-for-nothing the argument above is actually about.
 
    `data-confirm` is the project's own destructive-action pattern; base.html
    includes the modal and confirm.js sets the body with textContent, so a row
-   LABEL taken from a bank line cannot inject.  It is attached only where the
-   undo would destroy a record -- a match between rows that already existed
-   removes nothing, and a confirmation on a reversible act trains the owner to
-   click through the one that is not. #}
-{% macro undo_match(account, group) %}
+   LABEL taken from a bank line cannot inject. #}
+{% macro undo_match(action, group) %}
 {% if group.removes.refusal %}
 {# The undo would be REFUSED, so the row says so instead of listing removals it
    will not perform.  Same derivation as the door, which is the whole point: a
@@ -38,10 +56,11 @@
   {% endfor %}
 </div>
 {% endif %}
-<form method="post"
-      action="{{ url_for('accounts.release_statement_match', account_id=account.id) }}"
+<form method="post" action="{{ action }}"
       {% if group.removes.rows %}
       data-confirm="Undo this match? It puts {{ group.descriptions | length }} statement line(s) back among the unexplained, and it REMOVES the {{ group.removes.rows | length }} row(s) this match created{% if group.removes.moves_money %}, worth {{ money(group.removes.cash_amount) }} of money the app currently records{% endif %}. Settle dates on rows the match only re-dated are NOT changed."
+      {% elif not group.removes.refusal %}
+      data-confirm="Undo this match? It destroys the record that {{ group.descriptions | length }} statement line(s) are {{ group.rows | length }} of your own row(s), and puts those lines back among the unexplained. No money moves and no settle date changes -- but the match itself is gone, and matching them again is by hand."
       {% endif %}>
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <input type="hidden" name="match_id" value="{{ group.match_id }}">

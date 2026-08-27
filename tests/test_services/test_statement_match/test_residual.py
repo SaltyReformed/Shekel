@@ -52,6 +52,7 @@ from app.services import statement_match
 from app.services.statement_match._variance import MatchSides
 
 from ._builders import (
+    accepted_acts,
     a_bank_line,
     a_later_period,
     a_purchase,
@@ -565,9 +566,7 @@ class TestTheMintedRowIsAMemberOfTheMatch:
             residual="0.05",
         )
 
-        groups = statement_match.review_set(
-            a_scope(seed_user),
-        ).accepted
+        groups = accepted_acts(seed_user)
         assert len(groups) == 1
         assert groups[0].agrees is True
         assert sum(row.cash_amount for row in groups[0].rows) == line.amount
@@ -674,7 +673,7 @@ class TestTheMintedRowIsAMemberOfTheMatch:
         assert "you have edited that row since" in str(caught.value)
         # And the refusal left the act standing, so nothing is half-undone.
         assert db.session.get(Transaction, row.id) is not None
-        assert statement_match.review_set(a_scope(seed_user)).accepted
+        assert accepted_acts(seed_user)
 
     def test_a_member_the_act_did_NOT_create_survives_the_undo(
         self, app, db, seed_user,
@@ -1361,7 +1360,7 @@ class TestTheACTS_OWN_WRITES_CannotMoveAMemberUnderIt:
         assert "moved one of its own rows" in str(caught.value)
         assert "-85.00" in str(caught.value)
         # Nothing survives the refusal: no match, and no minted row.
-        assert not statement_match.review_set(a_scope(seed_user)).accepted
+        assert not accepted_acts(seed_user)
         assert not _minted(seed_user)
 
     def test_the_SAME_group_without_the_sibling_still_lands(

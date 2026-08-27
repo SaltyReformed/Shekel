@@ -19,8 +19,17 @@ The public surface, and what each piece is for:
   developer's own statement offers -- 12.88 minutes of derivation to work one
   statement, against 5.80 s for the whole pass now.
 * :func:`review_set` -- everything the review screen shows for one account:
-  what the app proposes, what it could not explain, what is out of reach, and
-  what has already been accepted.
+  what the app proposes, what it could not explain, and what is out of reach.
+  **It is the EXCEPTION QUEUE and nothing else** since plan step
+  ``bank_import:X-gf-2`` (ruling **bank_import:R-GX**).
+* :func:`accepted_register` and :func:`answered_merchants` -- what has already
+  been DECIDED, which is the register: the acts accepted (with the undo, and
+  every act that no longer holds first) and the merchant answers already
+  given.  **Neither needs a** :class:`ReviewScope`, which is the point of the
+  split as much as the page weight was: they were folded into the review
+  screen's own derivation, so rendering the queue valued all 221 of the
+  developer's accepted acts and re-asked 29 answers he was not looking at --
+  442,109 bytes of a 578,523-byte page.
 * :func:`apply_reviewed` -- the batch door, and the one the screen posts to.
   **It MOVES MONEY.**  It applies every act the owner ticked, each in its own
   SAVEPOINT so a refused item leaves nothing behind and the rest still land,
@@ -165,7 +174,13 @@ from ._submission import (
 from ._near import NEAR_MISS_BOUND
 from ._pairing import DAY_WINDOW
 from ._propose import ProposedMatches, propose
-from ._accepted_view import AcceptedGroup, AcceptedRow
+from ._accepted_view import (
+    REGISTER_LIMIT,
+    AcceptedGroup,
+    AcceptedRegister,
+    AcceptedRow,
+    accepted_register,
+)
 from ._placement import Placement, PlacementKind
 from ._preview import HandTotals, preview_hand_build
 from ._rules import (
@@ -185,7 +200,18 @@ from ._reads import (
     awaiting_review_count,
     review_set,
 )
-from ._section import MerchantSection, MerchantSummary
+from ._section import (
+    MerchantRegister,
+    MerchantSection,
+    MerchantSummary,
+    WaitingMerchant,
+    answered_merchants,
+)
+from ._register import (
+    StatementRegister,
+    merchant_register,
+    register_set,
+)
 from ._scope import ReviewScope
 from ._filing import (
     RECEIPT_LIMIT,
@@ -198,7 +224,9 @@ from ._filing import (
 __all__ = [
     "NEW_ENVELOPE",
     "RECEIPT_LIMIT",
+    "REGISTER_LIMIT",
     "AcceptedGroup",
+    "AcceptedRegister",
     "AcceptedMatch",
     "AcceptedRow",
     "BankLine",
@@ -217,9 +245,11 @@ __all__ = [
     "NEAR_MISS_BOUND",
     "MatchDays",
     "StandingRule",
+    "MerchantRegister",
     "MerchantSection",
     "MintedEnvelopes",
     "MerchantSummary",
+    "WaitingMerchant",
     "MatchProposal",
     "MatchSubmission",
     "NewEnvelope",
@@ -242,11 +272,14 @@ __all__ = [
     "ReviewSet",
     "ReviewedBatch",
     "ReviewedRow",
+    "StatementRegister",
     "RowKind",
     "StatedRules",
     "WithheldLine",
     "accept_match",
     "account_merchants",
+    "accepted_register",
+    "answered_merchants",
     "apply_reviewed",
     "as_reviewed",
     "awaiting_review_count",
@@ -257,12 +290,14 @@ __all__ = [
     "destinations_for",
     "file_new_swipes",
     "matched_subjects",
+    "merchant_register",
     "parse_figure",
     "merchant_label",
     "preview_hand_build",
     "propose",
     "release_match",
     "removals_by_match",
+    "register_set",
     "review_set",
     "rule_filed_acts",
     "state_rules",

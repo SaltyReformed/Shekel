@@ -1,10 +1,18 @@
 """
-Shekel Budget App -- The statement review screen and its two write doors
+Shekel Budget App -- The statement review QUEUE and its write doors
 
 "Which of my rows is this bank line?" -- the page that proposes matches, the
-POST that applies a whole reviewed pass, and the POST that releases one match.
-Plan steps **bank_import:X-f6a-2** and **X-f6a-3c-2**, rulings **R-FS**,
-**R-FP** and **R-FV**.
+POST that applies a whole reviewed pass, and the POST that answers for a
+merchant nobody has answered for yet.  Plan steps **bank_import:X-f6a-2** and
+**X-f6a-3c-2**, rulings **R-FS**, **R-FP** and **R-FV**.
+
+**It is the EXCEPTION QUEUE and nothing else** since plan step
+``bank_import:X-gf-2`` (ruling **bank_import:R-GX**).  The matches already
+accepted and the merchants already answered for are decisions MADE, so they
+are :mod:`.statement_register`'s -- and the undo that acts on one went with
+them.  Measured on the developer's own data before the split: they were
+442,109 bytes of a 578,523-byte page, and the work a routine import leaves was
+136,414.
 
 **It MOVES MONEY, and it is the only screen in the app where the BANK gets the
 last word on a date.**  Accepting a match writes the bank's posted day onto
@@ -58,31 +66,19 @@ and write to :mod:`app.services.statement_match`.
 
 import logging
 
-from flask import flash, redirect, render_template, request, url_for
+from flask import render_template, request, url_for
 from flask_login import current_user, login_required
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.routes.accounts._bp import accounts_bp
-from app.routes.accounts._statement_doors import (
-    StatementDoorContext,
-    refusal_sentence,
-    run_statement_door,
-)
+from app.routes.accounts._statement_doors import refusal_sentence
 from app.routes.accounts._cash_page import load_cash_account_or_404
-from app.schemas.validation import form_payload
-from app.schemas.validation.merchant_rules import (
-    ALWAYS_ASK,
-    NEVER,
-    NOT_SAID,
-    MerchantRuleBatchSchema,
-    rule_payload,
-)
+from app.routes.accounts._statement_rules import record_submitted_rules
 from app.schemas.validation.statements import (
     NEW_ENVELOPE,
     StatementBatchSchema,
-    StatementMatchReleaseSchema,
     batch_payload,
 )
 from app.services.category_service import list_active_categories
@@ -92,16 +88,12 @@ from app.services.statement_match import (
     IncomeCreation,
     MatchSubmission,
     NewEnvelope,
-    RuleAnswer,
-    RuleSubmission,
     PurchaseCreation,
     ReviewedBatch,
     ReviewScope,
     apply_reviewed,
     preview_hand_build,
-    release_match,
     review_set,
-    state_rules,
 )
 from app.utils.auth_helpers import require_owner
 from app.utils.error_fragments import designed_error
@@ -113,10 +105,10 @@ from app.utils.log_events import (
 
 _logger = logging.getLogger(__name__)
 
-#: One schema instance each, constructed at import like every sibling's.
+#: One schema instance, constructed at import like every sibling's.  The
+#: merchant-rule form has its own, beside the door that reads it
+#: (:mod:`._statement_rules`).
 _batch_schema = StatementBatchSchema()
-_release_schema = StatementMatchReleaseSchema()
-_rule_schema = MerchantRuleBatchSchema()
 
 #: The partial both the page and the batch POST render.  Extracted at plan step
 #: X-f6a-3c-2 so the answer to "apply this pass" is the SCREEN carrying its own
@@ -397,63 +389,6 @@ def apply_statement_review(account_id):
     )
 
 
-def _submitted_rules(submitted) -> "tuple[RuleSubmission, ...]":
-    """Return the loaded payload as the statements the service records.
-
-    **The wire's five values become the service's four answers, and the fifth
-    becomes NOTHING** (ruling **R-GS**, plan step ``bank_import:X-gd-2``).  The
-    mapping happens HERE because it is a fact about the FORM rather than about
-    the domain: the service's
-    :class:`~app.services.statement_match.RuleAnswer` has no member for *I have
-    not said*, since not having said something is the absence of a row.
-
-    **:data:`~app.schemas.validation.statements.NOT_SAID` is DROPPED rather
-    than carried as a null answer.**  It used to travel to the door as
-    ``answer=None`` and mean *withdraw*, so the door had a delete arm and an
-    optional answer; there is no withdrawal now, so a submission that states
-    nothing is an item with nothing in it.  Dropping it here is what lets
-    :class:`~app.services.statement_match.RuleSubmission` require its answer,
-    which is what makes an answer-less rule row unconstructible one tier down.
-    It is most of an ordinary pass: the section submits every merchant it
-    renders, and a merchant with no rule submits this.
-
-    Args:
-        submitted: What :class:`~app.schemas.validation.statements
-            .MerchantRuleBatchSchema` loaded.
-
-    Returns:
-        One :class:`~app.services.statement_match.RuleSubmission` per merchant
-        the section rendered AND ANSWERED FOR, in the order it rendered them.
-    """
-    statements = []
-    for item in submitted["rules"]:
-        answer = item["answer"]
-        if answer == NOT_SAID:
-            continue
-        if answer == NEVER:
-            statements.append(RuleSubmission(
-                merchant_id=item["merchant_id"], answer=RuleAnswer.NEVER,
-            ))
-        elif answer == ALWAYS_ASK:
-            statements.append(RuleSubmission(
-                merchant_id=item["merchant_id"], answer=RuleAnswer.ALWAYS_ASK,
-            ))
-        elif answer == NEW_ENVELOPE:
-            statements.append(RuleSubmission(
-                merchant_id=item["merchant_id"],
-                answer=RuleAnswer.NEW_ENVELOPE,
-                envelope_name=item["envelope_name"],
-                category_id=item["category_id"],
-            ))
-        else:
-            statements.append(RuleSubmission(
-                merchant_id=item["merchant_id"],
-                answer=RuleAnswer.TEMPLATE,
-                template_id=answer,
-            ))
-    return tuple(statements)
-
-
 @accounts_bp.route(
     "/accounts/<int:account_id>/statements/review/merchants",
     methods=["POST"],
@@ -505,28 +440,13 @@ def state_merchant_rules(account_id):
     # X-f6a-3c-2.
     scope = ReviewScope.build(current_user.id, account_id)
 
-    payload = rule_payload(request.form)
-    errors = _rule_schema.validate(payload)
-    if errors:
-        return _refused(account, scope, refusal_sentence(errors))
-    statements = _submitted_rules(_rule_schema.load(payload))
-
-    try:
-        recorded = state_rules(statements, current_user.id, account_id)
-        db.session.commit()
-    except ValidationError as exc:
-        db.session.rollback()
-        return _refused(account, scope, str(exc))
-    except SQLAlchemyError:
-        db.session.rollback()
-        _logger.exception(
-            "user_id=%d failed to record merchant rules on account %d",
-            current_user.id, account_id,
-        )
-        return _refused(account, scope, _DB_ERROR_MESSAGE)
-
+    outcome = record_submitted_rules(
+        request.form, current_user.id, account_id, _logger,
+    )
+    if outcome.refusal is not None:
+        return _refused(account, scope, outcome.refusal)
     return render_template(
-        _BODY, **_review_context(account, scope, rules=recorded),
+        _BODY, **_review_context(account, scope, rules=outcome.recorded),
     )
 
 
@@ -632,92 +552,3 @@ def statement_review_totals(account_id):
     # NO event and NO commit.  Nothing was written, and a read pass that logged
     # would put a line in the audit trail for every checkbox on the page.
     return render_template(_HAND_TOTALS, totals=totals)
-
-
-def _release_report(released) -> "tuple[str, str]":
-    """Return the flash for one released match: what came back, and what went.
-
-    **The removal half is not an aside**, which is why it names a figure and
-    not only a count (plan step ``bank_import:X-f6f``): this act destroys the
-    app's record of money that moved, and a receipt saying "1 row" over a
-    `$213.49` swipe is the *"Nothing moved."* sentence ruling **R-GD** has
-    already had to correct once, one door over.
-
-    Args:
-        released: The :class:`~app.services.statement_match.ReleasedMatch`.
-
-    Returns:
-        ``(message, category)``.
-    """
-    removed = (
-        f"  It also removed the {released.removed_rows} row(s) that match had "
-        f"created, worth {released.removed_cash:+,.2f}."
-        if released.removed_rows else ""
-    )
-    kept = (
-        f"  {released.kept_containers} budget line(s) it created were kept: "
-        f"something is still filed under them, or you have edited them since."
-        if released.kept_containers else ""
-    )
-    return (
-        "Match undone.  Those statement lines are unexplained again; the days "
-        f"they corrected are unchanged.{removed}{kept}",
-        "info",
-    )
-
-
-@accounts_bp.route(
-    "/accounts/<int:account_id>/statements/review/release", methods=["POST"],
-)
-@login_required
-@require_owner
-def release_statement_match(account_id):
-    """Undo one match: put its bank lines back, and take back what it created.
-
-    **It does NOT put the settle days back**, and the page says so: the bank is
-    still the best evidence the app has about when that money moved, so
-    reverting a correction in order to tidy a relation would throw away the
-    fact and keep the bookkeeping.  What comes back is the QUESTION.
-
-    **It DOES remove the rows the act created** (plan step
-    ``bank_import:X-f6f``, ruling **R-GG**), which is why the button carries a
-    ``data-confirm`` naming them and their figure: a purchase a bank line
-    became is money the app records only because this act recorded it, and the
-    control that withdraws it is the one place the owner can see how much.
-
-    **It stays a plain POST-redirect-GET** where its sibling became an htmx
-    swap, and the difference is the subject rather than an inconsistency: this
-    names ONE act and either does it or refuses it, so a flash carries the
-    whole answer.  Its sibling reports per-item outcomes no flash can hold.
-
-    Args:
-        account_id: The account being reviewed.
-
-    Returns:
-        A redirect back to the review page.
-    """
-    account = load_cash_account_or_404(account_id)
-    target = url_for("accounts.review_statements", account_id=account_id)
-
-    payload = form_payload(request.form, _release_schema)
-    errors = _release_schema.validate(payload)
-    if errors:
-        flash(refusal_sentence(errors), "warning")
-        return redirect(target)
-
-    match_id = _release_schema.load(payload)["match_id"]
-    return run_statement_door(
-        StatementDoorContext(
-            logger=_logger,
-            refusal=ValidationError,
-            log_message="user_id=%d failed to release a match on account %d",
-            log_args=(current_user.id, account_id),
-            flash_message=(
-                "Something went wrong undoing that match.  Nothing was "
-                "changed."
-            ),
-            target=target,
-        ),
-        lambda: release_match(match_id, current_user.id, account.id),
-        _release_report,
-    )

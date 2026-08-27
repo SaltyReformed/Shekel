@@ -41,6 +41,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.statement_match import StatementMatch
 from app.services import statement_match
 from app.services.statement_match import (
+    register_set,
     CreationBar,
     CreationBars,
     NewEnvelope,
@@ -815,14 +816,14 @@ class TestWhatTheScreenShowsInstead:
         db.session.commit()
 
         rows = {
-            row.merchant: row
+            row.summary.merchant: row
             for row in review_set(a_scope(seed_user)).merchants.merchants
         }
 
-        assert rows[CARD_MERCHANT].pays_an_account is True
+        assert rows[CARD_MERCHANT].summary.pays_an_account is True
         assert rows[CARD_MERCHANT].line_count == 1
         assert rows[CARD_MERCHANT].total == Decimal("-793.23")
-        assert rows["Food Lion"].pays_an_account is False
+        assert rows["Food Lion"].summary.pays_an_account is False
 
     def test_the_flag_is_carried_WHATEVER_the_owner_has_said(
         self, app, db, seed_user,
@@ -837,6 +838,13 @@ class TestWhatTheScreenShowsInstead:
         fit, and one whose stored answer predates the bank filing this merchant
         as an account payment is entitled to see why their Save is now being
         refused.
+
+        **Read off the REGISTER since plan step ``bank_import:X-gf-2``** (ruling
+        **bank_import:R-GX**), and the move is the case rather than a detour:
+        this merchant HAS been answered for, so its row is where answers are
+        changed -- and the flag has to survive the move, because the register
+        is now the only surface offering that owner the two options the door
+        refuses.
         """
         statement = an_import(seed_user)
         _a_card_payment(seed_user, statement)
@@ -845,7 +853,9 @@ class TestWhatTheScreenShowsInstead:
 
         row = {
             item.merchant: item
-            for item in review_set(a_scope(seed_user)).merchants.merchants
+            for item in register_set(
+                seed_user["user"].id, seed_user["account"].id,
+            ).merchants.merchants
         }[CARD_MERCHANT]
 
         assert row.rule.answer is RuleAnswer.NEVER

@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% from "_acct_macros.html" import acct_glyph %}
+{% from "_nav_macros.html" import back_link %}
+{% block title %}{{ account.name }} -- What you have already decided -- Shekel{% endblock title %}
+
+{# What this account has already DECIDED -- plan step bank_import:X-gf-2,
+   ruling bank_import:R-GX.
+
+   THE PAGE IS THE HEADER; the whole surface is _statement_register_body.html,
+   which the rule POST re-renders on its own so its answer IS the screen
+   carrying its receipt.  The split is the one the review page already keeps,
+   and for the same reason: a flash rides in the signed session cookie, which
+   a per-item receipt overflows.
+
+   Context (accounts.statement_register): account, register (StatementRegister),
+   categories (the owner's active categories, for the new-envelope answer),
+   show_all (whether the accepted bound was lifted), rules (None on a plain
+   render), error (None on a plain render). #}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center gap-2 mb-3 flex-wrap">
+  <div class="d-flex align-items-center gap-2">
+    <h4 class="mb-0"><i class="bi {{ acct_glyph(account) }}"></i> {{ account.name }}</h4>
+    <span class="acctd-type-tag">What you have already decided</span>
+  </div>
+  <div class="d-flex align-items-center gap-2">
+    <a class="btn btn-sm btn-primary"
+       href="{{ url_for('accounts.review_statements', account_id=account.id) }}">
+      <i class="bi bi-link-45deg"></i> Review matches
+    </a>
+    {{ back_link(url_for('accounts.statements', account_id=account.id), 'Bank statements') }}
+  </div>
+</div>
+
+{% include "accounts/_statement_register_body.html" %}
+{% endblock content %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/statement_rules.js') }}"></script>
+{% endblock scripts %}

@@ -76,10 +76,10 @@ root -- measured, 103 admitted and 0 refused.
 
 **What the screen shows and what the door does are ONE derivation**
 (:func:`planned_removals`), which is the shape :func:`~._preview
-.preview_hand_build` already has one door over: the accepted-matches panel
-prints what an Undo would remove, the confirm dialog carries the same figure,
-and the door then removes exactly that.  Two derivations would let the screen
-promise one thing and the button do another.
+.preview_hand_build` already has one door over: the register's accepted
+list prints what an Undo would remove, the confirm dialog carries the same
+figure, and the door then removes exactly that.  Two derivations would let the
+screen promise one thing and the button do another.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in, a
 frozen dataclass out, no Flask import.  It MUTATES and does NOT commit -- the
@@ -92,11 +92,15 @@ import logging
 from dataclasses import dataclass
 from decimal import Decimal
 
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import selectinload
 
 from app.exceptions import AmountUnresolvable, ValidationError
 from app.extensions import db
-from app.models.statement_match import StatementMatch, StatementMatchCreation
+from app.models.statement_match import (
+    StatementMatch,
+    StatementMatchCreation,
+    StatementMatchMember,
+)
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import (
@@ -114,6 +118,47 @@ from app.utils.log_events import (
 from ._offers import RowKind
 
 _logger = logging.getLogger(__name__)
+
+#: How to load an act WHOLE -- its two relations and the row each of them
+#: names -- in one option list both readers of :func:`acts_of` share.
+#:
+#: **The subjects are loaded through the act rather than fetched back by id**
+#: (finding **bank_import:N-358**, plan step ``bank_import:X-gf-2``).  Two
+#: readers used to collect the ids off the members and creations and SELECT
+#: them by primary key alone; the account travels in these joins instead
+#: (:class:`~app.models.statement_match.StatementMatchMember`), so a scoped act
+#: can only ever hand back its own account's rows.
+#:
+#: **It is also what deleted the WARM.**  :func:`planned_removals` reached each
+#: created subject with ``db.session.get`` -- right for the door, which reads
+#: one act, and 478 queries for a reader folding 230 -- so the bulk paths
+#: warmed the identity map first and then had to HOLD the result, SQLAlchemy's
+#: identity map being weak.  A relationship loaded here is held by the act, so
+#: neither step is a discipline a future caller can forget.
+#:
+#: The chains are exactly what the two folds then read: an entry's parent (for
+#: its label, its balance contribution and ``entry_service``'s refusal) and a
+#: transaction's own purchases (for what a container still holds, and for the
+#: settled figure the amount model derives from them).
+_WHOLE_ACT = (
+    selectinload(StatementMatch.members).selectinload(
+        StatementMatchMember.line,
+    ),
+    selectinload(StatementMatch.members).selectinload(
+        StatementMatchMember.transaction,
+    ).selectinload(Transaction.entries),
+    selectinload(StatementMatch.members).selectinload(
+        StatementMatchMember.entry,
+    ).joinedload(TransactionEntry.transaction),
+    selectinload(StatementMatch.creations).selectinload(
+        StatementMatchCreation.transaction,
+    ).selectinload(Transaction.entries),
+    selectinload(StatementMatch.creations).selectinload(
+        StatementMatchCreation.entry,
+    ).joinedload(TransactionEntry.transaction).selectinload(
+        Transaction.entries,
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -248,6 +293,27 @@ def _subject_of(creation: StatementMatchCreation):
     away, so a ``None`` here means the row went between this read and now --
     nothing to remove and nothing to refuse.
 
+    **It also answers ``None`` for a creation that has not been FLUSHED**, a
+    relationship not loading on a pending parent by default, where the
+    ``session.get`` this replaced would have found the row.  No caller can be
+    in that state: all three hold persistent acts read back by
+    :func:`acts_of` or by :func:`release_match`'s own scoped query, and the
+    door that WRITES a creation flushes before anything reads one.  It is
+    stated because it is the one behaviour the change did not preserve
+    exactly, and a caller that ever builds a creation and asks for its
+    removals in the same breath would be told there is nothing to destroy.
+
+    **Through the creation's OWN relationship, which joins on the account as
+    well as the id** (finding **bank_import:N-358**, plan step
+    ``bank_import:X-gf-2``).  It was ``db.session.get`` by primary key alone,
+    and two things follow from the change rather than one.  The account
+    equality is now in the JOIN, so this cannot answer with another account's
+    row however it is called.  And the answer is reachable from an eager
+    option on the act, so a bulk reader loads every subject with the acts
+    themselves instead of WARMING the identity map and then holding the warm
+    against SQLAlchemy's weak references -- which is a discipline two callers
+    had to keep and one of them did not.
+
     Args:
         creation: The creation record.
 
@@ -256,8 +322,8 @@ def _subject_of(creation: StatementMatchCreation):
         :class:`~app.models.transaction_entry.TransactionEntry`, or ``None``.
     """
     if creation.transaction_id is not None:
-        return db.session.get(Transaction, creation.transaction_id)
-    return db.session.get(TransactionEntry, creation.transaction_entry_id)
+        return creation.transaction
+    return creation.entry
 
 
 def _container_survives(
@@ -294,8 +360,8 @@ def _container_survives(
     # loaded collection cannot be behind the database for the row this asks
     # about.  A per-container SELECT was the first spelling and it made the
     # bulk fold pay one query per container -- measured, 8 acts cost 18
-    # statements where 2 cost 12, which is the per-act cost this step's own
-    # warm exists to remove.
+    # statements where 2 cost 12, which is the per-act cost :data:`_WHOLE_ACT`
+    # exists to remove.
     return any(entry.id not in going for entry in container.entries)
 
 
@@ -445,8 +511,8 @@ def planned_removals(match: StatementMatch) -> PlannedRemovals:
     """Return what releasing *match* would take back, WITHOUT taking it.
 
     The one derivation the screen renders and the door acts on.  It reads and
-    never writes, so the accepted-matches panel can call it per act while the
-    review page is rendered.
+    never writes, so the register's accepted list can call it per act while
+    that page is rendered.
 
     Args:
         match: The act, with its members and creations loaded.
@@ -657,11 +723,11 @@ def acts_of(
     **The ONE loader, because an act is only readable with both of its
     relations** (plan step ``bank_import:X-f6f``): what it NAMES decides
     whether it still holds, and what it CREATED decides what an undo would take
-    back.  Two callers need exactly that -- the accepted-matches panel and the
-    import page's delete preview -- and they spelled the same query with the
+    back.  Two callers need exactly that -- the register's accepted list and
+    the import page's delete preview -- and they spelled the same query with the
     same two eager loads until pylint's ``duplicate-code`` said so.  A third
     relation added later would otherwise be loaded by one reader and lazily
-    fetched per row by the other.
+    fetched per row by the other; it is stated once, in :data:`_WHOLE_ACT`.
 
     **It filters on the OWNER as well as the account**, which the write door
     :func:`release_match` already does.  The account implies the owner
@@ -684,16 +750,15 @@ def acts_of(
 
     Returns:
         Its :class:`~app.models.statement_match.StatementMatch` rows, newest
-        first, with ``members`` and ``creations`` loaded.
+        first, loaded WHOLE (:data:`_WHOLE_ACT`) -- both relations and the row
+        each of them names, so a caller folding many acts issues no further
+        statement and reaches no subject by id.
     """
     if match_ids is not None and not match_ids:
         return []
     query = (
         db.session.query(StatementMatch)
-        .options(
-            selectinload(StatementMatch.members),
-            selectinload(StatementMatch.creations),
-        )
+        .options(*_WHOLE_ACT)
         .filter(
             StatementMatch.account_id == account_id,
             StatementMatch.user_id == owner_id,
@@ -704,67 +769,6 @@ def acts_of(
     return query.order_by(
         StatementMatch.created_at.desc(), StatementMatch.id.desc(),
     ).all()
-
-
-def warm_subjects(matches: "list[StatementMatch]") -> list:
-    """Load every creation's SUBJECT into the session in two statements.
-
-    **PUBLIC because it has two callers in this package** (plan step
-    ``bank_import:X-ge``): :func:`removals_by_match` here, and
-    :func:`~._accepted_view.accepted_groups`, which is the same fold and
-    went without it -- the package's convention is that a name reached
-    from another module is public rather than borrowed through an
-    underscore.
-
-    :func:`planned_removals` reaches each subject with ``db.session.get``,
-    which is the right shape for the DOOR -- one act, one or two rows -- and
-    the wrong one for a reader folding many acts: measured on a 230-act
-    account carrying 235 creations, the per-row gets and the lazy loads behind
-    them cost 478 queries and 0.458 s.  ``session.get`` answers from the
-    identity map when the row is already there, so warming it leaves that
-    function unchanged and makes the bulk path two queries plus what the
-    eager loads pull.
-
-    The relations warmed are the ones :func:`_subject_removal` and
-    :func:`_container_survives` then read: a purchase's parent (for its label
-    and for ``entry_service``'s refusal) and a transaction's entries (for its
-    settled figure).
-
-    **The loaded rows are RETURNED and the caller must HOLD them**, which is
-    not a style choice: SQLAlchemy's identity map keeps WEAK references, so a
-    warm whose results are discarded is collected before the fold reaches them
-    and every ``get`` queries again.  Measured on the developer's own database
-    with 235 creations over 230 acts: 478 queries and 0.458 s either way
-    until the reference was kept, and 9 queries and 0.039 s with it.
-
-    Args:
-        matches: The acts about to be folded, with ``creations`` loaded.
-
-    Returns:
-        The loaded subjects, to be held for the length of the fold.
-    """
-    transaction_ids = {
-        creation.transaction_id
-        for match in matches for creation in match.creations
-        if creation.transaction_id is not None
-    }
-    entry_ids = {
-        creation.transaction_entry_id
-        for match in matches for creation in match.creations
-        if creation.transaction_entry_id is not None
-    }
-    warmed = []
-    if transaction_ids:
-        warmed += db.session.query(Transaction).options(
-            selectinload(Transaction.entries),
-        ).filter(Transaction.id.in_(transaction_ids)).all()
-    if entry_ids:
-        warmed += db.session.query(TransactionEntry).options(
-            joinedload(TransactionEntry.transaction).selectinload(
-                Transaction.entries,
-            ),
-        ).filter(TransactionEntry.id.in_(entry_ids)).all()
-    return warmed
 
 
 def removals_by_match(
@@ -805,15 +809,13 @@ def removals_by_match(
         match for match in acts_of(owner_id, account_id, match_ids)
         if match.creations
     ]
-    warmed = warm_subjects(matches)
+    # **No warm, and nothing to hold** (finding **bank_import:N-358**, plan
+    # step ``bank_import:X-gf-2``).  Every subject arrives on its creation
+    # through :data:`_WHOLE_ACT`, so it is reachable for as long as ``matches``
+    # is -- where the previous shape warmed the identity map and then had to
+    # keep the returned list alive against its WEAK references, a rule two
+    # callers had to know and one of them did not.
     planned = {match.id: planned_removals(match) for match in matches}
-    # ``warmed`` is read for its LIFETIME rather than its value, and the
-    # ``del`` is what says so: SQLAlchemy's identity map holds WEAK references,
-    # so a warm nothing points at is collected before the fold above reaches
-    # it and every subject is fetched again one row at a time.  Measured on the
-    # developer's own database with 235 creations: 478 queries and 0.458 s
-    # without the reference, 9 and 0.039 s with it.
-    del warmed
     return {
         match_id: removals for match_id, removals in planned.items()
         if removals.rows or removals.refusal is not None

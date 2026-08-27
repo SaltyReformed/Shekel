@@ -15,7 +15,9 @@ a clean sweep:
   (:attr:`~._propose.ProposedMatches.crowded_days`);
 * matches whose rows no longer carry the day the bank stated, which is what a
   later hand edit produces and what makes a match re-reviewable rather than
-  quietly stale.
+  quietly stale -- reported by :mod:`._accepted_view` on the REGISTER since
+  plan step ``bank_import:X-gf-2``, this screen having stopped listing
+  accepted acts at all (ruling **bank_import:R-GX**).
 
 Services-boundary discipline: reads only, plain data in, frozen dataclasses
 out, no Flask import.
@@ -31,7 +33,6 @@ from app.extensions import db
 from app.models.statement_import import BankStatementLine
 from app.models.statement_match import StatementMatchMember
 
-from ._accepted_view import AcceptedGroup, accepted_groups
 from ._candidates import (
     act_still_names_a_row,
     matched_subjects,
@@ -186,7 +187,11 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
     Pylint: too-many-instance-attributes (9/7) -- **nine because the screen
     renders nine distinct things**, not because the value wants splitting.
     Eight are cards the owner reads and acts in; the ninth is
-    :attr:`declined_lines`, which annotates two of them.
+    :attr:`declined_lines`, which annotates two of them.  It was TEN until
+    plan step ``bank_import:X-gf-2`` took the accepted matches off this screen
+    (ruling **bank_import:R-GX**): they are not a decision anyone is making,
+    and folding them cost this pass a valuation of all 221 acts on the
+    developer's own account to render a panel he was not reading.
 
     The obvious way to satisfy the limit is to fold ``declined_lines``
     back into :attr:`bounds`, where it lived until plan step
@@ -220,7 +225,6 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             own; a second record carrying the same five fields was reported by
             pylint's cross-file ``duplicate-code`` and was exactly rule 13's
             speculative shape.
-        accepted: The matches already accepted, newest first.
         creatable: The unmatched OUTFLOW lines, each with the budget lines it
             could become a purchase against (:class:`CreatableLine`).  A SUBSET
             of ``unmatched`` rather than a partition of it, and deliberately:
@@ -256,11 +260,14 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             **R-GJ**'s bars are about SPENDING the budget already holds in
             another shape, and no answer a merchant control can hold says
             anything about a deposit.
-        merchants: The rule control (:class:`~._section.MerchantSection`) --
-            where this account's merchants go, and what the owner has already
-            said.  **It counts** ``parked`` **beside** ``creatable``, because
-            the parked half is parked for want of an answer and this is the
-            control that gives one.
+        merchants: The queue's rule control
+            (:class:`~._section.MerchantSection`) -- the merchants this pass
+            has an unexplained outflow for and the owner has NEVER answered
+            about, which is a decision they owe.  **It counts** ``parked``
+            **beside** ``creatable``, because a merchant a source files as an
+            account payment is parked for want of an answer and this is the
+            control that gives one.  An ANSWERED merchant is on the register
+            instead (ruling **bank_import:R-GX**).
         bounds: What this pass did NOT look at (:class:`ReviewBounds`).
         declined_lines: WHAT THIS PASS CONSIDERED and would not conclude
             about, by line id, in the words of the tier that declined
@@ -284,7 +291,6 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
     proposals: "tuple[MatchProposal, ...]"
     unmatched: "tuple[BankLine, ...]"
     unmatched_rows: "tuple[CandidateRow, ...]"
-    accepted: "tuple[AcceptedGroup, ...]"
     creatable: "tuple[CreatableLine, ...]"
     parked: "tuple[ParkedLine, ...]"
     recordable_inflows: "tuple[RecordableInflow, ...]"
@@ -799,7 +805,6 @@ def review_set(scope: ReviewScope) -> ReviewSet:
         unmatched_rows=_rows_the_bank_never_showed(
             offerable, proposals, account_id,
         ),
-        accepted=tuple(accepted_groups(scope.owner_id, account_id)),
         creatable=parts.creatable,
         parked=parts.parked,
         recordable_inflows=parts.recordable_inflows,

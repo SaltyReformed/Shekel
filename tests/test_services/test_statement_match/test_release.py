@@ -50,6 +50,7 @@ from app.services.entry_credit_workflow import sync_entry_payback
 from app.models.statement_match import (
     StatementMatch,
     StatementMatchCreation,
+    StatementMatchMember,
 )
 from app.services.statement_match import (
     NewEnvelope,
@@ -66,11 +67,13 @@ from tests._test_helpers import settlement_if_settling
 from app.services.statement_match import _create  # pylint: disable=protected-access
 
 from ._builders import (
+    accepted_acts,
     a_bank_line,
     a_bars,
     a_later_period,
     a_purchase,
     a_scope,
+    a_submission,
     a_transaction,
     an_import,
 )
@@ -258,7 +261,7 @@ class TestTheCreateArmHasAnInverse:
         assert "you have edited that row since" in str(caught.value)
         assert db.session.get(TransactionEntry, created.entry_id) is not None
         assert db.session.get(Transaction, created.transaction_id) is not None
-        assert statement_match.review_set(a_scope(seed_user)).accepted
+        assert accepted_acts(seed_user)
 
     def test_the_line_is_unexplained_again(self, app, db, seed_user):
         """What a release restores is the QUESTION.
@@ -476,7 +479,7 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
         )
         db.session.flush()
 
-        group = statement_match.review_set(a_scope(seed_user)).accepted[0]
+        group = accepted_acts(seed_user)[0]
 
         assert group.match_id == created.match_id
         assert len(group.removes.rows) == 2
@@ -502,7 +505,7 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
             seed_user, line, new_envelope=_a_new_envelope(seed_user),
         )
         db.session.flush()
-        group = statement_match.review_set(a_scope(seed_user)).accepted[0]
+        group = accepted_acts(seed_user)[0]
         promised = [(row.kind, row.row_id) for row in group.removes.rows]
 
         _release(seed_user, created.match_id)
@@ -538,7 +541,7 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
         )
         db.session.flush()
 
-        group = statement_match.review_set(a_scope(seed_user)).accepted[0]
+        group = accepted_acts(seed_user)[0]
 
         assert group.removes.refusal is not None
         assert "you have edited that row since" in group.removes.refusal
@@ -586,7 +589,7 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
         )
         db.session.flush()
 
-        group = statement_match.review_set(a_scope(seed_user)).accepted[0]
+        group = accepted_acts(seed_user)[0]
         assert group.removes.refusal is not None
         assert "is archived" in group.removes.refusal
 
@@ -595,17 +598,22 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
 
         assert str(caught.value) == group.removes.refusal
         # Nothing was written: the act stands, and so do both rows.
-        assert statement_match.review_set(a_scope(seed_user)).accepted
+        assert accepted_acts(seed_user)
         assert db.session.get(TransactionEntry, created.entry_id) is not None
         assert db.session.get(Transaction, created.transaction_id) is not None
 
     def test_a_match_that_created_nothing_names_nothing(
         self, app, db, seed_user,
     ):
-        """No confirmation on a reversible act.
+        """An act between rows that already existed removes nothing.
 
-        A dialog on every Undo trains the owner to click through the one that
-        actually destroys something.
+        What the SCREEN does with that is ruling **bank_import:R-GY**'s and it
+        changed at plan step ``bank_import:X-gf-2``: the press still confirms,
+        because it still destroys the record of the correspondence, and the
+        dialog's wording is what varies (``test_statement_register
+        .TestEveryUndoPressConfirms``).  What is asserted here is the
+        DERIVATION under it -- this undo would take back no row and move no
+        money -- which is what that wording is chosen from.
         """
         statement = an_import(seed_user)
         line = a_bank_line(seed_user, statement)
@@ -615,7 +623,7 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
         )
         db.session.flush()
 
-        group = statement_match.review_set(a_scope(seed_user)).accepted[0]
+        group = accepted_acts(seed_user)[0]
 
         assert group.removes.rows == ()
         assert group.removes.moves_money is False
@@ -626,12 +634,17 @@ class TestTheBulkPreviewDoesNotScaleWithTheAccount:
 
     ``removals_by_match`` was measured at **478 queries and 0.458 s** on the
     developer's own 230-act account carrying 235 creations, against 5 queries
-    before the step -- because ``planned_removals`` reaches each subject with
-    ``session.get``, which is right for the DOOR and wrong for a fold.  The
-    remedy is a bulk warm whose result is HELD: SQLAlchemy's identity map keeps
-    WEAK references, so a warm nothing points at is collected before the fold
-    reaches it and the per-row queries come straight back.  Measured after: 9
-    queries and 0.039 s.  Found by adversarial security review 2026-08-24.
+    before the step -- because ``planned_removals`` reached each subject with
+    ``session.get``, which is right for the DOOR and wrong for a fold.
+
+    **The remedy was a bulk WARM whose result had to be HELD**, SQLAlchemy's
+    identity map keeping weak references -- so a warm nothing pointed at was
+    collected before the fold reached it and the per-row queries came straight
+    back.  Plan step ``bank_import:X-gf-2`` deleted both halves of that
+    discipline: every subject arrives on its creation through
+    ``_release._WHOLE_ACT``, so it is loaded with the act and held by the act.
+    A caller can no longer forget either step, because there is no step.
+    Found by adversarial security review 2026-08-24.
     """
 
     @staticmethod
@@ -684,12 +697,14 @@ class TestTheBulkPreviewDoesNotScaleWithTheAccount:
         remaining entries, which is how ``_container_survives`` was first
         written, takes the eight-act reading to 18 against the two-act 12.
 
-        **It does NOT cover the weak-reference half, and saying so is the
-        point.**  Dropping the warm's own reference reads identically here --
-        eight subjects are not enough for the collector to reach them inside
-        one call -- and cost 478 statements against 9 on the developer's own
-        230-act database.  A control that cannot see a defect must not be
-        cited as covering it; that measurement is the record for this one.
+        **It did NOT cover the weak-reference half, and that is now moot
+        rather than uncovered.**  Dropping the warm's own reference read
+        identically here -- eight subjects are not enough for the collector to
+        reach them inside one call -- and cost 478 statements against 9 on the
+        developer's own 230-act database.  There is no warm and no reference to
+        drop since plan step ``bank_import:X-gf-2``; what would reintroduce the
+        cost is removing a chain from ``_release._WHOLE_ACT``, which THIS
+        control sees, because the subjects would then be fetched per act.
         """
         few = self._statements_for(seed_user, 2)
         many = self._statements_for(seed_user, 6, base=2)
@@ -697,6 +712,73 @@ class TestTheBulkPreviewDoesNotScaleWithTheAccount:
         assert many <= few + 2, (
             f"folding 8 acts cost {many} statements where 2 cost {few}: the "
             f"bulk preview is paying per act again"
+        )
+
+
+class TestTheAcceptedFoldDoesNotScaleWithTheAccount:
+    """The register folds every act too, and had no control saying so.
+
+    Plan step ``bank_import:X-gf-2``.  ``accepted_groups`` is the same fold as
+    ``removals_by_match`` and went without the warm the other one had -- it
+    looked cheap only because 218 of the developer's 221 acts pre-date the
+    creations relation and short-circuit, so the per-act cost was paid by
+    nobody's data yet.  Both are now flat by construction
+    (``_release._WHOLE_ACT``) rather than by a discipline, and this is the
+    control that says so for the reader the REGISTER renders.
+
+    It grades the SHAPE, not a constant: a count asserted against a number
+    would drift with any unrelated eager load, and what must not happen is
+    paying per act.
+    """
+
+    @staticmethod
+    def _statements_for(seed_user, count, base=0):
+        """Return how many SQL statements folding the account's acts costs.
+
+        Args:
+            seed_user: The seeded user bundle.
+            count: How many further acts to record before folding.
+            base: Where this batch's line ordinals start, so two calls in one
+                test do not collide on ``uq_bank_statement_lines_identity``.
+
+        Returns:
+            The statement count for one fold over every act on the account.
+        """
+        for index in range(base, base + count):
+            _record(
+                seed_user,
+                _a_swipe(seed_user, sequence=index, amount="-10.00"),
+                new_envelope=_a_new_envelope(seed_user, name=f"R{index}"),
+            )
+        db.session.flush()
+        db.session.expire_all()
+        seen = []
+        listener = lambda *args, **kwargs: seen.append(1)  # noqa: E731
+        event.listen(db.engine, "before_cursor_execute", listener)
+        try:
+            statement_match.register_set(
+                seed_user["user"].id, seed_user["account"].id, None,
+            )
+        finally:
+            event.remove(db.engine, "before_cursor_execute", listener)
+        return len(seen)
+
+    def test_the_query_count_is_FLAT_in_the_number_of_acts(
+        self, app, db, seed_user,
+    ):
+        """Two acts and eight acts cost the same handful of statements.
+
+        **Shown to fire**: dropping the member-subject chains from
+        ``_WHOLE_ACT`` -- which is what this reader did by hand until this step
+        -- takes the eight-act reading well past the two-act one, because every
+        line, row and purchase is then fetched per act.
+        """
+        few = self._statements_for(seed_user, 2)
+        many = self._statements_for(seed_user, 6, base=2)
+
+        assert many <= few + 2, (
+            f"folding 8 acts cost {many} statements where 2 cost {few}: the "
+            f"register's fold is paying per act"
         )
 
 
@@ -910,3 +992,120 @@ class TestTheSettledParentRuleIsTheArithmetic:
         db.session.flush()
 
         assert db.session.get(TransactionEntry, doomed.id) is None
+
+
+class TestTheRegisterBoundsWhatItRenders:
+    """Ruling **bank_import:R-GX**: the bound falls on the SETTLED remainder.
+
+    Plan step ``bank_import:X-gf-2``.  The accepted list is a log -- one row
+    per act the owner ever accepts, 221 of them and 216,637 bytes on the
+    developer's own account after a year -- so the register renders the newest
+    :data:`~app.services.statement_match.REGISTER_LIMIT` of it and says how
+    many it withheld.
+
+    **An act that NO LONGER HOLDS is never withheld**, whatever its age, and
+    that is the half worth grading: whether an act still holds is a VALUATION
+    over its member rows and not a query, so the fold reaches every act anyway
+    -- and an act explaining less than it claims is the one thing on that page
+    worth finding.  What is bounded is what is RENDERED, never what is read.
+    """
+
+    @staticmethod
+    def _an_act(seed_user, ordinal, *, amount="-10.00"):
+        """Accept one match, so the register has an act to list.
+
+        Args:
+            seed_user: The seeded user bundle.
+            ordinal: The line's ordinal, completing its identity.
+            amount: The bank line's signed figure.
+
+        Returns:
+            The accepted :class:`~app.services.statement_match.AcceptedMatch`.
+        """
+        statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(
+            seed_user, statement, amount=amount, posted_on=day,
+            sequence_in_group=ordinal,
+        )
+        txn = a_transaction(
+            seed_user, name=f"Bill {ordinal}", amount=amount.lstrip("-"),
+            status=StatusEnum.DONE, settled_on=day,
+        )
+        db.session.flush()
+        act = statement_match.accept_match(
+            a_submission(a_scope(seed_user), lines=[line], transactions=[txn]),
+            a_scope(seed_user),
+        )
+        db.session.flush()
+        return act
+
+    def test_it_renders_the_LIMIT_and_says_what_it_withheld(
+        self, app, db, seed_user,
+    ):
+        """Three acts, a bound of one: one rendered, two counted.
+
+        The limit is a PARAMETER here rather than the shipped 50, because what
+        is under test is the arithmetic and not the number -- and staging 51
+        acts to move one boundary would grade the same line at fifty times the
+        cost.  ``TestTheRegisterPage`` drives the shipped default through the
+        route.
+        """
+        for ordinal in range(3):
+            self._an_act(seed_user, ordinal)
+
+        register = statement_match.register_set(
+            seed_user["user"].id, seed_user["account"].id, 1,
+        )
+
+        assert len(register.accepted.shown) == 1
+        assert register.accepted.withheld_count == 2
+
+    def test_an_act_that_NO_LONGER_HOLDS_is_shown_however_old(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL for the exemption, and for the ORDER.
+
+        The oldest act is the one the bound would drop, so a register that
+        applied the limit before the exemption would hide exactly the row this
+        page exists to surface.  Its row is broken the way finding **N-349**
+        names: something else deleted a row it named.
+        """
+        doomed = self._an_act(seed_user, 0)
+        for ordinal in (1, 2):
+            self._an_act(seed_user, ordinal)
+        # ...and the OLDEST act stops holding, by the hand edit the accepted
+        # list is re-reviewable for.
+        member = db.session.query(StatementMatchMember).filter(
+            StatementMatchMember.match_id == doomed.match_id,
+            StatementMatchMember.transaction_id.isnot(None),
+        ).one()
+        db.session.get(Transaction, member.transaction_id).settled_on = (
+            seed_user["bootstrap_period"].start_date + timedelta(days=4)
+        )
+        db.session.flush()
+
+        register = statement_match.register_set(
+            seed_user["user"].id, seed_user["account"].id, 1,
+        )
+
+        shown = [group.match_id for group in register.accepted.shown]
+        assert doomed.match_id in shown, (
+            "the act that no longer holds was withheld by the bound"
+        )
+        assert shown[0] == doomed.match_id, (
+            "an act that no longer holds must sort above the ones that do"
+        )
+        assert register.accepted.withheld_count == 1
+
+    def test_NO_bound_renders_the_whole_record(self, app, db, seed_user):
+        """What the *show everything* link asks for."""
+        for ordinal in range(3):
+            self._an_act(seed_user, ordinal)
+
+        register = statement_match.register_set(
+            seed_user["user"].id, seed_user["account"].id, None,
+        )
+
+        assert len(register.accepted.shown) == 3
+        assert register.accepted.withheld_count == 0

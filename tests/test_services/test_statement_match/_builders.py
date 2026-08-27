@@ -28,6 +28,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services.cash_ledger import amount_basis
+from app.services import statement_match
 from app.services.statement_match import (
     CreationBars,
     MatchSubmission,
@@ -486,6 +487,55 @@ def a_rule(
     return row
 
 
+def an_envelope(seed_user, name="Groceries"):
+    """Return a Projected envelope a purchase may join.
+
+    Args:
+        seed_user: The seeded user bundle.
+        name: The envelope's name.
+
+    Returns:
+        The staged :class:`~app.models.transaction.Transaction`.
+    """
+    return a_transaction(
+        seed_user, name=name, amount="500.00", is_envelope=True,
+    )
+
+
+def an_unexplained_outflow(
+    seed_user, merchant="Amazon", amount="-57.96", sequence=0,
+    source_category=None,
+):
+    """Record one unexplained outflow from *merchant*.
+
+    **Shared by the two route modules** since plan step ``bank_import:X-gf-2``
+    (finding **N-33**'s shape): the queue asks about a merchant with no answer
+    and the register shows one already answered, and both need a line for it.
+
+    Args:
+        seed_user: The seeded user bundle.
+        merchant: What the bank names the merchant, which is the rule key.
+        amount: Signed, negative OUT of the account.
+        sequence: The ordinal completing the line's identity.
+        source_category: The BANK's own category string, verbatim, or ``None``
+            for a source stating none.  Ruling **R-GJ** reads it for one narrow
+            purpose: a merchant a source files as a payment to a credit card
+            has no create arm until the owner answers for it.
+
+    Returns:
+        The staged
+        :class:`~app.models.statement_import.BankStatementLine`.
+    """
+    statement = an_import(seed_user)
+    return a_bank_line(
+        seed_user, statement, amount=amount,
+        posted_on=seed_user["bootstrap_period"].start_date,
+        description=f"POINT OF SALE DEBIT L340 THING ({merchant})",
+        merchant=merchant, sequence_in_group=sequence,
+        source_category=source_category,
+    )
+
+
 def a_later_period(seed_user):
     """Stage and return the pay period AFTER the bootstrap one.
 
@@ -532,6 +582,38 @@ def a_scope(seed_user, account=None):
     return ReviewScope.build(
         seed_user["user"].id, (account or seed_user["account"]).id,
     )
+
+
+def accepted_acts(seed_user, account=None):
+    """Return the accepted acts the REGISTER lists, whole and unbounded.
+
+    Plan step ``bank_import:X-gf-2``.  These were ``review_set(scope).accepted``
+    until the register took them off the review screen (ruling
+    **bank_import:R-GX**), and going through the register's own reader rather
+    than around it is the point: it is what the surface renders, bound and
+    ordered as the surface orders it.
+
+    **Unbounded on purpose.**  A case here stages two or three acts, so the
+    bound could never fire -- and passing ``None`` says the assertion is about
+    the acts and not about the cut, which is
+    ``TestTheRegisterBoundsWhatItRenders``'s own subject.
+
+    Args:
+        seed_user: The seeded user bundle.
+        account: The account being reviewed; the seeded checking one by
+            default.
+
+    Returns:
+        The :class:`~app.services.statement_match.AcceptedGroup` values, every
+        act that no longer holds first and then newest first.  **That ORDER is
+        not what ``review_set(scope).accepted`` gave**, which was plain
+        newest-first: a case staging several acts and indexing ``[0]`` is
+        asking for a different one than it used to.  No case does today, and
+        the register's order is the one the screen renders.
+    """
+    return statement_match.register_set(
+        seed_user["user"].id, (account or seed_user["account"]).id, None,
+    ).accepted.shown
 
 
 def a_bars(seed_user, account=None):
