@@ -37,6 +37,16 @@ The public surface, and what each piece is for:
   it did.  It records the correspondence through the same function
   :func:`accept_match` does, so there is still exactly one place a match is
   written.
+* :func:`record_income_from_line` -- ruling **bank_import:R-GW** (plan step
+  ``bank_import:X-gf-1``): a bank line of money COMING IN that no app row
+  explains BECOMES an uncategorized income row, matched to itself.  **It MOVES
+  MONEY**, and it is the mirror of the door above on the direction that had
+  none: a purchase is an expense, so that one refuses an inflow, and a match
+  refuses an empty side -- between them they left eight of the developer's own
+  deposits, `$58.87`, with no act on the review screen at all.  The row it
+  writes is the one a matched group's residual already used
+  (``_uncategorized.mint_uncategorized``), so there is one writer of *the row
+  bank evidence requires and the books do not hold*.
 * :class:`CreationBars` -- which of an account's merchants may NOT become
   purchases at all, and why (ruling **R-GJ**, plan step ``bank_import:X-ga``).
   Two bars: the owner answered *never a purchase*, or a SOURCE files the
@@ -81,7 +91,9 @@ The public surface, and what each piece is for:
   :class:`ReviewedRow`, :class:`CandidateRow`, :class:`BankLine`,
   :class:`RowKind`,
   :class:`AcceptedMatch`, :class:`AcceptedGroup`, :class:`AcceptedRow`,
-  :class:`ReviewedBatch`, :class:`BatchOutcome` and :class:`ReviewSet`.
+  :class:`ReviewedBatch`, :class:`BatchOutcome`, :class:`ReviewSet`, and
+  ruling **bank_import:R-GW**'s :class:`IncomeCreation`, :class:`RecordedIncome` and
+  :class:`RecordableInflow`.
 
 **Three rules this package is built on, each of them the developer's ruling of
 2026-08-17 rather than an implementation choice:**
@@ -126,10 +138,14 @@ from ._create import create_purchase_from_line
 from ._creations import (
     NEW_ENVELOPE,
     CreatedPurchase,
+    IncomeCreation,
     NewEnvelope,
     PurchaseCreation,
     PurchaseDestination,
+    RecordedIncome,
 )
+from ._income import record_income_from_line
+from ._leftovers import CreatableLine, RecordableInflow
 from ._offers import (
     BankLine,
     CandidateRow,
@@ -164,7 +180,6 @@ from ._stating import (
     state_rules,
 )
 from ._reads import (
-    CreatableLine,
     ReviewBounds,
     ReviewSet,
     awaiting_review_count,
@@ -191,7 +206,9 @@ __all__ = [
     "CandidateRow",
     "Candidates",
     "CreatableLine",
+    "RecordableInflow",
     "CreatedPurchase",
+    "IncomeCreation",
     "CreationBar",
     "CreationBars",
     "Consent",
@@ -217,6 +234,7 @@ __all__ = [
     "RuleView",
     "ProposedMatches",
     "PurchaseCreation",
+    "RecordedIncome",
     "PurchaseDestination",
     "ReleasedMatch",
     "ReviewBounds",
@@ -235,6 +253,7 @@ __all__ = [
     "candidates_for",
     "corrected_purchase_day",
     "create_purchase_from_line",
+    "record_income_from_line",
     "destinations_for",
     "file_new_swipes",
     "matched_subjects",

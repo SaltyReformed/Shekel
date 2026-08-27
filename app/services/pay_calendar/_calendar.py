@@ -142,7 +142,7 @@ clock.  Every answer is a pure function of the paydays and the cadence the
 caller supplies.
 """
 
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
@@ -168,7 +168,6 @@ from ._views import (
     current_and_future_window,
     index_window,
     overlapping_window,
-    projected_paychecks,
     projection_axis_window,
     saved_window,
 )
@@ -691,8 +690,8 @@ class PayCalendar:
         The one question here that is not about a DATE.
 
         **It has THIRTEEN live callers, and this paragraph has claimed ZERO,
-        FIVE, SEVEN and ELEVEN in turn.**  Plan step R7b-4's note -- "nothing
-        in the application asks this" -- was already false then
+        FIVE, SEVEN and ELEVEN in turn.**  Plan step R7b-4's note --
+        "nothing in the application asks this" -- was already false then
         (``grid/partials.py``, ``companion_service.py``); C2-f2d-3 added the
         salary cockpit's period selector, its anatomy fragment and the
         recurrence engine's pricing lookup; C2-f3a added both window labels;
@@ -703,6 +702,12 @@ class PayCalendar:
         comparison; and C2-f3e added the grid's cell-fragment resolver, the
         same replacement one blueprint over.
 
+        **C4-a-1 added NO caller here, and that is the point of the twin**: a
+        site that places a STORED row's paycheck calls :meth:`require_period`
+        below, which REFUSES where this answers ``None``.  One such caller runs
+        PER ROW, and :func:`~._searches.period_by_id` carries what that costs
+        and why the lookup is still a scan.
+
         **A sentence about the tree goes stale exactly like one about the
         code**, and this one has now gone stale FOUR times -- the fourth
         without any step touching it, because ELEVEN was already TWELVE when
@@ -711,9 +716,13 @@ class PayCalendar:
         :func:`~._searches.period_by_id` that live in ``app/`` OUTSIDE this
         package, which is ``grep -rn "period_by_id(" app/`` with the
         definitions, the re-exports and the docstring mentions struck out.
-        The one call inside the package -- this method's own delegation on the
-        line below -- is deliberately not counted, and saying so is the whole
-        difference between a number that can be checked and one that cannot.
+        **It does NOT match :meth:`require_period`'s callers**, which are
+        counted in that method's own docstring -- a predicate that silently
+        stopped covering a sibling is how this number went stale the last two
+        times.  The TWO calls inside the package -- this method's own
+        delegation on the line below, and :meth:`require_period`'s -- are
+        deliberately not counted, and saying so is the whole difference between
+        a number that can be checked and one that cannot.
 
         Never answers a projected period, which has no id.
 
@@ -725,6 +734,98 @@ class PayCalendar:
             :func:`period_by_id` for the two distinct ways that happens.
         """
         return period_by_id(self.periods, period_id)
+
+    def require_period(
+        self, period_id: int, transaction_id: int,
+    ) -> DerivedPeriod:
+        """Return the SAVED period *period_id*, REFUSING one this calendar lacks.
+
+        **The identity lookup for a caller holding a row that is already
+        FILED, rather than an id someone supplied** (pay-calendar plan step
+        C4-a-1), and the difference is which answer is honest.
+        :meth:`period_by_id` answers ``None`` because its thirteen callers hold
+        an id a user typed, a URL carried or a nullable column holds -- "no such
+        period of yours" is a real answer there, and each of them renders a 404
+        or an empty state for it.  A stored ``budget.transactions`` row is not
+        that: its ``pay_period_id`` is NOT NULL and its foreign key is
+        ``ON DELETE CASCADE``, so the period it names exists as long as the row
+        does, and a calendar is one owner's COMPLETE saved payday set.  So a
+        ``None`` here is not "not found" -- it is one of the two states below,
+        and answering it hands a money surface a decision it has no basis to
+        make.
+
+        **Nothing in the type system separates the twins, so the rule is
+        written down: an id read off a STORED row comes here.**  One site looks
+        like a counter-example and is not, which is worth naming so the next
+        reader does not read it as permission:
+        ``statement_match._candidates.transaction_candidate`` asks
+        :meth:`period_by_id` of a stored ``pay_period_id`` and treats the
+        ``None`` as "not offerable, and not an error".  It is right to, and for
+        a reason it states at ``_transaction_candidates``: that query is SCOPED
+        BY THE CALENDAR'S OWN period ids, so a row it returns names a period
+        the calendar was built from and the lookup cannot answer ``None``
+        there.  Where the precondition is carried by the QUERY, the total form
+        is honest; where it rests on two reads agreeing, it is not.
+
+        **TWO states reach the refusal, and neither is coped with.**
+
+        * **A picture assembled from more than one moment** -- balance finding
+          **N-358**, owned by ``balance:X-i5``.  ``balance:X-i3-a`` binds a GET
+          to ``REPEATABLE READ, READ ONLY`` and leaves every other method at
+          ``READ COMMITTED``, which the posting reconciles' lock-then-reread
+          depends on.  **How exposed a caller is depends on the ORDER of its
+          own two reads -- whether it derives this calendar before or after it
+          loads the row -- so each states its own** rather than inheriting a
+          sentence from here.  What is NOT the rule is "a GET is one snapshot":
+          ``/grid`` and ``/dashboard`` open a
+          :func:`~app.db_transaction.write_transaction` block for the rolling
+          top-up, so each runs read-only, then writable, then read-only again
+          over a NEW snapshot.
+        * **A row filed in ANOTHER owner's pay period.**
+          ``budget.transactions`` carries no ``user_id``: its owner IS its pay
+          period's, and nothing requires that owner to be its ACCOUNT's.  0
+          such rows on production and on both dev clones, measured 2026-08-27.
+
+        **The three quieter answers were weighed and refused** (the review that
+        parked C4-a-1, 2026-08-25): placing the row against no span hides a
+        contradiction on a money screen, re-deriving and retrying narrows the
+        window without closing it, and dropping the row deletes it from
+        whatever is being computed.  Each copes with an inconsistent picture
+        rather than preventing one, and preventing one is X-i5's work.
+
+        Args:
+            period_id: A ``budget.pay_periods.id`` read off a stored row --
+                never a submitted or nullable one, which is
+                :meth:`period_by_id`'s question.
+            transaction_id: The ``budget.transactions.id`` being placed, for
+                the message.  Typed to the one table both callers place today
+                rather than taken as free text, so the message has ONE
+                spelling; ``budget.transfers`` carries a ``pay_period_id`` too
+                and would widen this rather than add a second format string.
+
+        Returns:
+            The :class:`~._derive.DerivedPeriod` carrying *period_id*.
+
+        Raises:
+            RuntimeError: This calendar does not hold that period.  Bare rather
+                than a :class:`~._derive.PayCalendarError`, matching
+                ``balance_at._asset_fold``'s refusal for the same class of
+                state: no door may produce it, so no caller should be catching
+                it and none does.
+        """
+        period = period_by_id(self.periods, period_id)
+        if period is None:
+            raise RuntimeError(
+                f"transaction id={transaction_id} is filed in pay period "
+                f"id={period_id}, which user {self.user_id}'s pay calendar "
+                f"does not hold. Either that period belongs to another owner "
+                f"(a row whose account and whose paycheck have different "
+                f"owners, which no constraint refuses), or this calendar and "
+                f"that row were read at two different moments with a "
+                f"concurrent write between them -- balance finding N-358, "
+                f"which needs a transaction that is not one snapshot."
+            )
+        return period
 
     def earliest_start_in_month(self, year: int, month: int) -> "date | None":
         """Return the earliest payday falling in *year* / *month*, else ``None``.
@@ -819,80 +920,6 @@ class PayCalendar:
             crossed as a caller defect.
         """
         return current_and_future_window(self.periods, day)
-
-    def paychecks_from(self, day: date) -> "Iterator[DerivedPeriod]":
-        """Yield every paycheck that has not ENDED before *day*, saved then projected.
-
-        :meth:`current_and_future`'s TOTAL companion -- it yields that window and
-        then keeps going -- and the pairing is the one :meth:`span_containing`
-        already makes against :meth:`period_containing`:
-        the saved producer answers where the schedule reaches, this one keeps
-        answering past it at the owner's own cadence.  A caller walking a
-        CADENCE rather than reading a window needs that, because an owner goes
-        on being paid after the last payday anyone has saved -- the schedule's
-        horizon is a MATERIALISATION boundary, not a fact about how often the
-        money arrives.
-
-        **Plan step R16-b-1 added it because its absence was a silent wrong
-        answer**, not a missing convenience.  ``recurrence.occurrences(...,
-        through=X)`` walked ``self.periods`` for the ``PERIOD`` unit, so it
-        returned fewer dates than *X* asked for and raised nothing: measured on
-        a production clone (2026-08-27), an every-paycheck rule asked through
-        ``2036-01-01`` answered 62 dates ending ``2028-07-27`` against the 255
-        that owner is actually paid in the window, the last ``2035-12-20``.  A consumer
-        folding those occurrences into money -- the balance seam's ESTIMATED
-        loan tier, plan step R16-b-2 -- would under-generate by seven years and
-        report a payoff that never comes.
-
-        **FINITE**, because :func:`~._views.projected_paychecks` stops at
-        :data:`~app.utils.dates.CALENDAR_DATE_MAX` -- so a consumer that forgets
-        to stop pulling terminates instead of hanging, and the ordinary stop is
-        its own window (``recurrence._occurrence._bounded``, the one place a
-        bound is applied).  Finite is not SMALL: the length is
-        ``(CALENDAR_DATE_MAX - horizon) / cadence_days``, which is about 1,950
-        paychecks at a fourteen-day cadence and about 27,300 at the
-        one-day cadence ``budget.pay_schedule`` legally admits.
-
-        **It COMPOSES the two producers and steps nothing itself**, which is
-        this section's own rule: the saved half is
-        :func:`~._views.current_and_future_window` and the continuation is
-        :func:`~._views.projected_paychecks`, where the argument for each lives.
-        That second one is a function because it was two loops --
-        :func:`~._views.axis_window` walked the same recurrence to a requested
-        day -- and every projected paycheck it yields carries ``period_id =
-        None`` with a ``period_index`` continuing the saved sequence, so a phase
-        test spans the seam and a caller needing a foreign key target still
-        cannot mistake one for a saved row.
-
-        Args:
-            day: The first day the sequence covers.  A paycheck qualifies when
-                it has not ENDED before it, so the one *day* falls IN is the
-                first yielded -- the same admission test
-                :meth:`current_and_future` applies.  A *day* below
-                :meth:`opening_bound` yields the whole schedule rather than
-                projecting backwards (the 2026-08-10 ruling: before the first
-                payday there is no paycheck).
-
-        Yields:
-            :class:`~._derive.DerivedPeriod` values, ``start_date`` ascending,
-            saved where the schedule reaches and projected beyond it, up to the
-            last paycheck OPENING within the application's calendar.  Nothing
-            at all for a calendar with no payday, which is the same answer
-            :meth:`current_and_future` gives them.
-        """
-        # The saved half is :meth:`current_and_future` itself, not a second
-        # statement of its admission test: "has not ENDED before this day" is
-        # written once, in :func:`~._views.current_and_future_window`, and both
-        # methods ask it there.  Two copies of one predicate is the shape ledger
-        # row **P6** counted seven of, and it is what makes the equality between
-        # these two producers structural rather than a coincidence two
-        # comprehensions happen to share.
-        yield from current_and_future_window(self.periods, day)
-        yield from (
-            period
-            for period in projected_paychecks(self.periods, self.cadence_days)
-            if period.end_date >= day
-        )
 
     def overlapping(self, first_day: date, last_day: date) -> PeriodWindow:
         """Return every SAVED period overlapping ``[first_day, last_day]``.

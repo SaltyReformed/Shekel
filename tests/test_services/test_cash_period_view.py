@@ -972,36 +972,44 @@ class TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn:
         assert figures[seed_periods[1].id].net == Decimal("0.00")
         assert figures[seed_periods[1].id].period_timing == Decimal("-250.00")
 
-    def test_a_PROJECTED_row_clamped_against_the_stored_span_still_reconciles(
+    def test_a_corrupted_stored_end_moves_no_PROJECTED_figure_either(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The two-source coupling C2-c creates, MEASURED rather than argued.
+        """The two-source coupling C2-c created is CLOSED at **C4-a-1**.
 
-        An adversarial design review of this step claimed R-K's identity
-        breaks here, and the claim is REFUTED by this test.  The coupling is
-        real: :func:`~app.services.balance_at._cash_fold._period_balances`
-        samples each column at its DERIVED end while
-        :func:`~app.services.balance_at._cash_fold._cash_plan` still clamps a
-        projected row's landing day against the STORED span it reads off
-        ``txn.pay_period`` (the reader plan step C4 owns).  What does NOT
-        follow is a broken identity, and the reason is structural: the fold's
-        steps and this view's cash-clock grouping read the SAME
-        ``day_nets``, so wherever the clamp puts a row, both sides put it
-        there.  A disagreement surfaces as ``period_timing`` -- the figure
-        that exists to say "budgeted here, moved there" -- and never as an
-        unexplained balance step.
+        C2-c pointed :func:`~app.services.balance_at._cash_fold.period_balances`
+        at each column's DERIVED end and left
+        :func:`~app.services.balance_at._cash_fold._cash_plan` clamping a
+        projected row against the STORED span it read off ``txn.pay_period``:
+        one module, two ends, which is pay-calendar finding **P38**.  An
+        adversarial design review of C2-c claimed R-K's identity breaks on that
+        split, and it did not -- the fold's steps and this view's cash-clock
+        grouping read the SAME ``day_nets``, so wherever the clamp put a row
+        both sides put it there.  What the split DID cost was a row rendering
+        in a column its budget period is not, reported as ``period_timing``,
+        and that is what this test measures gone.
 
-        Hand-computed against a ``$1,000.00`` opening asserted 2026-01-01.
-        Period 0's stored end is pushed to 2026-01-20 while its derived end
-        stays 2026-01-15, and a still-projected ``$250.00`` expense budgeted
-        to period 0 carries ``due_date`` 2026-01-18 -- inside the corrupted
-        span, so ``attribution_date`` does NOT clamp it, and outside the real
-        one.  Period 0 budgets it (net ``-$250.00``) while nothing lands
-        inside 01-02..01-15, so its timing is ``+$250.00`` and its balance
-        holds at ``$1,000.00``.  Period 1 budgets nothing and the money lands
-        in its span, so its timing is ``-$250.00`` against a ``$750.00``
-        close.  Both columns satisfy the identity, and the assertion below is
-        the identity itself over every column.
+        Hand-computed against a ``$1,000.00`` opening asserted 2026-01-01, with
+        ``as_of`` 2026-01-05 so ruling R-G's floor (01-06) never binds.  Period
+        0's stored end is pushed to 2026-01-20 while its paydays keep its
+        derived end at 2026-01-15, and a still-projected ``$250.00`` expense
+        budgeted to period 0 carries ``due_date`` 2026-01-18 -- inside the
+        corrupted span and outside the real one.  Reading the DERIVED span,
+        ``attribution_date`` clamps 01-18 down to 01-15, so the row lands
+        INSIDE the column that budgeted it: net ``-$250.00``, ``period_timing``
+        ``$0.00``, and a ``$750.00`` close.  Period 1 budgets nothing, nothing
+        lands in its span, and it closes at ``$750.00`` too.
+
+        **Every figure here distinguishes the two arms.**  Against the stored
+        span the row was not clamped at all: period 0 held ``$1,000.00`` with
+        ``+$250.00`` of timing and period 1 ``-$250.00``, which is what this
+        test asserted until C4-a-1.  The FIRING control for the clamp lives
+        beside the clamp, in
+        ``test_cash_fold.TestThePlanClampsAgainstTheDerivedSpan``; the control
+        below shows the same corruption is observable in the SAMPLING half this
+        class was written for.  The identity held on the old arm and holds
+        here, which is why it is asserted BESIDE the figures rather than
+        instead of them: it is the property, and the figures are the behaviour.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         as_of = date(2026, 1, 5)
@@ -1018,9 +1026,10 @@ class TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn:
         figures = _view(account, scenario, seed_periods, as_of=as_of)
 
         assert figures[seed_periods[0].id].net == Decimal("-250.00")
-        assert figures[seed_periods[0].id].period_timing == Decimal("250.00")
-        assert figures[seed_periods[0].id].balance == Decimal("1000.00")
-        assert figures[seed_periods[1].id].period_timing == Decimal("-250.00")
+        assert figures[seed_periods[0].id].period_timing == Decimal("0.00")
+        assert figures[seed_periods[0].id].balance == Decimal("750.00")
+        assert figures[seed_periods[1].id].net == Decimal("0.00")
+        assert figures[seed_periods[1].id].period_timing == Decimal("0.00")
         assert figures[seed_periods[1].id].balance == Decimal("750.00")
 
         rows = _identity_holds(account, scenario, seed_periods, as_of=as_of)

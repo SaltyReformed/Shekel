@@ -225,7 +225,10 @@ class TestTheAssembledFoldBindsItsOwnAccount:
     memoizes nothing, so the pass's refusal never reaches it, and X-i4's first
     build edited its docstring to say otherwise. The record carries
     ``account_id`` now, beside the ``scenario_id`` it already carried for
-    exactly this reason.
+    exactly this reason -- and, since pay-calendar plan step **C4-a-1**, the
+    CALENDAR it was clamped by, which is why ``resolve`` no longer takes one:
+    the third determinant stopped being an argument a caller supplies
+    separately, so these calls pass four values where they passed five.
     """
 
     def test_resolve_refuses_a_fold_assembled_for_another_account(
@@ -250,7 +253,6 @@ class TestTheAssembledFoldBindsItsOwnAccount:
                 assembled_fold(other, ctx),
                 _AS_OF,
                 ContributionInputs.absent(),
-                ctx.calendar(),
             )
         assert str(other.id) in str(excinfo.value)
         assert str(seed_user["account"].id) in str(excinfo.value)
@@ -284,7 +286,7 @@ class TestTheAssembledFoldBindsItsOwnAccount:
         account = seed_user["account"]
         folded = _asset_fold.resolve(
             account, assembled_fold(account, ctx), _AS_OF,
-            ContributionInputs.absent(), ctx.calendar(),
+            ContributionInputs.absent(),
         )
         assert folded.seed == assembled_fold(account, ctx).seed
 

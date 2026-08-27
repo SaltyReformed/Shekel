@@ -50,6 +50,7 @@ from app.services.pay_calendar import (
     PeriodWindow,
     containing_period,
     latest_started_period,
+    paychecks_from,
 )
 from app.utils.dates import CALENDAR_DATE_MAX
 
@@ -1059,7 +1060,7 @@ class TestCurrentAndFuture:
 
 
 class TestPaychecksFromContinuesPastTheSavedSchedule:
-    """:meth:`PayCalendar.paychecks_from`, plan step **R16-b-1**.
+    """:func:`~app.services.pay_calendar.paychecks_from`, plan step **R16-b-1**.
 
     ``current_and_future``'s TOTAL companion: the saved producer answers where
     the schedule reaches, this one keeps naming paydays past it at the owner's
@@ -1092,7 +1093,7 @@ class TestPaychecksFromContinuesPastTheSavedSchedule:
             for probe in (cal.opening_bound(), cal.horizon()):
                 saved = list(cal.current_and_future(probe))
                 assert len(saved) > 0, (name, probe)
-                run = list(islice(cal.paychecks_from(probe), len(saved) + 1))
+                run = list(islice(paychecks_from(cal, probe), len(saved) + 1))
                 assert run[:-1] == saved, (name, probe)
                 seam, last_saved = run[-1], saved[-1]
                 assert seam.period_id is None, (name, probe)
@@ -1114,7 +1115,7 @@ class TestPaychecksFromContinuesPastTheSavedSchedule:
         stops a caller writing a projection into a foreign key.
         """
         cal = calendar()
-        first_six = list(islice(cal.paychecks_from(date(2026, 1, 2)), 6))
+        first_six = list(islice(paychecks_from(cal, date(2026, 1, 2)), 6))
 
         assert [p.period_id for p in first_six] == [10, 11, 12, 13, None, None]
         assert [p.period_index for p in first_six] == [0, 1, 2, 3, 4, 5]
@@ -1137,7 +1138,7 @@ class TestPaychecksFromContinuesPastTheSavedSchedule:
         fortnight at a time and yielding every paycheck in between.
         """
         cal = calendar()
-        first = next(iter(cal.paychecks_from(date(2030, 1, 1))))
+        first = next(iter(paychecks_from(cal, date(2030, 1, 1))))
 
         assert first.start_date == date(2029, 12, 28)
         assert first.end_date == date(2030, 1, 10)
@@ -1155,7 +1156,7 @@ class TestPaychecksFromContinuesPastTheSavedSchedule:
         admits every paycheck there is, starting at the first saved one.
         """
         cal = calendar()
-        taken = list(islice(cal.paychecks_from(date(2020, 1, 1)), 5))
+        taken = list(islice(paychecks_from(cal, date(2020, 1, 1)), 5))
 
         assert [p.period_id for p in taken] == [10, 11, 12, 13, None]
         assert taken[0].start_date == date(2026, 1, 2)
@@ -1169,7 +1170,7 @@ class TestPaychecksFromContinuesPastTheSavedSchedule:
         """
         empty = PayCalendar.from_paydays([], None, 7)
 
-        assert list(empty.paychecks_from(date(2026, 1, 1))) == []
+        assert list(paychecks_from(empty, date(2026, 1, 1))) == []
         assert len(empty.current_and_future(date(2026, 1, 1))) == 0
 
     def test_the_sequence_is_finite_and_stops_at_the_apps_last_calendar_day(self):
@@ -1183,7 +1184,7 @@ class TestPaychecksFromContinuesPastTheSavedSchedule:
         named.
         """
         cal = calendar()
-        every = list(cal.paychecks_from(date(2026, 1, 2)))
+        every = list(paychecks_from(cal, date(2026, 1, 2)))
 
         assert every[-1].start_date == date(2100, 12, 24)
         assert every[-1].period_index == 1956
@@ -1201,7 +1202,7 @@ class TestPaychecksFromContinuesPastTheSavedSchedule:
         """
         for name, paydays, cadence in SHAPES:
             cal = calendar(paydays, cadence)
-            run = list(islice(cal.paychecks_from(cal.opening_bound()), 12))
+            run = list(islice(paychecks_from(cal, cal.opening_bound()), 12))
             for earlier, later in zip(run, run[1:]):
                 assert earlier.end_date + timedelta(days=1) == later.start_date, (
                     name, earlier, later,
@@ -1732,3 +1733,82 @@ class TestTheDerivedPeriodContract:
         span = calendar().span_containing(date(2027, 1, 1))
         assert isinstance(span, DerivedPeriod)
         assert span.period_id is None
+
+
+class TestTheRaisingTwinOfTheIdentityLookup:
+    """``require_period`` REFUSES where ``period_by_id`` answers ``None``.
+
+    Pay-calendar plan step **C4-a-1**.  The two methods answer the same
+    question for two different callers, and only prose separates them: a
+    caller holding an id a user typed or a nullable column holds gets ``None``,
+    because "no such period of yours" is a real answer there; a caller holding
+    a STORED row's ``pay_period_id`` -- NOT NULL, ``ON DELETE CASCADE`` -- gets
+    a refusal, because for that caller ``None`` is never "not found" and
+    answering it hands a money surface a decision with no basis.
+
+    Graded HERE, on the value, rather than only through a caller.  It was
+    reachable only through the cash fold's plan load when it shipped, so one of
+    its two documented states -- a row filed in another owner's pay period --
+    had no direct exercise at all; an adversarial review named that, and the
+    tests below are the answer.
+    """
+
+    def test_it_answers_the_period_where_the_twin_does(self):
+        """The precondition: on a period the calendar holds, the two agree."""
+        cal = calendar()
+        held = cal.periods[1].period_id
+
+        assert cal.require_period(held, 77) == cal.period_by_id(held)
+
+    def test_a_period_this_calendar_does_not_hold_RAISES(self):
+        """The twin answers ``None`` for the same id; this refuses.
+
+        Both halves are asserted, because the refusal is only meaningful
+        against a lookup that would otherwise have answered quietly.
+        """
+        cal = calendar()
+        foreign = 9_999
+
+        assert cal.period_by_id(foreign) is None
+        with pytest.raises(RuntimeError):
+            cal.require_period(foreign, 77)
+
+    def test_the_message_names_the_ROW_the_PERIOD_and_the_OWNER(self):
+        """All three, because the triple is what identifies the broken pairing.
+
+        A refusal naming only the period cannot tell an investigator WHICH row
+        is filed against it, and one naming neither owner cannot distinguish
+        the two states the method documents -- a cross-owner filing from two
+        reads taken at different moments.
+        """
+        cal = calendar(user_id=42)
+
+        with pytest.raises(RuntimeError) as raised:
+            cal.require_period(9_999, 77)
+
+        message = str(raised.value)
+        assert "transaction id=77 " in message
+        assert "pay period id=9999," in message
+        assert "user 42's pay calendar" in message
+
+    def test_it_refuses_ANOTHER_owners_period_by_the_same_rule(self):
+        """The second documented state, which had no direct exercise.
+
+        ``budget.transactions`` carries no ``user_id`` -- its owner IS its pay
+        period's, and nothing in the schema requires that owner to be its
+        ACCOUNT's -- so a row can name a period this owner legitimately does
+        not hold.  Two calendars over DISJOINT payday sets is that state on the
+        value: each answers for its own ids and refuses the other's.
+        """
+        mine = calendar(paydays=((1, date(2026, 1, 2)), (2, date(2026, 1, 16))))
+        theirs = calendar(
+            paydays=((81, date(2026, 1, 9)), (82, date(2026, 1, 23))),
+            user_id=2,
+        )
+
+        assert mine.require_period(1, 77).period_id == 1
+        assert theirs.require_period(81, 78).period_id == 81
+        with pytest.raises(RuntimeError):
+            mine.require_period(81, 78)
+        with pytest.raises(RuntimeError):
+            theirs.require_period(1, 77)
