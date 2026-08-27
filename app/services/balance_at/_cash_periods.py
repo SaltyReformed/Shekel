@@ -43,6 +43,7 @@ from app.services.cash_ledger import (
 from app.services.pay_calendar import PeriodWindow
 from app.utils.money import round_money
 
+from ._assertions import CashAnchorCorrection
 from ._cash_fold import (
     AssembledCashFold,
     _CashPlan,
@@ -249,7 +250,7 @@ def period_view_of(
             period_balances(folded, window),
             _budget_legs(folded.walk, folded.plan, window),
             _cash_sums(folded.walk, folded.day_nets, window),
-            _assertion_sums(folded.walk, window),
+            _assertion_sums(folded.corrections, window),
         ),
         amount_overrides=live_amounts(folded.plan.basis, folded.plan.rows),
     )
@@ -418,7 +419,7 @@ def _cash_sums(
 
 
 def _assertion_sums(
-    walk: CashLedgerWalk, window: PeriodWindow,
+    corrections: "list[CashAnchorCorrection]", window: PeriodWindow,
 ) -> "dict[int, Decimal]":
     """Return ``{period_id: correction}`` -- what the user's true-ups booked.
 
@@ -433,18 +434,23 @@ def _assertion_sums(
     that is why it is a slice rather than a second ``is_opening`` test: two
     independent predicates could come to disagree about which correction the
     seed swallowed, while ``[0]`` and ``[1:]`` partition the list by
-    construction.
+    construction.  Both read the SAME list, which is plan step X-f3c-1's doing:
+    the corrections are replayed once per fold
+    (:func:`~._assertions.assertion_corrections`) and carried on
+    :class:`~._cash_fold.AssembledCashFold`, so the seed's ``[0]`` and this
+    ``[1:]`` are slices of one object rather than of two replays that could
+    have applied different assertion policies.
 
     Args:
-        walk: The account's walk.  Its ``anchor_corrections`` are chronological
-            and the FIRST is the opening (the leaf's own contract).
+        corrections: The account's assertion corrections, chronological, the
+            FIRST being the opening (:attr:`~._cash_fold.AssembledCashFold.corrections`).
         window: The reported periods.
 
     Returns:
         ``{period_id: correction}`` -- signed, UNROUNDED, total over the window.
     """
     asserted = _zeroed(window)
-    for correction in walk.anchor_corrections[1:]:
+    for correction in corrections[1:]:
         period_id = _column_for(window, correction.observed_on)
         if period_id is not None:
             asserted[period_id] += correction.delta

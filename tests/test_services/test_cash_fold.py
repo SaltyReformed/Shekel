@@ -50,6 +50,7 @@ from app.services.balance_at._cash_fold import (
     balances_at,
     period_balances,
 )
+from app.services.balance_at._assertions import assertion_corrections
 from app.services.balance_at._fold import sample_cumulative
 from app.services.cash_ledger import dated_deltas, walk_cash_ledger
 from tests._test_helpers import (
@@ -67,6 +68,29 @@ from tests._test_helpers import (
     period_window,
     restamp_opening_assertion,
 )
+
+
+def _recorded_steps(account, scenario):
+    """Return the ACTUAL tier's whole step list, zero-seeded.
+
+    ``dated_deltas`` (the SOURCE facts) plus the assertion RESETS -- which is
+    exactly what ``_cash_fold._actual_steps`` merges, minus the opening
+    compensator that is the thing under test here.  The two pieces travel
+    separately since plan step X-f3c-1: applying an assertion to a running total
+    is a policy an account's KIND decides (ruling R-FO for the modelled kinds,
+    plan step X-f3c for the PLAIN ones), so the leaf states the facts and the
+    fold states the policy.  Every figure this module asserts is unchanged by
+    that move, which is what makes it a move.
+    """
+    walk = walk_cash_ledger(account.id, scenario.id)
+    return sorted(
+        dated_deltas(walk) + [
+            (correction.observed_on, correction.delta)
+            for correction in assertion_corrections(walk)
+        ],
+        key=lambda step: step[0],
+    )
+
 
 # An as-of far past every valuation date these ACTUAL-tier tests read, so the
 # PLANNED tier (which clamps to ``as_of + 1``) cannot reach them.  The tiers are
@@ -239,13 +263,14 @@ class TestTheOpeningMovesIntoTheSeed:
         """The pin on the fold's ONE re-derivation.
 
         The fold re-derives the opening's emitted correction
-        (``anchor_balance - balance_before``, keyed on the assertion's UTC day)
-        in order to cancel it, because ``dated_deltas`` returns bare tuples that
-        carry no identity.  That is a second statement of what the leaf emits,
-        so it is PINNED rather than trusted: at and after the opening the fold
-        must be byte-identical to a zero-seeded sample of the very same steps,
-        and it is not equal before it.  If the leaf's emission and the fold's
-        compensator ever stop agreeing, the equality below breaks.
+        (``anchor_balance - balance_before``, keyed on the assertion's own day)
+        in order to cancel it, because the step list is bare tuples that carry
+        no identity.  That is a second statement of what the assertion replay
+        emits, so it is PINNED rather than trusted: at and after the opening the
+        fold must be byte-identical to a zero-seeded sample of the very same
+        steps (:func:`_recorded_steps`), and it is not equal before it.  If the
+        replay's emission and the fold's compensator ever stop agreeing, the
+        equality below breaks.
 
         Stream: opening $1,000.00 (2026-02-01) with a -$500.00 record already
         inside it (2026-01-15), a true-up to $2,000.00 (2026-03-01), and a
@@ -279,12 +304,7 @@ class TestTheOpeningMovesIntoTheSeed:
         # if a future fixture change adds a projected row.
         assert at_and_after[-1] < _LATE_AS_OF + timedelta(days=1)
         zero_seeded = sample_cumulative(
-            Decimal("0.00"),
-            sorted(
-                dated_deltas(walk_cash_ledger(account.id, scenario.id)),
-                key=lambda step: step[0],
-            ),
-            at_and_after,
+            Decimal("0.00"), _recorded_steps(account, scenario), at_and_after,
         )
         folded = _fold(account, scenario, at_and_after)
         assert folded == zero_seeded
@@ -310,11 +330,7 @@ class TestTheOpeningMovesIntoTheSeed:
         assert folded_before[earlier] == Decimal("1500.00")
         assert folded_before[between] == Decimal("1000.00")
         zero_seeded_before = sample_cumulative(
-            Decimal("0.00"),
-            sorted(
-                dated_deltas(walk_cash_ledger(account.id, scenario.id)),
-                key=lambda step: step[0],
-            ),
+            Decimal("0.00"), _recorded_steps(account, scenario),
             [earlier, between],
         )
         assert zero_seeded_before[earlier] == Decimal("0.00")

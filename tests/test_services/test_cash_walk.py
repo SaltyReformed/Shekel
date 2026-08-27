@@ -1,7 +1,9 @@
 """Shekel Budget App -- the cash ledger WALK (plan step X-a).
 
 Grades ``app.services.cash_ledger.walk_cash_ledger`` and its visible-day re-key
-``dated_deltas`` -- the leaf a cash account's balance will fold over (step X-b)
+``dated_deltas``, and the fold-side assertion replay that left it at plan step
+X-f3c-1 (``balance_at._assertions.assertion_corrections``) -- the facts a cash
+account's balance folds over (step X-b)
 and the posting writer will project (step X-d).  The walk is ADDITIVE at X-a: no
 production surface reads it yet, so nothing here can move a shipped balance.
 
@@ -35,6 +37,7 @@ from app.services.cash_ledger import (
     settled_cash_facts,
     walk_cash_ledger,
 )
+from app.services.balance_at._assertions import assertion_corrections
 from app.services.balance_at._cash_fold import assembled_fold, balances_at
 from app.services import transaction_service
 from app.services.row_valuation import purchases_total, settled_figure
@@ -97,29 +100,47 @@ def _assert_balance(account, period, balance, at, recorded_at=None):
 
 
 def _corrections(account, scenario):
-    """Return ``{asserted_at: (balance_before, delta)}`` for readable asserts."""
+    """Return ``{asserted_at: (balance_before, delta)}`` for readable asserts.
+
+    Through ``balance_at._assertions.assertion_corrections``, which owns the
+    RESET replay since plan step X-f3c-1 -- the walk states the facts and the
+    fold states what an assertion does to a running total (ruling R-FO gives
+    the modelled kinds one answer and plan step X-f3c gives the PLAIN ones
+    another, so a kind-blind walk could state neither).  Every figure below is
+    unchanged by that move, which is what makes it a move.
+    """
     walk = walk_cash_ledger(account.id, scenario.id)
     return {
         correction.anchor.asserted_at: (
             correction.balance_before,
             correction.anchor.anchor_balance - correction.balance_before,
         )
-        for correction in walk.anchor_corrections
+        for correction in assertion_corrections(walk)
     }
 
 
 def _running_balance(account, scenario):
-    """Return the walk's final running balance by summing :func:`dated_deltas`.
+    """Return the replay's final running balance from the fold's own two tiers.
 
-    :class:`TestDatedDeltasReconstructTheWalk` proves this equals the replay's
-    own terminal balance by reconstructing that balance INDEPENDENTLY from
-    ``anchor_corrections`` + the post-assertion ``source_facts``, so this helper
+    ``dated_deltas`` (the SOURCE facts) plus the assertion corrections -- which
+    is exactly what ``_cash_fold._actual_steps`` merges, minus the opening
+    compensator that only re-bases the seed.  It was ``dated_deltas`` alone
+    until plan step X-f3c-1, when the assertion steps left the leaf because
+    applying them is a policy an account's KIND decides (see
+    :func:`_corrections`); the total is the same total, assembled from two
+    named pieces instead of one.
+
+    :class:`TestTheStepsReconstructTheReplay` proves this equals the replay's
+    own terminal balance by reconstructing that balance INDEPENDENTLY from the
+    last assertion FACT + the post-assertion ``source_facts``, so this helper
     is a convenience rather than the only statement of the total.
     """
+    walk = walk_cash_ledger(account.id, scenario.id)
     return sum(
-        (delta for _day, delta in dated_deltas(
-            walk_cash_ledger(account.id, scenario.id),
-        )),
+        (delta for _day, delta in dated_deltas(walk)),
+        Decimal("0.00"),
+    ) + sum(
+        (correction.delta for correction in assertion_corrections(walk)),
         Decimal("0.00"),
     )
 
@@ -160,18 +181,18 @@ def _replay_terminal_balance(account, scenario):
     The independent reference: take the LAST assertion's asserted balance and
     add every source dated strictly AFTER the day that assertion closes.  That
     is the replay's definition (ruling R-DH (a)) read off
-    :class:`CashLedgerWalk`'s two lists directly, so comparing it against the
-    summed dated deltas is a real cross-check rather than a producer graded on
-    itself.
+    :class:`CashLedgerWalk`'s two FACT lists directly -- no correction, no step
+    list -- so comparing it against the summed steps is a real cross-check
+    rather than a producer graded on itself.
 
     The comparison is ``>`` on the civil DAY, not on an instant: a source
     sharing the assertion's day is inside the closing balance, so only a
     strictly later day rides on top.
     """
     walk = walk_cash_ledger(account.id, scenario.id)
-    if not walk.anchor_corrections:
+    if not walk.anchor_facts:
         return Decimal("0.00")
-    last = walk.anchor_corrections[-1].anchor
+    last = walk.anchor_facts[-1]
     return last.anchor_balance + sum(
         (
             fact.delta for fact in walk.source_facts
@@ -396,10 +417,19 @@ class TestEveryAssertionIsReplayed:
 
         ``balance_before`` at the March assertion is ``1000 - 200 = 800``, so its
         correction is ``+100.00``; at the May assertion it is ``900 - 300 = 600``,
-        so its correction is ``-100.00``.  Prefix-summing the dated deltas
-        therefore reads 1000 / 800 / 900 / 600 / 500 across the five event days --
-        the balance the user actually asserted at each point, where the shipping
-        scalar answers today's $500.00 for every one of them (finding B-18).
+        so its correction is ``-100.00``.  The account therefore reads
+        1000 / 800 / 900 / 600 / 500 across the five event days -- the balance
+        the user actually asserted at each point, where the shipping scalar
+        answers today's $500.00 for every one of them (finding B-18).
+
+        **Graded through the FOLD rather than by prefix-summing the leaf's dated
+        deltas**, which is where plan step X-f3c-1 left the question: the
+        assertion steps are the fold's to apply (ruling R-FO gives the modelled
+        kinds one answer and plan step X-f3c gives the PLAIN ones another), so
+        the five figures live in the producer a screen reads and not in the
+        leaf.  The instrument is stronger for it -- ``_fold_at``'s own docstring
+        records the review that caught a walk-graded clearing test passing while
+        the rendered balance was $500.00 short.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
@@ -422,17 +452,22 @@ class TestEveryAssertionIsReplayed:
         assert corrections[march] == (Decimal("800.00"), Decimal("100.00"))
         assert corrections[may] == (Decimal("600.00"), Decimal("-100.00"))
 
-        running = Decimal("0.00")
-        seen = []
-        for _day, delta in dated_deltas(
-            walk_cash_ledger(account.id, scenario.id),
-        ):
-            running += delta
-            seen.append(running)
-        assert seen == [
+        event_days = [
+            date(2026, 1, 1), date(2026, 2, 1), date(2026, 3, 1),
+            date(2026, 4, 1), date(2026, 5, 1),
+        ]
+        assert [
+            _fold_at(account, scenario, day) for day in event_days
+        ] == [
             Decimal("1000.00"), Decimal("800.00"), Decimal("900.00"),
             Decimal("600.00"), Decimal("500.00"),
         ]
+        # Sampling five NAMED dates cannot see a spurious step on a sixth day,
+        # which the prefix-sum this replaced did see.  The count and the total
+        # are what restore it.
+        walk = walk_cash_ledger(account.id, scenario.id)
+        assert len(dated_deltas(walk)) + len(assertion_corrections(walk)) == 5
+        assert _running_balance(account, scenario) == Decimal("500.00")
 
 
 class TestSourceFactValuation:
@@ -951,7 +986,7 @@ class TestDegenerateShapes:
 
         walk = walk_cash_ledger(account.id, scenario.id)
         assert walk.source_facts == []
-        assert walk.anchor_corrections == []
+        assert walk.anchor_facts == []
         assert dated_deltas(walk) == []
 
     def test_an_opening_with_no_prior_activity_corrects_from_zero(
@@ -971,8 +1006,13 @@ class TestDegenerateShapes:
         assert delta == Decimal("1000.00")
 
 
-class TestDatedDeltasReconstructTheWalk:
-    """The re-key preserves the walk's total and its within-day chronology."""
+class TestTheStepsReconstructTheReplay:
+    """``dated_deltas`` plus the corrections preserve the replay's own total.
+
+    Named for what it grades since plan step X-f3c-1: the two tiers travel in
+    separate lists now, so what is pinned is that MERGING them reproduces the
+    replay's terminal balance, and that both land on the day the fold samples.
+    """
 
     def test_the_deltas_sum_to_the_walks_final_running_balance(
         self, db, seed_user, seed_periods,
@@ -1035,13 +1075,21 @@ class TestDatedDeltasReconstructTheWalk:
         ]
         assert _running_balance(account, scenario) == Decimal("800.00")
 
-    def test_a_source_reads_before_an_assertion_sharing_its_day(
+    def test_a_source_and_an_assertion_sharing_a_day_both_land_on_it(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The re-key mirrors the walk's own tie-break, so both read alike.
+        """The two tiers key on the same civil DAY, so the assertion closes it.
 
-        Immaterial to the prefix sum (addition commutes), and pinned so the two
-        chronologies cannot silently diverge.
+        The source and the assertion travel in different lists since plan step
+        X-f3c-1 -- ``dated_deltas`` carries the movement and
+        ``assertion_corrections`` carries the reset -- so what has to be pinned
+        is that both land on the day the fold samples, which is ruling R-DH (a):
+        an assertion is the CLOSING balance for its civil day, whatever order
+        the two were recorded in.  Keying one of them by instant instead is what
+        cost production ``$4,001.42`` on 2026-07-31.
+
+        Graded at the balance as well as at the steps, because the step-level
+        assertion alone cannot see a day boundary drawn between them.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
@@ -1055,15 +1103,20 @@ class TestDatedDeltasReconstructTheWalk:
         )
         db.session.commit()
 
-        same_day = [
-            delta for day, delta in dated_deltas(
-                walk_cash_ledger(account.id, scenario.id),
-            )
-            if day == date(2026, 3, 1)
-        ]
-        # The source (-30.00) first, then the assertion's correction
-        # (5000.00 - 970.00 = 4030.00).
-        assert same_day == [Decimal("-30.00"), Decimal("4030.00")]
+        walk = walk_cash_ledger(account.id, scenario.id)
+        shared = date(2026, 3, 1)
+        assert [
+            delta for day, delta in dated_deltas(walk) if day == shared
+        ] == [Decimal("-30.00")]
+        # The assertion's correction on the same day: 5000.00 - 970.00.
+        assert [
+            (correction.observed_on, correction.delta)
+            for correction in assertion_corrections(walk)
+            if correction.observed_on == shared
+        ] == [(shared, Decimal("4030.00"))]
+        # And the day closes on what the user asserted, which is the property
+        # the within-day ordering existed to protect.
+        assert _fold_at(account, scenario, shared) == Decimal("5000.00")
 
 
 class TestTheTwoStatementsOfTheLatestAssertedDay:

@@ -250,7 +250,7 @@ def reject_future_settle_day(settle_day: Optional[SettleDay]) -> None:
     independent derivations, one number -- the step's own trace and a neutral
     adversarial review).  A settled source counts from its own ``settled_on``
     (``cash_ledger.dated_deltas``), and
-    :func:`app.services.cash_ledger.walk_cash_ledger` absorbs one into an
+    :func:`app.services.balance_at._assertions.assertion_corrections` absorbs one into an
     assertion only when the assertion is dated ON OR AFTER it -- so a
     future-dated settle rides on top of every assertion until that day arrives.
     On a ``$1,000`` anchor a ``$100`` expense settled three days ago reads

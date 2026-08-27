@@ -117,7 +117,7 @@ Projecting that cache would have made the posted ledger disagree with the grid's
 production clone across 61 periods: deriving from the day agrees with
 :func:`app.services.balance_at.grid_balance_view` on EVERY period; reading the
 stored column disagrees on two.  **The comparison is over TRUE-UPS, and saying
-so is load-bearing**: ``_assertion_sums`` folds ``anchor_corrections[1:]``,
+so is load-bearing**: ``_assertion_sums`` folds the fold's ``corrections[1:]``,
 excluding the OPENING because ruling R-I moves it into the fold's seed, while
 the ledger keeps an ``account_opening`` entry in a period -- so an unscoped
 comparison could not have agreed on 61 and a draft of this docstring implied

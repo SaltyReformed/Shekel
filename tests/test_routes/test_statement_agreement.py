@@ -207,7 +207,7 @@ class TestThePageReportsForItsOwner:
             seed_user["account"].id,
             get_baseline_scenario(seed_user["user"].id).id,
         )
-        before = walk.anchor_corrections[0].observed_on - timedelta(days=3)
+        before = walk.anchor_facts[0].observed_on - timedelta(days=3)
         _seed_import(
             db, seed_user["account"], stated="1000.00",
             effective_on=before, evidence=_FILE_CHAIN,
@@ -366,7 +366,7 @@ class TestThePageSaysWhatTheStepIsOBLIGEDToSay:
             seed_user["account"].id,
             get_baseline_scenario(seed_user["user"].id).id,
         )
-        opening = walk.anchor_corrections[0].observed_on
+        opening = walk.anchor_facts[0].observed_on
         first, second = (
             opening + timedelta(days=1), opening + timedelta(days=2),
         )

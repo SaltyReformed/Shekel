@@ -384,7 +384,7 @@ def cash_anchor_facts(account_id: int) -> list[CashAnchorFact]:
     Getting this wrong is not cosmetic: the flag chooses which correction books
     ``account_opening`` versus ``account_trueup``
     (:func:`app.services.account_posting_service._anchors._account_correction_kinds`)
-    while ruling R-I's seed takes ``anchor_corrections[0]`` and the period
+    while ruling R-I's seed takes the fold's ``corrections[0]`` and the period
     view's assertion component takes ``[1:]``
     (:mod:`app.services.balance_at._cash_fold`) -- three consumers, one of them
     keyed on the flag and two on the position. Ordering here is what keeps
@@ -451,10 +451,12 @@ def coverage_for(account_id: int) -> StatementCoverage:
     The DATABASE twin of :func:`~._clearing.statement_coverage`, for the callers
     that do not already hold an account's facts -- the entry list's indicator,
     reached from the grid (``entry_service.build_entry_lists_dict``) and from
-    the HTMX refresh (``routes/entries.py``).  The entry RESERVATION is not one
-    of them: it takes ``walk.coverage`` off the read pass's own walk
-    (``balance_at._cash_fold``), and the reconcile panel takes the governing
-    assertion itself (``cash_ledger.governing_anchor``).  It exists for the
+    the HTMX refresh (``routes/entries.py``).  Neither the entry RESERVATION nor
+    the reconcile panel is one of them: ruling **R-FM** dissolved the
+    reservation's question at plan step X-f3b, the panel takes the governing
+    assertion itself (``cash_ledger.governing_anchor``), and since plan step
+    X-f3c-1 the ONE reader of ``walk.coverage`` in ``app/`` is the fold's
+    assertion replay (``balance_at._assertions.assertion_corrections``).  It exists for the
     reason :func:`~._facts.reconciled_through` exists beside
     :attr:`~._walk.CashLedgerWalk.reconciled_through` -- a caller holding the
     walk must not pay a query, and a caller rendering one template row must not

@@ -345,7 +345,7 @@ class TestDaysBeforeTheRecordsBeginAreLabelledNotCounted:
                 seed_user["account"].id,
                 get_baseline_scenario(seed_user["user"].id).id,
             )
-            before = walk.anchor_corrections[0].observed_on - timedelta(days=5)
+            before = walk.anchor_facts[0].observed_on - timedelta(days=5)
             _seed_import(
                 db, seed_user["account"], stated="1000.00",
                 effective_on=before, evidence=_FILE_CHAIN,
@@ -380,7 +380,7 @@ class TestDaysBeforeTheRecordsBeginAreLabelledNotCounted:
                 seed_user["account"].id,
                 get_baseline_scenario(seed_user["user"].id).id,
             )
-            begins = walk.anchor_corrections[0].observed_on
+            begins = walk.anchor_facts[0].observed_on
             _seed_import(
                 db, seed_user["account"], stated="1000.00",
                 effective_on=begins - timedelta(days=10),
@@ -446,7 +446,7 @@ class TestWhichSideRestsOnAnAssumption:
                 seed_user["account"].id,
                 get_baseline_scenario(seed_user["user"].id).id,
             )
-            opening = walk.anchor_corrections[0].observed_on
+            opening = walk.anchor_facts[0].observed_on
             first, second = (
                 opening + timedelta(days=1), opening + timedelta(days=2),
             )
@@ -486,7 +486,7 @@ class TestWhichSideRestsOnAnAssumption:
                 seed_user["account"].id,
                 get_baseline_scenario(seed_user["user"].id).id,
             )
-            only = walk.anchor_corrections[0].observed_on + timedelta(days=1)
+            only = walk.anchor_facts[0].observed_on + timedelta(days=1)
             _seed_import(
                 db, seed_user["account"], stated="500.00",
                 effective_on=only, evidence=_UNCORROBORATED,

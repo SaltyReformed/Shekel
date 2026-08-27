@@ -473,7 +473,7 @@ def _latest_assertion_boundary(
     Raises:
         RuntimeError: When the account carries no assertion at all.
     """
-    if not walk.anchor_corrections:
+    if not walk.anchor_facts:
         raise RuntimeError(
             f"_asset_fold: account id={account.id} models a return but has "
             "zero AccountAnchorHistory rows, so there is no assertion to open "

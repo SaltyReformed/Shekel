@@ -67,6 +67,7 @@ from app.services.account_projection import (
 from app.services.balance_at import _kernel as net_worth_kernel
 from app.services.pay_calendar import DerivedPeriod, PayCalendarError, calendar_for
 from app.services.balance_at._asset_contributions import ContributionInputs
+from app.services.balance_at._assertions import assertion_corrections
 from app.services.investment_projection import adapt_deductions
 from app.services.projection_inputs import (
     load_active_deductions_for_accounts,
@@ -5475,7 +5476,7 @@ class TestCashAnchorHistory:
             # so ``None`` is this entry WITHHOLDING one rather than the walk
             # having nothing to report.
             walk = cash_ledger.walk_cash_ledger(later.id, ctx.scenario_id)
-            assert walk.anchor_corrections[0].balance_before == Decimal(
+            assert assertion_corrections(walk)[0].balance_before == Decimal(
                 "300.00",
             )
 

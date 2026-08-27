@@ -122,6 +122,7 @@ from app.services.cash_ledger import (
 from app.services.pay_calendar import PeriodWindow
 from app.utils.dates import attribution_date
 
+from ._assertions import CashAnchorCorrection, assertion_corrections
 from ._context import BalanceContext, _memoize_once
 from ._fold import sample_cumulative
 
@@ -155,10 +156,9 @@ class AssembledCashFold:
     opens (ruling R-L, generalised at ruling R-Y).
 
     Attributes:
-        account_id: The account these rows belong to.  Carried for the reason
-            :attr:`scenario_id` beside it is, and added by plan step **X-i4**
-            for the case that ruling did not reach: a reader taking BOTH this
-            record and an ``Account`` -- which
+        account_id: The account these rows belong to, added by plan step
+            **X-i4** for the case ruling R-GV did not reach: a reader taking
+            BOTH this record and an ``Account`` -- which
             :func:`app.services.balance_at._asset_fold.resolve` does, folding
             the account's own modelled rule, its latest assertion and its
             contribution feed onto these steps -- could be handed the two for
@@ -169,30 +169,34 @@ class AssembledCashFold:
             measured the gap it closes: an account of one owner resolved onto a
             fold assembled for another, seeding the first's HYSA rate with the
             second's `$2,000.00` opening.
-        scenario_id: The budget scenario the rows below were scoped by.  Carried
-            so the record is self-describing: a reader that resolves something
-            FURTHER off this fold -- the modelled tiers
-            (:func:`app.services.balance_at._asset_fold.resolve`) load a
-            contribution feed of their own -- scopes that load off the fold it is
-            extending rather than off a scenario passed beside it.  A caller
-            cannot then hand the two different scenarios, which is the only way
-            they could have disagreed (plan Section 8: an argument a caller can
-            get wrong is a defect, not a contract).
         seed: The balance before every step (ruling R-I's back-projection).
         steps: The dated deltas, ASCENDING by date -- the ACTUAL tier, the
             opening's compensator, and the PLANNED tier merged into one list.
         walk: The account's :class:`~app.services.cash_ledger.CashLedgerWalk`
-            (the settled facts and the assertion corrections).
+            (its settled source facts and its balance assertions).
+        corrections: One
+            :class:`~._assertions.CashAnchorCorrection` per assertion, replayed
+            ONCE here (:func:`~._assertions.assertion_corrections`) rather than
+            by each of the FIVE readers that need them -- the step list below,
+            :func:`day_facts`' assertion split, :mod:`._cash_periods`'
+            per-period component, and both of :mod:`._cash_flow`'s
+            (``records_balance_at`` and ``cash_anchor_history``).  Redundant
+            derivation
+            is where a divergence hides, which is the lesson
+            :class:`~._context.BalanceContext` was built on; and since plan step
+            **X-f3c-1** the replay is a POLICY rather than a property of the
+            facts (see :mod:`._assertions`), so a second caller of it would be a
+            second place the policy could differ.
         plan: The account's :class:`_CashPlan` (its still-Projected rows, the
             day each lands on, and the live override map).
         day_nets: The PLANNED tier's per-day nets.
     """
 
     account_id: int
-    scenario_id: int
     seed: Decimal
     steps: "list[tuple[date, Decimal]]"
     walk: CashLedgerWalk
+    corrections: "list[CashAnchorCorrection]"
     plan: _CashPlan
     day_nets: "dict[date, Decimal]"
 
@@ -335,6 +339,11 @@ def _assemble(
         The :class:`AssembledCashFold`.
     """
     walk = walk_cash_ledger(account.id, basis.scenario_id)
+    # The RESET policy, applied ONCE for every reader below (plan step
+    # X-f3c-1).  It is what the walk itself used to do; it moved out because
+    # what an assertion does to a running total differs by account kind
+    # (ruling R-FO) and the walk may not consult one (ruling R-J).
+    corrections = assertion_corrections(walk)
     # The plan load is INDEPENDENT of the walk since plan step X-f3b (ruling
     # **R-FM**): it took the walk so the entry reservation could ask which of an
     # envelope's purchases a declared balance already contained, and a purchase
@@ -343,11 +352,11 @@ def _assemble(
     # where the money is replayed.
     plan = _cash_plan(account, basis, as_of)
     day_nets = _planned_day_nets(plan)
-    seed, steps = _running_steps(walk, day_nets)
+    seed, steps = _running_steps(walk, corrections, day_nets)
     return AssembledCashFold(
         account_id=account.id,
-        scenario_id=basis.scenario_id,
-        seed=seed, steps=steps, walk=walk, plan=plan, day_nets=day_nets,
+        seed=seed, steps=steps, walk=walk, corrections=corrections,
+        plan=plan, day_nets=day_nets,
     )
 
 
@@ -493,10 +502,10 @@ def day_facts(
         requested day, and the account's first recorded day.
 
     **The three components sum to the day's change in the running total**, and
-    that is arithmetic rather than a claim: ``_running_steps`` assembles
-    exactly ``dated_deltas`` (the source facts and the corrections) plus the
-    opening's compensator plus the planned nets, so a day's steps ARE these
-    three sums.  ``balance`` is quantized where the components are exact, so a
+    that is arithmetic rather than a claim: ``_running_steps`` assembles exactly
+    ``dated_deltas`` (the source facts) plus this fold's assertion corrections
+    plus the opening's compensator plus the planned nets, so a day's steps ARE
+    these three sums.  ``balance`` is quantized where the components are exact, so a
     reader wanting the identity to the cent must compare the components rather
     than differencing two rounded balances.
     """
@@ -509,13 +518,13 @@ def day_facts(
     asserted = _day_sums(
         [
             (correction.observed_on, correction.delta)
-            for correction in folded.walk.anchor_corrections[1:]
+            for correction in folded.corrections[1:]
         ]
     )
     starts = [
         events[0] for events in (
             [fact.settled_on for fact in folded.walk.source_facts],
-            [c.observed_on for c in folded.walk.anchor_corrections],
+            [fact.observed_on for fact in folded.walk.anchor_facts],
         ) if events
     ]
     return CashDaySeries(
@@ -588,17 +597,26 @@ def period_balances(
 
 
 def _actual_steps(
-    walk: CashLedgerWalk,
+    walk: CashLedgerWalk, corrections: "list[CashAnchorCorrection]",
 ) -> "tuple[Decimal, list[tuple[date, Decimal]]]":
     """Return the ``(seed, steps)`` the RECORDED facts contribute.
 
-    The steps are the leaf's :func:`app.services.cash_ledger.dated_deltas` plus
-    ONE appended step, and nothing is re-keyed or re-valued.  That restraint is
-    deliberate: the same re-key is what the posting writer consumes at plan step
-    X-d, and a second statement of "which day does this event count from, and for
-    how much" is precisely how the fold and the posted ledger drift apart (the
-    shape plan step E1a found on the loan side).  The one appended step is the
-    seed's compensator, below.
+    The steps are the leaf's :func:`app.services.cash_ledger.dated_deltas`, the
+    assertion RESETS this fold has chosen to apply, and ONE appended step; and
+    nothing is re-keyed or re-valued.  That restraint is deliberate: the same
+    re-key is what the posting writer consumes at plan step X-d, and a second
+    statement of "which day does this event count from, and for how much" is
+    precisely how the fold and the posted ledger drift apart (the shape plan
+    step E1a found on the loan side).  The one appended step is the seed's
+    compensator, below.
+
+    **The assertion steps are this fold's CHOICE since plan step X-f3c-1**, and
+    naming that is the point: ``dated_deltas`` carried them until then, so every
+    consumer of the leaf inherited the RESET whether its account kind wanted one
+    or not (ruling R-FO says the modelled kinds do and plan step X-f3c says the
+    PLAIN ones do not).  They are merged HERE, from
+    :func:`~._assertions.assertion_corrections`, which is the one place the
+    cutover has to delete them from.
 
     **The seed is ruling R-I, and the mechanism is one subtraction.**  The walk
     seeds at zero, so a prefix taken BEFORE the account's first assertion is that
@@ -615,7 +633,7 @@ def _actual_steps(
 
     Concretely, with ``A`` the asserted balance and ``P`` the sum of the records
     attributed at or before it (which is exactly the walk's own
-    :attr:`~app.services.cash_ledger.CashAnchorCorrection.balance_before`, since
+    :attr:`~._assertions.CashAnchorCorrection.balance_before`, since
     the running balance starts at zero and no assertion precedes this one), the
     opening's emitted correction is ``A - P``.  Seeding there and booking an
     equal-and-opposite step on the opening's own day gives, at a date ``D``:
@@ -630,8 +648,8 @@ def _actual_steps(
     That cancellation depends on ``dated_deltas`` emitting the opening at exactly
     the day and amount the compensator books.  It no longer RE-DERIVES either
     (plan step X-c1): both read the correction's own
-    :attr:`~app.services.cash_ledger.CashAnchorCorrection.observed_on` /
-    :attr:`~app.services.cash_ledger.CashAnchorCorrection.delta`, so the pair is
+    :attr:`~._assertions.CashAnchorCorrection.observed_on` /
+    :attr:`~._assertions.CashAnchorCorrection.delta`, so the pair is
     stated once on the record and the leaf's list is a merge of the same pair.
     The pin stays, because "one statement" is a property of today's code rather
     than of the contract:
@@ -642,11 +660,15 @@ def _actual_steps(
 
     Args:
         walk: The account's :class:`~app.services.cash_ledger.CashLedgerWalk`.
+        corrections: Its assertion corrections
+            (:func:`~._assertions.assertion_corrections`), replayed once by
+            :func:`_assemble` and shared with every other reader of this fold.
 
     Returns:
         ``(seed, steps)`` -- the balance before every step, and the dated deltas
-        with the opening's compensator appended.  ``steps`` is a fresh list the
-        caller owns and may extend, and it is NOT sorted: the compensator is
+        with the assertion resets and the opening's compensator appended.
+        ``steps`` is a fresh list the caller owns and may extend, and it is NOT
+        sorted: the compensator is
         appended after ``dated_deltas``' own ordering, so the caller sorts once
         after merging in the planned tier (which
         :func:`~app.services.balance_at._fold.sample_cumulative` requires).
@@ -654,20 +676,26 @@ def _actual_steps(
         boundary AFTER every step on it, so only the day's SUM is observable.
     """
     steps = dated_deltas(walk)
-    if not walk.anchor_corrections:
+    steps.extend(
+        (correction.observed_on, correction.delta)
+        for correction in corrections
+    )
+    if not corrections:
         # No assertion at all: production-unreachable (migration
         # ``cfb15e782f86`` plus the account factory guarantee an opening), and
         # the walk is empty here anyway.  Folding it from zero is the honest
         # fold of no facts rather than a raise -- the totality rule.
         return _ZERO_MONEY, steps
 
-    opening = walk.anchor_corrections[0]
+    opening = corrections[0]
     steps.append((opening.observed_on, -opening.delta))
     return opening.delta, steps
 
 
 def _running_steps(
-    walk: CashLedgerWalk, day_nets: "dict[date, Decimal]",
+    walk: CashLedgerWalk,
+    corrections: "list[CashAnchorCorrection]",
+    day_nets: "dict[date, Decimal]",
 ) -> "tuple[Decimal, list[tuple[date, Decimal]]]":
     """Return the ``(seed, steps)`` a whole cash account folds from.
 
@@ -679,6 +707,8 @@ def _running_steps(
 
     Args:
         walk: The account's :class:`~app.services.cash_ledger.CashLedgerWalk`.
+        corrections: Its assertion corrections
+            (:func:`~._assertions.assertion_corrections`).
         day_nets: The PLANNED tier's per-day nets
             (:func:`_planned_day_nets`), merged in as later steps on the same
             running total -- never spliced on as a second producer's series.
@@ -687,7 +717,7 @@ def _running_steps(
         ``(seed, steps)`` with *steps* ASCENDING by date, which is what
         :func:`~app.services.balance_at._fold.sample_cumulative` requires.
     """
-    seed, steps = _actual_steps(walk)
+    seed, steps = _actual_steps(walk, corrections)
     steps.extend(day_nets.items())
     steps.sort(key=lambda step: step[0])
     return seed, steps

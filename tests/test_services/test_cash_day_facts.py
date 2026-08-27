@@ -39,6 +39,7 @@ from app.enums import StatusEnum, TxnTypeEnum
 from app.models.transaction import Transaction
 from app.services import balance_at, cash_ledger
 from app.services.balance_at import BalanceContext
+from app.services.balance_at._assertions import assertion_corrections
 from app.services.scenario_resolver import get_baseline_scenario
 from tests._test_helpers import (
     append_balance_assertion,
@@ -166,7 +167,7 @@ class TestTheThreeTiersSumToTheDaysMovement:
                 seed_user["account"].id,
                 get_baseline_scenario(seed_user["user"].id).id,
             )
-            opening = walk.anchor_corrections[0]
+            opening = assertion_corrections(walk)[0]
 
             facts = _series(
                 seed_user, opening.observed_on, opening.observed_on,
@@ -214,7 +215,7 @@ class TestTheThreeTiersSumToTheDaysMovement:
             opening = cash_ledger.walk_cash_ledger(
                 seed_user["account"].id,
                 get_baseline_scenario(seed_user["user"].id).id,
-            ).anchor_corrections[0]
+            ).anchor_facts[0]
             first, last = opening.observed_on, date(2026, 4, 30)
             series = _series(seed_user, first - timedelta(days=1), last)
             facts = series.facts
@@ -257,7 +258,7 @@ class TestTheThreeTiersSumToTheDaysMovement:
     ):
         """Only the FIRST correction is the seed; a later one that day is not.
 
-        ``anchor_corrections[1:]`` skips exactly one row, and this is the case
+        ``corrections[1:]`` skips exactly one row, and this is the case
         that says whether "one" is the right number: two assertions sharing the
         opening day means the opening is in the seed and the second is an
         ordinary true-up on its own day.  Skipping by DAY instead of by
@@ -268,7 +269,7 @@ class TestTheThreeTiersSumToTheDaysMovement:
                 seed_user["account"].id,
                 get_baseline_scenario(seed_user["user"].id).id,
             )
-            opening = walk.anchor_corrections[0]
+            opening = walk.anchor_facts[0]
             append_balance_assertion(
                 db.session, seed_user["account"], seed_periods[0],
                 Decimal("1750.00"),
@@ -281,7 +282,7 @@ class TestTheThreeTiersSumToTheDaysMovement:
                 seed_user["account"].id,
                 get_baseline_scenario(seed_user["user"].id).id,
             )
-            second = reread.anchor_corrections[1]
+            second = assertion_corrections(reread)[1]
             facts = _series(
                 seed_user,
                 opening.observed_on - timedelta(days=1),
@@ -359,7 +360,7 @@ class TestWhereTheAccountsRecordsBegin:
                 seed_user["account"].id,
                 get_baseline_scenario(seed_user["user"].id).id,
             )
-            opening = walk.anchor_corrections[0]
+            opening = walk.anchor_facts[0]
             earlier = opening.observed_on - timedelta(days=10)
             _settled(
                 db, seed_user, seed_periods[0], "Early", "20.00", earlier,

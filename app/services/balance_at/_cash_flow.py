@@ -352,8 +352,11 @@ def records_balance_at(
     NOT what the app currently reports, which after a balance is recorded for a
     day IS that recorded balance.
 
-    **The distinction exists because an assertion RESETS the walk**
-    (``cash_ledger._walk``: ``running = anchor.anchor_balance``).  So
+    **The distinction exists because the fold applies an assertion as a RESET**
+    (``balance_at._assertions``: ``running = anchor.anchor_balance``, merged
+    into the step list by ``_cash_fold._actual_steps`` for EVERY account kind
+    today -- plan step X-f3c-5 is what stops merging it for the PLAIN ones).
+    So
     :func:`cash_balance_at` on a day that already carries an assertion answers
     with that assertion, and a difference measured against it is zero by
     construction -- or worse, on a CORRECTION it is the gap between the user's
@@ -363,8 +366,8 @@ def records_balance_at(
     entry the third reads ``-$45.86``; against the records it reads
     ``-$92.29``.
 
-    **It is the walk's OWN field, not arithmetic over the fold.**
-    :attr:`~app.services.cash_ledger.CashAnchorCorrection.balance_before` is
+    **It is the replay's OWN field, not arithmetic over the fold.**
+    :attr:`~._assertions.CashAnchorCorrection.balance_before` is
     documented as the running balance *just before this assertion resets it*,
     which is exactly this question, already public and already the figure the
     LOAN side's drift card renders (``loan_posting_service._display``:
@@ -416,8 +419,7 @@ def records_balance_at(
         # precedence this codebase has already been bitten by stating twice
         # (S6-03).
         return None
-    walk = _cash_fold.assembled_fold(account, ctx).walk
-    for correction in walk.anchor_corrections:
+    for correction in _cash_fold.assembled_fold(account, ctx).corrections:
         if correction.observed_on == as_of:
             return correction.balance_before
     return cash_balance_at(account, ctx, as_of)
@@ -497,10 +499,10 @@ class CashAnchorRow:
             every account kind, which is why it is never ``None``.
         ledger: What the running balance held immediately before this assertion
             RESET it
-            (:attr:`~app.services.cash_ledger.CashAnchorCorrection.balance_before`),
+            (:attr:`~._assertions.CashAnchorCorrection.balance_before`),
             or ``None`` in the two cases above.
         correction: ``recorded - ledger``
-            (:attr:`~app.services.cash_ledger.CashAnchorCorrection.delta`) --
+            (:attr:`~._assertions.CashAnchorCorrection.delta`) --
             the jump THIS assertion booked, or ``None`` alongside
             :attr:`ledger`.
 
@@ -577,11 +579,12 @@ def cash_anchor_history(
     by definition is not the back-dated row (finding **N-205**).
 
     **It needs no new producer and adds no new rule.**  Every column is a field
-    the walk already publishes: :class:`~app.services.cash_ledger.CashAnchorCorrection`
-    carries ``observed_on``, its anchor's ``anchor_balance`` and ``asserted_at``,
-    ``balance_before`` and ``delta``.  Re-deriving any of them here would be a
-    second statement of the walk's own arithmetic, which is the shape plan step
-    X-f2-a corrected in the difference preview.
+    the fold's assertion replay already publishes:
+    :class:`~._assertions.CashAnchorCorrection` carries ``observed_on``, its
+    anchor's ``anchor_balance`` and ``asserted_at``, ``balance_before`` and
+    ``delta``.  Re-deriving any of them here would be a second statement of that
+    replay's arithmetic, which is the shape plan step X-f2-a corrected in the
+    difference preview.
 
     **It takes no valuation date, and that is exact rather than an omission.**
     The loan twin
@@ -622,7 +625,7 @@ def cash_anchor_history(
     # would collapse ONE of this module's walks and quietly leave the other --
     # and plan step **X-i4** put that memo on the pass, so every reading here
     # shares the one assembly it holds.
-    walk = _cash_fold.assembled_fold(account, ctx).walk
+    corrections = _cash_fold.assembled_fold(account, ctx).corrections
     # ``booked`` rather than ``correction``: the walk's record and the row's
     # field would otherwise share a name inside one expression, and
     # ``correction=correction.delta`` reads as a self-reference.
@@ -646,6 +649,6 @@ def cash_anchor_history(
             ),
             is_opening=booked.anchor.is_opening,
         )
-        for booked in reversed(walk.anchor_corrections)
+        for booked in reversed(corrections)
     ]
     return CashAnchorHistory(rows=rows, reconcilable=reconcilable)
