@@ -1,6 +1,6 @@
 """What a standing rule comes to for one pass, and why one did not fire.
 
-Plan step ``bank_import:X-gf-3``, finding **N-359**.  The verdict is the ONE
+Plan step ``bank_import:X-gf-3a``, finding **N-359**.  The verdict is the ONE
 value ruling **R-GH**'s automatic door and the review screen both read, so the
 cases here grade two things and not one: that each withholding reason fires and
 that the door acts on the value rather than re-deriving it.
@@ -40,7 +40,7 @@ from app.services.statement_match._placement import (  # pylint: disable=protect
     PlacementKind,
 )
 from app.services.statement_match._verdict import (  # pylint: disable=protected-access
-    rule_verdicts,
+    ruled,
 )
 
 DAY = date(2026, 8, 17)
@@ -104,15 +104,34 @@ def _proposal(row):
     return MatchProposal(lines=(_line(),), rows=(row,), day_gap=0)
 
 
-def _verdicts(creatable, **pass_facts):
-    """Return the verdicts for *creatable* under the stated pass facts."""
-    return rule_verdicts(
-        creatable,
-        pass_facts.get("proposals", ()),
-        declined_lines=pass_facts.get("declined_lines", {}),
+def _bounds(**pass_facts):
+    """Return the pass limits, publishing only what a case states."""
+    return ReviewBounds(
+        calendar_opens=None,
+        before_calendar_count=0,
+        before_calendar_last_day=None,
         crowded_days=pass_facts.get("crowded_days", ()),
         unpriceable_count=pass_facts.get("unpriceable_count", 0),
     )
+
+
+def _lines(creatable, **pass_facts):
+    """Return *creatable* ruled under the stated pass facts."""
+    return ruled(
+        creatable,
+        pass_facts.get("proposals", ()),
+        pass_facts.get("declined_lines", {}),
+        _bounds(**pass_facts),
+    )
+
+
+def _verdicts(creatable, **pass_facts):
+    """Return the verdicts by line id, for the cases that ask about one."""
+    return {
+        item.line.line_id: item.verdict
+        for item in _lines(creatable, **pass_facts)
+        if item.verdict is not None
+    }
 
 
 class TestARuleThatReachesNothingProducesNoVerdict:
@@ -255,14 +274,28 @@ class TestAProposalOverTheRuleSDestination:
     """
 
     def test_a_proposal_naming_the_ENVELOPE_withholds_the_rule(self):
-        """The rule would raise the very figure the proposal matched."""
+        """The rule's destination is a row this statement explains on its own.
+
+        **The sentence says what it COSTS, and the cost is not a double
+        count.**  Adversarial financial review 2026-08-27 traced the
+        arithmetic: a purchase created from a bank line is born posted,
+        ``posted_purchase_sum`` counts exactly those, and the cash leg is
+        ``gross - off_statement_sum`` -- so filing into the envelope leaves its
+        leg unchanged to the cent and no dollar is counted twice, in either
+        order.  What it costs is the MATCH: the created purchase becomes a
+        member, so ``_reject_parent_and_its_own_purchase`` refuses any later
+        act naming that envelope as a whole, and the line the proposal
+        explained stays unexplained.  The wording ``X-ge`` gave this was
+        *count that money twice*, and this case asserted it.
+        """
         verdict = _verdicts(
             (_creatable(_records_in()),),
             proposals=(_proposal(_row(row_id=ENVELOPE_ID)),),
         )[7]
 
         assert verdict.withheld is not None
-        assert "count that money twice" in verdict.withheld
+        assert "makes that match impossible to accept" in verdict.withheld
+        assert "count that money twice" not in verdict.withheld
 
     def test_a_proposal_naming_a_PURCHASE_INSIDE_it_does_not(self):
         """Two acts naming neither a parent nor its own child."""
@@ -319,20 +352,18 @@ class TestTheGapIsAskedBeforeTheCollision:
         assert verdict.withheld == gap
 
 
-def _review(creatable, verdicts):
-    """Return a ReviewSet carrying *creatable* and *verdicts* and nothing else."""
+def _review(creatable):
+    """Return a ReviewSet carrying *creatable* and nothing else.
+
+    Its bounds are EMPTY -- no declined line, no crowded day, nothing
+    unpriceable, no proposal -- so a door that re-derived the verdict rather
+    than reading the one the line carries would withhold nothing.
+    """
     return ReviewSet(
         proposals=(), unmatched=(), unmatched_rows=(),
         creatable=creatable, parked=(), recordable_inflows=(),
         merchants=MerchantSection(merchants=(), templates=()),
-        bounds=ReviewBounds(
-            calendar_opens=None,
-            before_calendar_count=0,
-            before_calendar_last_day=None,
-            crowded_days=(),
-            unpriceable_count=0,
-        ),
-        rule_verdicts=verdicts,
+        bounds=_bounds(),
     )
 
 
@@ -349,15 +380,15 @@ class TestTheAutomaticDoorReadsTheVerdictRatherThanDerivingOne:
 
     def test_a_verdict_carrying_a_reason_WITHHOLDS_despite_a_clean_pass(self):
         """The mutation: withheld under bounds that withhold nothing."""
-        creatable = (_creatable(_records_in()),)
-        review = _review(creatable, {
-            7: RuleVerdict(
+        review = _review((replace(
+            _creatable(_records_in()),
+            verdict=RuleVerdict(
                 creation=PurchaseCreation(
                     line_id=7, transaction_id=ENVELOPE_ID,
                 ),
                 withheld="a reason no bound on this pass could have produced",
             ),
-        })
+        ),))
 
         creations, withheld = _rule_filings(review, frozenset({7}))
 
@@ -377,12 +408,12 @@ class TestTheAutomaticDoorReadsTheVerdictRatherThanDerivingOne:
         to: a door still reading ``placement.creation_for`` would file into
         ``ENVELOPE_ID``.
         """
-        creatable = (_creatable(_records_in()),)
-        review = _review(creatable, {
-            7: RuleVerdict(
+        review = _review((replace(
+            _creatable(_records_in()),
+            verdict=RuleVerdict(
                 creation=PurchaseCreation(line_id=7, transaction_id=777),
             ),
-        })
+        ),))
 
         creations, withheld = _rule_filings(review, frozenset({7}))
 
@@ -401,14 +432,20 @@ class TestTheAutomaticDoorReadsTheVerdictRatherThanDerivingOne:
         decided, and a receipt naming it would tell the owner their rules had
         looked at a line from a previous month.
         """
-        creatable = (_creatable(_records_in()),)
-        review = _review(creatable, {
-            7: RuleVerdict(
+        # **The verdict WITHHOLDS**, and that is what makes this a control.
+        # With a clean verdict the withheld arm is never reached, so moving
+        # the freshness test BELOW it passed -- and the receipt would then
+        # have told the owner their rules withheld a line from a previous
+        # month.  Found by adversarial test-quality review 2026-08-27.
+        review = _review((replace(
+            _creatable(_records_in()),
+            verdict=RuleVerdict(
                 creation=PurchaseCreation(
                     line_id=7, transaction_id=ENVELOPE_ID,
                 ),
+                withheld="a reason this pass would give for a fresh line",
             ),
-        })
+        ),))
 
         creations, withheld = _rule_filings(review, frozenset())
 
@@ -417,7 +454,7 @@ class TestTheAutomaticDoorReadsTheVerdictRatherThanDerivingOne:
 
     def test_a_line_with_no_verdict_is_neither_filed_nor_withheld(self):
         """No rule reaches it, so this pass withheld nothing about it."""
-        review = _review((_creatable(None),), {})
+        review = _review((_creatable(None),))
 
         creations, withheld = _rule_filings(review, frozenset({7}))
 
@@ -425,39 +462,91 @@ class TestTheAutomaticDoorReadsTheVerdictRatherThanDerivingOne:
         assert withheld == []
 
 
-class TestTheScreenAndTheDoorQuoteONESentence:
-    """The property the whole step buys, asserted on one derived pass.
+class TestTheSentenceTheScreenPrintsIsComposedHERE:
+    """Finding **N-359**'s other half, and the design review's finding.
 
-    :func:`~._reads.review_set` derives the verdicts, so what the screen reads
-    through :meth:`~._reads.ReviewSet.rule_verdict_for` and what the door
-    reports on :class:`~._filing.RuleFiling` are the same object.  This grades
-    that the accessor finds it rather than that the two agree -- an accessor
-    keyed on the wrong id would return ``None`` for every line and the screen
-    would silently go back to saying nothing.
+    The first version of this step set two facts in Jinja and picked between
+    them with ``{% if %}``/``{% elif %}``, framing each in template copy.  That
+    is a template restating a partition -- the shape this package refuses in as
+    many words 200 lines further down the same file -- so the sentence is
+    composed here now and printed unbranched.  These cases grade the
+    composition, because the template no longer can.
     """
 
-    def test_the_accessor_finds_the_verdict_by_the_line_it_is_for(self):
-        """Keyed by line id, and asked with the line."""
-        creatable = (_creatable(_records_in()),)
-        verdict = RuleVerdict(
-            creation=PurchaseCreation(line_id=7, transaction_id=ENVELOPE_ID),
-            withheld="a reason",
+    def test_a_gap_WITHHELD_from_a_rule_reads_as_the_rule_s(self):
+        """The rule is named, the pass's own words are quoted, and the advice
+        is to go and look."""
+        gap = "one of your own rows is close enough to this"
+
+        item = _lines(
+            (_creatable(_records_in()),), declined_lines={7: gap},
+        )[0]
+
+        assert item.warning.startswith(
+            "Your rules will not record this one by themselves:",
+        )
+        assert gap in item.warning
+        assert item.warning.endswith(
+            "Check the match form below before recording it as new spending.",
         )
 
-        review = _review(creatable, {7: verdict})
+    def test_a_COLLISION_advises_the_match_rather_than_the_match_form(self):
+        """Different reason, different act -- and that is why the advice is
+        composed beside the reason rather than fixed in one template string.
 
-        assert review.rule_verdict_for(_line(7)) is verdict
-        assert review.rule_verdict_for(_line(8)) is None
+        Sending the owner to the hand-build form here would be wrong: the
+        remedy for a destination this statement already explains is to accept
+        THAT match, or to file this line somewhere else.
+        """
+        item = _lines(
+            (_creatable(_records_in()),),
+            proposals=(_proposal(_row(row_id=ENVELOPE_ID)),),
+        )[0]
 
-    def test_replacing_the_map_changes_what_the_accessor_answers(self):
-        """The accessor reads the field rather than a derivation beside it."""
-        review = _review((_creatable(_records_in()),), {})
+        assert "makes that match impossible to accept" in item.warning
+        assert item.warning.endswith(
+            "Accept that match first, or file this line somewhere else.",
+        )
 
-        assert review.rule_verdict_for(_line(7)) is None
-        assert replace(review, rule_verdicts={
-            7: RuleVerdict(
-                creation=PurchaseCreation(
-                    line_id=7, transaction_id=ENVELOPE_ID,
-                ),
-            ),
-        }).rule_verdict_for(_line(7)) is not None
+    def test_the_warning_QUOTES_the_receipt_s_own_sentence(self):
+        """One wording, two registers -- asserted rather than assumed.
+
+        The receipt says why the door withheld; the screen says the same thing
+        and adds what to do about it HERE.  A screen that composed its own
+        wording would be the second spelling this whole step exists to remove,
+        and nothing but this case would notice.
+        """
+        item = _lines(
+            (_creatable(_records_in()),),
+            proposals=(_proposal(_row(row_id=ENVELOPE_ID)),),
+        )[0]
+
+        assert item.verdict.withheld in item.warning
+
+    def test_a_line_NO_rule_reaches_still_gets_the_pass_s_own_reason(self):
+        """The warning is a WIDER set than the verdict.
+
+        A line nobody has answered for can still be one the pass never
+        finished looking at, and the create card is where the wrong act is
+        cheapest whether or not a rule is involved.
+        """
+        gap = "one of your own rows is close enough to this"
+
+        item = _lines((_creatable(None),), declined_lines={7: gap})[0]
+
+        assert item.verdict is None
+        assert item.warning == (
+            f"Before recording this as new spending, check the match form "
+            f"below: {gap}."
+        )
+
+    def test_a_clean_line_is_told_NOTHING(self):
+        """THE FIRING CONTROL for every case above.
+
+        A producer that warned unconditionally would satisfy all of them, and
+        a warning on every line is a warning on none.
+        """
+        item = _lines((_creatable(_records_in()),))[0]
+
+        assert item.verdict.withheld is None
+        assert item.warning is None

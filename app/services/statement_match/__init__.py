@@ -194,8 +194,8 @@ from ._stating import (
     StatedRules,
     state_rules,
 )
+from ._gaps import ReviewBounds
 from ._reads import (
-    ReviewBounds,
     ReviewSet,
     awaiting_review_count,
     review_set,

@@ -358,7 +358,7 @@ def _rule_filings(
         that reaches it.
 
     **It no longer DECIDES which of the two it is** (plan step
-    ``bank_import:X-gf-3``, finding **N-359**).  The verdict is
+    ``bank_import:X-gf-3a``, finding **N-359**).  The verdict is
     :attr:`~._reads.ReviewSet.rule_verdicts`, derived once by the pass, so the
     sentence this receipt reports and the sentence the review screen prints
     beside the same line are the same value rather than two spellings of one
@@ -376,7 +376,7 @@ def _rule_filings(
         # (ruling **R-GJ**).  None of the three is this pass withholding
         # anything, so none of them is reported as one, and none of them has a
         # verdict.
-        verdict = review.rule_verdict_for(item.line)
+        verdict = item.verdict
         if verdict is None:
             continue
         if verdict.withheld is not None:

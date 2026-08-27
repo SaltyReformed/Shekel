@@ -3453,7 +3453,7 @@ class TestALineThatMayNeverBecomeAPurchase:
 
 
 class TestWhyARuleDidNotFileALineItReaches:
-    """Finding **N-359** at the route tier, plan step ``bank_import:X-gf-3``.
+    """Finding **N-359** at the route tier, plan step ``bank_import:X-gf-3a``.
 
     The service test grades the verdict; this grades what a browser is handed,
     which is the half the finding was actually about: the reason lived on
@@ -3529,9 +3529,16 @@ class TestWhyARuleDidNotFileALineItReaches:
         assert "Proposed matches" in body
         assert "Your rules will not record this one by themselves" in body
         assert (
-            "the budget line your rule files it into is one this statement "
-            "already explains as a whole, so filing into it would count that "
-            "money twice" in body
+            "this statement explains that budget line on its own, and a "
+            "purchase filed inside it makes that match impossible to accept, "
+            "so the line it explains would stay unexplained" in body
+        )
+        # ...and the advice is the one that fits THIS reason: the remedy for a
+        # destination the statement already explains is to accept that match,
+        # not to go looking in the hand-build form.
+        assert (
+            "Accept that match first, or file this line somewhere else."
+            in body
         )
         # ...and the placement sentence still says WHERE, so the two read
         # together rather than the warning replacing the context for it.
@@ -3609,7 +3616,7 @@ class TestWhyARuleDidNotFileALineItReaches:
 
 
 class TestWhereAParkedLineSendsTheOwner:
-    """Plan step ``bank_import:X-gf-3``: the register, named or not named.
+    """Plan step ``bank_import:X-gf-3a``: the register, named or not named.
 
     Since ruling **bank_import:R-GX** an answered merchant leaves this screen's
     own control, so the only place a parked line's answer can be changed is the

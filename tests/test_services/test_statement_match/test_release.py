@@ -24,6 +24,7 @@ leg ``-57.96 -> 0.00``, which is the close re-pricing itself on a past day.
 :class:`TestTheSettledParentRuleIsTheArithmetic` pins both.
 """
 
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 
@@ -1115,7 +1116,7 @@ class TestTheRegisterBoundsWhatItRenders:
 
 
 class TestTheDeleteRemovesTheRowItWasHANDED:
-    """Finding **N-371**, plan step ``bank_import:X-gf-3``.
+    """Finding **N-371**, plan step ``bank_import:X-gf-3a``.
 
     ``_remove``'s transaction arm did ``db.session.get(Transaction, row_id)``
     and handed the result to ``transaction_service.delete_transaction``, whose
@@ -1128,9 +1129,16 @@ class TestTheDeleteRemovesTheRowItWasHANDED:
 
     **A behavioural test cannot see this.**  Both spellings reach the same
     instance through SQLAlchemy's identity map, so the same rows are deleted
-    either way and every figure agrees.  What the cases below grade is that the
-    id never re-enters a query: the removal CARRIES the row, and the door is
-    handed that object.
+    either way and every figure agrees.  What the cases below grade is that
+    ``_remove`` reads :attr:`PlannedRemoval.subject` and not :attr:`row_id`.
+
+    **That is NARROWER than the invariant the finding states**, and saying so
+    is the point: *no id re-enters a query on a path that destroys* is not
+    graded here and cannot be, because ``db.session.get(Transaction,
+    row.subject.id)`` would satisfy every case below while re-introducing
+    exactly the lookup N-371 names.  The invariant is held by reading
+    ``_remove``, which is four lines long; these cases hold the half a test
+    can.
     """
 
     @staticmethod
@@ -1204,7 +1212,10 @@ class TestTheDeleteRemovesTheRowItWasHANDED:
         removal = statement_match.PlannedRemoval(
             kind=statement_match.RowKind.TRANSACTION,
             row_id=named.id,
-            label="Carried",
+            # **Agreeing with NEITHER row**, so no reader keyed on the
+            # label can produce the right answer either: a first version said
+            # "Carried" and a label lookup would have passed.
+            label="neither of them",
             cash_amount=Decimal("0.00"),
             is_container=True,
             subject=carried,
@@ -1218,19 +1229,36 @@ class TestTheDeleteRemovesTheRowItWasHANDED:
         assert db.session.get(Transaction, carried.id) is None
         assert db.session.get(Transaction, named.id) is not None
 
-    def test_two_removals_of_the_same_row_are_still_EQUAL(
+    def test_two_removals_naming_ONE_row_are_EQUAL_whatever_they_carry(
         self, app, db, seed_user,
     ):
         """The carried instance is out of equality, and that is deliberate.
 
-        What makes two planned removals the same is which row they name; a
+        What makes two planned removals the same is which row they NAME; a
         value whose equality depended on which instance happened to be attached
         would make every comparison in this suite an identity-map assertion.
+
+        **A first version compared two `planned_removals` calls and could not
+        fail.**  Both run in one session, so both tuples hold the identical
+        instances out of the identity map, and `app/models/` defines no
+        `__eq__` -- so deleting `compare=False` compared an object with itself
+        and stayed green.  Two removals naming ONE row while carrying
+        DIFFERENT instances is the only shape that asks the question.
         """
-        match_id = self._an_act_that_created_an_envelope(seed_user)
-        match = db.session.get(StatementMatch, match_id)
+        carried = a_transaction(
+            seed_user, name="Carried", amount="11.00", template=False,
+        )
+        other = a_transaction(
+            seed_user, name="Other", amount="12.00", template=False,
+        )
+        db.session.flush()
+        first = statement_match.PlannedRemoval(
+            kind=statement_match.RowKind.TRANSACTION,
+            row_id=carried.id,
+            label="Carried",
+            cash_amount=Decimal("0.00"),
+            is_container=True,
+            subject=carried,
+        )
 
-        first = planned_removals(match).rows
-        second = planned_removals(match).rows
-
-        assert first == second
+        assert first == replace(first, subject=other)

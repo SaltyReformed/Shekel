@@ -187,11 +187,16 @@ class MerchantSection:
     rebuilding the permissive arm; measured false again by adversarial review
     2026-08-27.
 
-    **The parked LINE does not name the register**: its sentence is
-    :attr:`~._bars.ParkedLine.reason`, which says what the owner decided and
-    what to do instead, and putting the register beside the per-line reason is
-    `X-gf-3`'s -- the step that renders those reasons.  The register is reached
-    from an unconditional card at the foot of the review screen meanwhile.
+    **A parked LINE names the register only where a different answer would
+    open the create door**, which plan step ``bank_import:X-gf-3a`` measured to
+    be NONE of them: this sentence was written expecting that step to put the
+    register beside every per-line reason, and the measurement overturned the
+    unconditional half.  ``Capital One Credit Card`` carries the *never a
+    purchase* answer AND the account-payment bar, which no answer lifts, and it
+    is 9 of the developer's 9 parked lines -- so a link on every parked line
+    would have pointed at a control refusing every change made on it.
+    :attr:`~._bars.ParkedLine.answer_door` is that condition, and the reason
+    says why no answer would open the rest.
 
     Attributes:
         merchants: One :class:`WaitingMerchant` per merchant this pass has an

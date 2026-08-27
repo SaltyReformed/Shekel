@@ -182,7 +182,7 @@ class PlannedRemoval:
             removed on different terms; see the module docstring.
         subject: The row itself, as :func:`planned_removals` loaded it --
             threaded to :func:`_remove` rather than re-fetched by id (finding
-            **N-371**, plan step ``bank_import:X-gf-3``).
+            **N-371**, plan step ``bank_import:X-gf-3a``).
 
             **It is what the ownership of a DESTRUCTION rests on.**  The delete
             path's transaction arm did ``db.session.get(Transaction, row_id)``
@@ -645,7 +645,7 @@ def _remove(row: PlannedRemoval, owner_id: int) -> None:
     act that had CREATED nothing and so never reached this function at all.
 
     **It removes the row it was HANDED, and does not look one up** (finding
-    **N-371**, plan step ``bank_import:X-gf-3``).  The transaction arm did
+    **N-371**, plan step ``bank_import:X-gf-3a``).  The transaction arm did
     ``db.session.get(Transaction, row.row_id)``, so the ownership of a row this
     function DESTROYS rested on where its id had come from -- and
     ``transaction_service.delete_transaction`` re-checks ``user_id`` nowhere,

@@ -635,9 +635,6 @@
                 <span class="small text-body-secondary">(made {{ item.line.transaction_on }})</span>
                 {% endif %}
                 <div class="small text-body-secondary">{{ item.line.description }}</div>
-                {% set verdict = review.rule_verdict_for(item.line) %}
-                {% set withheld = verdict.withheld if verdict else None %}
-                {% set gap = review.search_gap_for(item.line) %}
                 {# THE WARNING, on the line rather than in a panel at the foot
                    of the page (plan step bank_import:X-f6d-3).  It belongs
                    HERE because this card is where the wrong act is cheapest:
@@ -645,37 +642,22 @@
                    the duplicate finding N-335 measures, at $356.61 for one
                    $178.29 movement.
 
-                   **The SENTENCE is the pass's own** (plan step X-ge-1).  It
-                   was one hardcoded line about the near tier's contest, which
-                   was the only rejection the pass published; every tier
-                   reports its own now -- a candidate refused for want of the
-                   merchant, one refused for the day window, an exact figure
-                   the window refused -- and the same derivation is what
-                   ruling R-GH's automatic door withholds on, so the screen and
-                   that door cannot describe one limit two ways.
-
-                   **TWO SENTENCES AND NEVER BOTH** (plan step X-gf-3, finding
-                   N-359).  A line the owner's rule REACHES and the automatic
-                   door would withhold said nothing about the rule at all --
-                   the reason lived on RuleFiling, whose only rendering is the
-                   import's transient flash -- so it read exactly like a line
-                   nobody had answered for.  It says so now, and the arms are
-                   `elif` because the withheld sentence CONTAINS the gap one
-                   wherever the gap is why: rule_verdicts asks search_gap
-                   first, so a verdict withheld for anything else has no gap to
-                   hide.  Printing both would print one sentence twice. #}
-                {% if withheld %}
+                   ONE SENTENCE, SERVER-DERIVED, PRINTED UNBRANCHED (finding
+                   N-359, plan step bank_import:X-gf-3a).  What is behind it is
+                   a partition -- a rule ruling R-GH's automatic door withheld,
+                   or a search this pass did not finish -- and the first
+                   version of this step picked between them with
+                   {% if %}/{% elif %} right here, which is the second place
+                   for a partition to be wrong that the parked card below and
+                   RecordableInflow.withheld both exist to refuse.  It said so
+                   in this same file, 200 lines down.  Found by adversarial
+                   design review 2026-08-27; the composition is now
+                   _verdict.ruled, which is also what stopped search_gap being
+                   derived twice per line per render. #}
+                {% if item.warning %}
                 <div class="small text-warning-emphasis mt-1">
                   <i class="bi bi-exclamation-triangle"></i>
-                  Your rules will not record this one by themselves:
-                  {{ withheld }}. Check the match form below before recording
-                  it as new spending.
-                </div>
-                {% elif gap %}
-                <div class="small text-warning-emphasis mt-1">
-                  <i class="bi bi-exclamation-triangle"></i>
-                  Before recording this as new spending, check the match form
-                  below: {{ gap }}.
+                  {{ item.warning }}
                 </div>
                 {% endif %}
               </td>
@@ -1012,7 +994,7 @@
                  decided, and a template restating that partition is a second
                  place for it to be wrong. #}
               {{ item.reason }}
-              {# THE DOOR, where there is one (plan step bank_import:X-gf-3).
+              {# THE DOOR, where there is one (plan step bank_import:X-gf-3a).
                  Since ruling R-GX an ANSWERED merchant leaves this screen's
                  own control for the register, so a line parked by an answer
                  the owner now disagrees with had nowhere here to say so.

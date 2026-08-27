@@ -604,7 +604,7 @@ class TestAPassThatCouldNotFinishLookingWITHHOLDS:
             assert [item.line.amount for item in filing.withheld] == [
                 Decimal("-10.89"),
             ]
-            assert "count that money twice" in filing.withheld[0].reason
+            assert "makes that match impossible to accept" in filing.withheld[0].reason
             assert _purchases_in(envelope) == []
 
 

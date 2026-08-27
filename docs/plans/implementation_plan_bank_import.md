@@ -127,43 +127,31 @@ the constraints it leaves a LATER step are on that step's own entry.
       cost the IMPORT path paid too. Closed **N-358** -- three by-id reads of RENDERED user data
       became composite-FK relationships, so the account travels in the JOIN and `accepted_groups`
       fell from 139 statements to 7 -- and **N-349**. Opened **bank_import:N-371**, **N-372**.
-- [ ] **X-gf-3a** `feat(import): the screen says why a rule did not file a line` --
-      **the DECOMPOSED first half**, split 2026-08-27 on the developer's ruling. Closes **N-359** at
-      the root rather than by adding a sentence: whether a standing rule would file an unexplained
-      line, and why ruling **R-GH**'s door would not, was decided inside `_rule_filings` and
-      reported on `RuleFiling`, whose only rendering is the import's transient FLASH -- so the
-      screen either restated the rule (a second spelling on the one door that moves money with no
-      press) or said nothing, and it said nothing. `_verdict.rule_verdicts` derives it ONCE for the
-      pass; the door reads it and the screen prints it.
-      **One of the two withholding reasons rendered NOWHERE**: a line withheld because its rule's
-      destination is a row this statement already explains as a whole kept its placement sentence
-      and its place in the one-click sweep with no warning at all -- and what was owed there is the
-      SENTENCE and not a second guard, the tick path being refused at the create door
-      (`resolve_destination` narrows by `matched_subjects`). It also closes **N-371** and gives a
-      PARKED line the door where its answer is changed,
-      **but only where a different answer would open the create door**: measured on the developer's
-      own data 2026-08-27, `Capital One Credit Card` carries BOTH bars and is
-      **9 of his 9 parked lines**, and `state_rules` refuses every answer but *never a purchase* for
-      such a merchant -- so an unconditional link would have been the chooser-that-cannot-succeed
-      shape on every line it ever appeared beside, and the reason now says why no answer would open
-      it. *Three corrections to N-359's own text, re-measured before it was built:* the crowded-day
-      and unpriceable arms are NOT reported only as counts -- `X-ge-1` folded all three arms into
-      `search_gap_for` at `6d3e3ca1` and the template has called it at three sites ever since; a
-      rule-reached line was not quite indistinguishable either, since it prints
-      *"You file Apple Music in ..."*; and what was actually missing is the ATTRIBUTION, of which
-      one arm had no rendering at all.
+- [ ] **X-gf-3** `feat(import): the review is an exception queue` -- **the DECOMPOSED parent**,
+      split 2026-08-27 on the developer's ruling into the rule verdict both readers share and the
+      queue's own shape. It ticks with the last of its two leaves.
+- [x] **X-gf-3a** `44f1cc7b` -- one rule VERDICT and one screen SENTENCE, derived where the decision
+      is and read by ruling **R-GH**'s door and by the review screen. Closed **N-359** and
+      **N-371**. **What a LATER step must obey**: the withholding sentence is composed in
+      `_verdict.ruled` and printed unbranched, because the partition behind it is the service's; and
+      a parked line names the register only where a different answer would open the create door,
+      which was 0 of 9 on the developer's own data.
 - [ ] **X-gf-3b** `feat(import): the review is an exception queue` -- what remains once the register
-      and the workbench leave: ONE list of unexplained bank lines grouped by the DECISION each
-      poses, rather than the three cards that partition them by MECHANISM -- outflow-that-may-be-
-      recorded, outflow-that-is-barred, inflow-that-may-be-recorded -- when the question all three
-      pose is the same: *is this money my books already hold, or is it new?* (developer ruling
-      2026-08-27). **The hand-build match form moves to a surface of its own**, on the same argument
-      **R-GX** made about the register: measured through the real route on the developer's own data
-      2026-08-27, the review body renders **145,125 bytes** of which that form's two pick lists are
-      **89,247, or 61.5%** -- 22,830 for 27 bank lines and **66,417 for 67 rows** -- both unbounded
-      and both growing with the statement span for ever, on a page whose remaining exceptions are 1
-      merchant, 2 creatable lines, 16 deposits and 9 parked payments. It is not an exception; it is
-      the TOOL three exceptions send the owner to, and each of them links to it.
+      and the workbench leave: contested lines, group residuals and every proposal touching a
+      hand-made row, as ONE list of unexplained bank lines grouped by the DECISION each poses rather
+      than the three cards that partition them by MECHANISM -- outflow-that-may-be-recorded,
+      outflow-that-is-barred, inflow-that-may-be-recorded -- when the question all three pose is the
+      same: *is this money my books already hold, or is it new?* (**R-HB**).
+      **The hand-build match form moves to a surface of its own** (**R-HC**), on the argument
+      **R-GX** made about the register: it is not an exception, it is the TOOL three exceptions send
+      the owner to, and each of them links to it. Closes **N-374**.
+      **Measured through the real route on the developer's own data 2026-08-27**, after `X-gf-3a`:
+      the review body renders **146,907 bytes** of which that form's two pick lists are
+      **89,247, or 61%** -- 22,830 for 27 bank lines and 66,417 for 67 rows -- against 1 unanswered
+      merchant, 2 creatable lines, 16 deposits and 9 parked payments of actual work.
+      *The 149,103 figure `R-GX` states is not contradicted*: it was measured at `X-gf-2`, before
+      `X-gf-1`'s deposit card and this step's per-line sentence were both in the page and before the
+      developer worked lines off it.
 - [ ] **X-gg** `docs(plans): the envelope-semantics design loop` -- **R-GK**'s owed loop, run WITH
       the developer: filling, closure on coverage, carry-forward and the grid's row identity (whose
       same-name double-render the review measured); it mints the build steps rather than building.

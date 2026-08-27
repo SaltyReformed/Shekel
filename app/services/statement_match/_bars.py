@@ -145,7 +145,7 @@ def _core_sentence(
     written once -- a control and the refusal behind it stating different
     reasons is how an owner learns to distrust both.
 
-    **BOTH bars can hold at once, and until plan step ``bank_import:X-gf-3``
+    **BOTH bars can hold at once, and until plan step ``bank_import:X-gf-3a``
     only the first was ever said.**  :meth:`CreationBars.bar_for` asks the
     owner's own answer first, which is the right order and is not what was
     wrong: what was wrong is that *you have said this is never a purchase*
@@ -386,7 +386,7 @@ class ParkedLine:
         also_pays_an_account: Whether a source ALSO files this merchant as a
             payment to an account the owner holds.  **A line can carry both
             bars and 9 of the developer's 9 parked lines do** (measured
-            2026-08-27, plan step ``bank_import:X-gf-3``), which is what
+            2026-08-27, plan step ``bank_import:X-gf-3a``), which is what
             decides whether this line has a door at all: an answer the owner
             gave can be given again, and the second bar is lifted by nothing,
             so a merchant carrying both has no answer worth sending them to
@@ -425,7 +425,7 @@ class ParkedLine:
     def answer_door(self) -> "str | None":
         """Return where the answer that parks this line is changed, or ``None``.
 
-        Plan step ``bank_import:X-gf-3``.  **A parked line's only door is one
+        Plan step ``bank_import:X-gf-3a``.  **A parked line's only door is one
         it does not name**, which is what this closes: since ruling
         **bank_import:R-GX** an ANSWERED merchant leaves the review screen's
         own control and appears on the register, so a line parked by an answer

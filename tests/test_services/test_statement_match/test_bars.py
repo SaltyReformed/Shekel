@@ -863,7 +863,7 @@ class TestWhatTheScreenShowsInstead:
 
 
 class TestWhereAParkedLineSAnswerIsCHANGED:
-    """Plan step ``bank_import:X-gf-3``: the door a parked line does not name.
+    """Plan step ``bank_import:X-gf-3a``: the door a parked line does not name.
 
     Since ruling **bank_import:R-GX** an ANSWERED merchant leaves the review
     screen's own control for the register, so a line parked by an answer the
