@@ -810,11 +810,17 @@ hides.
   plain `**R-GD**` at :139, so rule 4's literal remedy applies and its argument goes to that step's
   specification. **A peer census reported it uncited and the reason offered for that miss was also
   wrong** -- a `**R-xx**`-only matcher finds the plain form at :139 -- so what is established here
-  is the disposition, not the diagnosis. And `recurrence:R-R38`'s owner `R7d-c-1` HAS shipped
-  and has no as-built record at all, so one is written (by the recurrence session, offered
-  2026-08-27)
-  before the row is cut -- which is rule 5's own archive path, and **N-371** applies to it: adding
-  an archived document runs no commit-time gate.
+  is the disposition, not the diagnosis. And `recurrence:R-R38`'s owner `R7d-c-1` HAD shipped
+  with no as-built record at all, so the recurrence session wrote one:
+  `../../plans/historical/recurrence_r7dc1_as_built_2026-08-27.md`, on dev at `c5334e02`,
+  naming `R-R38` four times while the live `R7d-c-1` entry names it back -- so this step
+  GRADES the move rather than asserting it. Where a record is missing for one of the other
+  rows, writing it is rule 5's own archive path. **And nothing gates that locally**: the
+  `shekel-plan-ledger-gate` hook's `files:` pattern does not match `docs/plans/historical/`
+  (**N-371**) and `.rumdl.toml` EXCLUDES that directory outright, so an archive file gets
+  neither the banner arm nor markdown lint until CI -- measured 2026-08-27, 33 files
+  filtered. That is two configs wide, not one, and on this census 17 rows may need such a
+  file.
   **Cutting a row is a REVIEWED EDIT per ruling, never a truncation to fit** (rule 5), and the
   instrument this step owes is the lift's verifier INVERTED: every sentence removed from a row must
   resolve to text in the named as-built record, checked BEFORE the row is cut. Without that, "the

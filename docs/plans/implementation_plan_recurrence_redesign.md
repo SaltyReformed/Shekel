@@ -442,10 +442,11 @@ a money-adjacent form) or stays locked for a value nothing stores. R7d-f decides
       call so no caller could get between them.
 
 - [x] **R7d-c-1 -- the generate pass CARRIES the read pass, and the ROUTE opens it.** `61d81c7f`,
-      ruling **R-R38**. `GenerationSchedule` takes a `BalanceContext` and DERIVES its calendar, and
-      the five doors that create a pay period RECORD and return, so `routes/_period_population`
-      opens the pass between the paydays and the rows. `$0.00` through all three generate doors.
-      Closed **D58**, found by that caller census: the GENERATE route populated nothing.
+      ruling **R-R38**, account `historical/recurrence_r7dc1_as_built_2026-08-27.md`.
+      `GenerationSchedule` takes a `BalanceContext` and DERIVES its calendar, and the five doors
+      that create a pay period RECORD and return, so `routes/_period_population` opens the pass
+      between the paydays and the rows. `$0.00` through all three generate doors. Closed **D58**,
+      found by that caller census: the GENERATE route populated nothing.
 
 - [ ] **R7d-c-2 -- GENERATION takes the resolver.** Both engines' `resolve_generation_plan` applies
       `loan_payment_window`'s answer over the rule's own bound. **MOVES MONEY**: today it creates
