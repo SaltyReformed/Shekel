@@ -619,14 +619,28 @@ class TestRuleFourAppliesToThisFileToo:
         assert rulings.RULINGS_ROW_CAP == registry.LEDGER_ROW_CAP
 
     def test_the_widest_lifted_row_is_the_one_recorded(self):
-        """16,087 characters against a 542.5-character median over 190 rows.
+        """Whatever the widest row is, the debt knows it and knows its width.
 
-        Named so the debt has a face: it is the arc document's argument living
-        in the registry, which is the sentence LEDGER_ROW_CAP was written for.
+        The debt has a face: the widest row is the arc document's argument
+        living in the registry, which is the sentence ``LEDGER_ROW_CAP`` was
+        written for.  At ``X-ao-2a`` that face was ``bank_import:R-GD`` at
+        16,087 characters against a 542.5-character median over 190 rows.
+
+        **The assertion is a PROPERTY, and pinning the id instead was caught
+        before it bit.**  ``X-ao-2b`` exists to TRIM these rows, ``R-GD`` most
+        of all, so ``assert widest.key == "bank_import:R-GD"`` would have gone
+        red on the step whose whole job is to change it -- and the remedy would
+        have been to edit the test.  That is finding **N-355**, a control
+        deriving its specimen from a live row, and a peer session shipping
+        ``balance:X-am`` broke two other controls the same way on the same day.
         """
-        widest = max(rulings.ruling_rows(), key=lambda r: r.width)
-        assert widest.key == "bank_import:R-GD"
-        assert widest.width > 16000
+        widest = max(rulings.ruling_rows(), key=lambda row: row.width)
+        assert widest.width > rulings.RULINGS_ROW_CAP, (
+            "no row is over the cap, so the debt is discharged -- delete "
+            "LIFTED_ROWS_OVER_CAP and this control with it (X-ao-2b's end state)"
+        )
+        assert widest.key in rulings.LIFTED_ROWS_OVER_CAP
+        assert rulings.LIFTED_ROWS_OVER_CAP[widest.key] == widest.width
 
 
 class TestTheHalfMigrationCannotHideARowLoss:
