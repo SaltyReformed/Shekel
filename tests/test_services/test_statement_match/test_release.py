@@ -65,6 +65,9 @@ from tests._test_helpers import settlement_if_settling
 # so exporting it would be the surface rule 13 forbids; a test for a module
 # reaches into it, which is the allowance every sibling here takes.
 from app.services.statement_match import _create  # pylint: disable=protected-access
+from app.services.statement_match._release import (  # pylint: disable=protected-access
+    planned_removals,
+)
 
 from ._builders import (
     accepted_acts,
@@ -1109,3 +1112,125 @@ class TestTheRegisterBoundsWhatItRenders:
 
         assert len(register.accepted.shown) == 3
         assert register.accepted.withheld_count == 0
+
+
+class TestTheDeleteRemovesTheRowItWasHANDED:
+    """Finding **N-371**, plan step ``bank_import:X-gf-3``.
+
+    ``_remove``'s transaction arm did ``db.session.get(Transaction, row_id)``
+    and handed the result to ``transaction_service.delete_transaction``, whose
+    signature says *the user the caller proved owns it* and which re-checks
+    ``user_id`` nowhere -- so the ownership of a row this path DESTROYS rested
+    on where its id had come from.  Its sibling arm never had the gap:
+    ``entry_service.delete_entry`` re-validates ownership through the parent
+    transaction chain itself, and that asymmetry is what made this one
+    invisible.
+
+    **A behavioural test cannot see this.**  Both spellings reach the same
+    instance through SQLAlchemy's identity map, so the same rows are deleted
+    either way and every figure agrees.  What the cases below grade is that the
+    id never re-enters a query: the removal CARRIES the row, and the door is
+    handed that object.
+    """
+
+    @staticmethod
+    def _an_act_that_created_an_envelope(seed_user):
+        """Record a line into a NEW envelope and return its match id.
+
+        The shape with a CONTAINER as well as a purchase, because the container
+        is what goes through the transaction arm -- the purchase goes through
+        ``entry_service``, which was never the finding.
+        """
+        line = _a_swipe(seed_user)
+        db.session.flush()
+        recorded = _record(
+            seed_user, line, new_envelope=_a_new_envelope(seed_user),
+        )
+        db.session.commit()
+        return recorded.match_id
+
+    def test_the_planned_removal_carries_the_row_it_names(
+        self, app, db, seed_user,
+    ):
+        """The instance, not just its id -- and it IS that row.
+
+        Asserted by identity against the row read back independently, so a
+        field carrying some other transaction of the right shape would fail.
+        """
+        match_id = self._an_act_that_created_an_envelope(seed_user)
+        match = db.session.get(StatementMatch, match_id)
+
+        planned = planned_removals(match)
+
+        container = next(
+            row for row in planned.rows if row.is_container
+        )
+        assert container.subject is db.session.get(
+            Transaction, container.row_id,
+        )
+        assert container.subject.id == container.row_id
+
+    def test_the_row_REMOVED_is_the_one_carried_and_not_the_one_NAMED(
+        self, app, db, seed_user,
+    ):
+        """THE FIRING CONTROL, and the first version of it could not fire.
+
+        That version recorded which object reached
+        ``transaction_service.delete_transaction`` and compared it with the one
+        the removal carries -- and it passed with the refetch RESTORED, because
+        ``db.session.get`` returns the same instance out of the identity map.
+        A mutation run measured it: the whole file stayed green with
+        ``db.session.get(Transaction, row.row_id)`` back in ``_remove``.
+
+        What distinguishes the two is a removal whose ``subject`` and
+        ``row_id`` DISAGREE -- deliberately inconsistent, because *which of the
+        two does it use* is the only question here, and no consistent value can
+        be asked it.  A door reading the id deletes ``named``; one removing the
+        row it was handed deletes ``carried``.
+        """
+        # AD-HOC, because that is the only shape this path ever removes: a
+        # residual names no template and a created envelope is built without
+        # one, so the delete verb's SOFT arm is unreachable from here and its
+        # hard delete is what runs.  A templated row would be flagged rather
+        # than removed, and both assertions below would read the same either
+        # way.
+        carried = a_transaction(
+            seed_user, name="Carried", amount="11.00", template=False,
+        )
+        named = a_transaction(
+            seed_user, name="Named", amount="12.00", template=False,
+        )
+        db.session.commit()
+        removal = statement_match.PlannedRemoval(
+            kind=statement_match.RowKind.TRANSACTION,
+            row_id=named.id,
+            label="Carried",
+            cash_amount=Decimal("0.00"),
+            is_container=True,
+            subject=carried,
+        )
+
+        statement_match._release._remove(  # pylint: disable=protected-access
+            removal, seed_user["user"].id,
+        )
+        db.session.flush()
+
+        assert db.session.get(Transaction, carried.id) is None
+        assert db.session.get(Transaction, named.id) is not None
+
+    def test_two_removals_of_the_same_row_are_still_EQUAL(
+        self, app, db, seed_user,
+    ):
+        """The carried instance is out of equality, and that is deliberate.
+
+        What makes two planned removals the same is which row they name; a
+        value whose equality depended on which instance happened to be attached
+        would make every comparison in this suite an identity-map assertion.
+        """
+        match_id = self._an_act_that_created_an_envelope(seed_user)
+        match = db.session.get(StatementMatch, match_id)
+
+        first = planned_removals(match).rows
+        second = planned_removals(match).rows
+
+        assert first == second

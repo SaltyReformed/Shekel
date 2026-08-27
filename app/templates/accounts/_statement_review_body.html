@@ -635,8 +635,9 @@
                 <span class="small text-body-secondary">(made {{ item.line.transaction_on }})</span>
                 {% endif %}
                 <div class="small text-body-secondary">{{ item.line.description }}</div>
+                {% set verdict = review.rule_verdict_for(item.line) %}
+                {% set withheld = verdict.withheld if verdict else None %}
                 {% set gap = review.search_gap_for(item.line) %}
-                {% if gap %}
                 {# THE WARNING, on the line rather than in a panel at the foot
                    of the page (plan step bank_import:X-f6d-3).  It belongs
                    HERE because this card is where the wrong act is cheapest:
@@ -651,7 +652,26 @@
                    merchant, one refused for the day window, an exact figure
                    the window refused -- and the same derivation is what
                    ruling R-GH's automatic door withholds on, so the screen and
-                   that door cannot describe one limit two ways. #}
+                   that door cannot describe one limit two ways.
+
+                   **TWO SENTENCES AND NEVER BOTH** (plan step X-gf-3, finding
+                   N-359).  A line the owner's rule REACHES and the automatic
+                   door would withhold said nothing about the rule at all --
+                   the reason lived on RuleFiling, whose only rendering is the
+                   import's transient flash -- so it read exactly like a line
+                   nobody had answered for.  It says so now, and the arms are
+                   `elif` because the withheld sentence CONTAINS the gap one
+                   wherever the gap is why: rule_verdicts asks search_gap
+                   first, so a verdict withheld for anything else has no gap to
+                   hide.  Printing both would print one sentence twice. #}
+                {% if withheld %}
+                <div class="small text-warning-emphasis mt-1">
+                  <i class="bi bi-exclamation-triangle"></i>
+                  Your rules will not record this one by themselves:
+                  {{ withheld }}. Check the match form below before recording
+                  it as new spending.
+                </div>
+                {% elif gap %}
                 <div class="small text-warning-emphasis mt-1">
                   <i class="bi bi-exclamation-triangle"></i>
                   Before recording this as new spending, check the match form
@@ -992,6 +1012,26 @@
                  decided, and a template restating that partition is a second
                  place for it to be wrong. #}
               {{ item.reason }}
+              {# THE DOOR, where there is one (plan step bank_import:X-gf-3).
+                 Since ruling R-GX an ANSWERED merchant leaves this screen's
+                 own control for the register, so a line parked by an answer
+                 the owner now disagrees with had nowhere here to say so.
+
+                 The CONDITION is the service's and not this template's: a
+                 merchant a source files as a payment to an account the owner
+                 holds is barred by that filing, which no answer lifts, and
+                 state_rules refuses every answer but "never a purchase" for
+                 one -- so a link rendered unconditionally would be the
+                 chooser-that-cannot-succeed shape this package has closed five
+                 times.  Measured 2026-08-27: that is 9 of the developer's 9
+                 parked lines, so it would have been wrong on every line it
+                 ever appeared beside.  What the template supplies is the URL,
+                 which is the one fact a service may not build. #}
+              {% if item.answer_door %}
+              <div class="mt-1">
+                <a href="{{ url_for('accounts.statement_register', account_id=account.id) }}">{{ item.answer_door }}</a>
+              </div>
+              {% endif %}
             </td>
           </tr>
           {% endfor %}

@@ -200,6 +200,7 @@ from ._reads import (
     awaiting_review_count,
     review_set,
 )
+from ._verdict import RuleVerdict
 from ._section import (
     MerchantRegister,
     MerchantSection,
@@ -260,6 +261,7 @@ __all__ = [
     "PlannedRemovals",
     "RuleAnswer",
     "RuleFiling",
+    "RuleVerdict",
     "RuleSubmission",
     "RuleView",
     "ProposedMatches",

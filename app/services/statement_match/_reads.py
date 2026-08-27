@@ -46,10 +46,10 @@ from ._offers import (
 )
 from ._bars import ParkedLine
 from ._leftovers import CreatableLine, RecordableInflow, leftovers
-from ._pairing import DAY_WINDOW
 from ._propose import propose
 from ._scope import ReviewScope
 from ._section import MerchantSection
+from ._verdict import RuleVerdict, rule_verdicts, search_gap
 
 
 @dataclass(frozen=True)
@@ -184,14 +184,19 @@ class IncomeAlreadyRecorded:
 class ReviewSet:  # pylint: disable=too-many-instance-attributes
     """Everything the review screen needs, in one value.
 
-    Pylint: too-many-instance-attributes (9/7) -- **nine because the screen
-    renders nine distinct things**, not because the value wants splitting.
-    Eight are cards the owner reads and acts in; the ninth is
-    :attr:`declined_lines`, which annotates two of them.  It was TEN until
-    plan step ``bank_import:X-gf-2`` took the accepted matches off this screen
+    Pylint: too-many-instance-attributes (10/7) -- **ten because the screen
+    renders eight distinct things and two of them are annotated**, not because
+    the value wants splitting.  Eight are cards the owner reads and acts in;
+    the ninth is :attr:`declined_lines`, which annotates two of them; the tenth
+    is :attr:`rule_verdicts`, which annotates one.  It was TEN before plan step
+    ``bank_import:X-gf-2`` too, which took the accepted matches off this screen
     (ruling **bank_import:R-GX**): they are not a decision anyone is making,
     and folding them cost this pass a valuation of all 221 acts on the
-    developer's own account to render a panel he was not reading.
+    developer's own account to render a panel he was not reading.  **A field
+    was not what was wrong with that one and a field is not what is wrong with
+    this one** -- what the accepted matches cost was a VALUATION per render,
+    and :attr:`rule_verdicts` is a dictionary comprehension over a list this
+    value already holds.
 
     The obvious way to satisfy the limit is to fold ``declined_lines``
     back into :attr:`bounds`, where it lived until plan step
@@ -286,6 +291,25 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             it a second time from the create arm, which is exactly the
             duplicate **N-335** measures.  The screen asks membership per line;
             the count is ``len`` and nothing needs it.
+        rule_verdicts: What a STANDING RULE comes to for each line it reaches,
+            by line id (:class:`~._verdict.RuleVerdict`, finding **N-359**) --
+            the act it names, and why ruling **R-GH**'s automatic door would
+            not have performed it, or ``None`` where nothing stood in its way.
+
+            **Derived here so that ONE value answers it** (plan step
+            ``bank_import:X-gf-3``).  ``_rule_filings`` decided this inside the
+            import request and reported it on
+            :class:`~._filing.RuleFiling`, whose only rendering is the import's
+            FLASH; this screen re-rendered the same lines and could say nothing
+            about it, so a line the owner's own rule was supposed to have
+            handled was indistinguishable from one nobody had answered for.
+            Restating the decision here instead would have been a second
+            spelling of it, on the one door in the app that moves money with no
+            press.
+
+            It holds an entry for exactly the lines a stated rule NAMES A
+            DESTINATION for, so its absence is *no rule reaches this line* and
+            never *not asked yet*.
     """
 
     proposals: "tuple[MatchProposal, ...]"
@@ -297,6 +321,7 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
     merchants: MerchantSection
     bounds: ReviewBounds
     declined_lines: "dict[int, str]" = field(default_factory=dict)
+    rule_verdicts: "dict[int, RuleVerdict]" = field(default_factory=dict)
 
     @property
     def placed_by_class(self) -> "dict[str, int]":
@@ -374,55 +399,13 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
     def search_gap_for(self, line: BankLine) -> "str | None":
         """Return why this pass cannot say *line* has no counterpart, or ``None``.
 
-        Plan step ``bank_import:X-ge``, developer ruling 2026-08-26, corrected
-        at ``X-ge-1``.  **Membership of :attr:`creatable` is a set defined by
-        SUBTRACTION** -- no proposal claimed the line -- and that is two
-        different facts wearing one name: *the pass looked and there is
-        nothing*, and *the pass threw the only candidate away*.  Under a human
-        tick the difference costs nothing, because the person reading the
-        screen is the check.  Under ruling **R-GH**'s auto-apply there is no
-        person, so it has to be a fact the pass STATES rather than one a reader
-        infers.
-
-        **It READS what the search reports and derives nothing**, which is the
-        whole of the correction ``X-ge-1`` made.  A first version enumerated
-        the bounds :class:`ReviewBounds` and the near tier PUBLISH, and called
-        that enumeration complete; an adversarial review measured it false
-        twice over, because the matcher applies more bounds than it published.
-        Re-deriving them here would have been a third spelling of
-        :data:`~._near.NEAR_MISS_BOUND` and :data:`~._pairing.DAY_WINDOW`
-        outside the modules that own them -- finding **N-322** exactly, which
-        :mod:`._pairing`'s own header predicts in as many words.  So each tier
-        reports its own refusals now (:attr:`~._propose.ProposedMatches
-        .declined_lines`) and this joins them to the two bounds that belong to
-        the PASS rather than to any line.
-
-        **What that makes true:** a tier added later must put its refusals in
-        ``declined_lines`` or they are invisible, which is the same rule the
-        search already keeps for its crowded days -- rather than this function
-        having to be taught about it.
-
-        The three sources, in the order a reader should hear them:
-
-        * what a TIER declined about this line, in that tier's own words: a
-          near candidate it admitted and would not choose between (the
-          `$356.61`-for-one-`$178.29` shape, finding **N-335**), one it refused
-          for want of the merchant in the row's label, one it refused for the
-          day window, and an EXACT candidate the window refused;
-        * a CROWDED day the GROUP search skipped
-          (:attr:`ReviewBounds.crowded_days`), measured within
-          :data:`~._pairing.DAY_WINDOW` of the line because that is the window
-          :func:`~._propose._groups` pairs a line to a bucket across;
-        * a row the amount model could not PRICE at all
-          (:attr:`ReviewBounds.unpriceable_count`).  It is account-wide and so
-          is this refusal: an unpriced row is absent from the candidate set
-          entirely, so there is no line it can be said not to match.
-
-        **Measured on the developer's own 378 recorded lines (2026-08-26):**
-        the last two are ZERO, and the first touches 12 of the 80 lines a
-        standing rule would file -- `$391.77` -- one of which is his own
-        `Apple Music` row sitting one day past the window from an `Apple` line
-        the door would otherwise have recorded a second time.
+        The screen's spelling of :func:`~._verdict.search_gap`, which holds the
+        derivation and the whole argument for it.  It moved out of this class
+        at plan step ``bank_import:X-gf-3`` so the rule verdict could ask the
+        same question of the same pass without importing this value -- and one
+        spelling is the point of the move rather than a side effect of it: the
+        sentence the screen prints beside a line and the sentence ruling
+        **R-GH**'s automatic door withholds on are the same sentence.
 
         Args:
             line: The bank line, which must be one this pass considered.
@@ -437,30 +420,41 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
                 :attr:`declined_lines` answerable for it.
 
         Returns:
-            One sentence naming the gap, for the receipt that has to say what
-            it withheld and for the screen that has to say why a line is still
-            there; ``None`` when this pass searched exhaustively for a
-            counterpart to *line* and found none.
+            One sentence naming the gap, or ``None`` when this pass searched
+            exhaustively for a counterpart to *line* and found none.
         """
-        declined = self.declined_lines.get(line.line_id)
-        if declined is not None:
-            return declined
-        crowded = [
-            day for day in self.bounds.crowded_days
-            if abs((day - line.posted_on).days) <= DAY_WINDOW
-        ]
-        if crowded:
-            return (
-                f"{crowded[0]} held too many rows for the app to search them "
-                f"for a group that adds up to this line"
-            )
-        if self.bounds.unpriceable_count:
-            return (
-                f"{self.bounds.unpriceable_count} row(s) on this account "
-                f"could not be priced, so the app could not compare them "
-                f"against this line"
-            )
-        return None
+        return search_gap(
+            line,
+            self.declined_lines,
+            self.bounds.crowded_days,
+            self.bounds.unpriceable_count,
+        )
+
+    def rule_verdict_for(self, line: BankLine) -> "RuleVerdict | None":
+        """Return what a standing rule comes to for *line*, or ``None``.
+
+        Finding **N-359**, plan step ``bank_import:X-gf-3``.  **The screen and
+        ruling R-GH's automatic door read ONE verdict**
+        (:class:`~._verdict.RuleVerdict`): the door performs it or reports it
+        withheld on :class:`~._filing.RuleFiling`, and this is how the screen
+        prints the same reason beside the same line.  Before it, that reason
+        existed only inside the import request and its only rendering was the
+        import's flash, which is transient -- so a line the owner's own rule
+        was supposed to have handled sat in the queue with nothing saying so.
+
+        Args:
+            line: A creatable line's bank line.  A line no rule reaches, an
+                inflow and a parked line all answer ``None``, and only the
+                first of the three is a state a caller has to think about: the
+                other two are never in :attr:`creatable` at all.
+
+        Returns:
+            The :class:`~._verdict.RuleVerdict`, or ``None`` where the owner
+            has stated no rule that names a destination for this line's
+            merchant -- which is the exception queue's ordinary content and not
+            a fact about this pass.
+        """
+        return self.rule_verdicts.get(line.line_id)
 
 
 def _covered_span(account_id: int) -> "tuple[date, date] | None":
@@ -799,6 +793,21 @@ def review_set(scope: ReviewScope) -> ReviewSet:
         scope, unmatched,
         unmatched_destinations(scope.destinations, matched),
     )
+    bounds = ReviewBounds(
+        calendar_opens=opens,
+        before_calendar_count=len(before),
+        before_calendar_last_day=(
+            max(line.posted_on for line in before) if before else None
+        ),
+        # **The days the SEARCH skipped, published by the search** (finding
+        # **N-322**).  This reader re-derived them over every candidate until
+        # plan step X-f6a-3c-2, while ``propose`` searches only the rows no
+        # one-to-one proposal claimed -- a superset, so the screen could name a
+        # day too crowded to search that had been searched.
+        crowded_days=proposed.crowded_days,
+        unpriceable_count=len(candidates.unpriceable_ids),
+        impossible_day_count=parts.impossible_day_count,
+    )
     return ReviewSet(
         proposals=proposals,
         unmatched=tuple(unmatched),
@@ -809,21 +818,7 @@ def review_set(scope: ReviewScope) -> ReviewSet:
         parked=parts.parked,
         recordable_inflows=parts.recordable_inflows,
         merchants=parts.merchants,
-        bounds=ReviewBounds(
-            calendar_opens=opens,
-            before_calendar_count=len(before),
-            before_calendar_last_day=(
-                max(line.posted_on for line in before) if before else None
-            ),
-            # **The days the SEARCH skipped, published by the search** (finding
-            # **N-322**).  This reader re-derived them over every candidate
-            # until plan step X-f6a-3c-2, while ``propose`` searches only the
-            # rows no one-to-one proposal claimed -- a superset, so the screen
-            # could name a day too crowded to search that had been searched.
-            crowded_days=proposed.crowded_days,
-            unpriceable_count=len(candidates.unpriceable_ids),
-            impossible_day_count=parts.impossible_day_count,
-        ),
+        bounds=bounds,
         # **The near tier's own bound, published by the pass that applied it**,
         # for the reason the crowded days beside it are: a reader re-deriving
         # it would be scoring a different population.  It sits on the SET
@@ -831,4 +826,17 @@ def review_set(scope: ReviewScope) -> ReviewSet:
         # LINE it concerns rather than in the panel of things this page did not
         # look at (plan step ``bank_import:X-f6d-3``).
         declined_lines=proposed.declined_lines,
+        # **What the owner's own rules came to for this pass** (finding
+        # **N-359**), derived here rather than inside ruling **R-GH**'s door so
+        # that the door and this screen read ONE verdict.  The gap map is built
+        # from the same :func:`~._verdict.search_gap` the screen prints per
+        # line, so a line withheld for a reason and a line SHOWN that reason
+        # cannot be different lines.
+        rule_verdicts=rule_verdicts(
+            parts.creatable,
+            proposals,
+            declined_lines=proposed.declined_lines,
+            crowded_days=bounds.crowded_days,
+            unpriceable_count=bounds.unpriceable_count,
+        ),
     )

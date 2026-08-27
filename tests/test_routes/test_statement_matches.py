@@ -68,6 +68,7 @@ from tests.test_routes._statement_forms import (
 )
 from tests.test_services.test_statement_match._builders import (
     a_bank_line,
+    a_rule,
     an_envelope,
     an_unexplained_outflow,
     a_merchant,
@@ -3449,3 +3450,223 @@ class TestALineThatMayNeverBecomeAPurchase:
         ).data.decode()
 
         assert f'name="match-hand-line_ids" value="{line.id}"' in page
+
+
+class TestWhyARuleDidNotFileALineItReaches:
+    """Finding **N-359** at the route tier, plan step ``bank_import:X-gf-3``.
+
+    The service test grades the verdict; this grades what a browser is handed,
+    which is the half the finding was actually about: the reason lived on
+    ``RuleFiling``, whose only rendering is the import's transient FLASH, so a
+    line the owner's own rule was supposed to have handled arrived on this page
+    with nothing saying so.
+
+    **The arm chosen here is the one that rendered NOWHERE.**  A line withheld
+    for a SEARCH gap at least got the unattributed *check the match form below*
+    sentence; a line withheld because its rule's destination is a row this
+    statement already explains as a whole got nothing at all -- while still
+    carrying its placement sentence and still being counted by the one-click
+    sweep.
+    """
+
+    @staticmethod
+    def _create_card(body):
+        """Return just the *purchase you never recorded* card's markup.
+
+        **An assertion about ONE card has to read that card.**  This page
+        renders the same search-gap sentence in TWO places on purpose -- here,
+        where the wrong act is cheapest, and in the hand-build list, where the
+        remedy is -- so a body-wide count would read the deliberate second
+        render as the duplicate this step exists to prevent.  Bounded by the
+        card's own footer, which no other card carries.
+        """
+        opens = body.index("Lines that are a purchase you never recorded")
+        closes = body.index(
+            "The name and category appear only when you pick", opens,
+        )
+        return body[opens:closes]
+
+    def _a_collision(self, seed_user, db):
+        """Stage a rule whose destination this statement explains as a whole.
+
+        The envelope carries one `$180.00` purchase, so its own cash leg is
+        `-$180.00` (ruling **R-FM**: an unposted purchase is INCLUDED), and a
+        bank line of that figure pairs with it one-to-one.  The Amazon swipe
+        beside it is what the rule reaches.
+        """
+        day = seed_user["bootstrap_period"].start_date
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="500.00", is_envelope=True,
+        )
+        a_purchase(seed_user, envelope, amount="180.00")
+        a_bank_line(
+            seed_user, an_import(seed_user), amount="-180.00", posted_on=day,
+            description="POINT OF SALE DEBIT L340 KROGER", sequence_in_group=9,
+        )
+        swipe = an_unexplained_outflow(
+            seed_user, merchant="Amazon", amount="-57.96",
+        )
+        a_rule(seed_user, "Amazon", template_id=envelope.template_id)
+        db.session.commit()
+        return envelope, swipe
+
+    def test_the_page_says_the_rule_will_not_file_it_and_why(
+        self, auth_client, db, seed_user,
+    ):
+        """THE FIRING CONTROL.  Nothing on this page said it before.
+
+        Both halves are asserted: that the screen names the withholding at all,
+        and that the sentence it prints is the one ruling **R-GH**'s door
+        withholds on rather than a second wording of the same rule.
+        """
+        envelope, _ = self._a_collision(seed_user, db)
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+        body = " ".join(page.split())
+
+        assert "Proposed matches" in body
+        assert "Your rules will not record this one by themselves" in body
+        assert (
+            "the budget line your rule files it into is one this statement "
+            "already explains as a whole, so filing into it would count that "
+            "money twice" in body
+        )
+        # ...and the placement sentence still says WHERE, so the two read
+        # together rather than the warning replacing the context for it.
+        assert "You file Amazon in" in body
+        assert envelope.name in body
+
+    def test_an_ORDINARY_rule_reached_line_is_NOT_warned_about(
+        self, auth_client, db, seed_user,
+    ):
+        """The control the case above is read against.
+
+        Without it a screen that printed the withholding sentence on every
+        rule-reached line -- or on every line at all -- would satisfy every
+        assertion above.  Same rule, same merchant, same envelope; the only
+        difference is that no line of this statement explains that envelope.
+        """
+        day = seed_user["bootstrap_period"].start_date
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="500.00", is_envelope=True,
+        )
+        a_purchase(seed_user, envelope, amount="180.00")
+        an_unexplained_outflow(seed_user, merchant="Amazon", amount="-57.96")
+        a_rule(seed_user, "Amazon", template_id=envelope.template_id)
+        db.session.commit()
+
+        body = " ".join(auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode().split())
+
+        assert "You file Amazon in" in body
+        assert "Your rules will not record this one by themselves" not in body
+        assert "count that money twice" not in body
+
+    def test_a_SEARCH_GAP_is_reported_as_the_rule_s_and_printed_ONCE(
+        self, auth_client, db, seed_user,
+    ):
+        """One line, one warning, and it is the RULE's wording.
+
+        The other withholding reason, and the case the template's ``elif``
+        exists for: here the withheld sentence and the search gap are the SAME
+        string -- ``rule_verdicts`` asks ``search_gap`` first -- so a screen
+        printing both would print one sentence twice, and a screen printing
+        only the gap would go back to saying nothing about the rule.  Both
+        halves are asserted, because each is satisfied by a different bug.
+
+        **The crowded-day arm is the one that can be ARRANGED**: 33 candidate
+        rows share the line's own day against a bound of 32, so the group
+        search skips it.  The other two arms measure zero on real data and are
+        graded on the published bound in ``test_verdict.py``.
+        """
+        day = seed_user["bootstrap_period"].start_date
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="500.00", is_envelope=True,
+        )
+        for index in range(33):
+            a_transaction(
+                seed_user, name=f"Bill {index}", amount=f"{index + 11}.00",
+                status=StatusEnum.DONE, settled_on=day,
+            )
+        an_unexplained_outflow(seed_user, merchant="Amazon", amount="-57.96")
+        a_rule(seed_user, "Amazon", template_id=envelope.template_id)
+        db.session.commit()
+
+        body = " ".join(auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode().split())
+
+        card = self._create_card(body)
+        assert "Your rules will not record this one by themselves" in card
+        assert card.count("held too many rows for the app to search them") == 1
+        assert "Before recording this as new spending, check the match" not in card
+        # ...and the hand-build list still carries the same sentence, which is
+        # a second RENDER of one fact rather than a second derivation of it.
+        assert body.count("held too many rows for the app to search them") == 2
+
+
+class TestWhereAParkedLineSendsTheOwner:
+    """Plan step ``bank_import:X-gf-3``: the register, named or not named.
+
+    Since ruling **bank_import:R-GX** an answered merchant leaves this screen's
+    own control, so the only place a parked line's answer can be changed is the
+    register -- and the line did not name it.  What the fix had to get right is
+    that it must NOT name it where changing the answer would change nothing:
+    on the developer's own data 2026-08-27 that is 9 of 9 parked lines, so a
+    link rendered unconditionally would have been wrong every time it appeared.
+    """
+
+    @staticmethod
+    def _register_url(seed_user):
+        """Return the register's URL, built the way the template builds it."""
+        return f"/accounts/{seed_user['account'].id}/statements/register"
+
+    def test_an_answer_the_owner_could_change_is_LINKED_to_the_register(
+        self, auth_client, db, seed_user,
+    ):
+        """An ordinary swipe merchant answered *never a purchase*."""
+        an_envelope(seed_user)
+        an_unexplained_outflow(seed_user, merchant="Walmart", amount="-57.96")
+        a_rule(seed_user, "Walmart")
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+
+        assert "Payments waiting for their home" in page
+        assert (
+            f'<a href="{self._register_url(seed_user)}">Change what you have '
+            f"said about Walmart</a>" in " ".join(page.split())
+        )
+
+    def test_an_answer_that_would_change_NOTHING_offers_no_link(
+        self, auth_client, db, seed_user,
+    ):
+        """THE FIRING CONTROL, and the case that is 9 of the developer's 9.
+
+        A card merchant answered *never a purchase* carries BOTH bars, and the
+        second is lifted by no answer at all -- so the register would show the
+        row and refuse every change made on it.
+        """
+        an_envelope(seed_user)
+        an_unexplained_outflow(
+            seed_user, merchant="Capital One Credit Card", amount="-793.23",
+            source_category=_CARD_PAYMENT,
+        )
+        a_rule(seed_user, "Capital One Credit Card")
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+        body = " ".join(page.split())
+
+        assert "Payments waiting for their home" in body
+        assert "Change what you have said about" not in body
+        # ...and the reason says why no answer would help, rather than leaving
+        # the owner to discover it at a refusal.
+        assert "which no answer lifts" in body

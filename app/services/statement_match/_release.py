@@ -89,7 +89,7 @@ route owns the unit of work.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 from sqlalchemy.orm import selectinload
@@ -180,6 +180,29 @@ class PlannedRemoval:
         is_container: Whether this row is the CONTAINER a created purchase
             went into rather than a subject the act names.  The two are
             removed on different terms; see the module docstring.
+        subject: The row itself, as :func:`planned_removals` loaded it --
+            threaded to :func:`_remove` rather than re-fetched by id (finding
+            **N-371**, plan step ``bank_import:X-gf-3``).
+
+            **It is what the ownership of a DESTRUCTION rests on.**  The delete
+            path's transaction arm did ``db.session.get(Transaction, row_id)``
+            and handed the result to ``transaction_service.delete_transaction``,
+            whose signature says *the user the caller proved owns it* and which
+            re-checks ``user_id`` nowhere -- so a row this function destroys
+            was owned only by derivation from where its id came from.  That is
+            the argument finding **N-358** was raised to stop accepting, one
+            path over.  Reached from here the row arrives by an in-memory walk
+            from a :class:`~app.models.statement_match.StatementMatch` already
+            filtered on ``user_id`` AND ``account_id``, with no id re-entering
+            a query in between.  **Its sibling arm never had the gap**:
+            ``entry_service.delete_entry`` re-validates ownership through the
+            parent transaction chain itself, and the asymmetry between the two
+            doors is what made this one invisible.
+
+            Excluded from equality and from ``repr``: what makes two planned
+            removals the same is which row they name, not which instance is
+            attached, and a mapper's ``repr`` in a log line is a lazy load
+            nobody asked for.
     """
 
     kind: RowKind
@@ -187,6 +210,9 @@ class PlannedRemoval:
     label: str
     cash_amount: Decimal
     is_container: bool
+    subject: "Transaction | TransactionEntry" = field(
+        compare=False, repr=False,
+    )
 
 
 @dataclass(frozen=True)
@@ -441,7 +467,7 @@ def _subject_removal(
     except AmountUnresolvable:
         return PlannedRemoval(
             kind=RowKind.TRANSACTION, row_id=subject.id, label=label,
-            cash_amount=Decimal("0.00"), is_container=False,
+            cash_amount=Decimal("0.00"), is_container=False, subject=subject,
         ), (
             f'Undoing this match would remove "{label}", which it created, '
             f"but the app can no longer work out what that row is worth -- so "
@@ -454,6 +480,7 @@ def _subject_removal(
         label=label,
         cash_amount=cash,
         is_container=False,
+        subject=subject,
     )
     if subject.version_id != creation.created_version_id:
         return row, (
@@ -504,6 +531,7 @@ def _container_removal(container: Transaction) -> "PlannedRemoval | None":
     return PlannedRemoval(
         kind=RowKind.TRANSACTION, row_id=container.id,
         label=container.name, cash_amount=cash, is_container=True,
+        subject=container,
     )
 
 
@@ -616,8 +644,20 @@ def _remove(row: PlannedRemoval, owner_id: int) -> None:
     ``TestReleasingAnActDoesNotWithdrawTwice``, whose first version released an
     act that had CREATED nothing and so never reached this function at all.
 
+    **It removes the row it was HANDED, and does not look one up** (finding
+    **N-371**, plan step ``bank_import:X-gf-3``).  The transaction arm did
+    ``db.session.get(Transaction, row.row_id)``, so the ownership of a row this
+    function DESTROYS rested on where its id had come from -- and
+    ``transaction_service.delete_transaction`` re-checks ``user_id`` nowhere,
+    its own signature saying *the user the caller proved owns it*.  The id is
+    gone from that path now: :attr:`PlannedRemoval.subject` is the instance
+    :func:`planned_removals` already walked to off a
+    :class:`~app.models.statement_match.StatementMatch` filtered on ``user_id``
+    and ``account_id``, so no id re-enters a query between the ownership check
+    and the delete.
+
     Args:
-        row: The planned removal.
+        row: The planned removal, carrying the row itself.
         owner_id: The user the route proved owns the account.
 
     Raises:
@@ -631,8 +671,7 @@ def _remove(row: PlannedRemoval, owner_id: int) -> None:
     if row.kind is RowKind.PURCHASE:
         entry_service.delete_entry(row.row_id, owner_id)
         return
-    subject = db.session.get(Transaction, row.row_id)
-    transaction_service.delete_transaction(subject, owner_id)
+    transaction_service.delete_transaction(row.subject, owner_id)
 
 
 def release_match(

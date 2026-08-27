@@ -226,7 +226,18 @@ def _creatable_lines(
         # the redundant producer call this module already refuses above.
         barred_by = bars.bar_for(line.merchant_id)
         if barred_by is not None:
-            parked.append(ParkedLine(line=line, barred_by=barred_by))
+            # **BOTH facts, because both bars can hold** (plan step
+            # ``bank_import:X-gf-3``): which one the line is parked BY decides
+            # what the screen says happened, and whether the OTHER also holds
+            # decides whether the owner has a door -- an answer they gave can
+            # be given again, and a source's filing is lifted by nothing.  Both
+            # come off the bars this pass already derived; the value asks
+            # nothing for itself.
+            parked.append(ParkedLine(
+                line=line,
+                barred_by=barred_by,
+                also_pays_an_account=bars.pays_an_account(line.merchant_id),
+            ))
             continue
         creatable.append(_one_creatable(
             line, _period_id_for(calendar, line.happened_on), by_period, view,
