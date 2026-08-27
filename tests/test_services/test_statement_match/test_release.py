@@ -301,7 +301,7 @@ class TestOnePressRecordsONEContainer:
         second_line = _a_swipe(seed_user, sequence=1, amount="-18.64")
 
         outcome = statement_match.apply_reviewed(
-            ReviewedBatch(consent=Consent.TICKED, matches=(), creations=(
+            ReviewedBatch(consent=Consent.TICKED, matches=(), incomes=(), creations=(
                 PurchaseCreation(
                     line_id=first_line.id, new_envelope=answer,
                 ),

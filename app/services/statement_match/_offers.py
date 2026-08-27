@@ -605,7 +605,7 @@ class BankLine:
         ask it** (finding **N-325**).  :func:`~._pairing.within_window` asks it
         to decide whether a purchase recorded after the line posted may still
         be paired -- it may, because the bank's own stated day is later too --
-        and :func:`~._reads._creatable_lines` asks it to decline OFFERING such a
+        and :func:`~._leftovers._creatable_lines` asks it to decline OFFERING such a
         line as a purchase at all, because ``entry_service.create_entry``
         refuses a purchase whose money left before it was spent and the screen
         would be rendering a chooser whose submission can never succeed.  Two

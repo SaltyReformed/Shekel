@@ -503,7 +503,7 @@ class TestABarredItemCostsOnlyItself:
         db.session.commit()
 
         outcome = statement_match.apply_reviewed(
-            ReviewedBatch(consent=Consent.TICKED, matches=(), creations=(
+            ReviewedBatch(consent=Consent.TICKED, matches=(), incomes=(), creations=(
                 PurchaseCreation(line_id=barred.id, new_envelope=NewEnvelope(
                     name=CARD_MERCHANT,
                     category_id=seed_user["categories"]["Groceries"].id,
@@ -777,6 +777,7 @@ class TestWhatTheScreenShowsInstead:
         outcome = statement_match.apply_reviewed(
             ReviewedBatch(
                 consent=Consent.TICKED,
+                incomes=(),
                 matches=(a_submission(
                     scope, lines=[line], transactions=[first, second],
                 ),),

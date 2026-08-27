@@ -28,7 +28,7 @@ from marshmallow import (
 
 from app import ref_cache
 from app.utils.dates import CALENDAR_DATE_MAX, CALENDAR_DATE_MIN
-from app.utils.digit_strings import MIN_ROW_ID, parse_row_id
+from app.utils.digit_strings import MIN_ROW_ID, is_ascii_digits, parse_row_id
 
 
 # ── Shared range validators (commit C-24) ─────────────────────────
@@ -439,3 +439,64 @@ def form_payload(form, schema):
         else:
             payload[key] = form[key]
     return payload
+
+
+#: The most digits a submitted ordering token may carry and still be READ as a
+#: number.  A rendered proposal's index is bounded by the batch ceiling in
+#: :mod:`~app.schemas.validation.statements`
+#: and a bank line's key by a 32-bit serial, so nine is far past anything this
+#: application emits -- and the bound is what licenses the ``int()`` below.
+#: :func:`~app.utils.digit_strings.is_ascii_digits` is TRUE for an arbitrarily
+#: long run of digits, which CPython then refuses to convert
+#: (``sys.get_int_max_str_digits()``, 4,300), and that module's own docstring
+#: says so in as many words: *"a true answer does NOT license ``int()``"*.
+MAX_ORDER_DIGITS: int = 9
+
+
+def order_token_key(raw: str) -> tuple:
+    """Return a total order over submitted ordering tokens.
+
+    Numeric where the token is a number this application could have emitted,
+    lexical otherwise -- so the applied order is the rendered order, which is
+    what the receipt reads down, and so **no submitted string can raise here**.
+
+    **``str.isdigit`` is the wrong predicate and this project already owns
+    that fact** (:mod:`app.utils.digit_strings`, plan step X-ae, finding
+    **N-136**): it is true for 888 characters, 128 of which make ``int()``
+    raise -- ``'\N{SUPERSCRIPT TWO}'`` among them.  A first draft of this
+    function used it and claimed in its own docstring that a crafted
+    submission "cannot raise a ``TypeError`` inside a sort", which guarded the
+    wrong exception one token before reintroducing ``ValueError``.  There is no
+    ``ValueError`` arm in ``app/error_handlers.py``, so ``apply=%C2%B2`` was a
+    500 on the door that applies a whole reviewed pass.  Found by adversarial
+    security review 2026-08-19.
+
+    **It is NOT :func:`~app.utils.digit_strings.parse_row_id`**, and the
+    difference is the domain rather than the strictness: this token is an
+    ORDINAL, not a row id, so ``0`` is a legitimate value -- it is the first
+    rendered proposal and the hand-build form's own hidden index -- where
+    ``parse_row_id`` refuses it by design.  Reading these through that function
+    would push the first item of every pass to the end.
+
+    **It is in this module because BOTH halves of the review screen submit
+    ordering tokens** -- the money pass
+    (:mod:`~app.schemas.validation.statements`) and the merchant-rule pass
+    (:mod:`~app.schemas.validation.merchant_rules`), which plan step
+    ``bank_import:X-gf-1`` split apart -- and a second spelling of *which
+    submitted strings may be read as numbers* is a security predicate stated
+    twice.  **A first version of this paragraph claimed that split had already
+    happened when it had not**, and the honest reason at the time was only the
+    line cap; the split shipped in the same commit, which is what made the
+    claim true rather than reworded.  Found by adversarial design review
+    2026-08-27.
+
+    Args:
+        raw: A submitted ``apply`` value, a ``destination-`` field's key, or
+            a ``rule-`` field's key.
+
+    Returns:
+        Its sort key.  Every ``str`` has one.
+    """
+    if is_ascii_digits(raw) and len(raw) <= MAX_ORDER_DIGITS:
+        return (0, int(raw), "")
+    return (1, 0, raw)

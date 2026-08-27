@@ -69,7 +69,7 @@
        href="{% if bank_control.awaiting %}{{ url_for('accounts.review_statements', account_id=bank_control.account_id) }}{% else %}{{ url_for('accounts.statements', account_id=bank_control.account_id) }}{% endif %}"
        data-import-url="{{ url_for('accounts.statements', account_id=bank_control.account_id) }}"
        data-review-url="{{ url_for('accounts.review_statements', account_id=bank_control.account_id) }}"
-       title="{% if bank_control.awaiting %}Review {{ bank_control.awaiting }} imported bank line{{ '' if bank_control.awaiting == 1 else 's' }} still to match{% else %}Import a bank statement, or review what is already imported{% endif %}">
+       title="{% if bank_control.awaiting %}Review {{ bank_control.awaiting }} imported bank line{{ '' if bank_control.awaiting == 1 else 's' }} your records do not explain{% else %}Import a bank statement, or review what is already imported{% endif %}">
       <i class="bi bi-bank"></i><span class="d-none d-sm-inline"> {% if bank_control.awaiting %}Review statements{% else %}Import statements{% endif %}</span>
       {% if bank_control.awaiting %}
       <span class="badge rounded-pill grid-bank-badge">{{ bank_control.awaiting }}</span>

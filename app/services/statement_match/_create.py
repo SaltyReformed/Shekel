@@ -135,6 +135,15 @@ def _load_line(
     unexplained lines are inflows, including three card refunds, so this is the
     ordinary shape rather than a crafted request.
 
+    **What it SENDS the owner to changed at ruling bank_import:R-GW**, and the sentence
+    with it.  It used to say *match it to the row it belongs to instead*,
+    which was the only other act there was -- and for an inflow no row
+    explains, it was advice to do something impossible: eight of the
+    developer's own deposits are smaller than the smallest row the match form
+    offers.  :func:`~._income.record_income_from_line` is the other half now,
+    so the refusal names both and the two doors are total over the lines the
+    schema allows (``ck_bank_statement_lines_amount_real_nonzero``).
+
     Args:
         creation: What the owner submitted.
         matched: What this account's matches have already claimed, as of this
@@ -154,8 +163,8 @@ def _load_line(
     if line.amount >= 0:
         raise ValidationError(
             "Only money LEAVING the account can be recorded as a purchase, "
-            "and that line is money coming in.  Match it to the row it "
-            "belongs to instead.  Nothing was changed."
+            "and that line is money coming in.  Record it as income, or match "
+            "it to the row it belongs to, instead.  Nothing was changed."
         )
     return line
 
