@@ -784,18 +784,11 @@ hides.
   see. Closes **N-372**, whose own count it corrected. Rulings **balance:R-HB**, **balance:R-HC**, **balance:R-HD**; opened
   **N-376**, **N-377**. As-built in the commit and its merge, `7a95e40e`.
 * [ ] **X-ao-2b** `docs(plans): an over-cap ruling's argument goes to its own step` -- closes
-  **balance:N-370**. The 25 rows over `RULINGS_ROW_CAP` hold 43,855 characters of overflow against
-  a 542.5-character median over the registry's 190 rows, and `bank_import:R-GD`
-  alone is 16,087. **The destination is RULED
-  (balance:R-HD)**: the AS-BUILT record of the step that shipped the ruling, or that step's live
-  specification where it has not shipped -- which is what this registry's own first sentence
-  already said and nothing graded. Measured 2026-08-27: NINE of `bank_import`'s 14 (`R-FV`, `R-FW`,
-  `R-FX`, `R-FY`, `R-GB`, `R-GC`, `R-GF`, `R-GJ`, `R-GG`; 14,949 characters) are cited by no step
-  entry in that document at all, live or shipped, because the spans that owned them were archived
-  under rule 5 -- and every one of the nine is already cited by an as-built record that exists.
-  **The OWNER is this step's first task, not its input**: 17 of the 25 rows name no step of their
-  own arc at all and only TWO name a SHIPPED one, so it is determined per row from the row's text,
-  from the arc-document entries that cite it, and from the row's own git history. **That third
+  **balance:N-370**, whose row carries the measurements and **balance:R-HD** the destination: the
+  AS-BUILT record of the step that shipped the ruling, its live specification otherwise.
+  **The OWNER is this step's first task, not its input** -- 17 of the 25 rows name no step of their
+  own arc at all and only TWO name a SHIPPED one -- determined per row from the row's text, from
+  the arc-document entries that cite it, and from the row's own git history. **That third
   source DECAYS and the refs that stop it decaying are named here rather than left to be found**
   (the recurrence session, 2026-08-27): `git log -S` keys on the row's TEXT, and both lifts
   rewrote every row, so a search against today's text lands on the lift rather than on the commit
@@ -803,13 +796,11 @@ hides.
   `bank_import` (31), and at `91f95f43~1` for `recurrence` (37), `pay_calendar` (33) and
   `credit_card` (8); `recurrence:R-R38` landed on dev between the two lifts and its pre-lift text
   is at `107add57`. Searching from those refs still resolves -- `R-R38` lands on `f7b0ce16`, whose
-  SUBJECT names `R-R38` and whose body names `R7d-c-1` at line 31, so the search finds the commit
-  and the owner is one line inside it rather than in the subject. Two specimens bound the work at
-  both ends. `bank_import:R-GD`, the widest row at 14,087 over, is NOT archive-bound: it is cited
-  inside LIVE entries TWICE, as `**R-GD(d)**` at `implementation_plan_bank_import.md:78` and as a
-  plain `**R-GD**` at :139, so rule 4's literal remedy applies and its argument goes to that step's
-  specification. **A peer census reported it uncited and the reason offered for that miss was also
-  wrong** -- a `**R-xx**`-only matcher finds the plain form at :139 -- so what is established here
+  SUBJECT names it and whose body names `R7d-c-1` at line 31. Two specimens bound the work at both
+  ends. `bank_import:R-GD`, the widest at 14,087 over, is NOT archive-bound: it is cited inside
+  LIVE entries twice, at `implementation_plan_bank_import.md:78` and :139, so rule 4's literal
+  remedy applies. **A peer census reported it uncited and the reason offered for that miss was
+  also wrong** -- a `**R-xx**`-only matcher finds the plain form at :139 -- so what is established
   is the disposition, not the diagnosis. And `recurrence:R-R38`'s owner `R7d-c-1` HAD shipped
   with no as-built record at all, so the recurrence session wrote one:
   `../../plans/historical/recurrence_r7dc1_as_built_2026-08-27.md`, on dev at `c5334e02`,
@@ -821,6 +812,12 @@ hides.
   neither the banner arm nor markdown lint until CI -- measured 2026-08-27, 33 files
   filtered. That is two configs wide, not one, and on this census 17 rows may need such a
   file.
+  **The finishing check on a hand-edited row is its CELL COUNT through
+  `_tables.UNESCAPED_PIPE_RX`**: `X-ao-2a` rewrote seven-column `N-370` as six on a bare
+  `|` split, deleting its finding sentence with every arm green -- and a NAIVE count is the
+  opposite trap, reporting the three rows that carry a literal `\|` broken and sending the
+  next reader to UN-escape `bank_import:R-FW`, the row `X-ao-1` repaired for that very
+  defect.
   **Cutting a row is a REVIEWED EDIT per ruling, never a truncation to fit** (rule 5), and the
   instrument this step owes is the lift's verifier INVERTED: every sentence removed from a row must
   resolve to text in the named as-built record, checked BEFORE the row is cut. Without that, "the
