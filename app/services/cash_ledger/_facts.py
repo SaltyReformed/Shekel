@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import selectinload
 
 from app.extensions import db
 from app.models.account import Account, AccountAnchorHistory
@@ -364,7 +364,7 @@ def planned_cash_rows(
 
     The PLAN half of the cash event stream, and the exact structural twin of
     :func:`app.services.cash_ledger.settled_cash_facts` beside it: same account /
-    scenario scope, same shared eligibility gate, same eager loads, same absence
+    scenario scope, same shared eligibility gate, same eager load, same absence
     of a period window.  The two differ in their status narrowing (settled there,
     Projected here) and in what they RETURN, and that second difference is the
     ruling:
@@ -414,7 +414,7 @@ def planned_cash_rows(
     Returns:
         ``list[Transaction]`` -- every still-Projected contributing row for the
         account in the scenario, unordered (the fold groups them by day), with
-        ``entries`` and ``pay_period`` populated.
+        ``entries`` populated.
     """
     return _unwindowed_contributing_rows(
         account_id, scenario_id, is_projected_clause(Transaction),
@@ -439,11 +439,29 @@ def _unwindowed_contributing_rows(
     the two loaders, not a leaf surface a consumer should reach -- which is also
     what keeps it out of the W9909 registry, structure doing what a fence entry
     would otherwise have to.  Sharing it is not tidiness: the account / scenario
-    scope, the contributing gate, and BOTH eager loads are individually
-    load-bearing (a missing ``selectinload(entries)`` is the seam that shipped two
-    different balances for one row in CRIT-01 / F-009, and the fold reads
-    ``pay_period`` for its attribution clamp), so a second hand-written copy is
-    exactly where one of them would go missing on one half only.
+    scope, the contributing gate, and ``selectinload(entries)`` are individually
+    load-bearing -- a missing ``selectinload(entries)`` is the seam that shipped
+    two different balances for one row in CRIT-01 / F-009 -- so a second
+    hand-written copy is exactly where one of them would go missing on one half
+    only.
+
+    **``joinedload(pay_period)`` was a THIRD option here and pay-calendar plan
+    step C4-a-1 deleted it, which is worth a paragraph because of what kept it
+    alive.**  It was the fold's -- ``_cash_fold._cash_plan`` read
+    ``txn.pay_period`` for its attribution clamp until that step moved the clamp
+    onto the owner's derived calendar.  Once that reader left, the load had no
+    consumer of its own at all: what it still did was warm SQLAlchemy's identity
+    map for a reader in another package, ``grid/_transaction_cell.html``, which
+    rendered ``t.pay_period.start_date`` from JINJA for its due-date caption.
+    Measured 2026-08-27 on a six-period ``/grid`` render carrying six projected
+    rows: 29 statements with the load and 35 without, of which
+    ``budget.pay_periods`` reads went 4 to 8 -- so deleting it alone would have
+    been a real regression, and keeping it would have written an accidental
+    cross-package coupling down as a contract.  Both halves went instead: the
+    two surfaces that draw that cell PUBLISH the payday it needs, and the load
+    went with the reader.  **The lesson is the shape rather than the site**: an
+    eager load whose stated reason has moved on is not dead weight, it is a
+    query budget some other reader is silently spending.
 
     **The status narrowing is a clause PARAMETER, and stays in SQL.**  Loading the
     whole contributing set and partitioning in Python would be one query instead
@@ -465,12 +483,11 @@ def _unwindowed_contributing_rows(
 
     Returns:
         ``list[Transaction]`` -- the matching rows, unordered, with ``entries``
-        and ``pay_period`` populated.
+        populated.
     """
     return (
         db.session.query(Transaction)
         .options(
-            joinedload(Transaction.pay_period),
             selectinload(Transaction.entries),
         )
         .filter(

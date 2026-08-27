@@ -191,16 +191,32 @@ def period_by_id(
     carries the correction and the five callers.
 
     Linear rather than a map built at construction, and the justification has
-    now narrowed TWICE.  It was "once per rule" (61 paydays against 46 live
-    rules on production); pay-calendar plan step C2-f2d-3 widened it to once
-    per generated ROW, when the recurrence engine's pricing lookup started
-    resolving an id back to a derived period; and **plan step C2-f3c deleted
-    that caller** -- the generation seam carries the derived period on the
-    placement, so there is nothing to look back up.  No caller runs this per
-    row today, and the worst remaining pattern is once per render, so the
-    second derived value an index would be is still not worth keeping in step
-    with :attr:`periods`.  Stated because each of those sentences described a
-    call pattern that has since changed.
+    now narrowed twice and WIDENED again.  It was "once per rule" (61 paydays
+    against 46 live rules on production); pay-calendar plan step C2-f2d-3
+    widened it to once per generated ROW, when the recurrence engine's pricing
+    lookup started resolving an id back to a derived period; plan step C2-f3c
+    deleted that caller, since the generation seam carries the derived period on
+    the placement; and **plan step C4-a-1 put a per-row caller back** --
+    ``balance_at._cash_fold._cash_plan``, through
+    :meth:`~._calendar.PayCalendar.require_period`, resolves every
+    still-projected row's span here.
+
+    **A map WOULD be faster and it is still not built, which is a size
+    judgement rather than a refutation.**  C4-a-1's own design review called
+    for an index; measured 2026-08-27 at the worst shape either database holds
+    -- the dev Checking account's 603 projected rows against 62 paydays -- the
+    scan costs **0.194 ms per fold** against **0.019 ms** for a dict built ONCE
+    per fold and then indexed 603 times -- so the review was right about the
+    direction and the factor is about ten.  (Rebuilding the dict per CALL, which
+    is what a naive index inside this function would do, measures 0.692 ms and
+    is worse than the scan; saying which thing was built when is the difference
+    between a number and a slogan.)  What the measurement decides is the MAGNITUDE: a fold is
+    memoized per account per read pass, so the whole saving on the widest
+    render this application has is a fifth of a millisecond, against a second
+    derived value that must then be kept in step with :attr:`periods`.  The
+    number is recorded so the next caller pattern is weighed against a figure
+    rather than against this paragraph -- and a per-row caller on a set an
+    order of magnitude larger would decide the other way.
 
     Args:
         periods: The owner's periods, in any order.  Identity is not a search

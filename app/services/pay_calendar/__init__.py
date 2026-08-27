@@ -98,6 +98,7 @@ from ._searches import (
     opening_payday,
     period_by_id,
 )
+from ._walks import paychecks_from
 from ._window import PeriodWindow
 
 __all__ = [
@@ -119,5 +120,6 @@ __all__ = [
     "final_covered_day",
     "latest_started_period",
     "opening_payday",
+    "paychecks_from",
     "period_by_id",
 ]

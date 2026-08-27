@@ -41,10 +41,14 @@ implementation fails rather than a comment asserting it:
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
-from app.utils.dates import DISPLAY_TIMEZONE
+import pytest
+
+from app.utils.dates import DISPLAY_TIMEZONE, attribution_date
 from app.enums import StatusEnum
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
+from app.models.pay_period import PayPeriod
+from app.services import pay_period_write
 from app.services.balance_at._cash_fold import (
     assembled_fold,
     balances_at,
@@ -52,6 +56,7 @@ from app.services.balance_at._cash_fold import (
 )
 from app.services.balance_at._fold import sample_cumulative
 from app.services.cash_ledger import dated_deltas, walk_cash_ledger
+from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
     add_entry,
     add_txn,
@@ -1417,3 +1422,283 @@ class TestTheDriftOracleWalksFiftyTwoPeriods:
         assert actual[seed_periods_52[19].id] == Decimal("9361.77")
         assert actual[seed_periods_52[20].id] == Decimal("10274.05")
         assert actual[seed_periods_52[51].id] == Decimal("50067.39")
+
+
+class TestThePlanClampsAgainstTheDerivedSpan:
+    """Pay-calendar plan step **C4-a-1**, and finding **P38**'s last site.
+
+    :func:`~app.services.balance_at._cash_fold._cash_plan` read a projected
+    row's span off ``txn.pay_period`` -- the STORED ``end_date``, a copy of
+    ``lead(start_date) - 1`` with nothing reconciling it to the paydays it
+    derives from -- while :func:`~app.services.balance_at._cash_fold.period_balances`
+    in the same module sampled that period at its DERIVED end.  One module, two
+    ends.  It now reads the OWNER's calendar
+    (:meth:`~app.services.pay_calendar.PayCalendar.require_period`), so both
+    halves of
+    this module answer from the paydays.
+
+    **The class is latent on real data, which is why it needs a planted
+    shape.**  Measured 2026-08-27 on production and on both dev clones: **0 of
+    62 stored ends disagree with the derivation, and 0 of 699 still-projected
+    rows would land on a different day** -- and ``pay_period_write``
+    rematerialises every end on every write, so the divergence is applied with
+    a direct UPDATE, under the writer, exactly as
+    ``test_cash_period_view.TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn``
+    applies its own.  ``tests/manual/verify_c4a1_cash_fold_equality.py`` is the
+    both-sides instrument those figures come from.
+
+    Both spans are exercised, because the derivation has two branches and only
+    one of them is a projection: a MIDDLE period's end is ``lead(start) - 1``
+    and the LAST one's is ``start + cadence_days - 1``
+    (:attr:`~app.services.pay_calendar.DerivedPeriod.end_is_projected`).
+    """
+
+    def test_a_row_dated_past_its_DERIVED_end_lands_on_that_end(
+        self, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """Stored end 01-20, derived end 01-15, a bill due 01-18: it lands 01-15.
+
+        Hand-computed against a ``$1,000.00`` opening asserted 2026-01-01, with
+        ``as_of`` 2026-01-05 so ruling R-G's floor (01-06) never binds.  A
+        still-projected ``$250.00`` expense is budgeted to period 0 and dated
+        2026-01-18; period 0's stored end is pushed to 01-20 while its paydays
+        keep it at 01-15 (the next payday is 01-16).
+
+        Reading the DERIVED span, ``attribution_date`` clamps 01-18 down to
+        01-15, so the fold steps ``-$250.00`` on 01-15 and every day from there
+        reads ``$750.00``.
+
+        **ONE assertion distinguishes the arms and it is the 01-15 one**: the
+        retired arm left the row on 01-18, so it read ``$1,000.00`` there where
+        this reads ``$750.00``.  The other two are held anyway and neither
+        fires -- 01-14 pins that nothing landed EARLY, and 01-18 is exactly
+        where the stored span put the row, so both arms agree on it.  *An
+        adversarial review measured that: this docstring claimed both dated
+        assertions fired, and the sibling test below is where that sentence is
+        actually true.*
+        """
+        account, scenario = seed_user["account"], seed_user["scenario"]
+        _opened_at(account, _instant(2026, 1, 1))
+        add_txn(
+            db.session, seed_user, seed_periods[0], "projected bill", "250.00",
+            due_date=date(2026, 1, 18),
+        )
+        db.session.query(PayPeriod).filter_by(id=seed_periods[0].id).update(
+            {"end_date": date(2026, 1, 20)},
+        )
+        db.session.commit()
+
+        folded = _fold(
+            account, scenario,
+            [date(2026, 1, 14), date(2026, 1, 15), date(2026, 1, 18)],
+            as_of=date(2026, 1, 5),
+        )
+
+        assert folded[date(2026, 1, 14)] == Decimal("1000.00")
+        assert folded[date(2026, 1, 15)] == Decimal("750.00")
+        assert folded[date(2026, 1, 18)] == Decimal("750.00")
+
+    def test_the_LAST_periods_end_is_the_PROJECTED_one_and_clamps_there(
+        self, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The other branch of the derivation, which had no test at all.
+
+        A middle period's derived end is ``lead(start_date) - 1``; the LAST
+        one's is ``start_date + cadence_days - 1``, the only end the derivation
+        PROJECTS rather than reads off the next payday (ruling "The last
+        payday's period end").  A test that only plants a middle period grades
+        one branch and reads as though it graded both.
+
+        ``seed_periods`` is ten biweekly paydays from 2026-01-02, so period 9
+        opens 2026-05-08 and its derived end is ``05-08 + 13 = 2026-05-21``.
+        Its stored end is pushed to 2026-06-30 and a still-projected
+        ``$250.00`` expense budgeted to it is dated 2026-06-15 -- inside the
+        corrupted span and seven weeks past the real one.
+
+        Hand-computed against the same ``$1,000.00`` opening: the clamp lands
+        the row on 2026-05-21, so 05-20 still reads ``$1,000.00`` and both
+        05-21 and 06-14 read ``$750.00``.  **Against the retired arm 05-21 and
+        06-14 BOTH read ``$1,000.00``** -- the row sat on 06-15 -- so each of
+        those two assertions distinguishes the arms on its own.
+        """
+        account, scenario = seed_user["account"], seed_user["scenario"]
+        last = seed_periods[-1]
+        _opened_at(account, _instant(2026, 1, 1))
+        add_txn(
+            db.session, seed_user, last, "projected bill", "250.00",
+            due_date=date(2026, 6, 15),
+        )
+        db.session.query(PayPeriod).filter_by(id=last.id).update(
+            {"end_date": date(2026, 6, 30)},
+        )
+        db.session.commit()
+
+        derived = calendar_for(account.user_id).period_by_id(last.id)
+        assert derived.start_date == date(2026, 5, 8)
+        assert derived.end_date == date(2026, 5, 21)
+        # The branch under test: this end came from the cadence, not from a
+        # following payday.  Without it the case is a middle period again.
+        assert derived.end_is_projected is True
+
+        folded = _fold(
+            account, scenario,
+            [date(2026, 5, 20), date(2026, 5, 21), date(2026, 6, 14)],
+            as_of=date(2026, 1, 5),
+        )
+
+        assert folded[date(2026, 5, 20)] == Decimal("1000.00")
+        assert folded[date(2026, 5, 21)] == Decimal("750.00")
+        assert folded[date(2026, 6, 14)] == Decimal("750.00")
+
+    def test_the_control_shows_the_stored_span_would_place_it_elsewhere(
+        self, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The firing control: the planted divergence is real, not a no-op.
+
+        Both tests above would pass vacuously on any schedule whose two ends
+        coincide, which is every schedule either production-shaped database
+        holds.  This reads both ends off the same corrupted fixtures and
+        applies the SHARED clamp to each, so the day the retired arm produced
+        is shown rather than argued -- for the middle period and for the last
+        one, because they are different branches of the derivation.
+        """
+        account = seed_user["account"]
+        last = seed_periods[-1]
+        db.session.query(PayPeriod).filter_by(id=seed_periods[0].id).update(
+            {"end_date": date(2026, 1, 20)},
+        )
+        db.session.query(PayPeriod).filter_by(id=last.id).update(
+            {"end_date": date(2026, 6, 30)},
+        )
+        db.session.commit()
+
+        calendar = calendar_for(account.user_id)
+        first_stored = db.session.get(PayPeriod, seed_periods[0].id)
+        first_derived = calendar.period_by_id(seed_periods[0].id)
+        last_stored = db.session.get(PayPeriod, last.id)
+        last_derived = calendar.period_by_id(last.id)
+
+        assert first_stored.end_date == date(2026, 1, 20)
+        assert first_derived.end_date == date(2026, 1, 15)
+        assert attribution_date(
+            date(2026, 1, 18), first_stored.start_date, first_stored.end_date,
+        ) == date(2026, 1, 18)
+        assert attribution_date(
+            date(2026, 1, 18), first_derived.start_date,
+            first_derived.end_date,
+        ) == date(2026, 1, 15)
+
+        assert last_stored.end_date == date(2026, 6, 30)
+        assert last_derived.end_date == date(2026, 5, 21)
+        assert attribution_date(
+            date(2026, 6, 15), last_stored.start_date, last_stored.end_date,
+        ) == date(2026, 6, 15)
+        assert attribution_date(
+            date(2026, 6, 15), last_derived.start_date, last_derived.end_date,
+        ) == date(2026, 5, 21)
+
+
+class TestARowFiledOutsideThePassesCalendarIsRefused:
+    """The one state the span lookup cannot answer, and it REFUSES.
+
+    ``budget.transactions.pay_period_id`` is NOT NULL and a
+    :class:`~app.services.pay_calendar.PayCalendar` is one owner's COMPLETE
+    saved payday set, so the lookup is total whenever the two were read from one
+    consistent picture of the database.  Balance finding **N-358** is the state
+    where they were not, and what makes this fold exposed to it is its ORDER:
+    it derives the calendar BEFORE it loads the rows, so a payday appended in
+    between leaves rows filed in a period the calendar never saw.
+    ``balance:X-i3-a`` binds a GET to ``REPEATABLE READ, READ ONLY`` and every
+    measured caller of this fold is a GET -- but ``/grid`` and ``/dashboard``
+    each split a GET into three transactions around their ``write_transaction``
+    block, so "a GET is one snapshot" is NOT the rule and
+    :meth:`~app.services.pay_calendar.PayCalendar.require_period` says so.
+    ``balance:X-i5`` owns closing it; until then the fold refuses rather than
+    placing a row against a span it cannot read.
+
+    **The mechanism is SIMULATED rather than re-measured**, which is the only
+    way to grade an inference: two statements of one pass, with the append
+    committed between them, is what the concurrent case does to this reader and
+    what it does can be reproduced in one session.
+    """
+
+    def test_a_payday_appended_after_the_pass_read_its_calendar_RAISES(
+        self, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The pass holds ten paydays; the row it then loads names an eleventh.
+
+        The pass memoizes the calendar FIRST (which is what a render does --
+        every per-period entry asks for it), an eleventh payday is then recorded
+        through the one write door and repopulated with a still-projected row,
+        and the fold is assembled afterwards.  Its plan load sees the new row;
+        its calendar does not hold the new period.
+
+        What is asserted is the REFUSAL, and that it names both ids: the row and
+        the period are what identify the pair for whoever has to investigate.
+        """
+        account, scenario = seed_user["account"], seed_user["scenario"]
+        ctx = read_pass(account, scenario, date(2026, 1, 5))
+        held = ctx.calendar()
+        assert len(held.periods) == 10
+
+        appended = pay_period_write.record_paydays(
+            user_id=seed_user["user"].id,
+            first_payday=date(2026, 1, 2),
+            num_periods=11,
+            cadence_days=14,
+        )
+        assert len(appended) == 1
+        repopulated = add_txn(
+            db.session, seed_user, appended[0], "repopulated bill", "250.00",
+            due_date=date(2026, 5, 25),
+        )
+        db.session.commit()
+
+        with pytest.raises(RuntimeError) as raised:
+            assembled_fold(account, ctx)
+
+        # BOTH ids, each anchored: a bare ``id=11`` substring is satisfied by
+        # ``transaction id=115``, so the pair would not actually be graded.
+        message = str(raised.value)
+        assert f"transaction id={repopulated.id} " in message
+        assert f"pay period id={appended[0].id}," in message
+        assert "does not hold" in message
+
+    def test_the_control_shows_the_SAME_shape_folds_on_a_fresh_pass(
+        self, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The firing control: it is the STALE calendar that refuses, not the row.
+
+        Same append, same repopulated row, a pass built AFTER it -- which is
+        what ``app/`` does today (a write path that records a payday and then
+        re-renders builds a fresh context) and what every GET gets for free
+        under one snapshot.  It folds, and the row lands on its own due date:
+        2026-05-25 is inside the appended period's derived span, so nothing
+        clamps and ``$750.00`` is the close.
+
+        Without this the test above could pass for the wrong reason -- a
+        repopulated row the fold refuses on some other ground would look
+        identical.
+        """
+        account, scenario = seed_user["account"], seed_user["scenario"]
+        _opened_at(account, _instant(2026, 1, 1))
+        appended = pay_period_write.record_paydays(
+            user_id=seed_user["user"].id,
+            first_payday=date(2026, 1, 2),
+            num_periods=11,
+            cadence_days=14,
+        )
+        add_txn(
+            db.session, seed_user, appended[0], "repopulated bill", "250.00",
+            due_date=date(2026, 5, 25),
+        )
+        db.session.commit()
+
+        folded = _fold(
+            account, scenario,
+            [date(2026, 5, 24), date(2026, 5, 25)],
+            as_of=date(2026, 1, 5),
+        )
+
+        assert folded[date(2026, 5, 24)] == Decimal("1000.00")
+        assert folded[date(2026, 5, 25)] == Decimal("750.00")

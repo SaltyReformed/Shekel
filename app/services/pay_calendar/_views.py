@@ -12,8 +12,15 @@ one:
 :class:`~._calendar.PayCalendar` is the owner's whole schedule as a VALUE --
 the paydays, the derivation over them, and the questions asked OF one period --
 while everything here answers a different shape of question, "which SLICE of
-this schedule does a surface report over", and every one of them returns a
-:class:`~._window.PeriodWindow`.
+this schedule does a surface report over".
+
+**Five of the six return a** :class:`~._window.PeriodWindow` **and one does
+not**, which is the correction plan step R16-b-1 owed and did not make when it
+added the exception.  :func:`projected_paychecks` is a CONTINUATION rather than
+a slice -- an unbounded generator past the saved horizon -- and it lives here
+because :func:`axis_window` consumes it as well as :mod:`._walks` does, so it
+belongs where both can reach it.  The shape it serves is named by that module;
+this one keeps the producer.
 
 **The dependency runs one way and that is what the split buys.**  These are
 free functions over a period tuple, so a view producer reads only what a caller
@@ -64,7 +71,7 @@ def projected_paychecks(
     **The ONE loop that steps the forward continuation**, and it is a function
     because it was two (plan step **R16-b-1**).  :func:`axis_window` walked it to
     a requested ``last_day`` and
-    :meth:`~._calendar.PayCalendar.paychecks_from` walked it to the end of the
+    :func:`~._walks.paychecks_from` walked it to the end of the
     application's calendar; the two are the same recurrence with different stop
     conditions, and a second implementation of "where does the next paycheck
     land" is exactly the class ledger row **P6** counted seven of.

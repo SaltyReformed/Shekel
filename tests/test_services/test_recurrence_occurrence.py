@@ -1135,7 +1135,7 @@ class TestThePeriodUnit:
         :func:`_bounded` stops on the first occurrence past the caller's
         window, so a walk whose window lies beyond every date this application
         can express has to run out on its own.
-        :meth:`~app.services.pay_calendar.PayCalendar.paychecks_from` bounds it
+        :func:`~app.services.pay_calendar.paychecks_from` bounds it
         at :data:`~app.utils.dates.CALENDAR_DATE_MAX` exactly as
         :func:`~app.services.recurrence._months.walk_months` does, so the
         sequence is finite and a consumer that forgets to stop pulling does not

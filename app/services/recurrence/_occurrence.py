@@ -243,7 +243,7 @@ from app.enums import (
     RecurrenceUnitEnum,
 )
 from app.exceptions import ShekelError
-from app.services.pay_calendar import DerivedPeriod, PayCalendar
+from app.services.pay_calendar import DerivedPeriod, PayCalendar, paychecks_from
 from app.services.recurrence._months import (
     month_ordinal,
     months_per_step,
@@ -368,7 +368,7 @@ def _period_walk(
     The horizon is a MATERIALISATION boundary, not a fact about the cadence:
     an owner goes on being paid after the last payday anyone has saved, so
     this sequence goes on naming paydays.
-    :meth:`~app.services.pay_calendar.PayCalendar.paychecks_from` is where
+    :func:`~app.services.pay_calendar.paychecks_from` is where
     that continuation lives, beside the derivation it continues, and it bounds
     the sequence at :data:`~app.utils.dates.CALENDAR_DATE_MAX` exactly as
     :func:`~._months.walk_months` does -- so this walk stops where the MONTH
@@ -385,7 +385,7 @@ def _period_walk(
         Qualifying paychecks' ``start_date`` values, ascending -- saved where
         the schedule reaches, projected at the owner's cadence beyond it.
     """
-    for period in calendar.paychecks_from(resolved.starts_on):
+    for period in paychecks_from(calendar, resolved.starts_on):
         phase = period.period_index - resolved.offset_periods
         if phase % resolved.interval_n != 0:
             continue

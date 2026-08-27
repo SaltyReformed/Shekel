@@ -11,7 +11,7 @@ what reached `main` is a MEASUREMENT (`git log --oneline origin/main..dev`).
 section 3 named were two stale and two moved, and five more were named by no step at all, which row
 **P70**'s query-position census structurally could not see. The leaves ARE that census: five take
 the readers off the columns one PACKAGE at a time, one makes an owner's recorded cadence a foreign
-key, and the last drops the columns. **`C4-a-1` is next.**
+key, and the last drops the columns. **`C4-a-1` has SHIPPED; `C4-a-2` is next.**
 
 **`C10`-`C12` came OUT of `C2-f3`** on 2026-08-19 for gating C4 on work it does not depend on: the
 salary package's clock (**P49**, which `C2-f3a` wrongly closed), the layer predicate (**P56**) and
@@ -53,6 +53,7 @@ registries are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
 | **`C4`'s shape** | **DECOMPOSED into SEVEN leaves. Ruled 2026-08-25 (developer)**, on the census re-measured that day: five reader leaves split by PACKAGE (`C4-a-1` .. `C4-a-5`), a schedule-row foreign key (`C4-b`), and the drop (`C4-c`). Eighteen-to-nineteen signature changes across five packages, plus a destructive migration, plus 63 `PayPeriod(...)` constructions in 35 test files that pass a dropped column, is the shape ruling "`C2-f2`'s shape" refused as one commit at a smaller size. The readers come off the columns first with NO schema change, each leaf ending at a package that names neither column; then the schedule row becomes guaranteed and the inferred cadence dies; then the columns drop. Rejected: three commits (`C4-a` whole is the five-package diff this ruling exists to refuse, and it cannot be reverted precisely), and folding `C4-b` into `C4-c` (an additive guarantee and a destructive drop would revert together, and `resolve_cadence`'s fallback death would land inside a schema migration rather than in front of one) |
 | **How an owner's schedule row is guaranteed** | **A FOREIGN KEY, not a write-door discipline. Ruled 2026-08-25 (developer)**, row **P8**. `budget.pay_periods.user_id` gains a second FK to `budget.pay_schedule (user_id)` -- already UNIQUE as `uq_pay_schedule_user` -- `ON DELETE CASCADE`, beside the CASCADE to `auth.users` it already carries. A payday for an owner whose cadence is not recorded becomes UNCONSTRUCTIBLE rather than merely unwritten, which is what lets `resolve_cadence`'s inferring fallback be DELETED rather than left as a branch no state can reach. Measured 2026-08-25 on both databases: 0 owners hold paydays without a schedule row, so the backfill writes nothing and the constraint takes clean. Rejected: leaving the invariant on `pay_period_write` and `auth_service.register_user`, where a violation surfaces as a `PayCalendarError` on a bare 500 (row **P35**) -- a symptom, at read time, on whichever money screen the owner opened first |
 | **Where the attribution CLAMP lives** | **On the value: `DerivedPeriod.attribution_day`, and `utils.dates.attribution_date` is DELETED. Ruled 2026-08-25 (developer)**, landing at `C4-a-2`. Its three live callers each pass one period's two bounds as separate arguments, which is a pairing a caller can get wrong -- "an argument a caller can get wrong is a defect, not a contract", which `_cash_fold`'s own docstring already cites -- and after `C4-a-1` and `C4-a-2` every one of them holds a `DerivedPeriod`, so the free function's signature outlives its last reason to exist. `DerivedPeriod.covers` lands with it, for the three sites that open-code `start_date <= day <= end_date`. **The rule's BODY moves rather than being wrapped**: `app.utils.dates` cannot import `pay_calendar` (`_derive` imports `app.utils.dates`, so a delegating free function would close a cycle), so a method beside a surviving function would be two independent implementations of one clamp. Rejected: keeping the free function and changing only where its bounds come from (the mis-pairable signature survives with no caller that needs it), and adding the method BESIDE it (two spellings of one rule, which is the denormalization this arc exists to remove) |
+| **How a transaction's OWNER is proved** | **A COLUMN with two COMPOSITE FOREIGN KEYS, which is neither remedy row P75's fork listed. Ruled 2026-08-27 (developer)**, landing at `C13`. `budget.transactions` carries no `user_id`, so its owner IS its pay period's -- and nothing requires that owner to be its ACCOUNT's, which makes a row filed in a stranger's paycheck EXPRESSIBLE. The fork offered the owner's CALENDAR against a `user_id`-filtered JOIN, and both are ways of ASKING; this makes the question unanswerable by making the state unconstructible. The row gains `user_id` and two composite FKs -- `(account_id, user_id)` against `budget.accounts (id, user_id)`, whose `uq_accounts_id_user` superkey already exists and which `fk_account_external_identities_owner` and `fk_statement_matches_owner` already target that way, and `(pay_period_id, user_id)` against `budget.pay_periods (id, user_id)`, which needs one added. `fk_transactions_reconciled_by` is already a composite FK on this very table, so the shape is in the house. It also retires the NINETEEN hand-written ownership comparisons P75 counts: an owner becomes a column to filter on rather than a relationship each door walks. Measured 2026-08-27: **0 mismatched rows on production and on both dev clones**, so the constraint takes clean. Rejected: the calendar and the JOIN, which leave the state writable and disagree with each other on adjacent doors -- the denormalisation this arc exists to remove |
 | **What holds a `tests/manual/` harness to the code it measures** | **The lint gate, at `E,F` only. Ruled 2026-08-18 (developer)**, ledger row **P66**. These are the proof instruments every cutover here is verified with, and nothing checked them: pytest does not collect the directory, CI linted only `app/`, and each probe's `_guard` records a raise AS DATA -- so a signature change makes a harness dump `{"RAISED": ...}` where a figure belongs, and a before/after diff of two such runs reads BYTE-IDENTICAL over a region never measured. FOUR sites were already dead when this was found, one since `C2-f2d-3`. `E,F` and NOT the 10.00/10 floor the other three trees hold: these scripts legitimately duplicate one another and branch wide, and what is gated is the class that rotted them. A both-sides harness naming a HEAD-only API carries a scoped disable with a `Pylint:` rationale. Rejected: a pytest smoke test that runs each harness (stronger, but it needs a seeded owner rich enough to reach every probe and the both-sides files would need skips), and leaving it recorded |
 
 ---
@@ -266,6 +267,11 @@ their only live specimen from them, which both `_staging` docstrings predict and
       `loan_recurrence_sync` is a WRITER and takes its own by design, so the rule carves it out or
       takes it from its caller. Collapses the +1 `C2-f3a` left on `/analytics/taxes`. Closes
       **P56**, **P69**.
+- [ ] **C13 -- a transaction's owner is a COLUMN**, per the ruling of that name. Expand / backfill /
+      contract: `user_id` NULLABLE, backfilled from `pay_periods.user_id`; `UNIQUE (id, user_id)` on
+      `budget.pay_periods`; both composite FKs; `SET NOT NULL`. P75's nineteen comparisons go in a
+      SECOND leaf. **Own review pass**: the busiest table in the schema, and a downgrade cannot
+      re-add a constraint a cross-owner write invalidated while it was off. Closes **P75**.
 - [ ] **C12 -- one current-paycheck producer.** The THREE implementations become one, which needs a
       RULING first because it changes what `/savings` and `/retirement` publish. The merged producer
       gives `income_service`'s amount basis a threaded calendar, so `balance:X-i1` and this step
@@ -291,14 +297,10 @@ untouched; each survivor is an `AttributeError` or a `ProgrammingError` the day 
 (`:939`) and `pay_period_locks` (`:215`) read `DerivedPeriod` values, and
 `settings/_pay_periods_manage.html` has since `C2-f3b`.
 
-- [ ] **C4-a-1 -- the balance seam's attribution clamp.** `balance_at/_cash_fold._cash_plan` reads
-      `txn.pay_period` per planned row (`:675-677`). It and `assemble` take a REQUIRED `PayCalendar`
-      and resolve each row through `period_by_id`, which is the shape ruling "How the CONTRIBUTION
-      tier learns its periods" already gave `_asset_fold.resolve` one module over -- a calendar
-      carries neither a scenario nor a clock, so passing one reintroduces nothing. All four
-      `assemble` call sites hold a `BalanceContext` and pass `ctx.calendar()`; `fold_cash_balances`,
-      `fold_cash_day_facts` and `cash_period_balances` reach FIVE arguments, which is the ceiling
-      and not past it.
+- [x] **C4-a-1 -- the balance seam's attribution clamp.** `8962e073` + `2895f693`. Closed **P38**.
+      *Its specification here described a build `balance:X-i4` had already made impossible -- five
+      public entries each taking a `PayCalendar` -- and the shipped shape changes no public
+      signature at all. The commits are the record.*
 - [ ] **C4-a-2 -- the reconcile panel, and the clamp moves onto the value.** `_rows.attributed_on`
       reads `txn.pay_period` (`:271-273`) and `_assemble._block_headings` SELECTS
       `PayPeriod.end_date` (`:106`); `lands_on_or_before` and `outstanding_rows` thread between

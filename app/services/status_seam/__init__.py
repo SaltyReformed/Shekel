@@ -87,11 +87,12 @@ from app.services.status_seam._record import (
 )
 from app.services.status_seam._refusals import (
     StatusBearingRow,
+    day_is_in_the_future,
+    reject_figure_without_settled_status,
     reject_future_settle_day,
     reject_settle_day_without_a_record,
     reject_settle_day_without_settled_status,
     reject_settlement_without_settled_status,
-    reject_figure_without_settled_status,
 )
 from app.services.status_seam._seam import (
     apply_status_change,
@@ -108,6 +109,7 @@ __all__ = [
     "honoured_correction",
     "recorded_settlement",
     "reject_figure_without_settled_status",
+    "day_is_in_the_future",
     "reject_future_settle_day",
     "reject_settle_day_without_a_record",
     "reject_settle_day_without_settled_status",

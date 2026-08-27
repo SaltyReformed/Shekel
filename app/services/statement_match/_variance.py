@@ -73,15 +73,10 @@ from __future__ import annotations
 import logging
 from decimal import Decimal
 
-from app import ref_cache
-from app.enums import SettledDayBasisEnum, StatusEnum, TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.transaction import Transaction
-from app.services import transaction_service
 from app.services.cash_ledger import off_statement_sum
-from app.services.scenario_resolver import require_baseline_scenario
-from app.services.settle_day import SettleDay
 from app.utils.log_events import (
     BUSINESS,
     EVT_STATEMENT_RESIDUAL_RECORDED,
@@ -89,10 +84,10 @@ from app.utils.log_events import (
 )
 from app.utils.money import MONEY_COLUMN_MAX, round_money
 
-from ._candidates import transaction_candidate
 from ._offers import CandidateRow, MatchDays, RowKind, merchant_label
 from ._sides import MatchSides
 from ._scope import ReviewScope
+from ._uncategorized import mint_uncategorized
 
 _logger = logging.getLogger(__name__)
 
@@ -101,12 +96,6 @@ _logger = logging.getLogger(__name__)
 #: together on any name-ordered list and none of them reads as a budget line
 #: somebody planned (developer, 2026-08-23).
 _NAME_PREFIX: str = "Statement difference"
-
-#: How long ``budget.transactions.name`` is.  The merchant is the bank's own
-#: string and this door writes it directly, so the composed name is cut to fit
-#: rather than left to the column to refuse -- the same bound
-#: ``_create.create_purchase_from_line`` applies to a purchase's description.
-_NAME_LIMIT: int = 200
 
 
 def _named_for(lines) -> str:
@@ -120,17 +109,24 @@ def _named_for(lines) -> str:
 
     :func:`~._offers.merchant_label` is what supplies it, and it is total: the
     bank's own merchant where the source names one, else the whole description.
-    ``budget.transactions.name`` is NOT NULL and this door writes it directly.
+
+    **It does NOT cut the name to the column, and that is the refactor rather
+    than an omission** (plan step ``bank_import:X-gf-1``).
+    ``budget.transactions.name`` has ONE bound and
+    :func:`~._uncategorized.mint_uncategorized` is the one writer of that
+    column here, so it applies it -- for its other caller as well as this one.
+    Cutting here too would be the same rule in two places, which is what this
+    package calls a root cause rather than a belt.
 
     Args:
         lines: The match's bank lines, at least one.
 
     Returns:
-        The composed name, cut to :data:`_NAME_LIMIT`.
+        The composed name, uncut.
     """
     latest = max(lines, key=lambda line: (line.posted_on, line.id))
     named = merchant_label(latest.merchant_name, latest.description)
-    return f"{_NAME_PREFIX}: {named}"[:_NAME_LIMIT]
+    return f"{_NAME_PREFIX}: {named}"
 
 
 #: The last clause of every refusal this module writes.  One spelling, because
@@ -497,57 +493,31 @@ def mint(
 ) -> CandidateRow:
     """Record the movement a group's rows do not account for.
 
-    Ruling **R-FN**'s ordinary accepted row, built and settled here and
-    returned as the match member that makes the group add up.
+    Ruling **R-FN**'s ordinary accepted row, returned as the match member that
+    makes the group add up.
 
-    **It is born Projected and settled through the app's own verb**, never
-    assigned a settled status directly: ``status_seam.apply_status_change`` is
-    the ONE door into the settled band and a row may not be born in one, which
-    is the discipline :func:`~._create._create_envelope` states and plan step
-    ``balance:X-aj2`` makes structural.  ``transaction_service.apply_requested_status``
-    is the same verb :func:`~._accept._apply_day` moves every other member
-    with, so this opens no fourth settle door -- and it is what reconciles the
-    ledger, which is how the row reaches the Uncategorized account at all.
-
-    **It carries NO category on purpose** (**R-FN**), and that is what routes
-    it: ``posting_service._settled_target`` books a NULL-category row's counter
-    leg to the per-(owner, class) Uncategorized fallback.  Measured 2026-08-23
-    on a production clone: 0 of 1,013 transactions carry a NULL category and no
-    fallback ledger account exists yet, so this door is the first writer of
-    both -- which is why the end-to-end proof is a test over the LEDGER and not
-    over the row.
-
-    **It OWNS its amount** (``amount_source_id`` NULL beside a stored figure,
-    which ``ck_transactions_amount_ownership`` pairs): it names no template, no
-    transfer and no card spend, so there is no derivation for it to read.  The
-    stored figure is the MAGNITUDE and the direction is the transaction TYPE,
-    which is what ``ck_transactions_estimated_amount`` (``>= 0``) requires.
-
-    **It is the BASELINE scenario, unconditionally**, for
-    :func:`~._create._create_envelope`'s reason: a what-if scenario is a
-    hypothesis about money that has not moved, and this row records money the
-    bank has already moved.
+    **The ROW is minted by :func:`~._uncategorized.mint_uncategorized` and not
+    here** (plan step ``bank_import:X-gf-1``, ruling **bank_import:R-GW**).  Every clause of
+    what that row IS -- no category, born Projected and settled through the
+    app's own verb, the bank's posting day on the ``observed`` basis, owning
+    its amount, baseline scenario -- is decided by the fact that a bank
+    statement is why it exists, which is equally true of the line ruling
+    **bank_import:R-GW** records as INCOME.  Two spellings of one money rule is this
+    package's own root cause, so there is one writer and this function supplies
+    the two things that are genuinely its own: what the row is CALLED, and the
+    event that says a MATCH's difference is what produced it.
 
     Does NOT commit -- the caller owns the session boundary.
 
     Args:
         difference: The DOOR's own figure
-            (:attr:`MatchSides.difference`), already reconciled against the
-            one the owner accepted by
-            :func:`reject_unrecordable`.  Passed rather than
-            re-derived here, because the value that was tested and the value
-            that is written must be one.
+            (:attr:`MatchSides.difference`), already reconciled against the one
+            the owner accepted by :func:`reject_unrecordable`.  Passed rather
+            than re-derived here, because the value that was tested and the
+            value that is written must be one.
         pay_period_id: The paycheck this movement belongs to, resolved by the
-            caller through :meth:`~._scope.ReviewScope.period_holding`.
-            **Resolved THERE rather than here, and that is a correctness
-            change rather than tidying**: that lookup can refuse, and by the
-            time this runs every member row has already been settled -- so a
-            refusal raised here would leave written work behind and lean on
-            the batch's SAVEPOINT, which :mod:`._accept` explicitly declines
-            to depend on.  Found by adversarial financial review 2026-08-23,
-            which also measured the reachability: a line posted past the last
-            SAVED pay period is not split off by the review screen's own
-            bounds, so the refusal is live rather than theoretical.
+            caller through :meth:`~._scope.ReviewScope.period_holding` for the
+            reason :func:`~._uncategorized.mint_uncategorized` states.
         scope: The pass, which is the ONE statement of whose account and whose
             baseline scenario this row belongs to.
         lines: The match's bank lines, for the row's name.
@@ -559,62 +529,18 @@ def mint(
 
     Raises:
         PostingError: From the ledger reconcile, on a broken invariant.
-        RuntimeError: When the candidate constructor refuses the row this
-            function has just created -- a broken contract rather than
-            anything an owner did, so it fails the request loud.  **This
-            function raises no DESIGNED refusal**: every one this act owes has
-            fired before it is called, which is what lets it write.
+        RuntimeError: When the candidate constructor refuses the row just
+            created, which is the shared writer's contract.
     """
-    row = Transaction(
-        account_id=scope.account_id,
-        pay_period_id=pay_period_id,
-        scenario_id=require_baseline_scenario(scope.owner_id).id,
-        status_id=ref_cache.status_id(StatusEnum.PROJECTED),
-        name=_named_for(lines),
-        category_id=None,
-        transaction_type_id=ref_cache.txn_type_id(
-            TxnTypeEnum.INCOME if difference > 0 else TxnTypeEnum.EXPENSE,
-        ),
-        estimated_amount=abs(difference),
-        is_envelope=False,
+    candidate = mint_uncategorized(
+        _named_for(lines), difference, pay_period_id, days.posts_on, scope,
     )
-    db.session.add(row)
-    # The settle verb reads the row's own type and id, so it must exist first.
-    db.session.flush()
-    transaction_service.apply_requested_status(
-        row,
-        transaction_service.settled_status_id(row),
-        settle_day=SettleDay(
-            # ``observed``: this row exists BECAUSE a bank line showed the
-            # money, so its day is a day a statement showed rather than a
-            # bound or a day the owner typed (plan step **X-az**).
-            day=days.posts_on, basis=SettledDayBasisEnum.OBSERVED,
-        ),
-    )
-    candidate = transaction_candidate(row, scope.calendar, difference)
-    if candidate is None:  # pragma: no cover - defended, not reachable
-        # ``transaction_candidate`` answers ``None`` for a row worth nothing or
-        # one whose period this calendar does not carry.  Neither can happen
-        # here -- the figure is non-zero by the refusal that let this run, and
-        # the period was resolved from THIS calendar by this act's own caller.
-        #
-        # **A RuntimeError rather than a ValidationError, and the difference
-        # matters**: this row is already written and settled by now, so a
-        # designed refusal would render "Nothing was changed" over money that
-        # had moved.  Nothing catches this -- ``_batch._run`` takes only the
-        # two designed refusals -- so it fails the whole request loud and
-        # rolls back, which is the right answer for a broken contract.
-        raise RuntimeError(
-            f"transaction_candidate refused the residual row {row.id} this "
-            f"door just created and settled; the match cannot record a "
-            f"member it cannot describe.",
-        )
     log_event(
         _logger, logging.INFO, EVT_STATEMENT_RESIDUAL_RECORDED, BUSINESS,
         "A matched group's difference was recorded as an uncategorized row.",
         user_id=scope.owner_id,
         account_id=scope.account_id,
-        transaction_id=row.id,
+        transaction_id=candidate.row_id,
         pay_period_id=pay_period_id,
         amount=str(difference),
         posts_on=days.posts_on.isoformat(),
