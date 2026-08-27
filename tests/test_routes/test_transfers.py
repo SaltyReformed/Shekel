@@ -47,7 +47,6 @@ from tests._test_helpers import (
     settlement_basis_id,
 )
 from app.services.row_valuation import owned_contribution
-from app.services.pay_calendar import calendar_for
 from app.services.settle_day import (
     record_settle_day,
     recorded_settle_day,
@@ -662,7 +661,7 @@ class TestTemplateUpdate:
             periods = all_periods(seed_user["user"].id)
             transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in periods},
+                    BalanceContext.build(template.user_id), {p.id for p in periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -738,7 +737,7 @@ class TestTemplateUpdate:
             periods = all_periods(seed_user["user"].id)
             transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in periods},
+                    BalanceContext.build(template.user_id), {p.id for p in periods},
                 ), scenario.id,
             )
             db.session.flush()
@@ -787,7 +786,7 @@ class TestTemplateUpdate:
             periods = all_periods(seed_user["user"].id)
             transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in periods},
+                    BalanceContext.build(template.user_id), {p.id for p in periods},
                 ), scenario.id,
             )
             db.session.flush()

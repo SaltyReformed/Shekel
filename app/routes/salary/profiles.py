@@ -34,11 +34,11 @@ from app.services import (
     template_amount_service,
 )
 from app.services import pay_schedule_service
-from app.services.pay_calendar import PayCadence, cadence_for, calendar_for
+from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import PayCadence, cadence_for
 from app.services.recurrence import RecurrenceSpec, author_rule
 from app.services.generation_schedule import GenerationSchedule
 from app.services.payroll_basis import PayrollBasis
-from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.routes._commit_helpers import (
     DbErrorContext,
@@ -227,9 +227,12 @@ def create_profile():
 
     data = _create_schema.load(request.form)
 
-    # Get baseline scenario
-    scenario = get_baseline_scenario(current_user.id)
-    if not scenario:
+    # ONE read pass for the whole POST (plan step R7d-c-1): the baseline
+    # scenario this branch refuses on, the owner's schedule every step below
+    # reads, and the pass the generate runs in are one value rather than three
+    # lookups that have to agree.
+    ctx = BalanceContext.build(current_user.id)
+    if ctx.scenario is None:
         flash(Markup(
             "No baseline scenario found. Please "
             '<a href="/register" class="alert-link">register a new account</a> '
@@ -266,10 +269,10 @@ def create_profile():
     # session (PendingRollbackError) rather than yield the id.
     user_id = current_user.id
 
-    # ONE derivation of the owner's schedule for the whole POST: the template's
-    # opening bound and per-paycheck amount, the generate pass, and the net-pay
-    # recompute below all read it (pay-calendar plan step C2-f3c).
-    calendar = calendar_for(current_user.id)
+    # The template's opening bound and per-paycheck amount, the generate pass,
+    # and the net-pay recompute below all read the pass's own derivation of it
+    # (pay-calendar plan step C2-f3c; plan step R7d-c-1 moved it onto the pass).
+    calendar = ctx.calendar()
 
     try:
         template = _paycheck_template(
@@ -282,7 +285,7 @@ def create_profile():
         # Create the salary profile
         profile = SalaryProfile(
             user_id=current_user.id,
-            scenario_id=scenario.id,
+            scenario_id=ctx.scenario_id,
             template_id=template.id,
             filing_status_id=data["filing_status_id"],
             name=data["name"],
@@ -301,9 +304,11 @@ def create_profile():
         # is the OWNER's whole one, which is also what the paycheck
         # calculator reads as ``all_periods`` (plan step R4b-1).  ONE
         # derivation answers both (pay-calendar plan steps C2-f2d-3, C2-f3c).
-        schedule = GenerationSchedule.for_calendar(calendar)
+        schedule = GenerationSchedule.for_pass(ctx)
         periods = calendar.saved()
-        recurrence_engine.generate_for_template(template, schedule, scenario.id)
+        recurrence_engine.generate_for_template(
+            template, schedule, ctx.scenario_id,
+        )
 
         # Update the template's default_amount from gross to net so that
         # any future fallback (e.g. missing tax configs for a period)

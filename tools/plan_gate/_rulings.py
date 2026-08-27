@@ -207,8 +207,10 @@ RULINGS_ROW_CAP = 2000
 #: not here, and a row here that is no longer over it, which is how
 #: ``X-ao-2b`` reports its own progress.
 #:
-#: ``recurrence:R-R37`` is the 24th and arrived with the ``X-ao-2`` lift, over
-#: in the document that held it exactly as the other 23 were.
+#: ``recurrence:R-R37`` and ``R-R38`` are the 24th and 25th and arrived with
+#: the ``X-ao-2`` lift, over in the document that held them exactly as the
+#: other 23 were -- ``R-R38`` on the merge, having landed on ``dev`` while the
+#: lift was being written.
 LIFTED_ROWS_OVER_CAP = frozenset({
     "balance:R-FI", "balance:R-FJ", "balance:R-FK", "balance:R-FL",
     "balance:R-FN", "balance:R-FO", "balance:R-FQ", "balance:R-FR",
@@ -218,7 +220,7 @@ LIFTED_ROWS_OVER_CAP = frozenset({
     "bank_import:R-GB", "bank_import:R-GC", "bank_import:R-GD",
     "bank_import:R-GF", "bank_import:R-GG", "bank_import:R-GJ",
     "bank_import:R-GU", "bank_import:R-GW",
-    "recurrence:R-R37",
+    "recurrence:R-R37", "recurrence:R-R38",
 })
 
 

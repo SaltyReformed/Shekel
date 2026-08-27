@@ -25,6 +25,18 @@ transaction).  It DECIDES and delegates -- every row it adds goes through
 place in ``app/`` that changes ``budget.pay_periods``.  The dependency runs one
 way: this module imports that one, and nothing there reaches back.
 
+**It RETURNS the periods it appended, where it returned a count** (plan step
+R7d-c-1, ruling **R-R38**).  The append leaves them EMPTY: the door it calls
+no longer generates the recurring rows, because the read pass that generation
+resolves in may only be opened above this layer, and a count is not something
+a caller can populate.  So the two render routes that call this --
+:func:`app.routes.grid.page.index` and :func:`app.routes.dashboard.page` --
+hand what comes back to
+:func:`app.routes._period_population.populate_new_periods` inside the same
+``write_transaction`` block.  A caller that drops the return value creates
+paydays with no rent, no paycheck and no recurring transfer in them, which is
+why the routes' own tests assert the ROWS rather than the period count.
+
 **Nothing here reads ``end_date`` or ``period_index``**, the two columns plan
 step C4 drops, which is the property ``TestTheDestructiveDoorsHoldNoDerivedColumn``
 grades over both modules.
@@ -54,8 +66,9 @@ def top_up_rolling_window(user_id, as_of=None):
     per-user advisory lock, RE-READS the schedule and RE-COUNTS under it
     (another request may have just filled the window or moved the
     cadence), and appends exactly the deficit via
-    :func:`~app.services.pay_period_admin.extend_pay_periods` (which
-    repopulates the new periods).
+    :func:`~app.services.pay_period_admin.extend_pay_periods`, which leaves
+    the new periods EMPTY for the caller to populate (see the module
+    docstring).
 
     Correctness against a duplicate payday comes from
     ``UNIQUE(user_id, start_date)``; the lock + re-count is the UX
@@ -80,20 +93,21 @@ def top_up_rolling_window(user_id, as_of=None):
             ``/dashboard``) pass none.
 
     Returns:
-        The number of pay periods created (0 when rolling is disabled,
-        the window is already full, or a concurrent top-up filled it
-        first).
+        The newly created :class:`~app.models.pay_period.PayPeriod` rows,
+        flushed and EMPTY -- the caller populates them.  An empty list when
+        rolling is disabled, the window is already full, or a concurrent
+        top-up filled it first.
     """
     if as_of is None:
         as_of = display_today()
 
     schedule = pay_schedule_service.get_schedule(user_id)
     if schedule is None or not schedule.rolling_enabled:
-        return 0
+        return []
 
     target = schedule.rolling_target_periods
     if _future_period_count(user_id, schedule.cadence_days, as_of) >= target:
-        return 0
+        return []
 
     # A deficit exists: serialize concurrent top-ups, then re-count under
     # the lock so a request that lost the race re-reads a now-full window
@@ -112,7 +126,7 @@ def top_up_rolling_window(user_id, as_of=None):
         user_id, schedule.cadence_days, as_of,
     )
     if deficit <= 0:
-        return 0
+        return []
 
     # No handler.  This is an opportunistic write on a READ path -- ``/grid``
     # and ``/dashboard`` call it with no handler of their own -- so anything
@@ -134,7 +148,7 @@ def top_up_rolling_window(user_id, as_of=None):
     # coverage rule, deleted 2026-08-11) was swallowed with a WARNING, and an
     # opportunistic writer needing a swallow was the clearest evidence that
     # rule did not belong on a read path.
-    return len(pay_period_admin.extend_pay_periods(user_id, deficit))
+    return pay_period_admin.extend_pay_periods(user_id, deficit)
 
 
 def _future_period_count(user_id: int, cadence_days: int, as_of: date) -> int:

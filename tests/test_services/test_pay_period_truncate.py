@@ -41,7 +41,6 @@ from app.models.transfer import Transfer
 from app.services import (
     pay_period_admin,
     pay_period_write,
-    period_population,
     posting_service,
     transfer_service,
 )
@@ -56,15 +55,16 @@ from scripts.integrity_check import (
     check_referential_integrity,
 )
 from tests._test_helpers import (
-    all_periods,
     add_txn,
+    all_periods,
     assert_pay_period_invariants,
     bare_expense_template,
     create_savings_account,
+    make_cadence_rule,
     make_every_period_rule,
     make_expense_template,
-    make_cadence_rule,
     make_transfer_template,
+    populate_in_a_fresh_pass,
     seam_cash_balance_at,
 )
 from tests.oracles.recurrence_baseline import EVERY_PERIOD
@@ -182,9 +182,7 @@ class TestTruncateHappyPath:
             periods = _future_periods(db.session, seed_user, count=4)
             user_id = seed_user["user"].id
             make_expense_template(db.session, seed_user)
-            period_population.populate_periods_from_active_templates(
-                user_id, {p.id for p in periods},
-            )
+            populate_in_a_fresh_pass(user_id, {p.id for p in periods})
             db.session.commit()
             doomed_id = periods[3].id  # index 4; capture before deletion
             keep_period_id = periods[1].id
@@ -207,9 +205,7 @@ class TestTruncateHappyPath:
                 seed_user, db.session, "Savings", Decimal("500.00"),
             )
             make_transfer_template(db.session, seed_user, savings)
-            period_population.populate_periods_from_active_templates(
-                user_id, {p.id for p in periods},
-            )
+            populate_in_a_fresh_pass(user_id, {p.id for p in periods})
             db.session.commit()
             doomed_id = periods[3].id  # capture before deletion
             keep_period_id = periods[1].id
@@ -269,9 +265,7 @@ class TestTruncateHappyPath:
         with app.app_context():
             periods = _future_periods(db.session, seed_user, count=6)
             make_expense_template(db.session, seed_user, amount="1200.00")
-            period_population.populate_periods_from_active_templates(
-                user_id, {p.id for p in periods},
-            )
+            populate_in_a_fresh_pass(user_id, {p.id for p in periods})
             db.session.commit()
 
             before = seam_cash_balance_at(
@@ -647,9 +641,7 @@ class TestTruncateDiscardGate:
             periods = _future_periods(db.session, seed_user, count=4)
             user_id = seed_user["user"].id
             make_expense_template(db.session, seed_user)
-            period_population.populate_periods_from_active_templates(
-                user_id, {p.id for p in periods},
-            )
+            populate_in_a_fresh_pass(user_id, {p.id for p in periods})
             txn = db.session.query(Transaction).filter_by(
                 pay_period_id=periods[2].id,
             ).one()
@@ -672,9 +664,7 @@ class TestTruncateDiscardGate:
             periods = _future_periods(db.session, seed_user, count=4)
             user_id = seed_user["user"].id
             make_expense_template(db.session, seed_user)
-            period_population.populate_periods_from_active_templates(
-                user_id, {p.id for p in periods},
-            )
+            populate_in_a_fresh_pass(user_id, {p.id for p in periods})
             txn = db.session.query(Transaction).filter_by(
                 pay_period_id=periods[2].id,
             ).one()
@@ -692,9 +682,7 @@ class TestTruncateDiscardGate:
             periods = _future_periods(db.session, seed_user, count=4)
             user_id = seed_user["user"].id
             make_expense_template(db.session, seed_user)
-            period_population.populate_periods_from_active_templates(
-                user_id, {p.id for p in periods},
-            )
+            populate_in_a_fresh_pass(user_id, {p.id for p in periods})
             db.session.commit()
 
             deleted = pay_period_admin.truncate_pay_periods(
@@ -719,9 +707,7 @@ class TestTruncateDiscardGate:
                 seed_user, db.session, "Savings", Decimal("500.00"),
             )
             make_transfer_template(db.session, seed_user, savings)
-            period_population.populate_periods_from_active_templates(
-                user_id, {p.id for p in periods},
-            )
+            populate_in_a_fresh_pass(user_id, {p.id for p in periods})
             db.session.commit()
 
             deleted = pay_period_admin.truncate_pay_periods(
