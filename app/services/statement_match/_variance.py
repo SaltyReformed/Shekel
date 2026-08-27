@@ -497,12 +497,12 @@ def mint(
     makes the group add up.
 
     **The ROW is minted by :func:`~._uncategorized.mint_uncategorized` and not
-    here** (plan step ``bank_import:X-gf-1``, ruling **R-GW**).  Every clause of
+    here** (plan step ``bank_import:X-gf-1``, ruling **bank_import:R-GW**).  Every clause of
     what that row IS -- no category, born Projected and settled through the
     app's own verb, the bank's posting day on the ``observed`` basis, owning
     its amount, baseline scenario -- is decided by the fact that a bank
     statement is why it exists, which is equally true of the line ruling
-    **R-GW** records as INCOME.  Two spellings of one money rule is this
+    **bank_import:R-GW** records as INCOME.  Two spellings of one money rule is this
     package's own root cause, so there is one writer and this function supplies
     the two things that are genuinely its own: what the row is CALLED, and the
     event that says a MATCH's difference is what produced it.

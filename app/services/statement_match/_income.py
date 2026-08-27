@@ -1,6 +1,6 @@
 """The door that turns a bank line of money COMING IN into the row it is.
 
-Ruling **R-GW**, plan step ``bank_import:X-gf-1``.  **It MOVES MONEY**: a line
+Ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``.  **It MOVES MONEY**: a line
 recorded here becomes a cash movement the app did not have, dated the day the
 bank posted it.
 
@@ -248,7 +248,7 @@ def record_income_from_line(
             created=(CreatedSubject.of(candidate),),
         ),
         matched,
-        # **Never a rule** (ruling **R-GW**).  A merchant answer says where
+        # **Never a rule** (ruling **bank_import:R-GW**).  A merchant answer says where
         # SPENDING goes, and a deposit is not spending, so nothing but a person
         # ticking this line can reach this door -- and a literal ``False`` here
         # is that fact rather than a default nobody chose.

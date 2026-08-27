@@ -1,6 +1,6 @@
 """What an unexplained bank line may BECOME, and where it would land.
 
-Ruling **R-GW**, plan step ``bank_import:X-gf-1`` split this out of
+Ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1`` split this out of
 :mod:`._reads`.  **The seam is the SUBJECT**, which is the argument
 :mod:`._section` already makes one module over: that one answers *what does the
 review screen SHOW about this pass*, and this answers *what may one line the
@@ -17,7 +17,7 @@ review:
 * an outflow whose merchant is barred becomes nothing, and is PARKED with the
   reason (:class:`~._bars.ParkedLine`, ruling **R-GJ**);
 * an inflow becomes an uncategorized INCOME row
-  (:class:`RecordableInflow`, ruling **R-GW**);
+  (:class:`RecordableInflow`, ruling **bank_import:R-GW**);
 * **an outflow the bank dates MADE after it POSTED reaches none of the three.**
   :func:`_creatable_lines` drops it before the split, on finding **N-325**'s
   developer ruling of 2026-08-19 -- *reported rather than repaired*, because
@@ -25,7 +25,7 @@ review:
   itself, which ruling **R-FW** refused one clock over.  It survives only as
   :attr:`~._reads.ReviewBounds.impossible_day_count`, a number naming no line,
   and it is still counted by ``awaiting_review_count``.  **That is the same
-  shape R-GW closed for inflows**, on a class whose remedy is already ruled and
+  shape bank_import:R-GW closed for inflows**, on a class whose remedy is already ruled and
   already owned, so it is named here rather than repaired here: 0 of the
   developer's 378 recorded lines are it, and the OFX adapter's own measurement
   found 2 of 361.
@@ -115,7 +115,7 @@ class CreatableLine:
 class RecordableInflow:
     """One unmatched bank line of money COMING IN, and where it would land.
 
-    Ruling **R-GW**, plan step ``bank_import:X-gf-1``.  :class:`CreatableLine`
+    Ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``.  :class:`CreatableLine`
     without its two chooser fields, and the absence is the whole difference: a
     purchase is filed against a container the owner picks between, and an
     income row is filed against nothing -- so there are no destinations to
@@ -239,7 +239,7 @@ def _recordable_inflows(
 ) -> "tuple[RecordableInflow, ...]":
     """Return the unmatched lines of money COMING IN, each placed by its day.
 
-    Ruling **R-GW**, plan step ``bank_import:X-gf-1``.  :func:`_creatable_lines`
+    Ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``.  :func:`_creatable_lines`
     takes the outflows and this takes the other side, which is what closed a
     whole DIRECTION of movement having no act.
 
@@ -428,7 +428,7 @@ class Leftovers:
         parked: The offerable unexplained outflows ruling **R-GJ** bars, each
             with the reason (:class:`~._bars.ParkedLine`).
         recordable_inflows: The unexplained INFLOWS, each with the period
-            that would hold it (ruling **R-GW**).
+            that would hold it (ruling **bank_import:R-GW**).
         merchants: The rule control's rows and option list.
         impossible_day_count: How many outflows were declined for being dated
             MADE after they POSTED (finding **N-325**).

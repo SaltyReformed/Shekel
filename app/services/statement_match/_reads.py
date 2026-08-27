@@ -127,7 +127,7 @@ class ReviewBounds:
 class IncomeAlreadyRecorded:
     """The unexplained INCOME the books already hold for one deposit's period.
 
-    Ruling **R-GW**, added after this step's own adversarial review measured
+    Ruling **bank_import:R-GW**, added after this step's own adversarial review measured
     what the card was really protected by.  **Recording a deposit the books
     already hold is the only way this door can double-count money**, and the
     per-line safeguard the card was written around -- the pass's own near-miss
@@ -150,7 +150,7 @@ class IncomeAlreadyRecorded:
     question whose answer decides whether recording this is a duplicate.
 
     **The one narrowing is a PROOF, not a threshold**, and it is the same
-    argument ruling **R-GW** rests on: a deposit SMALLER than the smallest
+    argument ruling **bank_import:R-GW** rests on: a deposit SMALLER than the smallest
     unexplained income row in its period cannot be any subset of them, because
     every one of them is positive and already exceeds it.  So the five
     dividends of `$0.12`-`$0.22` and the three card refunds of `$11.73`-
@@ -229,7 +229,7 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             are different acts on the same fact and the owner is the one who
             knows which it is.  Inflows are absent -- a purchase is an expense
             (``ck_transaction_entries_positive_amount``), so a deposit or a
-            card refund is not one; since ruling **R-GW** it has a door of its
+            card refund is not one; since ruling **bank_import:R-GW** it has a door of its
             own instead (:attr:`recordable_inflows`), and until then it had
             none at all.  **A line that
             ruling R-GJ bars is not here** -- it is in :attr:`parked` -- so this
@@ -243,7 +243,7 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             ``unmatched``, so the group-match arm the ruling leaves open is
             reached exactly as it was.
         recordable_inflows: The unmatched INFLOW lines, each with the period
-            that would hold it (:class:`RecordableInflow`, ruling **R-GW**).
+            that would hold it (:class:`RecordableInflow`, ruling **bank_import:R-GW**).
             The mirror of ``creatable`` on the direction that had no door at
             all until plan step ``bank_import:X-gf-1``: an inflow is not a
             purchase, so the create arm refuses one, and a match needs an app
@@ -425,7 +425,7 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
                 already false when it was written: the create card reads it off
                 :attr:`creatable`, the hand-build form off :attr:`unmatched`
                 (which is the only one an inflow used to reach), and since
-                ruling **R-GW** the deposit card off
+                ruling **bank_import:R-GW** the deposit card off
                 :attr:`recordable_inflows`.  What every caller does share is
                 that the line was in THIS pass, which is what makes
                 :attr:`declined_lines` answerable for it.

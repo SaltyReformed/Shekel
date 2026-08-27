@@ -19,7 +19,7 @@ place where a reader has to notice which is which.
 
 **The split is a line cap made useful rather than worked around**, which is the
 argument :mod:`app.services.statement_match._creations` and ``_section`` both
-record: adding ruling **R-GW**'s deposit arm took ``statements`` past this
+record: adding ruling **bank_import:R-GW**'s deposit arm took ``statements`` past this
 project's 1,000-line module bound, and the two honest answers are to cut the
 record or to cut the module.
 

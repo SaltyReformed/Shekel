@@ -555,7 +555,7 @@ class TestTheBatchSchemaRefusesWhatItDoesNotDeclare:
 
         # SPELLED OUT rather than derived from the schema's own field list:
         # deriving it would make this a tautology, and the whole point is that
-        # a THIRD kind of act (ruling **R-GW**'s incomes) added on one side
+        # a THIRD kind of act (ruling **bank_import:R-GW**'s incomes) added on one side
         # and not the other is caught here.
         assert loaded == {"matches": [], "creations": [], "incomes": []}
 

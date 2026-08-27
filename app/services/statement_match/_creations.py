@@ -323,7 +323,7 @@ class CreatedPurchase:  # pylint: disable=too-many-instance-attributes
 class IncomeCreation:
     """What the owner submitted to record one bank line as an income row.
 
-    Ruling **R-GW**, plan step ``bank_import:X-gf-1``.  **One id and nothing
+    Ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``.  **One id and nothing
     else**, and the emptiness is the design rather than a stub: a purchase
     needs a container to be filed against and asks the owner which
     (:class:`PurchaseCreation`), while a deposit reserves nothing, so there is
@@ -348,7 +348,7 @@ class IncomeCreation:
 class RecordedIncome:
     """What recording one bank line as an income row did.
 
-    Ruling **R-GW**, plan step ``bank_import:X-gf-1``.  :class:`CreatedPurchase`
+    Ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``.  :class:`CreatedPurchase`
     without the container half and without the second clock: the row this act
     creates is filed under nothing and IS the movement, so it has neither a
     budget line to name nor a day it was "made" apart from the day the bank

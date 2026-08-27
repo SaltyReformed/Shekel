@@ -1,6 +1,6 @@
 """The row a bank line requires and the books do not hold, minted once.
 
-Plan step ``bank_import:X-gf-1``, ruling **R-GW**.  **Two doors need this row
+Plan step ``bank_import:X-gf-1``, ruling **bank_import:R-GW**.  **Two doors need this row
 and it is written once**: a matched group's leftover difference
 (:func:`~._variance.mint`, ruling **R-FN**) and a bank line of money COMING IN
 that no app row explains (:func:`~._income.record_income_from_line`).  They are

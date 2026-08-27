@@ -72,7 +72,7 @@ def _batch(seed_user, matches=(), creations=(), incomes=()):
         seed_user: The seeded user bundle.
         matches: :class:`MatchSubmission` values.
         creations: :class:`PurchaseCreation` values.
-        incomes: :class:`IncomeCreation` values (ruling **R-GW**).
+        incomes: :class:`IncomeCreation` values (ruling **bank_import:R-GW**).
 
     Returns:
         The :class:`~app.services.statement_match.BatchOutcome`.

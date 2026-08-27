@@ -142,7 +142,7 @@ class ReviewedBatch:
             are one list rather than two.
         creations: The bank lines the owner named a destination for.
         incomes: The bank lines of money COMING IN the owner ticked to record
-            (ruling **R-GW**, plan step ``bank_import:X-gf-1``).  **Its own
+            (ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``).  **Its own
             list beside *creations*, because they reach different doors and
             write different shapes**: a purchase is filed against a container
             the submission names, and an income row is filed against nothing
@@ -177,7 +177,7 @@ class ReviewedBatch:
         A TICKED batch carrying no items at all is legal and ordinary -- it is
         what an untouched form posts -- so nothing here counts.
 
-        **A rule pass may not carry an INCOME either** (ruling **R-GW**,
+        **A rule pass may not carry an INCOME either** (ruling **bank_import:R-GW**,
         plan step ``bank_import:X-gf-1``), and that is a second sentence rather
         than a widening of the first: a merchant rule says where that
         merchant's SPENDING goes, so there is no answer it could hold that
@@ -205,7 +205,7 @@ class ReviewedBatch:
         if self.incomes:
             raise ValueError(
                 "A merchant rule says where that merchant's SPENDING goes "
-                "(R-GI), so no rule can mean 'record this deposit' (R-GW), "
+                "(R-GI), so no rule can mean 'record this deposit' (bank_import:R-GW), "
                 "and a rule-consented batch cannot carry an income."
             )
 
@@ -277,7 +277,7 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
 
     Pylint: too-many-instance-attributes (11/7) -- **eleven because a pass
     receipt has eleven things to say.**  ``deposited_count`` is the newest
-    (ruling **R-GW**) and it is here for ``repriced_count``'s reason: without
+    (ruling **bank_import:R-GW**) and it is here for ``repriced_count``'s reason: without
     it a pass that recorded a deposit reports through ``recorded_count``,
     whose caption says *as a purchase*, or through nothing at all.
     ``repriced_count`` is what stopped this
@@ -313,7 +313,7 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
             have.
         envelopes_created: How many budget lines the pass created to hold one.
         deposited_count: How many bank lines of money COMING IN became an
-            uncategorized income row (ruling **R-GW**).  **Its own count and
+            uncategorized income row (ruling **bank_import:R-GW**).  **Its own count and
             not folded into** :attr:`recorded_count`, whose sentence on the
             receipt is *recorded as a purchase your records did not have* --
             false of a deposit, and a count whose caption is false of half its
@@ -394,7 +394,7 @@ class BatchOutcome:  # pylint: disable=too-many-instance-attributes
             or self.repriced_count
             or self.residual_count
             or self.recorded_count
-            # **Recording a deposit MOVES MONEY** (ruling **R-GW**), so it
+            # **Recording a deposit MOVES MONEY** (ruling **bank_import:R-GW**), so it
             # belongs here for the reason ``repriced_count`` was added: a pass
             # whose only act was one would otherwise render *"Nothing moved."*
             # over a row it had just created and settled.  Every arm of this
@@ -501,7 +501,7 @@ def _income_summary(recorded) -> str:
     """Return the sentence describing what recording one deposit did.
 
     **It names no container and no second day, because the row has neither**
-    (ruling **R-GW**).  ``_created_summary`` beside it names both because a
+    (ruling **bank_import:R-GW**).  ``_created_summary`` beside it names both because a
     purchase is filed against something that reserves for it and carries a
     budget clock of its own; an income row IS the movement, so the day the bank
     credited it is the only day there is.

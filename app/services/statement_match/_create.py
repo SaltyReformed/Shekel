@@ -135,7 +135,7 @@ def _load_line(
     unexplained lines are inflows, including three card refunds, so this is the
     ordinary shape rather than a crafted request.
 
-    **What it SENDS the owner to changed at ruling R-GW**, and the sentence
+    **What it SENDS the owner to changed at ruling bank_import:R-GW**, and the sentence
     with it.  It used to say *match it to the row it belongs to instead*,
     which was the only other act there was -- and for an inflow no row
     explains, it was advice to do something impossible: eight of the

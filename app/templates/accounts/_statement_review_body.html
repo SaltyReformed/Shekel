@@ -102,7 +102,7 @@
            different questions and the total nets: the count is how many rows
            are now waiting for a category, the total is how much money reached
            the Uncategorized bucket. #}
-        {# THE DEPOSIT LINE (ruling R-GW).  The comment ABOVE belongs to the
+        {# THE DEPOSIT LINE (ruling bank_import:R-GW).  The comment ABOVE belongs to the
            residual block further down, which this one was inserted in front
            of; both are read together and neither describes the other.  Its own sentence beside the
            recorded-as-a-purchase one above, and never folded into it: that
@@ -648,7 +648,7 @@
        to record as new, and the owner is the one who knows which.
 
        Inflows are absent: a purchase is an expense, so a deposit or a card
-       refund is not one.  Since ruling R-GW they have a card of their own
+       refund is not one.  Since ruling bank_import:R-GW they have a card of their own
        below -- "Money that arrived and your records do not hold" -- and
        before it they had no act on this screen at all.
 
@@ -896,7 +896,7 @@
     {% endif %}
 
     {# ── Money that arrived and your records do not hold ─────────────── #}
-    {# RULING R-GW, plan step bank_import:X-gf-1.  THIS CARD MOVES MONEY.
+    {# RULING bank_import:R-GW, plan step bank_import:X-gf-1.  THIS CARD MOVES MONEY.
 
        It is the mirror of the create card above, on the direction that had no
        door at all.  A deposit is not a purchase -- a purchase is an expense
@@ -1203,7 +1203,7 @@
                          pairing the score would not guess (ruling R-FP).  One
                          fact on the review set, two renders -- the danger and
                          the fix are in different cards.  It was "an inflow
-                         reaches only this one" until ruling R-GW gave a
+                         reaches only this one" until ruling bank_import:R-GW gave a
                          deposit a card of its own, which renders it too. #}
                       {% set gap = review.search_gap_for(line) %}
                       {% if gap %}

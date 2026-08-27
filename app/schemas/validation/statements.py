@@ -461,7 +461,7 @@ class StatementPurchaseSchema(BaseSchema):
 
 
 class StatementIncomeSchema(BaseSchema):
-    """Validate ONE bank line becoming an income row (ruling **R-GW**).
+    """Validate ONE bank line becoming an income row (ruling **bank_import:R-GW**).
 
     **One line id and nothing else, and the emptiness is the design.**  Its
     sibling :class:`StatementPurchaseSchema` needs a destination because a
@@ -528,7 +528,7 @@ class StatementBatchSchema(Schema):
         fields.Nested(StatementPurchaseSchema), required=False,
         load_default=list,
     )
-    #: The lines of money COMING IN the owner ticked (ruling **R-GW**).  **Its
+    #: The lines of money COMING IN the owner ticked (ruling **bank_import:R-GW**).  **Its
     #: own list rather than a third arm of ``creations``**: that schema
     #: REQUIRES a destination, and an income row has none, so folding them
     #: would mean a required field that is meaningless for half its members --
@@ -575,7 +575,7 @@ class StatementBatchSchema(Schema):
 #: are keyed the same way and for the same reason its comment gives: paired
 #: arrays would depend on the browser submitting several lists in the same
 #: order, which is a property of the document rather than of the form.
-#: What a line's RECORD-AS-INCOME checkbox is named with (ruling **R-GW**,
+#: What a line's RECORD-AS-INCOME checkbox is named with (ruling **bank_import:R-GW**,
 #: plan step ``bank_import:X-gf-1``).  A checkbox rather than a select, because
 #: there is nothing to choose between: an income row is filed against no
 #: container, so the only question is whether to record it.  **A browser
@@ -689,7 +689,7 @@ def _creation_items(form) -> list:
 def _income_items(form) -> list:
     """Return the inflow lines the form ticked, in bank-line order.
 
-    Ruling **R-GW**, plan step ``bank_import:X-gf-1``.  **Presence IS the
+    Ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``.  **Presence IS the
     tick**: a browser submits a checkbox only when it is ticked, so an item
     here exists exactly when the owner ticked one, and there is no do-nothing
     value to drop the way :data:`LEAVE_ALONE` is dropped from the select

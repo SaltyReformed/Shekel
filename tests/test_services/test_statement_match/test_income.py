@@ -1,6 +1,6 @@
 """Money COMING IN that no app row explains: the door, and what it refuses.
 
-Ruling **R-GW**, plan step **bank_import:X-gf-1**.
+Ruling **bank_import:R-GW**, plan step **bank_import:X-gf-1**.
 
 **The step's own acceptance test is the shape that had NO ACT AT ALL.**  On the
 developer's own dev database 2026-08-27, eight of the 27 lines
@@ -646,7 +646,7 @@ class TestThePassReportsIt:
 
 
 class TestNoRuleReachesThisDoor:
-    """R-GW: a merchant answer says where SPENDING goes."""
+    """bank_import:R-GW: a merchant answer says where SPENDING goes."""
 
     def test_a_rule_consented_batch_carrying_an_INCOME_is_unconstructible(
         self, app, db, seed_user,
@@ -675,7 +675,7 @@ class TestNoRuleReachesThisDoor:
 
 
 class TestTheSafeguardAgainstRecordingWhatTheBooksHold:
-    """Ruling **R-GW**'s per-line duplicate check (``IncomeAlreadyRecorded``).
+    """Ruling **bank_import:R-GW**'s per-line duplicate check (``IncomeAlreadyRecorded``).
 
     **The only way this door can double-count money** is by recording a
     deposit the books already hold, and the signal the card was first written
@@ -763,7 +763,7 @@ class TestTheSafeguardAgainstRecordingWhatTheBooksHold:
         Every unexplained row is positive, so no subset of them can come to
         less than the smallest -- a `$0.15` dividend cannot BE a `$2,473.38`
         salary row at any tolerance.  These eight lines are what ruling
-        **R-GW** exists for, and a sentence on them would be the alarm that
+        **bank_import:R-GW** exists for, and a sentence on them would be the alarm that
         teaches an owner to stop reading alarms.
         """
         a_transaction(
@@ -855,7 +855,7 @@ class TestWhichLinesGetAnActAndWhichSTILLDoNot:
     def test_an_IMPOSSIBLE_DAY_outflow_still_reaches_NO_list(
         self, app, db, seed_user,
     ):
-        """The class R-GW did NOT close, pinned so it cannot be forgotten.
+        """The class bank_import:R-GW did NOT close, pinned so it cannot be forgotten.
 
         An outflow the bank dates as MADE after it POSTED has no day a
         purchase could happen on, so ``_creatable_lines`` declines it and

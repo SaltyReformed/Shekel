@@ -506,7 +506,7 @@ def file_new_swipes(scope: ReviewScope, import_id: int) -> RuleFiling:
         ReviewedBatch(
             matches=(),
             creations=tuple(creations),
-            # **A rule NEVER files a deposit** (ruling **R-GW**): a merchant
+            # **A rule NEVER files a deposit** (ruling **bank_import:R-GW**): a merchant
             # answer says where that merchant's SPENDING goes, so there is no
             # answer it could hold that means *record this money coming in*.
             # Stated as an empty tuple rather than defaulted, for the reason

@@ -518,7 +518,7 @@ EVT_STATEMENT_INCOME_RECORDED = _register(
     "statement_income_recorded", BUSINESS,
     "A bank line of money COMING IN that no app row explained became an "
     "uncategorized income row, which MOVES MONEY: the app now records a "
-    "deposit it did not have (ruling R-GW).  Its own event beside "
+    "deposit it did not have (ruling bank_import:R-GW).  Its own event beside "
     "``statement_line_recorded`` because the two doors record opposite "
     "DIRECTIONS of movement into different shapes -- a purchase against a "
     "container that reserves for it, and a top-level row that reserves "

@@ -325,7 +325,7 @@ def _apply_form_controls(page):
     reader = _RuleFormReader(
         prefixes=(
             "destination-", "envelope_name-", "category_id-", "apply",
-            # Ruling **R-GW**'s tick.  It is in this list for the SAME reason
+            # Ruling **bank_import:R-GW**'s tick.  It is in this list for the SAME reason
             # the destination select is: an untouched Apply must write no
             # deposit either, and the only honest way to check that is to read
             # what the template rendered.  An unticked checkbox is dropped by
@@ -2141,7 +2141,7 @@ class TestTheReleasePost:
 
 
 class TestTheDepositArmOnTheWire:
-    """Ruling **R-GW** end to end: what the template renders, the door takes.
+    """Ruling **bank_import:R-GW** end to end: what the template renders, the door takes.
 
     The service suite grades the door and the review set; this closes the loop
     the project's own lesson names -- *a form submits every control it renders,

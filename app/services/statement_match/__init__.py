@@ -37,7 +37,7 @@ The public surface, and what each piece is for:
   it did.  It records the correspondence through the same function
   :func:`accept_match` does, so there is still exactly one place a match is
   written.
-* :func:`record_income_from_line` -- ruling **R-GW** (plan step
+* :func:`record_income_from_line` -- ruling **bank_import:R-GW** (plan step
   ``bank_import:X-gf-1``): a bank line of money COMING IN that no app row
   explains BECOMES an uncategorized income row, matched to itself.  **It MOVES
   MONEY**, and it is the mirror of the door above on the direction that had
@@ -92,7 +92,7 @@ The public surface, and what each piece is for:
   :class:`RowKind`,
   :class:`AcceptedMatch`, :class:`AcceptedGroup`, :class:`AcceptedRow`,
   :class:`ReviewedBatch`, :class:`BatchOutcome`, :class:`ReviewSet`, and
-  ruling **R-GW**'s :class:`IncomeCreation`, :class:`RecordedIncome` and
+  ruling **bank_import:R-GW**'s :class:`IncomeCreation`, :class:`RecordedIncome` and
   :class:`RecordableInflow`.
 
 **Three rules this package is built on, each of them the developer's ruling of
