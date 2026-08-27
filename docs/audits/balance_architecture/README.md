@@ -777,7 +777,13 @@ hides.
   with the id in PROSE beside cross-references to OTHER rulings -- a regex mis-attributed four
   recurrence ids on the first pass, which is why this is its own step -- and `credit_card`'s 8 are
   a numbered list. 45 need an id MINTED; `pay_calendar` continues `R-PC1`, whose scheme exists and
-  is cited three times from `app/`. Two `app/` docstrings cite a pay-calendar ruling by its PROSE
+  is cited three times from `app/`. **The recurrence table's id is in its row's CLOSING clause**
+  (`R-Rnn, ruled DATE; shipped as <step>`) and a cross-reference to another ruling never sits
+  there -- keying on the tail resolves all four ids the naive first-id-in-text read claimed twice,
+  measured 0 against 4. **But 11 of 36 rows carry no tail id and only 6 of those are rulings**: the
+  rest are a `---` separator, a `Shipped / superseded decisions` section label, and rows whose
+  subject is a decision recorded elsewhere. So this step CLASSIFIES rows before it parses them; a
+  reader that assumes every table row is a ruling mints ids for separators. Two `app/` docstrings cite a pay-calendar ruling by its PROSE
   NAME and must gain the minted id in the same commit. It also moves the 23 over-cap rows'
   overflow to their owning steps' specifications, which is rule 4's own remedy.
 * [ ] **X-ao-3** `feat(plan-gate): a bare citation of an ambiguous id fails` -- closes **N-217**,
