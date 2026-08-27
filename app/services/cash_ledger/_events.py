@@ -572,8 +572,12 @@ def settled_cash_facts(
     valued and dated once, and both carry the budget column they were attributed
     to, so the ONE valued row set can be grouped on either clock (see
     :class:`CashSourceFact`).  For the transaction half both extra fields are
-    free: the shared loader already joins ``pay_period``, and the transaction
-    TYPE is a column on the row it already holds.
+    free: the budget column is the row's own ``pay_period_id`` and the
+    transaction TYPE is a column beside it, so neither costs a join.  *That
+    first clause read "the shared loader already joins ``pay_period``" until
+    pay-calendar plan step C4-a-1 deleted that eager load; the field this
+    carries was never the relationship, and saying it was made a stale
+    justification out of a true sentence.*
 
     **It loads its own rows and takes no period window, deliberately.**  An
     argument a caller can get wrong is a defect, not a contract (plan Section 8):
@@ -587,8 +591,8 @@ def settled_cash_facts(
     scenario scope, the shared
     :func:`~app.utils.balance_predicates.balance_contributing_clause` eligibility
     gate (``is_deleted = FALSE AND status_id NOT IN (Credit, Cancelled)``) and
-    both eager loads are stated once for the two halves of the event stream
-    rather than copied per half.  One gate for both halves is what makes the
+    its ``selectinload(entries)`` are stated once for the two halves of the
+    event stream rather than copied per half.  One gate for both halves is what makes the
     SETTLED and PLANNED tiers a partition of the contributing set rather than
     two filters that could disagree about which rows exist at all.
 

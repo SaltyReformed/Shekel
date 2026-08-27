@@ -25,6 +25,7 @@ from app.services.cash_ledger import (
     recorded_amounts_by_id,
 )
 from app.services.entry_service import build_entry_sums_dict
+from app.services.grid_view_service import due_captions_by_id
 from app.services.transaction_service import retained_settle_amounts_by_id
 from app.services.transfer_service import load_transfer_rows
 
@@ -217,8 +218,34 @@ def render_transaction_cell(txn: Transaction, **extra: Any) -> str:
     """Render the transaction cell template with its amount and entry context.
 
     Wraps render_template so every HTMX cell response includes the three
-    amount maps the display reads (:class:`RenderAmounts`) and the
-    ``entry_sums`` dict the progress indicator on tracked transactions needs.
+    amount maps the display reads (:class:`RenderAmounts`), the ``entry_sums``
+    dict the progress indicator on tracked transactions needs, and the PAYDAY
+    the due-date caption is compared against.
+
+    **The caption is DECIDED by the route and drawn by the template**
+    (pay-calendar plan step C4-a-1).  The partial computed it itself, as
+    ``t.due_date != t.pay_period.start_date`` -- a lazy relationship load
+    issued from inside the render, once per distinct paycheck on a page
+    drawing N cells, and a template cannot be given a query budget.  Both
+    surfaces that draw this cell now call the same producer
+    (:func:`~app.services.grid_view_service.due_captions_by_id`), so a row
+    cannot caption one way on the grid and another in the fragment the same
+    click swaps in -- the rule :class:`RenderAmounts` above states for the
+    three amount maps, applied to the fourth thing a cell draws.
+
+    **The payday it needs costs nothing here.**  Every caller of this helper
+    has already proved ownership through ``txn.pay_period.user_id``
+    (``transactions/_helpers._get_owned_transaction`` and its siblings), so
+    the relationship is loaded before this runs and reading ``start_date`` off
+    it adds no statement.  Measured 2026-08-27: ``GET /transactions/<id>/cell``
+    issues **12 statements either side of this change**.  Deriving the owner's
+    calendar here instead was built and rejected on that measurement -- it
+    ADDED two statements on top of the load the ownership check had already
+    paid for, and bought only a re-check of an ownership fact the route had
+    just established.  ``start_date`` is the one column
+    ``budget.pay_periods`` actually stores, carried through
+    :func:`~app.services.pay_calendar.derive_periods` untouched, so it is the
+    same date the grid's derived window publishes.
 
     Args:
         txn: The Transaction object to render.
@@ -237,5 +264,8 @@ def render_transaction_cell(txn: Transaction, **extra: Any) -> str:
         settled=amounts.settled,
         retained=amounts.retained,
         entry_sums=build_entry_sums_dict([txn], amounts.budgets),
+        due_captions=due_captions_by_id(
+            [txn], {txn.pay_period_id: txn.pay_period.start_date},
+        ),
         **extra,
     )
