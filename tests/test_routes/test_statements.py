@@ -235,7 +235,12 @@ class TestItRefusesAnotherUsersAccount:
             name="Stranger Checking",
         )
         db.session.add(account)
-        db.session.flush()
+        # COMMITTED, not flushed (plan step balance:X-i3): a query request
+        # opens a transaction of its OWN, so a row this fixture only flushed is
+        # one the request cannot see.  The 404 these tests assert must be the
+        # OWNERSHIP gate refusing a real account of someone else's rather than
+        # a missing row.
+        db.session.commit()
         return account.id
 
     def test_the_page_answers_404(self, auth_client, other_users_account):
@@ -564,7 +569,11 @@ class TestTheAccountPageLinksHere:
                 observed_on=seed_user["bootstrap_period"].start_date,
             )
         )
-        db.session.flush()
+        # COMMITTED, not flushed (plan step balance:X-i3): a query request
+        # opens a transaction of its OWN, so a row this test only flushed is
+        # one the request cannot see.  The 404 below must come from the KIND
+        # gate refusing a real mortgage rather than from a missing row.
+        db.session.commit()
 
         assert auth_client.get(
             f"/accounts/{loan.id}/statements"

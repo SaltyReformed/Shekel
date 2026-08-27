@@ -1,7 +1,7 @@
 """X-b / X-c2b2: the three cash seam entries ARE the fold, on every day.
 
 Plan steps X-b and X-c2b2 (``docs/audits/balance_architecture/README.md``).
-Runs ``balance_at._cash_fold.fold_cash_balances`` against the three seam entries
+Runs ``balance_at._cash_fold``'s own reading against the three seam entries
 -- ``cash_balance_map``, ``cash_balance_at`` and ``cash_daily_balance_series`` --
 on **EVERY DAY** of each shape's domain.
 
@@ -35,11 +35,10 @@ from decimal import Decimal
 
 from app.services import balance_at
 from app.services.balance_at import BalanceContext
-from app.services.balance_at._cash_fold import fold_cash_balances
+from app.services.balance_at._cash_fold import assembled_fold, balances_at
 from tests._test_helpers import (
     add_txn,
     append_balance_assertion,
-    basis_for,
     create_settled_cash_transaction,
     restamp_opening_assertion,
 )
@@ -58,9 +57,21 @@ def _context(seed_user, as_of):
 
 
 def _folded(seed_user, account, as_of, days):
-    """Fold *account* at every day in *days*."""
-    return fold_cash_balances(
-        account, basis_for(account, seed_user["scenario"]), as_of, list(days),
+    """Fold *account* at every day in *days*.
+
+    **On its OWN read pass, deliberately.**  :func:`_context` builds a fresh
+    :class:`~app.services.balance_at.BalanceContext` per call, so the fold on
+    the left of every equality in this file and the seam entry on the right are
+    two INDEPENDENT passes -- which is what keeps the comparisons meaningful.
+    Sharing one pass would make both sides read the same memoized
+    :class:`~app.services.balance_at._cash_fold.AssembledCashFold` after plan
+    step X-i4, and every equality here would become a tautology that could not
+    fail. A first draft of this docstring claimed the sharing as a feature;
+    an adversarial review caught that it was both false and the wrong thing to
+    want.
+    """
+    return balances_at(
+        assembled_fold(account, _context(seed_user, as_of)), list(days),
     )
 
 

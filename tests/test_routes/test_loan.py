@@ -3423,6 +3423,10 @@ class TestTransferPrompt:
             tpl, MONTHLY,
             fires_on_day=1,
         )
+        # And the cadence is COMMITTED before the request (plan step X-i3):
+        # ``make_cadence_rule``'s contract is that the caller commits, and a
+        # request cannot see a row this test never committed.
+        db.session.commit()
 
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
@@ -3457,6 +3461,8 @@ class TestTransferPrompt:
             tpl, MONTHLY,
             fires_on_day=1,
         )
+        # Committed before the request, for the reason the sibling above states.
+        db.session.commit()
 
         resp = auth_client.get(f"/accounts/{acct.id}/loan")
         assert resp.status_code == 200
@@ -3868,11 +3874,14 @@ class TestPaymentDrift:
         )
         db_session.add(tpl)
         db_session.commit()
-        # The definition first, then the cadence onto it (plan step R-F6).
+        # The definition first, then the cadence onto it (plan step R-F6),
+        # then COMMITTED (plan step X-i3) -- every caller of this helper goes
+        # on to issue a request, and a request cannot see uncommitted rows.
         rule = make_cadence_rule(
             tpl, MONTHLY,
             fires_on_day=1,
         )
+        db_session.commit()
         return tpl
 
     def test_dashboard_warns_when_manual_payment_short(
@@ -5798,6 +5807,12 @@ def _create_transfer_template(seed_user, db_session, loan_account):
         db_session, seed_user, loan_account,
         cadence=MONTHLY, fires_on_day=1,
     )
+    # The shared builders' stated contract is "the caller commits", and every
+    # caller of this one goes on to issue a request (plan step balance:X-i3).
+    # A request holds its own transaction, so an uncommitted template is one
+    # the route cannot see -- the fixture would be describing a state no
+    # browser can produce.
+    db_session.commit()
     return template, template.recurrence_rule
 
 
@@ -6027,11 +6042,13 @@ class TestRecurrenceEndDateUpdate:
         )
         db.session.add(tpl)
         db.session.commit()
-        # The definition first, then the cadence onto it (plan step R-F6).
+        # The definition first, then the cadence onto it (plan step R-F6),
+        # committed before the request (plan step X-i3).
         rule = make_cadence_rule(
             tpl, MONTHLY,
             fires_on_day=1,
         )
+        db.session.commit()
 
         resp = auth_client.get(f"/accounts/{account.id}/loan")
         assert resp.status_code == 200
@@ -6070,6 +6087,10 @@ class TestRecurrenceEndDateUpdate:
             tpl, MONTHLY,
             fires_on_day=1,
         )
+        # Committed before the request (plan step X-i3): a query request opens
+        # a transaction of its OWN, so the rule this test asserts is UNTOUCHED
+        # has to exist as far as that request is concerned.
+        db.session.commit()
 
         # Access other user's loan as the primary user.
         resp = auth_client.get(f"/accounts/{other_loan.id}/loan")

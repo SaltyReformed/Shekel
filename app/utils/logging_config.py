@@ -37,7 +37,6 @@ import uuid
 
 from flask import Flask, g, request
 from flask_login import current_user
-from sqlalchemy.exc import SQLAlchemyError
 
 from pythonjsonlogger.json import JsonFormatter
 
@@ -563,24 +562,32 @@ def setup_logging(app: Flask) -> None:
         g.request_id = str(uuid.uuid4())
         g.request_start = time.perf_counter()
 
-        # Propagate the application user_id into the PostgreSQL session
-        # so audit triggers can capture who made the change.
-        # Uses SET LOCAL (transaction-scoped, not session-scoped).
-        try:
-            if current_user.is_authenticated:
-                # Pylint: ``import-outside-toplevel`` -- Deferred:
-                # app.extensions imports this logging module during
-                # logging setup, so a module-top import here would be circular.
-                from app.extensions import db  # pylint: disable=import-outside-toplevel
-                db.session.execute(
-                    db.text("SET LOCAL app.current_user_id = :uid"),
-                    {"uid": str(current_user.id)},
-                )
-        except (RuntimeError, AttributeError, SQLAlchemyError):
-            # RuntimeError: outside application/request context.
-            # AttributeError: anonymous user proxy has no 'id'.
-            # SQLAlchemyError: SET LOCAL fails on broken DB session.
-            pass
+        # RESOLVE who is acting; ``app.db_transaction`` decides what to do with
+        # it.  This hook is where the resolution belongs -- it is the first
+        # before-request hook and the only one that already reads
+        # ``current_user`` for its own log line -- and the BINDING rule is not
+        # this module's: the audit triggers read a transaction-scoped setting,
+        # a request no longer runs in one transaction, and which of those
+        # transactions can fire a trigger at all is exactly what
+        # ``db_transaction`` knows.  Writing ``g.shekel_audit_actor`` here
+        # directly is what made that one key with two spellings in two modules.
+        #
+        # No ``try`` around it, and the three arms it used to carry are why.
+        # ``RuntimeError: outside a request context`` cannot happen in a
+        # before-request hook.  ``AttributeError: the anonymous proxy has no
+        # id`` cannot happen under ``is_authenticated``, which is False for it.
+        # And ``SQLAlchemyError`` was the one reachable arm: swallowing it
+        # leaves the request writing audit rows with a NULL actor -- silently,
+        # because the trigger's ``EXCEPTION WHEN OTHERS`` reads an unset GUC as
+        # "no authenticated user" -- which is the exact defect this binding
+        # exists to prevent, so it is raised rather than passed over.
+        if current_user.is_authenticated:
+            # Pylint: ``import-outside-toplevel`` -- Deferred:
+            # app.extensions imports this logging module during
+            # logging setup, so a module-top import here would be circular.
+            # pylint: disable=import-outside-toplevel
+            from app.db_transaction import bind_request_actor
+            bind_request_actor(current_user.id)
 
     # Slow request threshold in milliseconds (configurable via env var).
     slow_threshold_ms = float(os.getenv("SLOW_REQUEST_THRESHOLD_MS", "500"))
@@ -589,6 +596,31 @@ def setup_logging(app: Flask) -> None:
     def _log_request_summary(response):
         # Skip logging for health checks and other excluded paths.
         if getattr(g, "skip_request_logging", False):
+            return response
+
+        # And for a request that never reached ``_attach_request_id``.  Since
+        # ``app.db_transaction`` moved its boundary onto ``request_started``,
+        # which Flask sends BEFORE any before-request hook, a refusal there
+        # leaves this hook with no start time and no request id -- and the two
+        # reads below would then raise an ``AttributeError`` from inside the
+        # 500 that was already being rendered, replacing the real refusal with
+        # a "request finalizing failed" log line.  Guarded on ``request_start``
+        # alone because the same hook sets both.
+        #
+        # It LOGS rather than returning silently: a request that got this far
+        # with no start time was refused before any hook ran, which is the one
+        # state where losing the request line entirely would hide the refusal
+        # as well as the timing.  An adversarial review found the first version
+        # returning in silence.
+        if getattr(g, "request_start", None) is None:
+            logging.getLogger(__name__).warning(
+                "request completed with no start time: it was refused before "
+                "the request-id hook ran (see app.db_transaction's boundary), "
+                "so this response carries no request id and no duration",
+                extra={"event": "request_unattributed", "category": "error",
+                       "method": request.method, "path": request.path,
+                       "status_code": response.status_code},
+            )
             return response
 
         duration_ms = (time.perf_counter() - g.request_start) * 1000

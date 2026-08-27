@@ -72,11 +72,25 @@ class ReviewScope:
             everything THIS package asks: three sites here asked
             ``calendar_for`` separately inside one request until adversarial
             financial review 2026-08-19, and two of them can disagree under
-            READ COMMITTED.  **It is not one per REQUEST, and saying so would
-            be false**: ``entry_credit_workflow._create_payback`` reads its
-            own, and a creation filing a purchase into an envelope whose
-            payback was soft-deleted reaches it.  Narrowing the claim rather
-            than widening the parameter, because that module is another arc's.
+            READ COMMITTED -- which since plan step balance:X-i3 is true of
+            the THREE POST doors that build a scope
+            (``apply_statement_review``, ``state_merchant_rules``,
+            ``statement_review_totals``) and not of the GET that renders the
+            screen, whose whole request is one snapshot.
+            ``apply_statement_review`` builds TWO, and that is the one place
+            two scopes in one request is right: the second is a FRESH one for
+            the ANSWER, taken only on the path that WROTE, because the pass it
+            was applied against describes a state that no longer exists.
+            **The parameter stays either way, and not only for the arms it
+            still protects**: three reads of one fact in one request is this
+            project's DRY violation rather than a cost, and the doors it
+            protects are the ones that MOVE MONEY.
+            **It is not one per REQUEST, and saying
+            so would be false**: ``entry_credit_workflow._create_payback``
+            reads its own, and a creation filing a purchase into an envelope
+            whose payback was soft-deleted reaches it.  Narrowing the claim
+            rather than widening the parameter, because that module is another
+            arc's.
         basis: The owner's :class:`~app.services.cash_ledger.AmountBasis`.
             ONE per pass, for the reason ``calendar`` above it is one (plan
             step X-au-j, finding **N-309**): every producer under a read pass
@@ -124,6 +138,16 @@ class ReviewScope:
         can differ -- so a line could be OFFERED against one calendar and
         PLACED against another.  Taking it off the scope makes that
         unrepresentable rather than merely avoided.
+
+        **Plan step balance:X-i3 does not retire that argument, and this is
+        the one site in the package where saying so needs care.**  Every
+        placement runs inside a POST, so the transaction is a command's and
+        the two reads really are two snapshots.  It is also the only
+        accommodation here whose two halves sit in DIFFERENT requests -- a
+        line is offered by the GET and placed by the POST, which no
+        per-request snapshot could ever reconcile -- so what makes the pairing
+        safe is that the POST re-derives BOTH from one scope of its own, which
+        is exactly what this method being a method enforces.
 
         **WHICH day a caller passes is the caller's decision and they differ**:
         a purchase is placed by the day it was MADE, because it has a budget

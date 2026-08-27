@@ -139,7 +139,7 @@ class CashAnchorCorrection:
         **Stated here so it is stated ONCE.**  Three readers need this pair --
         :func:`dated_deltas` below, the fold's R-I seed
         (``balance_at._cash_fold._actual_steps``), and the period view's
-        assertion component (``balance_at._cash_periods.cash_period_view``, plan
+        assertion component (``balance_at._cash_periods.period_view_of``, plan
         step X-c1) -- and until X-c1 the fold RE-DERIVED it, which its own
         docstring had to pin with a test.  A property on the record retires that
         re-derivation, exactly as :class:`~._events.CashSourceFact` already

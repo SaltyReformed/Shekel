@@ -86,7 +86,7 @@ class DebtSchedule:
             ``balance_at`` seam.
         owed_from: The loan's ``origination_date``.  A loan owes nothing before
             it exists, and the forward plan fold enforces that
-            (:func:`app.services.balance_at._plan.fold_forward` returns ``0.00``
+            (:func:`app.services.balance_at._plan_fold.fold_forward` returns ``0.00``
             for a date before ``owed_from``).
     """
 

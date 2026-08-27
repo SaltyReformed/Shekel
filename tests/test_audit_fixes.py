@@ -112,7 +112,12 @@ def _create_other_user():
 
 
 def _create_savings_account(user_id):
-    """Create a savings account for the given user."""
+    """Create and COMMIT a savings account for the given user.
+
+    Committed rather than flushed (plan step balance:X-i3): the ownership
+    tests here post a form naming this account and then follow the redirect,
+    and a request cannot see a row that was never committed.
+    """
     savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
     acct = account_service.create_account(
         account_service.AccountSpec(
@@ -123,7 +128,7 @@ def _create_savings_account(user_id):
         ),
     )
     db.session.add(acct)
-    db.session.flush()
+    db.session.commit()
     return acct
 
 

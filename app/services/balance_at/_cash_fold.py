@@ -23,19 +23,28 @@ branch.**  Every date is answered off a single running total
 * the **PLANNED** steps -- the still-Projected rows, each landing at
   ``max(its attribution date, as_of + 1 day)`` (ruling R-G: "a plan cannot have
   already happened").  The cash twin of
-  :func:`app.services.balance_at._plan.fold_forward`.  See :func:`_cash_plan`
+  :func:`app.services.balance_at._plan_fold.fold_forward`.  See :func:`_cash_plan`
   and :func:`_planned_day_nets`.
 
 **Three readers of that ONE row set** (plan steps X-c1 / X-c2b2, ruling R-K).
-:func:`fold_cash_balances` samples the running total at a list of dates -- the
-balance a scalar or a daily series asks for.  :func:`cash_period_balances`
+:func:`balances_at` samples the running total at a list of dates -- the
+balance a scalar or a daily series asks for.  :func:`period_balances`
 samples it at each pay period's end -- the per-period map.  And
 :mod:`._cash_periods` samples the same period ends AND groups the very same rows
 a second way, by the period each was BUDGETED to, so the grid's balance row and
 its subtotal rows reconcile by construction with named remainders for what
-neither clock alone can explain.  The assembly is shared rather than duplicated
-(:func:`assemble`): one walk, one plan load, one valuation, whichever reader is
-asking.
+neither clock alone can explain.  The assembly is shared rather than duplicated:
+one walk, one plan load, one valuation, whichever reader is asking.
+
+**And they READ an assembly they cannot make, which is plan step X-i4.**  Every
+reader here took ``(account, basis, as_of[, window])`` and assembled for itself,
+so an account and the pass's own derivations were independent arguments that
+agreed only because each call site named one ``ctx`` three times -- finding
+**N-354**.  Now :func:`assembled_fold` is the ONE door: it memoizes the fold on
+the pass and refuses an account the pass does not own
+(:func:`~._context._memoize_once`), and every reader below takes the assembled
+record and carries no account and no clock at all.  There is nothing left to
+pair wrongly.
 
 **The third reader lives in its own module since plan step S1-c**, when ruling
 R-DH (f) split its remainder in two and this one passed the 1,000-line ceiling.
@@ -113,6 +122,7 @@ from app.services.cash_ledger import (
 from app.services.pay_calendar import PeriodWindow
 from app.utils.dates import attribution_date
 
+from ._context import BalanceContext, _memoize_once
 from ._fold import sample_cumulative
 
 _ZERO_MONEY = Decimal("0.00")
@@ -127,7 +137,7 @@ _ONE_DAY = timedelta(days=1)
 class AssembledCashFold:
     """One account's whole running total, plus the facts it was built from.
 
-    The output of :func:`assemble`, and the reason the three readers below are
+    The output of :func:`~._cash_fold.assembled_fold`, and the reason the three readers below are
     readings of ONE valued row set rather than three producers a test keeps in
     step (ruling R-K).  It carries the sampling inputs (:attr:`seed` /
     :attr:`steps`) AND the groupings the period view regroups the same rows by
@@ -137,7 +147,7 @@ class AssembledCashFold:
     **A fourth reader lives one module over** (plan step X-g1): the modelled
     asset fold (:mod:`app.services.balance_at._asset_fold`) takes this whole
     record and resolves two MORE event kinds onto the same running total --
-    CONTRIBUTION and ACCRUAL.  That is why :func:`assemble` and this record are
+    CONTRIBUTION and ACCRUAL.  That is why :func:`~._cash_fold.assembled_fold` and this record are
     seam-visible rather than module-private: a modelled asset IS its cash fold
     plus a modelled return (plan Section 3.2), so the two must share ONE
     assembly rather than the modelled side re-deriving a cash basis.  It reads
@@ -145,6 +155,20 @@ class AssembledCashFold:
     opens (ruling R-L, generalised at ruling R-Y).
 
     Attributes:
+        account_id: The account these rows belong to.  Carried for the reason
+            :attr:`scenario_id` beside it is, and added by plan step **X-i4**
+            for the case that ruling did not reach: a reader taking BOTH this
+            record and an ``Account`` -- which
+            :func:`app.services.balance_at._asset_fold.resolve` does, folding
+            the account's own modelled rule, its latest assertion and its
+            contribution feed onto these steps -- could be handed the two for
+            different accounts.  The pass refuses a foreign account where it
+            MEMOIZES (``_context._memoize_once``); that reader memoizes nothing,
+            so the pairing is bound HERE, on the value, rather than by a rule
+            its caller has to keep.  An adversarial review of X-i4's first build
+            measured the gap it closes: an account of one owner resolved onto a
+            fold assembled for another, seeding the first's HYSA rate with the
+            second's `$2,000.00` opening.
         scenario_id: The budget scenario the rows below were scoped by.  Carried
             so the record is self-describing: a reader that resolves something
             FURTHER off this fold -- the modelled tiers
@@ -164,6 +188,7 @@ class AssembledCashFold:
         day_nets: The PLANNED tier's per-day nets.
     """
 
+    account_id: int
     scenario_id: int
     seed: Decimal
     steps: "list[tuple[date, Decimal]]"
@@ -171,11 +196,123 @@ class AssembledCashFold:
     plan: _CashPlan
     day_nets: "dict[date, Decimal]"
 
+    def require_account(self, account: Account) -> None:
+        """Refuse an *account* these steps were not assembled for.
 
-def assemble(
+        **The pairing check for a reader that takes BOTH this record and an
+        ``Account``** -- which :func:`~._asset_fold.resolve` does, folding the
+        account's own modelled rule, its latest assertion and its contribution
+        feed onto these steps.  The pass refuses a foreign account where it
+        MEMOIZES (:func:`~._context._memoize_once`); such a reader memoizes
+        nothing, so the rule lives on the VALUE instead and every reader that
+        needs it asks the same one rather than writing its own.
+
+        Args:
+            account: The account the caller is about to fold onto these steps.
+
+        Raises:
+            ValueError: When it is not the account this record is for.
+        """
+        if self.account_id != account.id:
+            raise ValueError(
+                f"account {account.id} cannot be folded onto a cash fold "
+                f"assembled for account {self.account_id}: the running total, "
+                f"the walk and the plan are all that account's. Take the fold "
+                f"from the pass this account came from (assembled_fold)"
+            )
+
+
+def assembled_fold(
+    account: Account, ctx: BalanceContext,
+) -> AssembledCashFold:
+    """Return *account*'s assembled cash fold for this pass, assembling it once.
+
+    **The seam's ONE door to a cash fold** (plan step **X-i4**), and the cash
+    counterpart of :meth:`~._context.BalanceContext.loan_walk`: one walk of the
+    account's facts, one load of its plan and one valuation, however many
+    readings ask.  The four readings below take the record this returns, so
+    none of them carries an account or a clock and there is nothing left for a
+    caller to pair wrongly.
+
+    **What it replaced.**  :func:`_assemble` and four siblings each took
+    ``(account, basis, as_of[, window])``, and every call site spelled
+    ``ctx.amounts(), ctx.as_of`` by hand -- values that agreed only because one
+    ``ctx`` happened to be named two or three times, with nothing checking the
+    account against the ``user_id`` that pass pins (finding **N-354**).  The
+    refusal is :func:`~._context._memoize_once`'s rather than this function's,
+    because creating per-account state on a pass is the thing that must be
+    bound and that is the only way to create it.
+
+    **The memo, measured** on the dev database over the six cash entries a
+    single-account screen asks: **42 ``walk_cash_ledger`` calls across 8
+    accounts before, 8 after** -- and
+    :func:`~app.services.balance_at.records_balance_at` walked the same account
+    TWICE inside one call, once for its assertion lookup and once through its
+    :func:`~app.services.balance_at.cash_balance_at` fall-through.  Redundant
+    derivation is where a divergence hides, which is the lesson
+    :class:`~._context.BalanceContext` was built on.
+
+    **What a caller must obey**, and it is that object's standing contract
+    rather than a new one: a pass is a memo whose lifetime is the ONE read it
+    was built for, so a path that writes and then reads again builds a FRESH
+    pass.  Nothing in ``app/`` reuses one across a write; four TESTS did and
+    were corrected, because the cash fold was the last account-keyed derivation
+    a pass did not hold and so the only one that could hide the mistake.
+
+    **The door is HERE and the cache is PRIVATE, which is not an accident of
+    layering.**  An :class:`AssembledCashFold` carries ``seed`` and ``steps`` --
+    a running total, so five lines of prefix sum over it reproduce
+    :func:`~app.services.balance_at.cash_balance_at`'s answer exactly.  X-i4's
+    first build put the door on :class:`~._context.BalanceContext` as a public
+    method with a public cache beside it, and two adversarial reviews measured
+    the same consequence: a consumer importing nothing private, holding only the
+    re-exported context, could read a balance the W9910 fence exists to make
+    unreachable.  W9910 sees IMPORTS and ``protected-access`` sees underscores,
+    so neither saw it -- and W9909, which DOES scope public methods on that
+    class, refused the public form outright with "non-producer or move it into a
+    private seam module".  This module IS that private seam module.
+
+    Args:
+        account: The account to value.  Must belong to ``ctx.user_id``, which is
+            REFUSED rather than trusted.  Its ``id`` scopes the walk and the
+            plan; its KIND is not consulted (ruling R-J).  Must be attached to
+            ``db.session``.
+        ctx: The read pass.  Its
+            :meth:`~._context.BalanceContext.amounts` carries the scenario whose
+            rows are folded and the derivations they are priced through, and its
+            ``as_of`` is ruling R-G's clamp floor.
+
+    Returns:
+        The pass's memoized :class:`AssembledCashFold` for this account.
+
+    Raises:
+        ForeignAccountError: When *account* belongs to another owner.
+        BaselineMissingError: When this pass has no baseline scenario -- a row's
+            amount rule resolves against one.
+    """
+    # Pylint: ``protected-access`` -- the ONE crossing of this boundary in the
+    # package, and the design rather than a shortcut: this module owns the
+    # cash-fold derivation and the context owns per-pass storage, which is what
+    # plan step D-ctx-b's "the seam owns the derivation, the context owns the
+    # storage" already says for the three PUBLIC caches beside it.  THIS one is
+    # private because it holds a balance-at-T (see above), and Python has no
+    # package-private -- so the alternatives are a public cache no gate can see
+    # or eight disables at the reading call sites.  One, here, named.
+    cache = ctx._cash_folds  # pylint: disable=protected-access
+    return _memoize_once(
+        ctx, cache, account,
+        lambda: _assemble(account, ctx.amounts(), ctx.as_of),
+    )
+
+
+def _assemble(
     account: Account, basis: AmountBasis, as_of: date,
 ) -> AssembledCashFold:
     """Walk the account's facts and load its plan -- ONCE, for every reader.
+
+    Private since plan step X-i4: :func:`assembled_fold` above is its only
+    caller, so the ``(account, basis, as_of)`` triple is constructed in exactly
+    one place, out of one pass, and no other seam module can spell it.
 
     Args:
         account: The account to value.  Its ``id`` scopes the walk and the plan;
@@ -208,22 +345,20 @@ def assemble(
     day_nets = _planned_day_nets(plan)
     seed, steps = _running_steps(walk, day_nets)
     return AssembledCashFold(
+        account_id=account.id,
         scenario_id=basis.scenario_id,
         seed=seed, steps=steps, walk=walk, plan=plan, day_nets=day_nets,
     )
 
 
-def fold_cash_balances(
-    account: Account,
-    basis: AmountBasis,
-    as_of: date,
-    dates: list[date],
+def balances_at(
+    folded: AssembledCashFold, dates: list[date],
 ) -> dict[date, Decimal]:
-    """Return the account's folded cash balance at each of *dates*.
+    """Return the folded cash balance at each of *dates*.
 
     The cash counterpart of
-    :func:`app.services.balance_at._fold.fold_loan_balances`, and the producer
-    the seam's cash-flow SCALAR and DAILY SERIES read (plan step X-c2b2).  ONE
+    :func:`app.services.balance_at._fold.fold_loan_balances`, and the reading
+    the seam's cash-flow SCALAR and DAILY SERIES take (plan step X-c2b2).  ONE
     walk of the account's facts plus ONE load of its plan, sampled at every
     requested date -- so N dates cost one pass, not N, which is what lets the
     daily series be a sampling of the period map's own running total rather than
@@ -231,17 +366,18 @@ def fold_cash_balances(
     the real Checking account the day before the cutover, ``$246.36`` at the
     worst day of the current period).
 
-    **Two dates, and they are not the same date** (the contract the seam's
-    context documents): *as_of* is the reader's NOW -- what decides that a plan
-    cannot already have happened -- while each of *dates* is a VALUATION date,
-    which may be long before it (a historical read) or long after (a projection).
-    Passing ``as_of`` as a valuation date is ordinary, not special.
+    **It TAKES the assembled fold since plan step X-i4** and therefore carries
+    no account and no clock: it was ``(account, basis, as_of, dates)``, three of
+    whose four arguments a caller had to keep in agreement by hand.  The
+    reader's NOW is inside *folded* -- ruling R-G's clamp was applied when the
+    plan was keyed onto landing days -- so the only date left here is a
+    VALUATION date, which may be long before that now (a historical read) or
+    long after (a projection).  Two dates that are not the same date used to be
+    a contract this docstring stated; it is now a property of the signature.
 
     Args:
-        account: The account to value (see :func:`assemble`).
-        basis: The read pass's amount basis, carrying the scenario whose rows
-            are folded (see :func:`assemble`).
-        as_of: The reader's NOW (ruling R-G's clamp floor).
+        folded: The account's :class:`AssembledCashFold`
+            (:func:`~._cash_fold.assembled_fold`).
         dates: The dates to value the account at, in any order.  Duplicates
             collapse.
 
@@ -249,7 +385,6 @@ def fold_cash_balances(
         ``{date: balance}`` -- one cent-quantized ``Decimal`` per distinct
         requested date.  ``{}`` for an empty *dates*.
     """
-    folded = assemble(account, basis, as_of)
     return sample_cumulative(folded.seed, folded.steps, dates)
 
 
@@ -267,7 +402,7 @@ class CashDayFacts:
 
     Attributes:
         balance: The account's cash-flow balance at the END of the day, cent
-            quantized -- the same figure :func:`fold_cash_balances` samples,
+            quantized -- the same figure :func:`balances_at` samples,
             from the same running total.
         recorded: What the account's OWN settled rows moved that day
             (:attr:`~app.services.cash_ledger.CashSourceFact.delta`, summed).
@@ -335,26 +470,22 @@ def _day_sums(
     return sums
 
 
-def fold_cash_day_facts(
-    account: Account,
-    basis: AmountBasis,
-    as_of: date,
-    days: list[date],
+def day_facts(
+    folded: AssembledCashFold, days: list[date],
 ) -> "CashDaySeries":
     """Return each day's folded balance beside the three tiers that moved it.
 
-    The fourth reader of the ONE assembled row set (plan step
+    The fourth reading of the ONE assembled row set (plan step
     ``bank_import:X-f6e-2``), and a reading rather than a second producer: the
     balance it reports is :func:`sample_cumulative` over the very
-    ``(seed, steps)`` :func:`fold_cash_balances` samples, so the two cannot
+    ``(seed, steps)`` :func:`balances_at` samples, so the two cannot
     disagree about a day's balance.  What it adds is the SPLIT of that day's
     movement, which no other reader needs and a consumer must not re-derive
     (see :class:`CashDayFacts`).
 
     Args:
-        account: The account to value (see :func:`assemble`).
-        basis: The read pass's amount basis, carrying the scenario.
-        as_of: The reader's NOW (ruling R-G's clamp floor).
+        folded: The account's :class:`AssembledCashFold`
+            (:func:`~._cash_fold.assembled_fold`).
         days: The days to answer, in any order.  Duplicates collapse.
 
     Returns:
@@ -369,7 +500,6 @@ def fold_cash_day_facts(
     reader wanting the identity to the cent must compare the components rather
     than differencing two rounded balances.
     """
-    folded = assemble(account, basis, as_of)
     balances = sample_cumulative(folded.seed, folded.steps, days)
     recorded = _day_sums(
         [(fact.settled_on, fact.delta) for fact in folded.walk.source_facts]
@@ -402,18 +532,17 @@ def fold_cash_day_facts(
     )
 
 
-def cash_period_balances(
-    account: Account,
-    basis: AmountBasis,
-    as_of: date,
-    window: PeriodWindow,
+def period_balances(
+    folded: AssembledCashFold, window: PeriodWindow,
 ) -> "OrderedDict[int, Decimal]":
-    """Return the account's folded balance at each period's END, by period id.
+    """Sample an assembled fold at each period's ``end_date``, keyed by period id.
 
     The per-period map (plan step X-c2b2): the seam's ``cash_balance_map``, the
     kernel's PLAIN fall-through, and the INTEREST accrual's SEED all read it, so
     a period column, the scalar sampled at that column's end date, and the daily
     series' last day of it are one running total read at three grains.
+    :func:`~._cash_periods.period_view_of` reads it too, for the balance row it
+    reconciles its budget-clock subtotals against.
 
     **TOTAL over the periods it is given**, which is the cutover's whole point:
     the shipping producer carried the anchor forward and OMITTED every
@@ -422,29 +551,11 @@ def cash_period_balances(
     blank columns).  Every assertion is replayed here, so a past period reads the
     balance in force THEN.
 
-    Args:
-        account: The account to value (see :func:`assemble`).
-        basis: The read pass's amount basis, carrying the scenario whose rows
-            are folded (see :func:`assemble`).
-        as_of: The reader's NOW (ruling R-G's clamp floor).
-        window: The pay periods to value, as a slice of the owner's ONE derived
-            calendar
-            (:meth:`~app.services.balance_at.BalanceContext.reported_periods`).
-            It need not start at the account's anchor.
-
-    Returns:
-        ``OrderedDict`` period id -> cent-quantized ``Decimal``, in payday
-        order.  EVERY period of *window* is present.
-    """
-    return _period_balances(
-        assemble(account, basis, as_of), window,
-    )
-
-
-def _period_balances(
-    folded: AssembledCashFold, window: PeriodWindow,
-) -> "OrderedDict[int, Decimal]":
-    """Sample an assembled fold at each period's ``end_date``, keyed by period id.
+    **One function since plan step X-i4**, where it was two: a private
+    ``_period_balances`` taking the assembled fold, and a public
+    ``cash_period_balances`` taking ``(account, basis, as_of, window)`` that
+    assembled one first.  The second was the mis-pairable spelling -- and every
+    caller of it already held the pass the fold now comes out of.
 
     **The end it samples at is DERIVED, since plan step C2-c.**  It was
     ``PayPeriod.end_date``, a stored copy of ``lead(start_date) - 1`` with
@@ -457,11 +568,16 @@ def _period_balances(
     the column that could hold it.
 
     Args:
-        folded: The account's :class:`AssembledCashFold`.
-        window: The pay periods to value.
+        folded: The account's :class:`AssembledCashFold`
+            (:func:`~._cash_fold.assembled_fold`).
+        window: The pay periods to value, as a slice of the owner's ONE derived
+            calendar
+            (:meth:`~app.services.balance_at.BalanceContext.reported_periods`).
+            It need not start at the account's anchor.
 
     Returns:
-        ``OrderedDict`` period id -> cent-quantized ``Decimal``.
+        ``OrderedDict`` period id -> cent-quantized ``Decimal``, in payday
+        order.  EVERY period of *window* is present.
     """
     sampled = sample_cumulative(
         folded.seed, folded.steps, [period.end_date for period in window],
@@ -557,8 +673,8 @@ def _running_steps(
 
     The ONE assembly, and the reason both readers in this module are readings of
     ONE valued row set rather than two producers a test keeps in step (ruling
-    R-K): :func:`fold_cash_balances` samples these steps for a balance, and
-    :func:`cash_period_view` samples them for its balance row while grouping the
+    R-K): :func:`balances_at` samples these steps for a balance, and
+    :func:`~._cash_periods.period_view_of` samples them for its balance row while grouping the
     SAME facts on the budget clock beside it.
 
     Args:
@@ -645,7 +761,7 @@ def _cash_plan(
     one reason: a projected envelope's reservation had to know which of its
     purchases a declared balance already contained, and that answer
     (:attr:`~app.services.cash_ledger.CashLedgerWalk.coverage`) was read off the
-    facts :func:`assemble` had already loaded rather than by resolving the
+    facts :func:`_assemble` had already loaded rather than by resolving the
     account's assertions a second time.  Ruling **R-FM** dissolved the question:
     a purchase carrying a recorded posting day is a cash movement of its OWN in
     the walk, so the reservation asks the purchase and the clearing rule stays

@@ -596,11 +596,16 @@ def _transaction_candidates(
       ``pay_periods.user_id``, and that is what makes the window lookup below
       total**: a row this query returns names a period the calendar was built
       from, so :meth:`~app.services.pay_calendar.PayCalendar.period_by_id`
-      cannot answer ``None`` for it.  The two reads are separate snapshots
-      under READ COMMITTED, so a concurrent period INSERT between them is
-      expressible -- and scoping by the calendar's own ids means the query
-      simply does not ask about a period the calendar has not got, rather than
-      returning a row nothing here can date;
+      cannot answer ``None`` for it.  Inside a COMMAND -- the three POST doors
+      that build a scope -- the two reads are separate snapshots under READ
+      COMMITTED, so a concurrent period INSERT between them is expressible,
+      and scoping by the calendar's own ids means the query simply does not
+      ask about a period the calendar has not got rather than returning a row
+      nothing here can date.  **Plan step balance:X-i3 makes that
+      inexpressible inside a QUERY and takes nothing away from this clause**,
+      because the clause is ALSO the OWNERSHIP scope this bullet opens with:
+      it is what keeps another owner's rows out of the answer, which holds for
+      every request kind and for every CLI caller;
     * a SHADOW's parent transfer still exists and is not soft-deleted -- the
       clause ``reconcile_service._transfers.arm`` carries for the same reason:
       a shadow whose parent has gone is not money this account owes, and
@@ -769,7 +774,12 @@ def candidates_for(
     defect the paragraph above describes, and two of them can disagree: under
     READ COMMITTED a concurrent payday write between the two loads would place
     a line by one calendar and bound its candidates by another.  Found by
-    adversarial financial review 2026-08-19.
+    adversarial financial review 2026-08-19.  **Since plan step balance:X-i3
+    the disagreement is a COMMAND's alone** -- the three POST doors that build
+    a scope, which are also the three that move money -- because a render's
+    whole request is one snapshot.  The DRY half of the argument was never
+    conditional on the isolation level and is what still makes the parameter
+    required on every path.
 
     **It answers what the account COULD offer, and says nothing about what is
     already spoken for** (plan step ``bank_import:X-f6a-3c-2``) -- that is

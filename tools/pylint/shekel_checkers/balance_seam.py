@@ -64,7 +64,7 @@ from pylint.checkers import BaseChecker
 # deleted: no producer, no re-export, nothing to allowlist.  The loan FOLD had
 # already left for the same structural reason at plan step D-fold
 # (``fold_loan_balances`` / ``fold_from_walk`` into ``balance_at._fold``, the
-# past-side twin of ``balance_at._plan.fold_forward``), and ``walk_loan_ledger``
+# past-side twin of ``balance_at._plan_fold.fold_forward``), and ``walk_loan_ledger``
 # came off to the leaf's NON-producer ruling because the walk yields only FACTS
 # once the fold is elsewhere (see the ``loan_ledger`` ruling below).
 
@@ -496,7 +496,7 @@ _FENCED_MODULE_RULINGS = {
         # live-override basis across them.  Its per-period ``period_subtotal`` /
         # ``period_subtotals`` siblings carried this same ruling until plan step
         # X-c2b3 deleted them: ruling R-K changed what a subtotal COUNTS, so the
-        # seam-private ``_cash_fold.cash_period_view`` is their successor, and
+        # seam-private ``_cash_periods.period_view_of`` is their successor, and
         # two rulings went with the two names (the reverse-staleness meta-test
         # would otherwise flag them).
         "sum_projected",
@@ -593,12 +593,11 @@ _FENCED_MODULE_RULINGS = {
     # The loan WALK leaf (plan step B1, renamed ``_fold`` -> ``_walk`` at D-fold):
     # the event stream, the split, and the one running-balance replay over them,
     # which the posting ledger and the read seam both derive from.  Scoped WHOLE
-    # for the same reason its sibling below is: a new balance-at-T reader born in
-    # any of its submodules would reproduce exactly the hole this check exists to
-    # kill.  Its producer set is EMPTY and stays that way: D-fold moved the fold
-    # into the seam, so every public name this leaf defines is a non-producer
-    # that must say why, and a new one that DOES answer balance-at-T belongs
-    # inside ``balance_at``, not here.
+    # for the same reason its sibling below is: a new balance-at-T reader born in any of its
+    # submodules would reproduce the hole this check kills.  Its producer set is EMPTY and stays
+    # that way -- D-fold moved the fold into the seam -- so every public name this leaf defines
+    # is a non-producer that must say why, and one that DOES answer balance-at-T belongs inside
+    # ``balance_at``.
     "app.services.loan_ledger": (
         frozenset(), frozenset({
             # The running-balance WALK: it replays the loan's events into
@@ -614,8 +613,10 @@ _FENCED_MODULE_RULINGS = {
             "walk_loan_ledger",
             # The real principal/interest/escrow split of a payment -- a
             # decomposition of CASH, not an account balance.  The whole-loan list,
-            # its per-payment step, and the pure arithmetic core the step shares
-            # with the planned/estimated payment kinds carry the same ruling.
+            # its per-payment step, and the two halves R16-a made of the arithmetic
+            # core (allocation alone; the month-charging composition over it) carry
+            # one ruling: cash in, four parts out, no balance-at-T.
+            "apply_payment_cash",
             "compute_loan_payment_splits",
             "split_one_payment",
             "split_payment_cash",

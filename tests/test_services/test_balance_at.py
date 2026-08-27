@@ -1825,7 +1825,18 @@ class TestInvestmentContributions:
             _add_flat_deduction(db, profile, inv, Decimal("200.0000"))
             db.session.commit()
 
-            with_ded = balance_at.balance_map(inv, bctx)
+            # A FRESH pass for the read AFTER the write.  A ``BalanceContext``
+            # is a memo whose lifetime is the one read it was built for, and
+            # since plan step X-i4 the cash fold every modelled kind rides on
+            # is one of the derivations it holds.  This case is green on one
+            # pass only by accident -- ``make_salary_profile`` writes no
+            # transaction, so the CONTRIBUTION tier (re-derived per call) moves
+            # while the memoized fold does not -- and adding one row to the
+            # fixture would turn it into two stale halves compared against each
+            # other.  Found by X-i4's adversarial review, which caught this with
+            # a session-level write probe after its three siblings were fixed.
+            after_ctx = BalanceContext.build(user_id)
+            with_ded = balance_at.balance_map(inv, after_ctx)
             # Post-anchor period reflects the consumed contribution.
             assert with_ded[periods[-1].id] > baseline[periods[-1].id]
 
@@ -1838,7 +1849,7 @@ class TestInvestmentContributions:
                 user_id, calendar_for(user_id),
             )
             expected = net_worth_kernel.build_account_balance_map(
-                inv, bctx,
+                inv, after_ctx,
                 ContributionInputs(
                     investment_params=params,
                     # ADAPTED, as the seam's own loader does since plan
@@ -1855,9 +1866,9 @@ class TestInvestmentContributions:
 
             # Scope: a non-investment account in the same batch is untouched.
             checking = seed_user["account"]
-            maps = balance_at.build_maps([inv, checking], bctx)
+            maps = balance_at.build_maps([inv, checking], after_ctx)
             assert maps[checking.id] == balance_at.balance_map(
-                checking, bctx,
+                checking, after_ctx,
             )
 
     def test_employer_match_driven_by_gross_exceeds_no_match(
@@ -2094,6 +2105,10 @@ class TestOnlyALoanIsNotATransactionSum:
                 acct.id: balance_at.balance_map(acct, bctx)
                 for acct in (mortgage, inv, prop)
             }
+            # The rows below are a WRITE, so the reads after them take a fresh
+            # pass: a ``BalanceContext`` is a memo whose lifetime is the one
+            # read it was built for, and since plan step X-i4 the cash fold the
+            # modelled kinds ride on is one of the derivations it holds.
             for acct in (mortgage, inv, prop):
                 db.session.add(Transaction(
                     account_id=acct.id,
@@ -2108,14 +2123,16 @@ class TestOnlyALoanIsNotATransactionSum:
                 ))
             db.session.commit()
 
+            after_ctx = BalanceContext.build(user_id)
+
             # The LOAN is unmoved: its balance is its schedule (ruling D4).
             assert balance_at.balance_map(
-                mortgage, bctx,
+                mortgage, after_ctx,
             ) == before[mortgage.id], "the loan moved on a typed row"
 
             # The MODELLED kinds count it, once, from the period it lands in.
             for acct in (inv, prop):
-                after = balance_at.balance_map(acct, bctx)
+                after = balance_at.balance_map(acct, after_ctx)
                 # Untouched before the row's own period ...
                 assert after[periods[4].id] == before[acct.id][periods[4].id], (
                     f"{acct.name} moved BEFORE the typed row's period"

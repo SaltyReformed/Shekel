@@ -13,7 +13,7 @@ more event kinds on it::
          | ACCRUAL      balance += balance * rate      (modelled return, DAILY, R-T)
 
 The first three are exactly :mod:`app.services.balance_at._cash_fold`'s three
-tiers, taken whole through :func:`~app.services.balance_at._cash_fold.assemble`
+tiers, taken whole through :func:`~._cash_fold.assembled_fold`
 rather than re-derived -- which is the structural claim this module exists to
 make: an INTEREST account, an INVESTMENT and a Property are not three questions,
 they are the cash fold plus a rate.  The retired interest layer said exactly
@@ -622,9 +622,9 @@ def resolve(
     """Resolve *account*'s modelled tiers onto an ALREADY-assembled cash fold.
 
     The replay's real entry, and the reason a modelled asset needs no cash basis
-    of its own: it takes :func:`~app.services.balance_at._cash_fold.assemble`'s
-    whole record -- the seed, the three tiers' dated deltas, and the walk it
-    reads the latest assertion off -- and adds the two modelled kinds to it.
+    of its own: it takes the pass's whole assembled record -- the seed, the
+    three tiers' dated deltas, and the walk it reads the latest assertion off --
+    and adds the two modelled kinds to it.
 
     Taking the assembled fold rather than assembling one is what lets a reader
     that ALSO needs the cash period columns share the walk (plan step X-g2a):
@@ -670,13 +670,16 @@ def resolve(
         calendar: The OWNER's pay calendar for this read pass
             (:meth:`~app.services.balance_at.BalanceContext.calendar`), read
             for the CONTRIBUTION tier's axis alone and only on the modelled
-            arm.  That it is the right owner's is the seam's standing contract
-            (every account a context resolves belongs to ``ctx.user_id``), not
-            a check here -- which would be a second spelling of it.
+            arm.  That it is the RIGHT owner's follows from *cash*, bound to
+            *account* above and memoized on a pass that refuses a foreign one.
 
     Returns:
         The resolved :class:`ModelledFold`.
+
+    Raises:
+        ValueError: When *cash* was assembled for a DIFFERENT account (X-i4).
     """
+    cash.require_account(account)
     accrual = _modelled_return(account, inputs.investment_params)
     if accrual is None:
         return _resolve(cash, [], None)
@@ -762,7 +765,7 @@ def _assemble(
     """
     return resolve(
         account,
-        _cash_fold.assemble(account, ctx.amounts(), ctx.as_of),
+        _cash_fold.assembled_fold(account, ctx),
         horizon_end,
         inputs,
         ctx.calendar(),
@@ -778,7 +781,7 @@ def fold_asset_balances(
     """Return *account*'s modelled balance at each of *dates*.
 
     The modelled counterpart of
-    :func:`app.services.balance_at._cash_fold.fold_cash_balances`, and the
+    :func:`app.services.balance_at._cash_fold.balances_at`, and the
     producer that makes a modelled kind answer a DATE rather than a period.
     Until plan step X-g2b wired it, ``_kind_correct.balance_at`` resolved a date
     to its pay period and read a period-keyed map for these three kinds, so a

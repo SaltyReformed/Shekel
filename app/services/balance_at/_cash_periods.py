@@ -34,10 +34,8 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from app.models.account import Account
 from app.models.transaction import Transaction
 from app.services.cash_ledger import (
-    AmountBasis,
     CashLedgerWalk,
     live_amounts,
     sum_projected,
@@ -48,8 +46,7 @@ from app.utils.money import round_money
 from ._cash_fold import (
     AssembledCashFold,
     _CashPlan,
-    _period_balances,
-    assemble,
+    period_balances,
 )
 
 _ZERO_MONEY = Decimal("0.00")
@@ -59,7 +56,7 @@ _ZERO_MONEY = Decimal("0.00")
 class CashPeriodFigures:
     """One pay period's cash column: the balance, the subtotals, the remainders.
 
-    The per-period output of :func:`cash_period_view`, and the grid rows ruling
+    The per-period output of :func:`period_view_of`, and the grid rows ruling
     R-K makes ONE row set grouped two ways.  For every period and every account
     kind, in terms of :attr:`balance` below::
 
@@ -132,7 +129,7 @@ class CashPeriodFigures:
 class CashPeriodView:
     """A whole account's cash columns, and the income basis they were valued on.
 
-    The output of :func:`cash_period_view`.  The override map rides on the
+    The output of :func:`period_view_of`.  The override map rides on the
     result rather than being the caller's ARGUMENT (ruling R-Q): it is what the
     projection was actually computed with, so a consumer that renders the
     individual rows beside the columns -- the budget grid -- prices each row off
@@ -153,19 +150,38 @@ class CashPeriodView:
     amount_overrides: "dict[int, Decimal]"
 
 
-def cash_period_view(
-    account: Account,
-    basis: AmountBasis,
-    as_of: date,
-    window: PeriodWindow,
+def period_view_of(
+    folded: AssembledCashFold, window: PeriodWindow,
 ) -> CashPeriodView:
     """Return the account's cash column for each period of *window* -- ruling R-K.
 
     ONE valued row set, grouped on TWO clocks, plus the assertion steps.  The
-    same walk and the same plan :func:`~._cash_fold.fold_cash_balances` folds
+    same walk and the same plan :func:`~._cash_fold.balances_at` folds
     are grouped here a second way -- by the pay period each row was BUDGETED to
     -- so the grid's balance row and its subtotal rows stop being two producers
     that a test has to keep in step and become two readings of one set.
+
+    **It takes an ALREADY-assembled fold**, split from its assembly at plan step
+    X-g2a so a reader that needs the cash columns AND something else off the
+    same account pays for ONE walk, ONE plan load and ONE valuation rather than
+    two.  The grid is that reader: from plan step X-g2b it renders the modelled
+    balance -- :func:`app.services.balance_at._asset_fold.resolve` over this very
+    :class:`~._cash_fold.AssembledCashFold` -- beside the budget-clock subtotals
+    this returns, and calling two entry points would have assembled the account
+    twice.  Taking the assembled record rather than the account is what makes
+    that sharing STRUCTURAL: the columns and whatever the caller resolves beside
+    them are readings of one valued row set by construction, not two producers
+    that a test keeps in step.
+
+    **The convenience twin that assembled first is GONE (plan step X-i4).**  A
+    ``cash_period_view(account, basis, as_of, window)`` stood beside this and
+    had no caller in ``app/`` at all -- the grid, its only production reader,
+    already came through here.  It took the account and the pass's own
+    derivations as independent arguments (finding **N-354**), which is the
+    shape X-i4 removes, and keeping a production function alive for test callers
+    alone is what ``CLAUDE.md`` rule 13 forbids.  Its callers now spell
+    ``period_view_of(assembled_fold(account, ctx), window)``, where the pass
+    binds the account it values.
 
     **Why the subtotals had to change basis, measured.**  Today's subtotal counts
     only rows that are still UNPAID (``cash_ledger.sum_projected`` filters through
@@ -207,14 +223,10 @@ def cash_period_view(
     which is the ``+ accrual[p]`` term of R-K's identity.
 
     Args:
-        account: The account to project.  Must be attached to ``db.session``;
-            its kind is not consulted.
-        basis: The read pass's
-            :class:`~app.services.cash_ledger.AmountBasis`, carrying the
-            scenario whose rows are grouped and the derivations they are priced
-            through (plan step X-au-c2b).
-        as_of: The reader's NOW (ruling R-G's clamp floor) -- NOT a valuation
-            date; each period is valued at its own ``end_date``.
+        folded: The account's :class:`~._cash_fold.AssembledCashFold`
+            (:func:`~._cash_fold.assembled_fold`), which carries the account's
+            walk, its plan and the scenario and pricing basis both were loaded
+            under.  The account's kind is not consulted.
         window: The pay periods to report, as a slice of the owner's ONE
             derived calendar
             (:meth:`~app.services.balance_at.BalanceContext.reported_periods`).
@@ -231,41 +243,10 @@ def cash_period_view(
         against its folded balance), plus the live override map the projection
         was computed with.
     """
-    return period_view_of(assemble(account, basis, as_of), window)
-
-
-def period_view_of(
-    folded: AssembledCashFold, window: PeriodWindow,
-) -> CashPeriodView:
-    """Regroup an ALREADY-assembled fold into its per-period columns.
-
-    :func:`cash_period_view`'s body, split from its assembly so a reader that
-    needs the cash columns AND something else off the same account pays for ONE
-    walk, ONE plan load and ONE valuation rather than two (plan step X-g2a).
-    The grid is that reader: from plan step X-g2b it renders the modelled
-    balance -- :func:`app.services.balance_at._asset_fold.resolve` over this very
-    :class:`~._cash_fold.AssembledCashFold` -- beside the budget-clock subtotals
-    this returns, and calling both entry points would have assembled the account
-    twice.
-
-    Taking the assembled record rather than the account is what makes the
-    sharing STRUCTURAL: the columns and whatever the caller resolves beside them
-    are readings of one valued row set by construction, not two producers that a
-    test keeps in step.
-
-    Args:
-        folded: The account's :class:`~._cash_fold.AssembledCashFold`
-            (:func:`~._cash_fold.assemble`).
-        window: The pay periods to report.  See :func:`cash_period_view` for
-            the windowing contract.
-
-    Returns:
-        The :class:`CashPeriodView`.
-    """
     return CashPeriodView(
         columns=_assemble_figures(
             window,
-            _period_balances(folded, window),
+            period_balances(folded, window),
             _budget_legs(folded.walk, folded.plan, window),
             _cash_sums(folded.walk, folded.day_nets, window),
             _assertion_sums(folded.walk, window),
@@ -498,7 +479,7 @@ def _assemble_figures(
     Args:
         window: The pay periods to report.
         balances: The fold sampled at every period ``end_date``, keyed by
-            period id (:func:`~._cash_fold._period_balances`).
+            period id (:func:`~._cash_fold.period_balances`).
         legs: The budget-clock ``(income, expense)`` per period.
         moved: The cash-clock net per period.
         asserted: The assertion corrections per period.

@@ -102,8 +102,9 @@ class NearRefusal(enum.Enum):
 #:   exclusion rather than an argument.**  A row whose figure is whatever its
 #:   contents come to is the ORDINARY shape on this screen: every envelope is
 #:   one, and an envelope's own cash leg lands near some line's figure
-#:   constantly.  Publishing it withheld the Groceries case ruling **R-GU**
-#:   exists to file -- caught by this step's own controls 2026-08-26 -- and it
+#:   constantly.  Publishing it withheld the Groceries case ruling
+#:   **`bank_import:R-GU`** exists to file -- caught by this step's own
+#:   controls 2026-08-26 -- and it
 #:   is outside the 12-of-80 the ruling was measured on.  What makes it
 #:   different from the two above is that the tier is not declining EVIDENCE
 #:   about the pairing; it is saying the row cannot be re-priced, which is a

@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from flask import Flask, request, session as flask_session
 
 from app.config import CONFIG_MAP
+from app.db_transaction import register_transaction_boundary
 from app.error_handlers import register_error_handlers
 from app.extensions import csrf, db, limiter, login_manager, migrate
 from app.jinja_filters import register_template_filters
@@ -67,12 +68,8 @@ def create_app(config_name=None, *, init_ref_cache=True):
             "until this key is configured. See .env.example for details."
         )
 
-    # --- Extensions ------------------------------------------------------
-    db.init_app(app)
-    migrate.init_app(app, db)
-    login_manager.init_app(app)
-    csrf.init_app(app)
-    limiter.init_app(app)
+    # --- Extensions -------------------------------------------------------
+    _bind_extensions(app)
 
     # Flask-Login user loader callback.
     # Pylint: ``import-outside-toplevel`` -- app-factory pattern: importing a
@@ -221,6 +218,51 @@ def create_app(config_name=None, *, init_ref_cache=True):
 
     app.logger.info("Shekel app created with config=%s", config_name)
     return app
+
+
+def _bind_extensions(app):
+    """Bind every Flask extension, and the transaction boundary, to *app*.
+
+    Extracted from :func:`create_app` at plan step balance:X-i3, and the reason
+    is a measurement rather than tidiness: adding
+    :func:`~app.db_transaction.register_transaction_boundary`'s one call inline
+    takes the factory to **51 statements against pylint's 50**, which CI fails
+    on. Reproduce with ``pylint app/__init__.py`` after moving the call back --
+    and use the project's own ``.pylintrc``, because an adversarial review of
+    this step measured 49 with ``--rcfile=/dev/null --disable=all`` and
+    concluded the extraction was unforced. Two configurations, two counts; the
+    one the gate runs is the one that binds.
+
+    It is the same extraction ``_register_context_processors`` and the four
+    helpers beside it already are, so the factory reads as a list of what an
+    application HAS rather than as the wiring of each.
+
+    **The boundary's position in this function decides nothing, and saying so
+    is the correction to what this paragraph used to claim.** It registered no
+    before-request hook at plan step balance:X-i3's correction: the request's
+    kind is decided by a ``request_started`` receiver, which Flask sends before
+    it runs ANY before-request hook, so no registration order here can put a
+    statement in front of it. The paragraph this replaces argued the opposite
+    -- that the position "decides only which hook opens the request's first
+    transaction" -- and that sentence is exactly what the correction refutes,
+    because that first transaction was the one running outside the render's own
+    snapshot.
+
+    ``setup_logging``'s hook still RESOLVES the acting user and hands it to
+    :func:`app.db_transaction.bind_request_actor`, which tells the transaction
+    already open and lets the boundary's listener tell every later one. That
+    division does depend on the resolution happening before the route writes,
+    which any before-request hook satisfies.
+
+    Args:
+        app: The Flask application being built.
+    """
+    db.init_app(app)
+    migrate.init_app(app, db)
+    login_manager.init_app(app)
+    csrf.init_app(app)
+    limiter.init_app(app)
+    register_transaction_boundary(app)
 
 
 def _register_context_processors(app):

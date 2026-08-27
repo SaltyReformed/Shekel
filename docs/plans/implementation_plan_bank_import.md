@@ -137,8 +137,12 @@ live row in `ledger.md`, and the constraints it leaves a LATER step are on that 
       **N-353**; opened **N-358**, which is that row's PREDICATE measured false.
 - [x] **X-ge** `6d3e3ca1` -- the auto-apply door (**R-GH**), MOVING MONEY with no press, over a
       matcher that now publishes what it DECLINED to decide rather than only what it matched. What a
-      rule may file and what it must refuse is **R-GU**. Opens **N-359**; condensed to
+      rule may file and what it must refuse is **`bank_import:R-GU`**. Opens **N-359**; condensed to
       `historical/bank_import_x_ge_as_built_2026-08-26.md`.
+- [x] **X-ge-1** `6d3e3ca1` -- each matcher tier publishes the refusals it used to SWALLOW, so a
+      pass reports three verdicts rather than two. It shipped inside `X-ge`'s commit and had no row
+      until 2026-08-26 while that commit's message cited it three times -- an id resolving to
+      nothing. As built: `historical/bank_import_x_ge_as_built_2026-08-26.md`.
 - [ ] **X-gf** `feat(import): the review is an exception queue` -- what remains after rules: new
       merchants, contested lines, group residuals and the ticked proposals, with the permanent
       panels gone. **It carries a finding `X-ga` introduced and the ledger had no headroom to hold**

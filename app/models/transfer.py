@@ -333,6 +333,12 @@ class Transfer(
         outcome the ``limit(1)`` was written to prevent.  One read of two
         columns cannot straddle anything.
 
+        Both causes are still live, and the concurrent-commit one is now live
+        for a narrower reason: the one caller below is a PATCH, a COMMAND, and
+        plan step balance:X-i3 leaves a command at READ COMMITTED precisely so
+        a lock-then-reread can see a rival's commit.  The duplicate-shadow
+        cause never depended on the isolation level at all.
+
         **Its ONE caller is the transfer PATCH's echo rule** -- what the pair
         already records, so a re-submitted day does not restate its basis.  It
         pairs with ``settle_day.settle_day_from_columns``, which takes the two

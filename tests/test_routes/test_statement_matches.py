@@ -2152,7 +2152,12 @@ class TestItRefusesAnotherUsersAccount:
             name="Stranger Checking",
         )
         db.session.add(account)
-        db.session.flush()
+        # COMMITTED, not flushed (plan step balance:X-i3): a query request
+        # opens a transaction of its OWN, so a row this fixture only flushed is
+        # one the request cannot see.  The 404 these tests assert must be the
+        # OWNERSHIP gate refusing a real account of someone else's rather than
+        # a missing row.
+        db.session.commit()
         return account.id
 
     def test_the_review_page_answers_404(

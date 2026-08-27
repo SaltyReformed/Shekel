@@ -12,6 +12,7 @@ from flask_login import current_user, login_required
 
 from app import ref_cache
 from app.enums import RoleEnum
+from app.exceptions import RequiredRecordMissing
 from app.utils.auth_helpers import fresh_login_required, require_owner
 from app.utils.digit_strings import parse_row_id
 
@@ -45,6 +46,7 @@ _VALID_SECTIONS = [
     "general", "categories", "pay-periods", "tax", "account-types",
     "companions", "security",
 ]
+
 
 # The scalar UserSettings fields the POST handler copies straight from the
 # validated form.  All are storage-domain values: UserSettingsSchema's
@@ -156,6 +158,22 @@ def render_settings_dashboard(section, extra=None, status=200):
     context; ``status`` lets a route re-render with a 422 (e.g. the
     discard-confirm panel) instead of redirecting.
 
+    **It used to AUTO-CREATE the owner's settings row, and plan step
+    balance:X-i3 deleted that branch** -- the third instance of one shape, after
+    the two on the account detail pages.  This is a render, shared by a GET and
+    by POST re-renders, and a render that repairs data is a write inside a read:
+    it cost ``/settings`` the one snapshot the figures on it are computed
+    against, and no ``write_transaction`` block could declare it here, because
+    the same function serves commands where such a block is meaningless.
+
+    Every door that creates a user writes the row -- registration
+    (``auth_service.register_user``), the companion invite below, and
+    ``scripts/seed_companion.py`` -- so a missing one means the data was
+    changed outside the application.  The two POST handlers that also
+    create-if-missing keep doing so: a write door may author what it writes,
+    which is the standing this render does not have.  Measured before the
+    branch was deleted: **0 of 2 production users** without a settings row.
+
     Args:
         section: The active settings section.
         extra: Optional dict overlaid on the context after the section
@@ -164,12 +182,22 @@ def render_settings_dashboard(section, extra=None, status=200):
 
     Returns:
         A Flask ``(body, status)`` response tuple.
+
+    Raises:
+        RequiredRecordMissing: The owner carries no ``auth.user_settings`` row.
     """
     settings = current_user.settings
     if settings is None:
-        settings = UserSettings(user_id=current_user.id)
-        db.session.add(settings)
-        db.session.commit()
+        raise RequiredRecordMissing(
+            f"user {current_user.id} carries no auth.user_settings row, so "
+            f"there are no preferences to render a settings page from. Every "
+            f"door that creates a user writes one -- registration, and the "
+            f"companion invite -- so reaching this means the row was removed "
+            f"outside the application. POST /settings rebuilds it, but the "
+            f"form that posts there is on the page this refusal replaces, so "
+            f"there is no path to it through the browser: repair the row "
+            f"directly."
+        )
 
     context = _empty_section_context()
     context.update(_section_context(section))

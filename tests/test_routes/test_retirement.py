@@ -90,7 +90,12 @@ def _create_pension(seed_user, db_session, salary_profile=None, name="State Pens
 
 
 def _create_retirement_account(seed_user, db_session, type_name="401(k)"):
-    """Helper to create a retirement account with investment params."""
+    """Helper to create a retirement account with investment params.
+
+    COMMITS rather than flushes (plan step balance:X-i3): most callers go on to
+    issue a request, and a request holds a transaction of its own in which an
+    uncommitted account and its params do not exist.
+    """
     acct_type = db_session.query(AccountType).filter_by(name=type_name).one()
     account = account_service.create_account(
         account_service.AccountSpec(
@@ -114,7 +119,7 @@ def _create_retirement_account(seed_user, db_session, type_name="401(k)"):
         employer_match_cap_percentage=Decimal("0.0600"),
     )
     db_session.add(params)
-    db_session.flush()
+    db_session.commit()
     return account, params
 
 

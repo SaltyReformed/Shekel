@@ -17,7 +17,7 @@ end balance, the income and expense subtotals, the two remainders ("Period
 timing" and "Book vs bank"), the modelled contribution and the modelled
 accrual -- is one
 :class:`GridColumn`, and all but the last two come from a single
-:func:`~app.services.balance_at._cash_periods.cash_period_view`: one walk, one
+:func:`~app.services.balance_at._cash_periods.period_view_of`: one walk, one
 plan load, one valuation, grouped on the two clocks the identity binds.
 
     balance[p] - balance[p-1]
@@ -407,7 +407,7 @@ def grid_balance_view(
     """Return the kind-aware cash-flow-surface view for *account*.
 
     The single entry the budget grid reads to project one account's column set.
-    ONE :func:`~app.services.balance_at._cash_fold.assemble` supplies every
+    ONE :func:`~app.services.balance_at._cash_fold.assembled_fold` supplies every
     figure the surface renders: :func:`._cash_periods.period_view_of` regroups it
     into the income and expense subtotals and ruling R-K's remainder, and
     :func:`._asset_fold.resolve` resolves the modelled tiers over the SAME
@@ -502,7 +502,7 @@ def grid_balance_view(
         # window -- the same guard :func:`._asset_fold.asset_period_view` and
         # :func:`._asset_fold.period_columns` already carry.
         return empty_grid_view()
-    folded = _cash_fold.assemble(account, ctx.amounts(), ctx.as_of)
+    folded = _cash_fold.assembled_fold(account, ctx)
     view = _cash_periods.period_view_of(folded, window)
     modelled = _asset_fold.period_columns(
         _asset_fold.resolve(

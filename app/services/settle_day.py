@@ -215,7 +215,9 @@ def settle_day_from_columns(
     function a day from one and a basis from the other, which it correctly
     refuses -- as a ``ValueError`` naming a phantom writer, i.e. a 500 on the
     transfer PATCH.  One read of two columns cannot straddle anything.  Found by
-    adversarial review 2026-08-22.
+    adversarial review 2026-08-22.  The second cause is a COMMAND's since plan
+    step balance:X-i3 -- a PATCH stays at READ COMMITTED so its lock-then-reread
+    works -- and the first was never about the isolation level.
 
     Args:
         settled_on: The stored day, or ``None``.
