@@ -24,8 +24,10 @@ rather than one.
   150,853 bytes of which that form's two unbounded pick lists were **89,247**
   (finding **bank_import:N-374**).
 
-**It MOVES MONEY, and it is the only screen in the app where the BANK gets the
-last word on a date.**  Accepting a match writes the bank's posted day onto
+**It MOVES MONEY, and it is one of the TWO screens where the BANK gets the
+last word on a date** -- :mod:`.statement_workbench` is the other since plan
+step ``bank_import:X-gf-3b``, and this sentence said *the only* until then.
+Accepting a match writes the bank's posted day onto
 every row the match names -- settling one still Projected and correcting one
 whose recorded day was wrong.  Recording a line adds a movement the app did not
 have at all.  Measured on the developer's own 2026-08-16 export against a

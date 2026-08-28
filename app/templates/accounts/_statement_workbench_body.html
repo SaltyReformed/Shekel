@@ -255,10 +255,30 @@
      be wrong, which is the rule ParkedLine.reason and RecordableInflow.withheld
      both exist to state.  The other two bound the QUEUE and not these lists,
      and that page renders them. #}
-  {% if review.bounds.any_pick_list_limit %}
+  {% set proposed = review.explained_by_a_proposal %}
+  {% if review.bounds.any_pick_list_limit or proposed.any %}
   <div class="alert alert-secondary" role="alert">
     <div class="fw-semibold mb-1">What is not in these lists</div>
     <ul class="mb-0 small">
+      {% if proposed.any %}
+      {# THE FIFTH BOUND, and the only one that is not a ReviewBounds field --
+         which is why this panel could not see it and why an adversarial design
+         review 2026-08-28 found it missing.  A line a proposal explains is
+         dropped before `unmatched` exists and a row one names before
+         `unmatched_rows` does, and the developer's own statement carries 124
+         proposals.  It matters most when a proposal is WRONG: that line is
+         then absent from the very tool for pairing it correctly, and while
+         this form stood on the review screen the proposal card was beside it.
+         A COUNT and a link, not a list: this is not missing work, it is work
+         waiting on a decision one screen away. #}
+      <li>
+        {{ proposed.lines }} line(s) and {{ proposed.rows }} row(s) are not here
+        because the review screen is already
+        <a href="{{ url_for('accounts.review_statements', account_id=account.id) }}">proposing
+        a match for them</a>. Accept or leave those first: a proposal you do not
+        agree with keeps its line out of this list until you deal with it.
+      </li>
+      {% endif %}
       {% if review.bounds.before_calendar_count %}
       <li>
         {{ review.bounds.before_calendar_count }} line(s) up to
@@ -282,9 +302,10 @@
   <div class="card">
     <div class="card-body d-flex justify-content-between align-items-center gap-2 flex-wrap">
       <span class="small text-body-secondary">
-        This is a tool, not a queue: nothing here is waiting on you. The lines
-        still asking for a decision are on the review screen, and each of them
-        links back here with itself already ticked.
+        This is a tool rather than a queue: it holds everything either side
+        could still be paired with, not a list to work through in order. The
+        lines still asking for a decision are on the review screen, and each of
+        them links back here with itself already ticked.
       </span>
       <a class="btn btn-sm btn-outline-secondary"
          href="{{ url_for('accounts.review_statements', account_id=account.id) }}">

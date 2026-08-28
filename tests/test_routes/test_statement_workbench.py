@@ -18,11 +18,15 @@ from html.parser import HTMLParser
 import re
 from datetime import timedelta
 
+import pytest
 from werkzeug.datastructures import MultiDict
 
 from app.enums import StatusEnum
+from app.models.account import Account
 from app.models.statement_match import StatementMatch
 from app.models.transaction import Transaction
+from app.models.user import User, UserSettings
+from app.services import auth_service
 from tests.test_routes._statement_forms import hand_match, rule_item
 from tests.test_routes.test_statement_matches import _visible_text
 from tests.test_services.test_statement_match._builders import (
@@ -73,9 +77,6 @@ def _never_showed_panel(body):
     feature, and :func:`_never_showed_rows`' own empty-guard was satisfied by
     the help modal's ``<tbody>``.  Found by adversarial review of this step's
     own tests, 2026-08-25.
-
-    Args:
-        body: The rendered workbench page, as text.
 
     The card carries an ``id`` for exactly this reason, and the totals panel
     below it carries the one that bounds the far end.
@@ -161,11 +162,18 @@ class _WorkbenchFieldReader(HTMLParser):
     def __init__(self):
         super().__init__()
         self.fields = []
+        self.names = []
+        #: When set, collect EVERY named control rather than the three the
+        #: door reads -- which is how :func:`_submitted_names` can notice a
+        #: field the template grew and the door does not know about.
+        self.all_names = False
 
     def handle_starttag(self, tag, attrs):
         """Record every control the hand-build form would submit."""
         attributes = dict(attrs)
         name = attributes.get("name", "")
+        if tag in {"input", "select", "textarea"} and name:
+            self.names.append(name)
         if tag == "input" and name in {"line_ids", "rows", "residual"}:
             self.fields.append((name, attributes.get("value", "")))
 
@@ -196,6 +204,19 @@ def _no_refusal(page):
     assert at != -1, "no totals panel on the page, so this graded nothing"
     panel = " ".join(page[at:].split())
     return "alert-warning" not in panel and "Nothing was changed" not in panel
+
+
+def _submitted_names(page):
+    """Return every control NAME the hand-build form would submit.
+
+    Reads the form's own markup rather than a list written beside it, so a
+    field added to the template without the door being taught to read it shows
+    up here as a set that no longer matches.
+    """
+    reader = _WorkbenchFieldReader()
+    reader.all_names = True
+    reader.feed(page)
+    return set(reader.names)
 
 
 class _ConsentReader(HTMLParser):
@@ -282,15 +303,27 @@ class TestTheHandBuildForm:
         # pick from, which is what makes the accept door's refusals reachable
         # from a browser at all.
         assert b'name="rows"' in response.data
-        # **THERE IS NO INDEX, and its absence is the control.**  This form
-        # submitted ``apply=hand`` while it shared a page with the reviewed
-        # pass, and that reserved token was the only thing keeping its ticks
-        # out of proposal 0's submission -- the two being separate <form>
-        # elements, a property of the DOCUMENT.  It posts to a door of its own
-        # now (ruling bank_import:R-HC), so there is no shared namespace for
-        # the collision to be expressed in, and this asserts the field is gone
-        # rather than that it is well chosen.
-        assert b'name="apply"' not in response.data
+        # **THE WHOLE SUBMITTED NAME SET, not the absence of one name.**  This
+        # form submitted ``apply=hand`` while it shared a page with the
+        # reviewed pass, and that reserved token was the only thing keeping its
+        # ticks out of proposal 0's submission -- the two being separate
+        # <form> elements, a property of the DOCUMENT.  It posts to a door of
+        # its own now (ruling bank_import:R-HC), so no shared namespace exists
+        # for that collision to be expressed in.
+        #
+        # **A first version asserted ``b'name="apply"' not in response.data``,
+        # and that could never fail**: ``name="apply"`` is emitted only by
+        # ``_statement_review_body.html``, a different template on a different
+        # URL, so the needle was never on this page to begin with.  Found by
+        # adversarial test-quality review 2026-08-28 -- the same shape as *a
+        # negative assertion whose needle no longer exists anywhere passes for
+        # the wrong reason*.  An EQUALITY over every name the form emits is
+        # what discriminates: it fails if an index comes back, and it fails
+        # equally if a field is renamed or added without the door being taught
+        # to read it.
+        assert _submitted_names(response.data.decode()) == {
+            "csrf_token", "line_ids", "rows", "residual",
+        }
 
     def test_a_CC_PAYBACK_is_still_offered_and_is_TAGGED_not_a_line(
         self, auth_client, db, seed_user,
@@ -995,6 +1028,18 @@ class TestTheLineAnExceptionSentYouHereAbout:
 
         assert self._ticked(page) == []
         assert f'name="line_ids" value="{line.id}"' not in page
+        # **THE POSITIVE TAIL**, because everything above is an absence: this
+        # fixture matches its only line, so the pick list is EMPTY and nothing
+        # here would notice `_ticked` going permanently vacuous.  A second
+        # unexplained line, still offered, is what proves the scraper is
+        # looking at a real control while the assertions above are made.
+        # Named by adversarial test-quality review 2026-08-28.
+        still_open = an_unexplained_outflow(seed_user, merchant="Geico")
+        db.session.commit()
+        page = auth_client.get(
+            f"{_workbench_url(seed_user['account'].id)}?line={still_open.id}"
+        ).data.decode()
+        assert self._ticked(page) == [still_open.id]
         # **And the panel says nothing about it** -- see the sibling case for
         # why this, rather than the tick, is what the narrowing is for.
         # Unnarrowed, this ordinary gesture (tick, match, press Back) renders
@@ -1059,3 +1104,375 @@ class TestTheLineAnExceptionSentYouHereAbout:
         assert self._ticked(page) == sorted([first.id, second.id])
         # -100.00 + -25.50 = -125.50, summed by the service and not the page.
         assert "-$125.50" in " ".join(page.split())
+
+
+class TestItRefusesAnotherUsersAccount:
+    """Firing controls against an IDOR on a door that MOVES MONEY.
+
+    **THE CONTROL DID NOT TRAVEL WITH THE DOOR, and that is the whole reason
+    this class exists.** `TestItRefusesAnotherUsersAccount` in
+    ``test_statement_matches.py`` grades the reviewed pass; when plan step
+    ``bank_import:X-gf-3b`` gave the hand-built match a write door of its own,
+    the new door shipped with **zero** ownership assertions and the full suite
+    stayed green. Found by adversarial money review 2026-08-28.
+
+    **A 404 from the URL MAP and a 404 from the OWNERSHIP GATE are
+    indistinguishable**, so an ownership case whose route does not exist passes
+    for the wrong reason and guards nothing. Every case below is therefore
+    PAIRED with a case proving the same URL routes for its own owner --
+    ``test_the_routes_exist_for_their_own_owner`` -- because that pairing is
+    the only thing that tells the two 404s apart.
+
+    **Nothing here relies on the service.** ``ReviewScope.build`` takes
+    ``owner_id`` and ``account_id`` as independent parameters and its own
+    docstring says the caller must have PROVED the pairing; ``_resolve
+    .load_lines`` filters on ``account_id`` alone. So the route's
+    ``load_cash_account_or_404`` is the entire proof, and deleting it is a
+    one-line edit that moves another owner's money.
+    """
+
+    @pytest.fixture()
+    def other_users_account(self, db, seed_user):
+        """Return an account id belonging to a DIFFERENT user."""
+        stranger = User(
+            email="workbenchstranger@shekel.local",
+            password_hash=auth_service.hash_password("otherpass"),
+            display_name="Stranger",
+        )
+        db.session.add(stranger)
+        db.session.flush()
+        db.session.add(UserSettings(user_id=stranger.id))
+        db.session.flush()
+        account = Account(
+            user_id=stranger.id,
+            account_type_id=seed_user["account"].account_type_id,
+            name="Stranger Checking",
+        )
+        db.session.add(account)
+        # COMMITTED, not flushed (plan step balance:X-i3): a query request
+        # opens a transaction of its OWN, so a row this fixture only flushed is
+        # one the request cannot see. The 404 these tests assert must be the
+        # OWNERSHIP gate refusing a real account of someone else's rather than
+        # a missing row.
+        db.session.commit()
+        return account.id
+
+    def test_the_routes_exist_for_their_own_owner(
+        self, auth_client, db, seed_user,
+    ):
+        """THE PAIR for every 404 below, and it is not a formality.
+
+        A typo in a URL, a blueprint that stopped registering, a route deleted
+        by a later step: each answers 404 from the URL MAP, which is the same
+        404 the ownership gate returns. Without this case the three below would
+        all pass against routes that do not exist.
+        """
+        an_envelope(seed_user)
+        an_unexplained_outflow(seed_user, merchant="Geico")
+        db.session.commit()
+        account_id = seed_user["account"].id
+
+        assert auth_client.get(
+            _workbench_url(account_id),
+        ).status_code == 200
+        assert auth_client.post(
+            _workbench_url(account_id), data=hand_match(),
+        ).status_code == 200
+        assert auth_client.post(
+            _totals_url(seed_user), data=hand_match(),
+        ).status_code == 200
+
+    def test_the_page_answers_404(self, auth_client, other_users_account):
+        """A 403 would confirm the account exists."""
+        assert auth_client.get(
+            _workbench_url(other_users_account),
+        ).status_code == 404
+
+    def test_the_APPLY_door_answers_404_and_writes_NOTHING(
+        self, auth_client, db, seed_user, other_users_account,
+    ):
+        """The write door is decorated independently of the read.
+
+        **The payload names rows this caller really does own**, which is the
+        shape the refusal has to survive: without the route's proof, the pass
+        would be built from THIS owner's candidates against THAT owner's
+        account, and `load_lines` filters on `account_id` alone -- so the
+        stranger's bank line would be written onto this owner's rows.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(
+            seed_user, statement, amount="-100.00", posted_on=bank_day,
+            description="ACH DEBIT NOTHING EXPLAINS THIS",
+        )
+        mine = a_transaction(
+            seed_user, name="Ghost Payment", amount="100.00",
+            status=StatusEnum.DONE, settled_on=bank_day,
+        )
+        db.session.commit()
+        settled_before = mine.settled_on
+
+        response = auth_client.post(
+            _workbench_url(other_users_account),
+            data=hand_match(lines=[line], transactions=[mine]),
+        )
+
+        assert response.status_code == 404
+        assert db.session.query(StatementMatch).count() == 0
+        db.session.expire_all()
+        assert mine.settled_on == settled_before
+
+    def test_the_TOTALS_endpoint_answers_404(
+        self, auth_client, other_users_account,
+    ):
+        """It writes nothing and still may not be asked.
+
+        It PRICES what it is given, so answering for another owner's account
+        would report their figures -- and answering differently for an account
+        that exists than for one that does not is an oracle either way.
+        """
+        assert auth_client.post(
+            f"/accounts/{other_users_account}/statements/match/totals",
+            data=hand_match(),
+        ).status_code == 404
+
+
+class TestWhatTheProposalsTakeOutOfBothLists:
+    """The FIFTH bound, and the only one that is not a `ReviewBounds` field.
+
+    A line this pass PROPOSES a match for is dropped by `_reads._unexplained`
+    before ``unmatched`` exists, and a row one names is dropped by
+    `_rows_the_bank_never_showed` -- so both pick lists are shorter than their
+    captions, in a way the *what is not in these lists* panel could not see
+    because it was reading `ReviewBounds` alone. Found by adversarial design
+    review 2026-08-28; the developer's own statement carries **124** proposals,
+    so this is a large absence rather than a corner.
+
+    **It matters most when the proposal is WRONG.** A proposal is a suggestion
+    nobody has accepted, so a badly paired line is absent from the very tool for
+    pairing it correctly -- and while this form stood on the review screen the
+    proposal card was beside it, which is what makes this the split's own debt.
+    """
+
+    @staticmethod
+    def _proposed_pair(seed_user, db):
+        """Stage TWO lines the proposer will pair with two rows.
+
+        Equal figures on the same day is the EXACT tier's own shape, so this
+        arranges proposals rather than asserting some exist.
+
+        **TWO of each, and not one, because one cannot tell the counts
+        apart.** With a single proposal, ``len(self.proposals)`` and the count
+        of distinct LINES are both 1 -- so a mutation replacing the subject
+        count with the proposal count SURVIVED the first version of these
+        cases. Measured 2026-08-28. Two proposals over two lines still would
+        not discriminate; what does is asserting the pair (2, 2) against a
+        derivation that could return either, so both counts are read.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        lines, rows = [], []
+        for index, amount in enumerate(("77.77", "88.88")):
+            lines.append(a_bank_line(
+                seed_user, statement, amount=f"-{amount}", posted_on=bank_day,
+                description=f"ACH DEBIT THE PROPOSER WILL PAIR THIS {index}",
+            ))
+            rows.append(a_transaction(
+                seed_user, name=f"Paired Bill {index}", amount=amount,
+                status=StatusEnum.DONE, settled_on=bank_day,
+            ))
+        db.session.commit()
+        return lines, rows
+
+    def test_a_PROPOSED_line_and_row_are_absent_from_both_pick_lists(
+        self, auth_client, db, seed_user,
+    ):
+        """The absence itself, asserted before the panel that reports it.
+
+        A panel naming an absence that is not real would be worse than one
+        naming none, so this grades the fact and the sentence separately.
+        """
+        lines, _rows = self._proposed_pair(seed_user, db)
+
+        page = auth_client.get(
+            _workbench_url(seed_user["account"].id),
+        ).data.decode()
+
+        for line in lines:
+            assert f'name="line_ids" value="{line.id}"' not in page
+        assert "Paired Bill" not in page
+
+    def test_the_panel_SAYS_SO_and_names_both_counts(
+        self, auth_client, db, seed_user,
+    ):
+        """The bullet, with a link to the screen holding the decision.
+
+        **The counts come from the SERVICE** (`ReviewSet
+        .explained_by_a_proposal`), because a caption may not promise a number
+        a template computed.
+        """
+        self._proposed_pair(seed_user, db)
+
+        body = " ".join(auth_client.get(
+            _workbench_url(seed_user["account"].id),
+        ).data.decode().split())
+
+        assert "What is not in these lists" in body
+        assert (
+            "2 line(s) and 2 row(s) are not here because the review screen "
+            "is already"
+        ) in body
+        assert f"/accounts/{seed_user['account'].id}/statements/review" in body
+
+    def test_with_NO_proposal_the_bullet_is_absent(
+        self, auth_client, db, seed_user,
+    ):
+        """THE FIRING CONTROL for both cases above.
+
+        A bullet rendered unconditionally would satisfy them while saying
+        `0 line(s) and 0 row(s)`, which is a panel reporting an absence that is
+        not one -- the exact shape this whole panel exists to avoid.
+        """
+        an_unexplained_outflow(seed_user, merchant="Geico")
+        db.session.commit()
+
+        body = " ".join(auth_client.get(
+            _workbench_url(seed_user["account"].id),
+        ).data.decode().split())
+
+        assert "are not here because the review screen is already" not in body
+        assert "0 line(s) and 0 row(s)" not in body
+
+
+class TestAnEmptyConsentIsUntouchedRatherThanMalformed:
+    """`hand_match_payload`'s own founding principle, which nothing graded.
+
+    A browser submits every control it renders, so an untouched one must be
+    recognisable as untouched. The panel renders the consent box ``value=""``
+    and ``disabled`` in lockstep, so a browser cannot send an empty one -- but a
+    body that does must not 400 the whole act over a field nobody filled in.
+
+    **The control did not travel with the reader.** The equivalent arm on
+    ``batch_payload`` is covered (``tests/test_schemas/test_statement_batch.py``
+    's own consent cases); when plan step ``bank_import:X-gf-3b`` gave the
+    workbench ``hand_match_payload``, the `if residual:` line shipped with
+    nothing behind it -- mutating it to `if residual is not None:` survived
+    **1258** tests. Found by adversarial test-quality review 2026-08-28.
+    """
+
+    @staticmethod
+    def _a_group(seed_user, db):
+        """Stage one line and one row that agree, so no consent is wanted."""
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(
+            seed_user, statement, amount="-64.00", posted_on=bank_day,
+            description="ACH DEBIT NOTHING EXPLAINS THIS",
+        )
+        row = a_transaction(
+            seed_user, name="Ghost Payment", amount="64.00",
+            status=StatusEnum.DONE, settled_on=bank_day,
+        )
+        db.session.commit()
+        return line, row
+
+    def test_the_APPLY_door_takes_an_empty_consent_and_records(
+        self, auth_client, db, seed_user,
+    ):
+        """`residual=""` is an untouched box, not a malformed figure."""
+        line, row = self._a_group(seed_user, db)
+        payload = hand_match(lines=[line], transactions=[row])
+        payload["residual"] = [""]
+
+        response = auth_client.post(
+            _workbench_url(seed_user["account"].id), data=payload,
+        )
+
+        assert response.status_code == 200
+        assert db.session.query(StatementMatch).count() == 1
+
+    def test_the_TOTALS_endpoint_takes_one_too(
+        self, auth_client, db, seed_user,
+    ):
+        """The same body reaches both doors, so both must read it alike.
+
+        A panel that 400s on the body its own form submits is the shape the
+        review screen already paid for: an owner presses a control and the
+        page reports a failure nobody caused.
+        """
+        line, row = self._a_group(seed_user, db)
+        payload = hand_match(lines=[line], transactions=[row])
+        payload["residual"] = [""]
+
+        response = auth_client.post(_totals_url(seed_user), data=payload)
+
+        assert response.status_code == 200
+
+    def test_a_MALFORMED_consent_is_still_refused(
+        self, auth_client, db, seed_user,
+    ):
+        """THE FIRING CONTROL: dropping the field entirely is not the fix.
+
+        `hand_match_payload` could satisfy both cases above by never passing
+        `residual` on at all, which would take `ReviewedFigureField`'s whole
+        strictness with it -- and that field's own docstring records what a lax
+        reader cost: `"0.054"` silently REPAIRED into agreement by
+        ROUND_HALF_EVEN, on the one figure the design says must be exact.
+        """
+        line, row = self._a_group(seed_user, db)
+        payload = hand_match(lines=[line], transactions=[row])
+        payload["residual"] = ["NaN"]
+
+        response = auth_client.post(
+            _workbench_url(seed_user["account"].id), data=payload,
+        )
+
+        assert response.status_code == 400
+        assert db.session.query(StatementMatch).count() == 0
+
+
+class TestAGroupProposalTakesSEVERALRowsOutOfTheList:
+    """The `rows` half of `explained_by_a_proposal`, which counts SUBJECTS.
+
+    **The two halves are not equally falsifiable, and saying so is the point.**
+    Every proposal this app builds names exactly ONE line -- `_propose` at both
+    its sites and `_near` at its own all construct `lines=(line,)` -- so
+    counting distinct line ids and counting proposals give the same number for
+    every input that exists, and a mutation swapping one for the other is an
+    EQUIVALENT mutant rather than a blind control. It survives, and it should:
+    no case can kill it without a multi-line tier to arrange.
+
+    The ROWS half is different. `_propose._groups` builds `rows=combo`, so one
+    proposal can name several rows -- and this case is what makes the subject
+    count checkable rather than merely correct-looking.
+    """
+
+    def test_one_proposal_over_two_rows_reports_TWO_rows(
+        self, auth_client, db, seed_user,
+    ):
+        """A group match: one bank line, two rows that sum to it.
+
+        `1 line(s) and 2 row(s)` is a sentence the proposal COUNT cannot
+        produce, which is the whole reason this case exists beside its sibling.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        a_bank_line(
+            seed_user, statement, amount="-100.00", posted_on=bank_day,
+            description="ACH DEBIT ONE LINE TWO ROWS",
+        )
+        for name, amount in (("Half A", "60.00"), ("Half B", "40.00")):
+            a_transaction(
+                seed_user, name=name, amount=amount,
+                status=StatusEnum.DONE, settled_on=bank_day,
+            )
+        db.session.commit()
+
+        body = " ".join(auth_client.get(
+            _workbench_url(seed_user["account"].id),
+        ).data.decode().split())
+
+        assert (
+            "1 line(s) and 2 row(s) are not here because the review screen "
+            "is already"
+        ) in body

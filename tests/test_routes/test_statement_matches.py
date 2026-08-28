@@ -167,42 +167,6 @@ def _rendered_match_fields(page):
     return reader.fields
 
 
-class _ConsentReader(HTMLParser):
-    """Read the hand-build panel's consent box, exactly as a browser would.
-
-    Plan step ``bank_import:X-f6d-4``.  The box's VALUE is the figure the
-    server computed and the door will compare, so scraping it is the only way
-    a test can post what the screen actually offered rather than a figure of
-    its own.
-    """
-
-    def __init__(self):
-        super().__init__()
-        self.value = None
-        self.disabled = None
-
-    def handle_starttag(self, tag, attrs):
-        """Record the consent control the panel rendered."""
-        attributes = dict(attrs)
-        if tag == "input" and attributes.get("name") == "match-hand-residual":
-            self.value = attributes.get("value", "")
-            self.disabled = "disabled" in attributes
-
-
-def _rendered_consent(page):
-    """Return ``(value, disabled)`` for the panel's consent box.
-
-    Args:
-        page: The rendered review body, or the panel fragment alone.
-
-    Returns:
-        The box's submitted value and whether a browser would submit it.
-    """
-    reader = _ConsentReader()
-    reader.feed(page)
-    return reader.value, reader.disabled
-
-
 class _VisibleText(HTMLParser):
     """Collect the text a reader would SEE, with the markup out of the way.
 
@@ -225,13 +189,6 @@ def _visible_text(page):
     reader.feed(page)
     return " ".join(" ".join(reader.parts).split())
 
-
-
-def _totals_url(seed_user):
-    """Return the endpoint the hand-build panel re-renders through."""
-    return (
-        f"/accounts/{seed_user['account'].id}/statements/review/totals"
-    )
 
 
 class TestTheReviewPage:
@@ -3129,3 +3086,106 @@ class TestEveryExceptionLinksToTheTool:
 
         assert "Money that arrived and your records do not hold" in page
         assert self._linked_lines(page) == [line.id]
+
+
+class TestTheQueueDoesNotRenderTheTool:
+    """N-374's own regression, and until 2026-08-28 nothing graded it.
+
+    **This is the step's HEADLINE claim and it had no control.** An adversarial
+    test-quality review put the two pick lists back into
+    ``_statement_review_body.html`` and ran both statement route files: **102
+    passed, 0 failed.** Every case here dies to that edit.
+
+    What the claim is worth: those two lists were **89,247 bytes, 59% of the
+    review body**, on the developer's own data -- 22,830 for 27 bank lines and
+    66,417 for 67 rows, against 1 unanswered merchant, 2 creatable lines, 16
+    deposits and 9 parked payments of actual work. Both are UNBOUNDED and the
+    right one grows with the whole span the statements cover, for ever, which
+    is why ruling **bank_import:R-HC** bounds the queue by the tool LEAVING it
+    rather than by capping either list.
+    """
+
+    def test_the_queue_renders_NEITHER_pick_list(
+        self, auth_client, db, seed_user,
+    ):
+        """The absence itself, by the captions and the field names.
+
+        **Both**, because the two lists are separate cards and an edit could
+        restore one: the byte cost is 22,830 for the left and 66,417 for the
+        right, so either alone is most of what this step removed.
+        """
+        an_envelope(seed_user)
+        an_unexplained_outflow(seed_user, merchant="Geico")
+        a_transaction(
+            seed_user, name="Ghost Payment", amount="22.22",
+            status=StatusEnum.DONE,
+            settled_on=seed_user["bootstrap_period"].start_date,
+        )
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+
+        assert "Lines your bank shows and nothing explains" not in page
+        assert "Rows you recorded that no line explains" not in page
+        assert 'name="line_ids"' not in page
+        assert 'name="rows"' not in page
+        assert 'id="hand-build-form"' not in page
+        assert 'id="hand-totals"' not in page
+
+    def test_the_queue_renders_no_control_that_posts_to_the_tool(
+        self, auth_client, db, seed_user,
+    ):
+        """The FORM, not just its lists.
+
+        A restored form with its captions reworded would pass the case above.
+        This asks the one question a browser asks: is there anything here that
+        POSTS to the workbench's write door?
+        """
+        an_envelope(seed_user)
+        an_unexplained_outflow(seed_user, merchant="Geico")
+        db.session.commit()
+        account_id = seed_user["account"].id
+
+        page = auth_client.get(_review_url(account_id)).data.decode()
+
+        match_url = f"/accounts/{account_id}/statements/match"
+        # It LINKS there -- that is ruling R-HC's other half -- so the
+        # assertion has to be about a form ACTION rather than about the URL
+        # appearing at all, which is what an earlier draft of this case got
+        # wrong and what would have made it pass on an empty page.
+        assert match_url in page, (
+            "the queue no longer links to the tool at all, so this case would "
+            "pass for the wrong reason"
+        )
+        assert f'action="{match_url}"' not in page
+        assert f'hx-post="{match_url}"' not in page
+
+    def test_the_TOOL_still_renders_both_lists(
+        self, auth_client, db, seed_user,
+    ):
+        """THE PAIR: the lists moved rather than being deleted.
+
+        Without this, every assertion above is satisfied by a step that simply
+        removed the hand-build form from the app -- which would take ruling
+        **R-GJ**'s only remaining arm with it, since a parked card payment
+        meets its payback rows nowhere else.
+        """
+        an_envelope(seed_user)
+        line = an_unexplained_outflow(seed_user, merchant="Geico")
+        a_transaction(
+            seed_user, name="Ghost Payment", amount="22.22",
+            status=StatusEnum.DONE,
+            settled_on=seed_user["bootstrap_period"].start_date,
+        )
+        db.session.commit()
+
+        page = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements/match",
+        ).data.decode()
+
+        assert "Lines your bank shows and nothing explains" in page
+        assert "Rows you recorded that no line explains" in page
+        assert f'name="line_ids" value="{line.id}"' in page
+        assert "Ghost Payment" in page

@@ -158,10 +158,14 @@ the constraints it leaves a LATER step are on that step's own entry.
       to. Measured 2026-08-28 after `X-gf-3b-1`: **17** lines carry a counterpart signal (9 Capital
       One payments at `-$7,412.94` the books hold as CC Payback rows, 8 deposits whose period
       already holds unexplained income), **10** carry none (8 dividends and refunds at `$58.87`, 2
-      purchases), **0** cannot be decided. **It also closes a hole this split exposed**:
-      `search_gap_for` is derived for a PARKED line and rendered nowhere -- 1 of his 9, the
-      `-$1,000.44` line of 2026-06-01 -- because three cards is three places to forget a caution,
-      which is the argument for one list restated as a defect.
+      purchases), **0** cannot be decided. **One ASYMMETRY it also resolves**: the create card and
+      the deposit card each print `search_gap_for` beside their line and the PARKED card does not,
+      so the `-$1,000.44` line of 2026-06-01 -- 1 of his 9 -- carries its bar reason on the queue
+      and its gap only on the workbench. Three cards is three places to decide what a line is owed.
+      *A first version of this entry called that "rendered nowhere" and a hole this split exposed;
+      both are FALSE. Measurement anchored on the line's own `<tr>` is what showed it --
+      `search_gap` returns identical wording for every line a tier declined, so a substring test
+      over the page cannot say which line it was rendered for.*
 - [ ] **X-gg** `docs(plans): the envelope-semantics design loop` -- **R-GK**'s owed loop, run WITH
       the developer: filling, closure on coverage, carry-forward and the grid's row identity (whose
       same-name double-render the review measured); it mints the build steps rather than building.

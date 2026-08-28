@@ -447,11 +447,6 @@ def statement_match_totals(account_id):
     # found" and "not yours".
     load_cash_account_or_404(account_id)
     scope = ReviewScope.build(current_user.id, account_id)
-    context = {
-        "total_url": url_for(
-            "accounts.statement_match_totals", account_id=account_id,
-        ),
-    }
 
     payload = hand_match_payload(request.form)
     errors = _match_schema.validate(payload)
@@ -460,7 +455,6 @@ def statement_match_totals(account_id):
             render_template(
                 _HAND_TOTALS,
                 totals=HandTotals.refused(refusal_sentence(errors)),
-                **context,
             ),
             400,
         )
@@ -470,5 +464,4 @@ def statement_match_totals(account_id):
     return render_template(
         _HAND_TOTALS,
         totals=preview_hand_build(_submitted_match(submitted), scope),
-        **context,
     )

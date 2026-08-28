@@ -106,8 +106,11 @@ _ALREADY_EXPLAINED = (
 #: ``bank_import:X-gf-3b`` (ruling **bank_import:R-HC**): it read *"Check the
 #: match form BELOW"*, which went false the moment that form moved to a surface
 #: of its own.  A service sentence naming where something sits on a page is
-#: coupled to a layout the service cannot see -- five sentences on this screen
-#: carried that coupling and all five broke in one step.  What the sentence
+#: coupled to a layout the service cannot see -- EIGHT owner-visible sentences
+#: carried that coupling and all eight broke in one step, THREE of them derived
+#: here or in :mod:`._bars`.  *A first version of this note said five and two*,
+#: which counts the literal string "the match form below" and not the coupling
+#: (adversarial design review 2026-08-28).  What the sentence
 #: states is the ACT; the row renders the link, which is the one fact a service
 #: may not build (:attr:`~._bars.ParkedLine.answer_door` sets the precedent).
 _LOOK_FIRST = (

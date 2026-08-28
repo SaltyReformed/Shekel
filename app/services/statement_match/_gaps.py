@@ -117,8 +117,10 @@ class ReviewBounds:
 
         * :attr:`before_calendar_count` bounds the LINE list.
           ``_reads._split_at_calendar_open`` removes those lines before
-          ``unmatched`` is derived, so 130 of the developer's own 361 are
-          absent from it.
+          ``unmatched`` is derived, so 130 of the developer's own 378 are
+          absent from it (re-counted 2026-08-28; a first version of this line
+          said 361, which is one export behind what
+          :mod:`._leftovers` and the review body both already say).
         * :attr:`unpriceable_count` bounds the ROW list.
           :class:`~._offers.Candidates` keeps unpriceable ids OUT of ``rows``,
           so they never reach ``unmatched_rows`` either.
