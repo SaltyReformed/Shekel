@@ -34,6 +34,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services.statement_import import delete_import
 from app.services.statement_match import (
+    Evidence,
     StandingRule,
     Placement,
     PlacementKind,
@@ -1094,7 +1095,28 @@ class TestTheSectionTheScreenRenders:
 
         assert [item.line.merchant for item in review.creatable] == ["Amazon"]
         assert [item.line.merchant for item in review.parked] == ["Capital One"]
-        assert review.placed_by_class == {"into_open": 1}
+        # **The sweep is counted on the GROUP that offers it** since plan step
+        # ``bank_import:X-gf-3b-2`` (developer ruling 2026-08-28), which is
+        # what keeps the caption's number and the control's reach one fact.
+        # The Amazon line has no counterpart evidence, so it groups under
+        # NOTHING_FOUND and its rule is swept there.
+        groups = {group.evidence: group for group in review.queue.groups}
+        assert groups[Evidence.NOTHING_FOUND].sweeps[0].css_class == "into_open"
+        assert groups[Evidence.NOTHING_FOUND].sweeps[0].count == 1
+        # **The parked line is in the other group**, which is what this case
+        # can say about the grouping.
+        #
+        # It asserted `groups[Evidence.ALREADY_HELD].sweeps == ()` until a
+        # mutation run measured that TAUTOLOGICAL: `_sweeps_for` skips every
+        # row that is not `records_a_purchase`, and this group's only member
+        # is a parked line, which is `NONE_OPEN` by construction -- so the
+        # assertion holds under EVERY possible grouping rule and graded
+        # nothing. Removing the group guard from `statement_queue` left it
+        # green. The reach invariant it was reaching for needs a group holding
+        # a CREATABLE row, and lives where it can fire:
+        # `test_queue.py::TestNoSweptRowCarriesASentence`.
+        assert [row.line.merchant for row
+                in groups[Evidence.ALREADY_HELD].rows] == ["Capital One"]
         # ...and the ANSWER that parked it is still reachable, on the register:
         # both of these merchants have been answered for, so the queue asks
         # about neither and the register shows both (ruling

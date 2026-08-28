@@ -13,6 +13,12 @@ rationale).
 
 - Invoke via `./scripts/test.sh`, never bare `pytest` -- the wrapper restarts the
   `shekel-dev-test-db` container first. `SKIP_DB_RESTART=1` on chained follow-ups.
+- **It also defaults to `-m "not docker"`, which DESELECTS 28 container-spawning
+  `tests/test_deploy` tests** -- deselected, not skipped, so they leave NO line in the
+  report and a green run says nothing about them; CI runs bare `pytest` and executes all
+  28. Run bare `pytest` to see them as skips; to actually run them, point `DOCKER_HOST` at
+  an isolated daemon rather than `SHEKEL_ALLOW_HOST_DOCKER=1`, which accepts container
+  churn on the production daemon the homelab stack watches.
 - Single file/test for fast feedback:
   `./scripts/test.sh tests/path/test_file.py::test_name -v`.
 - **Zero tolerance:** every batch must end in `<N> passed`. Any `failed`,
