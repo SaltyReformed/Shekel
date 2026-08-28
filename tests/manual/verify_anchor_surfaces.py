@@ -158,11 +158,25 @@ def _account_surfaces(account, balance_ctx):
         ),
         "reconcile_outstanding": _guarded(
             "reconcile_outstanding",
-            # Asked as of the assertion's OWN day, which is the partition the
-            # panel draws: purchases made on or before it whose posting day has
-            # never been recorded.
+            # Asked against the assertion the PANEL is reconciled against
+            # (``governing_anchor``, the same resolver the route uses), whose
+            # own day is the partition the panel draws: rows and purchases on
+            # or before it whose posting day has never been recorded.
+            #
+            # **This surface recorded ``__error__`` on both sides of every A/B
+            # run between plan steps X-f3a-1 and pay-calendar C4-a-2**, because
+            # the call still passed a bare ``observed_on`` where the producer
+            # had begun taking the whole ``AnchorPoint``.  Two equal errors
+            # DIFF CLEAN, so the panel read as "unchanged" while being measured
+            # not at all -- the harness failure this file's own ``_guarded``
+            # docstring exists to bound, landing on the one surface here that
+            # offers money to be moved.  Read the printed error count, never
+            # the empty diff alone.
             lambda: reconcile_service.outstanding_set(
-                account.user_id, account.id, anchor.observed_on,
+                reconcile_service.Statement(
+                    balance_ctx.calendar(), account.id,
+                    cash_ledger.governing_anchor(account.id),
+                ),
             ),
         ),
         "home_equity": _guarded(

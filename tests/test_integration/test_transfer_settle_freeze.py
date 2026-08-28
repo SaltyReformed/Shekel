@@ -64,7 +64,8 @@ from app.services import (
 )
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
-from app.utils.dates import attribution_date, display_today
+from app.services.pay_calendar import calendar_for
+from app.utils.dates import display_today
 from tests._test_helpers import (
     amount_basis_for,
     an_entered_day,
@@ -512,10 +513,10 @@ class TestEveryDoorReachesTheSameFigure:
             # LANDING day, not its period's start: a loan payment carries a
             # due date, so the two differ and a statement asserted before the
             # landing day would (correctly) offer nothing.
-            period = shadow.pay_period
-            observed = attribution_date(
-                shadow.due_date, period.start_date, period.end_date,
+            period = calendar_for(seed_user["user"].id).require_period(
+                shadow.pay_period_id, shadow.id,
             )
+            observed = period.attribution_day(shadow.due_date)
 
         response = auth_client.patch(
             f"/accounts/{account_id}/true-up",

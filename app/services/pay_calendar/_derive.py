@@ -166,6 +166,76 @@ class DerivedPeriod:
     end_date: date
     end_is_projected: bool
 
+    def attribution_day(self, preferred: "date | None") -> date:
+        """Return the day an item filed in THIS period is budgeted to.
+
+        The single BUDGET-attribution rule, shared by the calendar's day-cell
+        grouping (``calendar_service._get_display_day``), the balance-at seam's
+        PLANNED tier (``balance_at._cash_fold._cash_plan``) and the reconcile
+        panel's offer bound (``reconcile_service._rows.attributed_on``), so no
+        two of them can come to disagree about which day an item is BUDGETED
+        to.  An item lands on *preferred* -- its ``due_date`` -- falling back
+        to this period's :attr:`start_date` when it has none; the result is
+        then clamped into ``[start_date, end_date]``.
+
+        **It is a METHOD ON THE PERIOD, and that is plan step C4-a-2's whole
+        subject.**  It was ``utils.dates.attribution_date(preferred,
+        period_start, period_end)``, three positional arguments a caller had to
+        pair correctly, and pairing them wrongly is not a crash -- it is a row
+        rendered on the wrong day.  Two of its three callers already held a
+        :class:`DerivedPeriod` and split it back into two dates to make the
+        call; the third read ``txn.pay_period`` and clamped a projected row
+        against the STORED ``end_date`` while everything around it sampled the
+        DERIVED one.  Asking the period itself makes the pairing structural:
+        there is no second span to supply.
+
+        **Clamping is load-bearing for the daily balance**: every one of a
+        period's contributing items must fall on or before :attr:`end_date`, so
+        the running balance summed through that day equals the period-end
+        balance the grid shows (the calendar/grid reconciliation invariant).  A
+        ``due_date`` outside the item's own period is possible -- the
+        recurrence engine can date an item just outside its period's range,
+        which is why the calendar query carries a due-date-in-range OR
+        no-due-date path -- so such a stray date is pulled to the nearest
+        boundary rather than escaping onto a neighbouring period's day and
+        breaking that period's sum.
+
+        **What this does NOT guarantee, and both halves of the paragraph it
+        replaces were false** (ledger row **N-97**).  The deleted function's
+        docstring named the seam's caller as
+        ``balance_resolver.daily_cash_balance_series``, a producer plan step
+        X-c2b3 had DELETED a month earlier, so the citation resolved to
+        nothing.  And it guaranteed that a flow's calendar cell and the balance
+        line's step for it land on the SAME day: that stopped holding at plan
+        step X-c2b2, when the balance line became the cash fold, which steps a
+        SETTLED row on the day its money moved and a projected one on
+        ``max(attribution, as_of + 1)`` (rulings **R-DH (b)** and **R-G**).
+        Neither is this day, so a chip and its own step can sit days apart:
+        ``|settled_on - due_date|`` over the real Checking account's settled
+        rows is **median 2, p75 7, max 25 across 126 rows, re-measured
+        2026-08-28**.  It moved here CARRYING NO DATE, quoted as "median 2, p75
+        6, max 25" over 130 rows, and a measurement quoted as a REASON decays
+        invisibly because nobody re-checks a premise -- so the leaf that
+        relocated it re-took it rather than copying it forward.  That
+        divergence is finding **N-58**, it is an open fork rather than a
+        settled rule, and ``calendar_service._get_display_day`` states it at
+        the site.  What survives is the budget attribution itself, which is
+        what every reader asks this for.
+
+        Args:
+            preferred: The item's preferred landing date (its ``due_date``), or
+                ``None`` to fall back to :attr:`start_date`.
+
+        Returns:
+            The attributed calendar day, guaranteed within
+            ``[start_date, end_date]``.
+        """
+        if preferred is None or preferred < self.start_date:
+            return self.start_date
+        if preferred > self.end_date:
+            return self.end_date
+        return preferred
+
     @property
     def label(self) -> str:
         """Return this period's human label (``"02/21 - 03/06"``).
@@ -239,7 +309,7 @@ def derive_periods(
     Only ends inside the last period's PROJECTED span can move this way; an end
     dictated by a following payday is fixed for as long as that payday is.
     A row already dated into the vacated days is not left outside its period --
-    ``utils.dates.attribution_date`` clamps it -- so the damage is a row
+    :meth:`DerivedPeriod.attribution_day` clamps it -- so the damage is a row
     silently RENDERED on a different day, which is plan finding P10's shape
     reached through a door P10 does not cover.  ``_reject_overlapping_batch``
     blocked that write by comparing against the stored end; plan step **C3-b**

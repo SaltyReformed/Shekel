@@ -480,7 +480,7 @@ class TestReDerivationStability:
         by the plan's own definition and is not the mid-schedule insert C6
         rules on.  It still moves the second period's end from 2026-01-29 to
         2026-01-27.  A row dated 2026-01-28 and pointed at that period is not
-        left outside it -- ``utils.dates.attribution_date`` clamps -- so it
+        left outside it -- ``DerivedPeriod.attribution_day`` clamps -- so it
         RENDERS on 2026-01-27 instead, which is plan finding P10's damage
         reached through a door P10 does not cover.
 

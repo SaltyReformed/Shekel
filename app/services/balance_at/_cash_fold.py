@@ -122,7 +122,6 @@ from app.services.cash_ledger import (
     walk_cash_ledger,
 )
 from app.services.pay_calendar import PayCalendar, PeriodWindow
-from app.utils.dates import attribution_date
 
 from ._assertions import CashAnchorCorrection, assertion_corrections
 from ._context import BalanceContext, _memoize_once
@@ -817,7 +816,8 @@ def _cash_plan(
     (ruling R-G), exactly as the loan plan's is (plan step C6a).
 
     **Where a planned row lands.**  Its nominal day is the shared
-    :func:`~app.utils.dates.attribution_date` -- its ``due_date``, falling back to
+    :meth:`~app.services.pay_calendar.DerivedPeriod.attribution_day` -- its
+    ``due_date``, falling back to
     its pay period's ``start_date``, clamped into that period's span -- the SAME
     rule the calendar groups its day cells by, so a flow's cell and the balance
     line's step for it cannot land on different days.  That day is then clamped
@@ -896,9 +896,7 @@ def _cash_plan(
     by_day: "dict[date, list[Transaction]]" = defaultdict(list)
     for txn in rows:
         period = calendar.require_period(txn.pay_period_id, txn.id)
-        nominal = attribution_date(
-            txn.due_date, period.start_date, period.end_date,
-        )
+        nominal = period.attribution_day(txn.due_date)
         by_day[max(nominal, not_before)].append(txn)
     return _CashPlan(rows=rows, by_day=dict(by_day), basis=basis)
 

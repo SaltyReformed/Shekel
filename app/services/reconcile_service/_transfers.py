@@ -56,7 +56,7 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import transfer_service
-from app.services.cash_ledger import AmountBasis, AnchorPoint
+from app.services.cash_ledger import AmountBasis
 from app.services.reconcile_service import _rows
 from app.services.reconcile_service._offers import (
     OfferKind,
@@ -166,8 +166,7 @@ def arm(owner_id: int) -> _rows.Arm:
 
 
 def outstanding_transfers(
-    owner_id: int, account_id: int, anchor: AnchorPoint,
-    basis: "AmountBasis",
+    statement: _rows.Statement, basis: "AmountBasis",
 ) -> "dict[int, OutstandingTransaction]":
     """Return this arm's offers, ``{shadow transaction id: offer}``.
 
@@ -196,11 +195,12 @@ def outstanding_transfers(
     Reads only (no writes, no commit).
 
     Args:
-        owner_id: The user_id whose rows to list.
-        account_id: The cash account whose balance was asserted.
-        anchor: The governing assertion -- the STATEMENT being
-            reconciled against.  Its ``observed_on`` bounds the offer
-            set and its id is what a tick records (ruling **R-FL**).
+        statement: The :class:`~._rows.Statement` being reconciled -- whose
+            calendar, which account, which assertion.  **Built ONCE by
+            :func:`~._assemble.outstanding_set` and threaded**; see
+            :func:`~._transactions.outstanding_transactions` for why one value
+            rather than three arguments, which is pay-calendar plan step
+            C4-a-2's doing.
         basis: The PANEL's :class:`~app.services.cash_ledger.AmountBasis`,
             built ONCE by :func:`~._assemble.outstanding_set` and threaded
             (plan step X-au-j, finding **N-295**).  This is the EXPENSIVE half of that
@@ -217,11 +217,10 @@ def outstanding_transfers(
         holding no overdue transfer, which is production's state at its latest
         assertion today.
     """
-    statement = _rows.Statement(owner_id, account_id, anchor)
     return {
         shadow.id: OutstandingTransaction(
             transaction_id=shadow.id,
-            attributed_on=_rows.attributed_on(shadow),
+            attributed_on=_rows.attributed_on(statement, shadow),
             amount=transfer_service.settle_amount(shadow, basis),
             # Always the whole figure: a shadow can hold no entries, so there
             # is no card half for the statement to disagree with (N-226).
@@ -230,5 +229,7 @@ def outstanding_transfers(
             is_income=shadow.is_income,
             kind=OfferKind.TRANSFER,
         )
-        for shadow in _rows.outstanding_rows(arm(owner_id), statement)
+        for shadow in _rows.outstanding_rows(
+            arm(statement.owner_id), statement,
+        )
     }
