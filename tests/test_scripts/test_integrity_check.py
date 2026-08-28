@@ -730,8 +730,8 @@ class TestDataConsistency:
     def test_dc06_allows_override_sibling(self, app, db, seed_user, seed_periods):
         """An override sibling next to the generated row is NOT a duplicate.
 
-        Mirrors the schema's own uniqueness contract: the partial unique
-        index ``idx_transactions_template_period_scenario`` applies only
+        Mirrors the schema's own uniqueness contract: both partial unique
+        generation indexes apply only
         WHERE ``is_override = FALSE``, precisely so a carried-forward
         unpaid item (flagged ``is_override = TRUE``) can legally coexist
         with the rule-generated row for its target period.  Before the
@@ -762,20 +762,24 @@ class TestDataConsistency:
         assert dc06.passed
 
     def test_dc06_detects_true_duplicate(self, app, db, seed_user, seed_periods):
-        """Two NON-override rows for one template/period/scenario are flagged.
+        """Two undated NON-override rows in one paycheck are flagged.
 
-        The partial unique index blocks this at the DB tier, so (like
-        the DC-02 test) the index is dropped to stage the corruption the
-        check exists to catch -- a partial restore or manual SQL is the
-        real-world source.  The staged rows are removed before the index
-        is recreated (CREATE UNIQUE INDEX validates existing rows).
+        The fixture's rows carry no ``occurs_on``, so the contract that holds
+        them is the UNDATED half of plan step R17's split: a row answering no
+        occurrence still holds its paycheck alone
+        (``idx_transactions_template_scenario_undated``).  The partial unique
+        index blocks this at the DB tier, so (like the DC-02 test) the index is
+        dropped to stage the corruption the check exists to catch -- a partial
+        restore or manual SQL is the real-world source.  The staged rows are
+        removed before the index is recreated (CREATE UNIQUE INDEX validates
+        existing rows).
         """
         template, generated = self._template_with_generated_row(
             seed_user, seed_periods,
         )
 
         db.session.execute(db.text(
-            "DROP INDEX budget.idx_transactions_template_period_scenario"
+            "DROP INDEX budget.idx_transactions_template_scenario_undated"
         ))
         try:
             db.session.execute(db.text("""
@@ -817,9 +821,119 @@ class TestDataConsistency:
             # index is about to validate are the ones the trigger is about.
             db.session.execute(db.text("SET CONSTRAINTS ALL IMMEDIATE"))
             db.session.execute(db.text("""
-                CREATE UNIQUE INDEX idx_transactions_template_period_scenario
-                ON budget.transactions (template_id, pay_period_id, scenario_id)
+                CREATE UNIQUE INDEX idx_transactions_template_scenario_undated
+                ON budget.transactions (template_id, scenario_id, pay_period_id)
                 WHERE template_id IS NOT NULL
+                  AND occurs_on IS NULL
+                  AND is_deleted = FALSE
+                  AND is_override = FALSE
+            """))
+
+    def test_dc06_allows_two_rows_answering_different_occurrences(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """One paycheck, two occurrences, two rows -- and that is CORRECT.
+
+        The state plan step **R17** made storable and this check must not call
+        corruption: a cadence that names one paycheck more than once (a monthly
+        bill at a pay cadence of 30 days or more) legitimately funds two
+        installments from one paycheck.  Asking the OLD question here -- group
+        by ``(template, pay_period, scenario)`` -- reports this as a critical
+        duplicate, which is exactly the second-fence failure the re-key exists
+        to remove.
+        """
+        template, generated = self._template_with_generated_row(
+            seed_user, seed_periods,
+        )
+        generated.occurs_on = date(2026, 1, 15)
+        second = Transaction(
+            template_id=template.id,
+            pay_period_id=generated.pay_period_id,
+            scenario_id=generated.scenario_id,
+            account_id=generated.account_id,
+            status_id=generated.status_id,
+            name="DC06 Template (second occurrence)",
+            category_id=generated.category_id,
+            transaction_type_id=generated.transaction_type_id,
+            estimated_amount=Decimal("100.00"),
+            occurs_on=date(2026, 2, 15),
+            is_override=False,
+        )
+        db.session.add(second)
+        db.session.flush()
+
+        results = check_data_consistency(db.session)
+        dc06 = next(r for r in results if r.check_id == "DC-06")
+        assert dc06.passed, (
+            "two rows answering different occurrences of one cadence are a "
+            "correct state, not a duplicate"
+        )
+
+    def test_dc06_detects_two_rows_answering_one_occurrence(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The real duplicate since R17: one occurrence answered twice.
+
+        The companion to the case above, and the one that keeps this check
+        from having been weakened into uselessness by the re-key: the DATED
+        half of the contract still holds a template to one row per occurrence,
+        so staging two rows with the SAME ``occurs_on`` must be flagged
+        critical.  Without this, dropping the group key to "anything goes in a
+        paycheck" would pass every DC-06 test in the file.
+        """
+        template, generated = self._template_with_generated_row(
+            seed_user, seed_periods,
+        )
+        generated.occurs_on = date(2026, 1, 15)
+        db.session.flush()
+
+        db.session.execute(db.text(
+            "DROP INDEX budget.idx_transactions_template_scenario_occurrence"
+        ))
+        try:
+            db.session.execute(db.text("""
+                INSERT INTO budget.transactions
+                    (template_id, pay_period_id, scenario_id, account_id,
+                     status_id, name, category_id, transaction_type_id,
+                     estimated_amount, occurs_on, is_override, is_deleted)
+                VALUES (:tid, :pid, :sid, :aid, :stid, 'DC06 Same Occurrence',
+                        :cid, :ttid, 100.00, :occ, FALSE, FALSE)
+            """), {
+                "tid": template.id,
+                "pid": seed_periods[1].id,
+                "sid": generated.scenario_id,
+                "aid": generated.account_id,
+                "stid": generated.status_id,
+                "cid": generated.category_id,
+                "ttid": generated.transaction_type_id,
+                "occ": date(2026, 1, 15),
+            })
+            db.session.flush()
+
+            results = check_data_consistency(db.session)
+            dc06 = next(r for r in results if r.check_id == "DC-06")
+            assert not dc06.passed
+            assert dc06.detail_count == 1
+            assert dc06.details[0]["cnt"] == 2
+        finally:
+            db.session.execute(db.text(
+                "DELETE FROM budget.transactions "
+                "WHERE name = 'DC06 Same Occurrence'"
+            ))
+            # **Drain the deferred constraint triggers before the DDL** (plan
+            # step X-f3c-2b), the same two lines the sibling case above needs
+            # and for the same reason.  The raw INSERT queues an event for
+            # ``ck_movement_after_books_open`` whatever that trigger would
+            # DECIDE -- the event is queued at statement time and the function
+            # only runs at COMMIT -- and PostgreSQL refuses ``CREATE INDEX`` on
+            # a table carrying pending trigger events.  Making them immediate
+            # runs the check now, inside this transaction.
+            db.session.execute(db.text("SET CONSTRAINTS ALL IMMEDIATE"))
+            db.session.execute(db.text("""
+                CREATE UNIQUE INDEX idx_transactions_template_scenario_occurrence
+                ON budget.transactions (template_id, scenario_id, occurs_on)
+                WHERE template_id IS NOT NULL
+                  AND occurs_on IS NOT NULL
                   AND is_deleted = FALSE
                   AND is_override = FALSE
             """))

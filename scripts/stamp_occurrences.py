@@ -72,11 +72,10 @@ else -- ``carry_forward_service._execute`` rolls an unspent envelope forward as
 an ``is_override`` row and writes exactly that.  Filtering in the row query is
 what stops all three rules inheriting the problem separately.
 
-**Soft-deleted rows ARE considered, deliberately.**  ``should_skip_period`` and
-``classify_maintain_work`` both treat a soft-deleted row as occupying its
-period, so under today's semantics such a row DOES answer its occurrence.
-Excluding them here would let the predicate leaf resurrect a bill the owner
-removed.
+**Soft-deleted rows ARE considered, deliberately.**  ``OccurrenceClaims`` counts
+a row's claim whatever state it is in, so a soft-deleted row DOES answer its
+occurrence.  Excluding them here would let the predicate resurrect a bill the
+owner removed.
 
 **It only ever WRITES ``occurs_on``.**  No row is created, deleted, re-dated or
 moved between pay periods -- deliberately, because a duplicate this defect
@@ -215,7 +214,19 @@ def _match_by_period(free_rows, free_occ) -> int:
     Returns:
         How many rows this rule stamped.
     """
+    # **Both sides are ORDERED, so the pairing is not the query's accident.**
+    # A paycheck can hold two free rows of one template -- a canonical and the
+    # ``is_override`` sibling a move produces, measured as one such group on
+    # the developer's data -- and a cadence can name that paycheck twice.  With
+    # two of each, the row this rule reached was whichever the unordered SELECT
+    # returned first, so two rows could take each other's occurrences.  Neither
+    # is left unanswered either way, so nothing is suppressed; what a swap
+    # corrupts is WHICH installment each row says it is, which for a loan
+    # payment is a posting input rather than a label.  Ascending due date
+    # against ascending occurrence is the only pairing that is not arbitrary
+    # once the due-date rule above has taken every exact match.
     stamped = 0
+    free_rows.sort(key=lambda row: (row.due_date, row.id))
     for placement in list(free_occ):
         hit = next((row for row in free_rows
                     if row.pay_period_id == placement.period.period_id), None)
@@ -237,13 +248,26 @@ def _placements_to_offer(plan, rows):
     occurrence on the second pass, measured on a production clone as a cancelled
     ``Christmas`` duplicate taking its live sibling's date.
 
-    The per-period collapse keeps the LAST placement of a repeated period, which
-    is what ``_recurrence_common.occurrence_by_period`` hands the maintain pass's
-    create arm.  A pay period legitimately appears twice at a cadence of 30 days
-    or more, and matching would otherwise take the EARLIEST -- so a row this
-    pass stamped and its sibling the engine wrote would state two different
-    facts about one cadence, and the surplus placement would sit unclaimed
-    forever as fuel for a mispairing.
+    **Every unclaimed placement is offered, including a second one in a paycheck
+    the cadence names twice.**  This collapsed a repeated period to its LAST
+    placement until plan step **R17**'s second leaf, justified by
+    ``_recurrence_common.occurrence_by_period`` -- the maintain pass's create
+    arm took a ``{period: occurrence}`` map, so a surplus placement had nothing
+    to claim it.  That function is gone: the create arm now consumes every
+    placement, and the collapse had become a defect in two directions.  It
+    discarded the EARLIEST placement before :func:`_match_by_due_date` could
+    see it, so a row carrying that occurrence's exact due date -- the hardest
+    evidence this script has -- was matched by PERIOD to the wrong one instead;
+    and the occurrence it dropped was left with no row, while the row it
+    mis-stamped went on claiming a date the cadence names once.  A row left
+    NULL claims its whole PAYCHECK under ``OccurrenceClaims``, so the
+    suppression is of both installments, silently.
+
+    :func:`_match_by_period` needs no collapse to be safe with a repeated
+    period: it consumes one free row per placement, so two placements sharing a
+    paycheck take two different rows, and a placement with no row left is
+    simply not stamped -- which is the correct answer, and leaves the engine to
+    generate it.
 
     Args:
         plan: The template's resolved ``GenerationPlan``.
@@ -253,12 +277,11 @@ def _placements_to_offer(plan, rows):
         The placements to offer, ascending by occurrence.
     """
     taken = {row.occurs_on for row in rows if row.occurs_on is not None}
-    by_period = {
-        placement.period.period_id: placement
-        for placement in plan.placements
-        if placement.occurrence not in taken
-    }
-    return sorted(by_period.values(), key=lambda placement: placement.occurrence)
+    return sorted(
+        (placement for placement in plan.placements
+         if placement.occurrence not in taken),
+        key=lambda placement: placement.occurrence,
+    )
 
 
 def _stamp_template(template, schedule, scenario_id, model, fk_col) -> tuple:

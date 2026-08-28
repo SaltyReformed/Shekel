@@ -579,23 +579,71 @@ def check_data_consistency(session):
         """,
     )))
 
-    # DC-06: Duplicate non-deleted transactions per template/period/scenario (critical).
-    # The predicate mirrors the schema's own uniqueness contract -- the
-    # partial unique index ``idx_transactions_template_period_scenario``
-    # is unique only WHERE ``is_override = FALSE``: an override sibling
-    # (a carried-forward unpaid item) legally coexists with the
-    # rule-generated row for its target period, so override rows must
-    # not count toward the duplicate group.
+    # DC-06: Two generated rows answering ONE occurrence (critical).
+    # The predicate mirrors the schema's own uniqueness contract, and plan
+    # step **R17** re-keyed that contract off the paycheck and onto the
+    # occurrence: a row answers one occurrence of its template's cadence, and
+    # the pay period is only where that occurrence's money lands.  Asking the
+    # old question here would report a CORRECT state as critical corruption --
+    # a cadence that names one paycheck twice (a monthly bill at a pay cadence
+    # of 30 days or more) legitimately stores two rows there, which is exactly
+    # what the re-key made possible.
+    #
+    # FOUR arms: two contracts across two tables.  ``budget.transfers`` carries
+    # the identical pair of indexes and the identical duplicate-money failure,
+    # and it went ungraded here until plan step R17 -- which is the step that
+    # makes "two rows in one paycheck" a LEGAL state, so the check that says
+    # which pairs are legal now has to exist on both tables.  The ``source``
+    # column names which one reported.
+    #
+    # Two contracts, because a row that answers an
+    # occurrence is unique on it, and a row that answers NONE
+    # (``occurs_on IS NULL`` -- a carry-forward roll-forward, a one-time
+    # transfer) still holds its paycheck alone.  Both stay unique only WHERE
+    # ``is_override = FALSE``: an override sibling legally coexists with the
+    # rule-generated row for its target period.
     results.append(_run_check(session, CheckSpec(
         "DC-06", "consistency", "critical",
-        "Duplicate non-deleted transactions per template/period/scenario",
+        "Two generated rows answering one occurrence (or one paycheck, undated)",
         """
-        SELECT template_id, pay_period_id, scenario_id, COUNT(*) AS cnt
+        SELECT 'transactions' AS source, template_id, scenario_id, occurs_on,
+               NULL::integer AS pay_period_id, COUNT(*) AS cnt
         FROM budget.transactions
         WHERE template_id IS NOT NULL
+          AND occurs_on IS NOT NULL
           AND is_deleted = FALSE
           AND is_override = FALSE
-        GROUP BY template_id, pay_period_id, scenario_id
+        GROUP BY template_id, scenario_id, occurs_on
+        HAVING COUNT(*) > 1
+        UNION ALL
+        SELECT 'transactions', template_id, scenario_id, NULL::date,
+               pay_period_id, COUNT(*)
+        FROM budget.transactions
+        WHERE template_id IS NOT NULL
+          AND occurs_on IS NULL
+          AND is_deleted = FALSE
+          AND is_override = FALSE
+        GROUP BY template_id, scenario_id, pay_period_id
+        HAVING COUNT(*) > 1
+        UNION ALL
+        SELECT 'transfers', transfer_template_id, scenario_id, occurs_on,
+               NULL::integer, COUNT(*)
+        FROM budget.transfers
+        WHERE transfer_template_id IS NOT NULL
+          AND occurs_on IS NOT NULL
+          AND is_deleted = FALSE
+          AND is_override = FALSE
+        GROUP BY transfer_template_id, scenario_id, occurs_on
+        HAVING COUNT(*) > 1
+        UNION ALL
+        SELECT 'transfers', transfer_template_id, scenario_id, NULL::date,
+               pay_period_id, COUNT(*)
+        FROM budget.transfers
+        WHERE transfer_template_id IS NOT NULL
+          AND occurs_on IS NULL
+          AND is_deleted = FALSE
+          AND is_override = FALSE
+        GROUP BY transfer_template_id, scenario_id, pay_period_id
         HAVING COUNT(*) > 1
         """,
     )))

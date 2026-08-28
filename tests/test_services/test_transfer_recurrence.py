@@ -28,7 +28,6 @@ from app.services import (
 )
 from app.services.recurrence_engine import resolve_generation_plan
 from app.exceptions import (
-    RecurrenceCadenceUnsupported,
     RecurrenceConflict,
 )
 from app.utils.log_events import (
@@ -296,7 +295,7 @@ class TestTransferGenerationSharesTheOccurrencePairs:
     Both engines take their ``(occurrence, pay period)`` pairs from the one
     shared preamble (``recurrence_engine.resolve_generation_plan``) and their
     pre-write step from the one shared helper
-    (``_recurrence_common.existing_rows_refusing_repeats``), so the BEHAVIOUR
+    (``_recurrence_common.occurrences_to_write``), so the BEHAVIOUR
     cannot drift.  The COVERAGE could: a neutral review found the repeat
     refusal exercised only on the transaction side, which would let a
     transfer-specific regression -- the wrong FK column handed to the shared
@@ -304,18 +303,19 @@ class TestTransferGenerationSharesTheOccurrencePairs:
     places.
     """
 
-    def test_a_transfer_repeating_inside_one_paycheck_is_refused(
+    def test_a_transfer_repeating_inside_one_paycheck_writes_each_occurrence(
         self, app, db, seed_user, seed_periods,
     ):
-        """``idx_transfers_template_period_scenario`` is the twin index.
+        """``idx_transfers_template_scenario_occurrence`` is the twin index.
 
         At a 90-day cadence a monthly transfer legitimately falls inside one
-        paycheck three times, and ``budget.transfers`` holds one row per
-        ``(template, period, scenario)``.  Writing them would raise an
-        ``IntegrityError`` naming nothing and roll back the enclosing
-        transaction -- a schedule extend among them.  The refusal names the
-        definition, the paycheck and every occurrence DATE (plan ledger row
-        D19, dates since plan step R4b-2).
+        paycheck three times.  While ``budget.transfers`` held one row per
+        ``(template, period, scenario)`` those three could not be stored and
+        the pass REFUSED (plan ledger row D19).  Plan step **R17** re-keyed the
+        index onto ``(template, scenario, occurs_on)``, so three occurrences
+        are three keys and all three transfers are written -- each with its own
+        shadow pair, which is the half this engine has and the transaction
+        engine does not.
         """
         with app.app_context():
             long_periods = pay_period_write.record_paydays(
@@ -329,14 +329,17 @@ class TestTransferGenerationSharesTheOccurrencePairs:
                 seed_user, MONTHLY, day_of_month=15,
             )
 
-            with pytest.raises(RecurrenceCadenceUnsupported) as excinfo:
-                transfer_recurrence.generate_for_template(
-                    template,
-                    GenerationSchedule.for_period_ids(
-                        BalanceContext.build(template.user_id), {p.id for p in long_periods},
-                    ),
-                    seed_user["scenario"].id,
-                )
+            created = transfer_recurrence.generate_for_template(
+                template,
+                GenerationSchedule.for_period_ids(
+                    BalanceContext.build(template.user_id),
+                    {p.id for p in long_periods},
+                ),
+                seed_user["scenario"].id,
+            )
+            # The flush is the assertion: under the paycheck-keyed index these
+            # three transfers were an IntegrityError.
+            db.session.flush()
 
             paycheck = long_periods[0]
             expected = tuple(
@@ -355,14 +358,23 @@ class TestTransferGenerationSharesTheOccurrencePairs:
                 "fixture no "
                 "longer exercises the repeat"
             )
-            assert excinfo.value.template_name == "Test Transfer"
-            assert excinfo.value.occurrence_dates == expected
-            # And nothing was written -- not the transfer, not its shadows.
+            in_paycheck = [
+                row for row in created if row.pay_period_id == paycheck.id
+            ]
+            assert sorted(
+                row.occurs_on for row in in_paycheck
+            ) == list(expected)
             assert db.session.query(Transfer).filter_by(
                 transfer_template_id=template.id,
-            ).count() == 0
+                pay_period_id=paycheck.id,
+            ).count() == 3
+            # Each transfer keeps its shadow pair -- the invariant this engine
+            # owns, and the one a repeat could have broken by writing a parent
+            # without its two linked rows.
+            for row in in_paycheck:
+                _assert_shadows_valid(row)
 
-    def test_a_transfer_occurrence_in_an_absorbed_hole_is_refused_too(
+    def test_a_transfer_occurrence_in_an_absorbed_hole_is_written_too(
         self, app, db, seed_user, seed_periods, caplog,
     ):
         """The transfer engine takes the absorption identically (row **P27**).
@@ -377,7 +389,7 @@ class TestTransferGenerationSharesTheOccurrencePairs:
 
         What the absorption leaves is an OVER-LONG paycheck holding the 15th
         twice,
-        which ``idx_transfers_template_period_scenario`` cannot hold, so the
+        which the paycheck-keyed index could not hold, so the
         pass refuses and writes nothing.  Identical to the transaction engine's
         answer, which is the point: the two are deliberate parallels and this
         asserts they did not diverge across the cutover.  The transaction twin
@@ -407,12 +419,13 @@ class TestTransferGenerationSharesTheOccurrencePairs:
 
             with caplog.at_level(
                 logging.WARNING, logger="app.services.transfer_recurrence",
-            ), pytest.raises(RecurrenceCadenceUnsupported) as excinfo:
-                transfer_recurrence.generate_for_template(
+            ):
+                created = transfer_recurrence.generate_for_template(
                     template,
                     GenerationSchedule.for_pass(BalanceContext.build(template.user_id)),
                     seed_user["scenario"].id,
                 )
+                db.session.flush()
 
             absorbed = [
                 date(year, month, 15)
@@ -421,19 +434,22 @@ class TestTransferGenerationSharesTheOccurrencePairs:
                 if gap_start <= date(year, month, 15) <= gap_end
             ]
             assert len(absorbed) == 1, "the fixture built no absorbed occurrence"
-            # The refusal names the absorbed date beside the one the paycheck
-            # already owed -- so nothing was dropped, it was refused.
-            assert absorbed[0] in excinfo.value.occurrence_dates
-            assert len(excinfo.value.occurrence_dates) == 2
-            # Nothing is logged any more, and nothing is written.
+            # The absorbed date is ANSWERED by a transfer of its own, beside
+            # the one the over-long paycheck already owed -- so nothing is
+            # dropped and nothing is refused (plan step R17).
+            assert absorbed[0] in {row.occurs_on for row in created}
+            absorbing = [
+                row for row in created if row.occurs_on == absorbed[0]
+            ][0].pay_period_id
+            both = [row for row in created if row.pay_period_id == absorbing]
+            assert len(both) == 2
+            assert len({row.occurs_on for row in both}) == 2
+            # And nothing is logged -- the gap report went with plan step C2-b2.
             assert [
                 record for record in caplog.records
                 if getattr(record, "event", None)
                 == "recurrence_occurrence_unplaced"
             ] == []
-            assert db.session.query(Transfer).filter_by(
-                transfer_template_id=template.id,
-            ).count() == 0
 
 
 class TestTransferRegeneration:

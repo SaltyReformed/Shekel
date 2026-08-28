@@ -374,26 +374,21 @@ and `_pp_assert_structure`'s invariants 1, 2, 3a and 3b, and re-bases the 63 `Pa
 constructions in 35 test files that pass a dropped column. **This leaf needs its own review pass**;
 it is the deepest cut into the spine.
 
-- [ ] **C5 -- the gap machinery goes, and a paycheck may owe one template twice.**
-
-**The DECOMPOSED PARENT, split 2026-08-09 (developer).** Its two halves shared only a sentence in
-row P16 and are not one commit: one is a pure deletion gated on C4, the other is a migration gated
-on an arc this document does not own. It ticks with the last of them.
+- [x] **C5 -- the gap machinery goes, and a paycheck may owe one template twice.** `4e8b40b3`,
+      ticked with `C5b`, its last leaf. The DECOMPOSED PARENT, split 2026-08-09 (developer): its two
+      halves shared only a sentence in row **P16** and were never one commit -- a pure deletion
+      gated on C4, and a migration gated on an arc this document does not own.
 
 - [x] **C5a -- delete what is now unconstructible.** `fe365de1`. Ticked at **C2-b2** rather than
       after C4: nothing in the gap chain read a stored column, so it went dead when that leaf
       pointed the engine at the derivation.
 
-- [ ] **C5b -- a paycheck may owe one template more than once.**
-
-`should_skip_period` (`_recurrence_common.py:196-232`) becomes OCCURRENCE-aware instead of returning
-True on the first template-linked row; `refuse_unstorable_repeats` (`:235-300`) and
-`RecurrenceCadenceUnsupported` retire with the refusal they exist to raise. Closes **P16**.
-**BLOCKED BY the recurrence arc's `R5`, and this is the dependency that made the whole arc look
-deferred.** The indexes must re-key onto `(template, scenario, occurs_on)` -- recurrence row
-**D19**'s own answer -- and `occurs_on` does not exist: `grep occurs_on app/models/` is empty, R5
-creates it, and R5 waits on the balance arc's X-f4. So the re-key is R5's and NOT restated here;
-this step consumes it. Needs a migration and its own review pass.
+- [x] **C5b -- a paycheck may owe one template more than once.** `4e8b40b3`, ticked with
+      `recurrence:R17`, closing **P16**. One commit under two arc names: the predicate became
+      occurrence-aware, both indexes re-keyed onto `(template, scenario, occurs_on)` with an
+      `..._undated` partner, and `refuse_unstorable_repeats` retired with the paycheck key that
+      forced it. The re-key it waited on `R5` for came forward with `R17`. Measured: at
+      `cadence_days` 30 two templates repeat a paycheck, at 31 eleven.
 
 - [ ] **C6 -- a payday may be inserted mid-schedule.**
 

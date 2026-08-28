@@ -16,6 +16,7 @@ test_idempotency.py.  Focuses on:
     period) so cell == subtotal == balance.
 """
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -535,9 +536,8 @@ class TestCarryForwardStatusRecheck:
 
         Regression for the F-049 fix: collapsing the loop into a
         bulk UPDATE must still set ``is_override = TRUE`` on
-        template-linked rows so the partial unique index
-        ``idx_transactions_template_period_scenario`` does not
-        collide with a rule-generated row in the target period.
+        template-linked rows so the partial unique generation indexes do
+        not collide with a rule-generated row in the target period.
         """
         with app.app_context():
             template = TransactionTemplate(
@@ -938,7 +938,7 @@ class TestCarryForwardOverrideSibling:
         """Override sibling coexists with rule-generated parent.
 
         Reproduces the production traceback:
-            UniqueViolation: idx_transactions_template_period_scenario
+            UniqueViolation on the generation index
             Key (template_id, pay_period_id, scenario_id)=(N, target, S)
             already exists.
 
@@ -1182,7 +1182,7 @@ def _create_transfer_template(seed_user, savings_account,
 
 class TestCarryForwardOverrideSiblingTransfers:
     """Mirror TestCarryForwardOverrideSibling for transfers, exercising
-    the relaxed idx_transfers_template_period_scenario index.
+    the relaxed idx_transfers_template_scenario_undated index.
     """
 
     def test_carries_transfer_into_target_with_existing_rule_generated(
@@ -1379,13 +1379,20 @@ def _create_envelope_template(
 def _create_envelope_txn(
     seed_user, period, template, *,
     estimated_amount=None, status_name="Projected",
-    is_override=False, settled_amount=None,
+    is_override=False, settled_amount=None, occurs_on=None,
 ):
     """Create a single envelope transaction owned by the template.
 
     Mirrors the recurrence engine's per-period generation for tests
     that hand-place rows rather than driving the engine.  Defaults to
     the template's default amount and Projected status.
+
+    *occurs_on* is WHICH occurrence of the template's cadence the row answers
+    (plan step **R17**).  ``None`` -- the default, and what every caller that
+    does not care passes -- leaves the row answering no occurrence, which
+    ``idx_transactions_template_scenario_undated`` holds to one per paycheck.
+    A caller staging two rows in ONE paycheck must therefore give each its own
+    occurrence, which is the only state in which two are storable.
 
     A row built in a settled status carries the whole record -- the day, the
     figure and how that figure is known -- through the one door a bare-built
@@ -1414,6 +1421,7 @@ def _create_envelope_txn(
         estimated_amount=planned,
         **settle_day_columns(settled_on),
         **settlement_columns(settled_on, planned, submitted=settled_amount),
+        occurs_on=occurs_on,
         is_override=is_override,
     )
     db.session.add(txn)
@@ -3056,6 +3064,191 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
                 carry_forward_service.BLOCK_AMBIGUOUS_TARGETS
             )
             assert "open row" in plan.block_reason.lower()
+
+    def test_two_targets_answering_different_occurrences_top_up_the_earliest(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A cadence that names one paycheck twice is NOT ambiguous.
+
+        **The developer's ruling of 2026-08-28**, and the case plan step R17
+        created: the re-keyed unique index
+        (``idx_transactions_template_scenario_occurrence``) lets one paycheck
+        hold two generated rows answering two different occurrences -- a
+        monthly bill at a pay cadence of 30 days or more, measured at 2 of the
+        developer's templates at cadence 30 and 11 at cadence 31.  The old
+        guard called any second mutable row corrupt, because the paycheck-keyed
+        index made it so; reading it that way now would refuse the whole
+        carry-forward batch over a correct state.
+
+        **The EARLIEST occurrence receives the leftover**: the unspent money
+        rolls into the paycheck to meet the next obligation, and the next
+        obligation is the first occurrence in it.
+        """
+        with app.app_context():
+            template = _create_envelope_template(seed_user)
+            source = _create_envelope_txn(
+                seed_user, seed_periods[0], template,
+            )
+            # Distinct amounts, so the assertion below identifies WHICH row
+            # was chosen rather than merely that one was.
+            # Two occurrences of one cadence inside the one paycheck.  The
+            # occurrence is given at CREATION: two undated rows in one paycheck
+            # is the state ``..._undated`` forbids, so assigning after the
+            # flush would trip the index rather than stage the case.
+            first = _create_envelope_txn(
+                seed_user, seed_periods[1], template,
+                estimated_amount="100.00", occurs_on=date(2026, 1, 15),
+            )
+            second = _create_envelope_txn(
+                seed_user, seed_periods[1], template,
+                estimated_amount="200.00", occurs_on=date(2026, 2, 15),
+            )
+            _add_entry(source, seed_user, "30.00")
+            db.session.commit()
+
+            preview = carry_forward_service.preview_carry_forward(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+
+            plan = preview.plans[0]
+            assert plan.blocked is False, (
+                "two rows answering two occurrences is a correct state, not "
+                "an ambiguous one"
+            )
+            assert plan.target_estimated_before == Decimal("100.00"), (
+                "the leftover must top up the EARLIEST occurrence in the "
+                "target paycheck, which is the $100.00 row"
+            )
+
+    def test_an_override_sibling_in_the_target_still_blocks(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """A row the OWNER owns is never chosen by an occurrence tie-break.
+
+        An adversarial review of plan step R17 found this: a row moved into the
+        target paycheck through the PATCH door carries ``is_override = True``
+        and its own EARLIER ``occurs_on``, so ranking candidates by occurrence
+        would select it over the paycheck's own canonical -- and the caller
+        then writes ``estimated_amount = resolve + leftover`` and clears
+        ``amount_source_id``, overwriting a figure the owner typed by hand.
+
+        The 2026-08-28 ruling was about two rows a CADENCE names.  It was never
+        about a row the owner owns, and the guard this leaf relaxed used to
+        refuse here.  It still does.
+        """
+        with app.app_context():
+            template = _create_envelope_template(seed_user)
+            source = _create_envelope_txn(
+                seed_user, seed_periods[0], template,
+            )
+            # The paycheck's own canonical, and a row the owner moved in --
+            # earlier occurrence, hand-priced, and theirs.
+            _create_envelope_txn(
+                seed_user, seed_periods[1], template,
+                estimated_amount="100.00", occurs_on=date(2026, 2, 15),
+            )
+            _create_envelope_txn(
+                seed_user, seed_periods[1], template,
+                estimated_amount="777.77", occurs_on=date(2026, 1, 15),
+                is_override=True,
+            )
+            _add_entry(source, seed_user, "30.00")
+            db.session.commit()
+
+            preview = carry_forward_service.preview_carry_forward(
+                seed_periods[0].id, seed_periods[1].id,
+                seed_user["scenario"].id,
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
+            )
+
+            plan = preview.plans[0]
+            assert plan.blocked is True, (
+                "the leftover was about to be folded into a row the owner "
+                "priced by hand"
+            )
+            assert plan.block_reason_code == (
+                carry_forward_service.BLOCK_AMBIGUOUS_TARGETS
+            )
+
+    def test_two_targets_answering_the_SAME_occurrence_still_block(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The corrupt state the guard was actually written for still refuses.
+
+        The companion to the case above, and what keeps that relaxation from
+        having deleted the guard: two rows answering ONE occurrence is a state
+        no cadence produces and the dated unique index forbids, so which of
+        them to credit is a guess.  Without this, widening
+        ``_leftover_recipient`` to "just take the earliest" would pass every
+        other carry-forward test in this file.
+        """
+        with app.app_context():
+            template = _create_envelope_template(seed_user)
+            source = _create_envelope_txn(
+                seed_user, seed_periods[0], template,
+            )
+            # The corrupt pair: one occurrence, answered twice.  The DATED
+            # index forbids it, so it is staged with the index dropped exactly
+            # as the DC-06 duplicate test stages its own.
+            #
+            # **Restored in a ``finally``, and this test COMMITS**, so a leak
+            # here is not confined to one case: the drop would outlive the
+            # rollback and every later test on this worker would run with the
+            # dated uniqueness gone, silently.  The staged rows are removed
+            # first -- CREATE UNIQUE INDEX validates the rows already there.
+            db.session.execute(db.text(
+                "DROP INDEX budget.idx_transactions_template_scenario_occurrence"
+            ))
+            try:
+                first = _create_envelope_txn(
+                    seed_user, seed_periods[1], template,
+                    occurs_on=date(2026, 1, 15),
+                )
+                second = _create_envelope_txn(
+                    seed_user, seed_periods[1], template,
+                    occurs_on=date(2026, 1, 15),
+                )
+                _add_entry(source, seed_user, "30.00")
+                db.session.commit()
+
+                preview = carry_forward_service.preview_carry_forward(
+                    seed_periods[0].id, seed_periods[1].id,
+                    seed_user["scenario"].id,
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
+                )
+
+                plan = preview.plans[0]
+                assert plan.blocked is True
+                assert plan.block_reason_code == (
+                    carry_forward_service.BLOCK_AMBIGUOUS_TARGETS
+                )
+            finally:
+                db.session.query(Transaction).filter(
+                    Transaction.id.in_([first.id, second.id]),
+                ).delete(synchronize_session=False)
+                db.session.commit()
+                db.session.execute(db.text("""
+                    CREATE UNIQUE INDEX
+                        idx_transactions_template_scenario_occurrence
+                    ON budget.transactions (template_id, scenario_id, occurs_on)
+                    WHERE template_id IS NOT NULL
+                      AND occurs_on IS NOT NULL
+                      AND is_deleted = FALSE
+                      AND is_override = FALSE
+                """))
+                db.session.commit()
+                # The restore is CHECKED, not hoped for.  A silent failure
+                # here leaves every later test on this worker running without
+                # the dated uniqueness -- the "green suite covering nothing"
+                # shape -- and the worker database is dropped at the end of
+                # the run, so nothing outside this block could observe it.
+                assert db.session.execute(db.text(
+                    "SELECT count(*) FROM pg_indexes WHERE schemaname = "
+                    "'budget' AND indexname = "
+                    "'idx_transactions_template_scenario_occurrence'"
+                )).scalar() == 1, "the dated unique index was not restored"
 
     def test_only_soft_deleted_target_is_actionable_creates_row(
         self, app, db, seed_user, seed_periods,

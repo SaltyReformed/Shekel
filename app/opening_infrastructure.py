@@ -81,6 +81,16 @@ which runs the checks in place rather than deferring them; it is what
 ``tests/test_models/test_clearing_link_schema.py`` do before re-creating an
 index and dropping a NOT NULL.
 
+**Measured rather than predicted: a peer's independent test met this within
+hours of the constraint shipping.**  ``recurrence:R17``'s
+``test_dc06_detects_two_rows_answering_one_occurrence`` drops an index,
+raw-``INSERT``s a movement row and re-creates the index in one transaction, and
+it failed with ``ObjectInUse`` on the merge.  Note WHAT queues the event: the
+row it inserts carries no ``settled_on`` at all, so the trigger function would
+have returned at its first line -- but the event is queued at STATEMENT time
+and the function runs at COMMIT, so "this write cannot violate the rule" does
+not spare it the DDL block.
+
 **The case a reader will NOT think of is a MIGRATION**, and it is the norm here
 rather than the exception: this project puts one-time backfills in the Alembic
 revision that changes the schema, so an revision that alters

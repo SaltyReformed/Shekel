@@ -130,7 +130,7 @@ from app.opening_infrastructure import (
 
 # revision identifiers, used by Alembic.
 revision = "d3b6f1c8a274"
-down_revision = "a7c41f9d2b60"
+down_revision = "c8e5a2f31b47"
 branch_labels = None
 depends_on = None
 

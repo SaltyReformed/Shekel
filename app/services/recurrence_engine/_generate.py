@@ -19,9 +19,7 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.services._recurrence_common import (
     TemplateRowSelector,
-    existing_rows_by_period,
-    existing_rows_refusing_repeats,
-    should_skip_period,
+    occurrences_to_write,
 )
 from app.services.recurrence_engine._amounts import (
     _derive_row_fields,
@@ -70,43 +68,22 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
     if plan is None:
         return []
 
-    # What is already there (to avoid duplicates and respect overrides), and
-    # the refusal of a paycheck this pass would write into TWICE -- the unique
-    # index holds one row per (template, period, scenario), and forward
-    # generation legitimately names a paycheck more than once at a cadence of
-    # 30 days or more.  One call because the order matters; see
-    # _recurrence_common.existing_rows_refusing_repeats.
-    existing = existing_rows_refusing_repeats(
-        _selector(template, scenario_id), plan.placements,
-    )
-
     # Check if this template has a linked salary profile for paycheck calculation.
     salary_profile = _get_salary_profile(template)
 
+    # WHICH occurrences still need a row -- the shared decision, so this loop
+    # holds only the part that is about ``budget.transactions``.  See
+    # ``_recurrence_common.occurrences_to_write``.
     created = []
-    for placement in plan.placements:
+    for placement in occurrences_to_write(
+        _selector(template, scenario_id), plan.placements,
+    ):
         period = placement.period
-        existing_txns = existing.get(period.period_id, [])
-
-        # Skip periods that already hold a template-linked row (immutable,
-        # override, soft-deleted, or simply already auto-generated).
-        if should_skip_period(existing_txns):
-            continue
-
-        # No existing row -- create one, taking every derived column from the
-        # ONE statement of them (:class:`DerivedRowFields`), which
-        # ``regenerate_for_template`` assigns onto an existing row from the
-        # same definition.  The three columns below that are NOT in it say what
-        # this row IS rather than what the template says: it is the rule's own
-        # row, live, and not yet an actual event.
-        #
-        # ``occurs_on`` is the FOURTH of that identity group and joins
-        # ``template_id`` / ``pay_period_id`` / ``scenario_id`` rather than the
-        # derived fields, which is the whole of plan step **R17**: it is WHICH
-        # occurrence this row answers, so it is deliberately not something
-        # ``DerivedRowFields`` restates per period and not something a maintain
-        # pass may rewrite.  The walk has carried it since plan step R4b-2 and
-        # this loop DISCARDED it -- ledger row **D57**.
+        # Every derived column comes from the ONE statement of them
+        # (:class:`DerivedRowFields`); the four below say what this row IS
+        # rather than what the template says.  ``occurs_on`` is deliberately
+        # not among the derived: it is WHICH occurrence this row answers, so a
+        # maintain pass may not rewrite it.
         txn = Transaction(
             **_derive_row_fields(
                 template, plan.rule, salary_profile, period, schedule.calendar,
@@ -150,10 +127,17 @@ def can_generate_in_period(template, period_id, scenario_id, *, schedule):
          user.
       2. Template must have a recurrence rule.
       3. The period must be one the rule fires in.
-      4. The (template, period, scenario) tuple must have NO existing
-         rows -- not even soft-deleted ones.  The engine's per-row
-         skip logic treats any existing row as a "do not generate"
-         signal, so a soft-deleted carry-over also blocks generation.
+      4. At least one occurrence the rule names in that period must be
+         UNANSWERED -- by any row, in any state, in whatever paycheck that
+         row now sits in.  A soft-deleted or overridden row answering the
+         occurrence blocks it exactly as a live one does.
+
+    **Step 4 asks about the OCCURRENCE since plan step R17**, where it asked
+    whether the period held any row at all.  The two differ in both
+    directions, which is the whole of ledger row **D57**: a row the owner
+    MOVED out of this period still answers its occurrence and must still
+    block, and a paycheck a rule names TWICE has a second occurrence to
+    answer even once the first is taken.
 
     **Steps 1-3 are now literally ``resolve_generation_plan``, and until plan
     step R4b they were a hand-written MIRROR of it that disagreed.**  The
@@ -218,18 +202,18 @@ def can_generate_in_period(template, period_id, scenario_id, *, schedule):
     # the one period asked about (the carry-forward context narrows it to the
     # target, but a caller threading a whole-schedule value is equally valid),
     # so the answer is "does the engine name THIS period".
-    if period_id not in {row.period.period_id for row in plan.placements}:
+    here = [
+        placement for placement in plan.placements
+        if placement.period.period_id == period_id
+    ]
+    if not here:
         return False
 
-    # Engine refuses to overwrite ANY existing row -- skip if even one
-    # row (including soft-deleted) sits in (template, period, scenario).
-    existing = existing_rows_by_period(
-        _selector(template, scenario_id), [period_id],
-    )
-    if existing.get(period_id):
-        return False
-
-    return True
+    # THE SAME function the write path calls, over this period's placements
+    # alone -- so the prediction cannot drift from what generation does, and
+    # the read stays bounded on the carry-forward hot path (this runs once per
+    # envelope row being rolled forward).
+    return bool(occurrences_to_write(_selector(template, scenario_id), here))
 
 
 

@@ -156,7 +156,7 @@ class TestPopulateFromActiveTemplates:
     def test_idempotent_second_run_creates_nothing(self, app, db, seed_user):
         """Re-running over already-populated periods creates nothing.
 
-        ``should_skip_period`` skips any period that already holds a
+        ``OccurrenceClaims`` skips any occurrence already answered by a
         template-linked row, so a retried extend / top-up is safe.
         """
         with app.app_context():

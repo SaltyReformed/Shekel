@@ -730,10 +730,10 @@ class TestTheParallelRun:
         2026-08-07).  Two months of rent funded by one paycheck are two
         obligations: summing at generation would lose which month is unpaid,
         break an amount that changes mid-group, and put one row in front of
-        two events.  ``idx_transactions_template_period_scenario`` cannot hold
-        them today -- it is UNIQUE over ``(template, period, scenario)`` -- and
-        re-keying it onto the occurrence is plan step R5's work, in the
-        migration that renames ``due_date`` to ``occurs_on``.
+        two events.  The paycheck-keyed index could not hold them, which is why
+        generation REFUSED such a cadence outright; plan step **R17** re-keyed
+        it onto ``(template, scenario, occurs_on)``, so both rows are now
+        written and stored and this producer's answer is one a pass can act on.
         """
         _biweekly, long_periods = _baseline_schedules()
         placements = _new_engine_placements()["long_cadence.monthly_first"]
