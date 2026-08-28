@@ -63,7 +63,7 @@ from decimal import Decimal
 import pytest
 
 from app.enums import StatusEnum, TxnTypeEnum
-from app.exceptions import RecurrenceCadenceUnsupported, RecurrenceWindowError
+from app.exceptions import RecurrenceWindowError
 from app import ref_cache
 from app.extensions import db
 from app.models.pay_period import PayPeriod
@@ -953,14 +953,31 @@ class TestAWindowMustBelongToTheOwner:
             ), "the control: the slice thinks the target IS February's first"
             # And it does not merely ANSWER differently, it answers wrongly:
             # the slice's only period runs to a cadence projection, so January
-            # AND February both land in it and the pass is refused as
-            # unstorable.  The whole-schedule read places those two occurrences
-            # in two different paychecks and refuses nothing.
-            with pytest.raises(RecurrenceCadenceUnsupported):
-                recurrence_engine.generate_for_template(
-                    _make_template(seed_user, MONTHLY_FIRST),
-                    narrowed, scenario_id,
-                )
+            # AND February both land in it, where the whole-schedule read
+            # places those two occurrences in two different paychecks.
+            #
+            # **Asserted on the ROWS since plan step R17.**  This used to be
+            # observed through ``RecurrenceCadenceUnsupported`` -- two
+            # occurrences in one paycheck were unstorable, so the narrowed
+            # schedule refused and the refusal stood in for the defect.  The
+            # re-keyed index stores them, so the defect is now named directly:
+            # one paycheck, two occurrences, from a schedule that should have
+            # placed them apart.  That is a stronger assertion than the refusal
+            # was, because it says WHAT went wrong rather than that something
+            # did.
+            wrong = recurrence_engine.generate_for_template(
+                _make_template(seed_user, MONTHLY_FIRST),
+                narrowed, scenario_id,
+            )
+            db.session.flush()
+            assert len(wrong) == 2, (
+                "the narrowed calendar must place both occurrences, or this "
+                "control no longer reproduces D22"
+            )
+            assert {row.pay_period_id for row in wrong} == {target.id}, (
+                "D22: a calendar narrowed to the window funds two months' "
+                "occurrences from one paycheck"
+            )
 
     def test_the_window_is_a_frozen_set(
         self, app, db, seed_user, seed_periods,

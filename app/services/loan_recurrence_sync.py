@@ -136,7 +136,7 @@ def recurrence_end_date(
       **This bounds the OCCURRENCE, and plan step R4a is what changed that.**
       ``end_date`` used to bound PERIODS -- a period was admitted when
       ``period.start_date <= end_date``, so the CURRENT period, which started
-      before *as_of*, still matched and only ``should_skip_period`` stopped a
+      before *as_of*, still matched and only the claim predicate stopped a
       further payment being generated into it for a loan that owes nothing.
       Forward generation stops at the first occurrence past the bound, so a
       retired loan's next installment is simply never emitted: finding **N-19**

@@ -10,18 +10,16 @@ block that does not actually touch the model belongs here, in one
 place, where the two cannot drift:
 
   - the cross-user ownership defense (:func:`check_scenario_ownership`),
-  - the per-period skip predicate (:func:`should_skip_period`),
-  - the generate row fetch + repeat refusal
-    (:func:`existing_rows_refusing_repeats`, over
-    :func:`existing_rows_by_period` and :func:`refuse_unstorable_repeats`),
+  - what a template's rows already CLAIM (:class:`OccurrenceClaims`), the one
+    query that reads it (:func:`rows_claiming`) and the generate decision
+    both engines and the read-only predictor share
+    (:func:`occurrences_to_write`),
   - the regenerate pass's whole DECISION -- which rows are the rule's to
     rewrite (:func:`owner_hold_on` / :func:`is_maintainable`), what one pass
     must do to each (:func:`classify_maintain_work` into
-    :class:`MaintainWork`), what it then did (:class:`MaintainOutcome`) and the
-    unstorable-cadence refusal that guards it
-    (:func:`refuse_repeats_this_pass`),
+    :class:`MaintainWork`) and what it then did (:class:`MaintainOutcome`),
   - the regenerate row fetch (:func:`rows_this_pass_may_maintain`),
-  - the ONE statement of the query both fetches run (:func:`_rows_in_periods`),
+  - the regenerate pass's period-set query (:func:`_rows_in_periods`),
   - the cross-user audit ``log_event(...)`` blocks (the ``log_*`` helpers
     below).
 
@@ -81,11 +79,9 @@ event constant, category, and keyword shape, not to add behaviour.
 """
 
 import logging
-from collections import defaultdict
 from datetime import date
 from typing import NamedTuple
 
-from app.exceptions import RecurrenceCadenceUnsupported
 from app.extensions import db
 from app.models.scenario import Scenario
 from app.utils.log_events import (
@@ -218,43 +214,91 @@ def check_scenario_ownership(
     return True
 
 
-def should_skip_period(existing_rows: list) -> bool:
-    """Return True if an existing row in a period blocks (re)generation.
+class OccurrenceClaims(NamedTuple):
+    """WHICH of a template's occurrences its existing rows already answer.
 
-    Both recurrence engines refuse to auto-generate into a period that
-    already holds any template-linked row, regardless of the row's
-    state.  The per-state checks below are kept explicit -- rather than
-    collapsed to ``bool(existing_rows)`` -- so the WHY of each skip
-    survives in one place and a future divergence (e.g. choosing to
-    regenerate over a soft-deleted row) is a localized edit, not a
-    rewrite:
+    **The one statement of what blocks a write, for all three readers**, and
+    the whole of plan step **R17**'s second leaf.  Both engines' generate loops
+    and the maintain pass's create arm ask the identical question -- "is this
+    occurrence already answered?" -- and until this type they each asked a
+    DIFFERENT one, about the pay PERIOD.  That is ledger row **D57**: a
+    generated row the owner moves to a neighbouring paycheck vacates the period
+    its occurrence names, so the next whole-schedule pass writes a second row
+    for an occurrence that is already answered.  Measured on a production clone
+    (2026-08-28): 8 rows, ``$1,482.93``, six of them duplicating a due date a
+    ``Paid`` row already covered.
 
-      - immutable (historical/settled): never touched.
-      - is_override: the user made a deliberate change; preserve it.
-      - is_deleted: the user intentionally removed it; do not resurrect.
-      - otherwise: an auto-generated, unmodified row already exists.
+    **A row claims the occurrence in its ``occurs_on``, and a row whose
+    ``occurs_on`` is NULL claims its PAY PERIOD instead.**  The second half is
+    not a fallback or a fence -- it is the honest reading of a column whose NULL
+    means "this row answers no occurrence" (see ``Transaction.occurs_on``).
+    Such a row cannot be compared against an occurrence at all, so the only
+    claim it can make is the pre-R17 one: it holds the paycheck it sits in.
+    Two live writers create them -- ``carry_forward_service._execute`` rolls an
+    unspent envelope forward, and the one-time branch of
+    ``routes/transfers/_instances.py`` materialises a transfer whose template
+    has no rule -- and the backfill deliberately leaves NULL every row no
+    occurrence claims.
 
-    Args:
-        existing_rows: The existing (Transaction|Transfer) rows already
-            present in the period for this template and scenario.
+    **Letting a NULL row claim NOTHING was measured, and it moves money.**  The
+    unarchive door restores a template's soft-deleted rows and then generates.
+    On the developer's own archived ``Emergency Fund`` transfer template (51
+    soft-deleted rows, all NULL because the backfill does not walk archived
+    templates), a NULL-claims-nothing rule creates **52 rows / ``$26,000``**
+    where today's period rule creates 11 / ``$5,500`` -- 41 phantom transfers
+    worth ``$20,500``, every one of them beside a row the owner had deleted.
+    Claiming the period creates exactly the 11, which is today's answer.
 
-    Returns:
-        True when the period already has a row and must be skipped;
-        False when the period is empty and generation may proceed.
+    Attributes:
+        answered: The ``occurs_on`` values this template's rows already hold.
+        held_undated: The ``budget.pay_periods.id`` values held by rows that
+            answer no occurrence, which therefore claim their paycheck whole.
     """
-    for row in existing_rows:
-        # Never touch immutable (historical) rows.
-        if row.status and row.status.is_immutable:
-            return True
-        # Skip overridden rows -- the user made a deliberate change.
-        if row.is_override:
-            return True
-        # Skip soft-deleted rows -- the user intentionally removed it.
-        if row.is_deleted:
-            return True
-        # Auto-generated and unmodified -- it already exists, skip.
-        return True
-    return False
+
+    answered: frozenset
+    held_undated: frozenset
+
+    @classmethod
+    def over(cls, rows) -> "OccurrenceClaims":
+        """Read what *rows* claim, in one pass over them.
+
+        Args:
+            rows: The (Transaction|Transfer) rows to read.  EVERY state counts
+                -- immutable, overridden and soft-deleted alike -- which is the
+                long-standing rule :func:`owner_hold_on` states for the
+                maintain pass and which this predicate has always applied on
+                the generate path: a row the owner removed must not be
+                resurrected, and a row they overrode must not be written beside.
+
+        Returns:
+            The claims those rows make.
+        """
+        return cls(
+            answered=frozenset(
+                row.occurs_on for row in rows if row.occurs_on is not None
+            ),
+            held_undated=frozenset(
+                row.pay_period_id for row in rows if row.occurs_on is None
+            ),
+        )
+
+    def blocks(self, placement) -> bool:
+        """Return True when *placement* is already answered and must be skipped.
+
+        Args:
+            placement: A ``recurrence_engine.PlannedOccurrence`` -- duck-typed
+                on ``.occurrence`` and ``.period.period_id`` exactly as the rest
+                of this module does, because importing that type here would
+                close a cycle (``_plan`` imports this module).
+
+        Returns:
+            True when some existing row already answers this occurrence, or
+            holds its paycheck without answering any occurrence.
+        """
+        return (
+            placement.occurrence in self.answered
+            or placement.period.period_id in self.held_undated
+        )
 
 
 class TemplateRowSelector(NamedTuple):
@@ -276,10 +320,11 @@ class TemplateRowSelector(NamedTuple):
         template_fk_col: That model's template foreign-key column object
             (``Transaction.template_id`` or ``Transfer.transfer_template_id``).
         template: The (Transaction|Transfer)Template being generated from.
-            The whole row rather than its id, because the refusal path reads
-            its NAME (:func:`refuse_unstorable_repeats`) and every other reader
-            wants ``template.id``; carrying both would be two spellings of one
-            fact.
+            The whole row rather than its id: every reader here wants
+            ``template.id``, and carrying both the row and the id would be two
+            spellings of one fact.  It carried the row for its NAME while the
+            D19 refusal existed to put that name in a message; plan step R17
+            deleted the refusal and the row is what the callers already hold.
         scenario_id: The scenario primary key every row must match.
     """
 
@@ -287,78 +332,6 @@ class TemplateRowSelector(NamedTuple):
     template_fk_col: object
     template: object
     scenario_id: int
-
-
-def refuse_unstorable_repeats(template, placements, existing) -> None:
-    """Refuse when one paycheck must host this template's row more than once.
-
-    Shared by both engines' ``generate_for_template``, because the storage
-    limit is a property of the two UNIQUE indexes rather than of either model:
-    ``idx_transactions_template_period_scenario`` and
-    ``idx_transfers_template_period_scenario`` are both keyed on
-    ``(template, pay_period, scenario)``.
-
-    **Plan step R4a made this reachable, which is why it exists here rather
-    than at R4b with the rest of the generation cutover.**  The reverse matcher
-    it replaced deduplicated: ``_match_monthly_first`` kept one period per
-    calendar month and ``_match_monthly`` one per ``(year, month)``, so a
-    repeat could only come from the ONE shape whose two endpoint months
-    collided.  Forward generation emits every occurrence the cadence names, so
-    at a cadence of 30 days or more a monthly bill repeats a paycheck as a
-    matter of course.  Measured against the deleted matcher, 12 periods from
-    2026-01-01: ``Monthly First`` returned no repeat at ANY cadence and now
-    returns 11 repeated periods at 90 days.  Letting those reach the flush
-    turns a silent under-generation into an ``IntegrityError`` that rolls back
-    the whole enclosing transaction -- ``pay_period_admin.extend_pay_periods``
-    among them, which would leave the owner unable to extend their schedule at
-    all.
-
-    **Checked AFTER the per-period skip, and that is load-bearing.**  A
-    paycheck that already holds a row for this template is skipped by
-    :func:`should_skip_period`, so no second row is attempted and there is
-    nothing to refuse; testing before the skip would make an already-populated
-    schedule permanently unextendable.  Checked BEFORE any row is created, so
-    the refusal never leaves a half-written pass behind.
-
-    **It names the occurrence DATES since plan step R4b-2**, which is when
-    generation started carrying them.  At R4a the engines answered in PERIODS
-    and discarded the occurrence, so the refusal could state only how MANY
-    times a definition fell inside the paycheck -- the developer's ruling asked
-    for the dates, and naming them would have meant walking the cadence a
-    second time.  ``resolve_generation_plan`` now hands over
-    ``(occurrence, period)`` pairs, so the dates come from the same walk that
-    found the collision.
-
-    Args:
-        template: The (Transaction|Transfer)Template being generated.
-        placements: The occurrences the rule fires on inside this pass's write
-            window (``recurrence_engine.PlannedOccurrence`` values, one per
-            occurrence), whose ``period`` may therefore repeat.  Each
-            placement's ``period`` is a
-            :class:`~app.services.pay_calendar.DerivedPeriod` since pay-calendar
-            plan step C2-f3c, so the paycheck this refusal NAMES is bounded by
-            the derivation rather than by two stored columns.
-        existing: ``{pay_period_id: [row, ...]}`` for this template and
-            scenario, as :func:`existing_rows_by_period` returns it.
-
-    Raises:
-        RecurrenceCadenceUnsupported: When a period this pass would WRITE into
-            appears more than once.  Names the template, the paycheck and
-            every occurrence date that lands in it.
-    """
-    seen: dict[int, list] = {}
-    for placement in placements:
-        seen.setdefault(placement.period.period_id, []).append(placement)
-    for period_id, repeats in seen.items():
-        if len(repeats) < 2 or should_skip_period(existing.get(period_id, [])):
-            continue
-        period = repeats[0].period
-        raise RecurrenceCadenceUnsupported(
-            template_name=template.name,
-            occurrence_dates=[repeat.occurrence for repeat in repeats],
-            period_start=period.start_date,
-            period_end=period.end_date,
-        )
 
 
 # What the owner can own about a generated row, and therefore the three ways a
@@ -387,15 +360,15 @@ def owner_hold_on(row) -> "str | None":
     The order is load-bearing: an immutable row is never touched whatever else
     is true of it, which is what keeps a settled row out of every list.
 
-    **It is NOT the only place the three conditions appear, and R10-b moved it
-    into the module that holds the other one.**  :func:`should_skip_period`
-    spells all three out again a hundred lines up -- deliberately, and its own
-    docstring says why: it answers a different question ("does anything here
-    block a WRITE"), every branch returns the same answer, and the enumeration
-    is commentary on a predicate that degenerates to ``bool(existing_rows)``.
-    Nothing is functionally coupled, and an unqualified claim to be "the ONE
-    statement of the three" would have been false in its own file, which an
-    adversarial review of R10-b caught.
+    **It IS the only place the three conditions appear, since plan step R17.**
+    ``should_skip_period`` spelled all three out again a hundred lines up, and
+    its own docstring explained why the duplication was deliberate: every
+    branch returned the same answer, so the enumeration was commentary on a
+    predicate that degenerated to ``bool(existing_rows)``.  That predicate is
+    gone.  :class:`OccurrenceClaims` replaced it and asks nothing about a row's
+    STATE at all -- every row claims what it answers, whatever status it is in
+    -- so the three conditions now have exactly one statement, which is this
+    one.
 
     Args:
         row: The Transaction or Transfer to classify.
@@ -418,8 +391,7 @@ def is_maintainable(row) -> bool:
     """Return True when *row* is the RULE's own row, free to be maintained.
 
     The boolean face of :func:`owner_hold_on`, for the callers that do not care
-    WHICH hold applies -- :func:`refuse_repeats_this_pass`, which only needs to
-    know whether a row blocks a write.
+    WHICH hold applies.
 
     Args:
         row: The Transaction or Transfer to classify.
@@ -476,12 +448,14 @@ class MaintainWork(NamedTuple):
     Attributes:
         update: Rule-generated rows the definition still names, to be brought
             into line with what it derives for their period.
-        create_in: One :class:`PlacedRow` per row to write -- the periods
-            the rule names that hold no row of this template at all, each with
-            the occurrence it answers.  A period holding ANY row -- immutable,
-            overridden or soft-deleted -- is absent, which is the long-standing
-            "one row per template per paycheck" rule
-            (:func:`should_skip_period`).
+        create_in: One :class:`PlacedRow` per row to write -- one per
+            occurrence the rule names that NOTHING already answers, each with
+            the occurrence it answers.  An occurrence answered by any row --
+            immutable, overridden or soft-deleted, in whatever paycheck that
+            row now sits in -- is absent (:class:`OccurrenceClaims`).  **Two
+            entries may share a ``period_id``** since plan step R17: a cadence
+            that names one paycheck twice writes both rows, which the re-keyed
+            index stores and the paycheck-keyed one refused.
         retire: Rows the rule no longer names that carry nothing of the
             owner's, to be deleted.
         overridden_ids: Conflicts -- the owner set this row's amount by hand.
@@ -553,94 +527,103 @@ class MaintainOutcome(NamedTuple):
         )
 
 
-def occurrence_by_period(placements) -> dict:
-    """Return ``{pay_periods.id: occurs_on}`` for this pass's placements.
-
-    What :func:`classify_maintain_work` takes since plan step **R17**, hoisted
-    here because both engines' maintain paths build it from the same value and
-    a private copy in each is the drift this module exists to prevent.  It
-    duck-types ``placements`` exactly as :func:`refuse_repeats_this_pass` does
-    -- reading ``.period.period_id`` and ``.occurrence`` off
-    ``recurrence_engine.PlannedOccurrence`` -- because importing that type here
-    would close a cycle (``_plan`` imports this module).
-
-    **A repeated period keeps the LAST placement's occurrence**, which is not
-    an arbitrary tie-break but the same collapse each engine's ``derived`` map
-    already makes one line above: both are keyed by period, so a paycheck a
-    rule names twice reduces to one entry in each. The two therefore agree by
-    construction rather than by care. That case is the 30-day-cadence repeat of
-    ledger row **D19**; :func:`refuse_unstorable_repeats` refuses it on the
-    generate path, and on THIS path it is storable because ``create_in``
-    excludes every occupied period. Making the pair a true one-per-occurrence
-    answer is what the ``occurs_on`` index re-key owns (plan step R5).
-
-    Args:
-        placements: This pass's ``recurrence_engine.PlannedOccurrence`` values.
-
-    Returns:
-        The period-to-occurrence map, one entry per DISTINCT period named.
-    """
-    return {
-        placement.period.period_id: placement.occurrence
-        for placement in placements
-    }
-
-
 def classify_maintain_work(
-    existing, named, *, with_records, reattributed,
+    selector, existing, placements, *, with_records, reattributed,
 ) -> MaintainWork:
     """Decide what a maintain pass must do to each row, WITHOUT writing.
 
-    The whole decision of ruling **R-R19** in one pure reduction: a row the rule
-    still names is maintained, a row it no longer names is retired, and either
-    becomes a conflict the moment the owner's own records are in the way.
+    The whole decision of ruling **R-R19**: a row the rule still names is
+    maintained, a row it no longer names is retired, and either becomes a
+    conflict the moment the owner's own records are in the way.  It READS --
+    its own claimants among them -- and writes nothing, so what a regeneration
+    decides can still be asserted without a database write.
 
     **A row is retained rather than changed in exactly two shapes**, and both
-    are finding **N-292**: the rule no longer fires in this row's period, or
-    the definition has moved the ACCOUNTS the row's records are attributed to.
-    Neither is safe to apply silently, so the pass leaves the row exactly as it
-    found it and asks.
+    are finding **N-292**: the rule no longer fires for this row's occurrence,
+    or the definition has moved the ACCOUNTS the row's records are attributed
+    to.  Neither is safe to apply silently, so the pass leaves the row exactly
+    as it found it and asks.
+
+    **"Still names it" is asked of the row's OCCURRENCE since plan step R17**,
+    where it was asked of the row's pay PERIOD.  That is the same re-keying
+    ledger row **D57** forced on the generate path, made here for the same
+    reason: the period a row sits in is where its money lands, not what the row
+    answers, and the owner can move it.  The developer ruled the consequence on
+    2026-08-28 -- a row whose occurrence the rule has dropped is NOT named, so
+    it retires when it carries nothing and is held back as a conflict when it
+    carries the owner's records.  It is never silently re-pointed at whatever
+    occurrence is left over in its paycheck: that is a deduction only if every
+    row answers some occurrence, and a NULL ``occurs_on`` denies it -- the same
+    invalid inference an adversarial review cut from ``stamp_occurrences.py``,
+    where it paired a ``$12.34`` envelope roll-forward with a car payment nine
+    paychecks away.
+
+    **A NULL ``occurs_on`` row answers no occurrence, so it is never named.**
+    Every such row on the developer's data is immutable (four ``Paid``, one
+    ``Credit``; ``Projected`` is the only mutable status in ``ref.statuses``),
+    so none reaches this branch today -- but a mutable one would retire, and
+    that is the correct answer for a row no rule claims.
+
+    **The claims that decide CREATE come from *claimants*, NOT from *existing*,
+    and that distinction is ledger row D57 on this path.**  *existing* is a
+    PERIOD set -- the pass's write window, bounded by its ``effective_from`` --
+    and the row that answers an occurrence need not be in it: the owner may
+    have moved that row to a paycheck the window does not reach.  An
+    adversarial review of this leaf measured the consequence at the service
+    seam, through the salary door (``routes/salary/_helpers`` regenerates with
+    ``effective_from=date.today()``): a row moved back one paycheck left
+    ``existing`` while its occurrence stayed named, and the create arm answered
+    that occurrence a SECOND time -- silently where the moved row is still an
+    override, and as an unhandled ``IntegrityError`` once the conflict chooser
+    has cleared that flag.  :func:`rows_claiming` is period-unscoped for
+    exactly this reason, and the generate path has consumed it from the start.
+
+    **The retired rows are removed from the claimants first.**  A retired row
+    stops holding anything, and a NULL-occurrence row holds its whole paycheck
+    (:class:`OccurrenceClaims`) -- so reading the claims before the
+    classification would let one row both block a write and be deleted in the
+    same pass, leaving a period the rule names with no row at all.  Dated rows
+    cannot produce that pairing (a retired row is one the rule stopped naming,
+    so it never blocked a named occurrence), which is why the ordering only
+    started mattering when NULL rows gained a claim.
 
     **Shared by both engines since plan step R10-b, over two ID SETS rather
     than a model.**  Every question this asks about a row is one both a
-    Transaction and a Transfer answer identically -- which period it is in,
-    whether the owner holds it -- and the two that are NOT (what "records"
-    means, and what "the definition moved the accounts" means, since a transfer
-    has two of them) arrive already resolved as sets of ids.  So there is one
-    decision function rather than a transaction one and a near-copy of it, and
-    each engine keeps exactly the part that is about its own table.
+    Transaction and a Transfer answer identically, and the two that are NOT
+    (what "records" means, and what "the definition moved the accounts" means,
+    since a transfer has two of them) arrive already resolved as sets of ids.
 
     Args:
+        selector: This pass's :class:`TemplateRowSelector` -- what
+            :func:`rows_claiming` is asked about.  Taken rather than handed the
+            claimants themselves, because "the rows that already answer these
+            occurrences" and "the rows this pass may maintain" are two
+            DIFFERENT reads that a caller could pair wrongly, and two values
+            that have to agree is the shape this module exists to remove.
         existing: Every row of this template in the pass's WRITE WINDOW at
             or after its bound.  The window half is the load-bearing one:
             it is what keeps this domain a superset of the plan's, and so
-            what makes the RETIRE branch reachable.
-        named: ``{pay_periods.id: occurs_on}`` -- the periods the rule names
-            now, each mapped to the date its cadence names there.  Empty for a
-            template whose recurrence was CLEARED, which correctly makes every
-            row an orphan.  It was a bare SET of ids until plan step **R17**;
-            the create arm now has to state an occurrence and cannot derive one
-            from a period id (see :class:`PlacedRow`).
+            what makes the RETIRE branch reachable.  It decides CLASSIFICATION
+            -- update, retire, retain -- and deliberately not creation.
+        placements: The occurrences the rule names now -- this pass's
+            ``recurrence_engine.PlannedOccurrence`` values, duck-typed on
+            ``.occurrence`` and ``.period.period_id`` as everything else in
+            this module is.  Empty for a template whose recurrence was
+            CLEARED, which correctly makes every row an orphan.  It was a
+            ``{period_id: occurs_on}`` map for one step, between plan step R17's
+            two leaves; a map keyed by period cannot state two occurrences in
+            one paycheck, which is exactly what the re-keyed index now stores.
         with_records: Ids of rows carrying the owner's own records, resolved by
             the engine from its own table -- purchases, a note, a settlement
             record or a statement link.
-        reattributed: Ids of rows whose ACCOUNTS the definition has moved.  A
-            transaction has one account and a transfer has two, and that is the
-            whole of the difference; both reduce to "would applying the
-            definition move where this row's records are filed".
+        reattributed: Ids of rows whose ACCOUNTS the definition has moved.
 
     Returns:
         The :class:`MaintainWork` this pass should apply.
     """
     work = MaintainWork([], [], [], [], [], [])
-    occupied = set()
+    named = {placement.occurrence for placement in placements}
     for row in existing:
-        is_named = row.pay_period_id in named
-        if is_named:
-            # ANY row occupies its period, so no second row is created beside
-            # it -- including the immutable, overridden and soft-deleted rows
-            # the loop below then declines to maintain.
-            occupied.add(row.pay_period_id)
         hold = owner_hold_on(row)
         if hold == BLOCK_IMMUTABLE:
             continue
@@ -650,7 +633,7 @@ def classify_maintain_work(
         if hold == BLOCK_DELETED:
             work.deleted_ids.append(row.id)
             continue
-        if not is_named:
+        if row.occurs_on is None or row.occurs_on not in named:
             if row.id in with_records:
                 work.retained_ids.append(row.id)
             else:
@@ -660,137 +643,126 @@ def classify_maintain_work(
             work.retained_ids.append(row.id)
             continue
         work.update.append(row)
+
+    retiring = {row.id for row in work.retire}
+    claims = OccurrenceClaims.over([
+        row for row in rows_claiming(selector, placements)
+        if row.id not in retiring
+    ])
     work.create_in.extend(
-        PlacedRow(period_id, named[period_id])
-        for period_id in sorted(set(named) - occupied)
+        PlacedRow(placement.period.period_id, placement.occurrence)
+        for placement in placements
+        if not claims.blocks(placement)
     )
     return work
 
 
-def refuse_repeats_this_pass(template, placements, existing) -> None:
-    """Refuse a maintain pass that would write one paycheck's row twice.
+def rows_claiming(selector, placements) -> list:
+    """Read what already answers this pass's occurrences, in ONE query.
 
-    Both engines' unique index holds one row per ``(template, period,
-    scenario)`` -- ``idx_transactions_template_period_scenario`` and
-    ``idx_transfers_template_period_scenario``, each PARTIAL over
-    ``is_deleted = FALSE AND is_override = FALSE`` -- and forward generation
-    legitimately names a paycheck more than once at a cadence of 30 days or
-    more, so an unstorable cadence must be refused before anything is written
-    (:func:`refuse_unstorable_repeats`, plan ledger row **D19**).  The partial
-    predicate is why the blocking set below can be narrower than the generate
-    path's and still store: a row the pass may MAINTAIN is neither deleted nor
-    overridden, so it is inside the index and no second row is created beside
-    it.
+    The generate path's whole read, shared by both engines.  It replaced
+    the generate path's two period-scoped fetches at plan step **R17**'s
+    second leaf, and the change is not a reshaping of the same
+    fetch: those selected on the PLAN's pay periods, and the row that answers
+    an occurrence is not necessarily in the period the plan names for it.  That
+    is ledger row **D57** in one sentence -- the owner MOVES a generated row to
+    a neighbouring paycheck, so the row that already answers the occurrence
+    sits in a period this pass may never look at.  Measured on the developer's
+    own data (2026-08-28): row 2447 answers ``2026-04-21`` and sits in period
+    3, while the plan names period 2 for that occurrence.  A period-scoped
+    fetch cannot see it, so no predicate built on top of one could have closed
+    D57 however it was keyed.
 
-    **The blocking set is narrower here than on the generate path, and the
-    reason is PARITY rather than storage.**  An earlier revision of this
-    docstring said two placements onto a maintained row "would still be two
-    rows"; an adversarial review of plan step R10-a disproved it.  On this path
-    they would not: ``create_in`` excludes every occupied period and ``update``
-    holds at most one row per period, so a repeat is physically storable here
-    and no index violation is possible.  What the narrowing preserves is the
-    ANSWER the old delete-then-generate pass gave -- it deleted the rule's own
-    row first, so the paycheck looked empty to the refusal and an unstorable
-    cadence was reported.  Widening the set would silently start ACCEPTING a
-    cadence this app has refused since plan ledger row **D19**, turning a loud
-    refusal into a schedule that quietly bills one paycheck once for a rule that
-    names it twice.  Verified to fire identically on both sides: a maintainable
-    row does not make its paycheck safe, a non-maintainable one does.
-
-    **It takes the flat row list and groups internally**, which is the last
-    literal duplicate the two engines shared: each built the same
-    ``{period_id: [row, ...]}`` dict three lines before calling this, and this
-    was its only consumer.  An adversarial review of plan step R10-b named it.
-
-    Args:
-        template: The template being maintained -- read for its name by the
-            refusal's message.
-        placements: This pass's ``recurrence_engine.PlannedOccurrence`` values.
-        existing: Every row of this template in the pass's write window, flat.
-
-    Raises:
-        RecurrenceCadenceUnsupported: See :func:`refuse_unstorable_repeats`.
-    """
-    blocking: dict[int, list] = defaultdict(list)
-    for row in existing:
-        if not is_maintainable(row):
-            blocking[row.pay_period_id].append(row)
-    refuse_unstorable_repeats(template, placements, dict(blocking))
-
-
-def existing_rows_refusing_repeats(selector, placements) -> dict[int, list]:
-    """Fetch what is already in this pass's periods, refusing an unstorable pass.
-
-    The two steps every generate pass runs between resolving its plan and
-    writing its first row, in one call because their ORDER is load-bearing and
-    was previously upheld by convention in two engines: the repeat refusal
-    consults the fetched rows (a paycheck that already holds a row for this
-    template is SKIPPED, so there is no second row to refuse), and it must run
-    before any row is created so a refusal never leaves half a pass behind.
-    Fusing them makes both facts unbreakable rather than remembered.
-
-    Plan step R4b-2 hoisted this: reshaping the plan onto ``(occurrence,
-    period)`` pairs made the two engines' copies of the block identical enough
-    for pylint's ``duplicate-code`` to see what a reader always could.
+    **The query IS the claim rule** (:class:`OccurrenceClaims`), rather than a
+    wider fetch the caller then filters: a row counts when it answers one of
+    these occurrences, or when it answers NO occurrence and holds one of the
+    paychecks this pass would write into.  Pushing both arms into SQL is what
+    keeps this a bounded read on the carry-forward hot path, where
+    ``can_generate_in_period`` runs once per envelope row being rolled forward
+    -- an unfiltered "every row of this template" fetch would grow with the
+    owner's whole schedule at every one of those calls.
 
     Args:
         selector: This pass's :class:`TemplateRowSelector`.
         placements: This pass's ``recurrence_engine.PlannedOccurrence`` values,
-            one per occurrence, whose ``period`` may therefore repeat.
-
-    Returns:
-        ``{pay_period_id: [row, ...]}``, as :func:`existing_rows_by_period`
-        returns it.
-
-    Raises:
-        RecurrenceCadenceUnsupported: See :func:`refuse_unstorable_repeats`.
-    """
-    existing = existing_rows_by_period(
-        selector,
-        [placement.period.period_id for placement in placements],
-    )
-    refuse_unstorable_repeats(selector.template, placements, existing)
-    return existing
-
-
-def existing_rows_by_period(selector, period_ids) -> dict[int, list]:
-    """Group this template's existing rows in *period_ids* by pay period.
-
-    Shared by both recurrence engines' ``generate_for_template``, which each
-    carried a byte-similar copy of it until plan step R4b-2 -- the exact
-    duplication this module exists to hold, and the parameterisation is the one
-    :class:`TemplateRowSelector` now carries for every fetch here: the model
-    class and the template foreign-key column, and nothing else, differ between
-    the two engines.
-
-    Fetches EVERY row, including soft-deleted and immutable ones, because the
-    caller's skip predicate (:func:`should_skip_period`) treats any existing row
-    as "do not generate": a row per period would let a soft-deleted row hide
-    behind a live one, so the value is a LIST per period rather than a row.
-
-    Takes pay-period IDS rather than rows because ids are all it ever read, and
-    since plan step R4b-2 the generate path holds ``(occurrence, period)`` pairs
-    rather than a period list -- so asking for rows would make every caller
-    unwrap one shape into another for a value this query reduces to ids anyway.
-    A repeated id is harmless: ``IN`` is a set test, and a paycheck a rule names
-    twice is refused by :func:`refuse_unstorable_repeats` before any row is
-    written.
-
-    Args:
-        selector: This pass's :class:`TemplateRowSelector`.
-        period_ids: The ``budget.pay_periods.id`` values to look in.  Empty
+            one per occurrence, whose ``period`` may repeat.  Empty
             short-circuits without a query.
 
     Returns:
-        ``{pay_period_id: [row, ...]}``, absent for a period holding no row.
+        Every row that claims one of these occurrences -- to be read through
+        :meth:`OccurrenceClaims.over`, which is the one statement of what a
+        claim IS.  Rows rather than the claims themselves, because the maintain
+        pass must first REMOVE the rows it is about to retire: a retired row
+        stops claiming, and subtracting a claim is not well defined where two
+        rows could make the same one.
     """
-    grouped: dict[int, list] = defaultdict(list)
-    for row in _rows_in_periods(selector, period_ids):
-        grouped[row.pay_period_id].append(row)
-    # A plain dict, not the defaultdict: the documented contract is that a
-    # period holding no row is ABSENT, and a defaultdict would silently create
-    # one for the next caller that indexes instead of ``.get``.
-    return dict(grouped)
+    occurrences = {placement.occurrence for placement in placements}
+    period_ids = {placement.period.period_id for placement in placements}
+    if not occurrences:
+        return []
+    model = selector.model
+    rows = (
+        db.session.query(model)
+        .filter(
+            selector.template_fk_col == selector.template.id,
+            model.scenario_id == selector.scenario_id,
+            db.or_(
+                model.occurs_on.in_(occurrences),
+                db.and_(
+                    model.occurs_on.is_(None),
+                    model.pay_period_id.in_(period_ids),
+                ),
+            ),
+        )
+        .all()
+    )
+    return rows
+
+
+def occurrences_to_write(selector, placements) -> list:
+    """The occurrences this pass must CREATE a row for, in walk order.
+
+    **The generate path's whole decision, for both engines and for the
+    read-only predictor.**  What is left at each call site is the part that is
+    genuinely about one table: constructing a ``Transaction`` versus routing a
+    ``Transfer`` through ``transfer_service`` for shadow atomicity.
+
+    **Sharing it is what makes ``can_generate_in_period`` an exact mirror
+    rather than a second opinion**, which plan step R4b paid for once already:
+    that predicate was a hand-written copy of the engine's gating and it
+    DISAGREED -- on a production clone it said the engine would generate in 32
+    of 61 periods where the real answer was each month's first paycheck only,
+    and because the carry-forward executor acts on the prediction and then
+    calls generation, the two agreed with each other and wrote a spurious row.
+    A prediction that calls this function cannot drift from what the write
+    does, because it is the same answer.
+
+    A row is created for an occurrence NOTHING already answers
+    (:class:`OccurrenceClaims`): not a live row, not an overridden one, not a
+    soft-deleted tombstone, and in whatever paycheck that row now sits in.  A
+    row that answers no occurrence at all holds its whole paycheck instead.
+
+    **A pay period may appear more than once in the answer.**  At a pay cadence
+    of 30 days or more a monthly bill legitimately falls inside one paycheck
+    several times, and since plan step **R17** re-keyed the unique index onto
+    ``(template, scenario, occurs_on)`` both rows STORE.  Until then the pass
+    was REFUSED outright (plan ledger row D19,
+    ``RecurrenceCadenceUnsupported``), because the index held one row per
+    paycheck; the refusal and its error handler went with the re-key.
+
+    Args:
+        selector: This pass's :class:`TemplateRowSelector`.
+        placements: The occurrences the rule names inside this pass's window --
+            ``recurrence_engine.PlannedOccurrence`` values.
+
+    Returns:
+        The subset to write, in the order the walk produced them.
+    """
+    claims = OccurrenceClaims.over(rows_claiming(selector, placements))
+    return [
+        placement for placement in placements
+        if not claims.blocks(placement)
+    ]
 
 
 def rows_this_pass_may_maintain(selector, schedule, effective_from) -> list:
@@ -867,12 +839,12 @@ def _rows_in_periods(selector, period_ids) -> list:
     """Return this template's rows, in this scenario, in *period_ids*.
 
     **THE statement of the query both fetches run.**
-    :func:`existing_rows_by_period` and :func:`rows_this_pass_may_maintain`
-    differ only in the SHAPE they hand back and in how their period set is
-    chosen; until pay-calendar plan step C2-f3c they differed in the query too,
-    because one selected on ids and the other joined ``budget.pay_periods`` on
-    a column plan step C4 drops.  With both selecting on ids, two spellings of
-    one ``SELECT`` is the duplication this module exists to hold.
+    :func:`rows_this_pass_may_maintain` is its only caller since plan step
+    **R17** deleted the generate path's period-scoped fetch -- that path now
+    selects on the CLAIM (:func:`rows_claiming`), because the row answering an
+    occurrence need not sit in the period the plan names for it.  Kept as its
+    own function because the maintain domain is genuinely a period SET (the
+    pass's write window) and stating that query once is what this module is.
 
     Args:
         selector: This pass's :class:`TemplateRowSelector`.

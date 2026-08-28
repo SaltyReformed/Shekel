@@ -70,10 +70,12 @@ def populate_periods_from_active_templates(
     *period_ids*, into the owner's baseline scenario (multi-scenario
     repopulation is reserved for later).
 
-    Both engines' shared ``should_skip_period`` skips any period that
-    already holds a template-linked row, so this is safe to re-run: a
-    retried extend / top-up creates nothing and cannot violate the
-    ``(template, period, scenario)`` unique partial index.
+    Both engines' shared ``OccurrenceClaims`` skips any occurrence a
+    template-linked row already answers, so this is safe to re-run: a retried
+    extend / top-up creates nothing and cannot violate either partial unique
+    generation index -- ``(template, scenario, occurs_on)`` for a row that
+    answers an occurrence, ``(template, scenario, pay_period_id)`` for one that
+    answers none (plan step **R17**).
 
     **This is the caller plan step R4b-1 was written for.**  *period_ids* is
     the newly created batch, and until R4b-1 it was handed to each engine as

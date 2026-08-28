@@ -258,6 +258,66 @@ def _is_finalised(target_row):
     return target_row.status is None or target_row.status.is_immutable
 
 
+def _leftover_recipient(mutable):
+    """Return which of *mutable* receives the leftover, or None to refuse.
+
+    **One paycheck may legitimately hold more than one generated row since plan
+    step R17**, so "more than one mutable row" stopped being proof of
+    corruption.  A row answers an OCCURRENCE of its template's cadence and the
+    unique index is keyed on that
+    (``idx_transactions_template_scenario_occurrence``); a cadence that names
+    one paycheck twice -- a monthly bill at a pay cadence of 30 days or more, a
+    weekly one once plan step R5 makes weekly rules authorable -- now stores
+    both rows instead of being refused.  Measured on the developer's own
+    templates: at ``cadence_days`` 30 two of them repeat a paycheck, at 31
+    eleven of them do across 12 paychecks.
+
+    **The earliest occurrence receives the leftover** (developer ruling,
+    2026-08-28): the unspent money is rolling into the paycheck to meet the
+    next obligation, and the next obligation is the first occurrence in it.
+
+    **Genuine ambiguity still refuses**, and it is the state the guard was
+    written for: two rows answering the SAME occurrence, or an undated row
+    beside any other, are states no cadence produces and no pass should guess
+    at.  Refusing there is what the old ``len(mutable) > 1`` test meant when
+    the index made every multi-row paycheck corrupt.
+
+    Args:
+        mutable: The target period's rows that can still receive a bump --
+            non-deleted and not finalised, as
+            :func:`_classify_leftover_target` selects them.
+
+    Returns:
+        The row to top up, or ``None`` when there is none to choose (an empty
+        period) or the choice cannot be made honestly.
+    """
+    if not mutable:
+        return None
+    if len(mutable) == 1:
+        return mutable[0]
+    # **An OVERRIDE row disqualifies the whole tie-break**, and an adversarial
+    # review of plan step R17 is why this is stated rather than assumed.  The
+    # developer ruled the earliest occurrence among rows a CADENCE names; a row
+    # the owner moved into this paycheck through the PATCH door is not one of
+    # those -- it carries ``is_override = True`` and its own earlier
+    # ``occurs_on``, so an occurrence tie-break would select it over the
+    # paycheck's own canonical and the caller would then write
+    # ``estimated_amount = resolve + leftover`` and clear ``amount_source_id``
+    # ON THE FIGURE THE OWNER TYPED.  The old ``len(mutable) > 1`` guard
+    # refused that, and nothing in the 2026-08-28 ruling asked for it to stop.
+    # Permitting that sibling is the entire reason both indexes are partial on
+    # ``is_override = FALSE``, so it is the more reachable producer of a
+    # multi-row target, not the rarer one.
+    if any(row.is_override for row in mutable):
+        return None
+    occurrences = [row.occurs_on for row in mutable]
+    if any(day is None for day in occurrences):
+        return None
+    if len(set(occurrences)) != len(occurrences):
+        return None
+    return min(mutable, key=lambda row: row.occurs_on)
+
+
 class _TargetKind(enum.Enum):
     """Where an envelope rollover's unspent leftover lands in the target.
 
@@ -270,7 +330,7 @@ class _TargetKind(enum.Enum):
     TOP_UP = "top_up"        # exactly one mutable row exists -> bump it
     GENERATE = "generate"    # empty + active template -> engine creates canonical
     CREATE = "create"        # no usable row -> create a fresh override row
-    AMBIGUOUS = "ambiguous"  # >1 mutable row -> refuse (corrupt state)
+    AMBIGUOUS = "ambiguous"  # >1 mutable row, unresolvable -> refuse
 
 
 @dataclass(frozen=True)
@@ -309,11 +369,14 @@ def _classify_leftover_target(source_txn, target_period, basis, schedule):
     up; if none exists, create one:
 
       * ``AMBIGUOUS`` -- more than one mutable row matches ``(template,
-        period, scenario)``.  The partial unique index already prevents
-        two non-override canonicals, so this is a corrupt pre-existing
-        state; the caller refuses rather than guess which open row to
-        credit.
-      * ``TOP_UP`` -- exactly one mutable row exists; bump it.
+        period, scenario)`` and :func:`_leftover_recipient` cannot choose
+        between them honestly: they answer the same occurrence, or one of
+        them answers none.  The caller refuses rather than guess which open
+        row to credit.
+      * ``TOP_UP`` -- one mutable row, or several answering DIFFERENT
+        occurrences of a cadence that names this paycheck more than once, in
+        which case the earliest occurrence is bumped
+        (:func:`_leftover_recipient`).
       * ``GENERATE`` -- no rows at all and the template is active in the
         destination; the recurrence engine would create the canonical,
         which the caller then bumps.
@@ -354,12 +417,13 @@ def _classify_leftover_target(source_txn, target_period, basis, schedule):
     non_deleted = [r for r in all_rows if not r.is_deleted]
     mutable = [r for r in non_deleted if not _is_finalised(r)]
 
-    if len(mutable) > 1:
+    recipient = _leftover_recipient(mutable)
+    if recipient is None and mutable:
         return _TargetResolution(_TargetKind.AMBIGUOUS)
-    if len(mutable) == 1:
+    if recipient is not None:
         return _TargetResolution(
-            _TargetKind.TOP_UP, row=mutable[0],
-            base=resolve_transaction_amount(mutable[0], basis),
+            _TargetKind.TOP_UP, row=recipient,
+            base=resolve_transaction_amount(recipient, basis),
         )
     if (not non_deleted
             and source_txn.template is not None

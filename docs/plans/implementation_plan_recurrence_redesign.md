@@ -245,38 +245,12 @@ passed with every refusal accepted.
 (`VERIFY_DEV_DATABASE`); the `ref` ids a `TEMPLATE` copy carries are identical either way, which is
 exactly what made the mismatch invisible.
 
-- [ ] **R17 -- a MOVED row's period is not RE-FILLED** (**D57** carries the measurement).
-      `should_skip_period` asks whether `(template, period, scenario)` holds a row while the walk
-      names the period an occurrence's own DATE falls in, so a row moved to a neighbouring paycheck
-      empties the period its occurrence names and the next pass writes a second one.
-      **MOVES MONEY, OWN PR.**
-
-**RESPECIFIED by ruling R-R46** (2026-08-27), from an interim due-date match to
-**R5's column leaf brought forward**: `pay_calendar:C5b` is the step that makes this predicate
-occurrence-aware and waits on `R5` only for `occurs_on`, so the interim would have been written to
-be deleted. What R17 still owes `C5b` is the UNDER-generation face and the index re-key it needs.
-Two leaves, one PR: (a) the row RECORDS its occurrence, both engines writing the `PlannedOccurrence`
-they already carry and discard; (b) the predicate READS it -- `should_skip_period`,
-`classify_maintain_work`'s `occupied` and `can_generate_in_period`, all three in lockstep.
-
-**`occurs_on` is NULLABLE where R5's specification said `NOT NULL`**: `carry_forward_service` rolls
-an envelope forward as a template-linked `is_override` row with `due_date = None`, and the one-time
-transfer branch materialises one whose template has no rule. NULL MEANS "answers no occurrence", and
-blocks none.
-
-**The backfill is `scripts/stamp_occurrences.py` run by `entrypoint.sh`, not the migration**
-(R-R46): the walk is required -- `due_date` is not the occurrence for 30 of 780 rows, a
-`Monthly First` rule occurring on the 1st and dated on the payday -- and no migration here imports
-app code, because `build_test_template.py` replays the chain from zero. It runs once on a SENTINEL,
-not its pre-flight count, which cannot reach zero. Two deductions, no inference: the due date its
-occurrence computes, then its own period -- that order because an `is_override` row may share a
-paycheck with that paycheck's own. Of 788 rows it walks 736 (archived templates are not), stamps
-726, leaves 10.
-
-**A THIRD rule was CUT by adversarial review**: "one row and one occurrence left, so they are each
-other" deduces nothing unless every row answers some occurrence, which the NULL case denies. It
-paired an extra row with an unrelated rowless occurrence -- a `$12.34` envelope stamped as a car
-payment nine paychecks away, SUPPRESSING the real bill.
+- [x] **R17 -- a generated row IS its occurrence, not its paycheck.** `4e8b40b3`, migration
+      `c8e5a2f31b47`, ticking `pay_calendar:C5b` with it. Closed **D57** (`$1,482.93` before,
+      `$0.00` after) and **P16**. `OccurrenceClaims` states what a row claims: its `occurs_on`, or
+      its PAY PERIOD where that is NULL -- which this specification had backwards, and the unarchive
+      door prices at `$20,500`. Both indexes re-keyed; the **D19** refusal and its exception,
+      handler and template gone.
 
 - [ ] **R5 -- a generated row carries THREE dates, in three places.**
 
@@ -292,12 +266,10 @@ endpoint-month scan R4a deleted from period selection (row D18) and the last pla
 `due_dom < dom` next-month inference lives (R-R2). Two things follow that the old specification did
 not have: the write loop stops discarding `PlannedOccurrence.occurrence`
 (`recurrence_engine.py:342`, `transfer_recurrence.py:127`, the two producers of one fact), and
-`idx_transactions_template_period_scenario` can finally re-key onto
-`(template, scenario, occurs_on)` -- which the old plan said needed only D18 and did not: for a
-day-less rule `compute_due_date` returns `period.start_date` whatever the month scan does, so three
-deferred `Monthly First` occurrences still collided. That re-key retires
-`RecurrenceCadenceUnsupported` (`app/exceptions.py:110`) and its error handler, a fence for an index
-keyed on the wrong column.
+**the index re-key this step used to carry SHIPPED at `R17`**, with the
+`RecurrenceCadenceUnsupported` retirement that rode on it. What remains here is the DATE split:
+`compute_due_date` reads a row's PERIOD, so two occurrences inside one paycheck -- storable since
+that re-key -- take the same due date, which is **D18**'s third door.
 
 **It is a value-SPLITTING migration, not `alter_column ... new_column_name`**, and it is
 destructive: it carries the `Review:` line and a refusing downgrade. The split is per row class -- a

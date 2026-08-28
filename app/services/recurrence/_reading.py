@@ -546,13 +546,12 @@ def rule_occurrences(
     cadence of 30 days or more a monthly bill legitimately occurs several times
     inside one paycheck; the reverse matcher walked PAYCHECKS and so silently
     emitted one row for three months of rent (defect D3).
-    ``budget.transactions`` cannot yet HOLD the separate rows --
-    ``idx_transactions_template_period_scenario`` is unique over
-    ``(template, period, scenario)`` -- so the WRITE path refuses
-    (``_recurrence_common.refuse_unstorable_repeats``), and plan step R5 re-keys
-    the index and lifts the refusal.  This function reports what the cadence
-    NAMES; it does not decide what is storable, which is why the read-only
-    surfaces still render the repeats.
+    ``budget.transactions`` HOLDS the separate rows since plan step **R17**:
+    ``idx_transactions_template_scenario_occurrence`` is unique over
+    ``(template, scenario, occurs_on)``, so a paycheck a cadence names twice
+    stores both rows and the WRITE path no longer refuses.  This function
+    reports what the cadence NAMES; it does not decide what is storable, which
+    is why it rendered the repeats even while they were refused.
 
     **An occurrence with no pay period is REPORTED, and since plan step C2-b2
     that means ONE thing**: the saved schedule does not reach it, which is every
