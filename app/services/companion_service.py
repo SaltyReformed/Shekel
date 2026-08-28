@@ -59,9 +59,9 @@ class CompanionPageRead(NamedTuple):
     cut returned the ``PayCalendar`` itself, and its only consumer was one
     route helper asking exactly these two searches.  Handing a whole schedule
     across this module's security boundary so a presentation layer can search
-    it is the shape the arc already refused once, when the ruling "How the
-    CONTRIBUTION tier learns its periods" rejected an OWNER value riding on a
-    per-account record.  The neighbours are computed here, beside the
+    it is the shape the arc already refused once, when ruling **R-PC19** ("How
+    the CONTRIBUTION tier learns its periods") rejected an OWNER value riding
+    on a per-account record.  The neighbours are computed here, beside the
     validation that decided whose calendar it is.
 
     Attributes:

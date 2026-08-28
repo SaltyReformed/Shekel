@@ -14,9 +14,14 @@ enumerating ``[Paid, Settled]`` by name or ID silently missed Received
 -- the status assigned to every income paycheck on mark-done -- and
 let a normal user permanently destroy real RECEIVED income history.
 ``is_settled`` is the single source of truth for "this transaction is
-real money already exchanged" (Paid, Received, Settled all carry
+real money already exchanged" (Paid and Received both carry
 ``is_settled=True`` in ``ref_seeds.py``), so a boolean predicate
 covers every current and future settled status without enumeration.
+
+That last clause has since been paid out twice.  ``Settled`` -- the terminal
+ARCHIVE -- joined the band and then LEFT it at plan step **balance:X-am**, and
+neither change touched a line in this module, because none of these predicates
+ever named a status.
 """
 
 from app.extensions import db
@@ -34,7 +39,7 @@ def template_has_paid_history(template_id: int) -> bool:
     """Check if a transaction template has any settled transactions.
 
     "Settled" is determined by the semantic ``Status.is_settled``
-    boolean (Paid, Received, Settled in the current seed -- see
+    boolean (Paid and Received in the current seed -- see
     ``ref_seeds.py``).  Enumerating status names or IDs here would
     silently miss any status added to the settled set in the
     future; the boolean column is the single source of truth.

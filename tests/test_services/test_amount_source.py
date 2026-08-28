@@ -520,7 +520,7 @@ class TestTheDeclarationDecides:
 
     @pytest.mark.parametrize("status", [
         StatusEnum.DONE, StatusEnum.RECEIVED, StatusEnum.CREDIT,
-        StatusEnum.CANCELLED, StatusEnum.SETTLED,
+        StatusEnum.CANCELLED,
     ])
     def test_leaving_projected_does_not_take_a_declared_row_back(
         self, app, db, seed_user, seed_periods, status,

@@ -122,7 +122,7 @@ class PaymentRecord:
         bypass has broken.
 
         Returns:
-            ``True`` for a settled payment (Paid / Received / Settled), ``False``
+            ``True`` for a settled payment (Paid or Received), ``False``
             for a Projected one.
         """
         return self.settled_on is not None
@@ -245,7 +245,7 @@ class AmortizationRow:  # pylint: disable=too-many-instance-attributes
 
     The is_confirmed flag distinguishes historical fact from projection:
     True when the row's payment came from a confirmed PaymentRecord
-    (Paid/Settled status), False when projected or computed from the
+    (a settled status), False when projected or computed from the
     contractual payment formula.
 
     Pylint: ``too-many-instance-attributes`` (9/7) -- suppressed

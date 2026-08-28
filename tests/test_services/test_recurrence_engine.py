@@ -51,6 +51,7 @@ from app.exceptions import (
     ValidationError,
 )
 from app.services import account_service
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from tests.oracles.recurrence_baseline import (
     EVERY_PERIOD,
@@ -284,7 +285,7 @@ class TestRecurrenceGeneration:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
 
@@ -319,7 +320,7 @@ class TestRecurrenceGeneration:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
 
@@ -364,7 +365,7 @@ class TestRecurrenceGeneration:
 
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
 
@@ -380,7 +381,7 @@ class TestRecurrenceGeneration:
             # First generation.
             first_run = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -389,7 +390,7 @@ class TestRecurrenceGeneration:
             # Second generation -- should create nothing new.
             second_run = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             assert len(second_run) == 0
@@ -404,7 +405,7 @@ class TestRecurrenceGeneration:
             # Generate entries.
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -420,7 +421,7 @@ class TestRecurrenceGeneration:
             try:
                 recurrence_engine.regenerate_for_template(
                     template, GenerationSchedule.for_period_ids(
-                        calendar_for(template.user_id), {p.id for p in seed_periods},
+                        BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                     ), seed_user["scenario"].id,
                 )
             except RecurrenceConflict as conflict:
@@ -439,7 +440,7 @@ class TestRecurrenceGeneration:
 
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -457,7 +458,7 @@ class TestRecurrenceGeneration:
             # Regenerate -- should not delete the done transaction.
             recurrence_engine.regenerate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -1125,7 +1126,7 @@ class TestGenerateForTemplate:
             with pytest.raises(RecurrenceCadenceUnsupported) as excinfo:
                 recurrence_engine.generate_for_template(
                     template, GenerationSchedule.for_period_ids(
-                        calendar_for(template.user_id), {p.id for p in long_periods},
+                        BalanceContext.build(template.user_id), {p.id for p in long_periods},
                     ), seed_user["scenario"].id,
                 )
 
@@ -1208,7 +1209,7 @@ class TestGenerateForTemplate:
 
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in long_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in long_periods},
                 ), seed_user["scenario"].id,
             )
 
@@ -1225,7 +1226,7 @@ class TestGenerateForTemplate:
             effective_from = seed_periods[3].start_date
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
                 effective_from=effective_from,
             )
@@ -1249,7 +1250,7 @@ class TestGenerateForTemplate:
             # First generation.
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -1262,7 +1263,7 @@ class TestGenerateForTemplate:
             # Second generation -- should not duplicate the deleted entry.
             second_run = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             assert len(second_run) == 0
@@ -1277,7 +1278,7 @@ class TestGenerateForTemplate:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
 
@@ -1378,7 +1379,7 @@ class TestThePlacedPeriodsBound:
         """
         with app.app_context():
             template = self._make_template(seed_user)
-            schedule = GenerationSchedule.for_calendar(calendar_for(template.user_id))
+            schedule = GenerationSchedule.for_pass(BalanceContext.build(template.user_id))
             straddled = seed_periods[3]
             bound = straddled.start_date + timedelta(days=1)
             assert bound < straddled.end_date
@@ -1594,7 +1595,7 @@ class TestALegacyScheduleHole:
             template = self._make_template_with_rule(
                 seed_user, MONTHLY, fires_on_day=absorbed_day,
             )
-            schedule = GenerationSchedule.for_calendar(calendar_for(template.user_id))
+            schedule = GenerationSchedule.for_pass(BalanceContext.build(template.user_id))
             plan = recurrence_engine.resolve_generation_plan(
                 template, schedule, seed_user["scenario"].id, None,
                 block_message="test",
@@ -1686,8 +1687,8 @@ class TestALegacyScheduleHole:
                 seed_user, MONTHLY, fires_on_day=5,
             )
             scenario_id = seed_user["scenario"].id
-            schedule = GenerationSchedule.for_calendar(
-                calendar_for(template.user_id),
+            schedule = GenerationSchedule.for_pass(
+                BalanceContext.build(template.user_id),
             )
             absorbing = next(
                 period
@@ -1804,7 +1805,7 @@ class TestALegacyScheduleHole:
             )
             created = recurrence_engine.generate_for_template(
                 template,
-                GenerationSchedule.for_calendar(calendar_for(template.user_id)),
+                GenerationSchedule.for_pass(BalanceContext.build(template.user_id)),
                 seed_user["scenario"].id,
             )
 
@@ -1868,7 +1869,7 @@ class TestALegacyScheduleHole:
             template = self._make_template_with_rule(
                 seed_user, MONTHLY, fires_on_day=self._DAY_OF_MONTH,
             )
-            schedule = GenerationSchedule.for_calendar(calendar_for(template.user_id))
+            schedule = GenerationSchedule.for_pass(BalanceContext.build(template.user_id))
 
             with pytest.raises(RecurrenceCadenceUnsupported) as excinfo:
                 recurrence_engine.generate_for_template(
@@ -1925,7 +1926,7 @@ class TestALegacyScheduleHole:
             )
 
             template = self._make_template_with_rule(seed_user, MONTHLY_FIRST)
-            schedule = GenerationSchedule.for_calendar(calendar_for(template.user_id))
+            schedule = GenerationSchedule.for_pass(BalanceContext.build(template.user_id))
             plan = recurrence_engine.resolve_generation_plan(
                 template, schedule, seed_user["scenario"].id, None,
                 block_message="test",
@@ -2110,7 +2111,7 @@ class TestRegenerateForTemplate:
             created = recurrence_engine.generate_for_template(
                 template,
                 GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ),
                 seed_user["scenario"].id,
             )
@@ -2126,7 +2127,7 @@ class TestRegenerateForTemplate:
             recurrence_engine.regenerate_for_template(
                 template,
                 GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ),
                 seed_user["scenario"].id,
             )
@@ -2166,8 +2167,8 @@ class TestRegenerateForTemplate:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
-            schedule = GenerationSchedule.for_calendar(
-                calendar_for(template.user_id),
+            schedule = GenerationSchedule.for_pass(
+                BalanceContext.build(template.user_id),
             )
             created = recurrence_engine.generate_for_template(
                 template, schedule, scenario_id,
@@ -2232,7 +2233,7 @@ class TestRegenerateForTemplate:
         with app.app_context():
             template = self._make_envelope_template(seed_user)
             schedule = GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             )
             created = recurrence_engine.generate_for_template(
                 template, schedule, seed_user["scenario"].id,
@@ -2275,7 +2276,7 @@ class TestRegenerateForTemplate:
         with app.app_context():
             template = self._make_envelope_template(seed_user)
             schedule = GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             )
             created = recurrence_engine.generate_for_template(
                 template, schedule, seed_user["scenario"].id,
@@ -2327,7 +2328,7 @@ class TestRegenerateForTemplate:
         with app.app_context():
             template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
             schedule = GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             )
             created = recurrence_engine.generate_for_template(
                 template, schedule, seed_user["scenario"].id,
@@ -2381,7 +2382,7 @@ class TestRegenerateForTemplate:
             created = recurrence_engine.generate_for_template(
                 template,
                 GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ),
                 seed_user["scenario"].id,
             )
@@ -2417,7 +2418,7 @@ class TestRegenerateForTemplate:
             recurrence_engine.regenerate_for_template(
                 template,
                 GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ),
                 seed_user["scenario"].id,
             )
@@ -2457,7 +2458,7 @@ class TestRegenerateForTemplate:
             created = recurrence_engine.generate_for_template(
                 template,
                 GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ),
                 seed_user["scenario"].id,
             )
@@ -2497,7 +2498,7 @@ class TestRegenerateForTemplate:
             recurrence_engine.regenerate_for_template(
                 template,
                 GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ),
                 seed_user["scenario"].id,
             )
@@ -2534,7 +2535,7 @@ class TestRegenerateForTemplate:
         with app.app_context():
             template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
             schedule = GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             )
             created = recurrence_engine.generate_for_template(
                 template, schedule, seed_user["scenario"].id,
@@ -2574,7 +2575,7 @@ class TestRegenerateForTemplate:
         with app.app_context():
             template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
             schedule = GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             )
             created = recurrence_engine.generate_for_template(
                 template, schedule, seed_user["scenario"].id,
@@ -2626,7 +2627,7 @@ class TestRegenerateForTemplate:
         with app.app_context():
             template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
             schedule = GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             )
             created = recurrence_engine.generate_for_template(
                 template, schedule, seed_user["scenario"].id,
@@ -2684,7 +2685,7 @@ class TestRegenerateForTemplate:
         with app.app_context():
             template = self._make_envelope_template(seed_user)
             schedule = GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             )
             created = recurrence_engine.generate_for_template(
                 template, schedule, seed_user["scenario"].id,
@@ -2735,7 +2736,7 @@ class TestRegenerateForTemplate:
         with app.app_context():
             template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
             schedule = GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             )
             created = recurrence_engine.generate_for_template(
                 template, schedule, seed_user["scenario"].id,
@@ -2810,7 +2811,7 @@ class TestRegenerateForTemplate:
             # Generate initial entries.
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -2825,7 +2826,7 @@ class TestRegenerateForTemplate:
             # own row, so there is nothing to CREATE and the return is empty.
             new_created = recurrence_engine.regenerate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -2851,7 +2852,7 @@ class TestRegenerateForTemplate:
 
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -2865,7 +2866,7 @@ class TestRegenerateForTemplate:
             with pytest.raises(RecurrenceConflict) as exc_info:
                 recurrence_engine.regenerate_for_template(
                     template, GenerationSchedule.for_period_ids(
-                        calendar_for(template.user_id), {p.id for p in seed_periods},
+                        BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                     ), seed_user["scenario"].id,
                 )
 
@@ -2920,7 +2921,7 @@ class TestResolveConflicts:
 
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -2952,7 +2953,7 @@ class TestResolveConflicts:
 
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -2987,7 +2988,7 @@ class TestResolveConflicts:
 
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -3022,7 +3023,7 @@ class TestResolveConflicts:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -3054,7 +3055,7 @@ class TestResolveConflicts:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -3085,7 +3086,7 @@ class TestResolveConflicts:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -3117,7 +3118,7 @@ class TestResolveConflicts:
             )
             created_a = recurrence_engine.generate_for_template(
                 template_a, GenerationSchedule.for_period_ids(
-                    calendar_for(template_a.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template_a.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -3138,7 +3139,7 @@ class TestResolveConflicts:
             )
             created_b = recurrence_engine.generate_for_template(
                 template_b, GenerationSchedule.for_period_ids(
-                    calendar_for(template_b.user_id), {p.id for p in periods_b},
+                    BalanceContext.build(template_b.user_id), {p.id for p in periods_b},
                 ), second_user["scenario"].id,
             )
             db.session.flush()
@@ -3352,7 +3353,7 @@ class TestResolveConflictsShadowGuard:
 
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -3437,7 +3438,7 @@ class TestCrossUserIsolation:
             created = recurrence_engine.generate_for_template(
                 template,
                 GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ),
                 second_user["scenario"].id,
             )
@@ -3518,7 +3519,7 @@ class TestNegativePaths:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
 
@@ -3557,7 +3558,7 @@ class TestNegativePaths:
 
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
 
@@ -3582,7 +3583,7 @@ class TestNegativePaths:
             # Initial generation.
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -3600,7 +3601,7 @@ class TestNegativePaths:
             # Regenerate -- received transaction must survive.
             recurrence_engine.regenerate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -3628,7 +3629,7 @@ class TestNegativePaths:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), set(),
+                    BalanceContext.build(template.user_id), set(),
                 ), seed_user["scenario"].id,
                 effective_from=date(2026, 1, 1),
             )
@@ -3652,7 +3653,7 @@ class TestNegativePaths:
 
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -3670,7 +3671,7 @@ class TestNegativePaths:
             # Regenerate.
             recurrence_engine.regenerate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -3701,7 +3702,7 @@ class TestNegativePaths:
 
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -3719,7 +3720,7 @@ class TestNegativePaths:
             # Regenerate.
             recurrence_engine.regenerate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -4020,7 +4021,7 @@ class TestEndDateIntegration:
 
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
 
@@ -4049,14 +4050,14 @@ class TestEndDateIntegration:
             # Initial generation.
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             assert len(created) == 3
 
             recurrence_engine.regenerate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -4163,7 +4164,7 @@ class TestDueDateGeneration:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
 
@@ -4188,7 +4189,7 @@ class TestDueDateGeneration:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
 
@@ -4221,7 +4222,7 @@ class TestDueDateGeneration:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {period.id},
+                    BalanceContext.build(template.user_id), {period.id},
                 ), seed_user["scenario"].id,
             )
 
@@ -4243,7 +4244,7 @@ class TestDueDateGeneration:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {period.id},
+                    BalanceContext.build(template.user_id), {period.id},
                 ), seed_user["scenario"].id,
             )
 
@@ -4265,7 +4266,7 @@ class TestDueDateGeneration:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {period.id},
+                    BalanceContext.build(template.user_id), {period.id},
                 ), seed_user["scenario"].id,
             )
 
@@ -4290,7 +4291,7 @@ class TestDueDateGeneration:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
 
@@ -4319,7 +4320,7 @@ class TestDueDateGeneration:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {period.id},
+                    BalanceContext.build(template.user_id), {period.id},
                 ), seed_user["scenario"].id,
             )
 
@@ -4343,7 +4344,7 @@ class TestDueDateGeneration:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {period.id},
+                    BalanceContext.build(template.user_id), {period.id},
                 ), seed_user["scenario"].id,
             )
 
@@ -4364,7 +4365,7 @@ class TestDueDateGeneration:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
 
@@ -4391,7 +4392,7 @@ class TestDueDateGeneration:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
 
@@ -4435,7 +4436,7 @@ class TestDueDateGeneration:
 
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods},
                 ), seed_user["scenario"].id,
             )
 
@@ -4468,7 +4469,7 @@ class TestDueDateGeneration:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in periods},
+                    BalanceContext.build(template.user_id), {p.id for p in periods},
                 ), seed_user["scenario"].id,
             )
 
@@ -4498,7 +4499,7 @@ class TestDueDateGeneration:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {period.id},
+                    BalanceContext.build(template.user_id), {period.id},
                 ), seed_user["scenario"].id,
             )
 
@@ -4525,7 +4526,7 @@ class TestDueDateGeneration:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in periods},
+                    BalanceContext.build(template.user_id), {p.id for p in periods},
                 ), seed_user["scenario"].id,
             )
 
@@ -4552,7 +4553,7 @@ class TestDueDateGeneration:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {period.id},
+                    BalanceContext.build(template.user_id), {period.id},
                 ), seed_user["scenario"].id,
             )
 
@@ -4578,7 +4579,7 @@ class TestDueDateGeneration:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {period.id},
+                    BalanceContext.build(template.user_id), {period.id},
                 ), seed_user["scenario"].id,
             )
 
@@ -4603,7 +4604,7 @@ class TestDueDateGeneration:
             )
             created = recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {period.id},
+                    BalanceContext.build(template.user_id), {period.id},
                 ), seed_user["scenario"].id,
             )
 

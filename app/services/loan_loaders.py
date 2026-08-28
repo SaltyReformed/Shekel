@@ -580,8 +580,8 @@ def projected_income_shadows(
 
     **Complementary with the settled set, so no payment is counted twice.**
     :func:`query_shadow_income` already drops Credit / Cancelled, and every
-    remaining status other than PROJECTED is settled (``Paid`` / ``Received`` /
-    ``Settled`` -- :func:`~app.utils.balance_predicates.settled_status_ids`), so a
+    remaining status other than PROJECTED is settled (``Paid`` / ``Received``
+    -- :func:`~app.utils.balance_predicates.settled_status_ids`), so a
     shadow is in EXACTLY ONE of :func:`settled_income_shadows` (ACTUAL, the fold's
     past) and this (PLANNED, the fold's projected future).  That is what lets the
     C6c settled-slot de-dup delete: a settled payment and a projected one can never

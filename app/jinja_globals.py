@@ -67,7 +67,6 @@ _REF_ID_GLOBALS: tuple[tuple[Callable[[Enum], int], dict[str, Enum]], ...] = (
         "STATUS_RECEIVED": StatusEnum.RECEIVED,
         "STATUS_CREDIT": StatusEnum.CREDIT,
         "STATUS_CANCELLED": StatusEnum.CANCELLED,
-        "STATUS_SETTLED": StatusEnum.SETTLED,
     }),
     (ref_cache.txn_type_id, {
         "TXN_TYPE_INCOME": TxnTypeEnum.INCOME,

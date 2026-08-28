@@ -28,7 +28,7 @@ class TemplateCreateSchema(RecurrenceFormFieldsMixin, BaseSchema):
     bounded amounts, leftover folds into the next period via
     ``Carry Fwd``) only apply to expense categories like groceries or
     spending money.  Income flows are settled via the
-    ``Projected -> Received -> Settled`` workflow and the discrete
+    ``Projected -> Received`` workflow and the discrete
     carry-forward path; they have no rollover.
     """
 

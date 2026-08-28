@@ -430,11 +430,16 @@ def _subject_removal(
       ``entry_service``, which admits removing one from a settled row only
       where the removal cannot change what that row's own close booked -- and
       the container this act created can be put beyond that afterwards, by
-      being archived or re-closed at a stored figure.  **Measured on the first
-      build of this step**: the panel offered *"Undo removes 1 row"* over an
-      archived container and the release then raised with the act already
-      deleted from the session, which breaks this package's promise that a
-      refused act leaves the database exactly as it was.
+      being RE-CLOSED AT A STORED FIGURE -- the owner unticks *Track
+      individual purchases* on the settled row and types an Actual.
+      **Measured on the first build of this step**: the panel offered *"Undo
+      removes 1 row"* over such a container and the release then raised with
+      the act already deleted from the session, which breaks this package's
+      promise that a refused act leaves the database exactly as it was.
+      (The measurement was taken over an ARCHIVED container; plan step
+      **balance:X-am** deleted that status, and this sentence named the
+      stored-figure route beside it all along -- which is what caught an X-am
+      draft arguing the arm had become unreachable and deleting its test.)
 
     Args:
         creation: The creation record, carrying the revision this act left.

@@ -136,7 +136,8 @@ Routes (Blueprints) → Services (no Flask imports) → Models (SQLAlchemy) / Sc
 **Key domain concepts:** Anchor Balance (real checking balance, projections flow forward from it).
 Balance Calculator (period-by-period from anchor). Recurrence Engine (8 patterns from templates).
 Paycheck Calculator (salary + raises - taxes - deductions). Status workflow:
-`projected -> done|credit|cancelled`, `done|received -> settled`.
+`projected -> done|received|credit|cancelled`, and every one of those back to `projected` (revert).
+No status is terminal.
 
 **Established patterns -- use these, do not reinvent:** Ownership helpers in
 `app/utils/auth_helpers.py`. Security response rule: 404 for both "not found" and "not yours."
@@ -207,9 +208,8 @@ the arc a COLUMN; `conventions.md` is the 16 rules all of it is held to; `lesson
 project has already paid to learn. Each arc's argument and step specifications stay in its own
 document: `docs/audits/balance_architecture/README.md` (balance), and `implementation_plan_*.md` for
 recurrence, pay_calendar, credit_card and bank_import. `steps.md` names which document and section
-holds a given step's detail. **Rulings moved OUT of the arc documents at `balance:X-ao-1`;
-`recurrence`, `pay_calendar` and `credit_card` still hold their own until `X-ao-2`, and `rulings.md`
-says in its preamble which arcs it holds.**
+holds a given step's detail. **Every arc's rulings are in `rulings.md`, keyed `(arc, id)`, since
+`balance:X-ao-2a`; no arc document states one, and each carries a `The rulings` pointer instead.**
 
 **Anything under an `archive/` or `historical/` directory is a HISTORICAL RECORD and governs
 nothing** -- every such file says so on its first line. Cite one for how a decision came to be,

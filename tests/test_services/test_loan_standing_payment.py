@@ -33,7 +33,6 @@ from app.services import (
 )
 from app.services import transfer_recurrence
 from app.services.generation_schedule import GenerationSchedule
-from app.services.pay_calendar import calendar_for
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._plan import loan_plan
 from app.services.balance_at._resolution import (
@@ -425,7 +424,7 @@ class TestPayoffDoesNotMoveWithMaterialisation:
         transfer_recurrence.generate_for_template(
             template,
             GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in periods},
+                BalanceContext.build(template.user_id), {p.id for p in periods},
             ),
             seed_user["scenario"].id,
         )
@@ -546,7 +545,7 @@ class TestPayoffDoesNotMoveWithMaterialisation:
         transfer_recurrence.generate_for_template(
             template,
             GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in periods},
+                BalanceContext.build(template.user_id), {p.id for p in periods},
             ),
             seed_user["scenario"].id,
         )

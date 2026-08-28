@@ -7,7 +7,7 @@
    Optional: source_txn_id -- when opened from a shadow transaction cell,
    the form targets #txn-cell-<source_txn_id> instead of #xfer-cell-<xfer.id>.
 
-   Finalised transfers (is_immutable: Paid / Received / Settled /
+   Finalised transfers (is_immutable: Paid / Received /
    Cancelled) lock the BUDGET DECISIONS -- the amount, the period, the category,
    the due date: those inputs are disabled so they neither accept nor submit a
    value (matching the route guard #26 -- a disabled input is omitted from the

@@ -168,7 +168,7 @@ assertions only 17 equal the bank's closing balance for their day, and of 110 mo
 bank lines on exact amount only 33 (30%) carry the day the bank posted them. The steps that
 carry it are below; their sequence is `../../plans/steps.md`'s.
 
-## 4. Decisions that govern the remaining work
+## 4. The rulings
 
 **This arc's rulings are in `../../plans/rulings.md`, rows whose `arc` is `balance`.** They moved
 there at `X-ao-1` with `bank_import`'s, and the reason is one this document could not fix for
@@ -489,6 +489,11 @@ hides.
     currently make, one of which (Received) is not in the transfer map at all, so the refusal would
     be correct and the test wrong. That is a behaviour change on a creation path and gets its own
     worked ruling, not a build decision.
+    **It carries N-321 too, enumerated here for that same reason**:
+    `grid/_transaction_entries.html` withdraws the purchase-date and description inputs,
+    the add form and the delete button on `status.is_settled`, where `entry_service`
+    refuses only `amount` / `is_credit`, a delete and an UNDATED add -- so **R-FW**'s
+    purchase-date correction is reachable from statement review and not from the popover.
     **It also carries N-334, and the five surfaces are enumerated here because a
     ledger row is an index entry** (conventions rule 4): since plan step X-az a row records
     WHICH KIND of settle day it holds -- a bank observation, a balance assertion's UPPER BOUND,
@@ -772,23 +777,58 @@ hides.
   Repaired `bank_import:R-FW` (four cells in a three-column table since 2026-08-18) and the gate
   hook's own `files:` pattern, YAML-folded so one document matched nothing. Opened **balance:N-370**,
   **balance:N-371**; carries the citation arm to `X-ao-3`.
-* [ ] **X-ao-2** `feat(plan-gate): the last three arcs take the one grammar` -- closes **balance:N-370**.
-  The remaining 77: `recurrence`'s 36 and `pay_calendar`'s 33 state a ruling `| fork | ruling |`
-  with the id in PROSE beside cross-references to OTHER rulings -- a regex mis-attributed four
-  recurrence ids on the first pass, which is why this is its own step -- and `credit_card`'s 8 are
-  a numbered list. 45 need an id MINTED; `pay_calendar` continues `R-PC1`, whose scheme exists and
-  is cited three times from `app/`. **The recurrence table's id is in its row's CLOSING clause**
-  (`R-Rnn, ruled DATE; shipped as <step>`) and a cross-reference to another ruling never sits
-  there -- keying on the tail resolves all four ids the naive first-id-in-text read claimed twice,
-  measured 0 against 4. **But 11 of 36 rows carry no tail id and only 6 of those are rulings**: the
-  rest are a `---` separator, a `Shipped / superseded decisions` section label, and rows whose
-  subject is a decision recorded elsewhere. So this step CLASSIFIES rows before it parses them; a
-  reader that assumes every table row is a ruling mints ids for separators. **The tail rule is a
-  PARSE and not a proof**: it says nothing about those 11, and it holds because every row written so
-  far follows the convention rather than because anything enforces it, so the eyeball pass over the
-  residue is the part that cannot be dropped. One of the 11 is **balance:N-372**. Two `app/` docstrings cite a pay-calendar ruling by its PROSE
-  NAME and must gain the minted id in the same commit. It also moves the 23 over-cap rows'
-  overflow to their owning steps' specifications, which is rule 4's own remedy.
+* [ ] **X-ao-2** -- the DECOMPOSED parent, split 2026-08-27 (**balance:R-HB**) because the step's own
+  sentence carried two nouns and only the first is a lift. Its second, the over-cap overflow, was
+  measured unsatisfiable as rule 4 literally states it before the split rather than after: rule 4
+  sends the overflow to the owning step's SPECIFICATION, and `bank_import` alone owns 36,901 of the
+  43,855 characters against a document with 49 lines of headroom.
+* [x] **X-ao-2a** `91f95f43` -- `recurrence`'s, `pay_calendar`'s and `credit_card`'s rulings lifted
+  into `../../plans/rulings.md` keyed `(arc, id)`: 81 rows, 51 ids MINTED, proven lossless per row
+  in BOTH directions. `ARC_RULING_HEADINGS` DELETED for a predicate on a ruling DECLARATION's shape;
+  `LIFTED_ROWS_OVER_CAP` re-keyed from a COUNT to a SET, which is the direction a count could not
+  see. Closes **N-372**, whose own count it corrected. Rulings **balance:R-HB**, **balance:R-HC**, **balance:R-HD**; opened
+  **N-376**, **N-377**. As-built in the commit and its merge, `7a95e40e`.
+* [ ] **X-ao-2b** `docs(plans): an over-cap ruling's argument goes to its own step` -- closes
+  **balance:N-370**, whose row carries the measurements and **balance:R-HD** the destination: the
+  AS-BUILT record of the step that shipped the ruling, its live specification otherwise.
+  **The OWNER is this step's first task, not its input** -- 17 of the 25 rows name no step of their
+  own arc at all and only TWO name a SHIPPED one -- determined per row from the row's text, from
+  the arc-document entries that cite it, and from the row's own git history. **That third
+  source DECAYS and the refs that stop it decaying are named here rather than left to be found**
+  (the recurrence session, 2026-08-27): `git log -S` keys on the row's TEXT, and both lifts
+  rewrote every row, so a search against today's text lands on the lift rather than on the commit
+  that took the ruling. The pre-lift text is at `b8f1c862~1` for `balance` (74 rows) and
+  `bank_import` (31), and at `91f95f43~1` for `recurrence` (37), `pay_calendar` (33) and
+  `credit_card` (8); `recurrence:R-R38` landed on dev between the two lifts and its pre-lift text
+  is at `107add57`. Searching from those refs still resolves -- `R-R38` lands on `f7b0ce16`, whose
+  SUBJECT names it and whose body names `R7d-c-1` at line 31. Two specimens bound the work at both
+  ends. `bank_import:R-GD`, the widest at 14,087 over, is NOT archive-bound: it is cited inside
+  LIVE entries twice, at `implementation_plan_bank_import.md:78` and :139, so rule 4's literal
+  remedy applies. **A peer census reported it uncited and the reason offered for that miss was
+  also wrong** -- a `**R-xx**`-only matcher finds the plain form at :139 -- so what is established
+  is the disposition, not the diagnosis. And `recurrence:R-R38`'s owner `R7d-c-1` HAD shipped
+  with no as-built record at all, so the recurrence session wrote one:
+  `../../plans/historical/recurrence_r7dc1_as_built_2026-08-27.md`, on dev at `c5334e02`,
+  naming `R-R38` four times while the live `R7d-c-1` entry names it back -- so this step
+  GRADES the move rather than asserting it. Where a record is missing for one of the other
+  rows, writing it is rule 5's own archive path. **And nothing gates that locally**: the
+  `shekel-plan-ledger-gate` hook's `files:` pattern does not match `docs/plans/historical/`
+  (**N-371**) and `.rumdl.toml` EXCLUDES that directory outright, so an archive file gets
+  neither the banner arm nor markdown lint until CI -- measured 2026-08-27, 33 files
+  filtered. That is two configs wide, not one, and on this census 17 rows may need such a
+  file.
+  **The finishing check on a hand-edited row is its CELL COUNT through
+  `_tables.UNESCAPED_PIPE_RX`**: `X-ao-2a` rewrote seven-column `N-370` as six on a bare
+  `|` split, deleting its finding sentence with every arm green -- and a NAIVE count is the
+  opposite trap, reporting the three rows that carry a literal `\|` broken and sending the
+  next reader to UN-escape `bank_import:R-FW`, the row `X-ao-1` repaired for that very
+  defect.
+  **Cutting a row is a REVIEWED EDIT per ruling, never a truncation to fit** (rule 5), and the
+  instrument this step owes is the lift's verifier INVERTED: every sentence removed from a row must
+  resolve to text in the named as-built record, checked BEFORE the row is cut. Without that, "the
+  argument is in the archive" is an assertion about a file nobody re-opens, and `R-GD`'s 14,087
+  characters of overflow is where a silent loss would be least visible. The step ends with
+  `LIFTED_ROWS_OVER_CAP` deleted rather than emptied.
 * [ ] **X-ao-3** `feat(plan-gate): a bare citation of an ambiguous id fails` -- closes **N-217**,
   **N-367**. What makes `(arc, id)` SAFE rather than merely legal: every `R-xx` cited in `app/` or
   `docs/` resolves to exactly one ruling, and a bare citation of an id two arcs both define is a
@@ -830,16 +870,12 @@ hides.
   ruled here and must be shown FIRING on a planted stale disable. **FIFTEEN live `duplicate-code`
   disables remain in `app/` and not one has been re-measured** (4 in `models/`, 5 in `routes/`, 6 in
   `services/`). The step's first deliverable is the census.
-* [ ] **X-am** `refactor(status): the settled band has two members, not three` -- closes **N-177**.
-  The `Settled` status carries **0 rows on both tables in production** and no writer anywhere assigns
-  it; its only door is the status `<select>` in the two full-edit popovers. **It is in scope because
-  it is a member of the set the cash walk folds on**: `settled_status_ids()` is `{Paid, Received,
-  Settled}` and every reader consumes the SET, never the member, so the balance engine cannot tell
-  the three apart. Its whole distinct meaning is one line of the transition map (`settled: {settled}`,
-  terminal, no revert). **The step must decide whether that meaning is wanted at all** -- a
-  deliberate archive lock is a defensible feature and an unreachable one is dead vocabulary; today it
-  is the second wearing the first's clothes. Its trace owes: whether any row anywhere has ever
-  carried it, and what a delete does to the state machine's two maps.
+* [x] **X-am** `7b0ddae8` -- the `Settled` ARCHIVE is DELETED (**R-HA**): it was ABSORBING and
+  REACHABLE, so a row entered it from one dropdown and no door led out, while the DELETE control on
+  the same card still removed it. Closed **N-177**; as-built in `archive/x_am_as_built_2026-08-27.md`.
+  **What it pins is a CONJUNCTION** -- no state both reachable and absorbing -- not *no terminal
+  states*, which would contradict `credit_card` locked ruling 5. **CC3b must obey it**: a terminal
+  `Credit` re-arms the destroy-but-not-correct asymmetry `deletion_refusal` still permits.
 
 ### Phase E2 -- the super-package boundary (runs LAST; Phase G runs inside it, ruling **R-DQ**)
 

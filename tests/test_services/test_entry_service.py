@@ -1978,19 +1978,6 @@ class TestASettledRowsPurchasesAreClosed:
     """
 
     @staticmethod
-    def _archive(txn):
-        """Move *txn* Projected -> Paid -> Settled through the real seam."""
-        status_seam.apply_status_change(
-            txn, ref_cache.status_id(StatusEnum.DONE),
-            settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.DONE)),
-        )
-        status_seam.apply_status_change(
-            txn, ref_cache.status_id(StatusEnum.SETTLED),
-            settlement=settlement_if_settling(txn, ref_cache.status_id(StatusEnum.SETTLED)),
-        )
-        db.session.flush()
-
-    @staticmethod
     def _close(txn):
         """Move *txn* Projected -> Paid through the real seam."""
         status_seam.apply_status_change(
@@ -1999,44 +1986,23 @@ class TestASettledRowsPurchasesAreClosed:
         )
         db.session.flush()
 
-    def test_create_is_refused(self, app, db, seed_user, seed_entry_template):
-        """A purchase cannot be recorded against an archived row.
-
-        Shown to FIRE: without the guard the entry is created and persists.
-        """
-        with app.app_context():
-            txn = db.session.get(
-                Transaction, seed_entry_template["transaction"].id,
-            )
-            self._archive(txn)
-
-            with pytest.raises(ValidationError, match="has settled"):
-                entry_service.create_entry(
-                    transaction_id=txn.id,
-                    user_id=seed_user["user"].id,
-                    details=entry_service.EntryDetails(
-                        amount=Decimal("50.00"),
-                        description="Late purchase",
-                        purchased_on=display_today(),
-                    ),
-                )
-
-            assert db.session.query(TransactionEntry).filter_by(
-                transaction_id=txn.id,
-            ).count() == 0
-
     def test_update_is_refused(self, app, db, seed_user, seed_entry_template):
-        """An existing purchase on an archived row cannot be re-priced.
+        """An existing purchase on a settled row cannot be re-priced.
 
-        The row was archived carrying a $50.00 purchase; re-pricing it to
+        The row was closed carrying a $50.00 purchase; re-pricing it to
         $500.00 would rewrite what the books already say the row cost.
+
+        Specimen was the terminal ``Settled`` ARCHIVE until plan step
+        **balance:X-am** deleted that status.  ``_reject_settled_parent`` reads
+        the BAND and never the member -- that is this class's whole subject --
+        so the case moves to Paid unchanged.
         """
         with app.app_context():
             txn = db.session.get(
                 Transaction, seed_entry_template["transaction"].id,
             )
             entry = _make_entry(txn, seed_user["user"], amount="50.00")
-            self._archive(txn)
+            self._close(txn)
 
             with pytest.raises(ValidationError, match="has settled"):
                 entry_service.update_entry(
@@ -2048,24 +2014,30 @@ class TestASettledRowsPurchasesAreClosed:
             assert entry.amount == Decimal("50.00")
 
     def test_delete_is_refused(self, app, db, seed_user, seed_entry_template):
-        """A purchase cannot be removed from an archived row.
+        """An UNDATED purchase cannot be removed from a settled row.
 
-        **The refusal is unchanged and its SENTENCE moved** (plan step
-        ``bank_import:X-f6f``): the archive now has its own, because the one it
-        shared said the row *records a fixed figure* -- false for an archived
-        ``purchases`` row -- and told the owner to set it back to Projected,
-        which the state machine refuses for the terminal status.  This test
-        pinned the borrowed sentence and so could not see either.
+        **The refusal's SENTENCE has moved twice.**  Plan step
+        ``bank_import:X-f6f`` gave the ARCHIVE one of its own, because the
+        shared message said the row *records a fixed figure* -- false for an
+        archived ``purchases`` row -- and told the owner to set it back to
+        Projected, which the state machine refused for a terminal status.  Plan
+        step **balance:X-am** then deleted the archive, and with it that
+        sentence: the remedy it could not offer is now available from every
+        settled row, so one message serves again.
+
+        What is left here is the arithmetic arm -- removing an UNDATED debit
+        purchase shrinks what the row recorded as costing, on a past day, with
+        no external evidence -- which is the case that was always band-wide.
         """
         with app.app_context():
             txn = db.session.get(
                 Transaction, seed_entry_template["transaction"].id,
             )
             entry = _make_entry(txn, seed_user["user"], amount="50.00")
-            self._archive(txn)
+            self._close(txn)
             entry_id = entry.id
 
-            with pytest.raises(ValidationError, match="is archived"):
+            with pytest.raises(ValidationError, match="has settled"):
                 entry_service.delete_entry(entry_id, seed_user["user"].id)
 
             # No rollback: the guard runs BEFORE ``db.session.delete``, so a
@@ -2087,7 +2059,9 @@ class TestASettledRowsPurchasesAreClosed:
 
         The row is left exactly as the close left it: worth what it recorded,
         with no purchase persisted.  Shown to FIRE: narrowing the guard back to
-        ``is_archived`` lets the entry through.
+        ``is_archived`` let the entry through -- that predicate is itself
+        deleted at plan step **balance:X-am** with the status it named, so the
+        narrowing this case refuses is no longer expressible.
         """
         with app.app_context():
             txn = db.session.get(
@@ -2306,17 +2280,6 @@ class TestASettledRowMayStillGAINAPurchase:
         )
         db.session.flush()
 
-    @staticmethod
-    def _archive(txn):
-        """Move *txn* Paid -> the terminal ``Settled`` through the real seam."""
-        status_seam.apply_status_change(
-            txn, ref_cache.status_id(StatusEnum.SETTLED),
-            settlement=settlement_if_settling(
-                txn, ref_cache.status_id(StatusEnum.SETTLED),
-            ),
-        )
-        db.session.flush()
-
     def test_a_purchases_basis_close_ADMITS_a_new_purchase(
         self, app, db, seed_user, seed_entry_template,
     ):
@@ -2528,44 +2491,6 @@ class TestASettledRowMayStillGAINAPurchase:
             db.session.flush()
             db.session.expire(txn)
             assert cash_ledger.settled_cash_leg(txn) == Decimal("-80.00")
-
-    def test_an_ARCHIVED_row_refuses_a_new_purchase_whatever_its_basis(
-        self, app, db, seed_user, seed_entry_template,
-    ):
-        """Finding **N-229** survives the narrowing.
-
-        The archive says these purchases are history.  It is refused here even
-        on the ``purchases`` basis, because
-        ``statement_match._candidates._purchase_candidates`` already declines
-        to offer such a row -- so admitting it would make this the one door
-        that disagrees.
-        """
-        with app.app_context():
-            txn = db.session.get(
-                Transaction, seed_entry_template["transaction"].id,
-            )
-            _make_entry(txn, seed_user["user"], amount="50.00")
-            self._close(txn)
-            self._archive(txn)
-            assert txn.settled_basis_id == ref_cache.settlement_basis_id(
-                SettlementBasisEnum.PURCHASES,
-            )
-
-            with pytest.raises(ValidationError, match="records a fixed figure"):
-                entry_service.create_entry(
-                    transaction_id=txn.id,
-                    user_id=seed_user["user"].id,
-                    details=entry_service.EntryDetails(
-                        amount=Decimal("30.00"),
-                        description="Food Lion",
-                        purchased_on=display_today(),
-                        settle_day=an_entered_day(display_today()),
-                    ),
-                )
-
-            assert db.session.query(TransactionEntry).filter_by(
-                transaction_id=txn.id,
-            ).count() == 1
 
 
 class TestAPurchaseMayBeBornCarryingItsPostingDay:

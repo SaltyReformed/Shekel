@@ -430,7 +430,7 @@ def _unwindowed_contributing_rows(
     :func:`planned_cash_rows` above (still-Projected) and
     :func:`app.services.cash_ledger.settled_cash_facts` (settled).  The two halves
     partition the contributing set exactly: ``balance_contributing_clause``
-    admits Projected, Paid, Received and Settled, and the two callers narrow to
+    admits Projected, Paid and Received, and the two callers narrow to
     the first and the last three respectively.
 
     Extracted when the second half was written and ``duplicate-code`` reported

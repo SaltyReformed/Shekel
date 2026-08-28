@@ -1505,8 +1505,8 @@ class TestThePlanClampsAgainstTheDerivedSpan:
 
         A middle period's derived end is ``lead(start_date) - 1``; the LAST
         one's is ``start_date + cadence_days - 1``, the only end the derivation
-        PROJECTS rather than reads off the next payday (ruling "The last
-        payday's period end").  A test that only plants a middle period grades
+        PROJECTS rather than reads off the next payday (ruling **R-PC5**, "The
+        last payday's period end").  A test that only plants a middle period grades
         one branch and reads as though it graded both.
 
         ``seed_periods`` is ten biweekly paydays from 2026-01-02, so period 9

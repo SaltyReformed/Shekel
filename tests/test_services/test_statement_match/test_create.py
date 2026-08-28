@@ -42,12 +42,10 @@ from app.services import (
     balance_at,
     pay_calendar,
     statement_match,
-    status_seam,
     transaction_service,
 )
 from app.services.balance_at import BalanceContext
 from app.services.statement_match import NewEnvelope, PurchaseCreation
-from tests._test_helpers import settlement_if_settling
 
 # Pylint: protected-access -- MintedEnvelopes is an internal collaboration
 # between two PRIVATE modules of this package and has no importer outside
@@ -869,19 +867,6 @@ class TestWhatTheScreenMayOFFER:
             assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
                 SettlementBasisEnum.DERIVED,
             )
-            assert envelope.id not in self._offered(seed_user)
-
-    def test_an_ARCHIVED_envelope_is_not(self, app, db, seed_user):
-        """Finding **N-229**: an archived row's purchases are history."""
-        with app.app_context():
-            envelope = _closed_from_purchases(seed_user)
-            status_seam.apply_status_change(
-                envelope, ref_cache.status_id(StatusEnum.SETTLED),
-                settlement=settlement_if_settling(
-                    envelope, ref_cache.status_id(StatusEnum.SETTLED),
-                ),
-            )
-            db.session.flush()
             assert envelope.id not in self._offered(seed_user)
 
     def test_a_CANCELLED_envelope_is_not(self, app, db, seed_user):

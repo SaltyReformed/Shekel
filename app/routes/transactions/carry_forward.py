@@ -14,8 +14,7 @@ from flask_login import current_user, login_required
 
 from app.extensions import db
 from app.services import carry_forward_service
-from app.services.pay_calendar import calendar_for
-from app.services.scenario_resolver import get_baseline_scenario
+from app.services.balance_at import BalanceContext
 from app.exceptions import NotFoundError, ValidationError
 from app.utils.auth_helpers import require_owner
 from app.utils.dates import display_today
@@ -37,16 +36,19 @@ def _resolve_carry_forward_context(period_id):
         ctx, err = _resolve_carry_forward_context(period_id)
         if err is not None:
             return err
-        calendar, source_period, current_period, scenario = ctx
+        balance_ctx, source_period, current_period = ctx
 
-    **ONE derivation answers everything this render asks about the schedule**
-    (pay-calendar plan step C2-f3c, closing ledger row **P68**).  Both periods
-    and the recurrence engine's write window come off it, and it is handed to
-    ``carry_forward_service`` so the service derives none of its own.  The
-    render derived TWO before this step -- one here and one inside the
-    service's ``GenerationSchedule`` -- which was measured on the arch fixture
-    at 1 -> 2 derivations and 12 -> 13 queries when plan step C2-f3a replaced
-    a SQL reader here.
+    **ONE READ PASS answers everything this render asks about the schedule**
+    (pay-calendar plan step C2-f3c, closing ledger row **P68**; plan step
+    R7d-c-1 made it a pass where it was a bare calendar).  Both periods, the
+    baseline scenario and the recurrence engine's write window come off it,
+    and it is handed to ``carry_forward_service`` so the service opens none of
+    its own.  The render derived TWO calendars before C2-f3c -- one here and
+    one inside the service's ``GenerationSchedule`` -- which was measured on
+    the arch fixture at 1 -> 2 derivations and 12 -> 13 queries when plan step
+    C2-f3a replaced a SQL reader here.  It also held a
+    ``get_baseline_scenario`` beside the derivation, which is the second of
+    the two facts a pass pins.
 
     **Both periods are ANSWERED BY THE CALENDAR, which is what makes the
     ownership check structural.**  The source is a user-supplied id and used to
@@ -67,13 +69,15 @@ def _resolve_carry_forward_context(period_id):
     every row this operation writes needs one.
 
     Returns:
-        Tuple of ``((calendar, source_period, current_period, scenario),
-        None)`` on success, or ``(None, error_response)`` on failure.  The
-        error response is a Flask-compatible ``(body, status_code)``
-        tuple that the caller returns directly to HTMX.  Both periods are
-        :class:`~app.services.pay_calendar.DerivedPeriod` values.
+        Tuple of ``((balance_ctx, source_period, current_period), None)`` on
+        success, or ``(None, error_response)`` on failure.  The error response
+        is a Flask-compatible ``(body, status_code)`` tuple that the caller
+        returns directly to HTMX.  Both periods are
+        :class:`~app.services.pay_calendar.DerivedPeriod` values, and the
+        scenario is read off the pass rather than returned beside it.
     """
-    calendar = calendar_for(current_user.id)
+    balance_ctx = BalanceContext.build(current_user.id)
+    calendar = balance_ctx.calendar()
 
     source_period = calendar.period_by_id(period_id)
     if source_period is None:
@@ -83,11 +87,10 @@ def _resolve_carry_forward_context(period_id):
     if current_period is None:
         return None, ("No current period found", 400)
 
-    scenario = get_baseline_scenario(current_user.id)
-    if not scenario:
+    if balance_ctx.scenario is None:
         return None, ("No baseline scenario", 400)
 
-    return (calendar, source_period, current_period, scenario), None
+    return (balance_ctx, source_period, current_period), None
 
 
 @transactions_bp.route(
@@ -120,12 +123,12 @@ def carry_forward_preview(period_id: int):
     ctx, err = _resolve_carry_forward_context(period_id)
     if err is not None:
         return err
-    calendar, source_period, current_period, scenario = ctx
+    balance_ctx, source_period, current_period = ctx
 
     try:
         preview = carry_forward_service.preview_carry_forward(
-            period_id, current_period.period_id, scenario.id,
-            calendar=calendar,
+            period_id, current_period.period_id, balance_ctx.scenario_id,
+            balance_ctx=balance_ctx,
         )
     except NotFoundError as exc:
         return str(exc), 404
@@ -146,7 +149,7 @@ def carry_forward(period_id):
     ctx, err = _resolve_carry_forward_context(period_id)
     if err is not None:
         return err
-    calendar, _source_period, current_period, scenario = ctx
+    balance_ctx, _source_period, current_period = ctx
 
     # Pylint: ``duplicate-code`` -- the commit + ``NotFoundError`` -> 404 /
     # ``ValidationError`` -> rollback -> 400 translation below is generic
@@ -161,8 +164,8 @@ def carry_forward(period_id):
     # pylint: disable=duplicate-code
     try:
         count = carry_forward_service.carry_forward_unpaid(
-            period_id, current_period.period_id, scenario.id,
-            calendar=calendar,
+            period_id, current_period.period_id, balance_ctx.scenario_id,
+            balance_ctx=balance_ctx,
         )
         db.session.commit()
     except NotFoundError as exc:

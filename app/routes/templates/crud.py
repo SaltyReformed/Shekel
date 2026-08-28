@@ -37,13 +37,12 @@ from app.services import (
     recurrence_engine,
     template_amount_service,
 )
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
-from app.services.pay_calendar import calendar_for
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.services.scenario_resolver import get_baseline_scenario
 from app.utils.balance_predicates import is_projected_clause
 from app.routes._commit_helpers import (
     STALE_ACTION_MESSAGE,
@@ -377,14 +376,15 @@ def create_template():
         template, template.default_amount, effective_on=display_today(),
     )
 
-    # Auto-generate transactions from the rule into future periods.
+    # Auto-generate transactions from the rule into future periods.  ONE read
+    # pass carries the baseline scenario and the owner's schedule (plan step
+    # R7d-c-1), where this held a ``get_baseline_scenario`` beside a
+    # ``calendar_for`` -- the two facts a pass already pins.
     if rule:
-        scenario = get_baseline_scenario(current_user.id)
-        if scenario:
+        ctx = BalanceContext.build(current_user.id)
+        if ctx.scenario is not None:
             recurrence_engine.generate_for_template(
-                template,
-                GenerationSchedule.for_calendar(calendar_for(current_user.id)),
-                scenario.id,
+                template, GenerationSchedule.for_pass(ctx), ctx.scenario_id,
             )
 
     db.session.commit()
@@ -804,14 +804,13 @@ def unarchive_template(template_id):
             txn, settled=txn.status.is_settled,
         )
 
-    # Regenerate to fill in any missing future periods.
+    # Regenerate to fill in any missing future periods, on the one read pass
+    # this restore's generate runs in (plan step R7d-c-1).
     if template.recurrence_rule:
-        scenario = get_baseline_scenario(current_user.id)
-        if scenario:
+        ctx = BalanceContext.build(current_user.id)
+        if ctx.scenario is not None:
             recurrence_engine.generate_for_template(
-                template,
-                GenerationSchedule.for_calendar(calendar_for(current_user.id)),
-                scenario.id,
+                template, GenerationSchedule.for_pass(ctx), ctx.scenario_id,
                 effective_from=date.today(),
             )
 
@@ -842,8 +841,8 @@ def hard_delete_template(template_id):
     """Permanently delete a transaction template if it has no settled history.
 
     Two-path logic:
-      1. If the template has any settled transaction (Paid, Received, or
-         Settled -- anything with ``Status.is_settled = True``), OR any
+      1. If the template has any settled transaction (Paid or Received --
+         anything with ``Status.is_settled = True``), OR any
          standing merchant rule files a merchant's bank spending into it
          (``archive_helpers.template_has_standing_rule``, plan step
          ``bank_import:X-gd-2``), permanent deletion is blocked.  The template
@@ -860,10 +859,11 @@ def hard_delete_template(template_id):
     non-settled rows via the semantic ``Status.is_settled`` boolean.
     Even if the guard predicate above regresses, is bypassed, or races a
     concurrent mark-done that lands between the guard check and the
-    delete, settled financial history (Paid, Received, Settled) cannot
+    delete, settled financial history (Paid, Received) cannot
     be physically destroyed by this route.  The pre-fix code enumerated
     ``[DONE, SETTLED]`` and silently omitted RECEIVED, then bulk-deleted
     unconditionally -- the irreversible data-loss path CRIT-05 documents.
+    (``SETTLED`` is quoted as written; plan step **balance:X-am** deleted it.)
     """
     template = get_or_404(TransactionTemplate, template_id)
     if template is None:
@@ -942,7 +942,7 @@ def hard_delete_template(template_id):
     # No settled history -- safe to permanently delete.  Restrict the
     # bulk delete to non-settled rows via ``Status.is_settled`` so a
     # race-window mark-done (or any future caller that bypasses the
-    # guard above) cannot destroy real Paid/Received/Settled history.
+    # guard above) cannot destroy real Paid/Received history.
     # The FK ON DELETE SET NULL on ``Transaction.template_id`` means
     # any row that survives this filter keeps its financial data with
     # a null template_id rather than being cascaded away.

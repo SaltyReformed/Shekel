@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
-                         *, calendar):
+                         *, balance_ctx):
     """Carry forward all projected items from source to target period.
 
     Steps:
@@ -57,19 +57,20 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
         scenario_id: The scenario to carry forward within.  Prevents
             cross-scenario data corruption when multiple scenarios
             exist for the same user.
-        calendar: The owner's
-            :class:`~app.services.pay_calendar.PayCalendar`, derived once by
-            the route and threaded down (pay-calendar plan step C2-f3c).  It
-            names the owner, so no ``user_id`` rides beside it, and a period
-            id that is not in it is not this owner's -- which is how both
-            periods are ownership-checked.
+        balance_ctx: The request's
+            :class:`~app.services.balance_at.BalanceContext`, opened once by
+            the route and threaded down (pay-calendar plan step C2-f3c; plan
+            step R7d-c-1 moved it from the calendar to the pass that derives
+            one).  It names the owner, so no ``user_id`` rides beside it, and
+            a period id that is not in its calendar is not this owner's --
+            which is how both periods are ownership-checked.
 
     Returns:
         int -- the number of carried items (1 per source row processed).
 
     Raises:
-        NotFoundError: If either period is not in *calendar* -- it does
-            not exist, or it is not this owner's.
+        NotFoundError: If either period is not in *balance_ctx*'s calendar --
+            it does not exist, or it is not this owner's.
         ValidationError: On two conditions, either of which fails the WHOLE
             batch -- the caller must rollback the session before issuing any
             follow-up writes.  (a) The envelope branch's ``AMBIGUOUS`` guard: a
@@ -87,7 +88,7 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
             carry-forward's batch semantics, not to the guard.
     """
     ctx = _build_carry_forward_context(
-        source_period_id, target_period_id, scenario_id, calendar,
+        source_period_id, target_period_id, scenario_id, balance_ctx,
     )
     user_id = ctx.user_id
 

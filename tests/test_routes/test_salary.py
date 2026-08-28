@@ -32,6 +32,7 @@ from app.services.auth_service import hash_password
 
 import pytest
 from app.services import account_service
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 
 from tests._test_helpers import (
@@ -2466,7 +2467,7 @@ class TestNetBiweeklyMismatchFixes:
             periods = all_periods(user.id)
             recurrence_engine.regenerate_for_template(
                 profile.template, GenerationSchedule.for_period_ids(
-                    calendar_for(profile.template.user_id), {p.id for p in periods},
+                    BalanceContext.build(profile.template.user_id), {p.id for p in periods},
                 ), seed_user["scenario"].id,
             )
             db.session.commit()
@@ -2684,7 +2685,7 @@ class TestCalibration:
             try:
                 recurrence_engine.regenerate_for_template(
                     profile.template, GenerationSchedule.for_period_ids(
-                        calendar_for(profile.template.user_id), {p.id for p in periods},
+                        BalanceContext.build(profile.template.user_id), {p.id for p in periods},
                     ), seed_user["scenario"].id,
                 )
             except Exception:
