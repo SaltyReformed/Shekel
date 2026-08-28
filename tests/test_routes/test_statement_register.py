@@ -913,10 +913,26 @@ class TestTheRegisterBoundIsWiredToThePage:
         The acts are made in ONE Apply, which is what that door is for -- the
         developer's own pass applies 195 items -- and staging them one request
         at a time cost 9.3 s of a 30 s per-test budget for nothing.
+
+        **Every row is staged BEFORE the pass is derived, and all 51 tokens
+        come off that ONE derivation.**  That is what the screen does -- a
+        render builds one
+        :class:`~app.services.statement_match.ReviewScope` and emits every
+        row's token from it -- and building one per row is a shape the app
+        never has.  It is also what keeps this case affordable: at 51 rows the
+        per-row form derived the scope 53 times, which made this the slowest
+        test in the suite and timed the case out in CI at the 30 s budget the
+        paragraph above is already about.
+
+        **A stale scope cannot pass here quietly.**  A row the scope has not
+        got takes ``a_reviewed_token``'s not-offerable fallback, whose token
+        carries ``0.00``; the door then refuses the item, and the count
+        asserted below is short.  That assertion is the freshness guard for
+        the scope this case threads.
         """
         day = seed_user["bootstrap_period"].start_date
         statement = an_import(seed_user)
-        items = []
+        staged = []
         for ordinal in range(REGISTER_LIMIT + 1):
             line = a_bank_line(
                 seed_user, statement, amount="-10.00", posted_on=day,
@@ -926,10 +942,17 @@ class TestTheRegisterBoundIsWiredToThePage:
                 seed_user, name=f"Bill {ordinal}", amount="10.00",
                 status=StatusEnum.DONE, settled_on=day,
             )
-            items.append(
-                match_item(index=ordinal, lines=[line], transactions=[txn]),
-            )
+            staged.append((ordinal, line, txn))
         db.session.commit()
+        scope = ReviewScope.build(
+            seed_user["user"].id, seed_user["account"].id,
+        )
+        items = [
+            match_item(
+                index=ordinal, lines=[line], transactions=[txn], scope=scope,
+            )
+            for ordinal, line, txn in staged
+        ]
         applied = auth_client.post(
             _review_url(seed_user["account"].id), data=one_pass(*items),
         )
