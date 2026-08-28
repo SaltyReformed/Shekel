@@ -14,8 +14,18 @@ module adds or removes goes through
 changes ``budget.pay_periods``, so the rule that a stored ``end_date``
 / ``period_index`` equals the derivation over the owner's paydays has a
 single home.  What stays here are the two gates and the orchestration:
-which periods may go (the lock classifier and the discard count), what
-is repopulated afterwards, and which reconciles a wipe owes.
+which periods may go (the lock classifier and the discard count) and
+which reconciles a wipe owes.
+
+**Nothing here REPOPULATES any more, and that is ruling R-R38** (plan step
+R7d-c-1).  Each door recorded its paydays and then, in the SAME call,
+generated every active template's recurring rows into them -- a write followed
+by a READ-DEPENDENT write, so no caller could get between the two to open the
+read pass that generation resolves in, and the module that ran it had to open
+its own.  The doors now record and RETURN; the caller runs
+:func:`app.routes._period_population.populate_new_periods` next, which opens
+the pass AFTER the periods exist and BEFORE the rows do.  What a pass opened
+any earlier answers is measured in that module's docstring.
 
 The gates' foundation is the reusable **lock classifier** in
 ``pay_period_locks``: the one place that decides whether a pay period
@@ -36,10 +46,10 @@ C4 drops -- and since C4's FIRST commit that is the WHOLE module rather than the
 narrow claim it was** (finding **P70**).  Every door decides on the owner's
 schedule read once through ``pay_calendar``, in
 :class:`~app.services.pay_calendar.DerivedPeriod` values.  Three of the four
-doors still RECEIVE ``list[PayPeriod]`` back from ``pay_period_write`` and hand
-it to ``period_population`` -- the writer's OUTPUT, not an input to any decision
-here.  What the doors hand the writer is the set of ``budget.pay_periods.id`` to
-retire.
+doors still RETURN ``list[PayPeriod]`` from ``pay_period_write`` to their own
+caller, which populates them -- the writer's OUTPUT, not an input to any
+decision here.  What the doors hand the writer is the set of
+``budget.pay_periods.id`` to retire.
 
 **Each door resolves "today" ONCE, as the OWNER's civil day**
 (``utils.dates.display_today``), and both halves of that are plan step C2-f3b's.
@@ -94,7 +104,6 @@ from app.services import (
 from app.services._recurrence_common import log_resource_access_denied
 from app.services.pay_calendar import DerivedPeriod, PeriodWindow, calendar_for
 from app.services.pay_period_locks import PeriodLockReason, classify_schedule_locks
-from app.services.period_population import populate_periods_from_active_templates
 from app.utils.balance_predicates import is_projected_clause, settled_status_ids
 from app.utils.dates import display_today
 from app.utils.log_events import (
@@ -113,8 +122,11 @@ def extend_pay_periods(user_id, num_periods):
     ``period_index == calendar-order`` invariant the balance resolver relies on
     is preserved (only tail-append and tail-truncate do).
     :func:`~app.services.pay_period_write.record_paydays` creates the new
-    periods EMPTY -- it does not run the recurrence engine -- so they are then
-    repopulated with each active template's recurring rows.
+    periods EMPTY -- it does not run the recurrence engine -- and this door
+    LEAVES them empty (ruling **R-R38**): the caller repopulates them through
+    :func:`app.routes._period_population.populate_new_periods`, which opens the
+    read pass the generation resolves in.  The module docstring carries why
+    that call cannot be made from here.
 
     **It takes no cadence, and that is finding P29's fix** (plan step C3-b).
     ``cadence_days`` was an accepted parameter, forwarded from a Marshmallow
@@ -145,7 +157,8 @@ def extend_pay_periods(user_id, num_periods):
 
     Returns:
         The list of newly created :class:`~app.models.pay_period.PayPeriod`
-        objects.
+        objects, flushed and EMPTY -- no recurring row has been generated into
+        them yet.
 
     Raises:
         ValidationError: When the user has no existing periods to extend
@@ -185,13 +198,9 @@ def extend_pay_periods(user_id, num_periods):
     next_payday = calendar.span_containing(
         calendar.horizon() + timedelta(days=1),
     ).start_date
-    new_periods = pay_period_write.record_paydays(
+    return pay_period_write.record_paydays(
         user_id, next_payday, num_periods, cadence_days,
     )
-    populate_periods_from_active_templates(
-        user_id, {period.id for period in new_periods},
-    )
-    return new_periods
 
 
 def truncate_pay_periods(
@@ -476,8 +485,9 @@ def regenerate_pay_periods(
     "Fix a mistake" without per-period date editing: truncate the
     rebuildable future tail (the first not-yet-started unlocked period
     onward), then generate a fresh ``num_periods``-long schedule from
-    ``new_start_date`` at ``cadence_days`` and repopulate it with the
-    active templates' recurring rows.  Periods that have already started,
+    ``new_start_date`` at ``cadence_days``.  The new periods come back EMPTY
+    and the caller repopulates them (ruling **R-R38**; see the module
+    docstring).  Periods that have already started,
     are historical, hold settled money or posted ledger entries, or anchor a
     recurrence rule are KEPT; if any such locked period sits inside the rebuildable tail the
     truncate step refuses (history cannot be rewritten under a settled
@@ -561,14 +571,10 @@ def regenerate_pay_periods(
     # The gate below still decides WHICH periods may go; the writer carries the
     # delete out beside the create so one derivation sees the end state.
     doomed = _gate_deletable_tail(saved, kept, confirm_discard, locks)
-    new_periods = pay_period_write.record_paydays(
+    return pay_period_write.record_paydays(
         user_id, new_start_date, num_periods, cadence_days,
         retiring_ids={period.period_id for period in doomed},
     )
-    populate_periods_from_active_templates(
-        user_id, {period.id for period in new_periods},
-    )
-    return new_periods
 
 
 def can_reset_pay_periods(user_id: int) -> bool:
@@ -630,8 +636,7 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
          NOT in that cascade any more (ruling R-EO), and neither are the
          recurrence rules (plan step R7b-4).
       4. Generate the fresh schedule from ``new_start_date``.
-      5. Repopulate the new periods from the active templates.
-      6. Re-sync each of the user's loans' genesis postings onto the
+      5. Re-sync each of the user's loans' genesis postings onto the
          rebuilt schedule (:func:`loan_posting_service.resync_user_loan_postings`).
          A loan's opening / true-up ledger entries carry a ``pay_period_id``
          and so CASCADE-delete with the wiped periods, but they exist
@@ -645,6 +650,37 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
          period, but not the assertions those entries derive from -- so this
          re-derives every one of the user's real assertions onto the rebuilt
          schedule rather than one fabricated opening per account.
+
+    **The REPOPULATION left this list at plan step R7d-c-1** (ruling
+    **R-R38**), and it moved to the CALLER rather than merely to the end: it
+    used to run between steps 4 and 5, and it runs after both re-syncs now.
+
+    **Neither re-sync can see what the repopulation writes, and the reason is
+    ONE property rather than a list of readers.**  Both walk the POSTED
+    LEDGER: every read either of them makes of ``budget.transactions`` or
+    ``budget.transfers`` is keyed on a set of ids taken from
+    ``budget.journal_entries`` -- the linked ledger's nonzero per-row nets on
+    the account side (``account_posting_service._walk._source_net_days``), the
+    stale lineage transfers and stale payment shadows on the loan side, and
+    the loan walk's own ``settled_income_shadows``.  A freshly generated row is
+    ``Projected`` and posts nothing, so it is in none of those sets.  *A first
+    draft of this paragraph said the account half "reads no transaction or
+    transfer at all" and enumerated two readers on the loan side; an
+    adversarial review MEASURED the first false (``ACCOUNT RESYNC TABLES:
+    ['budget.transactions']``) and found two more loan-side readers.  The
+    conclusion survived both, and the enumeration is what was wrong -- so the
+    property is stated instead of the roll-call.*  The pre-split order was
+    measured equal on 82 journal entries (2026-08-27); this is why it is equal.
+
+    **The other direction is what R7d-c-2 makes load-bearing.**  The wipe
+    CASCADE-deletes the loan's genesis entries, so the OLD order generated
+    against an EMPTIED loan ledger and the new one generates against the
+    re-posted ledger.  Nothing on today's generation path reads a loan: its
+    reads off the schedule are FOUR of ``schedule.calendar`` and TWO of
+    ``schedule.write_period_ids``, which is the whole set, so the change is
+    invisible now.  From R7d-c-2 the pass folds the loan to bound a
+    payment, and then generating before the re-sync would fold a ledger the
+    wipe had emptied.  The new order is the one that survives that step.
     The new cadence is persisted by step 4's writer rather than by a line of
     this function's own (plan step C3-b): ``record_paydays`` applies the one
     rule -- a batch that RECORDED a payday sets the forecast cadence -- so the
@@ -694,8 +730,9 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
     # true-up entries exist without any settled transaction (a payment-less
     # configured loan posts its opening at params-create), so the wipe DOES
     # CASCADE-delete them.  That is safe because their source facts (LoanParams,
-    # user_trueup LoanAnchorEvent) survive the wipe, and step 8 below re-posts
-    # them onto the rebuilt schedule in this same transaction (review M2 / R7).
+    # user_trueup LoanAnchorEvent) survive the wipe, and
+    # ``resync_user_loan_postings`` below re-posts them onto the rebuilt
+    # schedule in this same transaction (review M2 / R7).
     settled = _settled_transaction_count(user_id)
     if settled > 0:
         raise PayPeriodResetBlocked(settled)
@@ -710,9 +747,6 @@ def reset_pay_periods(user_id, new_start_date, num_periods, cadence_days):
     new_periods = pay_period_write.record_paydays(
         user_id, new_start_date, num_periods, cadence_days,
         retiring_ids=pay_period_write.owner_period_ids(user_id),
-    )
-    populate_periods_from_active_templates(
-        user_id, {period.id for period in new_periods},
     )
     # Re-post the loan genesis (opening / true-up) corrections the period
     # CASCADE wiped: their source facts survived, so this re-derives them

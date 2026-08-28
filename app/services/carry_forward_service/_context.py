@@ -68,7 +68,7 @@ class _CarryForwardContext:  # pylint: disable=too-many-instance-attributes
 
 
 def _build_carry_forward_context(source_period_id, target_period_id,
-                                 scenario_id, calendar):
+                                 scenario_id, balance_ctx):
     """Validate periods, query projected source rows, three-way partition.
 
     Pure read-only setup shared by ``carry_forward_unpaid`` (mutating)
@@ -96,11 +96,29 @@ def _build_carry_forward_context(source_period_id, target_period_id,
         source_period_id: pay_period.id to carry forward FROM.
         target_period_id: pay_period.id to carry forward TO.
         scenario_id: scenario filter (mirrors the mutating path).
-        calendar: The owner's
-            :class:`~app.services.pay_calendar.PayCalendar`, derived once by
+        balance_ctx: The request's
+            :class:`~app.services.balance_at.BalanceContext`, opened once by
             the route.  It carries the owner, so no ``user_id`` rides beside
             it -- two spellings of one fact with nothing reconciling them is
-            the shape ruling P54 rejected.
+            the shape ruling P54 rejected -- and its calendar answers both
+            period lookups.  **It took the calendar itself until plan step
+            R7d-c-1**, which moved the derivation onto the pass so the value
+            the recurrence prediction resolves against and the value that
+            answers these lookups cannot be two different schedules.
+
+            **The SCENARIO still rides beside it, and that is deliberate
+            rather than an oversight the owner sentence above covers** -- an
+            adversarial review of R7d-c-1 read the two claims together and was
+            right to.  *scenario_id* is what this operation carries forward
+            WITHIN; the pass pins the owner's BASELINE.  Today every caller
+            passes ``balance_ctx.scenario_id`` and the two are the same value,
+            so :meth:`~app.services.balance_at.BalanceContext.amounts` would
+            answer the *basis* below identically -- but it would answer it for
+            the BASELINE whatever this argument said, which is a different
+            rule silently substituted.  The same pairing the recurrence
+            engines already take (``scenario_id`` beside a
+            ``GenerationSchedule``), and collapsing it is a decision about
+            what a non-baseline carry-forward MEANS rather than a rename.
 
     Returns:
         _CarryForwardContext.
@@ -109,7 +127,8 @@ def _build_carry_forward_context(source_period_id, target_period_id,
         NotFoundError: if either period is missing or not the calendar
             owner's.
     """
-    user_id = calendar.user_id
+    user_id = balance_ctx.user_id
+    calendar = balance_ctx.calendar()
 
     source = calendar.period_by_id(source_period_id)
     if source is None:
@@ -123,10 +142,12 @@ def _build_carry_forward_context(source_period_id, target_period_id,
     # period the envelope rollovers write into (plan step R4b-1).  Every
     # envelope row asks the recurrence engine the same question about the same
     # target; building this per row would repeat the forward occurrence walk
-    # once per row.  It is built from the calendar the route already derived,
-    # so the request holds ONE derivation of the owner's schedule rather than
+    # once per row.  It is built from the pass the route already opened, so
+    # the request holds ONE derivation of the owner's schedule rather than
     # the two plan ledger row **P68** measured.
-    schedule = GenerationSchedule.for_period_ids(calendar, {target.period_id})
+    schedule = GenerationSchedule.for_period_ids(
+        balance_ctx, {target.period_id},
+    )
     # ONE basis for the whole request, on the same terms as the schedule above:
     # every envelope row is priced against the same owner and scenario, and it
     # resolves nothing until the first row asks.

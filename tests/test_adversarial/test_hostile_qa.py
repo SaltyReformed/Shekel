@@ -44,6 +44,7 @@ from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer_template import TransferTemplate
+from app.services.balance_at import BalanceContext
 from app.services import (
     carry_forward_service,
     credit_workflow,
@@ -52,7 +53,6 @@ from app.services import (
 )
 from app.services import account_service
 from app.services.row_valuation import owned_contribution, settled_figure
-from app.services.pay_calendar import calendar_for
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -775,7 +775,7 @@ class TestCarryForwardEdgeCases:
             period_id = seed_periods[0].id
             count = carry_forward_service.carry_forward_unpaid(
                 period_id, period_id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -809,7 +809,7 @@ class TestCarryForwardEdgeCases:
             # Carry forward from period 0 to period 2.
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[2].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 

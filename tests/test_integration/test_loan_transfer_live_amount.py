@@ -29,6 +29,7 @@ from app.services import (
     transfer_recurrence,
 )
 from app.services.rate_period_engine import monthly_due_date
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
     add_escrow_line,
@@ -38,7 +39,6 @@ from tests._test_helpers import (
 )
 from tests.oracles.recurrence_baseline import MONTHLY
 from app.services.row_valuation import owned_contribution
-from app.services.pay_calendar import calendar_for
 
 
 def _live_overrides(scenario_id, rows):
@@ -158,7 +158,7 @@ def test_derived_transfer_amount_tracks_escrow_without_regeneration(
         )
         transfer_recurrence.generate_for_template(
             template, GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             ), scenario_id,
         )
         db.session.commit()
@@ -213,7 +213,7 @@ def test_non_derived_transfer_has_no_live_override(
         db.session.flush()
         transfer_recurrence.generate_for_template(
             template, GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             ), scenario_id,
         )
         db.session.commit()
@@ -243,7 +243,7 @@ def test_derived_transfer_due_date_matches_loan_due_date(
         )
         created = transfer_recurrence.generate_for_template(
             template, GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             ), scenario_id,
         )
         db.session.commit()
@@ -298,7 +298,7 @@ def test_derived_override_is_per_shadow_date_aware(
         )
         transfer_recurrence.generate_for_template(
             template, GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             ), scenario_id,
         )
         # Append a second version on the SAME line: 400/mo effective 2026-03-15.
@@ -352,7 +352,7 @@ def test_live_cash_and_split_agree_on_a_mid_window_escrow_change(
         )
         transfer_recurrence.generate_for_template(
             template, GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             ), scenario_id,
         )
         db.session.add(EscrowComponentVersion(
@@ -428,7 +428,7 @@ def test_settling_derived_loan_payment_captures_live_amount(
         )
         transfer_recurrence.generate_for_template(
             template, GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             ), scenario_id,
         )
         db.session.commit()
@@ -507,7 +507,7 @@ def test_settled_loan_payment_freeze_is_one_shot(
         )
         transfer_recurrence.generate_for_template(
             template, GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             ), scenario_id,
         )
         db.session.commit()
@@ -605,7 +605,7 @@ def test_derived_override_includes_standing_extra(
         db.session.flush()
         transfer_recurrence.generate_for_template(
             template, GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             ), scenario_id,
         )
         db.session.commit()
@@ -635,7 +635,7 @@ def test_manual_payment_with_extra_gets_base_plus_extra(
         db.session.flush()
         transfer_recurrence.generate_for_template(
             template, GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             ), scenario_id,
         )
         db.session.commit()
@@ -682,7 +682,7 @@ def test_manual_payment_without_extra_gets_no_override(
         db.session.flush()
         transfer_recurrence.generate_for_template(
             template, GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             ), scenario_id,
         )
         db.session.commit()
@@ -715,7 +715,7 @@ def test_settling_with_extra_lands_the_extra_in_principal(
         db.session.flush()
         transfer_recurrence.generate_for_template(
             template, GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             ), scenario_id,
         )
         db.session.commit()
@@ -772,7 +772,7 @@ def test_settling_manual_payment_with_extra_captures_base_plus_extra(
         db.session.flush()
         transfer_recurrence.generate_for_template(
             template, GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in seed_periods},
+                BalanceContext.build(template.user_id), {p.id for p in seed_periods},
             ), scenario_id,
         )
         db.session.commit()

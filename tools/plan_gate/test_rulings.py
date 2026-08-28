@@ -13,6 +13,7 @@ fails for a reason that has nothing to do with what it grades.
 """
 from __future__ import annotations
 
+import re
 from collections import Counter
 
 import pytest
@@ -37,18 +38,26 @@ def _a_row_of(arc: str) -> str:
 
 
 def _declaration() -> str:
-    """Return the preamble's per-arc count sentence, verbatim.
+    """Return the preamble's per-arc count sentence, VERBATIM from the file.
+
+    Taken from the document rather than rebuilt from
+    :func:`_rulings.declared_arc_counts`, and the difference is not cosmetic:
+    the sentence names five arcs and a formatter wraps it, so a rebuilt
+    ```arc` N, `arc` N`` string is not a substring of the file and every
+    control staging a defect into it fails for a reason that has nothing to do
+    with what it grades.
 
     DERIVED rather than spelled, so a control's anchor cannot go stale the
     next time a ruling is filed -- three controls needed hand-editing when
-    ``balance:R-GZ`` landed, which is the friction that turns a staged
-    control into a literal nobody re-reads.
+    ``balance:R-GZ`` landed, which is the friction that turns a staged control
+    into a literal nobody re-reads.
 
     Returns:
-        The ```arc` N, `arc` N`` fragment the preamble states.
+        The ```arc` N, `arc` N`` fragment the preamble states, newlines and all.
     """
-    counts = rulings.declared_arc_counts()
-    return ", ".join(f"`{arc}` {n}" for arc, n in counts.items())
+    match = rulings.MIGRATED_RX.search(rulings.RULINGS.read_text())
+    assert match is not None, "the preamble states no per-arc declaration"
+    return match.group("arcs")
 
 
 def _with_cell(row: str, index: int, value: str) -> str:
@@ -187,39 +196,253 @@ class TestTheMigrationCannotSitHalfDone:
     def test_a_declared_arc_with_no_rows_is_caught(self, stage_rulings):
         """The preamble claiming an arc the table does not hold."""
         declared = _declaration()
-        stage_rulings(declared, f"{declared}, `recurrence` 0")
-        assert any("carries no recurrence row" in p
+        stage_rulings(declared, f"{declared}, `envelopes` 3")
+        assert any("carries no envelopes row" in p
                    for p in rulings.migration_violations())
 
-    def test_an_arc_that_has_not_moved_still_states_its_rulings(self):
-        """The three arcs X-ao-2 lifts each still carry their own table."""
-        assert set(rulings.ARC_RULING_HEADINGS) == {
-            "recurrence", "pay_calendar", "credit_card",
-        }
+    def test_no_arc_document_states_a_ruling(self):
+        """The finished state, which is what replaced the map.
+
+        ``ARC_RULING_HEADINGS`` listed the arcs that had not moved and was
+        read in both directions while the migration ran.  ``X-ao-2a`` emptied
+        and DELETED it: there is no half-moved state left to describe, and an
+        arc that never enters a map is invisible to every arm that reads one.
+        """
+        assert not hasattr(rulings, "ARC_RULING_HEADINGS")
+        assert set(rulings.migrated_arcs()) == set(rulings.ARC_DOCS)
         assert not rulings.migration_violations()
 
-    @pytest.mark.parametrize("arc", sorted(rulings.ARC_RULING_HEADINGS))
-    def test_an_unmoved_arc_losing_its_heading_is_caught(self, arc, tmp_path,
-                                                        monkeypatch):
-        """An arc whose rulings would then be recorded nowhere."""
-        source = rulings.ARC_DOCS[arc]
-        heading = rulings.ARC_RULING_HEADINGS[arc]
-        target = tmp_path / f"{arc}.md"
-        target.write_text(source.read_text().replace(heading, "## Something else"))
-        monkeypatch.setitem(rulings.ARC_DOCS, arc, target)
-        assert any("recorded nowhere" in p for p in rulings.migration_violations())
+    @pytest.mark.parametrize("arc", sorted(registry.ARC_DOCS))
+    @pytest.mark.parametrize("header", rulings.RULING_TABLE_HEADERS)
+    def test_an_arc_keeping_a_rulings_table_is_caught(self, arc, header,
+                                                     tmp_path, monkeypatch):
+        """Two copies of one registry is what this move removes.
 
-    @pytest.mark.parametrize("arc", ["balance", "bank_import"])
-    def test_a_moved_arc_keeping_its_table_is_caught(self, arc, tmp_path,
-                                                    monkeypatch):
-        """Two copies of one registry is what this move removes."""
-        source = rulings.ARC_DOCS[arc]
+        Over EVERY arc and EVERY grammar.  Parametrizing on the arcs that had
+        moved was the shape of the first draft's hole: the arms that mattered
+        were never run against the arcs still to come.
+        """
         target = tmp_path / f"{arc}.md"
         target.write_text(
-            source.read_text() + "\n| ruling | date | what was ruled |\n"
+            registry.ARC_DOCS[arc].read_text() + f"\n{header}\n|---|---|\n"
         )
-        monkeypatch.setitem(rulings.ARC_DOCS, arc, target)
-        assert any("table -- two copies of one registry" in p
+        monkeypatch.setitem(registry.ARC_DOCS, arc, target)
+        assert any(f"carries a {header!r} table" in p
+                   for p in rulings.migration_violations())
+
+    @pytest.mark.parametrize("declaration", [
+        "| **A new fork** | **The answer. R-R99, ruled 2026-08-27** |",
+        "**Ruling R-R99 (2026-08-27): the answer.** Because of the evidence.",
+        "The bound is derived, R-PC99, archived -- see the as-built record.",
+        "The bound is derived, R-R99, taken 2026-09-01 (developer).",
+        "The bound is derived, R-R99 ruled 2026-09-01 (developer).",
+    ])
+    def test_a_ruling_declared_in_an_arc_document_is_caught(
+            self, declaration, tmp_path, monkeypatch):
+        """The arm that has no map behind it, in all three live spellings.
+
+        The middle specimen is ``recurrence:R-R28``'s own shape: a live ruling
+        that sat in section 4 PROSE, outside every table, while ``steps.md``
+        cited it as ``R13``'s.  No table arm could see it and no heading map
+        would have looked there.
+
+        **The last two were GREEN until an adversarial review wrote them.**
+        The pattern required a comma before the verb and admitted exactly two
+        verbs, both accidents of how the corpus happened to be phrased -- so
+        ``taken`` and a missing comma each walked past it.  What the same
+        review's other four probes show the arm still cannot see is stated at
+        :data:`_rulings.RULING_DECLARATION_RX` rather than left here.
+        """
+        target = tmp_path / "recurrence.md"
+        target.write_text(
+            registry.ARC_DOCS["recurrence"].read_text() + f"\n{declaration}\n"
+        )
+        monkeypatch.setitem(registry.ARC_DOCS, "recurrence", target)
+        assert any("DECLARES a ruling at line" in p
+                   for p in rulings.migration_violations())
+
+    @pytest.mark.parametrize("citation", [
+        "It takes the DEFINITION and not the loan (ruling **R-R35**).",
+        "**Ruling R-AP, taken AGAINST the recommendation**: the cluster stays.",
+        "### Phase X -- the anchor half (ruling R-EB; runs FIRST)",
+    ])
+    def test_a_ruling_citation_is_not_a_declaration(self, citation, tmp_path,
+                                                    monkeypatch):
+        """The arm's other half, and the one a wider pattern would break.
+
+        All three are live text in arc documents today.  A declaration carries
+        a DATE beside the id and a citation does not, which is the whole
+        discriminator -- an arm that fired on every ``R-xx`` would make citing
+        a ruling impossible in the documents whose job is to cite them.
+        """
+        target = tmp_path / "balance.md"
+        target.write_text(
+            registry.ARC_DOCS["balance"].read_text() + f"\n{citation}\n"
+        )
+        monkeypatch.setitem(registry.ARC_DOCS, "balance", target)
+        assert not [p for p in rulings.migration_violations()
+                    if "DECLARES a ruling" in p]
+
+    @pytest.mark.parametrize("stated", [
+        "1. **Re-account model.** Marking a purchase Credit MOVES it.",
+        "- **A charged expense stays visible in place** on the source grid.",
+        "| **A fork** | **An answer** |",
+        "1. Re-account model: marking a purchase Credit MOVES it.",
+        "- A charged expense stays visible in place on the source grid.",
+    ])
+    def test_a_pointer_section_that_states_rulings_is_caught(
+            self, stated, tmp_path, monkeypatch):
+        """The arm for an ID-LESS block, which nothing else here can see.
+
+        ``credit_card``'s eight locked rulings were a numbered LIST under a
+        heading, with no ids and no table, and they sat unparsed for five
+        weeks: the residual-table arm read table HEADERS, so that arc could
+        have kept its whole registry through the lift with every other arm
+        green.  The first specimen is one of those eight, verbatim in shape.
+
+        **The last two specimens carry NO bold**, and they are here because a
+        mutation run measured the cost of demanding it: the arm required a
+        bold-led list item, its docstring claimed "no list item", and reverting
+        the widening left all 285 tests green.  ``credit_card``'s eight
+        happened to be bold; nothing makes the next block bold.
+        """
+        text = registry.ARC_DOCS["credit_card"].read_text()
+        marker = "## The rulings\n"
+        assert marker in text, "the pointer section this control needs is gone"
+        target = tmp_path / "credit_card.md"
+        target.write_text(text.replace(marker, f"{marker}\n{stated}\n", 1))
+        monkeypatch.setitem(registry.ARC_DOCS, "credit_card", target)
+        assert any("it is a POINTER" in p for p in rulings.migration_violations())
+
+    def test_rulings_stated_under_a_subsection_of_the_pointer_are_caught(
+            self, tmp_path, monkeypatch):
+        """A section's body includes its subsections, which nothing graded.
+
+        :func:`_rulings._sections` argues for exactly this in its own
+        docstring -- "a rulings POINTER that grew a `### ...` block of
+        decisions underneath must read as part of the pointer, or the arm
+        refusing a list under this heading looks at the wrong lines" -- and an
+        adversarial review's mutation run found TWO ways to break it that the
+        whole suite passed: ending every section at the next heading of any
+        level, and dropping the deeper-heading walk entirely.  A property a
+        docstring argues for hardest and nothing exercises is a claim, not a
+        control.
+        """
+        text = registry.ARC_DOCS["credit_card"].read_text()
+        marker = "## The rulings\n"
+        assert marker in text, "the pointer section this control needs is gone"
+        buried = (f"{marker}\n### The re-account decisions\n\n"
+                  "1. **Re-account model.** Marking a purchase Credit MOVES it.\n"
+                  "2. **Full statement cycle.** A statement is DERIVED.\n")
+        target = tmp_path / "credit_card.md"
+        target.write_text(text.replace(marker, buried, 1))
+        monkeypatch.setitem(registry.ARC_DOCS, "credit_card", target)
+        assert any("it is a POINTER" in p for p in rulings.migration_violations())
+
+    def test_a_fenced_example_is_not_a_ruling_and_does_not_hide_one(
+            self, tmp_path, monkeypatch):
+        """Fences, in BOTH directions, which this module was blind to.
+
+        A ``#``-led line inside a fence ended the pointer section early, so
+        decisions written after it were invisible to every arm here; and a
+        fenced EXAMPLE of a forbidden declaration was reported as one, so a
+        document could not illustrate the shape it must not use.
+        ``_registry.arc_checkboxes`` and ``_plan_gate._section`` already
+        carried this in prose and ``_duplication`` already imported the
+        helper; this module was the third caller and the only one that did not.
+        """
+        text = registry.ARC_DOCS["credit_card"].read_text()
+        marker = "## The rulings\n"
+        hidden = (f"{marker}\n```text\n# a comment line inside a fence\n```\n\n"
+                  "1. **A decision.** Something ruled.\n")
+        target = tmp_path / "hidden.md"
+        target.write_text(text.replace(marker, hidden, 1))
+        monkeypatch.setitem(registry.ARC_DOCS, "credit_card", target)
+        assert any("it is a POINTER" in p for p in rulings.migration_violations()), (
+            "a fenced heading-shaped line truncated the section and hid the list"
+        )
+
+        example = (f"{marker}\n```text\n"
+                   "**Ruling R-CC99 (2026-08-27): never write this here.**\n```\n")
+        other = tmp_path / "example.md"
+        other.write_text(text.replace(marker, example, 1))
+        monkeypatch.setitem(registry.ARC_DOCS, "credit_card", other)
+        assert not [p for p in rulings.migration_violations()
+                    if "DECLARES a ruling" in p], (
+            "a fenced illustration of the forbidden shape is not a declaration"
+        )
+
+    def test_a_rulings_section_that_points_nowhere_is_caught(self, tmp_path,
+                                                            monkeypatch):
+        """A heading a reader lands on that names no forwarding address.
+
+        Its sibling below covers the section going MISSING.  The two were one
+        control until a mutation run measured what that cost: neutralising
+        either the section arm or a whole-document "names rulings.md somewhere"
+        arm left this test green, because removing every mention fired both.
+        The redundant arm is deleted and each survivor has its own specimen.
+        """
+        text = registry.ARC_DOCS["pay_calendar"].read_text()
+        target = tmp_path / "pay_calendar.md"
+        target.write_text(text.replace("rulings.md", "somewhere else"))
+        monkeypatch.setitem(registry.ARC_DOCS, "pay_calendar", target)
+        assert any("does not name" in p and "rulings.md" in p
+                   for p in rulings.migration_violations())
+
+    @pytest.mark.parametrize("arc", sorted(registry.ARC_DOCS))
+    def test_an_arc_document_with_no_rulings_section_is_caught(
+            self, arc, tmp_path, monkeypatch):
+        """The section itself going missing, which no other arm can see.
+
+        Over every arc, because the balance README carried a heading no
+        anchored pattern matched -- ``## 4. Decisions that govern the
+        remaining work`` -- until ``X-ao-2a`` renamed it. An arm that grades
+        four arcs and reports on five is the failure this whole registry is
+        an instance of.
+        """
+        text = registry.ARC_DOCS[arc].read_text()
+        heading = next(line for line in text.splitlines()
+                       if rulings.RULINGS_HEADING_RX.match(line))
+        target = tmp_path / f"{arc}.md"
+        target.write_text(text.replace(heading, "## Decisions", 1))
+        monkeypatch.setitem(registry.ARC_DOCS, arc, target)
+        assert any("carries no rulings section" in p
+                   for p in rulings.migration_violations())
+
+    def test_a_sixth_arc_document_nobody_mapped_is_caught(self, tmp_path,
+                                                          monkeypatch):
+        """The half of the map that survived deleting the map.
+
+        Three pointer sections say the gate "cannot go blind to one nobody
+        remembered to add".  An adversarial review measured that false: both
+        halves of :func:`migration_violations` iterate ``ARC_DOCS``, a
+        hardcoded dict, so a sixth arc plan created and never added to it was
+        invisible to every arm -- the per-arc map was gone and the map of
+        WHICH DOCUMENTS ARE ARCS was not.
+        """
+        plans = tmp_path / "plans"
+        plans.mkdir()
+        for path in registry.PLANS.glob("implementation_plan_*.md"):
+            (plans / path.name).write_text(path.read_text())
+        (plans / "implementation_plan_envelopes.md").write_text(
+            "# The envelope arc\n\n## The rulings\n\nSee `rulings.md`.\n")
+        monkeypatch.setattr(rulings, "PLANS", plans)
+        assert any("no ARC_DOCS entry names it" in p
+                   for p in rulings.migration_violations())
+
+    def test_an_arc_the_preamble_omits_is_caught(self, stage_rulings):
+        """The set-defined-by-omission shape, which this corpus has paid for.
+
+        With the map gone, an arc missing from the declaration is the only way
+        an arc can go unaccounted for -- and it now fails rather than reading
+        as "not moved yet".
+        """
+        declared = _declaration()
+        counts = rulings.declared_arc_counts()
+        fragment = f"`credit_card` {counts['credit_card']}"
+        assert fragment in declared, fragment
+        stage_rulings(declared, re.sub(rf",\s*{re.escape(fragment)}", "", declared))
+        assert any("rulings.md does not declare it" in p
                    for p in rulings.migration_violations())
 
 
@@ -269,17 +492,33 @@ class TestTheLiftLostNothing:
         The point of the pair key, stated as a control: before this file the
         collision was invisible to every gate; now it is a row-level fact a
         reader can enumerate, which is what X-ao-3 grades citations against.
+
+        **The assertion is a PROPERTY of R-GU, not a CENSUS of the registry.**
+        It read ``ambiguous == {"R-GU": ...}`` until an adversarial review
+        simulated the merge that was already in flight: another session had
+        minted ``bank_import:R-HB`` and ``R-HC`` beside this branch's
+        ``balance:R-HB`` and ``R-HC``, which rule 10 makes LEGAL and which
+        every other arm here correctly passes.  Only the census literal went
+        red, and the only way to make it green would have been to edit it --
+        the exact shape :class:`TestTheLiftLostNothing` rejects by name a few
+        lines above, arriving in the file that rejects it.
         """
         by_id: dict[str, set[str]] = {}
         for row in rulings.ruling_rows():
             by_id.setdefault(row.bare_ident, set()).add(row.arc)
         ambiguous = {i: a for i, a in by_id.items() if len(a) > 1}
-        assert ambiguous == {"R-GU": {"balance", "bank_import"}}, ambiguous
+        assert ambiguous.get("R-GU") == {"balance", "bank_import"}, ambiguous
         assert not rulings.key_violations()
 
 
 class TestTheArmsThatHadNoControl:
     """Every arm proven to FAIL, including the three that never had a companion.
+
+    One member here is NOT an arm proven to fail --
+    :meth:`test_the_map_that_replaced_these_two_controls_is_gone` records what
+    two deleted controls used to grade and asserts their subject is gone. It
+    sits here because this is where those two controls were, and moving it
+    would leave the reader of a diff no trace of why they went.
 
     This module's opening claim -- that every arm here has a companion that
     plants the defect and asserts it fires -- was FALSE for three arms when it
@@ -303,75 +542,117 @@ class TestTheArmsThatHadNoControl:
         assert any(f"{alias} is claimed as an `also` id by 2 rows" in p
                    for p in rulings.key_violations())
 
-    def test_an_arc_named_by_neither_side_is_caught(self, monkeypatch):
-        """The set-defined-by-omission shape, which this corpus has paid for.
+    def test_the_map_that_replaced_these_two_controls_is_gone(self):
+        """Their subject was ``ARC_RULING_HEADINGS`` and X-ao-2a deleted it.
 
-        An arc dropped from ``ARC_RULING_HEADINGS`` without being lifted is
-        named by no declaration and no map, so every other arm passes over it.
+        Both graded the map against itself -- an arc dropped from it, and an
+        entry that outlived its table -- and both were real while a migration
+        was in flight.  What replaced them grades the DOCUMENTS: a ruling
+        declaration, a rulings table in any grammar, and a pointer section
+        that has started stating decisions.  None of those needs an arc to
+        have been remembered.
         """
-        monkeypatch.delitem(rulings.ARC_RULING_HEADINGS, "credit_card")
-        assert any("neither declared moved nor listed" in p
-                   for p in rulings.migration_violations())
-
-    def test_a_moved_arc_left_in_the_not_moved_map_is_caught(self, monkeypatch):
-        """An entry that outlives the table it points at."""
-        monkeypatch.setitem(rulings.ARC_RULING_HEADINGS, "balance", "## 4.")
-        assert any("still has an entry in ARC_RULING_HEADINGS" in p
-                   for p in rulings.migration_violations())
+        assert not hasattr(rulings, "ARC_RULING_HEADINGS")
+        assert rulings.RULING_DECLARATION_RX.search("R-R99, ruled 2026-08-27")
+        assert rulings.RULINGS_HEADING_RX.match("## The rulings")
 
 
 class TestRuleFourAppliesToThisFileToo:
     """The per-ROW cap, which is the whole of rule 4 here."""
 
     def test_the_only_rows_over_the_cap_are_the_lifted_debt(self):
-        """The debt is COUNTED, so a new over-cap row is distinguishable.
+        """The debt is KEYED, so a new over-cap row is distinguishable.
 
-        These 23 rows were over the cap in the documents that held them and
-        were lifted verbatim; rule 5 forbids trimming a live specification to
-        fit, and rule 4's own remedy sends the overflow to the owning step's
-        specification, which is ``X-ao-2``.  Recording the number rather than
-        exempting the rows is what keeps a NEW over-cap row a failure.
+        These rows were over the cap in the documents that held them and were
+        lifted verbatim; rule 5 forbids trimming a live specification to fit,
+        and rule 4's own remedy sends the overflow to the as-built record of
+        the step that shipped the ruling, or to that step's live specification
+        when it has not shipped -- which is ``X-ao-2b``.  Recording which rows
+        AND HOW WIDE, rather than exempting them, is what keeps a new over-cap
+        row, a finished row and a SWOLLEN one all failures.
         """
-        assert len(rulings.row_width_violations()) == rulings.LIFTED_ROWS_OVER_CAP
+        assert not rulings.row_width_violations()
+        over = {row.key: row.width for row in rulings.ruling_rows()
+                if row.width > rulings.RULINGS_ROW_CAP}
+        assert over == rulings.LIFTED_ROWS_OVER_CAP
+
+    def test_a_new_row_over_the_cap_is_caught(self, stage_rulings):
+        """The debt is a named set to compare against, never a licence."""
+        row = _a_row_of("balance")
+        stage_rulings(row, _with_cell(row, 4, "x" * (rulings.RULINGS_ROW_CAP + 1)))
+        assert any("against the" in p and "row cap" in p
+                   for p in rulings.row_width_violations())
+
+    def test_a_debt_row_that_came_under_the_cap_is_caught(self, stage_rulings):
+        """The direction a COUNT could not see, which is why it is a SET.
+
+        ``LIFTED_ROWS_OVER_CAP = 23`` could not tell 23 rows from a different
+        23: trim one row under the cap while another swells past it and the
+        total is still 23 and the arm is still green.  Keyed, the trim is
+        REPORTED -- which is how ``X-ao-2b`` shows its own progress instead of
+        asserting it.
+        """
+        widest = max(rulings.ruling_rows(), key=lambda r: r.width)
+        row = next(line for line in rulings.RULINGS.read_text().splitlines()
+                   if line.startswith(f"| {widest.arc} | {widest.bare_ident} |"))
+        stage_rulings(row, _with_cell(row, 4, "the rule, and nothing else"))
+        assert any(f"{widest.key} is recorded in LIFTED_ROWS_OVER_CAP" in p
+                   for p in rulings.row_width_violations())
+
+    def test_a_debt_row_that_grew_is_caught(self, stage_rulings):
+        """The hole membership alone left, which the docstring denied.
+
+        An adversarial review measured it: with the debt recorded as a SET of
+        keys, ``bank_import:R-GD`` could go from 16,087 characters to 32,000
+        and every arm stayed green, while the constant's own note claimed
+        "both directions fail".  A width per key is what makes that true.
+        """
+        widest = max(rulings.ruling_rows(), key=lambda r: r.width)
+        row = next(line for line in rulings.RULINGS.read_text().splitlines()
+                   if line.startswith(f"| {widest.arc} | {widest.bare_ident} |"))
+        stage_rulings(row, _with_cell(row, 4, widest.rule + " x" * 4000))
+        assert any(f"{widest.key} is" in p and "and the debt records" in p
+                   for p in rulings.row_width_violations())
 
     def test_the_cap_is_the_ledger_s_own_number(self):
         """Not a number fitted to today's file, which rule 4 forbids."""
         assert rulings.RULINGS_ROW_CAP == registry.LEDGER_ROW_CAP
 
-    def test_a_new_row_over_the_cap_is_caught(self, stage_rulings):
-        """The debt count is a floor to compare against, never a licence."""
-        row = _a_row_of("balance")
-        stage_rulings(row, _with_cell(row, 4, "x" * (rulings.RULINGS_ROW_CAP + 1)))
-        assert len(rulings.row_width_violations()) == rulings.LIFTED_ROWS_OVER_CAP + 1
-
     def test_the_widest_lifted_row_is_the_one_recorded(self):
-        """16,087 characters against a 529-character median.
+        """Whatever the widest row is, the debt knows it and knows its width.
 
-        Named so the debt has a face: it is the arc document's argument living
-        in the registry, which is the sentence LEDGER_ROW_CAP was written for.
+        The debt has a face: the widest row is the arc document's argument
+        living in the registry, which is the sentence ``LEDGER_ROW_CAP`` was
+        written for.  At ``X-ao-2a`` that face was ``bank_import:R-GD`` at
+        16,087 characters against a 542.5-character median over 190 rows.
+
+        **The assertion is a PROPERTY, and pinning the id instead was caught
+        before it bit.**  ``X-ao-2b`` exists to TRIM these rows, ``R-GD`` most
+        of all, so ``assert widest.key == "bank_import:R-GD"`` would have gone
+        red on the step whose whole job is to change it -- and the remedy would
+        have been to edit the test.  That is finding **N-355**, a control
+        deriving its specimen from a live row, and a peer session shipping
+        ``balance:X-am`` broke two other controls the same way on the same day.
         """
-        widest = max(rulings.ruling_rows(), key=lambda r: r.width)
-        assert widest.key == "bank_import:R-GD"
-        assert widest.width > 16000
+        widest = max(rulings.ruling_rows(), key=lambda row: row.width)
+        assert widest.width > rulings.RULINGS_ROW_CAP, (
+            "no row is over the cap, so the debt is discharged -- delete "
+            "LIFTED_ROWS_OVER_CAP and this control with it (X-ao-2b's end state)"
+        )
+        assert widest.key in rulings.LIFTED_ROWS_OVER_CAP
+        assert rulings.LIFTED_ROWS_OVER_CAP[widest.key] == widest.width
 
 
 class TestTheHalfMigrationCannotHideARowLoss:
-    """The three states two adversarial reviews used to break the first draft."""
+    """The states two adversarial reviews used to break the first draft.
 
-    def test_a_declared_arc_that_kept_its_own_table_is_caught(self, tmp_path,
-                                                             monkeypatch):
-        """Every grammar, not only the one the migrated arcs used.
-
-        The first draft matched ``| ruling | date |`` -- the spelling of the
-        two arcs that had ALREADY moved and no longer have a table -- so it
-        was blind to exactly the three arcs X-ao-2 must protect.
-        """
-        source = rulings.ARC_DOCS["balance"]
-        target = tmp_path / "balance.md"
-        target.write_text(source.read_text() + "\n| fork | ruling |\n|---|---|\n")
-        monkeypatch.setitem(rulings.ARC_DOCS, "balance", target)
-        assert any("still carries a '| fork | ruling |' table" in p
-                   for p in rulings.migration_violations())
+    It said THREE and holds two: the residual-table case moved to
+    :meth:`TestTheMigrationCannotSitHalfDone.test_an_arc_keeping_a_rulings_table_is_caught`,
+    which runs it over every arc and every grammar instead of over one arc,
+    and the count stayed behind.  Naming that here rather than deleting the
+    sentence, because a stated count that outlives what it counts is the
+    defect class this whole arc exists to remove.
+    """
 
     def test_a_dropped_row_is_caught_even_when_the_total_is_corrected(
             self, stage_rulings):
@@ -400,94 +681,37 @@ class TestTheHalfMigrationCannotHideARowLoss:
 
 
 class TestThePreambleDoesNotDecay:
-    """Rule 3 over the arcs that have NOT moved yet.
+    """Rule 3 over the preamble, now that every arc has moved.
 
-    The registry's preamble states a count for each unmigrated arc and a total
-    derived from them.  Those are DERIVED VALUES BESIDE NO RECONCILER -- the
-    root cause three of these arcs exist to remove -- and they shipped that way
-    in the first draft.  The recurrence session named the decay before it
-    happened: its 36 becomes 37 when PR #138 merges and 38 after `R7d-c-1`.
+    This class used to grade a parenthesised count per UNMIGRATED arc and a
+    total derived from them -- derived values beside no reconciler, which is
+    the root cause three of these arcs exist to remove, and they shipped that
+    way in the first draft.  ``X-ao-2a`` deleted the sentence and the arms with
+    it: with no arc left unmoved there is nothing to count, and what remains
+    is the per-arc declaration, which :class:`TestTheLiftLostNothing` grades.
     """
 
-    def test_every_unmigrated_count_matches_its_document(self):
-        """Counted from the documents, never from the sentence."""
-        assert not rulings.unmigrated_count_violations()
+    def test_the_unmigrated_count_machinery_is_gone(self):
+        """A sentence with no subject is deleted, not left reading zero."""
+        for name in ("UNMIGRATED_RX", "UNMIGRATED_TOTAL_RX",
+                     "unmigrated_arc_counts", "unmigrated_count_violations"):
+            assert not hasattr(rulings, name), name
+        assert "need ids MINTED" not in rulings.RULINGS.read_text()
 
-    def test_the_counts_are_taken_from_the_three_documents(self):
-        """The arcs counted are exactly the arcs declared unmoved."""
-        assert set(rulings.unmigrated_arc_counts()) == set(
-            rulings.ARC_RULING_HEADINGS
-        )
-
-    def test_a_stale_per_arc_count_is_caught(self, stage_rulings):
-        """The decay the recurrence session predicted, planted."""
-        actual = rulings.unmigrated_arc_counts()["recurrence"]
-        text = rulings.RULINGS.read_text()
-        anchor = next(m.group(0) for m in rulings.UNMIGRATED_RX.finditer(text)
-                      if m.group("arc") == "recurrence")
-        stage_rulings(anchor, anchor.replace(str(actual), str(actual + 1)))
-        assert any("recurrence holds" in p
-                   for p in rulings.unmigrated_count_violations())
-
-    def test_a_stale_derived_total_is_caught(self, stage_rulings):
-        """The total is derived from three counts and decays with any of them."""
-        total = sum(rulings.unmigrated_arc_counts().values())
-        stage_rulings(f"Those {total} need ids", f"Those {total + 1} need ids")
-        assert any("still to be lifted" in p
-                   for p in rulings.unmigrated_count_violations())
-
-    def test_a_separator_row_is_not_counted_as_a_ruling(self):
-        """The error that read 37 recurrence rows where the document holds 36.
-
-        A ``|---|---|`` separator and a ``| fork | ruling |`` header are table
-        STRUCTURE, not entries.  Counting one is the same class as **balance:N-372**,
-        the section label rendered as a row -- and it is how this session first
-        quoted a number back to a peer that neither document held.
-        """
-        text = rulings.ARC_DOCS["recurrence"].read_text()
-        assert "|---|---|" in text, "the specimen separator is not in the real table"
-        inside, pipe_lines = False, 0
-        for line in text.splitlines():
-            if inside and line.startswith("## "):
-                break
-            if line.startswith(rulings.ARC_RULING_HEADINGS["recurrence"]):
-                inside = True
-                continue
-            if inside and line.strip().startswith("|"):
-                pipe_lines += 1
-        counted = rulings.unmigrated_arc_counts()["recurrence"]
-        assert counted == pipe_lines - 2, (
-            f"{pipe_lines} lines begin with a pipe and {counted} were counted; "
-            f"exactly TWO -- the header and the separator -- are structure "
-            f"rather than entries"
-        )
-
-
-    def test_a_count_the_preamble_omits_is_caught(self, stage_rulings):
-        """An UNSTATED count is not a clean one.
-
-        A pattern that matches nothing reads as "no claim is made" and passes.
-        That is not hypothetical here: `rumdl fmt` re-wrapped the preamble and
-        put a newline between an arc name and its count, and this arm went
-        silently blind rather than red -- the exact failure its sibling count
-        arm was written against, reproduced by a formatter.
-        """
-        text = rulings.RULINGS.read_text()
-        anchor = next(m.group(0) for m in rulings.UNMIGRATED_RX.finditer(text)
-                      if m.group("arc") == "credit_card")
-        stage_rulings(anchor, "`credit_card` no longer says")
-        assert any("states no count for credit_card" in p
-                   for p in rulings.unmigrated_count_violations())
-
-    def test_the_count_survives_a_line_break(self, stage_rulings):
-        """A formatter may wrap between the arc name and its count.
+    def test_the_declaration_survives_a_line_break(self, stage_rulings):
+        """A formatter may wrap between an arc name and its count.
 
         The mechanism, graded directly rather than through its effect: the
-        arm reads whitespace, so re-flowing the paragraph cannot silence it.
+        pattern reads whitespace, so re-flowing the paragraph cannot silence
+        it.  That is not hypothetical -- `rumdl fmt` re-wrapped this preamble
+        once and put a newline between an arc name and its count, and the arm
+        that read it went silently blind rather than red.
         """
-        text = rulings.RULINGS.read_text()
-        anchor = next(m.group(0) for m in rulings.UNMIGRATED_RX.finditer(text)
-                      if m.group("arc") == "recurrence")
-        stage_rulings(anchor, anchor.replace("` (", "`\n("))
-        assert "recurrence" in rulings.unmigrated_arc_counts()
-        assert not rulings.unmigrated_count_violations()
+        declared = _declaration()
+        count = rulings.declared_arc_counts()["credit_card"]
+        fragment = f"`credit_card` {count}"
+        assert fragment in declared, fragment
+        stage_rulings(declared, declared.replace(fragment,
+                                                 f"`credit_card`\n{count}"))
+        assert rulings.declared_arc_counts().get("credit_card") == count
+        assert not rulings.migration_violations()

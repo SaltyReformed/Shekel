@@ -375,11 +375,12 @@ def _assemble(
             (:meth:`~._context.BalanceContext.calendar`), which
             :func:`_cash_plan` clamps each planned row against.  **A calendar
             rather than the pass, and REQUIRED** (pay-calendar plan step
-            C4-a-1): it is the shape ruling "How the CONTRIBUTION tier learns
-            its periods" already gave :func:`~._asset_fold.resolve` one module
-            over, and a calendar carries neither a scenario nor a clock, so
-            passing one alongside *basis* and *as_of* reintroduces nothing they
-            could disagree about.
+            C4-a-1): it is the shape ruling **R-PC19** ("How the CONTRIBUTION
+            tier learns its periods") already gave
+            :func:`~._asset_fold.resolve` one module over, and a calendar
+            carries neither a scenario nor a clock, so passing one alongside
+            *basis* and *as_of* reintroduces nothing they could disagree
+            about.
 
     Returns:
         The :class:`AssembledCashFold`.

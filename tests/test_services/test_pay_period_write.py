@@ -944,7 +944,7 @@ class TestACoverageWithdrawalIsAccepted:
             )
             db.session.commit()
 
-            assert created == 1
+            assert len(created) == 1
             rows = _paydays(user_id)
             assert rows[-1] == (date(2026, 5, 11), date(2026, 5, 13), 10)
             # The previous last paycheck gave up 2026-05-11..2026-05-21 to the

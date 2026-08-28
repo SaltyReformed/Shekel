@@ -58,7 +58,6 @@ from tests._test_helpers import (
     settlement_columns,
 )
 from tests._test_helpers import make_every_period_rule
-from app.services.pay_calendar import calendar_for
 
 
 def _create_transaction(seed_user, seed_periods, period_index=0,
@@ -127,7 +126,7 @@ class TestCarryForwardUnpaid:
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -154,7 +153,7 @@ class TestCarryForwardUnpaid:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -187,7 +186,7 @@ class TestCarryForwardUnpaid:
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -230,7 +229,7 @@ class TestCarryForwardUnpaid:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -321,7 +320,7 @@ class TestCarryForwardUnpaid:
             # Carry forward only the baseline scenario.
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, baseline_scenario.id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -447,7 +446,7 @@ class TestCarryForwardStatusRecheck:
             ):
                 count = carry_forward_service.carry_forward_unpaid(
                     seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                    calendar=calendar_for(seed_user["user"].id),
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
                 )
                 db.session.commit()
 
@@ -515,7 +514,7 @@ class TestCarryForwardStatusRecheck:
             ):
                 count = carry_forward_service.carry_forward_unpaid(
                     seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                    calendar=calendar_for(seed_user["user"].id),
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
                 )
                 db.session.commit()
 
@@ -560,7 +559,7 @@ class TestCarryForwardStatusRecheck:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -590,7 +589,7 @@ class TestCarryForwardStatusRecheck:
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -656,7 +655,7 @@ class TestCarryForwardShadowTransactions:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert count == 2  # 1 regular + 1 transfer
@@ -691,7 +690,7 @@ class TestCarryForwardShadowTransactions:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             # Counted as 1 transfer, not 2 shadows.
@@ -707,7 +706,7 @@ class TestCarryForwardShadowTransactions:
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             db.session.refresh(xfer)
@@ -733,7 +732,7 @@ class TestCarryForwardShadowTransactions:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert count == 0
@@ -754,7 +753,7 @@ class TestCarryForwardShadowTransactions:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert count == 0
@@ -774,7 +773,7 @@ class TestCarryForwardShadowTransactions:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert count == 0
@@ -794,7 +793,7 @@ class TestCarryForwardShadowTransactions:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert count == 3  # 2 regular + 1 transfer
@@ -849,7 +848,7 @@ class TestCarryForwardShadowTransactions:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert count == 3  # 1 regular + 2 transfers
@@ -869,7 +868,7 @@ class TestCarryForwardShadowTransactions:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert count == 1
@@ -888,7 +887,7 @@ class TestCarryForwardShadowTransactions:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert count == 3
@@ -968,7 +967,7 @@ class TestCarryForwardOverrideSibling:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1032,7 +1031,7 @@ class TestCarryForwardOverrideSibling:
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1108,7 +1107,7 @@ class TestCarryForwardOverrideSibling:
             # periods 0 and 1.
             recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods[:2]},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -1116,7 +1115,7 @@ class TestCarryForwardOverrideSibling:
             # Carry forward the period 0 row into period 1.
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1137,7 +1136,7 @@ class TestCarryForwardOverrideSibling:
             # override sibling signals the period is handled.
             recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods[:2]},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -1231,7 +1230,7 @@ class TestCarryForwardOverrideSiblingTransfers:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1293,7 +1292,7 @@ class TestCarryForwardOverrideSiblingTransfers:
             # and 1.
             transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods[:2]},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -1302,7 +1301,7 @@ class TestCarryForwardOverrideSiblingTransfers:
             # rule-generated transfer + an override sibling.
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.flush()
 
@@ -1320,7 +1319,7 @@ class TestCarryForwardOverrideSiblingTransfers:
             # Re-run transfer recurrence -- must not add a third row.
             transfer_recurrence.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods[:2]},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -1481,7 +1480,7 @@ class TestCarryForwardEnvelopePartialSpend:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1546,7 +1545,7 @@ class TestCarryForwardEnvelopePartialSpend:
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1587,7 +1586,7 @@ class TestCarryForwardEnvelopeZeroEntries:
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1635,7 +1634,7 @@ class TestCarryForwardEnvelopeOverspend:
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1672,7 +1671,7 @@ class TestCarryForwardEnvelopeOverspend:
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1721,7 +1720,7 @@ class TestCarryForwardEnvelopeMissingTarget:
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1770,7 +1769,7 @@ class TestCarryForwardEnvelopeMissingTarget:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1835,7 +1834,7 @@ class TestCarryForwardEnvelopeSettledTarget:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1912,7 +1911,7 @@ class TestCarryForwardEnvelopeMultiHop:
             # Hop 1: A -> B.
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -1930,7 +1929,7 @@ class TestCarryForwardEnvelopeMultiHop:
             # Hop 2: B (now $200) -> C.
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[1].id, seed_periods[2].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2005,7 +2004,7 @@ class TestCarryForwardEnvelopeMultipleSourcesToSameTarget:
             # Hop 1: A -> C.
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[2].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
             db.session.refresh(row_c)
@@ -2016,7 +2015,7 @@ class TestCarryForwardEnvelopeMultipleSourcesToSameTarget:
             # still find it.
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[1].id, seed_periods[2].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2079,7 +2078,7 @@ class TestCarryForwardEnvelopeCorruptDoubledRow:
             with pytest.raises(ValidationError) as exc_info:
                 carry_forward_service.carry_forward_unpaid(
                     seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                    calendar=calendar_for(seed_user["user"].id),
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
                 )
             db.session.rollback()
 
@@ -2118,7 +2117,7 @@ class TestCarryForwardEnvelopeCreatesRowWhenNoCanonical:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2173,14 +2172,14 @@ class TestCarryForwardEnvelopeCreatesRowWhenNoCanonical:
             # Hop 1: period 0 -> target.  Creates a $100 override row.
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[2].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
             # Hop 2: period 1 -> target.  Tops up the same override row.
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[1].id, seed_periods[2].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2230,7 +2229,7 @@ class TestCarryForwardEnvelopeCreatesRowWhenNoCanonical:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2312,7 +2311,7 @@ class TestCarryForwardEnvelopeMixedBatch:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2407,7 +2406,7 @@ class TestCarryForwardEnvelopeMixedBatch:
             with pytest.raises(ValidationError):
                 carry_forward_service.carry_forward_unpaid(
                     seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                    calendar=calendar_for(seed_user["user"].id),
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
                 )
             db.session.rollback()
             db.session.expire_all()
@@ -2465,7 +2464,7 @@ class TestCarryForwardEnvelopeBalanceInvariant:
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2578,7 +2577,7 @@ class TestCarryForwardEnvelopeIncomeFalse:
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2637,7 +2636,7 @@ class TestCarryForwardEnvelopeRecurrenceSkip:
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -2659,7 +2658,7 @@ class TestCarryForwardEnvelopeRecurrenceSkip:
             # has is_override=True.  Both trigger skip clauses.
             recurrence_engine.generate_for_template(
                 template, GenerationSchedule.for_period_ids(
-                    calendar_for(template.user_id), {p.id for p in seed_periods[:2]},
+                    BalanceContext.build(template.user_id), {p.id for p in seed_periods[:2]},
                 ), seed_user["scenario"].id,
             )
             db.session.flush()
@@ -2711,7 +2710,7 @@ class TestPreviewCarryForwardEmptyAndShortCircuits:
         with app.app_context():
             preview = carry_forward_service.preview_carry_forward(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             assert preview.plans == []
             assert preview.any_blocked is False
@@ -2742,7 +2741,7 @@ class TestPreviewCarryForwardEmptyAndShortCircuits:
 
             preview = carry_forward_service.preview_carry_forward(
                 seed_periods[0].id, seed_periods[0].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             assert preview.plans == []
             assert preview.any_blocked is False
@@ -2757,7 +2756,7 @@ class TestPreviewCarryForwardEmptyAndShortCircuits:
             with pytest.raises(NotFoundError):
                 carry_forward_service.preview_carry_forward(
                     9_999_999, seed_periods[1].id, seed_user["scenario"].id,
-                    calendar=calendar_for(seed_user["user"].id),
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
                 )
 
     def test_unowned_source_period_raises_not_found(
@@ -2778,7 +2777,7 @@ class TestPreviewCarryForwardEmptyAndShortCircuits:
             with pytest.raises(NotFoundError):
                 carry_forward_service.preview_carry_forward(
                     other_period_id, seed_periods[1].id, seed_user["scenario"].id,
-                    calendar=calendar_for(seed_user["user"].id),
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
                 )
 
 
@@ -2812,7 +2811,7 @@ class TestPreviewCarryForwardEnvelopePlans:
             before = _read_only_session_snapshot()
             preview = carry_forward_service.preview_carry_forward(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             after = _read_only_session_snapshot()
             assert before == after, (
@@ -2850,7 +2849,7 @@ class TestPreviewCarryForwardEnvelopePlans:
 
             preview = carry_forward_service.preview_carry_forward(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             plan = preview.plans[0]
@@ -2883,7 +2882,7 @@ class TestPreviewCarryForwardEnvelopePlans:
 
             preview = carry_forward_service.preview_carry_forward(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             plan = preview.plans[0]
@@ -2924,7 +2923,7 @@ class TestPreviewCarryForwardEnvelopePlans:
 
             preview = carry_forward_service.preview_carry_forward(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             plan = preview.plans[0]
@@ -2982,7 +2981,7 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
 
             preview = carry_forward_service.preview_carry_forward(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert preview.any_blocked is False
@@ -3013,7 +3012,7 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
 
             preview = carry_forward_service.preview_carry_forward(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             plan = preview.plans[0]
@@ -3046,7 +3045,7 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
 
             preview = carry_forward_service.preview_carry_forward(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             plan = preview.plans[0]
@@ -3080,7 +3079,7 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
 
             preview = carry_forward_service.preview_carry_forward(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             plan = preview.plans[0]
@@ -3133,7 +3132,7 @@ class TestPreviewCarryForwardEnvelopeTargetResolution:
 
             preview = carry_forward_service.preview_carry_forward(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             assert len(preview.plans) == 2
             assert preview.any_blocked is True
@@ -3161,7 +3160,7 @@ class TestPreviewCarryForwardDiscreteAndTransfer:
 
             preview = carry_forward_service.preview_carry_forward(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             assert len(preview.plans) == 1
             plan = preview.plans[0]
@@ -3187,7 +3186,7 @@ class TestPreviewCarryForwardDiscreteAndTransfer:
 
             preview = carry_forward_service.preview_carry_forward(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             assert len(preview.plans) == 1
             plan = preview.plans[0]
@@ -3234,7 +3233,7 @@ class TestPreviewCarryForwardOrdering:
 
             preview = carry_forward_service.preview_carry_forward(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
 
             assert len(preview.plans) == 3
@@ -3288,14 +3287,14 @@ class TestPreviewCarryForwardParityWithMutating:
 
             preview = carry_forward_service.preview_carry_forward(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             assert preview.any_blocked is False
             predicted_after = preview.plans[0].target_estimated_after
 
             count = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
@@ -3333,7 +3332,7 @@ class TestPreviewCarryForwardParityWithMutating:
 
             preview = carry_forward_service.preview_carry_forward(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             assert preview.any_blocked is True
             assert preview.plans[0].block_reason_code == (
@@ -3343,7 +3342,7 @@ class TestPreviewCarryForwardParityWithMutating:
             with pytest.raises(ValidationError):
                 carry_forward_service.carry_forward_unpaid(
                     seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                    calendar=calendar_for(seed_user["user"].id),
+                    balance_ctx=BalanceContext.build(seed_user["user"].id),
                 )
             db.session.rollback()
 
@@ -3369,14 +3368,14 @@ class TestPreviewCarryForwardParityWithMutating:
 
             preview = carry_forward_service.preview_carry_forward(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             predicted_after = preview.plans[0].target_estimated_after
             assert preview.plans[0].target_will_be_generated is True
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
 
