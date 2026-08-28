@@ -63,6 +63,7 @@ from app.routes.accounts._cash_page import (
 )
 from app.schemas.validation.transactions import MarkDoneSchema
 from app.services import cash_ledger, reconcile_service
+from app.services.pay_calendar import PayCalendar, calendar_for
 from app.utils.auth_helpers import require_owner
 from app.utils.digit_strings import parse_row_id, parse_row_ids
 from app.utils.error_fragments import flatten_schema_errors
@@ -171,7 +172,8 @@ _PARTIAL_MESSAGE = (
 
 
 def _refusal(
-    account: Account, statement: "cash_ledger.AnchorPoint | None", message: str,
+    account: Account, statement: "reconcile_service.Statement",
+    message: str,
 ):
     """Re-render the panel carrying *message*, as a designed 400.
 
@@ -195,7 +197,11 @@ def _refusal(
 
     Args:
         account: The owned, attached account.
-        statement: The already-resolved governing assertion (finding **N-222**).
+        statement: The already-resolved
+            :class:`~app.services.reconcile_service.Statement` (finding
+            **N-222**), carrying the calendar the refused write was measured
+            against -- a second derivation across a rollback would be a second
+            answer to one question.
         message: The user-facing reason, one sentence.
 
     Returns:
@@ -251,9 +257,49 @@ def governing_statement(account: Account) -> "cash_ledger.AnchorPoint | None":
     return cash_ledger.governing_anchor(account.id)
 
 
+def reconcile_statement(
+    account: Account, calendar: PayCalendar,
+) -> "reconcile_service.Statement | None":
+    """Return the STATEMENT this account is being reconciled against.
+
+    The route tier's one construction of
+    :class:`~app.services.reconcile_service.Statement` -- the value both halves
+    of that package take (pay-calendar plan step C4-a-2).  It pairs the
+    governing assertion with the requester's pay calendar, which is what makes
+    every row the panel offers datable and is the OWNERSHIP scope every arm
+    narrows by.
+
+    **The calendar comes from the caller and is not resolved here**, for
+    :func:`governing_statement`'s reason: the cash detail page already holds one
+    on its read pass (``ctx.calendar()``), and a second derivation inside one
+    render is two answers to "what are this owner's paydays".  This package
+    holds no read pass of its own, so the HTTP tier is where that read belongs
+    (``pay_calendar:C11``).
+
+    An account carrying NO assertion answers ``None`` -- there is nothing for an
+    offer to be inside of -- and its caller renders the panel's empty state.
+    On that path the caller has already paid for a calendar it does not use;
+    the state is fixture-only in production (``cash_ledger.governing_anchor``),
+    and resolving the calendar lazily would mean this value could not be built
+    in one expression.
+
+    Args:
+        account: The account to reconcile.  Caller owns the ownership check.
+        calendar: The requester's pay calendar.
+
+    Returns:
+        The :class:`~app.services.reconcile_service.Statement`, or ``None`` for
+        an account whose owner has never declared a balance for it.
+    """
+    anchor = governing_statement(account)
+    if anchor is None:
+        return None
+    return reconcile_service.Statement(calendar, account.id, anchor)
+
+
 def reconcile_context(
     account: Account, panel: str,
-    statement: "cash_ledger.AnchorPoint | None",
+    statement: "reconcile_service.Statement | None",
 ) -> dict:
     """Assemble the reconcile panel's context for one account.
 
@@ -269,12 +315,14 @@ def reconcile_context(
             swaps in place.  Named ``panel`` rather than ``panel_id`` because
             :func:`panel_id` is now a module-level function and a parameter
             shadowing it would make the two indistinguishable at a glance.
-        statement: The assertion from :func:`governing_statement`, resolved by
-            the caller.  **Taken rather than resolved here** (finding
-            **N-222**): the POST needs the same assertion for its writers, which
-            stamp its id, and a builder that re-derived it would be the second
+        statement: What is being reconciled, from :func:`reconcile_statement`,
+            resolved by the caller.  **Taken rather than resolved here**
+            (finding **N-222**): the POST needs the SAME value for its writers,
+            which stamp its assertion's id and date every settled row against
+            its calendar, and a builder that re-derived it would be the second
             of two answers inside one request -- with a write in between them,
-            which is when two answers become a wrong one.
+            which is when two answers become a wrong one.  ``None`` for an
+            account carrying no assertion at all.
 
     Returns:
         The template context.  ``outstanding`` is an
@@ -283,26 +331,28 @@ def reconcile_context(
         reconcile or no assertion at all.
     """
     # An account with no assertion has nothing for an offer to be INSIDE of,
-    # so the empty set is built here rather than passing a sentinel day.  The
-    # producer is never asked about a ``None`` day, which is what keeps its
-    # ``observed_on`` non-optional.
+    # so the empty set is built here rather than passing a sentinel value.  The
+    # producer is never asked about a ``None`` statement, which is what keeps
+    # its own fields non-optional.
     outstanding = (
         reconcile_service.OutstandingSet.empty()
         if statement is None
-        else reconcile_service.outstanding_set(
-            current_user.id, account.id, statement,
-        )
+        else reconcile_service.outstanding_set(statement)
     )
     return {
         "account": account,
         "outstanding": outstanding,
-        "reconciled_through": None if statement is None else statement.observed_on,
+        "reconciled_through": (
+            None if statement is None else statement.observed_on
+        ),
         # The SAME record, not a second resolution: ``resolve_anchor`` and
         # ``governing_anchor`` share ``_governing_row``, so re-asking here would
         # be one request putting one question twice and trusting the answers to
         # agree -- finding **N-222**'s shape, which this builder already carries
         # for the day.
-        "anchor_balance": None if statement is None else statement.balance,
+        "anchor_balance": (
+            None if statement is None else statement.anchor.balance
+        ),
         "panel_id": panel,
     }
 
@@ -357,9 +407,14 @@ def prompt_fragment(account: Account) -> str:
     """
     if cash_detail_wrong_type(account):
         return ""
+    # This fragment is appended to a true-up's response, which has already
+    # committed; nothing above it on that path holds a calendar to thread, so
+    # this is where the one read for it happens.
     context = reconcile_context(
         account, panel="reconcile-panel-modal",
-        statement=governing_statement(account),
+        statement=reconcile_statement(
+            account, calendar_for(current_user.id),
+        ),
     )
     if context["outstanding"].is_empty:
         return ""
@@ -396,7 +451,9 @@ def reconcile_panel(account_id):
         "accounts/_reconcile_panel.html",
         **reconcile_context(
             account, panel=panel_id(account.id),
-            statement=governing_statement(account),
+            statement=reconcile_statement(
+                account, calendar_for(current_user.id),
+            ),
         ),
     )
 
@@ -461,7 +518,15 @@ def record_reconciliation(account_id):
     to be the exception in the first place.
     """
     account = load_cash_account_or_404(account_id)
-    statement = governing_statement(account)
+    # ONE statement for this request, resolved here and threaded through the
+    # write and every render below it -- the discipline ``governing_statement``
+    # states for the assertion (finding **N-222**), now carrying the pay
+    # calendar too.  The writers date the rows they settle against it and the
+    # re-render dates the rows it offers against it, so a second derivation
+    # across the commit would be two answers to one question with a write
+    # between them.  Nothing on this path creates or retires a payday, so the
+    # one answer stays true for the whole request.
+    statement = reconcile_statement(account, calendar_for(current_user.id))
     if statement is None:
         # No balance has ever been asserted for this account, so there is
         # nothing for an offer to be inside of.  Unreachable through the UI
@@ -479,12 +544,10 @@ def record_reconciliation(account_id):
     try:
         recorded = reconcile_service.record_reconciliation(
             reconcile_service.ReconcileSubmission(
-                owner_id=current_user.id,
-                account_id=account.id,
+                statement=statement,
                 entry_ids=entry_ids,
                 transaction_ids=transaction_ids,
                 corrections=_submitted_corrections(request.form),
-                anchor=statement,
             ),
         )
         db.session.commit()

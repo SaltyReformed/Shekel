@@ -37,6 +37,7 @@ from app.services import (
     reconcile_service,
 )
 from app.services.balance_at import BalanceContext
+from app.services.pay_calendar import calendar_for
 from app.utils.dates import display_today, to_display_date
 from tests._test_helpers import (
     add_entry,
@@ -277,9 +278,11 @@ class TestRecordingAPurchaseDoesNotMoveTheProjection:
         whose whole claim is that it records a fact and moves no money.
         """
         recorded = reconcile_service.record_settled_days(
-            seed_user["user"].id, account.id,
+            reconcile_service.Statement(
+                calendar_for(seed_user["user"].id), account.id,
+                cash_ledger.governing_anchor(account.id),
+            ),
             {entry.id for entry in envelope.entries},
-            cash_ledger.governing_anchor(account.id),
         )
         _db.session.commit()
         return recorded

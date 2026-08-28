@@ -43,7 +43,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.utils.dates import DISPLAY_TIMEZONE, attribution_date
+from app.utils.dates import DISPLAY_TIMEZONE
 from app.enums import StatusEnum
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
@@ -61,7 +61,7 @@ from app.services.cash_ledger import (
     dated_deltas,
     walk_cash_ledger,
 )
-from app.services.pay_calendar import calendar_for
+from app.services.pay_calendar import DerivedPeriod, calendar_for
 from tests._test_helpers import (
     add_entry,
     add_txn,
@@ -1157,9 +1157,9 @@ _DRIFT_OVERDUE_INDEX = 16
 _DRIFT_OVERDUE = Decimal("412.19")
 _DRIFT_OVERDUE_DUE = date(2026, 8, 20)
 _DRIFT_OVERDUE_LANDS_INDEX = 20
-# ``attribution_date`` clamps a due date outside its own period to the nearer
-# boundary, and BOTH directions are graded.  Period 40's row is due 30 days
-# EARLY (2027-06-16, inside period 37); period 44's is due 20 days LATE
+# ``DerivedPeriod.attribution_day`` clamps a due date outside its own period
+# to the nearer boundary, and BOTH directions are graded.  Period 40's row is
+# due 30 days EARLY (2027-06-16, inside period 37); period 44's is 20 days LATE
 # (2027-10-13, inside period 46).  Unclamped, each would land on a different
 # column than the one it is budgeted to.
 _DRIFT_STRAY_INDEX = 40
@@ -1237,7 +1237,7 @@ def _add_drift_zero_worth_rows(db_session, seed_user, periods):
 def _add_drift_stray_dated_rows(db_session, seed_user, periods):
     """Add the two rows whose due dates fall OUTSIDE their own pay period.
 
-    One 30 days early and one 20 days late, so ``attribution_date``'s two
+    One 30 days early and one 20 days late, so ``attribution_day``'s two
     clamp arms are each graded: unclamped, the early row lands on period 37 and
     the late one on period 46, neither of which is the column it is budgeted to.
 
@@ -1325,7 +1325,7 @@ def _drift_oracle(periods):
     ``balance_at`` or ``cash_ledger``, and it does not re-derive any of the
     producer's dating arithmetic -- it states each ruling's OUTCOME as a
     constant, which is the stronger of the two oracle forms here: the producer
-    computes a landing DAY from ``attribution_date`` and ``max(nominal, as_of +
+    computes a landing DAY from ``attribution_day`` and ``max(nominal, as_of +
     1)`` and prefix-sums it, while this names the landing PERIOD outright
     (``_DRIFT_OVERDUE_LANDS_INDEX``, ``_DRIFT_STRAY_INDEX``), so a broken clamp
     is caught rather than mirrored.  Likewise it ASSIGNS on the re-assertion
@@ -1404,7 +1404,7 @@ class TestTheDriftOracleWalksFiftyTwoPeriods:
       is proved to carry the running total forward;
     * a still-**PROJECTED** future, periods 20-51, including two rows whose due
       dates fall outside their own period -- one 30 days early, one 20 days
-      late -- so both of ``attribution_date``'s clamp arms are graded;
+      late -- so both of ``attribution_day``'s clamp arms are graded;
     * rows worth exactly nothing in four shapes: Cancelled, Credit,
       zero-amount and soft-deleted.
 
@@ -1437,7 +1437,7 @@ class TestTheDriftOracleWalksFiftyTwoPeriods:
     is built to separate the two rules; ruling R-G's clamp
     deleted; its floor off by one (``not_before = as_of``); the map sampling
     each period's START; and ``settled_cash_leg`` valuing a settled row at its
-    ESTIMATE rather than its ACTUAL.  The eighth, ``attribution_date``'s clamp
+    ESTIMATE rather than its ACTUAL.  The eighth, ``attribution_day``'s clamp
     deleted, fails the 52-column test in EITHER direction while the hand-figure
     test survives it -- the stray rows move to periods neither test names
     individually and net out again by the horizon, which is precisely why the
@@ -1585,7 +1585,7 @@ class TestThePlanClampsAgainstTheDerivedSpan:
         2026-01-18; period 0's stored end is pushed to 01-20 while its paydays
         keep it at 01-15 (the next payday is 01-16).
 
-        Reading the DERIVED span, ``attribution_date`` clamps 01-18 down to
+        Reading the DERIVED span, ``attribution_day`` clamps 01-18 down to
         01-15, so the fold steps ``-$250.00`` on 01-15 and every day from there
         reads ``$750.00``.
 
@@ -1682,7 +1682,23 @@ class TestThePlanClampsAgainstTheDerivedSpan:
         applies the SHARED clamp to each, so the day the retired arm produced
         is shown rather than argued -- for the middle period and for the last
         one, because they are different branches of the derivation.
+
+        **The STORED span is wrapped in a hand-built ``DerivedPeriod`` to be
+        clamped by** (pay-calendar plan step **C4-a-2**).  The clamp is a method
+        on the derived value now, so there is no signature left that takes two
+        loose dates -- which is the defect this control exists to demonstrate,
+        stated as a construction the production code cannot make.
         """
+        def stored_span(row):
+            """Return the clamp asked of a row's STORED span."""
+            return DerivedPeriod(
+                period_id=row.id,
+                period_index=0,
+                start_date=row.start_date,
+                end_date=row.end_date,
+                end_is_projected=False,
+            )
+
         account = seed_user["account"]
         last = seed_periods[-1]
         db.session.query(PayPeriod).filter_by(id=seed_periods[0].id).update(
@@ -1701,21 +1717,20 @@ class TestThePlanClampsAgainstTheDerivedSpan:
 
         assert first_stored.end_date == date(2026, 1, 20)
         assert first_derived.end_date == date(2026, 1, 15)
-        assert attribution_date(
-            date(2026, 1, 18), first_stored.start_date, first_stored.end_date,
+        assert stored_span(first_stored).attribution_day(
+            date(2026, 1, 18),
         ) == date(2026, 1, 18)
-        assert attribution_date(
-            date(2026, 1, 18), first_derived.start_date,
-            first_derived.end_date,
+        assert first_derived.attribution_day(
+            date(2026, 1, 18),
         ) == date(2026, 1, 15)
 
         assert last_stored.end_date == date(2026, 6, 30)
         assert last_derived.end_date == date(2026, 5, 21)
-        assert attribution_date(
-            date(2026, 6, 15), last_stored.start_date, last_stored.end_date,
+        assert stored_span(last_stored).attribution_day(
+            date(2026, 6, 15),
         ) == date(2026, 6, 15)
-        assert attribution_date(
-            date(2026, 6, 15), last_derived.start_date, last_derived.end_date,
+        assert last_derived.attribution_day(
+            date(2026, 6, 15),
         ) == date(2026, 5, 21)
 
 
