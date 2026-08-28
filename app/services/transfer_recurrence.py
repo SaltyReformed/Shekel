@@ -59,12 +59,9 @@ from app.services._recurrence_common import (
     check_scenario_ownership,
     PlacedRow,
     classify_maintain_work,
-    existing_rows_refusing_repeats,
+    occurrences_to_write,
     log_resource_access_denied,
-    occurrence_by_period,
-    refuse_repeats_this_pass,
     rows_this_pass_may_maintain,
-    should_skip_period,
 )
 from app.services.recurrence_engine import compute_due_date, resolve_generation_plan
 from app.services import transfer_service
@@ -325,25 +322,14 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
     if plan is None:
         return []
 
-    # What is already there, and the refusal of a paycheck this pass would
-    # write into TWICE -- ``idx_transfers_template_period_scenario`` holds one
-    # row per (template, period, scenario), and forward generation legitimately
-    # names a paycheck more than once at a cadence of 30 days or more.  The
-    # transaction engine makes the identical call; see
-    # ``_recurrence_common.existing_rows_refusing_repeats``.
-    existing = existing_rows_refusing_repeats(
-        _selector(template, scenario_id), plan.placements,
-    )
-
+    # WHICH occurrences still need a transfer -- the shared decision, so this
+    # loop holds only the part that is about ``budget.transfers`` and its
+    # shadow pair.  See ``_recurrence_common.occurrences_to_write``.
     created = []
-    for placement in plan.placements:
+    for placement in occurrences_to_write(
+        _selector(template, scenario_id), plan.placements,
+    ):
         period = placement.period
-        existing_xfers = existing.get(period.period_id, [])
-
-        # Skip periods that already hold a template-linked transfer
-        # (immutable, override, soft-deleted, or already auto-generated).
-        if should_skip_period(existing_xfers):
-            continue
 
         # No existing row -- create one, taking every derived column from the
         # ONE statement of them (:class:`DerivedTransferFields`), which the
@@ -446,9 +432,6 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
         with.
 
     Raises:
-        RecurrenceCadenceUnsupported: When one paycheck would have to host this
-            template's transfer more than once -- see
-            :func:`_recurrence_common.refuse_unstorable_repeats`.
         RecurrenceConflict: When rows exist that this pass must not change
             unasked.  The caller should catch it, present the options, and call
             :func:`resolve_conflicts`.
@@ -745,7 +728,7 @@ def _apply_maintain_work(work, derived, template, scenario_id, projected_id):
     for xfer in work.update:
         changed = {
             field: value
-            for field, value in derived[xfer.pay_period_id]._asdict().items()
+            for field, value in derived[xfer.occurs_on]._asdict().items()
             if getattr(xfer, field) != value
         }
         if not changed:
@@ -755,14 +738,15 @@ def _apply_maintain_work(work, derived, template, scenario_id, projected_id):
 
     created = [
         _create_from_definition(
-            derived[create.period_id], template, create,
+            derived[create.occurs_on], template, create,
             scenario_id, projected_id,
         )
         for create in work.create_in
     ]
 
     # **This is the ONLY path here that deletes**, and it is reached only when
-    # the rule stopped naming the row's period AND the transfer carries nothing
+    # the rule stopped naming the row's OCCURRENCE (plan step R17) AND the
+    # transfer carries nothing
     # of the owner's.  Routed through the canonical hard-delete path (Transfer
     # Invariant 4): ``delete_transfer`` reverses any posted effect while the
     # rows still exist to link against, takes the loan-payment split back,
@@ -801,16 +785,16 @@ def _maintain_instances(template, plan, scenario_id, existing):
         audit event and the conflict raise.
     """
     placements = plan.placements if plan is not None else ()
-    refuse_repeats_this_pass(template, placements, existing)
-
+    # Keyed by the OCCURRENCE; see the transaction engine's twin for the
+    # KeyError and the wrong-paycheck derivation this closes.
     derived = {
-        placement.period.period_id: _derive_row_fields(
+        placement.occurrence: _derive_row_fields(
             template, plan.rule, placement.period,
         )
         for placement in placements
     }
     work = classify_maintain_work(
-        existing, occurrence_by_period(placements),
+        _selector(template, scenario_id), existing, placements,
         with_records=_rows_holding_owner_records(existing),
         reattributed=_rows_the_definition_reattributes(existing, template),
     )

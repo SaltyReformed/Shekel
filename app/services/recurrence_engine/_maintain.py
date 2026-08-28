@@ -38,8 +38,6 @@ from app.services._recurrence_common import (
     MaintainOutcome,
     check_scenario_ownership,
     classify_maintain_work,
-    occurrence_by_period,
-    refuse_repeats_this_pass,
     rows_this_pass_may_maintain,
 )
 from app.services.recurrence_engine._generate import _selector
@@ -134,9 +132,6 @@ def regenerate_for_template(template, schedule, scenario_id, effective_from=None
         with.
 
     Raises:
-        RecurrenceCadenceUnsupported: When one paycheck would have to host this
-            template's row more than once -- see
-            :func:`_recurrence_common.refuse_unstorable_repeats`.
         RecurrenceConflict: When rows exist that this pass must not change
             unasked.  The caller should catch it, present the options, and call
             :func:`resolve_conflicts`.
@@ -355,14 +350,14 @@ def _apply_maintain_work(work, derived, template_id, scenario_id, projected_id):
     # would decide it silently.
     updated = []
     for row in work.update:
-        for field, value in derived[row.pay_period_id]._asdict().items():
+        for field, value in derived[row.occurs_on]._asdict().items():
             setattr(row, field, value)
         updated.append(row)
 
     created = []
     for create in work.create_in:
         txn = Transaction(
-            **derived[create.period_id]._asdict(),
+            **derived[create.occurs_on]._asdict(),
             template_id=template_id,
             pay_period_id=create.period_id,
             occurs_on=create.occurs_on,
@@ -380,8 +375,8 @@ def _apply_maintain_work(work, derived, template_id, scenario_id, projected_id):
     # ``journal_entries.transaction_entry_id`` is ON DELETE SET NULL -- so
     # deleting without reversing strands both legs with nothing to offset them.
     # **This is now the ONLY path here that deletes**, and it is reached only
-    # when the rule stopped naming the row's period AND the row carries nothing
-    # of the owner's.
+    # when the rule stopped naming the row's OCCURRENCE (plan step R17; it was
+    # the row's PERIOD) AND the row carries nothing of the owner's.
     for row in work.retire:
         posting_service.reverse_postings_before_delete(row)
         db.session.delete(row)
@@ -407,10 +402,12 @@ def _maintain_instances(template, plan, calendar, scenario_id, existing):
     The body of :func:`regenerate_for_template`, split out so the orchestrator
     reads as ownership -> plan -> maintain -> report.  It read
     "ownership -> bound -> plan" until pay-calendar plan step C2-f3c deleted
-    the bound-resolution step (``_recurrence_common.regeneration_bound``).  Runs in four
-    steps: refuse an unstorable cadence, derive what the definition says for
-    every period the rule names, classify each existing row against that, then
-    write.
+    the bound-resolution step (``_recurrence_common.regeneration_bound``).  Runs
+    in three steps: derive what the definition says for every period the rule
+    names, classify each existing row against that, then write.  It ran a
+    fourth first -- the unstorable-cadence refusal -- until plan step **R17**
+    re-keyed the unique index onto the occurrence, which is what made a
+    paycheck a rule names twice storable and the refusal unnecessary.
 
     Args:
         template: The updated TransactionTemplate.
@@ -436,17 +433,29 @@ def _maintain_instances(template, plan, calendar, scenario_id, existing):
         raise.
     """
     placements = plan.placements if plan is not None else ()
-    refuse_repeats_this_pass(template, placements, existing)
-
     salary_profile = _get_salary_profile(template)
+    # **Keyed by the OCCURRENCE, not by the pay period**, because that is what
+    # a row is now selected for maintenance BY.  Keying it by period was a
+    # defect an adversarial review of this leaf found: ``classify_maintain_work``
+    # routes a row to ``update`` when its ``occurs_on`` is named, and the row
+    # may sit in a period the rule does NOT name (the owner moved it, then
+    # cleared the override through the conflict chooser).  ``derived`` holds
+    # only named periods, so ``derived[row.pay_period_id]`` raised ``KeyError``
+    # -- a 500 -- and where the landing period happened to be named it silently
+    # re-derived the row's amount and due date from the WRONG paycheck.
+    #
+    # It also collapsed a repeated paycheck: two placements sharing a period
+    # kept only the last one's fields, so at a pay cadence of 30 days or more
+    # both installments took the same date and figure.  One occurrence is one
+    # entry, so neither is reachable.
     derived = {
-        placement.period.period_id: _derive_row_fields(
+        placement.occurrence: _derive_row_fields(
             template, plan.rule, salary_profile, placement.period, calendar,
         )
         for placement in placements
     }
     work = classify_maintain_work(
-        existing, occurrence_by_period(placements),
+        _selector(template, scenario_id), existing, placements,
         with_records=_rows_holding_owner_records(existing),
         reattributed=_rows_the_definition_reattributes(
             existing, template.account_id,

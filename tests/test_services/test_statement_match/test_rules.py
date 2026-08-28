@@ -269,7 +269,7 @@ class TestWhatARuleResolvesTo:
             seed_user, name="Groceries again", is_envelope=True,
         )
         # Two rows from ONE template in ONE period, which is what production
-        # holds: ``idx_transactions_template_period_scenario`` is PARTIAL on
+        # holds: the generation indexes are PARTIAL on
         # ``is_override = FALSE``, so an override row sits beside the generated
         # one.  Measured on a 2026-08-18 clone: transactions 2388 (override)
         # and 2389 (generated), both template 22 in pay period 3.

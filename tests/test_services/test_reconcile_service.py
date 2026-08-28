@@ -376,8 +376,9 @@ class TestTheOutstandingSet:
             )
             db.session.flush()
             # An AD-HOC envelope rather than a second row off the shared
-            # template: ``idx_transactions_template_period_scenario`` is
-            # unique, so one template cannot carry two rows in one period.
+            # template: both rows would answer no occurrence, and
+            # ``idx_transactions_template_scenario_undated`` holds one undated
+            # row per template per paycheck.
             txn_b = Transaction(
                 pay_period_id=seed_periods[0].id,
                 scenario_id=seed_user["scenario"].id,

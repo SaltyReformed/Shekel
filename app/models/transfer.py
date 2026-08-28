@@ -83,19 +83,48 @@ class Transfer(
             "amount_source_id IS NULL OR transfer_template_id IS NOT NULL",
             name="ck_transfers_adhoc_owns_amount",
         ),
-        # One non-deleted, non-override transfer per template per period
-        # per scenario.  Mirrors the relaxed transactions index: override
-        # siblings may coexist with their rule-generated parent so
-        # carry-forward can move unpaid recurring transfers into a target
-        # period that already holds the next rule-generated instance.
-        # transfer_recurrence.py already skips generation when an
-        # is_override = TRUE transfer exists in the period.
+        # WHAT A GENERATED ROW IS, stated as storage (plan step **R17**).  A
+        # row answers ONE occurrence of its template's cadence; the pay period
+        # is where that occurrence's money lands, which is a DERIVED placement
+        # and not the row's identity -- the owner may move it, and moving it is
+        # exactly what ledger row **D57** was.  Keyed on the paycheck, this
+        # index made a moved row vacate its own occurrence, so the next
+        # generate pass answered it a second time: 8 rows, $1,482.93, measured
+        # on a production clone 2026-08-28.
+        #
+        # TWO indexes rather than one, because ``occurs_on`` is NULLABLE and
+        # PostgreSQL treats NULLs as distinct -- a single index over it would
+        # let a template hold unlimited undated rows in one paycheck, which is
+        # the "one row per template per paycheck" rule this table has always
+        # had.  A row that answers NO occurrence therefore keeps the OLD key,
+        # and that split is the same rule
+        # ``_recurrence_common.OccurrenceClaims`` applies in Python: identity is
+        # the occurrence where it is known, and the paycheck where it is not.
+        # Letting an undated row claim nothing was measured at 41 phantom
+        # transfers / $20,500 at the unarchive door.
+        #
+        # Both stay PARTIAL over ``is_deleted = FALSE AND is_override = FALSE``:
+        # an override sibling may coexist with its rule-generated parent, which
+        # carry-forward relies on so a moved unpaid item lives beside the
+        # generated row for its target period.
         db.Index(
-            "idx_transfers_template_period_scenario",
-            "transfer_template_id", "pay_period_id", "scenario_id",
+            "idx_transfers_template_scenario_occurrence",
+            "transfer_template_id", "scenario_id", "occurs_on",
             unique=True,
             postgresql_where=db.text(
                 "transfer_template_id IS NOT NULL "
+                "AND occurs_on IS NOT NULL "
+                "AND is_deleted = FALSE "
+                "AND is_override = FALSE"
+            ),
+        ),
+        db.Index(
+            "idx_transfers_template_scenario_undated",
+            "transfer_template_id", "scenario_id", "pay_period_id",
+            unique=True,
+            postgresql_where=db.text(
+                "transfer_template_id IS NOT NULL "
+                "AND occurs_on IS NULL "
                 "AND is_deleted = FALSE "
                 "AND is_override = FALSE"
             ),
