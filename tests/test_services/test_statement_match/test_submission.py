@@ -117,7 +117,7 @@ class TestTheTokenIsOneFormatReadBothWays:
         ``app/error_handlers.py`` registers no ``ValueError`` arm, so anything
         escaping here is a 500 on the door that applies a whole reviewed pass
         -- which is exactly what ``apply=%C2%B2`` was once
-        (``_sort_key``, adversarial security review 2026-08-19).  The schema
+        (``order_token_key``, adversarial security review 2026-08-19).  The schema
         field turns this into a 400; nothing else may see it.
 
         Args:

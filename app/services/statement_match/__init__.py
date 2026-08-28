@@ -19,8 +19,17 @@ The public surface, and what each piece is for:
   developer's own statement offers -- 12.88 minutes of derivation to work one
   statement, against 5.80 s for the whole pass now.
 * :func:`review_set` -- everything the review screen shows for one account:
-  what the app proposes, what it could not explain, what is out of reach, and
-  what has already been accepted.
+  what the app proposes, what it could not explain, and what is out of reach.
+  **It is the EXCEPTION QUEUE and nothing else** since plan step
+  ``bank_import:X-gf-2`` (ruling **bank_import:R-GX**).
+* :func:`accepted_register` and :func:`answered_merchants` -- what has already
+  been DECIDED, which is the register: the acts accepted (with the undo, and
+  every act that no longer holds first) and the merchant answers already
+  given.  **Neither needs a** :class:`ReviewScope`, which is the point of the
+  split as much as the page weight was: they were folded into the review
+  screen's own derivation, so rendering the queue valued all 221 of the
+  developer's accepted acts and re-asked 29 answers he was not looking at --
+  442,109 bytes of a 578,523-byte page.
 * :func:`apply_reviewed` -- the batch door, and the one the screen posts to.
   **It MOVES MONEY.**  It applies every act the owner ticked, each in its own
   SAVEPOINT so a refused item leaves nothing behind and the rest still land,
@@ -37,6 +46,16 @@ The public surface, and what each piece is for:
   it did.  It records the correspondence through the same function
   :func:`accept_match` does, so there is still exactly one place a match is
   written.
+* :func:`record_income_from_line` -- ruling **bank_import:R-GW** (plan step
+  ``bank_import:X-gf-1``): a bank line of money COMING IN that no app row
+  explains BECOMES an uncategorized income row, matched to itself.  **It MOVES
+  MONEY**, and it is the mirror of the door above on the direction that had
+  none: a purchase is an expense, so that one refuses an inflow, and a match
+  refuses an empty side -- between them they left eight of the developer's own
+  deposits, `$58.87`, with no act on the review screen at all.  The row it
+  writes is the one a matched group's residual already used
+  (``_uncategorized.mint_uncategorized``), so there is one writer of *the row
+  bank evidence requires and the books do not hold*.
 * :class:`CreationBars` -- which of an account's merchants may NOT become
   purchases at all, and why (ruling **R-GJ**, plan step ``bank_import:X-ga``).
   Two bars: the owner answered *never a purchase*, or a SOURCE files the
@@ -81,7 +100,9 @@ The public surface, and what each piece is for:
   :class:`ReviewedRow`, :class:`CandidateRow`, :class:`BankLine`,
   :class:`RowKind`,
   :class:`AcceptedMatch`, :class:`AcceptedGroup`, :class:`AcceptedRow`,
-  :class:`ReviewedBatch`, :class:`BatchOutcome` and :class:`ReviewSet`.
+  :class:`ReviewedBatch`, :class:`BatchOutcome`, :class:`ReviewSet`, and
+  ruling **bank_import:R-GW**'s :class:`IncomeCreation`, :class:`RecordedIncome` and
+  :class:`RecordableInflow`.
 
 **Three rules this package is built on, each of them the developer's ruling of
 2026-08-17 rather than an implementation choice:**
@@ -126,10 +147,14 @@ from ._create import create_purchase_from_line
 from ._creations import (
     NEW_ENVELOPE,
     CreatedPurchase,
+    IncomeCreation,
     NewEnvelope,
     PurchaseCreation,
     PurchaseDestination,
+    RecordedIncome,
 )
+from ._income import record_income_from_line
+from ._leftovers import CreatableLine, RecordableInflow
 from ._offers import (
     BankLine,
     CandidateRow,
@@ -149,7 +174,13 @@ from ._submission import (
 from ._near import NEAR_MISS_BOUND
 from ._pairing import DAY_WINDOW
 from ._propose import ProposedMatches, propose
-from ._accepted_view import AcceptedGroup, AcceptedRow
+from ._accepted_view import (
+    REGISTER_LIMIT,
+    AcceptedGroup,
+    AcceptedRegister,
+    AcceptedRow,
+    accepted_register,
+)
 from ._placement import Placement, PlacementKind
 from ._preview import HandTotals, preview_hand_build
 from ._rules import (
@@ -163,14 +194,25 @@ from ._stating import (
     StatedRules,
     state_rules,
 )
+from ._gaps import ReviewBounds
 from ._reads import (
-    CreatableLine,
-    ReviewBounds,
     ReviewSet,
     awaiting_review_count,
     review_set,
 )
-from ._section import MerchantSection, MerchantSummary
+from ._verdict import RuleVerdict
+from ._section import (
+    MerchantRegister,
+    MerchantSection,
+    MerchantSummary,
+    WaitingMerchant,
+    answered_merchants,
+)
+from ._register import (
+    StatementRegister,
+    merchant_register,
+    register_set,
+)
 from ._scope import ReviewScope
 from ._filing import (
     RECEIPT_LIMIT,
@@ -183,7 +225,9 @@ from ._filing import (
 __all__ = [
     "NEW_ENVELOPE",
     "RECEIPT_LIMIT",
+    "REGISTER_LIMIT",
     "AcceptedGroup",
+    "AcceptedRegister",
     "AcceptedMatch",
     "AcceptedRow",
     "BankLine",
@@ -191,7 +235,9 @@ __all__ = [
     "CandidateRow",
     "Candidates",
     "CreatableLine",
+    "RecordableInflow",
     "CreatedPurchase",
+    "IncomeCreation",
     "CreationBar",
     "CreationBars",
     "Consent",
@@ -200,9 +246,11 @@ __all__ = [
     "NEAR_MISS_BOUND",
     "MatchDays",
     "StandingRule",
+    "MerchantRegister",
     "MerchantSection",
     "MintedEnvelopes",
     "MerchantSummary",
+    "WaitingMerchant",
     "MatchProposal",
     "MatchSubmission",
     "NewEnvelope",
@@ -213,10 +261,12 @@ __all__ = [
     "PlannedRemovals",
     "RuleAnswer",
     "RuleFiling",
+    "RuleVerdict",
     "RuleSubmission",
     "RuleView",
     "ProposedMatches",
     "PurchaseCreation",
+    "RecordedIncome",
     "PurchaseDestination",
     "ReleasedMatch",
     "ReviewBounds",
@@ -224,26 +274,32 @@ __all__ = [
     "ReviewSet",
     "ReviewedBatch",
     "ReviewedRow",
+    "StatementRegister",
     "RowKind",
     "StatedRules",
     "WithheldLine",
     "accept_match",
     "account_merchants",
+    "accepted_register",
+    "answered_merchants",
     "apply_reviewed",
     "as_reviewed",
     "awaiting_review_count",
     "candidates_for",
     "corrected_purchase_day",
     "create_purchase_from_line",
+    "record_income_from_line",
     "destinations_for",
     "file_new_swipes",
     "matched_subjects",
+    "merchant_register",
     "parse_figure",
     "merchant_label",
     "preview_hand_build",
     "propose",
     "release_match",
     "removals_by_match",
+    "register_set",
     "review_set",
     "rule_filed_acts",
     "state_rules",

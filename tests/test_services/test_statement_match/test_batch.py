@@ -65,13 +65,14 @@ from ._builders import (
 )
 
 
-def _batch(seed_user, matches=(), creations=()):
+def _batch(seed_user, matches=(), creations=(), incomes=()):
     """Apply one reviewed pass over the seeded account.
 
     Args:
         seed_user: The seeded user bundle.
         matches: :class:`MatchSubmission` values.
         creations: :class:`PurchaseCreation` values.
+        incomes: :class:`IncomeCreation` values (ruling **bank_import:R-GW**).
 
     Returns:
         The :class:`~app.services.statement_match.BatchOutcome`.
@@ -81,6 +82,7 @@ def _batch(seed_user, matches=(), creations=()):
             consent=Consent.TICKED,
             matches=tuple(matches),
             creations=tuple(creations),
+            incomes=tuple(incomes),
         ),
         # DERIVED HERE, so every pass sees the rows this test has staged.  The
         # ROUTE is what builds one in the app; a door that built its own would
@@ -984,6 +986,7 @@ def test_a_scope_serves_the_screen_and_the_doors_alike(app, db, seed_user):
         proposal = review.proposals[0]
         outcome = statement_match.apply_reviewed(ReviewedBatch(
             consent=Consent.TICKED,
+            incomes=(),
             matches=(MatchSubmission(
                 line_ids=frozenset(
                     bank.line_id for bank in proposal.lines
@@ -1167,6 +1170,7 @@ class TestABatchBooksWhatTheSameActsBookOneAtATime:
             outcome = statement_match.apply_reviewed(
                 ReviewedBatch(
                     consent=Consent.TICKED,
+                    incomes=(),
                     matches=matches, creations=creations,
                 ),
                 a_scope(seed_user),

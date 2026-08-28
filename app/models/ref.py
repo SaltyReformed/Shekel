@@ -199,20 +199,20 @@ class TransactionType(db.Model):
 class Status(db.Model):
     """Transaction status reference.
 
-    Values: Projected, Paid, Received, Credit, Cancelled, Settled.
+    Values: Projected, Paid, Received, Credit, Cancelled.
 
     Boolean columns capture logical groupings so that application code
     can branch on a single column instead of comparing against sets of
     status names:
 
         is_settled          -- The real-world transaction has completed
-                               (Paid, Received, Settled).  Such a row RECORDS
+                               (Paid, Received).  Such a row RECORDS
                                what moved, and the balance counts that record
                                rather than the row's plan (plan step X-au-c3;
                                it read actual_amount until then).
         is_immutable        -- The recurrence engine must not overwrite
                                this transaction (Paid, Received, Credit,
-                               Cancelled, Settled).
+                               Cancelled).
         excludes_from_balance -- This status contributes zero to the
                                projected checking balance (Credit,
                                Cancelled).

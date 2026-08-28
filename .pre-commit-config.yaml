@@ -177,11 +177,11 @@ repos:
         name: plan ledger integrity (every finding has a live owner)
         entry: pytest
         language: system
-        # One line on purpose: a YAML folded scalar joins its lines with a
-        # SPACE, which would put a space inside the alternation and stop the
-        # pattern matching either document.
-        files: ^(docs/plans/ledger\.md|docs/plans/steps\.md|docs/plans/conventions\.md|docs/plans/verification\.md|docs/plans/lessons\.md|docs/audits/balance_architecture/README\.md|docs/plans/implementation_plan_recurrence_redesign\.md|docs/plans/implementation_plan_pay_calendar\.md|docs/plans/implementation_plan_credit_card\.md|
-          docs/plans/implementation_plan_bank_import\.md|tools/plan_gate/.*\.py)$
+        # ONE LINE, and `test_gate_coverage` is what keeps it one: a YAML
+        # folded scalar joins its lines with a SPACE, which puts a space inside
+        # the alternation. It HAD been re-split, and bank_import's document
+        # went ungated for as long as nobody re-read this comment.
+        files: ^(docs/plans/ledger\.md|docs/plans/steps\.md|docs/plans/rulings\.md|docs/plans/conventions\.md|docs/plans/verification\.md|docs/plans/lessons\.md|docs/audits/balance_architecture/README\.md|docs/plans/implementation_plan_recurrence_redesign\.md|docs/plans/implementation_plan_pay_calendar\.md|docs/plans/implementation_plan_credit_card\.md|docs/plans/implementation_plan_bank_import\.md|tools/plan_gate/.*\.py)$
         pass_filenames: false
         args: [tools/plan_gate, -c, /dev/null, -q]
 

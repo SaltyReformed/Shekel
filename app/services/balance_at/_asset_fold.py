@@ -126,7 +126,7 @@ from app.services.account_projection import (
 )
 from app.services.cash_ledger import ReconciledThrough
 from app.services.interest_projection import accrued_interest
-from app.services.pay_calendar import PayCalendar, PeriodWindow
+from app.services.pay_calendar import PeriodWindow
 from app.utils.money import round_money
 
 from . import _asset_contributions, _cash_fold
@@ -617,7 +617,6 @@ def resolve(
     cash: _cash_fold.AssembledCashFold,
     horizon_end: date,
     inputs: ContributionInputs,
-    calendar: PayCalendar,
 ) -> ModelledFold:
     """Resolve *account*'s modelled tiers onto an ALREADY-assembled cash fold.
 
@@ -640,25 +639,34 @@ def resolve(
     cash tiers underneath it never saw.  Reading it off the fold removes the
     disagreement rather than documenting it.
 
-    **The pay CALENDAR is the exception, and it is not that context** (plan
-    step **C2-f2a**, ledger row **P37**): the contribution tier below used to
-    load the owner's schedule itself, the last ``pay_period_service`` read in
-    this package.  A :class:`~app.services.pay_calendar.PayCalendar` carries no
-    scenario and no clock, so it cannot reproduce the disagreement above, and
-    it is REQUIRED, so an omission fails at the call rather than modelling an
-    account's payroll contributions as nothing.  **The calendar and not a
-    WINDOW**, because the tier's precondition is the owner's WHOLE schedule --
-    the annual limit is a calendar-year accumulation, so a slice restarts the
-    year-to-date total mid-year and uncaps it -- and a ``PeriodWindow`` cannot
-    say whether ``saved()``, ``window()`` or ``axis()`` produced it.  Deriving
-    it here leaves no window for a caller to state and makes plan step **C9**
-    the one-line change below; the arc's ruling carries the rejected options.
+    **The pay CALENDAR is the exception, and it now comes off the FOLD** (plan
+    step **C2-f2a**, ledger row **P37**; re-sourced at pay-calendar plan step
+    **C4-a-1**).  The contribution tier below used to load the owner's schedule
+    itself, the last ``pay_period_service`` read in this package; C2-f2a made
+    it a required argument here instead, on the ground that a
+    :class:`~app.services.pay_calendar.PayCalendar` carries no scenario and no
+    clock so it cannot reproduce the disagreement above.  **The calendar and
+    not a WINDOW** for the reason that ruling gives: the tier's precondition is
+    the owner's WHOLE schedule -- the annual limit is a calendar-year
+    accumulation, so a slice restarts the year-to-date total mid-year and
+    uncaps it -- and a ``PeriodWindow`` cannot say whether ``saved()``,
+    ``window()`` or ``axis()`` produced it.
+
+    C4-a-1 changed only WHERE it comes from, and closer to that ruling rather
+    than further: it made the calendar a determinant of *cash* too -- the day
+    every planned row in the fold lands on -- so a SECOND one taken here as its
+    own argument was the shape the paragraph above deletes for the scenario.
+    The argument is GONE and the value is read off the record clamped by it, so
+    the mis-pairing is unrepresentable rather than refused.  Plan step **C9** is
+    still the one-line change below, now spelled ``cash.calendar``.
 
     Args:
         account: The account to value.
         cash: The account's
-            :class:`~app.services.balance_at._cash_fold.AssembledCashFold`, which
-            carries the scenario it was scoped by.
+            :class:`~app.services.balance_at._cash_fold.AssembledCashFold`,
+            which carries the scenario it was scoped by AND the pay calendar it
+            was clamped by -- the contribution tier's axis is read from the
+            second (``cash.calendar``).
         horizon_end: The furthest date this read will be sampled at.  Sampling
             beyond it would read a balance that had stopped accruing, so every
             caller derives it from its OWN request rather than from a horizon
@@ -667,11 +675,6 @@ def resolve(
             :class:`~app.services.balance_at._asset_contributions.ContributionInputs`
             -- its ``absent()`` constructor for a reader that cannot have a
             contribution feed.
-        calendar: The OWNER's pay calendar for this read pass
-            (:meth:`~app.services.balance_at.BalanceContext.calendar`), read
-            for the CONTRIBUTION tier's axis alone and only on the modelled
-            arm.  That it is the RIGHT owner's follows from *cash*, bound to
-            *account* above and memoized on a pass that refuses a foreign one.
 
     Returns:
         The resolved :class:`ModelledFold`.
@@ -706,7 +709,7 @@ def resolve(
         # caller.
         _asset_contributions.contribution_events(
             account, cash.plan.basis, inputs, reconciled_through,
-            calendar.saved(),
+            cash.calendar.saved(),
         ),
         window,
     )
@@ -724,23 +727,21 @@ def _assemble(
     a period map and a growth decomposition of the same account are readings of
     ONE resolved step list rather than three producers a test keeps in step.
 
-    **It reads THREE things off the context and nothing else**: the scenario
-    that scopes the fold, the ``as_of`` ruling R-G clamps to, and -- since plan
-    step **C2-f2a** -- the owner's pay CALENDAR, the CONTRIBUTION tier's axis
-    (ledger row **P37**, which that tier used to query for itself once per
-    modelled account in a pass already holding it).  This function exists to be
-    the ONE place a context is unpacked into the values :func:`resolve` takes.
-    The calendar is read EAGERLY, before :func:`resolve` can early-out on an
-    account that models no return, so a scalar read of a plain checking account
-    now derives one where it derived none: free on a pass that has already
-    asked (the context memoizes it), two queries on one that has not.
+    **It unpacks NOTHING off the context any more**: the scenario that scopes
+    the fold and the ``as_of`` ruling R-G clamps to are read inside
+    :func:`~._cash_fold.assembled_fold`, and the owner's pay CALENDAR -- the
+    contribution tier's axis, ledger row **P37** -- rode here as a third
+    argument until pay-calendar plan step **C4-a-1** moved it onto the
+    assembled fold itself.  It is still derived EAGERLY, now inside that fold,
+    before :func:`resolve` can early-out on an account modelling no return:
+    free on a pass that has already asked, two queries on one that has not.
 
     Args:
         account: The account to value.
         ctx: The read pass's :class:`~app.services.balance_at.BalanceContext`
             (its scenario scopes the fold and the contribution feed, its
-            ``as_of`` is ruling R-G's clamp floor, and its calendar is where
-            the contribution tier's axis comes from).
+            ``as_of`` is ruling R-G's clamp floor, and its calendar reaches the
+            contribution tier's axis through the fold).
         horizon_end: The furthest date this read will be sampled at.
         inputs: The account's
             :class:`~app.services.balance_at._asset_contributions.ContributionInputs`.
@@ -768,7 +769,6 @@ def _assemble(
         _cash_fold.assembled_fold(account, ctx),
         horizon_end,
         inputs,
-        ctx.calendar(),
     )
 
 

@@ -92,10 +92,13 @@ def _add_transaction(
         template: Optional template to link.
         is_deleted: Soft-delete flag.
         status: StatusEnum member; defaults to PROJECTED.  Mixed-status
-            calendar tests (F-3 / W-065) pass SETTLED, CANCELLED, CREDIT
+            calendar tests (F-3 / W-065) pass DONE, CANCELLED, CREDIT
             to assert the balance-contributing predicate filters them
-            correctly.
-        actual_amount: Optional realized amount.  Required for SETTLED
+            correctly.  They passed SETTLED -- the terminal archive -- until
+            plan step **balance:X-am** deleted that status; the predicate
+            under test reads ``excludes_from_balance`` and never a member, so
+            any settled status is the same specimen.
+        actual_amount: Optional realized amount.  Required for a SETTLED status
             so ``effective_amount`` returns the realized hit rather than
             falling back to ``estimated_amount``.
 
@@ -1307,7 +1310,7 @@ class TestEdgeCases:
 
 class TestBalanceContributingPredicate:
     """F-3 / HIGH-02 / W-065: calendar per-day filter via the locked
-    Choice-2 ``balance-contributing`` predicate (Projected + Settled,
+    Choice-2 ``balance-contributing`` predicate (Projected + settled,
     excludes Cancelled + Credit).
 
     Locks the post-Commit-10 (follow-up) behaviour so a future change
@@ -1320,12 +1323,12 @@ class TestBalanceContributingPredicate:
     def test_c10_1_projected_and_settled_both_contribute(
         self, app, seed_user, seed_periods, db,
     ):
-        """F-3 / W-065 C10-1: Projected $500 + Settled $200 -> day total $700.
+        """F-3 / W-065 C10-1: Projected $500 + Paid $200 -> day total $700.
 
         Hand arithmetic: 500 (Projected expense, effective = estimated)
-        + 200 (Settled expense, effective = actual_amount) = 700.
+        + 200 (Paid expense, effective = actual_amount) = 700.
         Both statuses are balance-contributing: Projected because it
-        is not in the {Credit, Cancelled} exclusion set; Settled for
+        is not in the {Credit, Cancelled} exclusion set; Paid for
         the same reason -- the calendar's locked Choice-2 predicate
         intentionally includes realized payments at their settled date.
         """
@@ -1337,9 +1340,9 @@ class TestBalanceContributingPredicate:
                 status=StatusEnum.PROJECTED,
             )
             _add_transaction(
-                db.session, seed_user, p0, "Settled Bill", "200.00",
+                db.session, seed_user, p0, "Paid Bill", "200.00",
                 due_date=date(2026, 1, 5),
-                status=StatusEnum.SETTLED, settled_amount="200.00",
+                status=StatusEnum.DONE, settled_amount="200.00",
             )
             db.session.commit()
 
@@ -1352,7 +1355,7 @@ class TestBalanceContributingPredicate:
             assert result.total_expenses == Decimal("700.00")
             assert len(result.day_entries[5]) == 2
             names = sorted(e.name for e in result.day_entries[5])
-            assert names == ["Projected Bill", "Settled Bill"]
+            assert names == ["Paid Bill", "Projected Bill"]
 
     def test_c10_2_cancelled_and_credit_excluded(
         self, app, seed_user, seed_periods, db,
@@ -1360,7 +1363,7 @@ class TestBalanceContributingPredicate:
         """F-3 / W-065 C10-2: Cancelled + Credit excluded from day total.
 
         Same day as C10-1 plus a Cancelled $100 expense and a Credit
-        $50 expense.  Hand arithmetic: 500 (Projected) + 200 (Settled)
+        $50 expense.  Hand arithmetic: 500 (Projected) + 200 (Paid)
         = 700.00; the Cancelled and Credit rows are filtered out by
         ``balance_contributing_clause`` (their status carries
         ``excludes_from_balance=True``) and never reach the day
@@ -1382,9 +1385,9 @@ class TestBalanceContributingPredicate:
                 status=StatusEnum.PROJECTED,
             )
             _add_transaction(
-                db.session, seed_user, p0, "Settled Bill", "200.00",
+                db.session, seed_user, p0, "Paid Bill", "200.00",
                 due_date=date(2026, 1, 5),
-                status=StatusEnum.SETTLED, settled_amount="200.00",
+                status=StatusEnum.DONE, settled_amount="200.00",
             )
             _add_transaction(
                 db.session, seed_user, p0, "Cancelled Bill", "100.00",
@@ -1408,14 +1411,14 @@ class TestBalanceContributingPredicate:
             # Day cell shows only the two contributing rows.
             assert len(result.day_entries[5]) == 2
             names = sorted(e.name for e in result.day_entries[5])
-            assert names == ["Projected Bill", "Settled Bill"]
+            assert names == ["Paid Bill", "Projected Bill"]
 
     def test_c10_3_grid_period_subtotal_excludes_cancelled_and_credit(
         self, app, seed_user, seed_periods, db,
     ):
         """F-3 / W-065 C10-3: Cancelled and Credit never reach the grid column.
 
-        Same fixture as C10-2 (Projected $500 + Settled $200 +
+        Same fixture as C10-2 (Projected $500 + Paid $200 +
         Cancelled $100 + Credit $50 on Jan 5).
 
         **Ruling R-K changed what a subtotal COUNTS, and this test's figure
@@ -1457,9 +1460,9 @@ class TestBalanceContributingPredicate:
                 status=StatusEnum.PROJECTED,
             )
             _add_transaction(
-                db.session, seed_user, p0, "Settled Bill", "200.00",
+                db.session, seed_user, p0, "Paid Bill", "200.00",
                 due_date=date(2026, 1, 5),
-                status=StatusEnum.SETTLED, settled_amount="200.00",
+                status=StatusEnum.DONE, settled_amount="200.00",
             )
             _add_transaction(
                 db.session, seed_user, p0, "Cancelled Bill", "100.00",
@@ -1520,9 +1523,9 @@ class TestBalanceContributingPredicate:
                 status=StatusEnum.PROJECTED,
             )
             _add_transaction(
-                db.session, seed_user, p0, "Settled Bill", "200.00",
+                db.session, seed_user, p0, "Paid Bill", "200.00",
                 due_date=date(2026, 1, 5),
-                status=StatusEnum.SETTLED, settled_amount="200.00",
+                status=StatusEnum.DONE, settled_amount="200.00",
             )
             _add_transaction(
                 db.session, seed_user, p0, "Cancelled Bill", "100.00",

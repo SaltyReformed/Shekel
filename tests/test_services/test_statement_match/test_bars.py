@@ -41,6 +41,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.statement_match import StatementMatch
 from app.services import statement_match
 from app.services.statement_match import (
+    register_set,
     CreationBar,
     CreationBars,
     NewEnvelope,
@@ -503,7 +504,7 @@ class TestABarredItemCostsOnlyItself:
         db.session.commit()
 
         outcome = statement_match.apply_reviewed(
-            ReviewedBatch(consent=Consent.TICKED, matches=(), creations=(
+            ReviewedBatch(consent=Consent.TICKED, matches=(), incomes=(), creations=(
                 PurchaseCreation(line_id=barred.id, new_envelope=NewEnvelope(
                     name=CARD_MERCHANT,
                     category_id=seed_user["categories"]["Groceries"].id,
@@ -777,6 +778,7 @@ class TestWhatTheScreenShowsInstead:
         outcome = statement_match.apply_reviewed(
             ReviewedBatch(
                 consent=Consent.TICKED,
+                incomes=(),
                 matches=(a_submission(
                     scope, lines=[line], transactions=[first, second],
                 ),),
@@ -814,14 +816,14 @@ class TestWhatTheScreenShowsInstead:
         db.session.commit()
 
         rows = {
-            row.merchant: row
+            row.summary.merchant: row
             for row in review_set(a_scope(seed_user)).merchants.merchants
         }
 
-        assert rows[CARD_MERCHANT].pays_an_account is True
+        assert rows[CARD_MERCHANT].summary.pays_an_account is True
         assert rows[CARD_MERCHANT].line_count == 1
         assert rows[CARD_MERCHANT].total == Decimal("-793.23")
-        assert rows["Food Lion"].pays_an_account is False
+        assert rows["Food Lion"].summary.pays_an_account is False
 
     def test_the_flag_is_carried_WHATEVER_the_owner_has_said(
         self, app, db, seed_user,
@@ -836,6 +838,13 @@ class TestWhatTheScreenShowsInstead:
         fit, and one whose stored answer predates the bank filing this merchant
         as an account payment is entitled to see why their Save is now being
         refused.
+
+        **Read off the REGISTER since plan step ``bank_import:X-gf-2``** (ruling
+        **bank_import:R-GX**), and the move is the case rather than a detour:
+        this merchant HAS been answered for, so its row is where answers are
+        changed -- and the flag has to survive the move, because the register
+        is now the only surface offering that owner the two options the door
+        refuses.
         """
         statement = an_import(seed_user)
         _a_card_payment(seed_user, statement)
@@ -844,8 +853,151 @@ class TestWhatTheScreenShowsInstead:
 
         row = {
             item.merchant: item
-            for item in review_set(a_scope(seed_user)).merchants.merchants
+            for item in register_set(
+                seed_user["user"].id, seed_user["account"].id,
+            ).merchants.merchants
         }[CARD_MERCHANT]
 
         assert row.rule.answer is RuleAnswer.NEVER
         assert row.pays_an_account is True
+
+
+class TestWhereAParkedLineSAnswerIsCHANGED:
+    """Plan step ``bank_import:X-gf-3a``: the door a parked line does not name.
+
+    Since ruling **bank_import:R-GX** an ANSWERED merchant leaves the review
+    screen's own control for the register, so a line parked by an answer the
+    owner has come to disagree with had nowhere on that page to say so.  The
+    fix is not a link, it is the QUESTION of whether a link would help -- and
+    on the developer's own data 2026-08-27 it would not, on any of them: all
+    nine parked lines name ``Capital One Credit Card``, which carries BOTH
+    bars, and :func:`~._stating.state_rules` refuses every answer but *never a
+    purchase* for such a merchant.  A link rendered unconditionally would have
+    been the chooser-that-cannot-succeed shape on every line it appeared
+    beside.
+    """
+
+    def test_an_answer_the_owner_could_CHANGE_names_where_to_change_it(
+        self, app, db, seed_user,
+    ):
+        """An ordinary swipe merchant answered *never a purchase*.
+
+        Nothing but the owner's own answer parks this line, so a different
+        answer would open the create door -- and the register is the only
+        surface that still offers them one.
+        """
+        statement = an_import(seed_user)
+        _a_swipe(seed_user, statement)
+        a_rule(seed_user, "Food Lion")
+        db.session.commit()
+
+        parked = review_set(a_scope(seed_user)).parked[0]
+
+        assert parked.barred_by is CreationBar.NEVER_A_PURCHASE
+        assert parked.also_pays_an_account is False
+        assert parked.answer_door == "Change what you have said about Food Lion"
+
+    def test_an_answer_that_would_change_NOTHING_names_no_door(
+        self, app, db, seed_user,
+    ):
+        """THE FIRING CONTROL, and the case that is 9 of the developer's 9.
+
+        Both bars hold.  The owner's answer is asked first and is what the
+        sentence leads with, but unsaying it opens nothing: no answer lifts a
+        source's filing, so sending them to restate it would be a chooser whose
+        submission can never succeed.
+
+        Delete the ``also_pays_an_account`` guard in
+        :attr:`~._bars.ParkedLine.answer_door` and only this case falls.
+        """
+        statement = an_import(seed_user)
+        _a_card_payment(seed_user, statement)
+        a_rule(seed_user, CARD_MERCHANT)
+        db.session.commit()
+
+        parked = review_set(a_scope(seed_user)).parked[0]
+
+        assert parked.barred_by is CreationBar.NEVER_A_PURCHASE
+        assert parked.also_pays_an_account is True
+        assert parked.answer_door is None
+
+    def test_a_bar_the_owner_never_STATED_names_no_door_either(
+        self, app, db, seed_user,
+    ):
+        """There is no answer to change: they never gave one.
+
+        Distinct from the case above rather than a repeat of it -- that one has
+        a stored answer the register would show, this one has none at all, and
+        collapsing them would make the guard pass for the wrong reason.
+        """
+        statement = an_import(seed_user)
+        _a_card_payment(seed_user, statement)
+        db.session.commit()
+
+        parked = review_set(a_scope(seed_user)).parked[0]
+
+        assert parked.barred_by is CreationBar.PAYS_AN_ACCOUNT_YOU_HOLD
+        assert parked.answer_door is None
+
+    def test_the_reason_says_the_SECOND_bar_where_it_also_holds(
+        self, app, db, seed_user,
+    ):
+        """The sentence stops implying that unsaying the answer would help.
+
+        ``bar_for`` asks the owner's own answer first, which is right and is
+        not what was wrong: what was wrong is that *you have said this is never
+        a purchase* implies unsaying it would open the door, and for 9 of the
+        developer's 9 parked lines it would not.  Both clauses, and the owner's
+        own decision still leads.
+        """
+        statement = an_import(seed_user)
+        _a_card_payment(seed_user, statement)
+        a_rule(seed_user, CARD_MERCHANT)
+        db.session.commit()
+
+        reason = review_set(a_scope(seed_user)).parked[0].reason
+
+        assert reason.index("You have said") < reason.index("Your bank also")
+        assert "which no answer lifts" in reason
+
+    def test_a_bar_the_owner_ALONE_states_says_only_that(
+        self, app, db, seed_user,
+    ):
+        """...and the clause is not printed where it would be false.
+
+        Without this the composed sentence would tell an owner who answered
+        *never* about an ordinary swipe merchant that their bank files it as an
+        account payment, which it does not.
+        """
+        statement = an_import(seed_user)
+        _a_swipe(seed_user, statement)
+        a_rule(seed_user, "Food Lion")
+        db.session.commit()
+
+        reason = review_set(a_scope(seed_user)).parked[0].reason
+
+        assert "You have said" in reason
+        assert "Your bank also" not in reason
+
+    def test_the_DOOR_says_what_the_screen_says_about_both_bars(
+        self, app, db, seed_user,
+    ):
+        """One wording, two registers -- extended to the second clause.
+
+        A screen saying *no answer would open this* over a door saying only
+        *you said never* is the drift this module's shared sentence exists to
+        prevent: the owner would restate the answer, be refused, and have no
+        way to tell which of the two surfaces was wrong.
+        """
+        statement = an_import(seed_user)
+        line = _a_card_payment(seed_user, statement)
+        a_rule(seed_user, CARD_MERCHANT)
+        db.session.commit()
+
+        with pytest.raises(ValidationError) as caught:
+            statement_match._bars.reject_barred_line(  # pylint: disable=protected-access
+                line, a_bars(seed_user),
+            )
+
+        assert "which no answer lifts" in str(caught.value)
+        assert "Nothing was changed" in str(caught.value)

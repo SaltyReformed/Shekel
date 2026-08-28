@@ -35,10 +35,10 @@ from app.services import (
     recurrence_engine,
     template_amount_service,
 )
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.services.payroll_basis import PayrollBasis
 from app.services.pay_calendar import calendar_for
-from app.services.scenario_resolver import get_baseline_scenario
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.schemas.validation import (
     CalibrationConfirmSchema,
@@ -159,17 +159,20 @@ def _regenerate_salary_transactions(profile):
     if not profile.template:
         return
 
-    scenario = get_baseline_scenario(current_user.id)
-    if not scenario:
+    # ONE read pass for the whole regeneration (plan step R7d-c-1): it pins the
+    # owner, the day and the baseline scenario, and its calendar serves both
+    # the paycheck recompute below and the regeneration's own resolution (plan
+    # step R4b-1).  The paycheck engine and the recurrence seam both read the
+    # CALENDAR (pay-calendar plan steps C2-f2d-3 and C2-f3c), so there is one
+    # value and no second read to reconcile it against.  It replaces a
+    # ``get_baseline_scenario`` beside a ``calendar_for`` -- the two facts a
+    # pass already pins.
+    ctx = BalanceContext.build(current_user.id)
+    if ctx.scenario is None:
         return
 
-    # ONE derivation of the owner's schedule serves both the paycheck recompute
-    # below and the regeneration's own resolution (plan step R4b-1).  The
-    # paycheck engine and the recurrence seam both read the CALENDAR
-    # (pay-calendar plan steps C2-f2d-3 and C2-f3c), so there is one value and
-    # no second read to reconcile it against.
-    calendar = calendar_for(current_user.id)
-    schedule = GenerationSchedule.for_calendar(calendar)
+    schedule = GenerationSchedule.for_pass(ctx)
+    calendar = ctx.calendar()
     periods = calendar.saved()
 
     # Update the template's default_amount to the current net pay
@@ -199,7 +202,7 @@ def _regenerate_salary_transactions(profile):
     # Regenerate transactions
     try:
         recurrence_engine.regenerate_for_template(
-            profile.template, schedule, scenario.id,
+            profile.template, schedule, ctx.scenario_id,
             effective_from=date.today(),
         )
     except RecurrenceConflict as e:

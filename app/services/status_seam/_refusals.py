@@ -20,6 +20,7 @@ Pure: reads columns and the settled-status predicate, raises or returns.  No
 session, no mutation, no Flask.
 """
 
+from datetime import date
 from typing import Optional, Union
 
 from app.exceptions import ValidationError
@@ -58,7 +59,7 @@ def reject_settle_day_without_settled_status(
 
     **One half of the settled-iff-dated invariant, stated once** (plan step
     X-f1, finding **N-183**).  A row carries the civil day its money moved if
-    and only if it is in a settled status (Paid / Received / Settled), so a day
+    and only if it is in a settled status (Paid or Received), so a day
     handed in beside a Projected / Credit / Cancelled status is not a value to
     store -- it is a request to record a payment that has not happened.
 
@@ -101,8 +102,8 @@ def reject_settle_day_without_settled_status(
     raise ValidationError(
         f"A settle day ({settle_day.day.isoformat()}) was supplied for status "
         f"{status_id}, which is not a settled status.  A row records the day "
-        "its money moved only while it is settled (Paid / Received / "
-        "Settled); mark it settled to give it a day, or clear the day to "
+        "its money moved only while it is settled (Paid or Received); "
+        "mark it settled to give it a day, or clear the day to "
         "leave it projected."
     )
 
@@ -179,7 +180,7 @@ def reject_settlement_without_settled_status(
     raise ValidationError(
         f"A settlement record was supplied for status {status_id}, which is "
         "not a settled status.  A row records what moved only while it is "
-        "settled (Paid / Received / Settled); mark it settled to record a "
+        "settled (Paid or Received); mark it settled to record a "
         "figure, or leave it projected, which records nothing."
     )
 
@@ -232,6 +233,35 @@ def reject_settle_day_without_a_record(
         "bank actually took in the Actual box as well as the day, and both are "
         "recorded together."
     )
+
+
+def day_is_in_the_future(day: date) -> bool:
+    """Return whether *day* is later than the user's today (ruling **R-EJ**).
+
+    **The PREDICATE behind :func:`reject_future_settle_day`, published so a
+    SCREEN can ask it.**  A door that raises answers *may I do this*, and a
+    control that must not be rendered needs *would this be refused* -- and the
+    project's own rule is that a screen may not offer a control whose
+    submission can never succeed, a shape the statement-match package has now
+    closed six times.  Before this, the only way to ask was a second
+    ``day > display_today()`` comparison at the call site, which is one money
+    rule spelled twice.
+
+    Added at plan step ``bank_import:X-gf-1`` for
+    :func:`app.services.statement_match._leftovers._recordable_inflows`, whose
+    card would otherwise render a tick for a bank line the bank dates in the
+    future -- and whose door wrote the row before this refusal fired.  Found by
+    adversarial financial review 2026-08-27.
+
+    Args:
+        day: The civil day to test.
+
+    Returns:
+        Whether it is after the user's today
+        (:func:`~app.utils.dates.display_today`), which is the display-timezone
+        clock every settle door already reads.
+    """
+    return day > display_today()
 
 
 def reject_future_settle_day(settle_day: Optional[SettleDay]) -> None:
@@ -305,9 +335,9 @@ def reject_future_settle_day(settle_day: Optional[SettleDay]) -> None:
     """
     if settle_day is None:
         return
-    today = display_today()
-    if settle_day.day <= today:
+    if not day_is_in_the_future(settle_day.day):
         return
+    today = display_today()
     raise ValidationError(
         f"A settle day of {settle_day.day.isoformat()} has not happened yet "
         f"(today is {today.isoformat()}).  A row records the day its money "

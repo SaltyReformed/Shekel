@@ -20,7 +20,7 @@ from decimal import Decimal
 import pytest
 
 from app import ref_cache
-from app.enums import SettlementBasisEnum, StatusEnum
+from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
@@ -44,6 +44,7 @@ from tests._test_helpers import (
     make_every_period_rule,
     net_posted_by_day,
     settlement_basis_id,
+    settlement_if_settling,
 )
 
 
@@ -1652,11 +1653,17 @@ class TestAReplayedSettleIsANoOp:
     def test_it_is_NARROWER_than_the_settled_band(
         self, app, db, seed_user, seed_periods,
     ):
-        """``Settled -> Paid`` still owes the state machine an answer.
+        """``Paid -> Received`` still owes the state machine an answer.
 
         A first version of this guard asked ``status_id in settled_status_ids()``
         and thereby swallowed an ILLEGAL transition, turning a designed 400 into
         a silent 200.  Only the IDENTITY move is nothing to do.
+
+        The specimen was ``Settled -> Paid`` until plan step **balance:X-am**
+        deleted the archive.  ``Paid -> Received`` is now the ONLY non-identity
+        move inside the settled band -- the band is exactly those two -- so it
+        is the one case that can still tell a band test from an identity test.
+        Without it this guard's narrowness would be unfalsifiable.
         """
         with app.app_context():
             template = _make_envelope_template(seed_user)
@@ -1665,14 +1672,20 @@ class TestAReplayedSettleIsANoOp:
             )
             _make_entry(txn.id, seed_user["user"].id, "40.00", "Store A")
             db.session.flush()
-            transaction_service.settle_transaction(txn)
+            # An INCOME row, so its type-correct settle target is Received and
+            # the Paid it holds is the other member of the band.
+            txn.transaction_type_id = ref_cache.txn_type_id(TxnTypeEnum.INCOME)
             status_seam.apply_status_change(
-                txn, ref_cache.status_id(StatusEnum.SETTLED),
+                txn, ref_cache.status_id(StatusEnum.DONE),
+                settlement=settlement_if_settling(
+                    txn, ref_cache.status_id(StatusEnum.DONE),
+                ),
             )
             db.session.flush()
 
-            # The row is ARCHIVED; a settle asks for Paid, which is not the
-            # status it holds -- so this is a transition, not a re-submit.
+            # The row holds Paid; its TYPE settles as Received, which is not
+            # the status it holds -- so this is a transition, not a re-submit,
+            # and the state machine refuses it.
             with pytest.raises(ValidationError):
                 transaction_service.settle_transaction(txn)
 
@@ -1743,9 +1756,20 @@ class TestTheDoorAppliesTheStatusANDTheCorrection:
     sits beside the Actual box -- so a user correcting a figure on the way to
     filing the row away got half of what they asked for, silently.
 
-    ``Settled`` is TERMINAL (``settled: {settled}`` in the workflow map), so the
-    archive is the LAST moment either fact can be stated.  Dropping either half
-    loses something no later edit can restate.
+    **The sharpest specimen is GONE and this says so rather than leaving the
+    reader to notice.**  ``Paid -> Settled`` was a real status MOVE that a
+    correction could ride, and plan step **balance:X-am** deleted the terminal
+    ``Settled`` archive.  A settled row's only remaining status move is the
+    REVERT, and a revert carrying a CHANGED figure is deliberately refused
+    (below) rather than composed -- so the "move plus correction" case has no
+    legal instance left and its test went with the status.
+
+    What still grades the composition is the IDENTITY move below: the door is
+    handed a status AND a figure in one call and must apply both, which is the
+    property whose absence dropped status changes on the floor.  What is no
+    longer graded is the same composition across a status BOUNDARY, and that is
+    a real reduction -- recorded here, not absorbed.  The first status move
+    added to a settled row's map owes this class a case.
     """
 
     #: A settle day that is NOT the user's today.  A settle stamps
@@ -1770,18 +1794,24 @@ class TestTheDoorAppliesTheStatusANDTheCorrection:
         )
         return txn
 
-    def test_an_archive_carrying_a_correction_does_BOTH(
+    def test_a_correction_with_a_status_IN_HAND_does_BOTH(
         self, app, db, seed_user, seed_periods,
     ):
-        """Paid -> Settled at $123.45: the row archives AND records $123.45.
+        """The identity case: the figure lands, the status stays, the ledger moves.
+
+        The composition, and since plan step **balance:X-am** the only legal
+        instance of it: the door is handed a status AND a figure in ONE call
+        and must apply both.  It used to record the figure and RETURN, so the
+        status half was dropped -- measured 2026-08-18 on ``Paid -> Settled``,
+        the move that no longer exists.
 
         Hand arithmetic: the row settles at its $100.00 plan, so the cash
         account is $100.00 down.  The correction restates the figure as
-        $123.45, so the settled effect becomes -$123.45 -- the difference
+        $87.10, so the settled effect becomes -$87.10 -- the difference
         re-posted, not a second full booking.
 
-        Shown to FIRE: restoring the early ``return`` after the correction
-        leaves ``status_id`` at Paid while the figure and the ledger both move.
+        The settle day is preserved, because a figure correction moves no day
+        and ruling **R-FL** releases the clearing link on the DAY alone.
         """
         with app.app_context():
             txn = self._settled_row(seed_user, seed_periods[0])
@@ -1789,19 +1819,16 @@ class TestTheDoorAppliesTheStatusANDTheCorrection:
             day = txn.settled_on
 
             transaction_service.apply_requested_status(
-                txn, ref_cache.status_id(StatusEnum.SETTLED),
-                submitted=Decimal("123.45"),
+                txn, txn.status_id, submitted=Decimal("87.10"),
             )
 
-            assert txn.status_id == ref_cache.status_id(StatusEnum.SETTLED), (
-                "the archive was dropped while the figure was recorded"
-            )
-            assert settled_figure(txn) == Decimal("123.45")
+            assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
+            assert settled_figure(txn) == Decimal("87.10")
             assert txn.settled_basis_id == settlement_basis_id(
                 SettlementBasisEnum.CORRECTED,
             )
             assert txn.settled_on == day, (
-                "the archive moved the day the money moved"
+                "a figure correction moved the settle day"
             )
             # The POSTING LEDGER, read from ``budget.journal_entries``.
             # ``posting_service.settled_transaction_effect`` is NOT an oracle
@@ -1813,31 +1840,7 @@ class TestTheDoorAppliesTheStatusANDTheCorrection:
             # The net per day is what separates "re-booked" from "booked twice".
             assert net_posted_by_day(
                 JournalEntry.transaction_id == txn.id,
-            ) == {day: Decimal("123.45")}
-
-    def test_a_correction_with_no_status_move_still_records(
-        self, app, db, seed_user, seed_periods,
-    ):
-        """The identity case: the figure lands and the status stays put.
-
-        The other side of the composition -- proving the merged seam call did
-        not make a status change a PRECONDITION of recording a figure.  The
-        settle day is preserved, because a figure correction moves no day and
-        ruling **R-FL** releases the clearing link on the DAY alone.
-        """
-        with app.app_context():
-            txn = self._settled_row(seed_user, seed_periods[0])
-            day = txn.settled_on
-
-            transaction_service.apply_requested_status(
-                txn, txn.status_id, submitted=Decimal("87.10"),
-            )
-
-            assert txn.status_id == ref_cache.status_id(StatusEnum.DONE)
-            assert settled_figure(txn) == Decimal("87.10")
-            assert txn.settled_on == day, (
-                "a figure correction moved the settle day"
-            )
+            ) == {day: Decimal("87.10")}
 
     def test_a_REVERT_carrying_a_figure_is_refused_and_changes_nothing(
         self, app, db, seed_user, seed_periods,

@@ -65,6 +65,7 @@ from app.services import (
 from app.services.statement_match import _create  # pylint: disable=protected-access
 
 from ._builders import (
+    accepted_acts,
     a_bank_line,
     a_bars,
     a_later_period,
@@ -444,7 +445,7 @@ class TestAnActIsWITHDRAWNONLYWhenItLosesItsLastRow:
         assert line.id in _matched_line_ids(seed_user), (
             "two rows still name it; the amber flag is what re-reviews this"
         )
-        groups = statement_match.review_set(a_scope(seed_user)).accepted
+        groups = accepted_acts(seed_user)
         assert len(groups) == 1
         assert groups[0].agrees is False, (
             "the sides no longer sum, which is what the flag is for"
@@ -463,7 +464,7 @@ class TestAnActIsWITHDRAWNONLYWhenItLosesItsLastRow:
 
         assert outcome.withdrawn.matches == 1
         assert line.id not in _matched_line_ids(seed_user)
-        assert not statement_match.review_set(a_scope(seed_user)).accepted
+        assert not accepted_acts(seed_user)
 
     def test_a_SOFT_delete_leaves_the_act_standing(
         self, app, db, seed_user,
@@ -485,9 +486,7 @@ class TestAnActIsWITHDRAWNONLYWhenItLosesItsLastRow:
         assert outcome.soft is True
         assert outcome.withdrawn.matches == 0
         assert line.id in _matched_line_ids(seed_user)
-        assert statement_match.review_set(
-            a_scope(seed_user),
-        ).accepted[0].agrees is False, (
+        assert accepted_acts(seed_user)[0].agrees is False, (
             "the row contributes nothing now, so the SUM says so"
         )
 

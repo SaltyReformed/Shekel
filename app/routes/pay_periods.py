@@ -23,6 +23,7 @@ from app.exceptions import (
     PayPeriodUnresolved,
     ValidationError,
 )
+from app.routes._period_population import populate_new_periods
 from app.routes.settings import render_settings_dashboard
 from app.schemas.validation import (
     PayPeriodExtendSchema,
@@ -92,6 +93,20 @@ def generate():
             num_periods=data["num_periods"],
             cadence_days=data["cadence_days"],
         )
+        # POPULATE, like every other door that creates a pay period (ruling
+        # **R-R38**), and this door needed saying out loud: it reads as
+        # first-time-only and is not.  ``record_paydays``' forward-only rule
+        # accepts any payday AFTER the owner's last, so on an owner who
+        # already has a schedule this behaved as an extend that skipped every
+        # template -- measured through this route at 3 appended periods
+        # holding 0 template rows, with "Generate pay periods" one click away
+        # in the main nav on every screen.  That was ledger row **D58**, found
+        # by censusing the five writers this step split and closed here.
+        #
+        # A genuinely NEW owner is unaffected twice over: no template can
+        # exist yet, and this route is reachable only once they have an
+        # account, so the pass finds nothing to generate.
+        populate_new_periods(current_user.id, periods)
     except ValidationError as exc:
         # Forward-only rule (ruling R-PC1, plan step C3-b): a payday that would
         # land BETWEEN two existing ones is rejected.  Surfaced on the
@@ -104,11 +119,12 @@ def generate():
         # the date one is what is left.  Widen either field and this line
         # starts rendering a cadence message under the date box.
         #
-        # The rollback is what makes the 422 clean.  ``record_paydays`` now
-        # runs every refusal BEFORE its first durable statement, so there is
-        # nothing staged to discard on this path -- but the response below
-        # re-renders a form, and a rendered response should not sit on a unit
-        # of work whose emptiness depends on reading the writer.
+        # The rollback is what makes the 422 clean.  ``record_paydays`` runs
+        # every refusal BEFORE its first durable statement, so nothing is
+        # staged when IT is the raiser -- but the populate above it can raise
+        # after flushing, and the response below re-renders a form, which
+        # should not sit on a unit of work whose emptiness depends on reading
+        # a writer.
         db.session.rollback()
         return render_template(
             "pay_periods/generate.html",
@@ -132,14 +148,24 @@ def extend():
 
     data = _extend_schema.load(request.form)
     try:
+        # RECORD, then POPULATE, and the order is the whole of ruling R-R38:
+        # the read pass the recurrence resolves in is opened by
+        # ``populate_new_periods`` AFTER the paydays exist, because a pass
+        # resolved before them holds a calendar that does not contain them and
+        # a loan whose payoff has not moved yet.  The door leaves the periods
+        # EMPTY; dropping this second call ships paydays with no rent, no
+        # paycheck and no recurring transfer in them.
         new_periods = pay_period_admin.extend_pay_periods(
             current_user.id, data["num_periods"],
         )
+        populate_new_periods(current_user.id, new_periods)
     except ValidationError as exc:
         # Rolled back before the redirect: ``extend_pay_periods`` takes the
-        # per-user advisory lock and may have flushed the repopulation pass
-        # before a later statement refused, and the page this redirects to
-        # reads the owner's schedule back.
+        # per-user advisory lock, and whichever of the two calls above ran
+        # before the refusal may have flushed -- the door's own refusals run
+        # before its first durable statement, the repopulation's do not. The
+        # page this redirects to reads the owner's schedule back, so it reads
+        # committed state either way.
         db.session.rollback()
         flash(str(exc), "danger")
         return _pay_periods_redirect()
@@ -229,6 +255,9 @@ def regenerate():
             current_user.id, data["new_start_date"], data["num_periods"],
             data["cadence_days"], confirm_discard=data["confirm_discard"],
         )
+        # The rebuilt tail comes back EMPTY; this fills it.  See the extend
+        # route for why the pass may only be opened here (ruling R-R38).
+        populate_new_periods(current_user.id, new_periods)
     except (PayPeriodLocked, ValidationError) as exc:
         # Rolled back for the reason the generate route states, and here it is
         # not a nicety: ``regenerate_pay_periods`` DELETES the rebuildable tail
@@ -289,11 +318,17 @@ def reset():
             current_user.id, data["new_start_date"], data["num_periods"],
             data["cadence_days"],
         )
+        # LAST, after the wipe, the rebuild and both posting re-syncs -- see
+        # ``reset_pay_periods`` for why the re-syncs cannot see what this
+        # writes and why generating AFTER them is the order R7d-c-2 needs, and
+        # the extend route for why the pass opens here.
+        populate_new_periods(current_user.id, new_periods)
     except (PayPeriodResetBlocked, ValidationError) as exc:
-        # ``reset_pay_periods`` wipes every period before it generates the new
-        # schedule, so a refusal raised at the second half leaves the wipe in
-        # the session.  The settled-transaction refusal happens before any of
-        # it; the rollback is for the other one.
+        # ``reset_pay_periods`` wipes every period before it records the new
+        # schedule, so a refusal raised after that leaves the wipe, the
+        # rebuild and both posting re-syncs staged in the session -- as does
+        # one raised by the repopulation below it.  The settled-transaction
+        # refusal happens before any of it; the rollback is for the rest.
         db.session.rollback()
         flash(str(exc), "danger")
         return _pay_periods_redirect()

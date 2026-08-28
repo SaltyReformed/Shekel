@@ -351,6 +351,102 @@ class TestTheImportPost:
         assert b"Filed by your rules" in response.data
         assert b"match_id" in response.data
 
+    def test_the_receipt_SENDS_the_owner_where_the_acts_actually_are(
+        self, auth_client, db, seed_user,
+    ):
+        """Plan step ``bank_import:X-gf-2`` moved them; this sentence follows.
+
+        The receipt is bounded at ``RECEIPT_LIMIT``, so it names the place
+        every act IS listed -- and that used to be the review screen, which
+        after the split lists none of them.  A sentence sending an owner to a
+        page that cannot answer is the *chooser whose submission can never
+        succeed* shape, on prose.  The three surfaces changed together and none
+        of them was graded: the sentence, the button in the header, and the
+        anchor that explains what a standing rule does.
+
+        Found by adversarial test-quality review of this step, 2026-08-27.
+        """
+        with auth_client.application.app_context():
+            envelope = a_transaction(
+                seed_user, name="Groceries", amount="500.00",
+                is_envelope=True,
+            )
+            a_rule(seed_user, "Coffee", template_id=envelope.template_id)
+            db.session.commit()
+        response = _upload(
+            auth_client, seed_user["account"].id,
+            _payload(entries=[
+                (date(2024, 1, 8), "-25.00",
+                 "POINT OF SALE DEBIT L340 COFFEE HOUSE (Coffee)"),
+            ]),
+        )
+        page = response.get_data(as_text=True)
+        toasts = _flash_toasts(page)
+
+        assert any(
+            "every one of them is on the page of what you have already "
+            "decided" in message
+            for _, message in toasts
+        ), toasts
+        assert "on the review screen" not in " ".join(
+            message for _, message in toasts
+        )
+        # The header button and the standing-rule anchor, which are how an
+        # owner reaches that page without reading a flash.
+        register = f"/accounts/{seed_user['account'].id}/statements/register"
+        assert f'href="{register}"' in page
+        assert f'href="{register}#merchant-rules"' in page
+
+    def test_undoing_a_filed_act_LEAVES_THE_OWNER_HERE(
+        self, auth_client, db, seed_user,
+    ):
+        """Plan step ``bank_import:X-gf-2``: a door returns you where you were.
+
+        This receipt lists up to twenty acts a standing rule performed, and an
+        owner checking it is reading a list.  The undo posted to the review
+        screen's own release door until this step and redirected THERE --
+        a different page, mid-receipt, and after the split a page that lists no
+        accepted match at all, so the redirect landed nowhere near the act.
+
+        What is graded is the whole round trip through the real control: the
+        receipt renders this page's own action, the press works, and the
+        answer is this page carrying the undo's receipt.
+        """
+        with auth_client.application.app_context():
+            envelope = a_transaction(
+                seed_user, name="Groceries", amount="500.00",
+                is_envelope=True,
+            )
+            a_rule(seed_user, "Coffee", template_id=envelope.template_id)
+            db.session.commit()
+        page = _upload(
+            auth_client, seed_user["account"].id,
+            _payload(entries=[
+                (date(2024, 1, 8), "-25.00",
+                 "POINT OF SALE DEBIT L340 COFFEE HOUSE (Coffee)"),
+            ]),
+        ).get_data(as_text=True)
+
+        # The RENDERED action, so this cannot pass against a receipt still
+        # posting to the review screen's door.
+        assert f"/accounts/{seed_user['account'].id}/statements/release" in (
+            page
+        )
+        match_id = db.session.query(statement_match_model.id).scalar()
+
+        response = auth_client.post(
+            f"/accounts/{seed_user['account'].id}/statements/release",
+            data={"match_id": match_id},
+            follow_redirects=True,
+        )
+
+        assert b"Match undone" in response.data
+        # ...and it is THIS page that came back, not the review screen.
+        assert b"Import a statement" in response.data
+        assert b"What the bank has told us" in response.data
+        db.session.expire_all()
+        assert db.session.query(statement_match_model).count() == 0
+
     def test_an_import_whose_rules_file_NOTHING_says_nothing_about_them(
         self, auth_client, db, seed_user,
     ):

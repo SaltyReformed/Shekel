@@ -126,7 +126,7 @@
 {%- if value > 0 %}+{% endif %}{{ money(value, cents=cents) }}
 {%- endmacro %}
 
-{% macro render_row_cells(rk, periods, matched_by_row_period, entry_sums, budgets, settled, retained, txn_type_id, account, today, current_period_id=none, band=none) -%}
+{% macro render_row_cells(rk, periods, matched_by_row_period, entry_sums, budgets, settled, retained, due_captions, txn_type_id, account, today, current_period_id=none, band=none) -%}
 {#- Desktop grid row.  Emits one <tr> containing the sticky row
     label (<th scope="row">) followed by one <td class="text-end
     cell"> per visible period.  Group-header rows are emitted by
@@ -142,6 +142,13 @@
 
     `budgets` and `settled` are the page's two amount maps, threaded as
     PARAMETERS -- see the file header for why they cannot be context.
+
+    `due_captions` is a third such map, threaded for the same reason:
+    `{transaction_id: the due date to caption, or none}` from
+    `grid_view_service.due_captions_by_id`, which the included cell
+    partial INDEXES.  That partial decided it itself, off
+    `t.pay_period.start_date`, until pay-calendar plan step C4-a-1 --
+    a database query issued from inside the render.
 
     `today` is accepted for caller-shape parity with the grid
     route's context; it is intentionally unread here.  The

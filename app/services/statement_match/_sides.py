@@ -2,7 +2,7 @@
 
 Plan step ``bank_import:X-f6d-4``.  Four different modules summed the two sides
 of a match and subtracted them before this file existed: the accept door for
-its refusals, the residual for the figure it mints, the accepted-matches panel
+its refusals, the residual for the figure it mints, the accepted-act reader
 for its ``agrees`` flag, and :class:`~._offers.MatchProposal` for the
 correction a near miss states on screen.  They agreed by reading, which is this
 arc's own root cause 1 -- and one of them had drifted far enough to cite a

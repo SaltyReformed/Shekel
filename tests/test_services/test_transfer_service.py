@@ -38,6 +38,7 @@ from tests._test_helpers import (
     settlement_columns,
 )
 from app.services.settle_day import record_settle_day
+from app.services.state_machine import allowed_transitions
 
 
 @pytest.fixture()
@@ -1442,13 +1443,26 @@ class TestRestoreTransfer:
     ):
         """A shadow the state machine cannot legally move is REFUSED (R-DO).
 
-        Settled is terminal: nothing is reachable from it, so a Settled shadow
-        under a Projected parent cannot be reconciled by any legal transition.
-        Before plan step X-aj1 this was silently rewritten to the parent's
-        status with no transition check at all, which destroys the evidence of
-        how the row got there -- and reverting a settled shadow to Projected
-        would strand its postings.  It now refuses in the same voice as the
-        shadow-count and type-pairing corruption checks it sits beside.
+        **The specimen had to change at plan step balance:X-am and the reason
+        is the step's whole content.**  It was a ``Settled`` shadow under a
+        Projected parent: the archive was TERMINAL, so nothing was reachable
+        from it and no legal transition could reconcile the pair.  With the
+        archive deleted, every state in both maps can reach ``Projected`` --
+        so a Projected parent has NO unrepairable drift left, and a case built
+        on one would assert a refusal that can never fire.
+
+        What is still unrepairable is drift in the other direction: a
+        ``Cancelled`` shadow under a ``Paid`` parent.  ``cancelled`` reaches
+        only itself and ``projected``, so the parent's Paid is out of reach.
+        The rule under test is unchanged -- ``assert_restorable`` asks
+        ``allowed_transitions`` whether the shadow can reach the parent -- and
+        it now has a specimen that exercises the map rather than a status with
+        no outgoing edges at all.
+
+        Before plan step X-aj1 the shadow was silently rewritten to the
+        parent's status with no transition check at all, which destroys the
+        evidence of how the row got there.  It now refuses in the same voice as
+        the shadow-count and type-pairing corruption checks it sits beside.
 
         The refusal must also leave the transfer SOFT-DELETED: nothing is
         mutated before the preconditions run, so there is no half-restored
@@ -1458,6 +1472,12 @@ class TestRestoreTransfer:
             td = transfer_data
             xfer = _create_basic_transfer(td)
             xfer_id = xfer.id
+            # The PARENT settles first, so the pair is Paid/Paid and legal.
+            transfer_service.update_transfer(
+                xfer_id, td["user"].id,
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+            )
+            db.session.flush()
             transfer_service.delete_transfer(xfer_id, td["user"].id, soft=True)
             db.session.flush()
 
@@ -1465,16 +1485,19 @@ class TestRestoreTransfer:
                 db.session.query(Transaction)
                 .filter_by(transfer_id=xfer_id).first()
             )
-            drifted.status_id = ref_cache.status_id(StatusEnum.SETTLED)
-            # The drift under test is the STATUS; the day and the RECORD come
-            # with it so the fixture expresses exactly one defect rather than
-            # three (plan step X-au-c3).
-            record_settle_day(drifted, an_entered_day(display_today()))
-            for column, value in settlement_columns(
-                display_today(), drifted.estimated_amount,
-            ).items():
+            # The drift: a shadow that walked to Cancelled on its own.  The
+            # settle record goes with the status, because a Cancelled row
+            # records nothing -- so the fixture expresses exactly one defect
+            # rather than three (plan step X-au-c3).
+            drifted.status_id = ref_cache.status_id(StatusEnum.CANCELLED)
+            record_settle_day(drifted, None)
+            for column, value in settlement_columns(None, None).items():
                 setattr(drifted, column, value)
             db.session.flush()
+
+            assert ref_cache.status_id(StatusEnum.DONE) not in (
+                allowed_transitions(drifted)
+            ), "the fixture's drift is repairable -- this case cannot fire"
 
             with pytest.raises(ValidationError, match="cannot legally"):
                 transfer_service.restore_transfer(xfer_id, td["user"].id)
@@ -2130,9 +2153,15 @@ class TestTheStatusMirrorIsAtomic:
 
         ``apply_status_to_all_three`` verifies all three rows before the seam
         assigns any.  The input that needs it: the INCOME shadow drifted to
-        Settled (terminal) under a Projected parent being moved to Paid.  The
-        transfer's move is legal (Projected -> Paid) and the income shadow's is
-        not (nothing is reachable from Settled).
+        Received under a Projected parent being moved to Paid.  The transfer's
+        move is legal (Projected -> Paid) and the income shadow's is not
+        (``received: {received, projected}`` has no edge to Paid).
+
+        The drifted status was ``Settled`` -- terminal, so nothing was
+        reachable from it -- until plan step **balance:X-am** deleted it.  The
+        replacement is a within-band move the maps still refuse, which is the
+        same shape: a shadow whose own transition is illegal while the parent's
+        is fine.
 
         **The EXPENSE shadow is what proves the pre-pass.**  The applier writes
         the shadows before the parent, so the parent is safe either way; a
@@ -2160,7 +2189,7 @@ class TestTheStatusMirrorIsAtomic:
                 if s.transaction_type_id == expense_type_id
             )
             income_shadow = next(s for s in shadows if s is not expense_shadow)
-            income_shadow.status_id = ref_cache.status_id(StatusEnum.SETTLED)
+            income_shadow.status_id = ref_cache.status_id(StatusEnum.RECEIVED)
             # As above: the drift under test is the STATUS alone, so the day
             # and the RECORD come with it (plan step X-au-c3).
             record_settle_day(income_shadow, an_entered_day(display_today()))

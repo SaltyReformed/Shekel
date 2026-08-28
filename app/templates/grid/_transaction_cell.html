@@ -2,7 +2,18 @@
 {# Transaction cell -- displays amount with status badge.
    Clicking opens the inline edit form via HTMX.
 
-   Expected context: found.txn (or txn) -- a Transaction object.
+   Expected context:
+     found.txn (or txn) -- a Transaction object.
+     due_captions -- `{transaction_id: the due date to caption, or none}`,
+                 from `grid_view_service.due_captions_by_id`.  REQUIRED, and a
+                 MAP so that the read RAISES: Jinja's default `Undefined`
+                 compares unequal to a date without raising, so a caption read
+                 as a bare variable renders on every dated row when a surface
+                 forgets to publish it.  Same rule as `budgets` below and the
+                 same reason.  The caption was decided HERE, as
+                 `t.due_date != t.pay_period.start_date`, until pay-calendar
+                 plan step C4-a-1 -- a database query issued from a template,
+                 once per distinct paycheck on the page.
    Optional:
      wrap_div -- if true, wraps the cell in a <div id="txn-cell-{{ t.id }}">.
      wrap_oob -- if true (requires wrap_div), the wrapper div also
@@ -177,9 +188,14 @@
   {% endif %}
 </div>
 
-{# Due date indicator -- shown only when due_date differs from period start #}
-{% if t.due_date and t.pay_period and t.due_date != t.pay_period.start_date %}
-  <small class="cell-caption d-block fs-mini">Due: {{ t.due_date.strftime('%-m/%-d') }}</small>
+{# Due date indicator.  The DECISION is the route's -- whether this row's due
+   date says anything its paycheck's own payday does not -- so this draws the
+   answer rather than computing it (pay-calendar plan step C4-a-1, see
+   `grid_view_service.due_captions_by_id`).  Indexed, not guarded: a missing
+   map raises where a missing variable would silently caption every row. #}
+{% set due_caption = due_captions[t.id] %}
+{% if due_caption %}
+  <small class="cell-caption d-block fs-mini">Due: {{ due_caption.strftime('%-m/%-d') }}</small>
 {% endif %}
 
 {# Envelope progress underline (cell hierarchy, audit B2): a thin bar

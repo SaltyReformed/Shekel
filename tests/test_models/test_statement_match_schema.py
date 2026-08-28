@@ -1029,3 +1029,85 @@ class TestAnActRecordsWhoConsentedToIt:
 
         assert "applied_by_rule" in columns
         assert "budget.merchant_rules" not in referenced
+
+
+class TestASubjectIsReachedThroughTheAccountToo:
+    """Finding **bank_import:N-358**: the scope is in the JOIN, not in a filter.
+
+    Plan step ``bank_import:X-gf-2``.  Three readers collected the ids off a
+    scoped act's members and creations and selected the rows back **by primary
+    key alone** -- ``_accepted_view._by_id`` over bank lines, transactions and
+    purchases, and ``_release.warm_subjects`` over the last two -- and every
+    one of them RENDERS what it returns.  Nothing leaked: each id arrives from
+    ``acts_of(owner_id, account_id)``, which is scoped.  That is safety by
+    DERIVATION over an open set of future callers, which is the exact ground
+    finding **N-353** was refused on one function away.
+
+    **The remedy is not a clause, it is the relationship**: each subject is
+    reached through the composite foreign key the schema already holds, so
+    the generated SQL reads ``ON subject.id = member.<id> AND
+    subject.account_id = member.account_id``.  A reader cannot forget it and a
+    new reader cannot fail to add it, because there is nothing to add.
+
+    **What these grade is the PAIR.**  A relationship rebuilt on the single-id
+    key would still work, still pass every behavioural test in the suite --
+    the composite key makes the mismatched state unwritable, so no fixture can
+    produce a row it would return wrongly -- and would silently put the scope
+    back in the caller's hands.  Only the join's own shape can see that, which
+    is why it is asserted directly rather than through a rendered page.
+    """
+
+    @pytest.mark.parametrize("model, relation, target", [
+        (StatementMatchMember, "line", "bank_statement_lines"),
+        (StatementMatchMember, "transaction", "transactions"),
+        (StatementMatchMember, "entry", "transaction_entries"),
+        (StatementMatchCreation, "transaction", "transactions"),
+        (StatementMatchCreation, "entry", "transaction_entries"),
+    ])
+    def test_the_join_carries_the_account(self, app, model, relation, target):
+        """The account column is one of the two the join pairs.
+
+        Args:
+            app: The application, for the mapper configuration.
+            model: The mapped class holding the relationship.
+            relation: Its attribute name.
+            target: The table the relationship reaches.
+        """
+        pairs = sqlalchemy.inspect(model).relationships[relation]
+        paired = {
+            (local.name, remote.name)
+            for local, remote in pairs.local_remote_pairs
+        }
+
+        assert pairs.mapper.local_table.name == target
+        assert ("account_id", "account_id") in paired, (
+            f"{model.__name__}.{relation} joins on {sorted(paired)}: the "
+            f"account is not in the join, so the scope is back in whatever "
+            f"the caller remembers to filter on"
+        )
+        assert len(paired) == 2, (
+            f"{model.__name__}.{relation} pairs {sorted(paired)}: a subject "
+            f"is reached by its id AND its account, never by one of them"
+        )
+
+    @pytest.mark.parametrize("model, relation", [
+        (StatementMatchMember, "line"),
+        (StatementMatchMember, "transaction"),
+        (StatementMatchMember, "entry"),
+        (StatementMatchCreation, "transaction"),
+        (StatementMatchCreation, "entry"),
+    ])
+    def test_the_relationship_writes_nothing(self, app, model, relation):
+        """It is a READ projection of a key the writer states in columns.
+
+        A writable second path to the same column pair is how the id and the
+        account come apart: the accept door sets the columns
+        (``_accept._record``), and ``viewonly`` is what says this is the same
+        fact read back rather than a second way to state it.
+
+        Args:
+            app: The application, for the mapper configuration.
+            model: The mapped class holding the relationship.
+            relation: Its attribute name.
+        """
+        assert sqlalchemy.inspect(model).relationships[relation].viewonly

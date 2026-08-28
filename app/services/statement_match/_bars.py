@@ -135,7 +135,9 @@ class CreationBar(enum.Enum):
     PAYS_AN_ACCOUNT_YOU_HOLD = "pays_an_account_you_hold"
 
 
-def _core_sentence(barred_by: CreationBar, merchant: str) -> str:
+def _core_sentence(
+    barred_by: CreationBar, merchant: str, also_pays_an_account: bool,
+) -> str:
     """Return the sentence both the screen and the door say about a bar.
 
     **One wording, two registers.**  The screen adds what to do instead and the
@@ -143,17 +145,42 @@ def _core_sentence(barred_by: CreationBar, merchant: str) -> str:
     written once -- a control and the refusal behind it stating different
     reasons is how an owner learns to distrust both.
 
+    **BOTH bars can hold at once, and until plan step ``bank_import:X-gf-3a``
+    only the first was ever said.**  :meth:`CreationBars.bar_for` asks the
+    owner's own answer first, which is the right order and is not what was
+    wrong: what was wrong is that *you have said this is never a purchase*
+    implies that unsaying it would open the door, and for a merchant a source
+    also files as an account payment it would not -- no answer lifts the second
+    bar.  Measured on the developer's own dev data 2026-08-27: merchant
+    ``Capital One Credit Card`` carries BOTH, and it is **9 of his 9 parked
+    lines**, so the incomplete sentence was the only one any of them ever got.
+    The second clause is added rather than the first replaced, because which
+    bar the owner DECIDED is still the thing to say first.
+
     Args:
-        barred_by: Which bar applies.
+        barred_by: Which bar applies -- the first that does, the owner's own
+            answer before the bank's filing.
         merchant: The bank's own merchant string, which is the rule key.
+        also_pays_an_account: Whether a source ALSO files this merchant as a
+            payment to an account the owner holds.  Read only where
+            *barred_by* is the owner's own answer: where it is the filing
+            itself, the sentence already says so and a second clause would
+            repeat it.
 
     Returns:
         The shared sentence.
     """
     if barred_by is CreationBar.NEVER_A_PURCHASE:
-        return (
+        stated = (
             f"You have said {merchant} is never a purchase, so nothing can "
             f"record it as one."
+        )
+        if not also_pays_an_account:
+            return stated
+        return (
+            f"{stated}  Your bank also files {merchant} as a payment to an "
+            f"account you hold, which no answer lifts, so saying something "
+            f"else about it would not open this either."
         )
     return (
         f"Your bank files {merchant} as a payment to an account you hold "
@@ -163,7 +190,9 @@ def _core_sentence(barred_by: CreationBar, merchant: str) -> str:
     )
 
 
-def _refusal_for(barred_by: CreationBar, merchant: str) -> str:
+def _refusal_for(
+    barred_by: CreationBar, merchant: str, also_pays_an_account: bool,
+) -> str:
     """Return what the DOOR says when it refuses a line for *merchant*.
 
     Private, and beside :func:`reject_barred_line` which is its only caller:
@@ -175,14 +204,20 @@ def _refusal_for(barred_by: CreationBar, merchant: str) -> str:
     Args:
         barred_by: The bar the caller established.
         merchant: The bank's own merchant string, which is the rule key.
+        also_pays_an_account: Whether a source ALSO files this merchant as a
+            payment to an account the owner holds.  Threaded through for the
+            reason this function exists at all: the screen states it, and a
+            door that did not would be the two-registers drift this module's
+            one wording exists to prevent.
 
     Returns:
         The refusal sentence, ending in the phrase every designed refusal in
         this package ends in, because the door leaves nothing behind.
     """
     return (
-        f"{_core_sentence(barred_by, merchant)}  Match it to rows you already "
-        f"hold instead, or leave it where it is.  Nothing was changed."
+        f"{_core_sentence(barred_by, merchant, also_pays_an_account)}  Match "
+        f"it to rows you already hold instead, or leave it where it is.  "
+        f"Nothing was changed."
     )
 
 
@@ -197,7 +232,7 @@ class CreationBars:
     for.
 
     **It is NOT carried on the** :class:`~._scope.ReviewScope`, for the reason
-    :func:`~._reads._leftovers` states about the rules themselves: the
+    :func:`~._leftovers._leftovers` states about the rules themselves: the
     rule-stating route derives its scope ONCE, BEFORE its write, and a reader
     taking these off the scope would show the answers that pass had just
     replaced.  The batch door builds one per REQUEST instead, exactly as it
@@ -338,7 +373,7 @@ class ParkedLine:
     at all.  Naming one where a group does leave it is ruling **R-FN**'s
     machinery, already built at ``X-f6d-4``.
 
-    **It is NOT a** :class:`~._reads.CreatableLine` **with the controls turned
+    **It is NOT a** :class:`~._leftovers.CreatableLine` **with the controls turned
     off.**  That value carries the destinations a line may be recorded into and
     the placement suggesting one of them, and a parked line has neither -- a
     record that carried empty versions of both would be a control one Jinja
@@ -346,11 +381,29 @@ class ParkedLine:
 
     Attributes:
         line: The bank's own record of the movement.
-        barred_by: Why the create door is closed for it.
+        barred_by: Why the create door is closed for it -- the FIRST bar that
+            holds, the owner's own answer before the bank's filing.
+        also_pays_an_account: Whether a source ALSO files this merchant as a
+            payment to an account the owner holds.  **A line can carry both
+            bars and 9 of the developer's 9 parked lines do** (measured
+            2026-08-27, plan step ``bank_import:X-gf-3a``), which is what
+            decides whether this line has a door at all: an answer the owner
+            gave can be given again, and the second bar is lifted by nothing,
+            so a merchant carrying both has no answer worth sending them to
+            change.  Carried rather than re-asked, because the pass has already
+            derived it (:meth:`CreationBars.pays_an_account`) and a value
+            re-deriving its own reason is the redundant producer call this
+            package refuses.
     """
 
     line: BankLine
     barred_by: CreationBar
+    #: **Required, and no default**, because the wrong default is the one that
+    #: reads as safe: ``False`` would render :attr:`answer_door` as a link on a
+    #: line whose answer no door will accept, which is 9 of 9 on the
+    #: developer's own data.  A value whose absence produces a working-looking
+    #: control is the shape ruling **R-GJ** cost `$7,412.94` to learn.
+    also_pays_an_account: bool
 
     @property
     def reason(self) -> str:
@@ -363,10 +416,44 @@ class ParkedLine:
         decided.
         """
         return (
-            f"{_core_sentence(self.barred_by, self.line.merchant)}  If some of "
-            f"your own rows are what this paid, tick them together below and "
-            f"match them."
+            f"{_core_sentence(self.barred_by, self.line.merchant, self.also_pays_an_account)}"
+            f"  If some of your own rows are what this paid, tick them "
+            f"together below and match them."
         )
+
+    @property
+    def answer_door(self) -> "str | None":
+        """Return where the answer that parks this line is changed, or ``None``.
+
+        Plan step ``bank_import:X-gf-3a``.  **A parked line's only door is one
+        it does not name**, which is what this closes: since ruling
+        **bank_import:R-GX** an ANSWERED merchant leaves the review screen's
+        own control and appears on the register, so a line parked by an answer
+        the owner now disagrees with had nowhere on this page to say so.
+
+        **It is ``None`` where changing the answer would change nothing**, and
+        that is the whole reason it is derived here rather than being a link
+        the template always renders.  A merchant a source files as a payment to
+        an account the owner holds is barred by that filing, which no answer
+        lifts (:meth:`CreationBars.bar_for`), and
+        :func:`~._stating.state_rules` refuses every answer but *never a
+        purchase* for one.  Sending the owner to restate it would be the
+        *chooser whose submission can never succeed* shape this package has now
+        closed five times -- and it is not the rare case: on the developer's
+        own data 2026-08-27 it is 9 of 9 parked lines, so a link rendered
+        unconditionally would have been wrong on every line it ever appeared
+        beside.
+
+        Returns:
+            The sentence naming the act, which the template renders as a link
+            to the register -- the URL being the one fact a service may not
+            build -- or ``None`` where no answer would open this line.
+        """
+        if self.barred_by is not CreationBar.NEVER_A_PURCHASE:
+            return None
+        if self.also_pays_an_account:
+            return None
+        return f"Change what you have said about {self.line.merchant}"
 
 
 def reject_barred_line(
@@ -406,4 +493,8 @@ def reject_barred_line(
     """
     barred_by = bars.bar_for(line.merchant_id)
     if barred_by is not None:
-        raise ValidationError(_refusal_for(barred_by, line.merchant_name))
+        raise ValidationError(_refusal_for(
+            barred_by,
+            line.merchant_name,
+            bars.pays_an_account(line.merchant_id),
+        ))

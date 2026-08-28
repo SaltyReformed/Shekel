@@ -4615,6 +4615,38 @@ def make_expense_template(db_session, seed_user, amount="1200.00", is_active=Tru
     return template
 
 
+def populate_in_a_fresh_pass(user_id, period_ids):
+    """Open a read pass over the CURRENT state and populate *period_ids*.
+
+    The producer takes a :class:`~app.services.balance_at.BalanceContext` and
+    builds none (ruling **R-R38**), so every caller owes it a pass -- and owes
+    it AFTER the write that created the periods, because a pass resolved
+    earlier holds a calendar that does not contain them and
+    ``GenerationSchedule.__post_init__`` refuses the window.  Route code says
+    that once, in ``app.routes._period_population.populate_new_periods``, which
+    takes the PayPeriod rows a door returned; the suite says it here, because
+    what a test usually holds is a set of ids.
+
+    Args:
+        user_id: The owning user's id.
+        period_ids: The ``budget.pay_periods.id`` values to populate.
+
+    Returns:
+        The number of template-linked records created.
+    """
+    # Pylint: ``import-outside-toplevel`` -- this module imports no app
+    # symbols at top level (its collection-time-safety convention).
+    # pylint: disable=import-outside-toplevel
+    from app.services.balance_at import BalanceContext
+    from app.services.period_population import (
+        populate_periods_from_active_templates,
+    )
+
+    return populate_periods_from_active_templates(
+        BalanceContext.build(user_id), period_ids,
+    )
+
+
 def make_transfer_template(db_session, seed_user, to_account, amount="200.00"):
     """Create and flush an every-period transfer template (checking -> to).
 

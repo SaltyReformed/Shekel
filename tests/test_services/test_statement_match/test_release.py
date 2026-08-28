@@ -24,6 +24,7 @@ leg ``-57.96 -> 0.00``, which is the close re-pricing itself on a past day.
 :class:`TestTheSettledParentRuleIsTheArithmetic` pins both.
 """
 
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 
@@ -41,7 +42,6 @@ from app.services import (
     entry_service,
     posting_service,
     statement_match,
-    status_seam,
     transaction_service,
 )
 from app.services.balance_at import BalanceContext
@@ -50,6 +50,7 @@ from app.services.entry_credit_workflow import sync_entry_payback
 from app.models.statement_match import (
     StatementMatch,
     StatementMatchCreation,
+    StatementMatchMember,
 )
 from app.services.statement_match import (
     NewEnvelope,
@@ -57,20 +58,24 @@ from app.services.statement_match import (
     Consent,
     ReviewedBatch,
 )
-from tests._test_helpers import settlement_if_settling
 
 # Pylint: protected-access -- ``MintedEnvelopes`` is an internal collaboration
 # between two PRIVATE modules of this package and has no importer outside it,
 # so exporting it would be the surface rule 13 forbids; a test for a module
 # reaches into it, which is the allowance every sibling here takes.
 from app.services.statement_match import _create  # pylint: disable=protected-access
+from app.services.statement_match._release import (  # pylint: disable=protected-access
+    planned_removals,
+)
 
 from ._builders import (
+    accepted_acts,
     a_bank_line,
     a_bars,
     a_later_period,
     a_purchase,
     a_scope,
+    a_submission,
     a_transaction,
     an_import,
 )
@@ -258,7 +263,7 @@ class TestTheCreateArmHasAnInverse:
         assert "you have edited that row since" in str(caught.value)
         assert db.session.get(TransactionEntry, created.entry_id) is not None
         assert db.session.get(Transaction, created.transaction_id) is not None
-        assert statement_match.review_set(a_scope(seed_user)).accepted
+        assert accepted_acts(seed_user)
 
     def test_the_line_is_unexplained_again(self, app, db, seed_user):
         """What a release restores is the QUESTION.
@@ -301,7 +306,7 @@ class TestOnePressRecordsONEContainer:
         second_line = _a_swipe(seed_user, sequence=1, amount="-18.64")
 
         outcome = statement_match.apply_reviewed(
-            ReviewedBatch(consent=Consent.TICKED, matches=(), creations=(
+            ReviewedBatch(consent=Consent.TICKED, matches=(), incomes=(), creations=(
                 PurchaseCreation(
                     line_id=first_line.id, new_envelope=answer,
                 ),
@@ -476,7 +481,7 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
         )
         db.session.flush()
 
-        group = statement_match.review_set(a_scope(seed_user)).accepted[0]
+        group = accepted_acts(seed_user)[0]
 
         assert group.match_id == created.match_id
         assert len(group.removes.rows) == 2
@@ -502,7 +507,7 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
             seed_user, line, new_envelope=_a_new_envelope(seed_user),
         )
         db.session.flush()
-        group = statement_match.review_set(a_scope(seed_user)).accepted[0]
+        group = accepted_acts(seed_user)[0]
         promised = [(row.kind, row.row_id) for row in group.removes.rows]
 
         _release(seed_user, created.match_id)
@@ -538,7 +543,7 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
         )
         db.session.flush()
 
-        group = statement_match.review_set(a_scope(seed_user)).accepted[0]
+        group = accepted_acts(seed_user)[0]
 
         assert group.removes.refusal is not None
         assert "you have edited that row since" in group.removes.refusal
@@ -560,17 +565,36 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
         """Found in this step's OWN build, by driving the case rather than
         arguing it.
 
-        The owner archives the budget line this act created.
-        ``entry_service`` then refuses to remove the purchase under it -- an
-        archived row's purchases are history -- and the first build discovered
-        that HALFWAY through the removal: the panel had already offered *"Undo
-        removes 1 row"*, and the release raised with the act already deleted
-        from the session, which breaks this package's promise that a refused
-        act leaves the database exactly as it was without depending on the
-        rollback.
+        The owner puts the budget line this act created beyond the purchase
+        door.  ``entry_service`` then refuses to remove the purchase under it,
+        and the first build discovered that HALFWAY through the removal: the
+        panel had already offered *"Undo removes 1 row"*, and the release
+        raised with the act already deleted from the session, which breaks this
+        package's promise that a refused act leaves the database exactly as it
+        was without depending on the rollback.
 
         So the preview asks the purchase door's own question, and the refusal
         arrives before anything is written.
+
+        **The specimen was the ARCHIVE until plan step balance:X-am deleted
+        that status, and a first attempt DELETED this case on the argument that
+        no other container state reaches the arm.  That argument was false**,
+        and ``_subject_removal``'s own docstring said so on the same page:
+        *"the container this act created can be put beyond that afterwards, by
+        being archived OR RE-CLOSED AT A STORED FIGURE."*  Two independent
+        adversarial reviews caught it, and the path below was then driven end
+        to end rather than reasoned about -- the `lessons.md` entry is *an
+        ONLY-way argument is one writer from wrong*.
+
+        The path, all of it through controls the owner has: the container is an
+        ad-hoc envelope, so its full-edit popover renders *Track individual
+        purchases*, and ``is_envelope`` is NOT in ``_LOCKED_EDIT_FIELDS`` --
+        unticking it on a settled row is admitted deliberately, because it
+        gives the row its own amount back.  ``settles_from_entries`` then goes
+        False, ruling **R-FF**'s guard stops biting, and a typed Actual records
+        a ``corrected`` basis.  Editing the PARENT does not bump the ENTRY's
+        ``version_id``, so the edited-row refusal above does not fire first and
+        this arm is the one reached.
         """
         line = _a_swipe(seed_user)
         created = _record(
@@ -578,34 +602,48 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
         )
         db.session.flush()
         envelope = db.session.get(Transaction, created.transaction_id)
-        status_seam.apply_status_change(
-            envelope, ref_cache.status_id(StatusEnum.SETTLED),
-            settlement=settlement_if_settling(
-                envelope, ref_cache.status_id(StatusEnum.SETTLED),
-            ),
-        )
+        transaction_service.settle_transaction(envelope)
         db.session.flush()
 
-        group = statement_match.review_set(a_scope(seed_user)).accepted[0]
+        envelope.is_envelope = False
+        db.session.flush()
+        transaction_service.apply_requested_status(
+            envelope, envelope.status_id, submitted=Decimal("999.99"),
+        )
+        db.session.flush()
+        assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
+            SettlementBasisEnum.CORRECTED,
+        ), "the container is not beyond the purchase door -- this cannot fire"
+
+        group = accepted_acts(seed_user)[0]
         assert group.removes.refusal is not None
-        assert "is archived" in group.removes.refusal
+        assert "records a fixed figure" in group.removes.refusal
+        # A refused act reports NOTHING to remove, so no reader can print a
+        # destruction the press will not perform.
+        assert group.removes.rows == ()
+        assert group.removes.cash_amount == Decimal("0.00")
 
         with pytest.raises(ValidationError) as caught:
             _release(seed_user, created.match_id)
 
         assert str(caught.value) == group.removes.refusal
         # Nothing was written: the act stands, and so do both rows.
-        assert statement_match.review_set(a_scope(seed_user)).accepted
+        assert accepted_acts(seed_user)
         assert db.session.get(TransactionEntry, created.entry_id) is not None
         assert db.session.get(Transaction, created.transaction_id) is not None
 
     def test_a_match_that_created_nothing_names_nothing(
         self, app, db, seed_user,
     ):
-        """No confirmation on a reversible act.
+        """An act between rows that already existed removes nothing.
 
-        A dialog on every Undo trains the owner to click through the one that
-        actually destroys something.
+        What the SCREEN does with that is ruling **bank_import:R-GY**'s and it
+        changed at plan step ``bank_import:X-gf-2``: the press still confirms,
+        because it still destroys the record of the correspondence, and the
+        dialog's wording is what varies (``test_statement_register
+        .TestEveryUndoPressConfirms``).  What is asserted here is the
+        DERIVATION under it -- this undo would take back no row and move no
+        money -- which is what that wording is chosen from.
         """
         statement = an_import(seed_user)
         line = a_bank_line(seed_user, statement)
@@ -615,7 +653,7 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
         )
         db.session.flush()
 
-        group = statement_match.review_set(a_scope(seed_user)).accepted[0]
+        group = accepted_acts(seed_user)[0]
 
         assert group.removes.rows == ()
         assert group.removes.moves_money is False
@@ -626,12 +664,17 @@ class TestTheBulkPreviewDoesNotScaleWithTheAccount:
 
     ``removals_by_match`` was measured at **478 queries and 0.458 s** on the
     developer's own 230-act account carrying 235 creations, against 5 queries
-    before the step -- because ``planned_removals`` reaches each subject with
-    ``session.get``, which is right for the DOOR and wrong for a fold.  The
-    remedy is a bulk warm whose result is HELD: SQLAlchemy's identity map keeps
-    WEAK references, so a warm nothing points at is collected before the fold
-    reaches it and the per-row queries come straight back.  Measured after: 9
-    queries and 0.039 s.  Found by adversarial security review 2026-08-24.
+    before the step -- because ``planned_removals`` reached each subject with
+    ``session.get``, which is right for the DOOR and wrong for a fold.
+
+    **The remedy was a bulk WARM whose result had to be HELD**, SQLAlchemy's
+    identity map keeping weak references -- so a warm nothing pointed at was
+    collected before the fold reached it and the per-row queries came straight
+    back.  Plan step ``bank_import:X-gf-2`` deleted both halves of that
+    discipline: every subject arrives on its creation through
+    ``_release._WHOLE_ACT``, so it is loaded with the act and held by the act.
+    A caller can no longer forget either step, because there is no step.
+    Found by adversarial security review 2026-08-24.
     """
 
     @staticmethod
@@ -684,12 +727,14 @@ class TestTheBulkPreviewDoesNotScaleWithTheAccount:
         remaining entries, which is how ``_container_survives`` was first
         written, takes the eight-act reading to 18 against the two-act 12.
 
-        **It does NOT cover the weak-reference half, and saying so is the
-        point.**  Dropping the warm's own reference reads identically here --
-        eight subjects are not enough for the collector to reach them inside
-        one call -- and cost 478 statements against 9 on the developer's own
-        230-act database.  A control that cannot see a defect must not be
-        cited as covering it; that measurement is the record for this one.
+        **It did NOT cover the weak-reference half, and that is now moot
+        rather than uncovered.**  Dropping the warm's own reference read
+        identically here -- eight subjects are not enough for the collector to
+        reach them inside one call -- and cost 478 statements against 9 on the
+        developer's own 230-act database.  There is no warm and no reference to
+        drop since plan step ``bank_import:X-gf-2``; what would reintroduce the
+        cost is removing a chain from ``_release._WHOLE_ACT``, which THIS
+        control sees, because the subjects would then be fetched per act.
         """
         few = self._statements_for(seed_user, 2)
         many = self._statements_for(seed_user, 6, base=2)
@@ -697,6 +742,73 @@ class TestTheBulkPreviewDoesNotScaleWithTheAccount:
         assert many <= few + 2, (
             f"folding 8 acts cost {many} statements where 2 cost {few}: the "
             f"bulk preview is paying per act again"
+        )
+
+
+class TestTheAcceptedFoldDoesNotScaleWithTheAccount:
+    """The register folds every act too, and had no control saying so.
+
+    Plan step ``bank_import:X-gf-2``.  ``accepted_groups`` is the same fold as
+    ``removals_by_match`` and went without the warm the other one had -- it
+    looked cheap only because 218 of the developer's 221 acts pre-date the
+    creations relation and short-circuit, so the per-act cost was paid by
+    nobody's data yet.  Both are now flat by construction
+    (``_release._WHOLE_ACT``) rather than by a discipline, and this is the
+    control that says so for the reader the REGISTER renders.
+
+    It grades the SHAPE, not a constant: a count asserted against a number
+    would drift with any unrelated eager load, and what must not happen is
+    paying per act.
+    """
+
+    @staticmethod
+    def _statements_for(seed_user, count, base=0):
+        """Return how many SQL statements folding the account's acts costs.
+
+        Args:
+            seed_user: The seeded user bundle.
+            count: How many further acts to record before folding.
+            base: Where this batch's line ordinals start, so two calls in one
+                test do not collide on ``uq_bank_statement_lines_identity``.
+
+        Returns:
+            The statement count for one fold over every act on the account.
+        """
+        for index in range(base, base + count):
+            _record(
+                seed_user,
+                _a_swipe(seed_user, sequence=index, amount="-10.00"),
+                new_envelope=_a_new_envelope(seed_user, name=f"R{index}"),
+            )
+        db.session.flush()
+        db.session.expire_all()
+        seen = []
+        listener = lambda *args, **kwargs: seen.append(1)  # noqa: E731
+        event.listen(db.engine, "before_cursor_execute", listener)
+        try:
+            statement_match.register_set(
+                seed_user["user"].id, seed_user["account"].id, None,
+            )
+        finally:
+            event.remove(db.engine, "before_cursor_execute", listener)
+        return len(seen)
+
+    def test_the_query_count_is_FLAT_in_the_number_of_acts(
+        self, app, db, seed_user,
+    ):
+        """Two acts and eight acts cost the same handful of statements.
+
+        **Shown to fire**: dropping the member-subject chains from
+        ``_WHOLE_ACT`` -- which is what this reader did by hand until this step
+        -- takes the eight-act reading well past the two-act one, because every
+        line, row and purchase is then fetched per act.
+        """
+        few = self._statements_for(seed_user, 2)
+        many = self._statements_for(seed_user, 6, base=2)
+
+        assert many <= few + 2, (
+            f"folding 8 acts cost {many} statements where 2 cost {few}: the "
+            f"register's fold is paying per act"
         )
 
 
@@ -789,6 +901,14 @@ class TestTheSettledParentRuleIsTheArithmetic:
 
         Its cost cannot fall by the purchase, and ``settled_cash_leg``'s third
         term would stop subtracting money the total never contained.
+
+        **A fourth case stood beside this one until plan step balance:X-am**:
+        an ARCHIVED parent, refused whatever its basis and carrying its own
+        sentence, because the shared message told the owner to *set the row
+        back to Projected* -- a transition the state machine refused for the
+        terminal status, which is finding **N-302**'s shape.  Deleting the
+        status deleted both the case and the second sentence: every settled row
+        can now take that repair, so one message is true for all of them.
         """
         start = seed_user["bootstrap_period"].start_date
         envelope = a_transaction(
@@ -807,41 +927,6 @@ class TestTheSettledParentRuleIsTheArithmetic:
         with pytest.raises(ValidationError, match="records a fixed figure"):
             entry_service.delete_entry(doomed.id, seed_user["user"].id)
 
-        assert db.session.get(TransactionEntry, doomed.id) is not None
-
-    def test_an_ARCHIVED_parent_is_still_refused(self, app, db, seed_user):
-        """An archived row's purchases are history, whatever the basis.
-
-        **It gets its OWN sentence, and the first version borrowed the wrong
-        one** (adversarial financial review 2026-08-24): an archived
-        ``purchases``-basis envelope records NO fixed figure, and the state
-        machine gives the terminal ``Settled`` status no outgoing edge but
-        identity, so *set the row back to Projected* named a repair the app
-        refuses to perform -- finding **N-302**'s shape, quoted onto the
-        review panel by ``planned_removals``.  This test pinned that borrowed
-        sentence and so could not see it.
-        """
-        envelope, doomed = self._closed_holding(seed_user)
-        status_seam.apply_status_change(
-            envelope, ref_cache.status_id(StatusEnum.SETTLED),
-            settlement=settlement_if_settling(
-                envelope, ref_cache.status_id(StatusEnum.SETTLED),
-            ),
-        )
-        db.session.flush()
-        assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
-            SettlementBasisEnum.PURCHASES,
-        ), "an archived row records no FIXED figure, which is the point"
-
-        with pytest.raises(ValidationError) as caught:
-            entry_service.delete_entry(doomed.id, seed_user["user"].id)
-
-        assert "is archived" in str(caught.value)
-        assert "records a fixed figure" not in str(caught.value)
-        assert "back to Projected" not in str(caught.value), (
-            "the terminal Settled status has no outgoing edge, so a refusal "
-            "naming that repair sends the owner at a door that refuses them"
-        )
         assert db.session.get(TransactionEntry, doomed.id) is not None
 
     def test_a_CREDIT_purchase_may_be_removed_and_the_payback_follows(
@@ -910,3 +995,269 @@ class TestTheSettledParentRuleIsTheArithmetic:
         db.session.flush()
 
         assert db.session.get(TransactionEntry, doomed.id) is None
+
+
+class TestTheRegisterBoundsWhatItRenders:
+    """Ruling **bank_import:R-GX**: the bound falls on the SETTLED remainder.
+
+    Plan step ``bank_import:X-gf-2``.  The accepted list is a log -- one row
+    per act the owner ever accepts, 221 of them and 216,637 bytes on the
+    developer's own account after a year -- so the register renders the newest
+    :data:`~app.services.statement_match.REGISTER_LIMIT` of it and says how
+    many it withheld.
+
+    **An act that NO LONGER HOLDS is never withheld**, whatever its age, and
+    that is the half worth grading: whether an act still holds is a VALUATION
+    over its member rows and not a query, so the fold reaches every act anyway
+    -- and an act explaining less than it claims is the one thing on that page
+    worth finding.  What is bounded is what is RENDERED, never what is read.
+    """
+
+    @staticmethod
+    def _an_act(seed_user, ordinal, *, amount="-10.00"):
+        """Accept one match, so the register has an act to list.
+
+        Args:
+            seed_user: The seeded user bundle.
+            ordinal: The line's ordinal, completing its identity.
+            amount: The bank line's signed figure.
+
+        Returns:
+            The accepted :class:`~app.services.statement_match.AcceptedMatch`.
+        """
+        statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(
+            seed_user, statement, amount=amount, posted_on=day,
+            sequence_in_group=ordinal,
+        )
+        txn = a_transaction(
+            seed_user, name=f"Bill {ordinal}", amount=amount.lstrip("-"),
+            status=StatusEnum.DONE, settled_on=day,
+        )
+        db.session.flush()
+        act = statement_match.accept_match(
+            a_submission(a_scope(seed_user), lines=[line], transactions=[txn]),
+            a_scope(seed_user),
+        )
+        db.session.flush()
+        return act
+
+    def test_it_renders_the_LIMIT_and_says_what_it_withheld(
+        self, app, db, seed_user,
+    ):
+        """Three acts, a bound of one: one rendered, two counted.
+
+        The limit is a PARAMETER here rather than the shipped 50, because what
+        is under test is the arithmetic and not the number -- and staging 51
+        acts to move one boundary would grade the same line at fifty times the
+        cost.  ``TestTheRegisterPage`` drives the shipped default through the
+        route.
+        """
+        for ordinal in range(3):
+            self._an_act(seed_user, ordinal)
+
+        register = statement_match.register_set(
+            seed_user["user"].id, seed_user["account"].id, 1,
+        )
+
+        assert len(register.accepted.shown) == 1
+        assert register.accepted.withheld_count == 2
+
+    def test_an_act_that_NO_LONGER_HOLDS_is_shown_however_old(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL for the exemption, and for the ORDER.
+
+        The oldest act is the one the bound would drop, so a register that
+        applied the limit before the exemption would hide exactly the row this
+        page exists to surface.  Its row is broken the way finding **N-349**
+        names: something else deleted a row it named.
+        """
+        doomed = self._an_act(seed_user, 0)
+        for ordinal in (1, 2):
+            self._an_act(seed_user, ordinal)
+        # ...and the OLDEST act stops holding, by the hand edit the accepted
+        # list is re-reviewable for.
+        member = db.session.query(StatementMatchMember).filter(
+            StatementMatchMember.match_id == doomed.match_id,
+            StatementMatchMember.transaction_id.isnot(None),
+        ).one()
+        db.session.get(Transaction, member.transaction_id).settled_on = (
+            seed_user["bootstrap_period"].start_date + timedelta(days=4)
+        )
+        db.session.flush()
+
+        register = statement_match.register_set(
+            seed_user["user"].id, seed_user["account"].id, 1,
+        )
+
+        shown = [group.match_id for group in register.accepted.shown]
+        assert doomed.match_id in shown, (
+            "the act that no longer holds was withheld by the bound"
+        )
+        assert shown[0] == doomed.match_id, (
+            "an act that no longer holds must sort above the ones that do"
+        )
+        assert register.accepted.withheld_count == 1
+
+    def test_NO_bound_renders_the_whole_record(self, app, db, seed_user):
+        """What the *show everything* link asks for."""
+        for ordinal in range(3):
+            self._an_act(seed_user, ordinal)
+
+        register = statement_match.register_set(
+            seed_user["user"].id, seed_user["account"].id, None,
+        )
+
+        assert len(register.accepted.shown) == 3
+        assert register.accepted.withheld_count == 0
+
+
+class TestTheDeleteRemovesTheRowItWasHANDED:
+    """Finding **N-371**, plan step ``bank_import:X-gf-3a``.
+
+    ``_remove``'s transaction arm did ``db.session.get(Transaction, row_id)``
+    and handed the result to ``transaction_service.delete_transaction``, whose
+    signature says *the user the caller proved owns it* and which re-checks
+    ``user_id`` nowhere -- so the ownership of a row this path DESTROYS rested
+    on where its id had come from.  Its sibling arm never had the gap:
+    ``entry_service.delete_entry`` re-validates ownership through the parent
+    transaction chain itself, and that asymmetry is what made this one
+    invisible.
+
+    **A behavioural test cannot see this.**  Both spellings reach the same
+    instance through SQLAlchemy's identity map, so the same rows are deleted
+    either way and every figure agrees.  What the cases below grade is that
+    ``_remove`` reads :attr:`PlannedRemoval.subject` and not :attr:`row_id`.
+
+    **That is NARROWER than the invariant the finding states**, and saying so
+    is the point: *no id re-enters a query on a path that destroys* is not
+    graded here and cannot be, because ``db.session.get(Transaction,
+    row.subject.id)`` would satisfy every case below while re-introducing
+    exactly the lookup N-371 names.  The invariant is held by reading
+    ``_remove``, which is four lines long; these cases hold the half a test
+    can.
+    """
+
+    @staticmethod
+    def _an_act_that_created_an_envelope(seed_user):
+        """Record a line into a NEW envelope and return its match id.
+
+        The shape with a CONTAINER as well as a purchase, because the container
+        is what goes through the transaction arm -- the purchase goes through
+        ``entry_service``, which was never the finding.
+        """
+        line = _a_swipe(seed_user)
+        db.session.flush()
+        recorded = _record(
+            seed_user, line, new_envelope=_a_new_envelope(seed_user),
+        )
+        db.session.commit()
+        return recorded.match_id
+
+    def test_the_planned_removal_carries_the_row_it_names(
+        self, app, db, seed_user,
+    ):
+        """The instance, not just its id -- and it IS that row.
+
+        Asserted by identity against the row read back independently, so a
+        field carrying some other transaction of the right shape would fail.
+        """
+        match_id = self._an_act_that_created_an_envelope(seed_user)
+        match = db.session.get(StatementMatch, match_id)
+
+        planned = planned_removals(match)
+
+        container = next(
+            row for row in planned.rows if row.is_container
+        )
+        assert container.subject is db.session.get(
+            Transaction, container.row_id,
+        )
+        assert container.subject.id == container.row_id
+
+    def test_the_row_REMOVED_is_the_one_carried_and_not_the_one_NAMED(
+        self, app, db, seed_user,
+    ):
+        """THE FIRING CONTROL, and the first version of it could not fire.
+
+        That version recorded which object reached
+        ``transaction_service.delete_transaction`` and compared it with the one
+        the removal carries -- and it passed with the refetch RESTORED, because
+        ``db.session.get`` returns the same instance out of the identity map.
+        A mutation run measured it: the whole file stayed green with
+        ``db.session.get(Transaction, row.row_id)`` back in ``_remove``.
+
+        What distinguishes the two is a removal whose ``subject`` and
+        ``row_id`` DISAGREE -- deliberately inconsistent, because *which of the
+        two does it use* is the only question here, and no consistent value can
+        be asked it.  A door reading the id deletes ``named``; one removing the
+        row it was handed deletes ``carried``.
+        """
+        # AD-HOC, because that is the only shape this path ever removes: a
+        # residual names no template and a created envelope is built without
+        # one, so the delete verb's SOFT arm is unreachable from here and its
+        # hard delete is what runs.  A templated row would be flagged rather
+        # than removed, and both assertions below would read the same either
+        # way.
+        carried = a_transaction(
+            seed_user, name="Carried", amount="11.00", template=False,
+        )
+        named = a_transaction(
+            seed_user, name="Named", amount="12.00", template=False,
+        )
+        db.session.commit()
+        removal = statement_match.PlannedRemoval(
+            kind=statement_match.RowKind.TRANSACTION,
+            row_id=named.id,
+            # **Agreeing with NEITHER row**, so no reader keyed on the
+            # label can produce the right answer either: a first version said
+            # "Carried" and a label lookup would have passed.
+            label="neither of them",
+            cash_amount=Decimal("0.00"),
+            is_container=True,
+            subject=carried,
+        )
+
+        statement_match._release._remove(  # pylint: disable=protected-access
+            removal, seed_user["user"].id,
+        )
+        db.session.flush()
+
+        assert db.session.get(Transaction, carried.id) is None
+        assert db.session.get(Transaction, named.id) is not None
+
+    def test_two_removals_naming_ONE_row_are_EQUAL_whatever_they_carry(
+        self, app, db, seed_user,
+    ):
+        """The carried instance is out of equality, and that is deliberate.
+
+        What makes two planned removals the same is which row they NAME; a
+        value whose equality depended on which instance happened to be attached
+        would make every comparison in this suite an identity-map assertion.
+
+        **A first version compared two `planned_removals` calls and could not
+        fail.**  Both run in one session, so both tuples hold the identical
+        instances out of the identity map, and `app/models/` defines no
+        `__eq__` -- so deleting `compare=False` compared an object with itself
+        and stayed green.  Two removals naming ONE row while carrying
+        DIFFERENT instances is the only shape that asks the question.
+        """
+        carried = a_transaction(
+            seed_user, name="Carried", amount="11.00", template=False,
+        )
+        other = a_transaction(
+            seed_user, name="Other", amount="12.00", template=False,
+        )
+        db.session.flush()
+        first = statement_match.PlannedRemoval(
+            kind=statement_match.RowKind.TRANSACTION,
+            row_id=carried.id,
+            label="Carried",
+            cash_amount=Decimal("0.00"),
+            is_container=True,
+            subject=carried,
+        )
+
+        assert first == replace(first, subject=other)

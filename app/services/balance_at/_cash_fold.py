@@ -121,7 +121,7 @@ from app.services.cash_ledger import (
     sum_projected,
     walk_cash_ledger,
 )
-from app.services.pay_calendar import PeriodWindow
+from app.services.pay_calendar import PayCalendar, PeriodWindow
 from app.utils.dates import attribution_date
 
 from ._assertions import CashAnchorCorrection, assertion_corrections
@@ -137,8 +137,19 @@ _ONE_DAY = timedelta(days=1)
 
 
 @dataclass(frozen=True)
-class AssembledCashFold:
+class AssembledCashFold:  # pylint: disable=too-many-instance-attributes
     """One account's whole running total, plus the facts it was built from.
+
+    Pylint: ``too-many-instance-attributes`` (8/7) -- suppressed because the
+    count is the POINT rather than an accident.  Three of the eight are the
+    inputs this record was built FROM (:attr:`account_id`, :attr:`scenario_id`,
+    :attr:`calendar`), carried so a reader holding both this and one of them
+    cannot pair them wrongly; the other five are one derivation and its
+    groupings.  Collapsing the three into a nested value would hide exactly
+    what each is here to make visible, and dropping one is what findings
+    **N-354** and this step's own review re-opened.  Same disposition as
+    :class:`~._context.BalanceContext` (10/7) one module over, for the same
+    reason.
 
     The output of :func:`~._cash_fold.assembled_fold`, and the reason the three readers below are
     readings of ONE valued row set rather than three producers a test keeps in
@@ -193,15 +204,29 @@ class AssembledCashFold:
         plan: The account's :class:`_CashPlan` (its still-Projected rows, the
             day each lands on, and the live override map).
         day_nets: The PLANNED tier's per-day nets.
+        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`
+            these steps were CLAMPED by, added by pay-calendar plan step
+            **C4-a-1** for the reason :attr:`account_id` and
+            :attr:`scenario_id` are here.  That step made the calendar a THIRD
+            determinant of this record -- it decides the day every planned row
+            lands on (:func:`_cash_plan`) -- and a determinant a reader can
+            supply a second, different answer for is the shape those two fields
+            exist to close.  Carrying it means the modelled fold one module
+            over reads the calendar this record was actually built with rather
+            than taking one beside it: :func:`~._asset_fold.resolve` DROPPED
+            its own ``calendar`` parameter here, which removes the mis-pairing
+            rather than adding a check that catches it.
     """
 
     account_id: int
+    scenario_id: int
     seed: Decimal
     steps: "list[tuple[date, Decimal]]"
     walk: CashLedgerWalk
     corrections: "list[CashAnchorCorrection]"
     plan: _CashPlan
     day_nets: "dict[date, Decimal]"
+    calendar: PayCalendar
 
     def require_account(self, account: Account) -> None:
         """Refuse an *account* these steps were not assembled for.
@@ -296,6 +321,21 @@ def assembled_fold(
         ForeignAccountError: When *account* belongs to another owner.
         BaselineMissingError: When this pass has no baseline scenario -- a row's
             amount rule resolves against one.
+        PayCalendarError: When the owner's paydays cannot define a calendar.
+            **New at pay-calendar plan step C4-a-1, and disclosed rather than
+            absorbed**: the PLANNED tier now clamps each row against the span
+            its paycheck DERIVES
+            (:meth:`~app.services.pay_calendar.PayCalendar.require_period`), so a cash fold
+            rests on the same derivation every per-period entry beside it
+            already did.
+            In practice this needs a cadence outside 1..365, which
+            ``resolve_cadence``'s legacy fallback can infer for an owner with no
+            ``budget.pay_schedule`` row -- plan findings **P8** / **P35**, and
+            ``C4-b`` deletes that fallback.  Zero such owners on either
+            database, measured at that step.
+        RuntimeError: When a planned row names a pay period this pass's
+            calendar does not hold -- see
+            :meth:`~app.services.pay_calendar.PayCalendar.require_period`.
     """
     # Pylint: ``protected-access`` -- the ONE crossing of this boundary in the
     # package, and the design rather than a shortcut: this module owns the
@@ -308,18 +348,20 @@ def assembled_fold(
     cache = ctx._cash_folds  # pylint: disable=protected-access
     return _memoize_once(
         ctx, cache, account,
-        lambda: _assemble(account, ctx.amounts(), ctx.as_of),
+        lambda: _assemble(
+            account, ctx.amounts(), ctx.as_of, ctx.calendar(),
+        ),
     )
 
 
 def _assemble(
-    account: Account, basis: AmountBasis, as_of: date,
+    account: Account, basis: AmountBasis, as_of: date, calendar: PayCalendar,
 ) -> AssembledCashFold:
     """Walk the account's facts and load its plan -- ONCE, for every reader.
 
     Private since plan step X-i4: :func:`assembled_fold` above is its only
-    caller, so the ``(account, basis, as_of)`` triple is constructed in exactly
-    one place, out of one pass, and no other seam module can spell it.
+    caller, so the ``(account, basis, as_of, calendar)`` tuple is constructed in
+    exactly one place, out of one pass, and no other seam module can spell it.
 
     Args:
         account: The account to value.  Its ``id`` scopes the walk and the plan;
@@ -337,9 +379,23 @@ def _assemble(
             reservation's entry window it does exactly ONE job: it is the floor
             a still-Projected row's effective date is clamped up to (ruling
             R-G).  It decides WHEN a row lands, never what it is worth.
+        calendar: The OWNER's pay calendar
+            (:meth:`~._context.BalanceContext.calendar`), which
+            :func:`_cash_plan` clamps each planned row against.  **A calendar
+            rather than the pass, and REQUIRED** (pay-calendar plan step
+            C4-a-1): it is the shape ruling **R-PC19** ("How the CONTRIBUTION
+            tier learns its periods") already gave
+            :func:`~._asset_fold.resolve` one module over, and a calendar
+            carries neither a scenario nor a clock, so passing one alongside
+            *basis* and *as_of* reintroduces nothing they could disagree
+            about.
 
     Returns:
         The :class:`AssembledCashFold`.
+
+    Raises:
+        RuntimeError: A planned row names a pay period *calendar* does not
+            hold (:meth:`~app.services.pay_calendar.PayCalendar.require_period`).
     """
     walk = walk_cash_ledger(account.id, basis.scenario_id)
     # The RESET policy, applied ONCE for every reader below (plan step
@@ -353,13 +409,14 @@ def _assemble(
     # carrying a posting day is now a movement in the walk itself, so the
     # reservation reads the purchase and the clearing rule is only ever asked
     # where the money is replayed.
-    plan = _cash_plan(account, basis, as_of)
+    plan = _cash_plan(account, basis, as_of, calendar)
     day_nets = _planned_day_nets(plan)
     seed, steps = _running_steps(walk, corrections, day_nets)
     return AssembledCashFold(
         account_id=account.id,
+        scenario_id=basis.scenario_id,
         seed=seed, steps=steps, walk=walk, corrections=corrections,
-        plan=plan, day_nets=day_nets,
+        plan=plan, day_nets=day_nets, calendar=calendar,
     )
 
 
@@ -751,7 +808,7 @@ class _CashPlan:
 
 
 def _cash_plan(
-    account: Account, basis: AmountBasis, as_of: date,
+    account: Account, basis: AmountBasis, as_of: date, calendar: PayCalendar,
 ) -> _CashPlan:
     """Load the account's plan and key each row onto the day it lands on.
 
@@ -769,6 +826,31 @@ def _cash_plan(
     Rejected at the ruling: landing it on its nominal date, which on real data
     (one re-anchor every 2.3 days on Checking) silently deletes nearly every
     unpaid past-due bill within days of its being entered.
+
+    **The SPAN it clamps against is DERIVED, since pay-calendar plan step
+    C4-a-1**, which is why this function takes a calendar -- see
+    :meth:`~app.services.pay_calendar.PayCalendar.require_period` -- the ONE
+    statement of that rule for every caller placing a stored row.  It read
+    ``txn.pay_period`` until then, so this module
+    clamped a projected row against a STORED end while :func:`period_balances`
+    sampled the very same period at its derived one.
+
+    **This is the EXPOSED order for balance finding N-358, and saying which
+    order a caller has is the whole of its exposure.**  The calendar is derived
+    before these rows are loaded, so under ``READ COMMITTED`` a payday appended
+    between the two leaves rows filed in a period the calendar never saw -- and
+    the rolling top-up appends exactly that way, mid-render, on ``/grid`` and
+    ``/dashboard``.  What holds today is a MEASUREMENT rather than a
+    guarantee: recording the request behind every :func:`assembled_fold` across
+    the whole suite on 2026-08-27 gave **2,206 dispatched-request assemblies
+    over 22 distinct endpoints, every one of them a GET**, and a GET holds one
+    snapshot between :func:`~app.db_transaction.write_transaction` blocks.  Two
+    limits on that, both real.  It is a census of what RAN, so it cannot say
+    what does not run.  And it counted assemblies REACHED THROUGH A REQUEST --
+    the suite calls this door directly too, and those are not in the figure --
+    so the supporting fact for "no other caller" is a different one:
+    ``grep -rl balance_at scripts/`` is empty, so no CLI door reaches the seam
+    at all.  ``balance:X-i5`` is what turns the measurement into a guarantee.
 
     **The load is separate from the reduction, and that is plan step X-c1's
     doing.**  The rows are kept, not just their per-day totals, because the
@@ -794,11 +876,17 @@ def _cash_plan(
             in and the derivations they are priced through.
         as_of: The reader's NOW -- the floor ruling R-G clamps a landing day up
             to.
+        calendar: The OWNER's pay calendar, which each row's span is read
+            from (:meth:`~app.services.pay_calendar.PayCalendar.require_period`).
 
     Returns:
         The account's :class:`_CashPlan`; its ``rows`` and ``by_day`` are empty
         for an account with no plan, and it carries the pass's basis either way
         so the record is self-describing.
+
+    Raises:
+        RuntimeError: A row names a pay period *calendar* does not hold
+            (:meth:`~app.services.pay_calendar.PayCalendar.require_period`).
     """
     rows = planned_cash_rows(account.id, basis.scenario_id)
     if not rows:
@@ -807,7 +895,7 @@ def _cash_plan(
     not_before = as_of + _ONE_DAY
     by_day: "dict[date, list[Transaction]]" = defaultdict(list)
     for txn in rows:
-        period = txn.pay_period
+        period = calendar.require_period(txn.pay_period_id, txn.id)
         nominal = attribution_date(
             txn.due_date, period.start_date, period.end_date,
         )

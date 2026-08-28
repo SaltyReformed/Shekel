@@ -28,6 +28,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.transaction_template import TransactionTemplate
 from app.services.cash_ledger import amount_basis
+from app.services import statement_match
 from app.services.statement_match import (
     CreationBars,
     MatchSubmission,
@@ -486,6 +487,55 @@ def a_rule(
     return row
 
 
+def an_envelope(seed_user, name="Groceries"):
+    """Return a Projected envelope a purchase may join.
+
+    Args:
+        seed_user: The seeded user bundle.
+        name: The envelope's name.
+
+    Returns:
+        The staged :class:`~app.models.transaction.Transaction`.
+    """
+    return a_transaction(
+        seed_user, name=name, amount="500.00", is_envelope=True,
+    )
+
+
+def an_unexplained_outflow(
+    seed_user, merchant="Amazon", amount="-57.96", sequence=0,
+    source_category=None,
+):
+    """Record one unexplained outflow from *merchant*.
+
+    **Shared by the two route modules** since plan step ``bank_import:X-gf-2``
+    (finding **N-33**'s shape): the queue asks about a merchant with no answer
+    and the register shows one already answered, and both need a line for it.
+
+    Args:
+        seed_user: The seeded user bundle.
+        merchant: What the bank names the merchant, which is the rule key.
+        amount: Signed, negative OUT of the account.
+        sequence: The ordinal completing the line's identity.
+        source_category: The BANK's own category string, verbatim, or ``None``
+            for a source stating none.  Ruling **R-GJ** reads it for one narrow
+            purpose: a merchant a source files as a payment to a credit card
+            has no create arm until the owner answers for it.
+
+    Returns:
+        The staged
+        :class:`~app.models.statement_import.BankStatementLine`.
+    """
+    statement = an_import(seed_user)
+    return a_bank_line(
+        seed_user, statement, amount=amount,
+        posted_on=seed_user["bootstrap_period"].start_date,
+        description=f"POINT OF SALE DEBIT L340 THING ({merchant})",
+        merchant=merchant, sequence_in_group=sequence,
+        source_category=source_category,
+    )
+
+
 def a_later_period(seed_user):
     """Stage and return the pay period AFTER the bootstrap one.
 
@@ -532,6 +582,38 @@ def a_scope(seed_user, account=None):
     return ReviewScope.build(
         seed_user["user"].id, (account or seed_user["account"]).id,
     )
+
+
+def accepted_acts(seed_user, account=None):
+    """Return the accepted acts the REGISTER lists, whole and unbounded.
+
+    Plan step ``bank_import:X-gf-2``.  These were ``review_set(scope).accepted``
+    until the register took them off the review screen (ruling
+    **bank_import:R-GX**), and going through the register's own reader rather
+    than around it is the point: it is what the surface renders, bound and
+    ordered as the surface orders it.
+
+    **Unbounded on purpose.**  A case here stages two or three acts, so the
+    bound could never fire -- and passing ``None`` says the assertion is about
+    the acts and not about the cut, which is
+    ``TestTheRegisterBoundsWhatItRenders``'s own subject.
+
+    Args:
+        seed_user: The seeded user bundle.
+        account: The account being reviewed; the seeded checking one by
+            default.
+
+    Returns:
+        The :class:`~app.services.statement_match.AcceptedGroup` values, every
+        act that no longer holds first and then newest first.  **That ORDER is
+        not what ``review_set(scope).accepted`` gave**, which was plain
+        newest-first: a case staging several acts and indexing ``[0]`` is
+        asking for a different one than it used to.  No case does today, and
+        the register's order is the one the screen renders.
+    """
+    return statement_match.register_set(
+        seed_user["user"].id, (account or seed_user["account"]).id, None,
+    ).accepted.shown
 
 
 def a_bars(seed_user, account=None):
@@ -648,7 +730,7 @@ def a_submission(
     )
 
 
-def a_reviewed_token(orm_row, kind):
+def a_reviewed_token(orm_row, kind, scope=None):
     """Return the form value the review screen would emit for *orm_row*.
 
     **Through the real producer, never composed here** -- a helper that spelled
@@ -669,12 +751,41 @@ def a_reviewed_token(orm_row, kind):
         orm_row: A ``Transaction`` or ``TransactionEntry``.
         kind: Which of the two it is
             (:class:`~app.services.statement_match.RowKind`).
+        scope: The pass to read the reviewed state out of, or ``None`` to
+            derive one for this row alone.
+
+            **Passing one is what the SCREEN does**, and deriving per row is a
+            shape the app never has: a render builds ONE
+            :class:`~app.services.statement_match.ReviewScope` and emits every
+            row's token off it.  It is also the twin of :func:`a_submission`,
+            which has always taken the scope rather than building its own.
+
+            **The caller owns FRESHNESS, and that is the whole of the
+            contract**: the scope must be derived after every row it will be
+            asked about is staged.  A row it has not got is not an error here
+            -- it takes the not-offerable fallback below, which is deliberate
+            and therefore SILENT, so a stale scope downgrades a live row's
+            token to ``0.00`` rather than failing.  :func:`a_scope` states the
+            same hazard from the other side ("a case that stages a row and then
+            re-uses an older scope is asserting against a state the app would
+            never have"), which is why this is an explicit parameter and not a
+            cache: a cache would make the staleness a property of call order
+            that no caller declared.
+
+            **Why it exists**: ``ReviewScope.build`` is the expensive object in
+            this package -- 0.59-0.75 s and 202 queries on the developer's own
+            account, and the reason ``apply_statement_review`` derives two per
+            request rather than one per act (finding **N-306**).  A case
+            tokenising many rows and building one scope EACH is the same shape
+            at the test tier, and one such case (51 acts) was the slowest test
+            in the suite and timed out in CI.
 
     Returns:
         Its ``"<kind>:<row_id>:<cash_amount>:<version_id>"`` token.
     """
-    account = db.session.get(Account, orm_row.account_id)
-    scope = ReviewScope.build(account.user_id, account.id)
+    if scope is None:
+        account = db.session.get(Account, orm_row.account_id)
+        scope = ReviewScope.build(account.user_id, account.id)
     for candidate in scope.candidates.rows:
         if candidate.kind is kind and candidate.row_id == orm_row.id:
             return as_reviewed(candidate).token
