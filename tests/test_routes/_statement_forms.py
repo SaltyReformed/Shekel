@@ -104,10 +104,14 @@ def match_item(
     is what was reviewed* (ruling **R-FP**) checkable rather than intended:
     the door refuses an item whose row moved since the render.
 
+    **Every index it emits is a rendered POSITION**, and until plan step
+    ``bank_import:X-gf-3b`` one was not: the hand-build form shared the review
+    screen and submitted the reserved index ``"hand"``.  That form is a surface
+    of its own now and posts through :func:`hand_match`, which carries no index
+    at all.
+
     Args:
-        index: The item's rendered position, or ``"hand"`` for the
-            hand-build form -- whose index is deliberately not a number, so it
-            can never collide with a proposal's.
+        index: The item's rendered position.
         lines: Bank line rows it explains.
         transactions: Transaction rows that explain them.
         entries: Purchase rows that explain them.
@@ -139,6 +143,53 @@ def match_item(
     }
     if residual is not None:
         fields[f"match-{index}-residual"] = [str(residual)]
+    return fields
+
+
+def hand_match(lines=(), transactions=(), entries=(), residual=None):
+    """Return the form fields the WORKBENCH's hand-build form submits.
+
+    Plan step ``bank_import:X-gf-3b``, ruling **bank_import:R-HC**.  The FIELD
+    NAMES ``_statement_workbench_body.html`` emits, which are
+    :func:`match_item`'s without an index: that form's whole submission IS one
+    group, so there is nothing to tick that is not already a member and nothing
+    for a name to be qualified by.
+
+    **The absent index is why this helper exists rather than a keyword on
+    :func:`match_item`.**  The two are not one payload with a flag: they reach
+    two doors, are graded by two payload readers
+    (``batch_payload`` and ``hand_match_payload``), and the whole point of the
+    step that split them is that no submission can carry both shapes at once.
+    A helper that emitted either from one call would be the shared namespace
+    the split deleted, rebuilt in the tests.
+
+    **The row VALUES are built through the service, not scraped**, so this
+    helper cannot show that the template renders them;
+    ``test_the_HAND_BUILD_form_s_own_token_is_graded_too`` is what does, by
+    posting the page's own bytes back.
+
+    Args:
+        lines: Bank line rows the group explains.
+        transactions: Transaction rows that explain them.
+        entries: Purchase rows that explain them.
+        residual: What the consent box carries when the owner ticked it -- the
+            difference the screen showed (plan step ``bank_import:X-f6d-4``).
+            ``None`` leaves the field off entirely, which is what an unticked
+            checkbox submits.
+
+    Returns:
+        The form fields, as a plain ``dict`` for the test client.
+    """
+    fields = {
+        "line_ids": [str(line.id) for line in lines],
+        "rows": (
+            [a_reviewed_token(txn, RowKind.TRANSACTION)
+             for txn in transactions]
+            + [a_reviewed_token(entry, RowKind.PURCHASE) for entry in entries]
+        ),
+    }
+    if residual is not None:
+        fields["residual"] = [str(residual)]
     return fields
 
 

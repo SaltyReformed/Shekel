@@ -1,5 +1,6 @@
 {% from "_money_macros.html" import money %}
 {% from "accounts/_merchant_rule_macros.html" import merchant_answer_cell, merchant_name_cell %}
+{% from "accounts/_statement_queue_macros.html" import match_by_hand %}
 
 {# THE WHOLE REVIEWABLE SURFACE, and the batch POST's own answer.
 
@@ -48,124 +49,12 @@
   </div>
 
   {# ── What the last pass did ─────────────────────────────────────────── #}
-  {% if error %}
-  <div class="alert alert-danger d-flex gap-2 align-items-start" role="alert">
-    <i class="bi bi-x-octagon mt-1"></i>
-    <div>{{ error }}</div>
-  </div>
-  {% endif %}
-
-  {% if outcome %}
-  <div class="card mb-3 border-{% if outcome.refused_count %}warning{% else %}success{% endif %}">
-    <div class="card-header d-flex justify-content-between align-items-center">
-      <span><i class="bi bi-clipboard-check"></i> What that pass did</span>
-      <span class="badge text-bg-secondary">
-        {{ outcome.applied_count }} applied{% if outcome.refused_count %}, {{ outcome.refused_count }} refused{% endif %}
-      </span>
-    </div>
-    <div class="card-body">
-      {% if outcome.moved_nothing %}
-      <p class="mb-0 text-body-secondary">
-        Nothing moved. Everything that was applied confirmed a day you already
-        had.
-      </p>
-      {% else %}
-      <ul class="mb-0 small">
-        {% if outcome.settled_count %}
-        <li>{{ outcome.settled_count }} row(s) marked as having happened.</li>
-        {% endif %}
-        {% if outcome.corrected_count %}
-        <li>{{ outcome.corrected_count }} row(s) moved onto the bank's day.</li>
-        {% endif %}
-        {% if outcome.redated_count %}
-        <li>{{ outcome.redated_count }} purchase date(s) corrected.</li>
-        {% endif %}
-        {# The AMOUNT (plan step bank_import:X-f6d-1).  It is the only line
-           here that says what money was SPENT rather than when it moved, and
-           without it a repricing on a row that already carried the bank's day
-           reported through EVERY day count as unchanged -- so this panel said
-           "Nothing moved." about a request that had just rewritten what a
-           payment cost.  Found by adversarial design review 2026-08-22. #}
-        {% if outcome.repriced_count %}
-        <li>{{ outcome.repriced_count }} row(s) corrected to the bank's amount.</li>
-        {% endif %}
-        {% if outcome.recorded_count %}
-        <li>
-          {{ outcome.recorded_count }} bank line(s) recorded as a purchase your
-          records did not have{% if outcome.envelopes_created %}, {{ outcome.envelopes_created }} of them in an envelope this created{% endif %}.
-        </li>
-        {% endif %}
-        {# The DIFFERENCE (plan step bank_import:X-f6d-4, ruling R-FN).  Every
-           other line here says what happened to a row the owner already had;
-           this one names rows this pass CREATED, holding money the bank showed
-           and the records did not.  Both numbers, because they answer
-           different questions and the total nets: the count is how many rows
-           are now waiting for a category, the total is how much money reached
-           the Uncategorized bucket. #}
-        {# THE DEPOSIT LINE (ruling bank_import:R-GW).  The comment ABOVE belongs to the
-           residual block further down, which this one was inserted in front
-           of; both are read together and neither describes the other.  Its own sentence beside the
-           recorded-as-a-purchase one above, and never folded into it: that
-           line reads "recorded as a purchase your records did not have",
-           which is FALSE of money coming in, and a count whose caption is
-           false of half its members is what this panel has already been
-           corrected for twice. #}
-        {% if outcome.deposited_count %}
-        {# ONE LINE in the source on purpose, the rule its siblings above
-           follow: Jinja keeps the newlines and the indentation it is given,
-           so a sentence wrapped here is a sentence no test can assert as a
-           sentence -- and this one is a MONEY receipt. #}
-        <li>{{ outcome.deposited_count }} bank line(s) recorded as money that arrived and your records did not hold. They have no category yet.</li>
-        {% endif %}
-        {% if outcome.residual_count %}
-        <li>
-          {{ outcome.residual_count }} difference(s) totalling
-          {{ money(outcome.residual_total) }} recorded as rows with no
-          category. Give them one whenever you know what they were.
-        </li>
-        {% endif %}
-      </ul>
-      {% endif %}
-      {% if outcome.applied %}
-      {# THE ITEMISATION, and it is folded rather than dropped.  The counts
-         above say how much moved; only these say WHERE -- which envelope took
-         a purchase, which day a row moved onto.  A pass can apply 195 items on
-         the developer's own statement, so the headline is the summary and the
-         record is one click away, rather than the record being cut to fit. #}
-      <details class="mt-2">
-        <summary class="small text-body-secondary">
-          What each of the {{ outcome.applied_count }} applied did
-        </summary>
-        <ul class="mt-2 mb-0 small">
-          {% for item in outcome.applied %}
-          {# The SUMMARY alone: it names the figure and the day, which is how
-             the owner recognises the act.  A bank line's id is opaque -- this
-             screen renders one nowhere the owner can see -- so a "Line 4711:"
-             prefix pointed at nothing. #}
-          <li class="mb-1">{{ item.summary }}</li>
-          {% endfor %}
-        </ul>
-      </details>
-      {% endif %}
-    </div>
-    {% if outcome.refused %}
-    {# EVERY refusal, quoted in the service's own words (developer ruling,
-       2026-08-19).  Not summarised and not capped: each sentence names its own
-       figures, and the payroll gap that motivated the ruling is only
-       actionable because it states the difference to the cent. #}
-    <div class="card-body border-top">
-      <p class="fw-semibold mb-2">
-        These were not applied, and nothing was changed for them:
-      </p>
-      <ul class="mb-0 small">
-        {% for item in outcome.refused %}
-        <li class="mb-1">{{ item.reason }}</li>
-        {% endfor %}
-      </ul>
-    </div>
-    {% endif %}
-  </div>
-  {% endif %}
+  {# ONE receipt for BOTH surfaces that apply through ``apply_reviewed``
+     (accounts/_statement_pass_receipt.html), extracted at plan step
+     bank_import:X-gf-3b when the hand-build form moved to a page of its own.
+     It reports one act there and a whole pass here off the same value, so
+     the two cannot describe one door in two wordings. #}
+  {% include "accounts/_statement_pass_receipt.html" %}
 
   {# ── What the last rule pass recorded ───────────────────────────────── #}
   {% if rules %}
@@ -527,9 +416,12 @@
        worth $3,383.49 -- and none can ever be matched, because the app records
        a period's groceries as one envelope and the bank records every swipe.
 
-       A line appears BOTH here and in the hand-build list below on purpose:
-       the same fact can be something to group with existing rows or something
-       to record as new, and the owner is the one who knows which.
+       A line appears BOTH here and in the hand-build form's own list on
+       purpose: the same fact can be something to group with existing rows or
+       something to record as new, and the owner is the one who knows which.
+       That is why every row here carries a link to it (ruling
+       bank_import:R-HC) -- the two acts are one click apart rather than one
+       screen apart.
 
        Inflows are absent: a purchase is an expense, so a deposit or a card
        refund is not one.  Since ruling bank_import:R-GW they have a card of their own
@@ -570,8 +462,9 @@
           <strong>Some of these may already be in your budget in another shape</strong>
           -- a card payment your app records as payback rows, an insurance premium
           you record as a bill, a subscription inside a bigger envelope. Recording
-          one of those here would count that money a second time; those belong in
-          the match form below, not in this list.
+          one of those here would count that money a second time. Those are
+          <em>matched</em> against the rows you already hold rather than
+          recorded, which is what the link on each line does.
         </p>
       </div>
       {% if review.placed_by_class %}
@@ -660,6 +553,7 @@
                   {{ item.warning }}
                 </div>
                 {% endif %}
+                {{ match_by_hand(account.id, item.line.line_id) }}
               </td>
               <td>
                 {% if item.pay_period_id is none %}
@@ -789,9 +683,9 @@
        (ck_transaction_entries_positive_amount) -- so the create door refuses
        one, and a match needs a row of yours on the other side.  Measured on
        the developer's own data: EIGHT unmatched inflows are smaller than the
-       smallest row the form below offers ($39.54), so no row and no sum of
-       rows can equal one, and every match that would dispose of one asserts a
-       falsehood.  They sat in the awaiting-review count forever.
+       smallest row the hand-build form offers ($39.54), so no row and no sum
+       of rows can equal one, and every match that would dispose of one asserts
+       a falsehood.  They sat in the awaiting-review count forever.
 
        THE TICK IS THE WHOLE CONTROL, and there is no select because there is
        nothing to choose between: an income row is filed against no container.
@@ -830,10 +724,12 @@
           the app does not know what it was -- give it one whenever you do.
         </p>
         <p class="text-body-secondary small mb-0">
-          <strong>Check the match form below first.</strong> A paycheck your
-          records already hold as two or three rows is money you HAVE recorded,
-          and ticking it here would count it twice. This is for money nothing of
-          yours accounts for: a dividend, a refund, a deposit you never budgeted.
+          <strong>If your records may already hold it, match it instead.</strong>
+          A paycheck your records already hold as two or three rows is money you
+          HAVE recorded, and ticking it here would count it twice; the link on
+          each line opens the match form with that line already ticked. This
+          card is for money nothing of yours accounts for: a dividend, a refund,
+          a deposit you never budgeted.
         </p>
       </div>
       <div class="table-responsive">
@@ -881,12 +777,19 @@
                 {% set held = review.income_already_recorded_in(item.line) %}
                 {% if held %}
                 {# WHAT THE BOOKS ALREADY HOLD for this line's pay period.
-                   Server-derived and NAMED, so the owner can find the rows in
-                   the match form below rather than being told to go looking.
-                   It is not a suggestion that this deposit IS them. #}
+                   Server-derived and NAMED, so the owner can find the rows on
+                   the match surface rather than being told to go looking.  It
+                   is not a suggestion that this deposit IS them.
+
+                   IT NAMES THE ACT AND NOT A POSITION (plan step
+                   bank_import:X-gf-3b).  It ended "match it BELOW instead of
+                   recording it here" while the form stood on this page; the
+                   link the row carries is where "there" is now, and a sentence
+                   that pointed down the page would have been false the moment
+                   that form moved. #}
                 <div class="small text-warning-emphasis mt-1">
                   <i class="bi bi-exclamation-triangle"></i>
-                  This pay period already holds {{ held.rows | length }} income row(s) totalling {{ money(held.total) }} that no line explains{% for row in held.rows %}{% if loop.first %}: {% else %}, {% endif %}{{ row.label }} {{ money(row.cash_amount) }}{% endfor %}. If this deposit is those, match it below instead of recording it here.
+                  This pay period already holds {{ held.rows | length }} income row(s) totalling {{ money(held.total) }} that no line explains{% for row in held.rows %}{% if loop.first %}: {% else %}, {% endif %}{{ row.label }} {{ money(row.cash_amount) }}{% endfor %}. If this deposit is those, match it against them instead of recording it here.
                 </div>
                 {% endif %}
                 {% set gap = review.search_gap_for(item.line) %}
@@ -897,10 +800,11 @@
                    $178.29 movement, in the other direction. #}
                 <div class="small text-warning-emphasis mt-1">
                   <i class="bi bi-exclamation-triangle"></i>
-                  Before recording this as new income, check the match form
-                  below: {{ gap }}.
+                  Before recording this as new income, match it against rows
+                  you already hold: {{ gap }}.
                 </div>
                 {% endif %}
+                {{ match_by_hand(account.id, item.line.line_id) }}
               </td>
             </tr>
             {% endfor %}
@@ -945,11 +849,16 @@
      vigilance; a warning paragraph did not survive one contact with a 215-item
      session.
 
-     IT IS DELIBERATELY ABOVE THE HAND-MATCH FORM, because that form is the
-     remedy: a card payment meets the payback rows it repays by being ticked
-     beside them and matched, with any difference NAMED (ruling R-FN).  The one
-     Capital One line handled that way -- -$466.47 on 2026-06-17 -- is grouped
-     with four CC Payback rows whose recorded figures sum to exactly $466.47.
+     EVERY ROW CARRIES A LINK TO THE HAND-MATCH FORM, because that form is
+     the remedy: a card payment meets the payback rows it repays by being
+     ticked beside them and matched, with any difference NAMED (ruling R-FN).
+     The one Capital One line handled that way -- -$466.47 on 2026-06-17 -- is
+     grouped with four CC Payback rows whose recorded figures sum to exactly
+     $466.47.  This said the card sat DELIBERATELY ABOVE that form until plan
+     step bank_import:X-gf-3b moved it to a surface of its own, at which point
+     a comment about relative position on one page described a layout that no
+     longer existed -- the same coupling the eight sentences this step rewrote
+     had.
 
      THE REAL HOME IS THE CARD ARC's.  A payment to a credit card is a transfer
      between two accounts the owner holds, and finding N-337 (owner
@@ -965,8 +874,9 @@
       <p class="text-body-secondary small mb-0">
         These left your account, and none of them can be recorded as a purchase:
         there is no control here that would do it. The reason is beside each
-        one. Where some of your own rows are what the money paid for, tick them
-        together below and match them.
+        one. Where some of your own rows are what the money paid for, the link
+        on that line opens the match form with it already ticked, and you tick
+        those rows beside it.
       </p>
     </div>
     <div class="table-responsive">
@@ -1014,6 +924,14 @@
                 <a href="{{ url_for('accounts.statement_register', account_id=account.id) }}">{{ item.answer_door }}</a>
               </div>
               {% endif %}
+              {# THE ACT THAT IS ALWAYS OPEN, beside the one that usually is
+                 not.  `reason` used to end "tick them together BELOW and match
+                 them", which was the whole remedy ruling R-GJ leaves for a
+                 parked card payment -- and it was a sentence in the SERVICE
+                 naming a position on a page the service cannot see.  Plan step
+                 bank_import:X-gf-3b moved the form it pointed at, so the
+                 sentence states the bar and this link states the act. #}
+              {{ match_by_hand(account.id, item.line.line_id) }}
             </td>
           </tr>
           {% endfor %}
@@ -1024,189 +942,46 @@
   {% endif %}
 
   {# ── Build a match by hand ────────────────────────────────────────────── #}
-  {# THE HAND-BUILD FORM IS WHAT MAKES THE ACCEPT DOOR'S REFUSALS REACHABLE.
-     Without it, _variance.reject_unrecordable and
-     _accept._reject_parent_and_its_own_purchase fire only on a crafted POST --
-     so the $0.05 payroll gap (finding N-239) is never put in front of the
-     person who can fix it, and the proposer's own docstring claim that "the
-     owner may still build such a group by hand" is false about the shipped
-     app.  Found by adversarial design review, 2026-08-17.  Since plan step
-     bank_import:X-f6d-4 it is also the ONLY way that gap can be RECORDED: the
-     seven payroll deposits it names are built here or nowhere.
+  {# THE WORKBENCH IS NOT THE QUEUE (ruling bank_import:R-HC, plan step
+     bank_import:X-gf-3b).  The hand-build match form used to stand here, and
+     it is the same argument ruling R-GX made about the register applied to the
+     other thing on this screen that is not a decision: it is the TOOL that
+     three separate exceptions above send the owner to -- a parked card payment
+     meeting its payback rows, a line a tier declined, a deposit the books may
+     already hold -- and it is not itself an exception.
 
-     It is its OWN form with its own button, and it posts to the same batch
-     door as a pass of exactly one match: the ``apply`` index is hidden rather
-     than a checkbox because its whole submission IS the group -- there is
-     nothing here to tick that is not already a member.
+     IT WAS ALSO 59% OF THIS PAGE.  Measured through the real route on the
+     developer's own data 2026-08-27 and reproduced on a clone of it
+     2026-08-28: the review body rendered 150,853 bytes of which that form's
+     two pick lists were 89,247 -- 22,830 for 27 bank lines and 66,417 for 67
+     rows -- against 1 unanswered merchant, 2 creatable lines, 16 deposits and
+     9 parked payments of actual work.  Both lists are UNBOUNDED and the right
+     one grows with the whole span the statements cover, for ever (finding
+     bank_import:N-374).
 
-     ITS INDEX IS "hand", NOT 0, and that is a separation rather than a label.
-     Proposal 0 emits ``apply=0`` and ``match-0-line_ids``; so did this form,
-     and the two are only kept apart today by being separate <form> elements --
-     a property of the document.  Merge them, or add an hx-include, and
-     _match_items would union proposal 0's hidden ids with this group's ticks
-     into ONE submission naming rows the owner never grouped.  A non-numeric
-     index cannot collide with a rendered position, and order_token_key already sorts
-     it last.  Named by adversarial test-quality review 2026-08-19. #}
-  <form method="post" id="hand-build-form"
-        action="{{ url_for('accounts.apply_statement_review', account_id=account.id) }}"
-        hx-post="{{ url_for('accounts.apply_statement_review', account_id=account.id) }}"
-        hx-target="#statement-review-body"
-        hx-swap="outerHTML show:top"
-        hx-disabled-elt="find button[type=submit]">
-    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-    <input type="hidden" name="apply" value="hand">
-    {# The two tick lists, and the only thing that re-prices the panel below.
+     A CAP IS REFUSED as the remedy: the row that explains a line may be number
+     51, and a scored shortlist is what ruling R-GD's third amendment already
+     withdrew on this screen after measuring 0 of 18 inspected correct.  What
+     is bounded is the QUEUE, by the tool leaving it.
 
-       `change` bubbles, so one binding here covers every checkbox in both
-       cards -- and NOTHING ELSE in the form is inside this wrapper, which is
-       the point: the consent box lives in the panel, so ticking it cannot
-       trigger the swap that would replace it.  This element is never swapped,
-       so the binding survives every re-render.
-
-       `hx-disabled-elt` is UNSET because the form's is inherited and resolves
-       against the triggering element -- this wrapper, which holds no submit
-       button, so htmx logged "returned no matches" on every tick.  Unset
-       rather than re-pointed: this is a READ, and disabling the Apply button
-       while it runs would fight the owner for the control they are heading
-       towards.  Caught by driving the real screen in a browser. #}
-    <div class="row g-3 mb-3"
-         hx-post="{{ total_url }}"
-         hx-trigger="change"
-         hx-include="#hand-build-form"
-         hx-target="#hand-totals"
-         hx-swap="outerHTML"
-         hx-disabled-elt="unset">
-      <div class="col-12 col-lg-6">
-        <div class="card h-100">
-          <div class="card-header d-flex justify-content-between align-items-center">
-            <span><i class="bi bi-bank"></i> Lines your bank shows and nothing explains</span>
-            <span class="badge text-bg-secondary">{{ review.unmatched | length }}</span>
-          </div>
-          <div class="card-body">
-            <p class="text-body-secondary small mb-2">
-              Nothing this account holds matches these on amount. Many are card
-              purchases the app records inside an envelope rather than one by one.
-              If some of your rows add up to one of these, or nearly do, tick
-              them here and on the right, then match them.
-            </p>
-            {% if review.unmatched %}
-            <div class="table-responsive stmt-pick-list">
-              <table class="table table-sm mb-0">
-                <tbody>
-                  {% for line in review.unmatched %}
-                  <tr>
-                    <td class="align-middle">
-                      <input class="form-check-input" type="checkbox"
-                             name="match-hand-line_ids" value="{{ line.line_id }}"
-                             id="line-{{ line.line_id }}">
-                    </td>
-                    <td class="text-nowrap"><label for="line-{{ line.line_id }}" class="mb-0">{{ line.posted_on }}</label></td>
-                    <td class="text-end fw-semibold text-nowrap">{{ money(line.amount) }}</td>
-                    <td class="small text-body-secondary">
-                      {{ line.description }}
-                      {# The same fact the create card carries, rendered where
-                         the REMEDY is: this form is how an owner asserts a
-                         pairing the score would not guess (ruling R-FP).  One
-                         fact on the review set, two renders -- the danger and
-                         the fix are in different cards.  It was "an inflow
-                         reaches only this one" until ruling bank_import:R-GW gave a
-                         deposit a card of its own, which renders it too. #}
-                      {% set gap = review.search_gap_for(line) %}
-                      {% if gap %}
-                      <div class="text-warning-emphasis">
-                        <i class="bi bi-exclamation-triangle"></i>
-                        {{ gap | capitalize }}.
-                      </div>
-                      {% endif %}
-                    </td>
-                  </tr>
-                  {% endfor %}
-                </tbody>
-              </table>
-            </div>
-            {% else %}
-            <p class="mb-0 text-body-secondary">None.</p>
-            {% endif %}
-          </div>
-        </div>
-      </div>
-
-      <div class="col-12 col-lg-6">
-        {# The id is a TEST ANCHOR and it earns its place: this card's own end
-           cannot be found from generic markup -- it renders no table when it
-           lists nothing, so a cut at the next `</table>` ran into the keyboard
-           help modal and graded four assertions against another feature's
-           markup (adversarial review of this step's tests, 2026-08-25). #}
-        <div class="card h-100" id="rows-no-line-explains">
-          <div class="card-header d-flex justify-content-between align-items-center">
-            <span><i class="bi bi-journal-text"></i> Rows you recorded that no line explains</span>
-            <span class="badge text-bg-secondary">{{ review.unmatched_rows | length }}</span>
-          </div>
-          <div class="card-body">
-            {# **The alarm is stated where it can be TRUE, and withdrawn per
-               row where it cannot** (plan step bank_import:X-gc).  The caption
-               claimed of all 67 rows that the bank had failed to make a
-               payment; 18 of them are CC Paybacks, whose money leaves inside
-               one payment to the card, and they are exactly what the 9
-               unexplained Capital One lines on the left must be grouped
-               against.  The chip is `row.not_shown_alone`, decided in the
-               service on a fact the row already carries -- no name list, and
-               no Jinja reasoning about money. #}
-            <p class="text-body-secondary small mb-2">
-              These fall inside the span your statements cover and no line
-              explains them. One you expected the bank to show is a payment
-              your records claim happened and your bank did not make. One
-              marked <em>not a line of its own</em> is not: tick it with the
-              line that carries its money.
-            </p>
-            {% if review.unmatched_rows %}
-            <div class="table-responsive stmt-pick-list">
-              <table class="table table-sm mb-0">
-                <tbody>
-                  {% for row in review.unmatched_rows %}
-                  <tr>
-                    <td class="align-middle">
-                      {# The SAME token the proposal card ticks with, for the
-                         same reason: a group the owner builds by hand reaches
-                         the same door and is exactly as stale-able. #}
-                      <input class="form-check-input" type="checkbox"
-                             id="row-{{ row.kind.value }}-{{ row.row_id }}"
-                             name="match-hand-rows"
-                             value="{{ row | reviewed_token }}">
-                    </td>
-                    <td class="text-nowrap">
-                      <label for="row-{{ row.kind.value }}-{{ row.row_id }}" class="mb-0">
-                        {% if row.settled_on %}{{ row.settled_on }}{% else %}<span class="text-body-secondary">not recorded</span>{% endif %}
-                      </label>
-                      {% if not row.settled_on and row.expected_on %}
-                      <div class="small text-body-secondary">
-                        budgeted {{ row.expected_on }} - {{ row.expected_through }}
-                      </div>
-                      {% endif %}
-                    </td>
-                    <td class="text-end fw-semibold text-nowrap">{{ money(row.cash_amount) }}</td>
-                    <td class="small">
-                      {{ row.label }}
-                      {% set caveat = row.not_shown_alone %}
-                      {% if caveat %}
-                      <span class="badge text-bg-secondary fw-normal"
-                            title="{{ caveat.sentence }}">{{ caveat.label }}</span>
-                      {% endif %}
-                    </td>
-                  </tr>
-                  {% endfor %}
-                </tbody>
-              </table>
-            </div>
-            {% else %}
-            <p class="mb-0 text-body-secondary">None.</p>
-            {% endif %}
-          </div>
-        </div>
-      </div>
+     EVERY EXCEPTION ABOVE LINKS TO IT with its own line already ticked, so
+     this card is the way in for someone who is not working one line -- and it
+     is what keeps the tool reachable at all when the queue is empty. #}
+  <div class="card mb-3">
+    <div class="card-body d-flex justify-content-between align-items-center gap-2 flex-wrap">
+      <span class="small text-body-secondary">
+        Some of these lines are money your records already hold in another
+        shape -- a card payment your app records as payback rows, a paycheck it
+        holds as two or three rows. Those are matched rather than recorded:
+        tick the line beside the rows it paid for, and any difference is named
+        before anything is written.
+      </span>
+      <a class="btn btn-sm btn-outline-primary"
+         href="{{ url_for('accounts.statement_workbench', account_id=account.id) }}">
+        <i class="bi bi-tools"></i> Build a match by hand
+      </a>
     </div>
-    {% include "accounts/_statement_hand_totals.html" %}
-  </form>
+  </div>
 
   {# ── The bounds, stated rather than left silent ──────────────────────── #}
   {% if review.bounds.any_limit %}
@@ -1247,11 +1022,24 @@
          earlier, which decides which day the app believes when the bank
          contradicts itself; ruling R-FW refused that substitution one clock
          over. #}
+      {# THE ONE BULLET THAT NAMES A LINE STILL ACTIONABLE, so it names where.
+         Every other limit here removes a line from the pass entirely; this one
+         removes it only from the CREATE arm, and such a line stays in
+         `review.unmatched` -- which means it is still tickable on the
+         hand-build surface, and until plan step bank_import:X-gf-3b it was
+         listed on this page because that form was on this page.  Moving the
+         form left this count naming lines with no path to them, which is the
+         "a bound is only a bound if it can be acted on" shape plan step
+         bank_import:X-f6d-3 corrected for the near tier.  0 of the developer's
+         378 recorded lines are this shape; the OFX adapter's own measurement
+         found 2 of 361, so a second source makes it live. #}
       <li>
         {{ review.bounds.impossible_day_count }} line(s) are dated by your bank
         as having been MADE after the day it took the money, so there is no day
         a purchase could have happened on. Money cannot leave before it is
-        spent, so they are not offered as purchases here.
+        spent, so they are not offered as purchases here. They can still be
+        <a href="{{ url_for('accounts.statement_workbench', account_id=account.id) }}">matched
+        against rows you already hold</a>.
       </li>
       {% endif %}
     </ul>

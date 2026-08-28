@@ -474,9 +474,18 @@ def order_token_key(raw: str) -> tuple:
     **It is NOT :func:`~app.utils.digit_strings.parse_row_id`**, and the
     difference is the domain rather than the strictness: this token is an
     ORDINAL, not a row id, so ``0`` is a legitimate value -- it is the first
-    rendered proposal and the hand-build form's own hidden index -- where
-    ``parse_row_id`` refuses it by design.  Reading these through that function
-    would push the first item of every pass to the end.
+    rendered proposal -- where ``parse_row_id`` refuses it by design.  Reading
+    these through that function would push the first item of every pass to the
+    end.
+
+    **The non-numeric arm is a SECURITY guard and not a feature of any form.**
+    It read as both while the hand-build form submitted the reserved index
+    ``"hand"``; plan step ``bank_import:X-gf-3b`` moved that form to a surface
+    of its own whose door carries no ordering token at all
+    (:func:`~app.schemas.validation.statements.hand_match_payload`), so no
+    control this app renders emits a non-numeric one any more.  The arm stays
+    because what it exists for is the CRAFTED token above, which no control
+    ever emitted either.
 
     **It is in this module because BOTH halves of the review screen submit
     ordering tokens** -- the money pass

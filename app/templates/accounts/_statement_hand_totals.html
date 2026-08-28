@@ -32,8 +32,16 @@
    owner could never keep it ticked, and Apply submitted no consent at all --
    the whole ruled act dead in a browser with every server test green.  The
    attributes live on the wrapper around the two tick lists instead
-   (`_statement_review_body.html`), which the swap never replaces and the
+   (`_statement_workbench_body.html`), which the swap never replaces and the
    consent box is not inside.
+
+   ITS FIELD IS `residual` AND NOT `match-hand-residual` since plan step
+   bank_import:X-gf-3b (ruling bank_import:R-HC): the form moved to a surface
+   of its own, so it carries no ordering index for a field name to be
+   qualified by.  The panel is rendered by
+   `statement_workbench.statement_match_totals`, which reads the same body the
+   apply door does through the same `hand_match_payload` -- so the figure on
+   screen and the figure the door compares against are one derivation.
 
    Context: totals (HandTotals). #}
 
@@ -71,7 +79,7 @@
          precondition rather than a payload -- the same distinction
          MatchSubmission draws for every figure it carries. #}
       <input class="form-check-input" type="checkbox"
-             id="hand-residual" name="match-hand-residual"
+             id="hand-residual" name="residual"
              value="{{ totals.consent or '' }}"
              {% if not totals.consent %}disabled{% endif %}>
       <label class="form-check-label small" for="hand-residual">
