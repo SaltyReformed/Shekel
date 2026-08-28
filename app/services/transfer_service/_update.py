@@ -453,10 +453,14 @@ def _apply_remaining_fields(
     # decides against.  That is not hypothetical: the transaction door returned
     # early after recording a figure, so a row moving Paid -> Settled while
     # carrying a corrected Actual recorded the figure and never archived.
+    # (That was the terminal ARCHIVE status, deleted at plan step
+    # **balance:X-am**.  The measurement is quoted as it was taken; what it
+    # established -- two independent facts in one request are not alternatives
+    # -- is about the DOOR and outlived the status it was found on.)
     #
-    # The status half is a change that does NOT settle: a cancel, a revert out
-    # of the settled band, or an archive of a pair whose money already moved.
-    # All three transitions are verified before any propagation, then applied
+    # The status half is a change that does NOT settle: a cancel, or a revert
+    # out of the settled band.  Both transitions are verified before any
+    # propagation, then applied
     # through the ONE status seam, which owns the F-048 defense-in-depth
     # ``settled_on`` synchronization and the ``status`` expire; see
     # :func:`app.services.transfer_service._status.apply_status_to_all_three`
@@ -765,9 +769,9 @@ def _apply_transfer_updates(transfer_id, user_id, updates, *, settle_only=False)
         # Already in the settled band, so there is no settle to run -- but the
         # STATUS still goes through, and dropping it too was a defect this
         # branch shipped for one test run.  Two things depend on it: the
-        # transition is VERIFIED, so marking an archived (``Settled``) or
-        # ``Cancelled`` transfer Done stays the designed 400 it has always
-        # been; and the write REPAIRS a pair whose shadows drifted out of the
+        # transition is VERIFIED, so marking a ``Cancelled`` transfer Done
+        # stays the designed 400 it has always been; and the write REPAIRS a
+        # pair whose shadows drifted out of the
         # parent's status, which is the state a bulk ``status_id`` update
         # leaves and which the posting reconcile below then refuses as an
         # undated settle.  What is dropped is the pair that DEGRADED: an

@@ -888,7 +888,7 @@ def _settled_transaction_count(user_id: int) -> int:
 
     Scopes through :class:`PayPeriod` because ``Transaction`` carries no
     ``user_id`` of its own.  "Settled" reuses the canonical
-    ``balance_predicates.settled_status_ids`` (Paid / Received / Settled)
+    ``balance_predicates.settled_status_ids`` (Paid or Received)
     and excludes soft-deleted rows -- exactly how the lock classifier
     decides a period is settled, so a row that does not lock a period also
     does not block a reset.  A settled transfer is counted via its settled

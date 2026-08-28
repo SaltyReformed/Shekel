@@ -136,7 +136,8 @@ Routes (Blueprints) → Services (no Flask imports) → Models (SQLAlchemy) / Sc
 **Key domain concepts:** Anchor Balance (real checking balance, projections flow forward from it).
 Balance Calculator (period-by-period from anchor). Recurrence Engine (8 patterns from templates).
 Paycheck Calculator (salary + raises - taxes - deductions). Status workflow:
-`projected -> done|credit|cancelled`, `done|received -> settled`.
+`projected -> done|received|credit|cancelled`, and every one of those back to `projected` (revert).
+No status is terminal.
 
 **Established patterns -- use these, do not reinvent:** Ownership helpers in
 `app/utils/auth_helpers.py`. Security response rule: 404 for both "not found" and "not yours."

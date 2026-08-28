@@ -198,14 +198,20 @@ class TestTemplateHasPaidHistorySemanticIsSettled:
             )
             assert template_has_paid_history(template.id) is True
 
-    def test_settled_returns_true(self, app, db, seed_user, seed_periods_today):
-        """C21-2 (predicate half): SETTLED -> True.
+    def test_received_returns_true(self, app, db, seed_user, seed_periods_today):
+        """C21-2 (predicate half): RECEIVED -> True.
 
-        Regression keep.  ``Settled`` carries ``is_settled=True``.
+        Regression keep, and the case CRIT-05 was actually about: the pre-fix
+        code enumerated ``[DONE, SETTLED]`` by name and silently omitted
+        RECEIVED, letting a normal user permanently destroy real received
+        income history.  The specimen here was ``Settled`` -- the terminal
+        archive -- until plan step **balance:X-am** deleted that status, which
+        is the second time the settled SET has moved under this predicate
+        without it needing an edit: it reads ``Status.is_settled``.
         """
         with app.app_context():
             template, _ = _make_template_with_status_txn(
-                app, db, seed_user, seed_periods_today[0], "Settled",
+                app, db, seed_user, seed_periods_today[0], "Received",
             )
             assert template_has_paid_history(template.id) is True
 
@@ -299,13 +305,25 @@ class TestTransferTemplateHasPaidHistorySemanticIsSettled:
             )
             assert transfer_template_has_paid_history(xfer_template.id) is True
 
-    def test_settled_returns_true(self, app, db, seed_user, seed_periods_today):
-        """SETTLED transfer -> True (regression keep)."""
+    def test_cancelled_returns_false(self, app, db, seed_user, seed_periods_today):
+        """CANCELLED transfer -> False: it is immutable but NOT settled.
+
+        The pair that keeps the predicate honest about WHICH column it reads.
+        ``Cancelled`` carries ``is_immutable=True`` and ``is_settled=False``,
+        so a predicate that had drifted onto immutability -- the plausible
+        wrong column, since every non-Projected status is immutable -- would
+        block a permanent delete that this one permits.
+
+        This case was ``Settled -> True`` until plan step **balance:X-am**
+        deleted the terminal archive.  That specimen only ever restated the
+        Paid case beside it; this one grades something neither of the others
+        could.
+        """
         with app.app_context():
             xfer_template, _ = _make_transfer_template_with_status(
-                app, db, seed_user, seed_periods_today[0], "Settled",
+                app, db, seed_user, seed_periods_today[0], "Cancelled",
             )
-            assert transfer_template_has_paid_history(xfer_template.id) is True
+            assert transfer_template_has_paid_history(xfer_template.id) is False
 
     def test_projected_returns_false(self, app, db, seed_user, seed_periods_today):
         """PROJECTED transfer only -> False (intended permanent-delete path)."""
@@ -352,9 +370,18 @@ class TestPredicateSourceUsesIsSettledNotIds:
         back to enumerating status IDs.
         """
         source = Path("app/utils/archive_helpers.py").read_text(encoding="utf-8")
+        # **These name the band as it was when CRIT-05 was written, and one
+        # of them can no longer fail**: plan step **balance:X-am** deleted the
+        # ``Settled`` status, so an enumeration spelling it would not import.
+        # They are kept as the historical record of the exact defect...
         assert "[paid_id, settled_id]" not in source
         assert "[DONE_ID, SETTLED_ID]" not in source
         assert "[StatusEnum.DONE, StatusEnum.SETTLED]" not in source
+        # ...and THIS is the one that grades the regression as it would be
+        # spelled today.  Without it the guard pointed only at a band that no
+        # longer exists, which is a control aimed at the past.
+        assert "[StatusEnum.DONE, StatusEnum.RECEIVED]" not in source
+        assert "[paid_id, received_id]" not in source
         # And the post-fix expression is actually present in both
         # predicates -- guards against a future "fix" that drops the
         # boolean filter entirely.

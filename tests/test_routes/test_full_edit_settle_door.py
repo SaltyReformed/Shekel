@@ -228,17 +228,24 @@ class TestTheDropdownBooksWhatTheRowCost:
                 "-100.00",
             )
 
-    def test_archiving_a_paid_row_does_not_re_settle_it(
+    def test_re_saving_a_paid_row_does_not_re_settle_it(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):
-        """``Paid -> Settled`` stays inside the band, so it is not a settle.
+        """Staying inside the band is not a settle.
 
         The control for ``enters_settled_band``'s second half.  A row already
         settled has an amount that is a FACT and an immutable status, so
-        routing this transition to the settle verb would ask the envelope
-        branch to re-price a row it refuses by precondition.  The archive must
-        move the status and nothing else -- including the settle DAY, which
-        must not jump to the day the user archived it.
+        routing this move to the settle verb would ask the envelope branch to
+        re-price a row it refuses by precondition.  The save must leave the
+        status alone and, above all, the settle DAY -- which must not jump to
+        the day the popover was re-saved.
+
+        It was ``Paid -> Settled``, the ARCHIVE, until plan step
+        **balance:X-am** deleted that status.  That was a real status MOVE
+        inside the band; what remains is the identity re-submit, which is what
+        this popover actually produces on every Save because it posts the whole
+        row rather than a delta.  Both reach the same rule, and the day is the
+        assertion either one could have destroyed.
         """
         with app.app_context():
             txn = _gas_envelope(seed_user, seed_periods_today[3])
@@ -250,20 +257,19 @@ class TestTheDropdownBooksWhatTheRowCost:
             db.session.expire_all()
             paid = db.session.get(Transaction, txn_id)
             settled_day = paid.settled_on
+            paid_id = paid.status_id
 
             resp = _full_edit_save(
-                auth_client, paid, ref_cache.status_id(StatusEnum.SETTLED),
+                auth_client, paid, paid_id,
                 settled_on=settled_day.isoformat(),
             )
 
             assert resp.status_code == 200
             db.session.expire_all()
-            archived = db.session.get(Transaction, txn_id)
-            assert archived.status_id == ref_cache.status_id(
-                StatusEnum.SETTLED,
-            )
-            assert settled_figure(archived) == Decimal("48.98")
-            assert archived.settled_on == settled_day
+            resaved = db.session.get(Transaction, txn_id)
+            assert resaved.status_id == paid_id
+            assert settled_figure(resaved) == Decimal("48.98")
+            assert resaved.settled_on == settled_day
 
 
 class TestTheFieldWritesFlushInsideTheExceptionNet:
@@ -517,46 +523,51 @@ class TestASettledStatusMustMatchTheRowsType:
             )
             assert reloaded.settled_amount is None
 
-    def test_the_dropdown_still_offers_the_ARCHIVE_from_a_paid_row(
+    def test_the_narrowing_removes_EXACTLY_the_type_mismatch(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):
-        """Narrowing the offer set must not take the archive with it.
+        """The offer set is the state machine's answer minus ONE status.
 
-        ``Settled`` is in the settled BAND but it is not a TYPE-specific
-        status: both an expense and an income row reach it, from Paid and from
-        Received respectively.  A narrowing keyed on the whole band therefore
-        removes it from every row's dropdown -- and the dropdown is the only
-        control that offers the archive at all, so the transition becomes
-        unreachable while ``state_machine`` still calls it legal and the seam
-        still preserves the settle day across it.
+        The narrowing exists to drop the settled status this row's TYPE does
+        not take -- ``Received`` on an expense -- and nothing else.  Asserting
+        the WHOLE difference rather than one membership is what catches an
+        over-broad subtraction, which is the defect this case was written for.
 
-        The regression this pins was shipped and caught by review: two
-        assertions in this same PR -- ``is_archived``'s docstring and
-        ``test_entry_service``'s -- both state that the dropdown offers Settled
-        from Paid, which is what made it visible as a mistake rather than a
-        decision.
+        **The defect it was written for was shipped and caught by review**: a
+        first draft subtracted the whole settled BAND, which also removed
+        ``Settled`` -- the ARCHIVE -- from every row's dropdown, silently
+        retiring the only control that offered it while ``state_machine`` still
+        called ``Paid -> Settled`` legal.  Plan step **balance:X-am** has since
+        deleted that status, so the specimen is gone; the over-broad
+        subtraction is not, because the band still has two members and dropping
+        both would leave a Projected expense unable to be marked Paid at all.
+
+        **Asked of a PROJECTED row, and that is where the narrowing bites.**
+        From Paid the state machine offers only ``{Paid, Projected}``, so the
+        subtraction is empty there and the case would grade nothing -- the
+        state machine is keyed on the STATUS and admits BOTH settled statuses
+        only from Projected, which is the exact blindness this narrowing
+        exists to cover.
         """
         with app.app_context():
             txn = _gas_envelope(seed_user, seed_periods_today[3])
-            assert auth_client.post(
-                f"/transactions/{txn.id}/mark-done",
-            ).status_code == 200
             db.session.expire_all()
-            paid = db.session.get(Transaction, txn.id)
+            projected = db.session.get(Transaction, txn.id)
+            assert projected.is_expense
 
-            offerable = transaction_service.offerable_status_ids(paid)
+            offerable = transaction_service.offerable_status_ids(projected)
+            legal = allowed_transitions(projected)
             names = {ref_cache.status_id(m): m.value for m in StatusEnum}
-            legal = allowed_transitions(paid)
             shown = (
-                f"status={names[paid.status_id]} "
+                f"status={names[projected.status_id]} "
                 f"legal={sorted(names[i] for i in legal)} "
                 f"offered={sorted(names[i] for i in offerable)}"
             )
 
-            assert ref_cache.status_id(StatusEnum.SETTLED) in offerable, shown
-            assert ref_cache.status_id(StatusEnum.PROJECTED) in offerable
-            assert ref_cache.status_id(StatusEnum.DONE) in offerable
-            assert ref_cache.status_id(StatusEnum.RECEIVED) not in offerable
+            assert legal == {ref_cache.status_id(m) for m in StatusEnum}, shown
+            assert legal - offerable == {
+                ref_cache.status_id(StatusEnum.RECEIVED),
+            }, shown
 
     def test_the_dropdown_does_not_offer_the_mismatched_status(
         self, app, db, auth_client, seed_user, seed_periods_today,
@@ -608,7 +619,7 @@ class TestTheActualBoxExistsOnlyWhereTheSettleHonoursIt:
         2026-08-17 ruling**, and the reasoning behind that was backwards.  A
         draft of plan step X-au-c3 drew the box gated on ``locked`` -- and since
         every ``is_settled`` status is also ``is_immutable`` (``ref_seeds``:
-        Paid, Received, Settled) it rendered ``disabled`` on 100% of the rows it
+        Paid and Received) it rendered ``disabled`` on 100% of the rows it
         appeared on, so the box was deleted as unreachable.  But being disabled
         WAS the defect: the estimate and the actual are two different facts, a
         lock protects BUDGET DECISIONS from being rewritten, and what the bank

@@ -57,10 +57,7 @@ from app.models.transfer import Transfer
 from app.models.transaction_entry import TransactionEntry
 from app.services import cash_ledger, transaction_service, transfer_service
 from app.services.settle_day import recorded_settle_day
-from app.utils.balance_predicates import (
-    balance_contributing_clause,
-    not_archived_clause,
-)
+from app.utils.balance_predicates import balance_contributing_clause
 
 from ._creations import PurchaseDestination
 from ._offers import CandidateRow, Candidates, RowKind
@@ -711,15 +708,15 @@ def _purchase_candidates(
     * its PARENT contributes.  A purchase under a soft-deleted, Credit or
       Cancelled row posts nothing (ruling **R-FM**), so offering one would
       propose to record a movement the ledger books at zero;
-    * its parent is NOT ARCHIVED.  ``entry_service.update_entry`` refuses every
-      write against a `Settled` parent (finding **N-229**: an archived row's
-      purchases are history), and `balance_contributing_clause` does not
-      exclude that status -- so without this clause the screen offered a row
-      whose acceptance raises MID-LOOP, after other members had already been
-      written.  That would falsify this package's own claim that every refusal
-      fires before anything is written.  0 archived rows on production today;
-      the full-edit Status dropdown reaches it.  Found by adversarial financial
-      review 2026-08-17.
+    **A THIRD clause stood here until plan step balance:X-am** (ruling
+    **balance:R-HA**): the parent must not be ARCHIVED.  It was added by
+    adversarial financial review 2026-08-17 because the terminal ``Settled``
+    status was not excluded by ``balance_contributing_clause``, so the screen
+    could offer a row whose acceptance raised MID-LOOP -- falsifying this
+    package's claim that every refusal fires before anything is written.  The
+    status is deleted, so no row can be in it and the clause can match nothing;
+    it goes with its subject rather than standing as a filter over an id that
+    no longer exists.
 
     **What is ALREADY MATCHED is NOT a clause here**; see
     :func:`_transaction_candidates` for why it moved to :func:`unmatched_rows`.
@@ -742,7 +739,6 @@ def _purchase_candidates(
             TransactionEntry.account_id == account_id,
             TransactionEntry.is_credit.is_(False),
             balance_contributing_clause(),
-            not_archived_clause(Transaction),
             Transaction.pay_period_id.in_(period_ids),
         )
         .all()
@@ -864,8 +860,6 @@ def destinations_for(
       (:func:`~app.utils.balance_predicates.balance_contributing_clause`) -- a
       Credit or Cancelled row records no cash, so a purchase filed under one
       would post nothing (ruling **R-FM**);
-    * it is not ARCHIVED -- finding **N-229**: an archived row's purchases are
-      history, and :func:`_purchase_candidates` already declines to offer one;
     * if it has SETTLED, its recorded figure IS its purchases.  **This is the
       money clause** (:func:`~app.services.entry_service._doors
       ._reject_settled_addition`): on a ``purchases`` basis a new purchase
@@ -874,6 +868,13 @@ def destinations_for(
       gross cannot rise, and ``settled_cash_leg`` then subtracts money the gross
       never held -- measured on a production clone, `-163.95` became `+203.67`
       while the anchor true-up moved `$0.00`.
+
+    **A SIXTH clause stood here until plan step balance:X-am** (ruling
+    **balance:R-HA**): the row must not be ARCHIVED, because an archived row's
+    purchases were history (finding **N-229**) and
+    :func:`_purchase_candidates` declined to offer one.  The terminal
+    ``Settled`` status is deleted, so both arms dropped the clause in one
+    commit and still agree on what they offer.
 
     **Whether it is ITSELF MATCHED is NOT a clause here**, and that is this
     step's change rather than a relaxation: it is :func:`unmatched_destinations`,
@@ -920,7 +921,6 @@ def destinations_for(
             Transaction.account_id == account_id,
             Transaction.transfer_id.is_(None),
             balance_contributing_clause(),
-            not_archived_clause(Transaction),
             Transaction.pay_period.has(user_id=owner_id),
         )
         .all()

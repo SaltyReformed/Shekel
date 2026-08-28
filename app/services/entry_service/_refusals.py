@@ -27,7 +27,6 @@ from app import ref_cache
 from app.enums import SettledDayBasisEnum, SettlementBasisEnum
 from app.exceptions import ValidationError
 from app.models.transaction import Transaction
-from app.utils.balance_predicates import is_archived
 from app.utils.dates import display_today
 
 #: The purchase facts that change what its PARENT ROW COST, named by what
@@ -119,8 +118,8 @@ def _reject_settled_parent(
     **Finding N-229's door half, widened to the settled BAND at plan step
     X-au-c3** (developer ruling, 2026-08-17).  A settled envelope's purchases
     are closed: the user has said this money moved, and re-pricing one or
-    removing one would move it again -- so both refuse, on Paid and Received as
-    well as on the terminal ``Settled``.
+    removing one would move it again -- so both refuse, on Paid and on
+    Received, which since plan step X-am are the whole band.
 
     **ADDING one is a separate rule since plan step ``bank_import:X-f6a-3b``
     and REMOVING one since ``bank_import:X-f6f``**, in
@@ -187,10 +186,12 @@ def _reject_settled_parent(
     parent, with the same answer: the assertion may be recorded, corrected and
     withdrawn long after the figure is final.
 
-    ``Status.is_settled`` is the band -- Paid, Received AND the terminal
-    ``Settled`` -- where :func:`~app.utils.balance_predicates.is_archived` is
-    that last status alone.  The band is what this rule is about, so it reads
-    the band; the archive keeps its own predicate because other readers mean it.
+    ``Status.is_settled`` is the band, and since plan step **X-am** the band is
+    exactly Paid and Received.  It carried a third member, the terminal
+    ``Settled`` archive, which ``balance_predicates.is_archived`` named alone so
+    that this rule could read the band while its siblings read that one status;
+    both the status and that predicate are deleted, so the band is the only
+    reading left and no caller has to choose between two.
 
     Args:
         txn: The parent transaction the entry belongs (or would belong) to.
@@ -279,11 +280,13 @@ def _reject_settled_addition(
     source, which is the reason :func:`_reject_settled_parent`'s message still
     gives for a refusal this rule lifts.
 
-    **The ARCHIVE is refused whatever its basis** (finding **N-229**): an
-    archived row's purchases are history, and
-    ``statement_match._candidates._purchase_candidates`` already declines to
-    offer one, so admitting a new purchase here would be the only door
-    disagreeing with that.
+    **It carried a THIRD arm until plan step X-am** (ruling **balance:R-HA**):
+    the terminal ``Settled`` ARCHIVE was refused whatever its basis, because an
+    archived row's purchases were history (finding **N-229**).  The status is
+    deleted, so the arm has no subject and the rule reads as the two facts it
+    was always about -- has this row settled, and does it record a fixed
+    figure.  ``statement_match._candidates`` dropped its matching clause in the
+    same commit, so the two doors still agree.
 
     **What a user does when this refuses**: put the row back to Projected,
     record the purchase, and close it again -- which restates the figure from
@@ -298,15 +301,14 @@ def _reject_settled_addition(
 
     Raises:
         ValidationError: When *txn* has settled and its recorded figure is not
-            its purchases, when it is archived, or when the purchase states no
-            posting day.
+            its purchases, or when the purchase states no posting day.
     """
     if txn.status is None or not txn.status.is_settled:
         return
     purchases_basis = ref_cache.settlement_basis_id(
         SettlementBasisEnum.PURCHASES,
     )
-    if not is_archived(txn) and txn.settled_basis_id == purchases_basis:
+    if txn.settled_basis_id == purchases_basis:
         if settled_on is not None:
             return
         raise ValidationError(
@@ -359,15 +361,29 @@ def removal_refusal(txn: Transaction, entry) -> "str | None":
     already-spent money handed back to the projection.  That is exactly what
     :func:`_reject_settled_parent` was written about.
 
-    **The ARCHIVE is refused whatever the purchase is**, and a settled row
-    recording a STORED figure likewise, both for
-    :func:`_reject_settled_addition`'s own reasons: an archived row's purchases
-    are history, and a ``derived`` or ``corrected`` settlement stores a figure
-    fixed before this purchase was weighed, so ``settled_cash_leg``'s third
-    term would stop subtracting money the total never contained.  **They are
-    two sentences rather than one** because the archive records no fixed figure
-    and cannot be set back to Projected, so the other message's reason and its
-    remedy are both false for it.
+    **A settled row recording a STORED figure is refused whatever the purchase
+    is**, for :func:`_reject_settled_addition`'s own reason: a ``derived`` or
+    ``corrected`` settlement stores a figure fixed before this purchase was
+    weighed, so ``settled_cash_leg``'s third term would stop subtracting money
+    the total never contained.
+
+    **It was TWO sentences until plan step X-am** (ruling **balance:R-HA**).
+    The terminal ``Settled`` ARCHIVE got one of its own, because that message's
+    remedy -- *set the row back to Projected* -- was a transition the state
+    machine refused for it, and a refusal naming a repair the app cannot
+    perform is finding **N-302**'s shape.  Deleting the status is what made the
+    two sentences one: no state a row can ENTER is absorbing any more, so
+    *revert it and correct it* is a repair every settled row can actually take,
+    and the remaining message's remedy is true for every row that reaches it.
+
+    **This is the half of ruling `bank_import:R-GG` (d) that X-am makes
+    VACUOUS, and the other half stands.**  That ruling (2026-08-24) says *the
+    archive and a stored-figure settlement stay refused for R-FX's own
+    reasons*.  The stored-figure refusal is the one below and is untouched.
+    The archive refusal is not RELAXED -- there is no longer a state for it to
+    refuse -- which is the same shape ``pay_period_locks`` records for the two
+    lock reasons that left its set by becoming unreachable rather than by being
+    argued down.  R-HA says so explicitly so no later reader has to infer it.
 
     **It does NOT answer the carry-forward staleness** (finding **N-249**,
     owner ``balance:X-ax``), and it WIDENS the door that reaches it -- which is
@@ -399,9 +415,11 @@ def removal_refusal(txn: Transaction, entry) -> "str | None":
     depending on the rollback, and a door that discovered the refusal halfway
     through would break it and would let the review screen promise a removal
     the button then refuses.  Measured on that build: the panel offered *"Undo
-    removes 1 row"* over an archived container and the release raised with the
-    act already deleted from the session.  So the rule ANSWERS, one place, and
-    :func:`_reject_settled_removal` is the arm that raises it.
+    removes 1 row"* over an ARCHIVED container and the release raised with the
+    act already deleted from the session -- so the shape was found on the very
+    status plan step X-am has since deleted, and the answering rule it forced
+    is what still protects the STORED-figure case.  The rule ANSWERS, one
+    place, and :func:`_reject_settled_removal` is the arm that raises it.
 
     Args:
         txn: The parent transaction the entry belongs to.  Its ``status``
@@ -420,21 +438,10 @@ def removal_refusal(txn: Transaction, entry) -> "str | None":
     purchases_basis = ref_cache.settlement_basis_id(
         SettlementBasisEnum.PURCHASES,
     )
-    # **The ARCHIVE gets its own sentence, because the other one's reason is
-    # false for it and its remedy is impossible.**  An archived
-    # ``purchases``-basis envelope records no fixed figure, and the state
-    # machine gives the terminal ``Settled`` status no outgoing edge but
-    # identity (``state_machine._transition_map``: ``settled: {settled}``), so
-    # *set the row back to Projected* is a transition the seam refuses -- a
-    # refusal naming a repair the app cannot perform is finding **N-302**'s
-    # shape, and this one is now quoted onto the review panel.  Found by
-    # adversarial financial review 2026-08-24.
-    if is_archived(txn):
-        return (
-            f"Transaction {txn.id} is archived, so its purchases are history "
-            "and none of them can be removed. Nothing changes an archived "
-            "row: it is the record of a period that is closed."
-        )
+    # The ARCHIVE branch that stood here is deleted with its status (plan step
+    # X-am); the docstring carries why.  What is left is the STORED-figure
+    # refusal, whose *set the row back to Projected* remedy is now reachable
+    # from every status a row can hold when it gets here.
     if txn.settled_basis_id != purchases_basis:
         return (
             f"Transaction {txn.id} has settled and records a fixed figure, so "

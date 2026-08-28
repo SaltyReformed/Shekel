@@ -9,12 +9,10 @@ Transaction workflow per CLAUDE.md
 ----------------------------------
 
   projected -> done | received | credit | cancelled
-  done | received -> settled
   done -> projected (revert mistakes)
   received -> projected (revert mistakes)
   credit -> projected (unmark credit)
   cancelled -> projected (reactivate cancelled item)
-  settled -> settled (terminal -- archived rows cannot be mutated)
 
 Transfer workflow
 -----------------
@@ -23,9 +21,8 @@ Transfers speak a smaller status vocabulary, so they get their own
 transition map rather than sharing the transaction one:
 
   projected -> done | cancelled
-  done -> projected (revert mistakes) | settled
+  done -> projected (revert mistakes)
   cancelled -> projected (reactivate)
-  settled -> settled (terminal)
 
 Credit is excluded because the credit/auto-payback workflow is
 expense-only (``mark_as_credit`` refuses transfers outright); a
@@ -38,6 +35,44 @@ the split, the shared map let a crafted PATCH (the shadow path or
 the direct transfer PATCH -- both schemas accept any integer
 ``status_id``) move a transfer into either state.
 
+NO STATE IS BOTH REACHABLE AND ABSORBING
+----------------------------------------
+
+Both maps carried ``settled: {settled}`` until plan step **X-am** (ruling
+**balance:R-HA**, closing finding **N-177**).  ``Settled`` -- the ARCHIVE -- was
+an ABSORBING state (no outgoing edge but identity) that was also REACHABLE (from
+``done`` and from ``received``, offered by the full-edit popover's Status
+dropdown).  The conjunction is the defect, and each half alone is not:
+
+* an absorbing state a row can ENTER is a trapdoor.  It removes the owner's
+  ability to CORRECT the row while leaving their ability to DESTROY it --
+  ``transaction_service.deletion_refusal`` names a transfer shadow and a CC
+  payback and no status at all, so the delete control on the same card removed
+  an archived row and reversed its postings.  A lock whose only permitted
+  mutation is deletion protects nothing;
+* an absorbing state NOTHING can enter is a RETIRED VOCABULARY ITEM, and that
+  is a legitimate shape this project has already ruled for.  ``credit_card``
+  locked ruling 5 (2026-07-19, *do not reopen*) makes ``Credit`` exactly that at
+  step ``CC3b``: ``projected`` loses its edge to ``credit`` in the same commit
+  that makes ``credit: {credit}`` terminal, so the surviving rows are frozen
+  history and no door can create another.
+
+So the law this module holds is the CONJUNCTION, and
+``TestNoStateIsBothReachableAndAbsorbing`` grades it that way rather than
+banning terminal states outright -- which would have put this module in
+contradiction with a locked ruling on the day it was written.
+
+Field immutability -- what the archive was actually reached for -- is
+``Status.is_immutable`` and :func:`finalised_edit_rejection`, which already lock
+Paid and Received.
+
+**WHAT CC3b STILL OWES.** Deleting the archive removed today's instance of the
+destroy-but-not-correct asymmetry and NOT its mechanism: ``deletion_refusal``
+still names no status.  While every state can reach ``projected`` that costs
+nothing, because any row can be reverted and corrected.  A terminal ``Credit``
+re-arms it on frozen card history, so CC3b owes either a ``deletion_refusal``
+arm naming it or a stated reason the asymmetry is acceptable there.
+
 Identity transitions (for example projected -> projected, done -> done)
 are always legal so an idempotent re-submission of a state-changing
 request -- a typical HTMX double-click or carry-forward of an
@@ -49,12 +84,19 @@ Why the helper exists
 Audit findings F-046, F-047, and F-161 all stem from the same gap: the
 transfer and transaction services accept any caller-supplied
 ``status_id`` without checking the current state, so an attacker (or a
-defective caller) can move a row directly from ``Settled`` to
-``Projected`` -- bypassing the workflow that the dashboard, the audit
-log, and the carry-forward service all rely on.  Centralising the
-transition table in this module gives every state-changing path a
-single, auditable choke point and produces a uniform 400-class error
-message on illegal transitions instead of letting the row drift.
+defective caller) can move a row directly from ``Cancelled`` to ``Paid``
+-- settling spending the books had been told did not happen, without the
+reactivation the audit log and the carry-forward service both read.
+Centralising the transition table in this module gives every
+state-changing path a single, auditable choke point and produces a
+uniform 400-class error message on illegal transitions instead of
+letting the row drift.
+
+(The three findings were written against ``Settled -> Projected``, which
+was the sharpest example while an ARCHIVE existed.  Plan step **X-am**
+deleted that status, so the example is restated over a jump the maps
+still refuse -- an illustration of a live rule has to be one, or a reader
+checks it against the map and finds the map permissive.)
 
 The workflow is chosen by the ROW, never by the caller
 ------------------------------------------------------
@@ -202,17 +244,18 @@ def _build_transitions():
     received = ref_cache.status_id(StatusEnum.RECEIVED)
     credit = ref_cache.status_id(StatusEnum.CREDIT)
     cancelled = ref_cache.status_id(StatusEnum.CANCELLED)
-    settled = ref_cache.status_id(StatusEnum.SETTLED)
 
     return {
         "transaction": {
             # Projected can move to any active workflow state and absorbs
             # idempotent re-submission via the projected -> projected entry.
             projected: {projected, done, received, credit, cancelled},
-            # Paid expenses can be archived (settled), reverted, or re-marked.
-            done: {done, projected, settled},
+            # Paid expenses can be reverted or re-marked.  The third edge
+            # here was ``settled`` -- the archive -- deleted with the status
+            # at plan step X-am; see the module docstring.
+            done: {done, projected},
             # Received income mirrors the Paid expense transitions.
-            received: {received, projected, settled},
+            received: {received, projected},
             # Credit can only revert to Projected -- both revert paths
             # (the dedicated unmark_credit workflow and the PATCH status
             # edit) delete the auto-generated payback row through the
@@ -224,10 +267,6 @@ def _build_transitions():
             # first so the audit trail records both the reactivation and
             # the subsequent settle.
             cancelled: {cancelled, projected},
-            # Terminal: a Settled row must not be mutated.  Identity is
-            # included so an idempotent resubmit of "settle this row" on
-            # an already-settled row does not raise.
-            settled: {settled},
         },
         "transfer": {
             # No Credit (the credit workflow is expense-only and refuses
@@ -235,10 +274,8 @@ def _build_transitions():
             # regular income rows; transfers settle with Done) -- see
             # the module docstring's transfer workflow section.
             projected: {projected, done, cancelled},
-            done: {done, projected, settled},
+            done: {done, projected},
             cancelled: {cancelled, projected},
-            # Terminal, as for transactions.
-            settled: {settled},
         },
     }
 

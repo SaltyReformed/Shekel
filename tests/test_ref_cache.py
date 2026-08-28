@@ -195,7 +195,7 @@ class TestStatusBooleanColumns:
     """Tests for the boolean columns on the Status model."""
 
     def test_status_boolean_columns_correct(self, app, db):
-        """All 6 statuses have the correct boolean column values.
+        """All 5 statuses have the correct boolean column values.
 
         Expected:
           Projected:  settled=F, immutable=F, excludes=F
@@ -203,7 +203,15 @@ class TestStatusBooleanColumns:
           Received:   settled=T, immutable=T, excludes=F
           Credit:     settled=F, immutable=T, excludes=T
           Cancelled:  settled=F, immutable=T, excludes=T
-          Settled:    settled=T, immutable=T, excludes=F
+
+        **The matrix is TOTAL over the table, and it was not before.**  This
+        looked each expected name up by ``filter_by(name=...).one()`` and never
+        asked what ELSE the table held, so a status the seed no longer names --
+        exactly what plan step **balance:X-am** does to ``Settled`` -- would
+        have left it green while the row survived in every database.  A test
+        for a DELETION that cannot see the deleted thing measures nothing
+        (``lessons.md``).  The set comparison below is what grades the
+        migration; the per-row loop grades the flags.
         """
         with app.app_context():
             expected = {
@@ -212,8 +220,18 @@ class TestStatusBooleanColumns:
                 "Received": (True, True, False),
                 "Credit": (False, True, True),
                 "Cancelled": (False, True, True),
-                "Settled": (True, True, False),
             }
+            seeded = {row.name for row in db.session.query(Status).all()}
+            assert seeded == set(expected), (
+                "ref.statuses does not hold exactly the expected rows: "
+                f"unexpected {sorted(seeded - set(expected))}, "
+                f"missing {sorted(set(expected) - seeded)}"
+            )
+            assert {member.value for member in StatusEnum} == set(expected), (
+                "StatusEnum and ref.statuses name different sets -- "
+                "ref_cache.init raises for a member with no row, and a row "
+                "with no member is dead vocabulary nothing can reach"
+            )
             for name, (settled, immutable, excludes) in expected.items():
                 status = (
                     db.session.query(Status).filter_by(name=name).one()

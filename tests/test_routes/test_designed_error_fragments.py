@@ -19,8 +19,9 @@ from app.enums import StatusEnum
 from app.extensions import db
 from app.models.ref import AccountType, Status, TransactionType
 from app.models.transaction import Transaction
-from app.services import account_service, transfer_service
+from app.services import account_service, status_seam, transfer_service
 from app.utils.error_fragments import DESIGNED_FRAGMENT_HEADER
+from tests._test_helpers import settlement_if_settling
 
 
 def _create_expense(seed_user, seed_periods_today, status_name="Projected"):
@@ -58,19 +59,31 @@ class TestDesktopCellErrorFragment:
     ):
         """An illegal PATCH returns the marked cell naming both statuses.
 
-        Projected -> Settled is unreachable (a row must pass through
-        Done/Received).  The 400 body must be the cell fragment (not a
-        raw string), carry the marker header, and name the two statuses
-        in words -- the id-only message the state machine used to emit
-        reads as noise in a user-facing hint.
+        Paid -> Cancelled is unreachable (money that moved cannot be
+        un-moved by re-labelling; the row must revert first).  The 400 body
+        must be the cell fragment (not a raw string), carry the marker header,
+        and name the two statuses in words -- the id-only message the state
+        machine used to emit reads as noise in a user-facing hint.
+
+        The specimen was ``Projected -> Settled`` until plan step
+        **balance:X-am** deleted the terminal archive -- after which Projected
+        reaches every status the enum has, so there is no illegal move FROM it
+        to render.  What this case grades is the FRAGMENT, not the rule, so it
+        moves to a refusal that still exists.
         """
         with app.app_context():
             txn = _create_expense(seed_user, seed_periods_today)
-            settled_id = ref_cache.status_id(StatusEnum.SETTLED)
+            paid_id = ref_cache.status_id(StatusEnum.DONE)
+            cancelled_id = ref_cache.status_id(StatusEnum.CANCELLED)
+            status_seam.apply_status_change(
+                txn, paid_id,
+                settlement=settlement_if_settling(txn, paid_id),
+            )
+            db.session.commit()
 
             resp = auth_client.patch(
                 f"/transactions/{txn.id}",
-                data={"status_id": str(settled_id)},
+                data={"status_id": str(cancelled_id)},
             )
             assert resp.status_code == 400
             assert resp.headers.get(DESIGNED_FRAGMENT_HEADER) == "1"
@@ -78,11 +91,11 @@ class TestDesktopCellErrorFragment:
             assert "txn-chip" in body
             assert "bi-exclamation-octagon" in body
             # Status NAMES lead the message; the ids stay in parens.
-            assert "Projected" in body
-            assert "Settled" in body
+            assert "Paid" in body
+            assert "Cancelled" in body
 
             db.session.refresh(txn)
-            assert txn.status_id == ref_cache.status_id(StatusEnum.PROJECTED)
+            assert txn.status_id == paid_id
 
     def test_mark_done_on_cancelled_renders_cell_error(
         self, app, auth_client, seed_user, seed_periods_today,
@@ -250,12 +263,14 @@ class TestTransferErrorFragment:
         """
         with app.app_context():
             xfer = _create_transfer(seed_user, seed_periods_today)
-            # Walk the parent to Settled through legal edges, bypassing
-            # the route layer; the cancel below is verified against the
-            # PARENT's status before any shadow is touched.
-            xfer.status_id = ref_cache.status_id(StatusEnum.DONE)
-            db.session.commit()
-            xfer.status_id = ref_cache.status_id(StatusEnum.SETTLED)
+            # Walk the parent to Paid, bypassing the route layer; the cancel
+            # below is verified against the PARENT's status before any shadow
+            # is touched.  It walked one step further, to the terminal
+            # ``Settled`` archive, until plan step **balance:X-am** deleted
+            # that status -- and ``done -> cancelled`` is the refusal the
+            # transfer map has always had underneath it.
+            paid_id = ref_cache.status_id(StatusEnum.DONE)
+            xfer.status_id = paid_id
             db.session.commit()
 
             resp = auth_client.post(f"/transfers/instance/{xfer.id}/cancel")
@@ -263,10 +278,10 @@ class TestTransferErrorFragment:
             assert resp.headers.get(DESIGNED_FRAGMENT_HEADER) == "1"
             body = resp.data.decode()
             assert "Invalid transfer status transition" in body
-            assert "Settled" in body
+            assert "Paid" in body
 
             db.session.refresh(xfer)
-            assert xfer.status_id == ref_cache.status_id(StatusEnum.SETTLED)
+            assert xfer.status_id == paid_id
 
 
 class TestEntryListErrorFragment:

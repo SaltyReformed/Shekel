@@ -280,7 +280,7 @@ def _apply_regular_update(txn, txn_id, data):
     #
     # Gate 1, ``_resolve_status_change``: the state-machine transition check,
     # run before any column is mutated so a rejection leaves the row untouched.
-    # Gate 2, the finalised-row edit lock (#26): a Paid/Received/Settled/
+    # Gate 2, the finalised-row edit lock (#26): a Paid/Received/
     # Credit/Cancelled row's money/period/category/due-date fields cannot be
     # rewritten unless this same request reverts it to Projected.
     # Gate 3, purchase tracking is expense-only.

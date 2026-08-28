@@ -59,7 +59,7 @@ def reject_settle_day_without_settled_status(
 
     **One half of the settled-iff-dated invariant, stated once** (plan step
     X-f1, finding **N-183**).  A row carries the civil day its money moved if
-    and only if it is in a settled status (Paid / Received / Settled), so a day
+    and only if it is in a settled status (Paid or Received), so a day
     handed in beside a Projected / Credit / Cancelled status is not a value to
     store -- it is a request to record a payment that has not happened.
 
@@ -102,8 +102,8 @@ def reject_settle_day_without_settled_status(
     raise ValidationError(
         f"A settle day ({settle_day.day.isoformat()}) was supplied for status "
         f"{status_id}, which is not a settled status.  A row records the day "
-        "its money moved only while it is settled (Paid / Received / "
-        "Settled); mark it settled to give it a day, or clear the day to "
+        "its money moved only while it is settled (Paid or Received); "
+        "mark it settled to give it a day, or clear the day to "
         "leave it projected."
     )
 
@@ -180,7 +180,7 @@ def reject_settlement_without_settled_status(
     raise ValidationError(
         f"A settlement record was supplied for status {status_id}, which is "
         "not a settled status.  A row records what moved only while it is "
-        "settled (Paid / Received / Settled); mark it settled to record a "
+        "settled (Paid or Received); mark it settled to record a "
         "figure, or leave it projected, which records nothing."
     )
 

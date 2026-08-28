@@ -1320,7 +1320,7 @@ class TestEmergencyFundCommittedBaseline:
             )
 
             # Create small settled expenses across 6 recent periods.
-            settled_id = ref_cache.status_id(StatusEnum.SETTLED)
+            settled_id = ref_cache.status_id(StatusEnum.DONE)
             expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
             category_id = seed_user["categories"]["Rent"].id
 
@@ -1388,7 +1388,7 @@ class TestEmergencyFundCommittedBaseline:
                 anchor_balance=Decimal("10000.00"),
             )
 
-            settled_id = ref_cache.status_id(StatusEnum.SETTLED)
+            settled_id = ref_cache.status_id(StatusEnum.DONE)
             expense_type_id = ref_cache.txn_type_id(TxnTypeEnum.EXPENSE)
             category_id = seed_user["categories"]["Rent"].id
 

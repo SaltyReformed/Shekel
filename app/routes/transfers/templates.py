@@ -726,7 +726,7 @@ def hard_delete_transfer_template(template_id):
          deletion, shadow transactions no longer exist in the table.
 
     Two-path logic:
-      - History exists (Paid/Settled transfers): permanent deletion is
+      - History exists (Paid transfers): permanent deletion is
         blocked.  Template is archived instead (if not already) and the
         user is warned.
       - No history: linked transfers are hard-deleted through the
@@ -739,7 +739,7 @@ def hard_delete_transfer_template(template_id):
     after CRIT-05.  Even if the guard predicate above regresses, is
     bypassed, or races a concurrent mark-done that lands between the
     guard check and the loop, settled transfers (Paid, Received,
-    Settled) and their two-shadow pairs cannot be physically destroyed
+    Received) and their two-shadow pairs cannot be physically destroyed
     by this route.  Survivors retain their ``transfer_template_id``;
     the column's FK is ``ON DELETE SET NULL`` so they become detached
     settled history when the parent template is removed.
@@ -797,7 +797,7 @@ def hard_delete_transfer_template(template_id):
     # Even if ``transfer_template_has_paid_history`` regresses, is
     # bypassed, or races a concurrent mark-done that lands between the
     # guard check and the loop below, settled transfers (Paid,
-    # Received, Settled) and their two-shadow pairs cannot be
+    # Received) and their two-shadow pairs cannot be
     # physically destroyed by this route.  Survivors retain their
     # ``transfer_template_id``; the column's FK is ``ON DELETE SET
     # NULL`` (see ``app/models/transfer.py``) so they become detached

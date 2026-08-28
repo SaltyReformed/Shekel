@@ -142,7 +142,11 @@ def test_register_ref_id_globals_is_idempotent(app):
         #     with no template reader (which is what caught these five) or a
         #     template naming one nothing registers, which Jinja would evaluate
         #     as a silent ``False`` rather than raise.
-        assert len(registered_keys) == 41, (
+        # 41 until plan step **balance:X-am**, which deleted ``STATUS_SETTLED``
+        # along with the status it named.  That global had ZERO template readers
+        # for its whole life and the arm below could not see it: the
+        # registered-vs-read check is scoped to ``REC_*``.
+        assert len(registered_keys) == 40, (
             "the ID-derived globals changed count -- update this number "
             "deliberately, and check the template that reads the new or "
             "removed constant"

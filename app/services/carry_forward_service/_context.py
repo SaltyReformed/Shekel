@@ -251,7 +251,7 @@ def _is_finalised(target_row):
     """True if *target_row* cannot receive a rollover bump.
 
     A row is finalised when it has no status or an immutable one (Paid,
-    Received, Settled, Credit, Cancelled).  Bumping it would silently
+    Received, Credit, Cancelled).  Bumping it would silently
     override the user's prior status decision, so both the preview
     (blocks) and the mutating path (raises) gate on this one rule.
     """

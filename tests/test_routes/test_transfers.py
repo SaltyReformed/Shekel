@@ -1129,31 +1129,35 @@ class TestTransferInstance:
                 f"the posted entry_date moved: {before[1]} -> {dated_after}"
             )
 
-            # ARCHIVING it must not re-date it either.  Paid -> Settled is a
-            # real state change, not an identity re-submit, and it reaches the
-            # same rule: the schema carries no settle day, so the seam decides,
-            # and before X-aj1 it stamped now() on any entry into a settled
-            # status.  Archiving a transfer paid last month used to move its
-            # posted entry to today.  Reachable from this very form -- Settled
-            # is in ``allowed_transitions`` for a Paid transfer and renders
-            # enabled.
-            settled_id = ref_cache.status_id(StatusEnum.SETTLED)
+            # A SECOND re-submit, this one with no other field at all, must
+            # not re-date it either: the schema carries no settle day, so the
+            # seam decides, and before X-aj1 it stamped now() on any entry
+            # into a settled status.
+            #
+            # This was ``Paid -> Settled`` -- the ARCHIVE -- until plan step
+            # **balance:X-am** deleted that status, and it was the stronger
+            # case: a real state CHANGE that still had to preserve the day,
+            # where an identity re-submit merely has to leave things alone.
+            # With the archive gone there is no non-identity move into or
+            # inside the settled band from Paid, so what remains is the bare
+            # re-submit -- which is the shape the popover actually produces,
+            # since it posts the whole row on every Save.
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
                 data={
                     "version_id": str(xfer.version_id),
-                    "status_id": str(settled_id),
+                    "status_id": str(done_id),
                 },
             )
             assert response.status_code == 200, response.data[:400]
 
             paid_archived, dated_archived = _state()
             assert paid_archived == before[0], (
-                f"archiving moved the settle instant: "
+                f"the bare re-submit moved the settle instant: "
                 f"{before[0]} -> {paid_archived}"
             )
             assert dated_archived == before[1], (
-                f"archiving moved the posted entry_date: "
+                f"the bare re-submit moved the posted entry_date: "
                 f"{before[1]} -> {dated_archived}"
             )
 
@@ -3931,7 +3935,8 @@ class TestTransferTemplateHardDelete:
         """C21-6: A transfer template with a RECEIVED transfer is archived, not deleted.
 
         Mirror of the transaction-template CRIT-05 fix proof.  The
-        pre-fix predicate enumerated ``[DONE, SETTLED]`` and silently
+        pre-fix predicate enumerated ``[DONE, SETTLED]`` (SETTLED being the
+        terminal archive plan step **balance:X-am** has since deleted) and silently
         omitted ``RECEIVED``; ``RECEIVED`` carries ``is_settled=True``
         in ``ref_seeds.py`` so the post-fix
         ``transfer_template_has_paid_history`` -- now filtering on
@@ -4744,27 +4749,40 @@ class TestTransferActualBox:
                 )
                 assert leg.settled_basis_id is None
 
-    def test_an_ARCHIVE_carrying_a_correction_does_BOTH(
+    def test_a_status_IN_HAND_carrying_a_correction_does_BOTH(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """Paid -> Settled with a corrected Actual records AND archives.
+        """A status IN HAND with a corrected Actual records on BOTH legs.
 
         The transfer half of the defect this step measured on the transaction
-        door: the correction and the status change were treated as alternatives,
-        so the archive was silently dropped and the response still said 200.
-        ``Settled`` is terminal, so this is the LAST moment the figure can be
-        corrected -- dropping either half loses something that cannot be
-        restated.
+        door: the correction and the status change were treated as
+        alternatives, so one of them was silently dropped and the response
+        still said 200.
+
+        It was ``Paid -> Settled`` -- an ARCHIVE, a real status MOVE -- until
+        plan step **balance:X-am** deleted that status.  A settled transfer's
+        only remaining status move is the revert, and a revert carrying a
+        changed figure is refused rather than composed, so the surviving legal
+        instance is the identity re-submit the popover actually produces: it
+        posts the whole row, so the status box arrives beside the Actual box on
+        every Save.  The reduction is recorded on the transaction twin's class
+        docstring, ``TestTheDoorAppliesTheStatusANDTheCorrection``.
+
+        What this still grades that its transaction sibling cannot: the
+        correction reaches BOTH SHADOWS and the pair stays mirrored (transfer
+        invariant 3).
         """
         with app.app_context():
             day = _THREE_DAYS_AGO()
             xfer = self._settled_transfer(seed_user, seed_periods_today, day)
-            version = db.session.get(Transfer, xfer.id).version_id
+            stored = db.session.get(Transfer, xfer.id)
+            version = stored.version_id
+            paid_id = stored.status_id
 
             response = auth_client.patch(
                 f"/transfers/instance/{xfer.id}",
                 data={
-                    "status_id": str(ref_cache.status_id(StatusEnum.SETTLED)),
+                    "status_id": str(paid_id),
                     "settled_amount": "187.65",
                     "version_id": str(version),
                 },
@@ -4772,11 +4790,11 @@ class TestTransferActualBox:
 
             assert response.status_code == 200, response.get_data(as_text=True)
             db.session.expire_all()
-            assert db.session.get(Transfer, xfer.id).status_id == (
-                ref_cache.status_id(StatusEnum.SETTLED)
-            ), "the archive was dropped while the figure was recorded"
+            assert db.session.get(Transfer, xfer.id).status_id == paid_id, (
+                "the status was dropped while the figure was recorded"
+            )
             for leg in self._legs(xfer.id):
-                assert leg.status_id == ref_cache.status_id(StatusEnum.SETTLED)
+                assert leg.status_id == paid_id
                 assert leg.settled_amount == Decimal("187.65")
             assert net_posted_by_day(
                 JournalEntry.transfer_id == xfer.id,

@@ -841,8 +841,8 @@ def hard_delete_template(template_id):
     """Permanently delete a transaction template if it has no settled history.
 
     Two-path logic:
-      1. If the template has any settled transaction (Paid, Received, or
-         Settled -- anything with ``Status.is_settled = True``), OR any
+      1. If the template has any settled transaction (Paid or Received --
+         anything with ``Status.is_settled = True``), OR any
          standing merchant rule files a merchant's bank spending into it
          (``archive_helpers.template_has_standing_rule``, plan step
          ``bank_import:X-gd-2``), permanent deletion is blocked.  The template
@@ -859,10 +859,11 @@ def hard_delete_template(template_id):
     non-settled rows via the semantic ``Status.is_settled`` boolean.
     Even if the guard predicate above regresses, is bypassed, or races a
     concurrent mark-done that lands between the guard check and the
-    delete, settled financial history (Paid, Received, Settled) cannot
+    delete, settled financial history (Paid, Received) cannot
     be physically destroyed by this route.  The pre-fix code enumerated
     ``[DONE, SETTLED]`` and silently omitted RECEIVED, then bulk-deleted
     unconditionally -- the irreversible data-loss path CRIT-05 documents.
+    (``SETTLED`` is quoted as written; plan step **balance:X-am** deleted it.)
     """
     template = get_or_404(TransactionTemplate, template_id)
     if template is None:
@@ -941,7 +942,7 @@ def hard_delete_template(template_id):
     # No settled history -- safe to permanently delete.  Restrict the
     # bulk delete to non-settled rows via ``Status.is_settled`` so a
     # race-window mark-done (or any future caller that bypasses the
-    # guard above) cannot destroy real Paid/Received/Settled history.
+    # guard above) cannot destroy real Paid/Received history.
     # The FK ON DELETE SET NULL on ``Transaction.template_id`` means
     # any row that survives this filter keeps its financial data with
     # a null template_id rather than being cascaded away.

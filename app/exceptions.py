@@ -495,7 +495,7 @@ class PayPeriodResetBlocked(ShekelError):
     """A full pay-period reset was refused: the user has settled history.
 
     Raised by ``pay_period_admin.reset_pay_periods`` when the user has at
-    least one settled (Paid / Received / Settled), non-deleted
+    least one settled (Paid or Received), non-deleted
     transaction.  Reset rebuilds the WHOLE schedule -- including the
     account anchor period -- and is a first-time-setup correction only; a
     user whose paychecks have begun settling must use Regenerate (which

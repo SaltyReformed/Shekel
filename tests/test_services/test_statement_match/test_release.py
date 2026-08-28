@@ -41,7 +41,6 @@ from app.services import (
     entry_service,
     posting_service,
     statement_match,
-    status_seam,
     transaction_service,
 )
 from app.services.balance_at import BalanceContext
@@ -57,7 +56,6 @@ from app.services.statement_match import (
     Consent,
     ReviewedBatch,
 )
-from tests._test_helpers import settlement_if_settling
 
 # Pylint: protected-access -- ``MintedEnvelopes`` is an internal collaboration
 # between two PRIVATE modules of this package and has no importer outside it,
@@ -560,17 +558,36 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
         """Found in this step's OWN build, by driving the case rather than
         arguing it.
 
-        The owner archives the budget line this act created.
-        ``entry_service`` then refuses to remove the purchase under it -- an
-        archived row's purchases are history -- and the first build discovered
-        that HALFWAY through the removal: the panel had already offered *"Undo
-        removes 1 row"*, and the release raised with the act already deleted
-        from the session, which breaks this package's promise that a refused
-        act leaves the database exactly as it was without depending on the
-        rollback.
+        The owner puts the budget line this act created beyond the purchase
+        door.  ``entry_service`` then refuses to remove the purchase under it,
+        and the first build discovered that HALFWAY through the removal: the
+        panel had already offered *"Undo removes 1 row"*, and the release
+        raised with the act already deleted from the session, which breaks this
+        package's promise that a refused act leaves the database exactly as it
+        was without depending on the rollback.
 
         So the preview asks the purchase door's own question, and the refusal
         arrives before anything is written.
+
+        **The specimen was the ARCHIVE until plan step balance:X-am deleted
+        that status, and a first attempt DELETED this case on the argument that
+        no other container state reaches the arm.  That argument was false**,
+        and ``_subject_removal``'s own docstring said so on the same page:
+        *"the container this act created can be put beyond that afterwards, by
+        being archived OR RE-CLOSED AT A STORED FIGURE."*  Two independent
+        adversarial reviews caught it, and the path below was then driven end
+        to end rather than reasoned about -- the `lessons.md` entry is *an
+        ONLY-way argument is one writer from wrong*.
+
+        The path, all of it through controls the owner has: the container is an
+        ad-hoc envelope, so its full-edit popover renders *Track individual
+        purchases*, and ``is_envelope`` is NOT in ``_LOCKED_EDIT_FIELDS`` --
+        unticking it on a settled row is admitted deliberately, because it
+        gives the row its own amount back.  ``settles_from_entries`` then goes
+        False, ruling **R-FF**'s guard stops biting, and a typed Actual records
+        a ``corrected`` basis.  Editing the PARENT does not bump the ENTRY's
+        ``version_id``, so the edited-row refusal above does not fire first and
+        this arm is the one reached.
         """
         line = _a_swipe(seed_user)
         created = _record(
@@ -578,17 +595,26 @@ class TestTheScreenNamesWhatTheUndoWouldRemove:
         )
         db.session.flush()
         envelope = db.session.get(Transaction, created.transaction_id)
-        status_seam.apply_status_change(
-            envelope, ref_cache.status_id(StatusEnum.SETTLED),
-            settlement=settlement_if_settling(
-                envelope, ref_cache.status_id(StatusEnum.SETTLED),
-            ),
+        transaction_service.settle_transaction(envelope)
+        db.session.flush()
+
+        envelope.is_envelope = False
+        db.session.flush()
+        transaction_service.apply_requested_status(
+            envelope, envelope.status_id, submitted=Decimal("999.99"),
         )
         db.session.flush()
+        assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
+            SettlementBasisEnum.CORRECTED,
+        ), "the container is not beyond the purchase door -- this cannot fire"
 
         group = statement_match.review_set(a_scope(seed_user)).accepted[0]
         assert group.removes.refusal is not None
-        assert "is archived" in group.removes.refusal
+        assert "records a fixed figure" in group.removes.refusal
+        # A refused act reports NOTHING to remove, so no reader can print a
+        # destruction the press will not perform.
+        assert group.removes.rows == ()
+        assert group.removes.cash_amount == Decimal("0.00")
 
         with pytest.raises(ValidationError) as caught:
             _release(seed_user, created.match_id)
@@ -789,6 +815,14 @@ class TestTheSettledParentRuleIsTheArithmetic:
 
         Its cost cannot fall by the purchase, and ``settled_cash_leg``'s third
         term would stop subtracting money the total never contained.
+
+        **A fourth case stood beside this one until plan step balance:X-am**:
+        an ARCHIVED parent, refused whatever its basis and carrying its own
+        sentence, because the shared message told the owner to *set the row
+        back to Projected* -- a transition the state machine refused for the
+        terminal status, which is finding **N-302**'s shape.  Deleting the
+        status deleted both the case and the second sentence: every settled row
+        can now take that repair, so one message is true for all of them.
         """
         start = seed_user["bootstrap_period"].start_date
         envelope = a_transaction(
@@ -807,41 +841,6 @@ class TestTheSettledParentRuleIsTheArithmetic:
         with pytest.raises(ValidationError, match="records a fixed figure"):
             entry_service.delete_entry(doomed.id, seed_user["user"].id)
 
-        assert db.session.get(TransactionEntry, doomed.id) is not None
-
-    def test_an_ARCHIVED_parent_is_still_refused(self, app, db, seed_user):
-        """An archived row's purchases are history, whatever the basis.
-
-        **It gets its OWN sentence, and the first version borrowed the wrong
-        one** (adversarial financial review 2026-08-24): an archived
-        ``purchases``-basis envelope records NO fixed figure, and the state
-        machine gives the terminal ``Settled`` status no outgoing edge but
-        identity, so *set the row back to Projected* named a repair the app
-        refuses to perform -- finding **N-302**'s shape, quoted onto the
-        review panel by ``planned_removals``.  This test pinned that borrowed
-        sentence and so could not see it.
-        """
-        envelope, doomed = self._closed_holding(seed_user)
-        status_seam.apply_status_change(
-            envelope, ref_cache.status_id(StatusEnum.SETTLED),
-            settlement=settlement_if_settling(
-                envelope, ref_cache.status_id(StatusEnum.SETTLED),
-            ),
-        )
-        db.session.flush()
-        assert envelope.settled_basis_id == ref_cache.settlement_basis_id(
-            SettlementBasisEnum.PURCHASES,
-        ), "an archived row records no FIXED figure, which is the point"
-
-        with pytest.raises(ValidationError) as caught:
-            entry_service.delete_entry(doomed.id, seed_user["user"].id)
-
-        assert "is archived" in str(caught.value)
-        assert "records a fixed figure" not in str(caught.value)
-        assert "back to Projected" not in str(caught.value), (
-            "the terminal Settled status has no outgoing edge, so a refusal "
-            "naming that repair sends the owner at a door that refuses them"
-        )
         assert db.session.get(TransactionEntry, doomed.id) is not None
 
     def test_a_CREDIT_purchase_may_be_removed_and_the_payback_follows(

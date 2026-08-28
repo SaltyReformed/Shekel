@@ -509,7 +509,7 @@ class Transaction(
     #
     # ``settled_on`` is the CASH clock, and its NULL is the invariant rather
     # than a gap: a transaction carries a settle day if and only if it is in a
-    # settled status (Paid / Received / Settled).  Both halves are written by
+    # settled status (Paid or Received).  Both halves are written by
     # ONE statement -- ``status_seam.apply_status_change``, the single door that
     # assigns ``status_id`` -- so they cannot diverge.  See the class docstring
     # for why that half is not a CHECK constraint and why the day has no bounds.
