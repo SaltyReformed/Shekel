@@ -136,27 +136,32 @@ the constraints it leaves a LATER step are on that step's own entry.
       `_verdict.ruled` and printed unbranched, because the partition behind it is the service's; and
       a parked line names the register only where a different answer would open the create door,
       which was 0 of 9 on the developer's own data.
-- [ ] **X-gf-3b** `feat(import): the review is an exception queue` -- what remains once the register
-      and the workbench leave: contested lines, group residuals and every proposal touching a
-      hand-made row, as ONE list of unexplained bank lines grouped by the DECISION each poses rather
-      than the three cards that partition them by MECHANISM -- outflow-that-may-be-recorded,
-      outflow-that-is-barred, inflow-that-may-be-recorded -- when the question all three pose is the
-      same: *is this money my books already hold, or is it new?* (**bank_import:R-HB**).
-      **The hand-build match form moves to a surface of its own** (**bank_import:R-HC**), on the
-      argument **R-GX** made about the register: it is not an exception, it is the TOOL three
-      exceptions send the owner to, and each of them links to it. Closes **N-374**, whose narrative
-      lives here under rule 4: **a CAP is the wrong remedy for those two lists** -- the row that
-      explains a line may be number 51, and a scored shortlist is what ruling **R-GD**'s third
-      amendment already withdrew on this screen after measuring 0 of 18 inspected correct -- and the
-      finding is distinct from **N-326** (the merchant control, bounded) and **bank_import:N-372**
-      (the register's fold, valued): those are bounded or valued, and these two lists are neither.
-      **Measured through the real route on the developer's own data 2026-08-27**, after `X-gf-3a`:
-      the review body renders **146,907 bytes** of which that form's two pick lists are
-      **89,247, or 61%** -- 22,830 for 27 bank lines and 66,417 for 67 rows -- against 1 unanswered
-      merchant, 2 creatable lines, 16 deposits and 9 parked payments of actual work.
-      *The 149,103 figure `R-GX` states is not contradicted*: it was measured at `X-gf-2`, before
-      `X-gf-1`'s deposit card and this step's per-line sentence were both in the page and before the
-      developer worked lines off it.
+- [ ] **X-gf-3b** `feat(import): the review is an exception queue` -- **the DECOMPOSED parent**,
+      split 2026-08-28 on measurement: the step's sentence carried two rulings and they are not the
+      same size. **R-HC**'s half is 59% of the page and closes **N-374**; **R-HB**'s is a re-shaping
+      of what is left. R-HC goes FIRST, because merging the three cards while the form was still on
+      the page renders the same 27 lines twice -- the duplication R-HB itself names.
+- [x] **X-gf-3b-1** `d2248fe6` -- **the workbench leaves** (**R-HC**): the hand-build form, its
+      live-totals endpoint and a write door of its own moved to `/accounts/<id>/statements/match`,
+      and every exception links to it carrying its own line, which arrives ticked and PRICED. The
+      review body fell from **150,853 bytes to 65,005**. Closes **N-374**.
+      **What a LATER step must obey**: `apply=hand` is DELETED not moved, and no sentence may name a
+      POSITION -- five did, two of them in the SERVICE, and all five went false in this one commit.
+- [ ] **X-gf-3b-2** `feat(import): the queue is one list, grouped by the decision` -- **R-HB**: the
+      three cards that partition the unexplained lines by MECHANISM -- an outflow that may be
+      recorded, an outflow **R-GJ** bars, an inflow that may be recorded -- become ONE list ordered
+      by what the decision IS. That partition is the SERVICE's and is right, the three reaching
+      different doors; it is not the READER's, because all three pose one question:
+      *is this money my books already hold, or is it new?*
+      **The grouping is on the EVIDENCE the pass already derives**, not on a new fact and not on the
+      act: a row carries every act open to it, and the group says which answer the evidence points
+      to. Measured 2026-08-28 after `X-gf-3b-1`: **17** lines carry a counterpart signal (9 Capital
+      One payments at `-$7,412.94` the books hold as CC Payback rows, 8 deposits whose period
+      already holds unexplained income), **10** carry none (8 dividends and refunds at `$58.87`, 2
+      purchases), **0** cannot be decided. **It also closes a hole this split exposed**:
+      `search_gap_for` is derived for a PARKED line and rendered nowhere -- 1 of his 9, the
+      `-$1,000.44` line of 2026-06-01 -- because three cards is three places to forget a caution,
+      which is the argument for one list restated as a defect.
 - [ ] **X-gg** `docs(plans): the envelope-semantics design loop` -- **R-GK**'s owed loop, run WITH
       the developer: filling, closure on coverage, carry-forward and the grid's row identity (whose
       same-name double-render the review measured); it mints the build steps rather than building.
