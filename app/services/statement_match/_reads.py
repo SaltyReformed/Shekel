@@ -110,6 +110,32 @@ class IncomeAlreadyRecorded:
 
 
 @dataclass(frozen=True)
+class ProposedAlready:
+    """How much of both pick lists this pass's own proposals account for.
+
+    :meth:`ReviewSet.explained_by_a_proposal`'s answer.  **A value rather than
+    a pair**, so the screen asks ``any`` rather than testing two integers with
+    an ``or`` -- the same reason :attr:`~._gaps.ReviewBounds.any_limit` exists,
+    and the same failure it prevents: a third count added later that a Jinja
+    condition silently does not include.
+
+    Attributes:
+        lines: Distinct bank lines a proposal explains, so absent from
+            :attr:`ReviewSet.unmatched`.
+        rows: Distinct row SUBJECTS a proposal names, so absent from
+            :attr:`ReviewSet.unmatched_rows`.
+    """
+
+    lines: int
+    rows: int
+
+    @property
+    def any(self) -> bool:
+        """Return whether the proposals take anything out of either list."""
+        return bool(self.lines or self.rows)
+
+
+@dataclass(frozen=True)
 class ReviewSet:  # pylint: disable=too-many-instance-attributes
     """Everything the review screen needs, in one value.
 
@@ -235,6 +261,66 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
     merchants: MerchantSection
     bounds: ReviewBounds
     declined_lines: "dict[int, str]" = field(default_factory=dict)
+
+    @property
+    def explained_by_a_proposal(self) -> "ProposedAlready":
+        """Return what this pass's own PROPOSALS take out of both pick lists.
+
+        **The FIFTH bound on the hand-build lists, and the only one that is not
+        a** :class:`~._gaps.ReviewBounds` **field** -- which is exactly why the
+        workbench's *what is not in these lists* panel could not name it and
+        why an adversarial design review 2026-08-28 found it missing. A line a
+        proposal explains is dropped by :func:`_unexplained` before
+        :attr:`unmatched` exists, and a row one names is dropped by
+        :func:`_rows_the_bank_never_showed`; measured on the developer's own
+        statement, this pass has proposed **124** matches, so it is a large
+        absence rather than a corner.
+
+        **It matters most when the proposal is WRONG.**  A proposal is a
+        suggestion the owner has not accepted, so a line the app paired
+        badly is absent from the very tool the owner would use to pair it
+        correctly -- and while the form stood on the review screen the
+        proposal card was beside it, so the line was at least on the page.
+        Plan step ``bank_import:X-gf-3b`` moved the form and that stopped
+        being true, which is what makes this the split's own debt rather than
+        an inherited one.
+
+        **A COUNT and a pointer, not a list**: these lines are not missing
+        work, they are work waiting on a decision one screen away, and the
+        remedy is to go and take it.  Counted here rather than in Jinja for
+        the reason :attr:`placed_by_class` is: a caption may not promise a
+        number a template computed.
+
+        Returns:
+            The :class:`ProposedAlready`.  Rows are counted over the SUBJECTS
+            a proposal names -- ``(kind, row_id)`` -- which is the same key
+            :func:`_rows_the_bank_never_showed` withholds on, so the number
+            and the absence cannot disagree.
+
+            **The two halves are not equally falsifiable, and the asymmetry is
+            recorded rather than papered over.**  Every proposal this app
+            builds names exactly ONE line: :func:`~._propose._one_to_one` and
+            :func:`~._propose._groups` and :func:`~._near.near_proposals` all
+            construct ``lines=(line,)``.  So counting distinct line ids and
+            counting PROPOSALS give the same number for every input that
+            exists, and a mutation swapping one for the other survives as an
+            EQUIVALENT mutant -- measured 2026-08-28.  It is written the
+            distinct way anyway, because a multi-line tier would make the
+            other spelling wrong silently.  The ROWS half is genuinely
+            checkable: ``_groups`` sets ``rows=combo``, and
+            ``TestAGroupProposalTakesSEVERALRowsOutOfTheList`` is the case that
+            kills it.
+        """
+        return ProposedAlready(
+            lines=len({
+                line.line_id
+                for proposal in self.proposals for line in proposal.lines
+            }),
+            rows=len({
+                (row.kind, row.row_id)
+                for proposal in self.proposals for row in proposal.rows
+            }),
+        )
 
     @property
     def placed_by_class(self) -> "dict[str, int]":

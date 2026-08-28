@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% from "_acct_macros.html" import acct_glyph %}
+{% from "_nav_macros.html" import back_link %}
+{% block title %}{{ account.name }} -- Build a match by hand -- Shekel{% endblock title %}
+
+{# The tool three exceptions send the owner to -- plan step
+   bank_import:X-gf-3b, ruling bank_import:R-HC.
+
+   THIS PAGE MOVES MONEY, and it says so above the fold in the body below, the
+   way the review screen does: recording a group settles every row it names
+   onto the bank's posted day, and a consented difference records a row the app
+   did not hold at all.
+
+   THE PAGE IS THE HEADER; the whole surface is
+   _statement_workbench_body.html, which the apply POST re-renders on its own
+   so its answer IS the screen carrying its receipt.  The split is the one both
+   sibling statement surfaces keep, and for the same reason: a per-item receipt
+   overflows the 4 KB a browser stores for the signed session cookie a flash
+   rides in.
+
+   Context (accounts.statement_workbench): account, review (ReviewSet),
+   preselected (line ids arriving ticked), totals (HandTotals), total_url,
+   outcome (None on a plain render), error (None on a plain render). #}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center gap-2 mb-3 flex-wrap">
+  <div class="d-flex align-items-center gap-2">
+    <h4 class="mb-0"><i class="bi {{ acct_glyph(account) }}"></i> {{ account.name }}</h4>
+    <span class="acctd-type-tag">Build a match by hand</span>
+  </div>
+  <div class="d-flex align-items-center gap-2">
+    <a class="btn btn-sm btn-primary"
+       href="{{ url_for('accounts.review_statements', account_id=account.id) }}">
+      <i class="bi bi-list-check"></i> Review matches
+    </a>
+    {{ back_link(url_for('accounts.statements', account_id=account.id), 'Bank statements') }}
+  </div>
+</div>
+
+{% include "accounts/_statement_workbench_body.html" %}
+{% endblock content %}
