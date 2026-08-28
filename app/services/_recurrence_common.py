@@ -82,6 +82,7 @@ event constant, category, and keyword shape, not to add behaviour.
 
 import logging
 from collections import defaultdict
+from datetime import date
 from typing import NamedTuple
 
 from app.exceptions import RecurrenceCadenceUnsupported
@@ -429,6 +430,41 @@ def is_maintainable(row) -> bool:
     return owner_hold_on(row) is None
 
 
+class PlacedRow(NamedTuple):
+    """A row a pass will CREATE: which paycheck funds it, what it answers.
+
+    The ID-LEVEL twin of
+    :class:`~app.services.recurrence_engine._plan.PlannedOccurrence`, for the
+    write arms that hold a ``pay_periods.id`` rather than a whole derived
+    period.  Both engines' create paths take one, so "which paycheck, which
+    occurrence" is one value rather than two arguments that can be paired
+    wrongly.
+
+    ``create_in`` held bare ``pay_periods.id`` values until plan step **R17**,
+    which is the whole of ledger row **D57**: a generated row now records WHICH
+    OCCURRENCE of its template's cadence it answers (``occurs_on``), and the
+    create arm cannot state that from a period id alone -- at a pay cadence of
+    30 days or more one paycheck can host a definition more than once, so the
+    period is not a name for the occurrence and never was.
+
+    **It is a pair rather than a second map beside ``derived``.**  The applier
+    already takes ``{period_id: DerivedRowFields}``; threading the occurrence as
+    another dict keyed the same way would be two structures that have to agree,
+    which is the shape this module exists to remove.  Carrying it on the
+    decision itself means the classifier states it once and the applier reads
+    it, and neither engine can pair a period with another period's occurrence.
+
+    Attributes:
+        period_id: The ``budget.pay_periods.id`` the new row lands in.
+        occurs_on: The date this template's cadence names for it -- the value
+            :class:`~app.services.recurrence_engine._plan.PlannedOccurrence`
+            carries and both write loops discarded before R17.
+    """
+
+    period_id: int
+    occurs_on: date
+
+
 class MaintainWork(NamedTuple):
     """What a maintain pass will DO, decided before anything is written.
 
@@ -440,8 +476,9 @@ class MaintainWork(NamedTuple):
     Attributes:
         update: Rule-generated rows the definition still names, to be brought
             into line with what it derives for their period.
-        create_in: ``pay_periods.id`` values the rule names that hold no row of
-            this template at all.  A period holding ANY row -- immutable,
+        create_in: One :class:`PlacedRow` per row to write -- the periods
+            the rule names that hold no row of this template at all, each with
+            the occurrence it answers.  A period holding ANY row -- immutable,
             overridden or soft-deleted -- is absent, which is the long-standing
             "one row per template per paycheck" rule
             (:func:`should_skip_period`).
@@ -455,7 +492,7 @@ class MaintainWork(NamedTuple):
     """
 
     update: list
-    create_in: "list[int]"
+    create_in: "list[PlacedRow]"
     retire: list
     overridden_ids: "list[int]"
     deleted_ids: "list[int]"
@@ -516,8 +553,41 @@ class MaintainOutcome(NamedTuple):
         )
 
 
+def occurrence_by_period(placements) -> dict:
+    """Return ``{pay_periods.id: occurs_on}`` for this pass's placements.
+
+    What :func:`classify_maintain_work` takes since plan step **R17**, hoisted
+    here because both engines' maintain paths build it from the same value and
+    a private copy in each is the drift this module exists to prevent.  It
+    duck-types ``placements`` exactly as :func:`refuse_repeats_this_pass` does
+    -- reading ``.period.period_id`` and ``.occurrence`` off
+    ``recurrence_engine.PlannedOccurrence`` -- because importing that type here
+    would close a cycle (``_plan`` imports this module).
+
+    **A repeated period keeps the LAST placement's occurrence**, which is not
+    an arbitrary tie-break but the same collapse each engine's ``derived`` map
+    already makes one line above: both are keyed by period, so a paycheck a
+    rule names twice reduces to one entry in each. The two therefore agree by
+    construction rather than by care. That case is the 30-day-cadence repeat of
+    ledger row **D19**; :func:`refuse_unstorable_repeats` refuses it on the
+    generate path, and on THIS path it is storable because ``create_in``
+    excludes every occupied period. Making the pair a true one-per-occurrence
+    answer is what the ``occurs_on`` index re-key owns (plan step R5).
+
+    Args:
+        placements: This pass's ``recurrence_engine.PlannedOccurrence`` values.
+
+    Returns:
+        The period-to-occurrence map, one entry per DISTINCT period named.
+    """
+    return {
+        placement.period.period_id: placement.occurrence
+        for placement in placements
+    }
+
+
 def classify_maintain_work(
-    existing, named_period_ids, *, with_records, reattributed,
+    existing, named, *, with_records, reattributed,
 ) -> MaintainWork:
     """Decide what a maintain pass must do to each row, WITHOUT writing.
 
@@ -545,9 +615,12 @@ def classify_maintain_work(
             or after its bound.  The window half is the load-bearing one:
             it is what keeps this domain a superset of the plan's, and so
             what makes the RETIRE branch reachable.
-        named_period_ids: The ``pay_periods.id`` values the rule names now.
-            Empty for a template whose recurrence was CLEARED, which correctly
-            makes every row an orphan.
+        named: ``{pay_periods.id: occurs_on}`` -- the periods the rule names
+            now, each mapped to the date its cadence names there.  Empty for a
+            template whose recurrence was CLEARED, which correctly makes every
+            row an orphan.  It was a bare SET of ids until plan step **R17**;
+            the create arm now has to state an occurrence and cannot derive one
+            from a period id (see :class:`PlacedRow`).
         with_records: Ids of rows carrying the owner's own records, resolved by
             the engine from its own table -- purchases, a note, a settlement
             record or a statement link.
@@ -562,8 +635,8 @@ def classify_maintain_work(
     work = MaintainWork([], [], [], [], [], [])
     occupied = set()
     for row in existing:
-        named = row.pay_period_id in named_period_ids
-        if named:
+        is_named = row.pay_period_id in named
+        if is_named:
             # ANY row occupies its period, so no second row is created beside
             # it -- including the immutable, overridden and soft-deleted rows
             # the loop below then declines to maintain.
@@ -577,7 +650,7 @@ def classify_maintain_work(
         if hold == BLOCK_DELETED:
             work.deleted_ids.append(row.id)
             continue
-        if not named:
+        if not is_named:
             if row.id in with_records:
                 work.retained_ids.append(row.id)
             else:
@@ -587,7 +660,10 @@ def classify_maintain_work(
             work.retained_ids.append(row.id)
             continue
         work.update.append(row)
-    work.create_in.extend(sorted(named_period_ids - occupied))
+    work.create_in.extend(
+        PlacedRow(period_id, named[period_id])
+        for period_id in sorted(set(named) - occupied)
+    )
     return work
 
 
