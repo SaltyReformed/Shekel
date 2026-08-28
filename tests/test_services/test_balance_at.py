@@ -5432,9 +5432,18 @@ class TestCashAnchorHistory:
             assert [row.correction for row in history.rows] == [
                 Decimal("-100.00"), Decimal("-375.00"), Decimal("0.00"),
             ]
-            assert [row.is_opening for row in history.rows] == [
-                False, False, True,
-            ]
+            # **The opening is a RECORD of its own, not a flag on a row**
+            # (plan step X-f3c-2b).  ``CashAnchorRow.is_opening`` is gone: it
+            # badged whichever assertion fell on the books' own day, which
+            # ruling R-HG makes a day no assertion of the records' era can
+            # share on an account whose books were moved back.  The account
+            # here was created asserting $1,000.00, so its books opened the
+            # same day at the same figure and the badge would still have
+            # landed -- which is why the flag's absence is asserted on the
+            # ROWS and its replacement on the record beside them.
+            assert not hasattr(history.rows[0], "is_opening")
+            assert history.opening.equity == Decimal("1000.00")
+            assert history.opening.declared is True
 
     def test_the_opening_row_PUBLISHES_its_pair_like_every_other_row(
         self, app, db, seed_user, seed_periods_today,
@@ -5472,27 +5481,60 @@ class TestCashAnchorHistory:
                 anchor_balance=Decimal("2746.58"),
                 observed_on=periods[2].start_date,
             )
+            # **The fixture this test was built on is now UNSTORABLE** (plan
+            # step X-f3c-2b, ruling R-HG).  It recorded $300.00 of income
+            # BEFORE the books opened so the opening's pair would be non-zero
+            # and the publication visibly meant something.  That state is the
+            # double count of finding N-378, so the refusal is asserted here
+            # instead -- and the row's pair is then graded on a record the
+            # books can hold.
+            with pytest.raises(ValidationError):
+                create_settled_cash_transaction(
+                    seed_user, db.session, periods[0], Decimal("300.00"),
+                    account=later, is_income=True, name="Pre-opening income",
+                    settled_on=periods[0].start_date,
+                )
+            db.session.rollback()
+
+            later = create_account_of_type(
+                seed_user, db.session, "Checking", "Statement Checking",
+                anchor_balance=Decimal("2746.58"),
+                observed_on=periods[2].start_date,
+            )
             create_settled_cash_transaction(
-                seed_user, db.session, periods[0], Decimal("300.00"),
-                account=later, is_income=True, name="Pre-opening income",
-                settled_on=periods[0].start_date,
+                seed_user, db.session, periods[3], Decimal("300.00"),
+                account=later, is_income=True, name="Income after the books",
+                settled_on=periods[3].start_date,
+            )
+            anchor_service.apply_anchor_true_up(
+                account=later, new_balance=Decimal("2746.58"),
+                observed_on=periods[3].end_date,
             )
             db.session.commit()
 
             ctx = balance_at.BalanceContext.build(user_id)
             history = balance_at.cash_anchor_history(later, ctx)
-            opening = history.rows[-1]
 
-            assert opening.is_opening is True
-            assert opening.observed_on == periods[2].start_date
-            assert opening.recorded == Decimal("2746.58")
-            assert opening.ledger == Decimal("3046.58")
-            assert opening.correction == Decimal("-300.00")
-            # Non-vacuity: the correction is non-zero because a real record
-            # sits before the books opened, not because the account is empty.
-            # The row's two cells ARE the walk's own figures, read back.
+            # The OPENING is its own record and its cells are empty by
+            # CONSTRUCTION: nothing precedes an opening for a correction to be
+            # measured against.
+            assert history.opening.opened_on == periods[2].start_date
+            assert history.opening.equity == Decimal("2746.58")
+            assert history.opening.declared is True
+
+            # The TRUE-UP publishes the pair, and it is non-zero because a
+            # real record sits between the books and it -- $2,746.58 opened,
+            # +$300.00 recorded, $2,746.58 declared again, so the declaration
+            # takes $300.00 back out.
+            trued_up = history.rows[0]
+            assert trued_up.observed_on == periods[3].end_date
+            assert trued_up.recorded == Decimal("2746.58")
+            assert trued_up.ledger == Decimal("3046.58")
+            assert trued_up.correction == Decimal("-300.00")
+            # Non-vacuity: the row's two cells ARE the walk's own figures,
+            # read back rather than recomputed here.
             walk = cash_ledger.walk_cash_ledger(later.id, ctx.scenario_id)
-            booked = assertion_corrections(walk)[0]
+            booked = assertion_corrections(walk)[-1]
             assert booked.balance_before == Decimal("3046.58")
             assert booked.delta == Decimal("-300.00")
             assert walk.opening.opening_equity == Decimal("2746.58")
@@ -5528,9 +5570,9 @@ class TestCashAnchorHistory:
             assert [row.recorded for row in history.rows] == [
                 Decimal("5100.00"), Decimal("5000.00"),
             ]
-            # EVERY row, not merely the opening: the true-up above is a
-            # non-opening row and its pair is withheld too.
-            assert history.rows[0].is_opening is False
+            # EVERY row, and the opening record beside them: the true-up
+            # above is a non-opening row and its pair is withheld too.
+            assert history.opening.equity == Decimal("5000.00")
             assert all(row.ledger is None for row in history.rows)
             assert all(row.correction is None for row in history.rows)
             # Non-vacuity: the PLAIN account beside it does publish a pair for
@@ -5579,7 +5621,10 @@ class TestCashAnchorHistory:
                 fresh, balance_at.BalanceContext.build(user_id),
             )
 
-            assert [row.is_opening for row in history.rows] == [True]
+            # One assertion, and the opening record beside it -- the account
+            # was created asserting $250.00, so its books opened there.
+            assert len(history.rows) == 1
+            assert history.opening.equity == Decimal("250.00")
             # A freshly created account's books open at what its owner typed,
             # so its one row corrects $0.00 -- NOT ``None``.  That is what makes
             # the trap in the docstring above live: ``any(row.correction)`` is

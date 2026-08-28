@@ -88,6 +88,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
+from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.account_opening import AccountOpening
@@ -140,6 +141,14 @@ class CashOpeningFact:
             (finding **N-275** measures one wrong by ``$436.05``), so a surface
             must be able to tell a guess from an observation.  The walk itself
             never branches on it: an opening is an opening whatever wrote it.
+        recorded_at: The RECORDING instant, aware-UTC.  It is what ORDERS the
+            restatements (see :func:`account_opening_fact`) and it dates
+            nothing -- :attr:`opened_on` is the business date, the same
+            two-clock split :attr:`CashAnchorFact.asserted_at` documents one
+            table over.  Carried since plan step **X-f3c-2b** so the history
+            card can caption a RESTATED opening the way it captions a
+            back-dated assertion: books opening in March, recorded in August,
+            is a fact the owner should be able to see rather than infer.
     """
 
     opening_id: int
@@ -147,6 +156,7 @@ class CashOpeningFact:
     opened_on: date
     opening_equity: Decimal
     source_id: int
+    recorded_at: datetime
 
 
 @dataclass(frozen=True)
@@ -480,6 +490,94 @@ def account_opening_fact(account_id: int) -> CashOpeningFact:
         opened_on=row.opened_on,
         opening_equity=Decimal(str(row.opening_equity)),
         source_id=row.source_id,
+        # Normalised the same way ``cash_anchor_facts`` normalises an
+        # assertion's instant: PostgreSQL hands back an aware value, and
+        # ``utc_instant`` is where a naive one from a fixture is refused
+        # rather than compared against an aware one further downstream.
+        recorded_at=utc_instant(row.created_at),
+    )
+
+
+def reject_movement_before_books_open(account_id: int, day: date) -> None:
+    """Refuse a cash movement dated on or before *account_id*'s opening day.
+
+    **The one statement of the boundary between an account's OPENING and its
+    RECORDS** (plan step X-f3c-2b, finding **N-378**).  An account's opening
+    equity is what it held at the CLOSE of
+    :attr:`CashOpeningFact.opened_on` -- the same rule
+    :attr:`CashAnchorFact.observed_on` states for an assertion (ruling
+    R-DH (a)) -- so a movement dated on or before that day is ALREADY INSIDE
+    the figure, and recording it counts the money twice.
+
+    **What the double count costs, and why the balance healing is not a
+    defence.**  The fold seeds at the opening equity and
+    :func:`~._walk.dated_deltas` emits every source at its own day, so between
+    the movement's day and the next assertion the running total carries it a
+    second time.  The next assertion RESETS to what the owner declared, so the
+    rendered balance heals -- but the correction that heals it is booked to the
+    general ledger, and on a MODELLED account (ruling **R-FO**) its counter leg
+    is ``unrealized_change``, not ``anchor_equity``.  A transfer therefore
+    becomes market performance that never unwinds.  Measured on a fixture: a
+    Roth declared ``$1,000.00`` with a ``$1,000.00`` pre-opening transfer
+    reports ``$850.00`` of unrealized change against a real ``$150.00``.
+
+    **It is stated here because this module owns the opening record**, and
+    asked by the TWO writers of a settle day -- the ORM one
+    (:func:`app.services.settle_day.record_settle_day`, which every door for
+    both ``budget.transactions`` and ``budget.transaction_entries`` goes
+    through) and the bulk one
+    (``reconcile_service.record_settled_days``, a ``query.update()`` with no
+    ORM instance to hand that function).  Two callers, one predicate.
+
+    **Its structural backstop is the database, not this function.**  Migration
+    ``d3b6f1c8a274`` adds a deferrable constraint trigger over both movement
+    tables AND over ``budget.account_openings``, so the state is unstorable
+    from any client -- a bulk ``UPDATE``, a raw statement, a restatement that
+    moves an opening FORWARD past a movement that already exists.  This
+    function exists so an ordinary date box gets a sentence instead of a
+    ``psycopg2`` exception at COMMIT: the same pairing
+    ``ck_transactions_settle_day_needs_a_record`` has with
+    :func:`app.services.status_seam.reject_settle_day_without_a_record`.
+
+    Args:
+        account_id: The account the movement belongs to.
+        day: The civil day the movement's cash moved.
+
+    Raises:
+        ValidationError: When *day* is on or before the account's opening day.
+            A 400 rather than a programming error: the day arrives from a date
+            box, and the message names both the offending value and the bound
+            it broke so a surface can render it verbatim.
+        RuntimeError: When the account carries no opening record, propagated
+            from :func:`account_opening_fact` -- a broken invariant, and
+            deliberately not softened here into "then anything is allowed".
+    """
+    # **Under ``no_autoflush``, and that is a defect this step's own suite
+    # caught rather than a precaution.**  This is the only READ on a write
+    # path, and SQLAlchemy autoflushes pending mutations before a query: the
+    # caller has already assigned part of the row it is midway through writing
+    # -- ``apply_status_change`` sets ``status_id`` before it reaches
+    # :func:`app.services.settle_day.record_settle_day` -- so the flush lands a
+    # half-written row against constraints that describe the finished one.
+    # Measured: a row already carrying a settle day and no settlement record,
+    # which is the LEGACY shape ``ck_transactions_settle_day_needs_a_record``
+    # exists to let an owner repair, failed with a raw ``CheckViolation``
+    # raised "as a result of Query-invoked autoflush".  Suppressing the flush
+    # cannot hide a pending opening from this read: every writer of
+    # ``budget.account_openings`` flushes -- ``account_service.create_account``
+    # before it stages the origination assertion, and the migration through
+    # ``op.execute`` -- so there is no unflushed opening for a settle to race.
+    with db.session.no_autoflush:
+        opening = account_opening_fact(account_id)
+    if day > opening.opened_on:
+        return
+    raise ValidationError(
+        f"Money cannot have moved on {day.isoformat()}: this account's books "
+        f"open on {opening.opened_on.isoformat()} holding "
+        f"${opening.opening_equity}, and that figure is the closing balance "
+        "for its own day -- so anything that moved by then is already inside "
+        "it.  Restate the account's opening to an earlier day if the records "
+        "really do start before it."
     )
 
 

@@ -69,6 +69,7 @@ from tests._test_helpers import (
     amount_basis_for,
     an_entered_day,
     create_transfer,
+    open_books_before_the_first_assertion,
     settlement_basis_id,
 )
 from tests.test_integration.test_loan_transfer_live_amount import (
@@ -139,6 +140,10 @@ def _plain_transfer(
         ),
     )
     db.session.flush()
+    # Its BOOKS open before anything this fixture dates (plan step
+    # X-f3c-2b, ruling **R-HG**): ``create_account`` opens them on the day it
+    # asserts -- the owner's today -- and this suite settles on or before it.
+    open_books_before_the_first_assertion(db.session, savings)
     return create_transfer(
         seed_user, db.session, seed_user["account"], savings,
         seed_periods[0], amount=Decimal(amount),

@@ -75,6 +75,32 @@ previous one to a true-up.  With the day stored, ``is_opening`` stops existing
 as a money concept: this row books the ``account_opening`` kind and every
 assertion books ``account_trueup``, with no positional flag left to read.
 
+**THE EQUITY IS THE BALANCE AT THE CLOSE OF ``opened_on``, so no cash movement
+may be dated ON OR BEFORE that day** (plan step X-f3c-2b, ruling **R-HG**).
+That is the same rule ``account_anchor_history.observed_on`` states for an
+assertion (ruling R-DH (a)) -- "a source dated at or before this day is already
+inside this figure" -- and adopting it is what makes the table's two writers
+mean one thing.  ``account_service.create_account`` stores the balance a human
+typed "as of" a day, which is that day's close; migration ``a7c41f9d2b60``
+derived a level from BEFORE the earliest recorded movement while dating it at
+the earliest ASSERTION.  One column, two semantics, differing by whatever moved
+that day -- and where the movement is not absorbed, counted twice (finding
+**N-378**: the fold seeds here and ``dated_deltas`` emits the row at its own
+day, so the running total carries it again until an assertion resets it, and on
+a MODELLED account that reset books to ``unrealized_change``, turning a transfer
+into market performance that never unwinds).
+
+**The rule is enforced where it cannot be skipped, not where it is convenient.**
+:func:`app.services.cash_ledger.reject_movement_before_books_open` refuses it at
+:func:`app.services.settle_day.record_settle_day` -- the ONE assignment of
+``settled_on`` on either movement table -- and at
+``reconcile_service.record_settled_days``, the bulk ``UPDATE`` that has no ORM
+instance to hand that function.  What makes the state UNSTORABLE rather than
+merely refused is :mod:`app.opening_infrastructure`: deferrable constraint
+triggers over ``budget.transactions``, ``budget.transaction_entries`` and this
+table, so the rule holds in BOTH directions -- an opening cannot be restated
+FORWARD past a movement either -- and against a writer nobody enumerated.
+
 **Append-only, latest governs -- the same shape as its two siblings.**
 :class:`~app.models.account.AccountAnchorHistory` records what a bank said and
 :class:`~app.models.loan_anchor_event.LoanAnchorEvent` records what a loan owed;

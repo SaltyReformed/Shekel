@@ -20,7 +20,10 @@ from app.models.ref import Status, TransactionType
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import account_service
-from tests._test_helpers import settlement_if_settling
+from tests._test_helpers import (
+    open_books_before_the_first_assertion,
+    settlement_if_settling,
+)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -318,6 +321,10 @@ class TestTransferShadowMarkDoneStateMachine:
         )
         db_session.add(savings)
         db_session.flush()
+        # Its BOOKS open before anything this fixture dates (plan step
+        # X-f3c-2b, ruling **R-HG**): ``create_account`` opens them on the day it
+        # asserts -- the owner's today -- and this suite settles on or before it.
+        open_books_before_the_first_assertion(db_session, savings)
 
         for group, item in (("Transfers", "Outgoing"), ("Transfers", "Incoming")):
             db_session.add(

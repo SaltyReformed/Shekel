@@ -19,7 +19,10 @@ from app.models.transfer import Transfer
 from app.models.ref import AccountType, Status, TransactionType
 from app.services import transfer_service
 from app.services import account_service
-from tests._test_helpers import create_loan_account
+from tests._test_helpers import (
+    create_loan_account,
+    open_books_before_the_first_assertion,
+)
 
 
 def _create_savings(seed_user):
@@ -35,6 +38,10 @@ def _create_savings(seed_user):
     )
     db.session.add(acct)
     db.session.flush()
+    # Its BOOKS open before anything this fixture dates (plan step
+    # X-f3c-2b, ruling **R-HG**): ``create_account`` opens them on the day it
+    # asserts -- the owner's today -- and this suite settles on or before it.
+    open_books_before_the_first_assertion(db.session, acct)
     return acct
 
 

@@ -41,7 +41,10 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import posting_service
-from app.services.cash_ledger import AnchorPoint
+from app.services.cash_ledger import (
+    AnchorPoint,
+    reject_movement_before_books_open,
+)
 from app.services.reconcile_service._offers import OutstandingPurchase
 from app.utils.balance_predicates import balance_contributing_clause
 from app.utils.log_events import (
@@ -355,10 +358,31 @@ def record_settled_days(
 
     Returns:
         The number of entries actually stamped.
+
+    Raises:
+        ValidationError: When *anchor*'s day is on or before the account's
+            opening day (from
+            :func:`app.services.cash_ledger.reject_movement_before_books_open`,
+            plan step X-f3c-2b).  Refused whole rather than per entry: the day
+            being stamped is the STATEMENT's, so either every tick lands inside
+            the opening equity or none does.
     """
     if not entry_ids:
         return 0
     observed_on = anchor.observed_on
+    # **The boundary the bulk UPDATE below cannot inherit** (plan step
+    # X-f3c-2b, finding **N-378**).  Every other writer of ``settled_on``
+    # reaches the column through ``settle_day.record_settle_day``, which asks
+    # this same function; this arm writes by ``query.update()`` and has no ORM
+    # instance to hand it, so it asks for itself.  Reachable rather than
+    # theoretical: an assertion's ``observed_on`` is bounded below only by
+    # ``pay_period_service.earliest_recordable_day``, which on the developer's
+    # own data is 2026-03-26 -- the very day Checking's books open -- so a
+    # statement recorded for that day would stamp every ticked purchase inside
+    # the opening equity.  Asked BEFORE the UPDATE so a refused act writes
+    # nothing, and asked ONCE rather than per entry because the day is the
+    # statement's, not the purchase's.
+    reject_movement_before_books_open(account_id, observed_on)
 
     # ``synchronize_session=False``, which CLOSES finding **N-223**, and the
     # reasoning that briefly argued the other way is recorded because it was

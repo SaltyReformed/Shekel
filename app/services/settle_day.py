@@ -23,8 +23,22 @@ transaction column and ``entry_service`` owns the purchase one.  Neither owns
 both, so a value type living in either would make the other import a package it
 has no other business with.
 
-Pure: a frozen value, one ``ref_cache`` lookup, and two functions that read or
-write a row's two columns.  No session, no commit, no Flask.
+**One QUERY, and it is the boundary rule** (plan step X-f3c-2b, finding
+**N-378**).  :func:`record_settle_day` asks
+:func:`app.services.cash_ledger.reject_movement_before_books_open` whether the
+day it is about to write predates the account's opening equity -- money already
+inside that figure, which the fold would then count twice.  It is asked HERE
+because this function is the ONE assignment of ``settled_on`` on either table:
+``status_seam.apply_status_change``, both ``entry_service`` doors and the
+statement matcher all reach the column through it, so one call covers every ORM
+path instead of three doors each remembering.  The one writer that does NOT
+come through here is ``reconcile_service.record_settled_days``, a bulk
+``query.update()`` with no ORM instance to hand over; it asks the same function
+itself, and the database's own constraint trigger is what makes the rule hold
+for a writer nobody enumerated.
+
+Otherwise pure: a frozen value, one ``ref_cache`` lookup, and two functions that
+read or write a row's two columns.  No session of its own, no commit, no Flask.
 """
 
 from dataclasses import dataclass
@@ -34,6 +48,7 @@ from typing import Optional
 from app import ref_cache
 from app.enums import SettledDayBasisEnum
 from app.models.mixins import SettleDatedMixin, reject_settle_instant
+from app.services.cash_ledger import reject_movement_before_books_open
 
 
 @dataclass(frozen=True)
@@ -179,17 +194,39 @@ def record_settle_day(
     the stronger constraint costs nothing and forbids the residue a revert would
     otherwise be free to leave.
 
+    **It refuses a day the account's books do not reach** (plan step X-f3c-2b,
+    finding **N-378**).  An opening equity is the balance at the CLOSE of
+    ``budget.account_openings.opened_on``, so a movement dated on or before
+    that day is already inside it and the fold would carry it a second time.
+    Asked BEFORE either column is assigned, so a refused call leaves the row
+    untouched -- the same ordering
+    :func:`app.services.status_seam.apply_status_change` keeps for its own
+    refusals, and for the same reason.  The CLEAR arm is not bounded: dropping
+    a day withdraws an assertion and states nothing about when money moved,
+    which is the identical carve-out ``settle_day_for_status`` makes for the
+    floor (ruling R-EG's unlock path).
+
     Mutates in place.  Does not flush or commit.
 
     Args:
-        row: The transaction or purchase to write.
+        row: The transaction or purchase to write.  Its ``account_id`` is what
+            the boundary above is asked about -- present on both tables
+            (``transaction_entries.account_id`` is written from the parent at
+            construction and pinned by
+            ``fk_transaction_entries_parent_account``).
         settle_day: What it now records, or ``None`` to clear both columns --
             which is what a revert, a cancel and an emptied date box each mean.
+
+    Raises:
+        ValidationError: When *settle_day*'s day is on or before the account's
+            opening day (from
+            :func:`app.services.cash_ledger.reject_movement_before_books_open`).
     """
     if settle_day is None:
         row.settled_on = None
         row.settled_day_basis_id = None
         return
+    reject_movement_before_books_open(row.account_id, settle_day.day)
     row.settled_on = settle_day.day
     row.settled_day_basis_id = settle_day.basis_id
 

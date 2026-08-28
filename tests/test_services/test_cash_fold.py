@@ -45,6 +45,7 @@ import pytest
 
 from app.utils.dates import DISPLAY_TIMEZONE, attribution_date
 from app.enums import StatusEnum
+from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.pay_period import PayPeriod
@@ -197,81 +198,110 @@ class TestTheOpeningEquityIsTheSeed:
         ])
         assert set(folded.values()) == {Decimal("1000.00")}
 
-    def test_a_record_dated_before_the_books_opened_is_COUNTED_TWICE(
+    def test_a_record_dated_before_the_books_opened_is_REFUSED(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """PINNED, NOT ENDORSED: the shape plan step X-f3c-2b closes.
+        """FLIPPED at plan step X-f3c-2b: the shape is now unstorable.
 
-        The exact fixture ``test_cash_walk.TestPreOpeningSources`` pins on the
-        LEAF: books opened $1,000.00 on 2026-02-01, with a $500.00 expense
-        recorded as settling 2026-01-15 -- BEFORE they opened.
+        **This test asserted the double count until 2026-08-28**, deliberately,
+        so this step had something to flip: books opened $1,000.00 on
+        2026-02-01, a $500.00 expense recorded as settling 2026-01-15, and the
+        fold reading $500.00 across the gap -- a dip that never happened,
+        healed only when the assertion reset the running total.
 
-        That expense is already inside the $1,000.00 the owner declared, and the
-        fold has no way to know it: ``dated_deltas`` emits every source at its
-        own day, so the running total reads $1,000.00 until 01-15, dips to
-        $500.00, and jumps back to $1,000.00 when the assertion resets it.  The
-        dip is money that never left twice.
+        Ruling **R-HG** deletes the state rather than the dip.  An opening
+        equity is the CLOSING balance for its own day, so that expense is
+        already inside the $1,000.00 the owner declared; the fold has no way to
+        know it, so the write door refuses it and a deferrable constraint
+        trigger makes it unstorable from any client.
 
-        **Ruling R-I hid exactly this, and hiding it is why it is being
-        deleted.**  The old fold back-computed a $1,500.00 pre-opening level --
-        "before that spend the account must have held $1,500" -- chosen so the
-        line ran smoothly into the assertion.  Nothing recorded $1,500.00
-        either.  One figure is invented and continuous, the other is arithmetic
-        and discontinuous, and the developer ruled 2026-08-27 to ship the
-        visible one and fix the cause: **plan step X-f3c-2b refuses a movement
-        dated before an account's books open**, and moves each production
-        account's opening back to where its bank statement actually starts.
-
-        **This shape does NOT arise on production today.** The X-f3c-2a
-        migration seeded each existing account at the derived value
-        (``asserted - records``), which cancels the double count exactly -- 1,829
-        balance readings across 9 accounts measured identical either side of the
-        step.  It arises only for an account whose books were declared first and
-        back-dated into afterwards, which is what this fixture builds.
+        **What did NOT change is the fold.**  There is no filter in
+        ``dated_deltas`` and none here: a fold that screened its own inputs
+        would be a second statement of a rule the database holds.
         """
-        account, scenario = seed_user["account"], seed_user["scenario"]
+        account = seed_user["account"]
+        _opened_at(account, _instant(2026, 2, 1))
+        db.session.flush()
+        with pytest.raises(ValidationError) as exc:
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_periods[0], Decimal("500.00"),
+                settled_on=date(2026, 1, 15), name="pre-opening",
+            )
+        message = str(exc.value)
+        assert "2026-01-15" in message
+        # ``_opened_at`` pins the opening ASSERTION at 2026-02-01 and the books
+        # the day before it, which is the production shape after this step's
+        # migration (Checking asserts 2026-03-27 over books that open 03-26).
+        assert "2026-01-31" in message
+        db.session.rollback()
+
+    def test_the_opening_day_itself_is_refused_not_just_an_earlier_one(
+        self, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The `<=` half of R-HG, on the fold's own fixture.
+
+        Paired with the case above and with
+        :meth:`test_the_real_money_market_shape` below, so the comparison
+        direction is pinned from both sides: a ``<`` written where the code has
+        ``<=`` passes the case above and fails this one.
+
+        ``_opened_at`` asserts $1,000.00 for 2026-02-01 and opens the books
+        2026-01-31; a $500.00 expense settling 2026-01-31 is inside that
+        figure, because an opening equity is its own day's CLOSING balance.
+        The next day, 2026-02-01, is recordable -- asserted below so the pair
+        pins the boundary rather than only one side of it.
+        """
+        account = seed_user["account"]
+        _opened_at(account, _instant(2026, 2, 1))
+        db.session.flush()
+        with pytest.raises(ValidationError):
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_periods[0], Decimal("500.00"),
+                settled_on=date(2026, 1, 31), name="on-the-opening-day",
+            )
+        db.session.rollback()
         _opened_at(account, _instant(2026, 2, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("500.00"),
-            settled_on=date(2026, 1, 15), name="pre-opening",
+            settled_on=date(2026, 2, 1), name="the-first-recordable-day",
         )
         db.session.commit()
 
-        folded = _fold(account, scenario, [
-            date(2026, 1, 14), date(2026, 1, 15), date(2026, 1, 31),
-            date(2026, 2, 1), date(2026, 3, 1),
-        ])
-        # The stored opening, before anything is recorded against it.
-        assert folded[date(2026, 1, 14)] == Decimal("1000.00")
-        # The double count, pinned so X-f3c-2b has something to flip.
-        assert folded[date(2026, 1, 15)] == Decimal("500.00")
-        assert folded[date(2026, 1, 31)] == Decimal("500.00")
-        # The assertion resets it, so from its own day forward the answer is
-        # unchanged from before this step -- which is why the step moves no
-        # money on any date an owner actually reads.
-        assert folded[date(2026, 2, 1)] == Decimal("1000.00")
-        assert folded[date(2026, 3, 1)] == Decimal("1000.00")
-
     def test_the_real_money_market_shape(
-        self, db, seed_user, seed_periods,
-    ):  # pylint: disable=unused-argument
-        """R-I's own worked figures, on the production Money Market shape.
+        self, db, seed_user, seed_periods, monkeypatch,
+    ):  # pylint: disable=unused-argument,too-many-arguments,too-many-positional-arguments
+        """The production Money Market shape, as X-f3c-2b's migration leaves it.
 
-        Assertion 2026-05-01 $4,879.26, with four records already inside it:
-        +$500.00 on 04-06, +$500.00 on 04-09, +$500.00 on 04-11 and -$1,500.00
-        on 04-23.
+        The real account asserts $4,879.26 for 2026-05-01 over four records
+        already inside it: +$500.00 on 04-06, +$500.00 on 04-09, +$500.00 on
+        04-11 and -$1,500.00 on 04-23.  Its books opened 2026-05-01 before this
+        step and **2026-04-05 after it** -- the day before its earliest record,
+        which is what the migration moves every such account to.
 
-        Hand-computed: those records sum to $0.00, so the seed is
-        ``4879.26 - 0 = 4879.26`` and the fold reads $4,879.26 before 04-06,
-        $5,379.26 on 04-06, $5,879.26 on 04-10, $6,379.26 on 04-22 (the
-        withdrawal not yet taken) and $4,879.26 from 04-23 -- the ruling's
-        figures to the cent.
+        Hand-computed: those four records sum to $0.00, so the seed is
+        $4,879.26 and the fold reads $4,879.26 before 04-06, $5,379.26 on
+        04-06, $5,879.26 on 04-10, $6,379.26 on 04-22 (the withdrawal not yet
+        taken) and $4,879.26 from 04-23.  **Every figure is what it was before
+        this step** -- the migration moves the DAY and not the money, which is
+        the whole claim its own docstring makes and the harnesses measured.
+
+        The first record now lands one day AFTER the books rather than 25 days
+        before them, which is what makes the fixture buildable at all.
         """
+        # The clock moves PAST the shape rather than the shape moving to the
+        # clock (plan step X-f3c-2b).  ``create_settled_cash_transaction``
+        # settles through the seam's own default day first -- the owner's today
+        # -- before correcting it, so a fixture whose books open after that day
+        # is refused on the transient stamp rather than on the day it asks for.
+        # Production cannot reach the state at all: ``resolve_observation_day``
+        # refuses a future ``observed_on``, so books in the future are a fixture
+        # artefact and the honest repair is to place the reader after them.
+        freeze_today(monkeypatch, date(2026, 6, 1))
         scenario = seed_user["scenario"]
         account = create_savings_account(
             seed_user, db.session, "Money Market", Decimal("4879.26"),
         )
-        _opened_at(account, _instant(2026, 5, 1))
+        _opened_at(account, _instant(2026, 4, 5))
         for amount, day, is_income in (
             (Decimal("500.00"), 6, True),
             (Decimal("500.00"), 9, True),
@@ -283,6 +313,10 @@ class TestTheOpeningEquityIsTheSeed:
                 account=account, is_income=is_income,
                 settled_on=date(2026, 4, day), name=f"apr-{day}",
             )
+        append_balance_assertion(
+            db.session, account, seed_periods[8], Decimal("4879.26"),
+            at=_instant(2026, 5, 1),
+        )
         db.session.commit()
 
         folded = _fold(account, scenario, [
@@ -297,47 +331,54 @@ class TestTheOpeningEquityIsTheSeed:
         assert folded[date(2026, 5, 1)] == Decimal("4879.26")
 
     def test_the_real_savings_shape(
-        self, db, seed_user, seed_periods,
-    ):  # pylint: disable=unused-argument
-        """The production Fidelity Savings shape: one record before the opening.
+        self, db, seed_user, seed_periods, monkeypatch,
+    ):  # pylint: disable=unused-argument,too-many-arguments,too-many-positional-arguments
+        """The production Fidelity Savings shape, as the migration leaves it.
 
-        Books declared $5,363.56 on 2026-04-06 with a single +$500.00 record on
-        03-27 -- the developer's own account 2, whose one pre-opening row is in
-        the eight plan step X-f3c-2b repairs.
+        The real account 2 declared $5,363.56 for 2026-04-06 with a single
+        +$500.00 record on 03-27 -- one of the twelve rows this step repairs.
+        Its books opened 2026-04-06 before this step and **2026-03-26 after
+        it**, the day before that record.  The fixture asserts the derived
+        $4,863.56 for 2026-03-26 and ``_opened_at`` opens its books the day
+        before that.
 
-        Hand-computed under the stored seed: $5,363.56 before 03-27, $5,863.56
-        from 03-27 (the deposit counted a second time -- it is already inside
-        the declared balance), and $5,363.56 from 04-06 when the assertion
-        resets it.
+        Hand-computed under the stored seed: the migration keeps the DERIVED
+        equity ($5,363.56 - $500.00 = $4,863.56), so the fold reads $4,863.56
+        before 03-27, $5,363.56 from 03-27, and $5,363.56 from 04-06 when the
+        assertion agrees rather than corrects.  **Those are the figures
+        production rendered before this step**, which is what money-neutral
+        means here.
 
-        **Production does NOT read these figures, and the difference is the
-        seed's PROVENANCE.**  This fixture's account was declared through
-        ``create_account``, which records the balance the owner typed
-        ($5,363.56).  The real account predates the table, so the X-f3c-2a
-        migration seeded it at the DERIVED value ($5,363.56 - $500.00 =
-        $4,863.56), which cancels the double count and reproduces the
-        pre-X-f3c-2a figures exactly -- measured, 1,829 readings identical.
-        Both are ``budget.account_openings`` rows; one is ``user_declared`` and
-        one is ``migration_derived``, and this pair of tests is why that column
-        is not decoration.
+        *This test asserted $5,363.56 / $5,863.56 / $5,363.56 until 2026-08-28,
+        against a fixture whose opening was ``user_declared`` at the ASSERTED
+        figure -- so the deposit was counted a second time.  The production
+        account's row is ``migration_derived`` at the SUBTRACTED figure, and
+        the pair of readings is why that column is not decoration.  The fixture
+        now models the real one.*
         """
+        # See ``test_the_real_money_market_shape`` for why the clock moves.
+        freeze_today(monkeypatch, date(2026, 6, 1))
         scenario = seed_user["scenario"]
         account = create_savings_account(
-            seed_user, db.session, "Fidelity Savings", Decimal("5363.56"),
+            seed_user, db.session, "Fidelity Savings", Decimal("4863.56"),
         )
-        _opened_at(account, _instant(2026, 4, 6))
+        _opened_at(account, _instant(2026, 3, 26))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[6], Decimal("500.00"),
             account=account, is_income=True,
             settled_on=date(2026, 3, 27), name="deposit",
+        )
+        append_balance_assertion(
+            db.session, account, seed_periods[7], Decimal("5363.56"),
+            at=_instant(2026, 4, 6),
         )
         db.session.commit()
 
         folded = _fold(account, scenario, [
             date(2026, 3, 26), date(2026, 3, 27), date(2026, 4, 6),
         ])
-        assert folded[date(2026, 3, 26)] == Decimal("5363.56")
-        assert folded[date(2026, 3, 27)] == Decimal("5863.56")
+        assert folded[date(2026, 3, 26)] == Decimal("4863.56")
+        assert folded[date(2026, 3, 27)] == Decimal("5363.56")
         assert folded[date(2026, 4, 6)] == Decimal("5363.56")
 
     def test_the_fold_is_the_seed_plus_the_steps_and_nothing_else(

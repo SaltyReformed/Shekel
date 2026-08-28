@@ -36,7 +36,11 @@ from app.services import (
     pay_period_rolling,
     pay_schedule_service,
 )
-from tests._test_helpers import assert_pay_period_invariants, linked_ledger_total
+from tests._test_helpers import (
+    assert_pay_period_invariants,
+    linked_ledger_total,
+    open_books_before_the_first_assertion,
+)
 from app.services import cash_ledger
 from app.utils.dates import display_today
 
@@ -183,6 +187,10 @@ def _create_user_with_data(db_session):
             anchor_balance=Decimal("5000.00"),
         ),
     )
+    # Its BOOKS open before anything this fixture dates (plan step
+    # X-f3c-2b, ruling **R-HG**): ``create_account`` opens them on the day it
+    # asserts -- the owner's today -- and this suite settles on or before it.
+    open_books_before_the_first_assertion(db_session, account)
 
     scenario = Scenario(
         user_id=user.id,

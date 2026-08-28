@@ -18,7 +18,7 @@ migration head are MEASUREMENTS, named by their command rather than copied.
 
 | | | detail |
 |---|---|---|
-| **just landed** | **X-f3c-1 -- the assertion RESET left the walk.** `walk_cash_ledger` yields FACTS and nothing else; what an assertion does to a running total is `balance_at._assertions`, applied by whichever fold owns that total. It had to move before the cutover could be written: ruling **R-FO** KEEPS the reset for the modelled kinds and the flip DELETES it for the PLAIN ones, so a kind-blind walk (**R-J**) was stating one kind's answer for both. Byte-identical: `tests/manual/verify_balance_baseline.py` over a production clone 2026-08-27, 9 accounts / 434 grid cells / 6,076 daily points, zero diff. It also DELETED `AssembledCashFold.scenario_id`: a field with no reader in `app/` or `tests/`, whose own rationale named a downstream reader that reads `plan.basis.scenario_id` instead | Section 5, X-f3c-1 |
+| **just landed** | **X-f3c-2b-1 -- a movement cannot predate the books it is in.** An opening equity is the CLOSING balance for its own day (**R-HG**), the same rule an assertion's `observed_on` states, so nothing may be dated on or before `opened_on`. Refused at `settle_day.record_settle_day` (the ONE ORM writer) and at the bulk `reconcile_service.record_settled_days`, and made UNSTORABLE in both directions by a deferrable constraint trigger over `budget.transactions`, `budget.transaction_entries` and `budget.account_openings`. **12 rows over five accounts, not the 8 over four N-378 counted**: Checking's four 2026-03-27 rows net the `$2,057.42` between its `$689.16` opening and its `$2,746.58` first assertion. The migration moves five openings back MONEY-NEUTRAL (both committed harnesses byte-identical over a production clone, positive control fires); a second commit restates account 10 to the bank's own `$5,363.56` for 2026-04-08 (**R-HH**, amending R-HF, because the pay calendar cannot carry a row before 2026-03-26). Opened **N-382** -- one real ACH recorded as two transfers, Checking debited `$500.00` twice -- and **N-383** | Section 5, X-f3c-2b-1 |
 | **in flight** | Nothing. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app`. What to pick up next is `../../plans/steps.md`'s first row | Section 5 |
 | **what changed the plan** | **X-f3c's ORDER was reversed and it decomposed into five leaves** (developer, 2026-08-27, **R-GW**): the residual is RECORDED before the reset is DELETED, because recording moves no rendered balance while the reset lives and the flip then lands on the balance already asserted. The measurement is `tests/manual/measure_cutover_against_bank.py`, and it is reported SPLIT by whether a day carries an assertion -- pooled, a same-day assertion cancels the balance gap to the cent, which is `bank_agreement`'s own reason for scoring the residue (**N-337**). The earlier redesign (X-f3 decomposed, X-f6 moved ahead, **R-FL**..**R-FO**) stands and is Section 3.3 | Section 4, R-GW |
 | **blocked on you** | **One OPERATOR act gates the money-moving leaves: import the account's own statement history.** Production holds 0 statement imports, 0 bank lines and 0 matches, while the SECU exports the shipped adapter reads sit on disk covering 2026-01-02 to 2026-07-19 -- and X-f3c's correctness is measurable only against them (**N-368**). Everything else this arc owes is a `developer-decision` / `operator` row in `ledger.md`; what to do next is `../../plans/steps.md`'s first row, never this section | ledger.md, N-368 |
@@ -252,16 +252,18 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
   * [ ] **X-f3c** the DECOMPOSED parent of THE CUTOVER, re-decomposed 2026-08-27 (**R-GW**, with
     **R-GX** and **R-GY**, the two rulings its first draft owed). Carries **N-172**, **N-174**.
     * [x] **X-f3c-1** `2dad8512` -- the assertion RESET left the kind-blind walk (**R-J**) for `balance_at._assertions`, so `walk_cash_ledger` yields FACTS and each fold applies the policy its own kind needs. Byte-identical.
-    * [x] **X-f3c-2a** `2aa2296d` -- opening equity is a RECORDED fact (**R-GX**, **R-HE**): an
-      append-only `budget.account_openings` carrying the day, the equity and a typed provenance,
-      read by BOTH the fold and the posted ledger. `is_opening` decides no figure and R-I's
-      compensator is gone. Seeded at the derived value: 1,829 readings and 148 posted rows identical.
-    * [ ] **X-f3c-2b** `feat(cash): a movement cannot predate the books it is in` -- **MOVES
-      MONEY.** A row dated before its account's books opened is already inside the declared opening,
-      so the fold counts it twice (**N-378**, eight rows, every one a transfer leg). Refuse one at
-      the write door and move each opening back to where its bank statement starts, importing what
-      the records lack (**R-HF**): account 10 opens at `$1,345.74` on 2026-01-30, not the derived
-      `$4,879.26` (**N-379**). Every changed figure goes to the developer first. Closes **N-378**.
+    * [x] **X-f3c-2a** `2aa2296d` -- opening equity is a RECORDED fact (**R-GX**, **R-HE**): an append-only `budget.account_openings` read by BOTH the fold and the posted ledger, seeded at the derived value. `is_opening` decides no figure and R-I's compensator is gone.
+    * [ ] **X-f3c-2b** the DECOMPOSED parent of the books boundary (**R-HG**, **R-HH**), split
+      2026-08-28. Carries **N-379**.
+      * [ ] **X-f3c-2b-1** `feat(cash): a movement cannot predate the books it is in` -- **MOVES
+        MONEY.** An opening equity is the CLOSING balance for its own day, so nothing may be dated
+        on or before `opened_on`: 12 rows over five accounts, refused at the ONE settle-day writer
+        and made UNSTORABLE in both directions by a deferrable constraint trigger. Closes
+        **N-378**; carries **N-382**, **N-383**.
+      * [ ] **X-f3c-2b-2** `feat(accounts): an owner can say when the books opened` -- the DOOR
+        **N-275** and **N-379** name, NOT bounded by `earliest_recordable_day` (that floor is a rule
+        about assertions, **R-ER**, and it would make the books unopenable before the calendar).
+        Closes **N-383**.
     * [ ] **X-f3c-2c** `feat(accounts): an assertion is append-only` -- give
       `account_anchor_history` the `before_update` / `before_delete` refusal `LoanAnchorEvent` and
       `JournalEntry` carry. Its cost is the fixtures: `restamp_opening_assertion` and
@@ -774,12 +776,7 @@ hides.
   and N-220 closed 2026-08-14** (`d8aed644`); the `steps.md` row went on citing N-220 until this
   decomposition. **The RULING it waited for is `balance:R-GZ`** (developer, 2026-08-27): rulings
   take ONE grammar, in one registry keyed `(arc, id)`.
-* [x] **X-ao-1** `b8f1c862` -- `balance`'s 74 rulings and `bank_import`'s 31 lifted into
-  `../../plans/rulings.md`, keyed `(arc, id)`, byte-identical and graded, under ruling **R-GZ**.
-  Rule 4 applies whole: no LINE cap, and `RULINGS_ROW_CAP` is the swap that lets that be true.
-  Repaired `bank_import:R-FW` (four cells in a three-column table since 2026-08-18) and the gate
-  hook's own `files:` pattern, YAML-folded so one document matched nothing. Opened **balance:N-370**,
-  **balance:N-371**; carries the citation arm to `X-ao-3`.
+* [x] **X-ao-1** `b8f1c862` -- `balance`'s 74 rulings and `bank_import`'s 31 lifted into `../../plans/rulings.md`, keyed `(arc, id)`, byte-identical and graded, under ruling **R-GZ**. Rule 4 applies whole: no LINE cap, and `RULINGS_ROW_CAP` is the swap that lets that be true. Repaired `bank_import:R-FW` (four cells in a three-column table since 2026-08-18) and the gate hook's own `files:` pattern, YAML-folded so one document matched nothing. Opened **balance:N-370**, **balance:N-371**; carries the citation arm to `X-ao-3`.
 * [ ] **X-ao-2** -- the DECOMPOSED parent, split 2026-08-27 (**balance:R-HB**) because the step's own
   sentence carried two nouns and only the first is a lift. Its second, the over-cap overflow, was
   measured unsatisfiable as rule 4 literally states it before the split rather than after: rule 4
