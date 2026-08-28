@@ -3784,7 +3784,7 @@ def _restamp_assertion(db_session, account, at, *, newest):
     # both from the factory's day.  A helper that placed the assertion and left
     # the opening record behind would build a fixture whose books opened on one
     # day and whose first assertion is on another -- which is a real state
-    # (finding balance:N-377, eight production rows) but not what any caller of
+    # (finding balance:N-378, eight production rows) but not what any caller of
     # a *restamp* helper means, and it would silently date the posted
     # ``account_opening`` journal entry off the FIXTURE's stale day.
     #

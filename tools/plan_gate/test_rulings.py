@@ -93,7 +93,7 @@ class TestTheRegistryIsWellFormed:
         assert len(rulings.ruling_rows()) > 0
 
     def test_a_duplicate_key_is_caught(self, stage_rulings):
-        """Two rows with one ``(arc, id)`` is N-217 and N-367's own defect."""
+        """Two rows with one ``(arc, id)`` is the collision this key exists for."""
         row = _a_row_of("balance")
         stage_rulings(row, f"{row}\n{row}")
         problems = rulings.key_violations()
@@ -491,7 +491,7 @@ class TestTheLiftLostNothing:
 
         The point of the pair key, stated as a control: before this file the
         collision was invisible to every gate; now it is a row-level fact a
-        reader can enumerate, which is what X-ao-3 grades citations against.
+        reader can enumerate, so a citation can name its arc where it matters.
 
         **The assertion is a PROPERTY of R-GU, not a CENSUS of the registry.**
         It read ``ambiguous == {"R-GU": ...}`` until an adversarial review
@@ -567,7 +567,7 @@ class TestRuleFourAppliesToThisFileToo:
         lifted verbatim; rule 5 forbids trimming a live specification to fit,
         and rule 4's own remedy sends the overflow to the as-built record of
         the step that shipped the ruling, or to that step's live specification
-        when it has not shipped -- which is ``X-ao-2b``.  Recording which rows
+        when it has not shipped.  Recording which rows
         AND HOW WIDE, rather than exempting them, is what keeps a new over-cap
         row, a finished row and a SWOLLEN one all failures.
         """
@@ -589,8 +589,8 @@ class TestRuleFourAppliesToThisFileToo:
         ``LIFTED_ROWS_OVER_CAP = 23`` could not tell 23 rows from a different
         23: trim one row under the cap while another swells past it and the
         total is still 23 and the arm is still green.  Keyed, the trim is
-        REPORTED -- which is how ``X-ao-2b`` shows its own progress instead of
-        asserting it.
+        REPORTED, so a row leaving the debt is a deliberate edit rather than a
+        silent one.
         """
         widest = max(rulings.ruling_rows(), key=lambda r: r.width)
         row = next(line for line in rulings.RULINGS.read_text().splitlines()
@@ -627,17 +627,17 @@ class TestRuleFourAppliesToThisFileToo:
         16,087 characters against a 542.5-character median over 190 rows.
 
         **The assertion is a PROPERTY, and pinning the id instead was caught
-        before it bit.**  ``X-ao-2b`` exists to TRIM these rows, ``R-GD`` most
-        of all, so ``assert widest.key == "bank_import:R-GD"`` would have gone
-        red on the step whose whole job is to change it -- and the remedy would
-        have been to edit the test.  That is finding **N-355**, a control
-        deriving its specimen from a live row, and a peer session shipping
-        ``balance:X-am`` broke two other controls the same way on the same day.
+        before it bit.**  Any trim of these rows moves the widest, so
+        ``assert widest.key == "bank_import:R-GD"`` would have gone red on the
+        edit whose whole job is to change it -- and the remedy would have been
+        to edit the test.  That is a control deriving its specimen from a live
+        row, and a peer session shipping ``balance:X-am`` broke two other
+        controls the same way on the same day.
         """
         widest = max(rulings.ruling_rows(), key=lambda row: row.width)
         assert widest.width > rulings.RULINGS_ROW_CAP, (
             "no row is over the cap, so the debt is discharged -- delete "
-            "LIFTED_ROWS_OVER_CAP and this control with it (X-ao-2b's end state)"
+            "LIFTED_ROWS_OVER_CAP and this control with it"
         )
         assert widest.key in rulings.LIFTED_ROWS_OVER_CAP
         assert rulings.LIFTED_ROWS_OVER_CAP[widest.key] == widest.width

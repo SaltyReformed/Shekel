@@ -10,10 +10,9 @@ COST something -- a rebuild, a wrong figure in production, a review round -- and
 or finding that paid, so a reader can go and check. The narrative of what went wrong stays in that
 commit: this file only works if it is read straight through, and prose is what stops that happening.
 
-**This document IS capped (rule 4), and it has two ways back under the cap.** CONDENSE a lesson that
-has grown into a paragraph, and RETIRE one that has been MECHANIZED into a gate -- its line moves to
-that gate's own rationale, where a reader meets it at the moment it fires. An append-only file
-nobody finishes reading loses its lessons just as completely as deleting them would.
+**A lesson MECHANIZED into a gate is RETIRED from here**, its line moving to that gate's own
+rationale, where a reader meets it at the moment it fires. An append-only file nobody finishes
+reading loses its lessons just as completely as deleting them would.
 
 What this file must never become is a place to record STATE -- what shipped, what is next, what
 production runs. That is `steps.md`'s, and a sentence about it here would be a second answer beside

@@ -49,7 +49,11 @@ end.
    commit", "own step", "own arc", "if ever", "recorded, deferred", "residue", and any wake
    condition -- they all mean nobody. A row with an empty owner, an owner naming no step, or an
    owner naming a TICKED step is a failure. **A finding is BORN with an owner**: the review or trace
-   that records it assigns one in the SAME commit.
+   that records it assigns one in the SAME commit. **The ledger records defects in the CODE**
+   (developer ruling 2026-08-28). A finding whose whole subject is a planning document -- its
+   length, its shape, the gate that grades it -- is not a row here and is not a paragraph in an arc
+   document either. Document upkeep is the assistant's standing job, raised with the developer when
+   it needs a decision.
 
 2. **A step that ships re-points every row that named it.** Ticking a box is the same edit as
    re-pointing its findings; the gate refuses the commit that does one without the other.
@@ -61,32 +65,26 @@ end.
    total AND its per-arc counts (a dropped row hides behind a corrected total), and `steps.md`'s
    `**N steps, M open.**`, `holds N edges over M rows` and
    `N of these steps are legal to start right now`.
-   **The fourth was added 2026-08-11 and was stale when the arm was written** -- it read 38 against
-   a table holding 41 -- which is this rule's own sentence a third time: the READY count moves when
-   a blocker SHIPS, an event that changes neither the size, the open count nor the graph, so no
-   existing arm could catch it. The balance ledger once read 38 against a 40-row table because a
-   step that closed four rows and opened three updated the rows and not the prose about them.
-   **`steps.md`'s four went ungraded until 2026-08-11 and every one of them was stale by the time
-   the arm was written**: "112 steps, 96 open" against 113 and 95, and "93 edges over 58 rows"
-   against 94 and 59 -- wrong in both directions inside one merge, because one session appended a
-   step while another ticked one. The rule had been written about one registry and enforced only
-   there, so its sibling carried the exact defect the rule describes, and a cold reader was told
-   what may start now by a number the gate had no opinion about. **A rule stated for one artifact
-   and graded on one artifact is a rule the second artifact does not have.**
+   **Every one of these was stale by the time its arm was written**, several wrong in both
+   directions inside one merge, because one session appended a row while another ticked one. The
+   READY count is the subtlest: it moves when a blocker SHIPS, an event that changes neither the
+   size, the open count nor the graph, so no other arm can catch it. **A rule stated for one
+   artifact and graded on one artifact is a rule the second artifact does not have.**
 
-4. **Every document is capped, and a cap is a FORCING FUNCTION rather than a ceiling sized to fit
-   the work.** Raising a cap is not the answer when it binds; rule 5 is. Current caps live in the
-   gate's own constants. **`ledger.md`, `steps.md` and `rulings.md` carry no LINE cap** (developer
-   rulings 2026-08-25 and 2026-08-27): a cap on ONE LINE PER THING caps how many of that thing the
-   project may have -- defects MEASURED, leaves DECOMPOSED, decisions TAKEN -- so
-   **a gate may not refuse to record work somebody has done.** The ledger's was raised three times,
-   the fourth pushing two findings into code docstrings; the index's bound on `recurrence:R7d`.
-   Holding them: **a per-ROW cap each, which makes dropping the line cap a SWAP and not a removal**
-   (the ledger's below, the index's rule 14's, the rulings registry's the ledger's own 2,000), a
-   runaway backstop each, and rule 3's counts. **The ledger's per-ROW cap is rule 14's twin**: a row
-   reached 3,536 characters against a 409-character median, the arc document's argument living in
-   the registry, and **the overflow goes to the step that OWNS the ruling** -- its AS-BUILT record
-   where it shipped, its live spec where it has not (balance:R-HD). 25 rows owe it (balance:N-370).
+4. **Every ARC DOCUMENT is capped, and a cap is a FORCING FUNCTION rather than a ceiling sized to
+   fit the work.** Current caps live in the gate's own constants.
+   **A cap that binds is a QUESTION FOR THE DEVELOPER -- never a finding, never a paragraph**
+   (developer ruling 2026-08-28). Rule 5 answers it while a completed span is left to archive; where
+   none is, say so and ask. A document may not spend its own lines recording that it ran out of
+   them, and a cap is never raised without being asked for.
+   **`ledger.md`, `steps.md` and `rulings.md` carry no LINE cap** (developer rulings 2026-08-25 and
+   2026-08-27): a cap on ONE LINE PER THING caps how many of that thing the project may have --
+   defects MEASURED, leaves DECOMPOSED, decisions TAKEN -- so
+   **a gate may not refuse to record work somebody has done.** Holding them instead: a per-ROW cap
+   each, which makes dropping the line cap a SWAP and not a removal, a runaway backstop each, and
+   rule 3's counts. **The ledger's per-ROW cap is rule 14's twin** -- a row that swells into its
+   arc's argument stops being an index entry -- and the overflow goes to the step that OWNS it: its
+   AS-BUILT record where it shipped, its live specification where it has not (balance:R-HD).
    **`lessons.md` is capped too, and its retirement path is its own**: a lesson MECHANIZED into a
    gate stops being a lesson and its line moves to that gate's rationale, because an append-only
    file nobody finishes reading loses its lessons as completely as deleting them would.
@@ -125,7 +123,7 @@ end.
 
 9. **A ruling is recorded as the RULE and its date, one line, in `rulings.md`.** The key is
    `(arc, id)`, so two arcs may hold one bare id and a citation of an ambiguous one MUST name its
-   arc (rule 10, **N-367**). Since `balance:X-ao-2a` no arc document DECLARES one; each points.
+   arc (rule 10). Since `balance:X-ao-2a` no arc document DECLARES one; each points.
 
 10. **The arc is a COLUMN, never a prefix.** The key is `(arc, id)` and it is unique across the
     corpus. Bare ids keep their exact spelling, because a rename would orphan every citation in
@@ -221,18 +219,13 @@ end.
     where it lives and can see nothing about a copy elsewhere; and
     **a section a live document has RETIRED says so at its own head**, which is rule 15's placement
     argument applied one level down, to a section rather than a file. **Every one of the three was
-    measured on 2026-08-11, and each had already produced a wrong statement in a live document.**
-    The order was restated in four places besides `steps.md`, and two copies were stale: the balance
-    README carried a shipped step as pending work, and it stated that "`R6` ships WITH X-an" -- a
-    claim its OWN signpost, the recurrence plan's section 0, rule 13 here and `steps.md` all
+    measured on 2026-08-11, and each had already produced a wrong statement in a live document**:
+    the balance README carried a shipped step as pending work and an ordering claim its own signpost
     contradicted, so one document disagreed with itself about the one thing a reader consults it
-    for. That README also counted "98 open findings" against a ledger whose own sentence read "The
-    ledger stands at 166 rows", in a section citing a Section 6 whose table had moved out entirely;
-    the paragraph doing the counting NAMED this blind spot ("drift the gate could not see") and kept
-    the number anyway, which is what a discipline without a predicate is worth. And the credit-card
-    plan carried a live-looking ordered list, discharged since 2026-07-19, whose ids `C8` and `D1`
-    now name LIVE steps in two other arcs -- retired only by a paragraph in a DIFFERENT document,
-    which is precisely the placement rule 15 exists to refuse.
+    for; it counted open findings against a ledger stating a different number, in a paragraph that
+    NAMED the blind spot and kept the number anyway; and the credit-card plan carried a live-looking
+    ordered list, discharged since 2026-07-19, whose ids now name LIVE steps in two other arcs,
+    retired only by a paragraph in a DIFFERENT document.
     **The remedy is a POINTER, never a summary**: a summary is a second copy that has merely been
     shortened, and it goes stale on the same commit.
 

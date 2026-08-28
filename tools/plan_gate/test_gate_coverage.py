@@ -16,7 +16,7 @@ it anyway, and ``.github/workflows/ci.yml`` runs ``pytest tools/plan_gate``
 unconditionally on every pull request.  Nothing that reached ``dev`` through a
 PR was ungraded.  A local commit got no signal, which is the whole of it.
 
-That is the shape ``balance:X-bb`` exists for -- every arm grades the planning
+That is the shape this arm exists for -- every other arm grades the planning
 documents and nothing graded the gate against them -- narrowed here to the one
 property this package cannot work without: *a document the gate reads is a
 document that runs the gate*.  An arm rather than a longer comment, because the
@@ -75,10 +75,10 @@ def _graded_documents() -> list[pathlib.Path]:
     ``docs/`` -- 222 files -- and reads each archived one to grade rule 15.
     The hook matches 11 of those 222, so ADDING an archived document, which is
     the event rule 15 is about, still runs no commit-time gate.  That is a
-    real hole and it is ``balance:X-bb``'s, whose subject is the gate's own
-    corpus; widening the pattern to all of ``docs/**`` would make every commit
-    touching any documentation run the gate, which is a decision rather than a
-    tidy-up.  Recorded as a finding rather than fixed here.
+    real hole and it is OPEN: widening the pattern to all of ``docs/**`` would
+    make every commit touching any documentation run the gate, which is a
+    decision rather than a tidy-up.  CI grades it on every pull request either
+    way, so what is missing is the local signal alone.
 
     Returns:
         The paths, relative to the repository root.
