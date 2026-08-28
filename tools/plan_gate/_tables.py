@@ -192,9 +192,9 @@ class RulingRow:
     **The arc is a CELL and the key is the pair**, which is the whole reason
     this registry exists.  Ruling ids came from one global sequence spelled
     across five arc documents, none of them parsed, so two arcs taking one id
-    was invisible to every gate -- finding **N-367**, three instances, the
-    third on 2026-08-27 when all three minting sessions had checked and a
-    ``docs/`` grep could not see an unmerged branch.  Holding the pair here
+    was invisible to every gate -- FOUR instances by 2026-08-27, the last with
+    every minting session having checked, because a ``docs/`` grep cannot
+    see an unmerged branch.  Holding the pair here
     makes the collision LEGAL and gradeable rather than silent: what a shared
     id costs is a bare citation resolving to two rules, which is a property of
     the CITATION and not of the ruling.

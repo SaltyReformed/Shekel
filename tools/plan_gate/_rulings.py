@@ -17,9 +17,8 @@ consequences, both measured:
   2026-08-10 (finding **N-217**, remedied by renaming one to ``R-FA``),
   ``R-GU`` names two today, and on 2026-08-27 ``R-GW`` was minted in BOTH
   ``balance`` and ``bank_import`` on two unmerged branches by sessions that
-  had each checked, a third having reserved and dropped it.  That is
-  **N-367**, third instance.  A ``docs/`` grep cannot see an unmerged branch,
-  which is why checking was not enough.
+  had each checked, a third having reserved and dropped it.  A ``docs/``
+  grep cannot see an unmerged branch, which is why checking was not enough.
 * **A row could be broken and stay broken.**  ``bank_import:R-FW`` carried an
   unescaped ``|`` inside a backticked string, so it read as FOUR cells in a
   three-column table: markdown truncated the rule at the pipe and
@@ -31,7 +30,8 @@ consequences, both measured:
 bare id is LEGAL here rather than a failure -- which is the only honest model,
 because the ids are already in commit messages and rule 2 makes those
 immutable.  What a shared id costs is a BARE citation resolving to two rules,
-and that is a property of the citation; grading citations is ``X-ao-3``.
+and that is a property of the citation, which no arm grades: the writer names
+the arc.
 
 **The migration is FINISHED and graded both ways** (:func:`migration_violations`).
 Every arc is named in the registry's preamble, and no arc document states a
@@ -44,9 +44,9 @@ had not come across yet, read in both directions.  That was correct migration
 state and it is now gone, because a map has to be REMEMBERED: an arc dropped
 from it, or a sixth arc never added to it, is invisible to every arm reading
 it.  What replaced it is a property of the TEXT -- :data:`RULING_DECLARATION_RX`
-and :data:`RULINGS_HEADING_RX` -- and that choice is **N-367**'s own lesson,
-which refuted a class of remedy rather than merely doubting it: a control whose
-content is *the session checks harder* is measured false.
+and :data:`RULINGS_HEADING_RX` -- and that choice is the collision's own
+lesson, which refuted a class of remedy rather than merely doubting it: a
+control whose content is *the session checks harder* is measured false.
 
 The map also had a hole its own docstring did not mention.  Its residual-table
 arm read table HEADERS, and ``credit_card`` stated its eight locked rulings as
@@ -108,9 +108,9 @@ RULING_TABLE_HEADERS = (
 #: in both directions, correct while it lasted and DELETED by ``X-ao-2a`` with
 #: its last entry.  A map has to be remembered: an arc dropped from it, or a
 #: sixth arc never added, is invisible to every arm that reads it.  A SHAPE
-#: does not.  ``N-367``'s own lesson is that a control whose content is *the
-#: session checks harder* is measured false, so what replaces the map is a
-#: property of the TEXT.
+#: does not.  The id collisions' own lesson is that a control whose content
+#: is *the session checks harder* is measured false, so what replaces the map
+#: is a property of the TEXT.
 #:
 #: Three spellings.  The first two are taken from the corpus; the third was
 #: constructed by an adversarial review, which wrote six future commits that
@@ -135,11 +135,10 @@ RULING_TABLE_HEADERS = (
 #: **The arm that WOULD close this needs no wording at all: an arc document
 #: may name no ruling id that has no `rulings.md` row.**  A new ruling written
 #: in an arc document carries an id, and that id is either in the registry --
-#: in which case it is recorded -- or it is not.  It cannot be built yet:
-#: **N-376** measures 88 ids cited from live files with no row, because an
-#: archived ruling's text stays in its archive, so the arm would fire on a
-#: dozen legitimate citations today.  ``X-ao-3`` is where that resolves, and
-#: this pattern is what holds until it does.
+#: in which case it is recorded -- or it is not.  **It cannot be built as
+#: stated**: 88 ids are cited from live files with no row, because an archived
+#: ruling's text stays in its archive, so the arm would fire on a dozen
+#: legitimate citations today.  This pattern is what holds instead.
 #:
 #: **What still passes, stated rather than left to be discovered.**  An
 #: ID-LESS dated block of developer decisions under a heading that does not
@@ -234,40 +233,45 @@ RULINGS_ROW_CAP = 2000
 
 #: The LIFTED rows that exceed :data:`RULINGS_ROW_CAP`, keyed BY WIDTH.
 #:
-#: **A measured debt, not an exemption.**  These rows were over the cap in the
-#: arc documents that held them and were lifted verbatim -- rule 5 forbids
-#: trimming a live specification to fit.  The overflow's remedy is rule 4's
-#: own and the developer ruled its destination on 2026-08-27 (**R-HD**): a
-#: SHIPPED ruling's deliberation goes to the as-built record of the step that
-#: shipped it, an OPEN one's to that step's live specification.  That is
-#: ``X-ao-2b``, and it deletes this map.
+#: **What remains after the 2026-08-28 TRIM, and why it remains.**  These rows
+#: were over the cap in the arc documents that held them, were lifted verbatim,
+#: and then ACCRETED: ``R-GD`` alone was amended four times and each amendment
+#: was appended, which is rule 6's signpost failure on a registry nobody
+#: thought to apply it to.  The developer ruled on 2026-08-28 that each be
+#: trimmed to its RULE, on the registry's own first sentence -- *the RULE, not
+#: the deliberation* -- and it was verified per row that what came out is in
+#: the commit that took the ruling.  **25 rows holding 43,827 characters of
+#: overflow became 20 holding 12,230**; the widest went 16,095 -> 3,775 and the
+#: file went 216,941 characters -> 184,509.
+#:
+#: **The 20 stay over because they state more DECISIONS than 2,000 characters
+#: hold**, not because prose is left in them: ``R-GD`` carries seventeen, each
+#: cited from ``app/``.  Rule 4's literal remedy (**R-HD**) is not available
+#: either -- it sends the overflow to the owning step's as-built record or its
+#: LIVE SPECIFICATION, and the live half lands in the four documents that have
+#: a line cap where this file has none, so it COSTS headroom rather than
+#: freeing it.  That step was dropped the same day.  This map therefore stays,
+#: and what it enforces is that the debt may only get smaller.
 #:
 #: **A WIDTH per key, and each widening was a repair rather than a refactor.**
 #: ``LIFTED_ROWS_OVER_CAP = 23`` could not tell 23 rows from a different 23:
 #: trimming one row while another swelled past the cap left the total at 23
 #: and the arm green, which is a gate that has stopped measuring what it
 #: names.  Keying it fixed that and left a second hole an adversarial review
-#: then measured: membership alone lets ``bank_import:R-GD`` grow from 16,087
-#: to 32,000 with every arm still green, while this note claimed "both
-#: directions fail".  The WIDTH closes it, and it hands ``X-ao-2b`` a progress
-#: number -- 43,855 characters of overflow -- instead of a row count.
-#:
-#: ``recurrence:R-R37`` and ``R-R38`` are the 24th and 25th and arrived with
-#: the ``X-ao-2a`` lift, over in the document that held them exactly as the
-#: other 23 were -- ``R-R38`` on the merge, having landed on ``dev`` while the
-#: lift was being written.
+#: then measured: membership alone let a 16,087-character row reach 32,000 with
+#: every arm still green, while this note claimed "both directions fail".  The
+#: WIDTH closes it, so a row may be trimmed (record the new width) and may
+#: never grow.
 LIFTED_ROWS_OVER_CAP = {
-    "balance:R-FI": 2749, "balance:R-FJ": 2451, "balance:R-FK": 4413,
-    "balance:R-FL": 2858, "balance:R-FN": 2237, "balance:R-FO": 2426,
-    "balance:R-FQ": 2505, "balance:R-FR": 2842, "balance:R-GV": 2322,
-    "bank_import:R-FU": 3229, "bank_import:R-FV": 3585,
-    "bank_import:R-FW": 3357, "bank_import:R-FX": 2214,
-    "bank_import:R-FY": 4237, "bank_import:R-GA": 3885,
-    "bank_import:R-GB": 3238, "bank_import:R-GC": 2185,
-    "bank_import:R-GD": 16095, "bank_import:R-GF": 6101,
-    "bank_import:R-GG": 5160, "bank_import:R-GJ": 2872,
-    "bank_import:R-GU": 3967, "bank_import:R-GW": 4784,
-    "recurrence:R-R37": 2030, "recurrence:R-R38": 2121,
+    "balance:R-FI": 2409, "balance:R-FJ": 2171, "balance:R-FK": 3283,
+    "balance:R-FL": 2705, "balance:R-FO": 2098, "balance:R-FQ": 2195,
+    "balance:R-FR": 2300, "balance:R-GV": 2160,
+    "bank_import:R-FU": 2670, "bank_import:R-FV": 2615,
+    "bank_import:R-FW": 2543, "bank_import:R-FY": 2364,
+    "bank_import:R-GA": 2850, "bank_import:R-GB": 2688,
+    "bank_import:R-GD": 3775, "bank_import:R-GF": 2876,
+    "bank_import:R-GG": 2816, "bank_import:R-GJ": 2321,
+    "bank_import:R-GU": 2408, "bank_import:R-GW": 2983,
 }
 
 
@@ -343,18 +347,18 @@ def runaway_violation() -> str | None:
 def row_width_violations() -> list[str]:
     """Return every disagreement between the over-cap rows and the DEBT.
 
-    Rule 4 on this file, in full.  The widest row lifted is
-    ``bank_import:R-GD`` at 16,087 characters against a **542.5-character
-    median over the 190 rows the registry holds since ``X-ao-2a``** -- it was
-    529 over 105, and the lift that moved it is the change that left the
-    number standing.  That row is the arc document's argument living in the
-    registry, the exact sentence ``_registry.LEDGER_ROW_CAP`` was written
-    for, at 4.5x the worst instance that forced it there.
+    Rule 4 on this file, in full.  At the lift the widest row was
+    ``bank_import:R-GD`` at 16,087 characters against a 542.5-character median
+    -- the arc document's argument living in the registry, the exact sentence
+    ``_registry.LEDGER_ROW_CAP`` was written for, at 4.5x the worst instance
+    that forced it there.  **After the 2026-08-28 trim it is 3,775 against a
+    647-character median over 202 rows**, and what is left in it is decisions
+    rather than deliberation (see :data:`LIFTED_ROWS_OVER_CAP`).
 
     **THREE directions, because the count this replaced had one and the
     keyed set had two.**  A new row over the cap is a failure; a row in
     :data:`LIFTED_ROWS_OVER_CAP` that is no longer over it is a failure, which
-    is what tells ``X-ao-2b`` it has finished one; and a debt row that has
+    is what makes a row leaving the debt a deliberate edit; and a debt row that has
     GROWN is a failure, which membership alone could not see -- an adversarial
     review measured that ``bank_import:R-GD`` could go from 16,087 to 32,000
     with every arm green while this docstring claimed both directions failed.
@@ -422,8 +426,8 @@ def key_violations() -> list[str]:
 
     Six arms, and each has cost this corpus something real:
 
-    * **A duplicate ``(arc, id)``** is the collision **N-217** and **N-367**
-      record, now inside one table where it is visible.
+    * **A duplicate ``(arc, id)``** is the collision that went unseen across
+      five documents, now inside one table where it is visible.
     * **An unknown arc** would file a ruling under a slug no document answers
       to, which is rule 10's key with half of it invented.
     * **A malformed id** cannot be cited, and a ruling nobody can cite is what

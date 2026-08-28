@@ -84,11 +84,10 @@ class TestTheOrderIsATotalOrderTheGraphAllows:
 
         **Its specimen was ``balance:X-am`` and that step SHIPPED**, which
         broke this control: a shipped row has no rank to make unparseable.
-        That is finding **N-355** -- a control may not derive its specimen from
-        a live row -- firing on this very suite, and it is `balance:X-bb`'s to
-        close properly.  Re-pointed at another live row meanwhile, which
-        re-arms it for whoever ships THAT one; the arm X-bb owes is one that
-        builds its own specimen.
+        **A control may not derive its specimen from a live row**, and this one
+        does: re-pointing it at another live row only re-arms it for whoever
+        ships THAT one.  The standing fix is a control that builds its own
+        specimen, as ``pay_calendar:C2-f3e`` did for its own.
         """
         line = row_of("steps", "| balance | X-aj2 |")
         stage("steps", line, with_cell(line, 4, "soon"))
