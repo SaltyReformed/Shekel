@@ -35,6 +35,7 @@ edits"*.  So a control states the SHAPE it needs and takes whatever row has it.
 """
 from __future__ import annotations
 
+import _plan_gate
 import _registry as registry
 from _classes import decomposition_leaf_keys, identity_class
 
@@ -121,7 +122,7 @@ def a_shipped_balance_row() -> str:
     return f"| balance | {shipped[0].ident} |"
 
 
-def a_live_ledger_row() -> str:
+def a_live_ledger_row(skip: int = 0) -> str:
     """Return a ``| <arc> | <id> |`` prefix naming a live row with a BARE id.
 
     The ledger counterpart of :func:`a_shipped_balance_row`, and it exists for
@@ -137,9 +138,16 @@ def a_live_ledger_row() -> str:
     PREFIX: an annotated cell (``N-205 (X-f1e3's design review 2026-08-05)``)
     does not match ``| balance | N-205 |``.
 
+    Args:
+        skip: How many qualifying rows to pass over first.  A control needing
+            TWO distinct live rows -- one to stage, one to point it at -- asks
+            for the second rather than naming it, which is the whole argument
+            of this helper applied twice.
+
     Returns:
         A :func:`row_of` prefix matching exactly one live ledger row.
     """
+    passed = 0
     for row in registry.ledger_rows():
         if " " in row.ident or "(" in row.ident:
             continue
@@ -149,8 +157,12 @@ def a_live_ledger_row() -> str:
             if ln.startswith(prefix)
         ]
         if len(matches) == 1:
-            return prefix
-    raise AssertionError("no live ledger row carries a bare, unambiguous id")
+            if passed == skip:
+                return prefix
+            passed += 1
+    raise AssertionError(
+        f"fewer than {skip + 1} live ledger row(s) carry a bare, unambiguous id",
+    )
 
 
 def a_prefix_trap() -> tuple[str, list[str]]:
@@ -258,6 +270,82 @@ def an_identity_class_with_leaves() -> tuple[list[str], list[str]]:
         "leaf derivation is blind to; re-read `_classes.decomposition_leaf_keys` "
         "before relaxing anything here"
     )
+
+
+def stage_a_fork(stage) -> str:
+    """Stage one RULED cross-arc fork, built out of rows the corpus really has.
+
+    **The fork table emptied on 2026-08-28**, when `recurrence:R17` /
+    `pay_calendar:C5b` shipped the remedy `pay_calendar:P16` was ruled to and
+    that defect row closed.  `P16` was the last fork, so twelve controls lost
+    their subject at once -- and one of them,
+    ``test_the_live_corpus_actually_contains_forks_to_grade``, exists precisely
+    to ANNOUNCE that: a rule with no subject in the corpus is untested by the
+    clean case.  It was reporting the truth.
+
+    **This is the same answer** :func:`stage_a_live_container` **gives to the
+    same problem**, which the corpus hit first on 2026-08-20: rather than name
+    a replacement the next tick removes again, build the shape under test out
+    of REAL rows and synthesise only the STATE.  Naming one is what broke three
+    of these controls on 2026-08-10, when the rule worked and the fork left.
+
+    The specimen is well formed against all three arms of
+    :func:`_registry.fork_violations`: its defect cell names a LIVE ledger row,
+    its remedies name two LIVE steps, and it is RULED to the remedy that row's
+    owner column already names -- so arm 3, which asks that a ruled fork's row
+    be owned by the winner, is satisfied by the corpus itself rather than by
+    this function asserting it.
+
+    Args:
+        stage: The ``stage`` fixture, applied once.
+
+    Returns:
+        The staged fork's defect key, so a caller can find its row.
+
+    Raises:
+        AssertionError: The corpus holds no ledger row whose owner is a live
+            step, or holds fewer than two live steps -- either of which would
+            mean there is nothing left to build a fork out of, and the control
+            should say so rather than pass.
+    """
+    steps = {row.key: row for row in registry.step_rows()}
+    live = {key for key, row in steps.items() if not row.shipped}
+    winner = defect = None
+    for row in registry.ledger_rows():
+        # A BARE id, for the same reason :func:`a_live_ledger_row` demands one:
+        # a control locates this row again by PREFIX, and an annotated cell
+        # (``N-205 (X-f1e3's design review)``) does not match ``| balance |
+        # N-205 |``.  ``row.key`` strips the annotation, so without this the
+        # fork would name a key no prefix lookup can find.
+        if " " in row.ident or "(" in row.ident:
+            continue
+        owners = [
+            match.group("owner")
+            for match in (_plan_gate.OWNER_RX.match(part)
+                          for part in _plan_gate.split_owners(
+                              row.owner.strip()))
+            if match
+        ]
+        candidates = [f"{row.arc}:{owner}" for owner in owners]
+        hit = next((key for key in candidates if key in live), None)
+        if hit is not None:
+            winner, defect = hit, row.key
+            break
+    assert winner is not None, (
+        "no ledger row names a live step, so no fork can be built from the "
+        "corpus -- the controls below would have no subject"
+    )
+    loser = next(key for key in sorted(live) if key != winner)
+
+    header = "| defect | competing remedies | ruled |\n|---|---|---|"
+    stage(
+        "steps", header,
+        header + f"\n| {defect} | {winner} (the remedy this row's owner "
+        f"column already names) **vs** {loser} (a competing remedy, staged) | "
+        f"**{winner}**, staged by `stage_a_fork` -- the corpus holds no live "
+        f"fork, so the shape under test is built from real rows |",
+    )
+    return defect
 
 
 def stage_a_live_container(stage) -> list[str]:

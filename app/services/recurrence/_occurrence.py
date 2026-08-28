@@ -23,8 +23,8 @@ could not match the interior ones -- and ``cadence_days`` is user-selectable
 1..365 (``schemas/validation/pay_periods.py``), so that is reachable
 configuration.  Measured on the R1 baseline's own 90-day schedule: a monthly
 day-1 rule over three years matched 13 periods instead of 36 (and returned one
-period TWICE, which would violate
-``idx_transactions_template_period_scenario``), and a quarterly rule matched 1
+period TWICE, which the paycheck-keyed generation index of the day could not
+store), and a quarterly rule matched 1
 of its 12 occurrences.  That was plan defect **D3**.
 
 Generating forward and then placing removes the defect structurally rather
@@ -159,10 +159,10 @@ and the owner's next payday write REPAIRS them.
   start period, which the plan's first statement of P26 did not cover.
 
 Two consequences ride on the first two.  Where the change puts a SECOND
-occurrence of one template into one paycheck,
-``_recurrence_common.refuse_unstorable_repeats`` refuses the whole pass -- the
-same refusal a 30-day-or-longer cadence already earns, and plan step C5b is
-what lifts it.  Where it does not repeat, the row is generated with a date
+occurrence of one template into one paycheck, both rows are now GENERATED and
+stored -- plan step **R17** re-keyed the unique index onto the occurrence, and
+the refusal a 30-day-or-longer cadence used to earn went with it.  Where it
+does not repeat, the row is generated with a date
 ``compute_due_date`` reads off the paycheck's two ENDPOINT months rather than
 off the occurrence this module found, so it can be dated in the wrong month
 entirely -- plan ledger row **D18**, whose fix is recurrence plan step **R5**
@@ -197,13 +197,12 @@ months of rent, measured on the R1 baseline's own 90-day schedule.  That was
 defect D3, and for ``Monthly First`` it went unmeasured until plan step R3
 added the missing oracle shapes.
 
-``budget.transactions`` cannot hold them yet:
-``idx_transactions_template_period_scenario`` is UNIQUE over
-``(template, period, scenario)``.  **That index is keyed on the wrong column**
--- it is a generation-idempotency guard, and a generated row's identity is its
-OCCURRENCE, not its paycheck.  Re-keying it onto ``(template, scenario,
-occurs_on)`` is plan step R5's work, in the same migration that renames
-``due_date`` to ``occurs_on`` and so first gives the occurrence a column.
+``budget.transactions`` HOLDS them since plan step **R17**:
+``idx_transactions_template_scenario_occurrence`` is UNIQUE over
+``(template, scenario, occurs_on)``.  The old index was keyed on the wrong
+column -- it is a generation-idempotency guard, and a generated row's identity
+is its OCCURRENCE, not its paycheck -- which is what made a repeat unstorable
+and what made a MOVED row vacate its own occurrence (ledger row **D57**).
 
 **The rows stay separate; only the grid sums them** (developer ruling,
 2026-08-07).  Summing at generation would fit today's index, and that is

@@ -274,7 +274,7 @@ class GenerationSchedule:
 
         What the create, unarchive, salary and template-edit paths mean: they
         re-drive a template across the whole schedule and let the per-period
-        skip predicate (``_recurrence_common.should_skip_period``) decide what
+        claim predicate (``_recurrence_common.OccurrenceClaims``) decide what
         is already there.
 
         Delegates to :meth:`for_period_ids` rather than building the value

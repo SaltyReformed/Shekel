@@ -105,9 +105,10 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
     # block so a partially-mutated row (is_override flipped, pay_period
     # not yet flipped, etc.) cannot trigger an autoflush mid-iteration
     # via a downstream lazy-load query.  An autoflush at the wrong
-    # moment violates the partial unique index
-    # idx_transactions_template_period_scenario, even though the
-    # FINAL state is index-safe.  See the original 33cd21e fix and
+    # moment violates the partial unique generation index (plan step R17
+    # split it in two: idx_transactions_template_scenario_occurrence for a
+    # row that answers an occurrence, ..._undated for one that does not),
+    # even though the FINAL state is index-safe.  See the original 33cd21e fix and
     # docs/carry-forward-aftermath-implementation-plan.md Phase 4.
     with db.session.no_autoflush:
         # ── Discrete branch ────────────────────────────────────────
@@ -130,11 +131,10 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
         #
         # Two passes are required because template-linked rows must
         # flip ``is_override = TRUE`` as part of the same SQL UPDATE
-        # to keep the row index-safe (the partial unique index
-        # ``idx_transactions_template_period_scenario`` excludes
-        # override rows, so flipping the flag and the period together
-        # avoids any transient state that could collide with the
-        # rule-generated row already in the target period).  Ad-hoc
+        # to keep the row index-safe (both partial unique generation
+        # indexes exclude override rows, so flipping the flag and the
+        # period together avoids any transient state that could collide
+        # with the rule-generated row already in the target period).  Ad-hoc
         # rows (``template_id IS NULL``) sit outside that index in
         # every state and only need the period flip.
         #
@@ -232,8 +232,7 @@ def carry_forward_unpaid(source_period_id, target_period_id, scenario_id,
     # no_autoflush block and its flush -- NOT inside settle_from_entries (which
     # runs inside that block) -- so _emit_balanced_entry's flush lands on the
     # batch's index-safe final state, never mid-loop where a partially-mutated
-    # (template, period, scenario) row could violate
-    # idx_transactions_template_period_scenario.  The reconcile is idempotent and
+    # partially-mutated row could violate a generation index.  The reconcile is idempotent and
     # a no-op for the common empty-envelope rollover (effect 0); a
     # partially-spent source posts its debit-only checking outflow.  Only
     # envelope sources need a reconcile here: carry-forward moves only Projected
@@ -416,10 +415,12 @@ def _resolve_or_create_target_row(source_txn, target_period,
         (inactive template, or a destination whose only row is finalised
         or soft-deleted); create a fresh override row.
       * ``AMBIGUOUS`` -- more than one mutable row for the same
-        ``(template, period, scenario)``.  This is corrupt pre-existing
-        state (the partial unique index prevents two non-override
-        canonicals), so refuse rather than guess which open row to
-        credit.  The route catches the ``ValidationError`` and rolls the
+        ``(template, period, scenario)`` that ``_leftover_recipient``
+        cannot choose between: they answer the same occurrence, or one
+        answers none.  Since plan step R17 a paycheck may legitimately hold
+        several rows of one template (a cadence that names it more than
+        once), and those are TOP_UP on the earliest occurrence rather than
+        a refusal.  The route catches the ``ValidationError`` and rolls the
         whole batch back.
 
     The returned row is the caller's to bump (its resolved amount plus the
@@ -501,10 +502,10 @@ def _create_target_override_row(source_txn, target_period, scenario_id):
 
     The row copies its identity (account, template, name, category, type)
     from *source_txn* and is flagged ``is_override = True`` so (a) it is
-    excluded from the partial unique index
-    ``idx_transactions_template_period_scenario`` and never collides with
-    a canonical or soft-deleted sibling, and (b) the recurrence engine
-    skips it on later passes (``should_skip_period``).  ``due_date`` is
+    excluded from both partial unique generation indexes and never
+    collides with a canonical or soft-deleted sibling, and (b) the recurrence engine
+    skips it on later passes (``_recurrence_common.OccurrenceClaims`` -- an
+    undated row claims its whole paycheck).  ``due_date`` is
     left ``None``: the leftover is a manually-carried amount with no
     scheduled date, and -- unlike the GENERATE path -- there is no
     recurrence rule to derive one from, so copying the source's

@@ -384,7 +384,7 @@ class TestOnePricingLink:
 
             # Period 1, not 0: the fixture already holds a non-override row for
             # this template in period 0, and
-            # ``idx_transactions_template_period_scenario`` would raise on THAT
+            # the undated generation index would raise on THAT
             # instead -- a control that fires for the wrong reason proves
             # nothing.
             txn = _make_transaction(

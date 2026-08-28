@@ -294,8 +294,7 @@ class TestTheFieldWritesFlushInsideTheExceptionNet:
     ):
         """Moving a generated row into an already-populated period still works.
 
-        ``idx_transactions_template_period_scenario`` is UNIQUE over
-        ``(template, period, scenario)`` but only ``WHERE is_override = FALSE``
+        Both generation indexes are unique only ``WHERE is_override = FALSE``
         -- so ``is_override = True`` is exactly what makes this move legal into
         a period the recurrence engine has already filled, which is every future
         period.  Written before the flush, the row leaves the index predicate
