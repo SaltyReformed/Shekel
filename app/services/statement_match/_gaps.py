@@ -11,8 +11,8 @@ asking :class:`~._reads.ReviewSet` would be a cycle: :mod:`._filing` imports
 :mod:`._reads`, so :mod:`._reads` cannot import the module that reads its own
 verdict.  Housing the question here rather than in :mod:`._verdict` is the
 other half of the same discipline: every live caller of :func:`search_gap`
-except one is about a line no rule reaches -- the deposit card, the hand-build
-list -- so a module named for what a RULE comes to would have been two
+except one is about a line no rule reaches -- the queue's INFLOW rows, the
+hand-build list -- so a module named for what a RULE comes to would have been two
 subjects wearing one name.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in,
@@ -202,11 +202,11 @@ def search_gap(
         line: The bank line, which must be one this pass considered.
             **THREE surfaces take it off three different lists**, and the claim
             that "every caller takes it off ``creatable``" was already false
-            when it was written: the create card reads it off
+            when it was written: the queue's OUTFLOW rows read it off
             :attr:`~._reads.ReviewSet.creatable`, the hand-build form off
             :attr:`~._reads.ReviewSet.unmatched` (which is the only one an
             inflow used to reach), and since ruling **bank_import:R-GW** the
-            deposit card off :attr:`~._reads.ReviewSet.recordable_inflows`.
+            queue's INFLOW rows off :attr:`~._reads.ReviewSet.recordable_inflows`.
             What every caller does share is that the line was in THIS pass,
             which is what makes *declined_lines* answerable for it.
         declined_lines: What each tier declined about a line, by line id
