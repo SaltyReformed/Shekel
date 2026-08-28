@@ -37,6 +37,7 @@ from app.services.scenario_resolver import get_baseline_scenario
 from app.services.scenario_resolver import get_baseline_scenario
 from tests._test_helpers import (
     append_balance_assertion,
+    create_account_of_type,
     settle_day_columns,
     settlement_columns,
 )
@@ -71,13 +72,20 @@ def _an_account_with_no_anchor(db, seed_user):
     Returns:
         The staged :class:`~app.models.account.Account`.
     """
-    account = Account(
-        user_id=seed_user["user"].id,
-        account_type_id=seed_user["account"].account_type_id,
-        name="Second Checking",
+    # Through the FACTORY, not ``Account(...)``.  ``account_service`` states
+    # the project rule this fixture used to break: no PostgreSQL constraint can
+    # require an account's child rows without a trigger, so the app fails loud
+    # at the first READ instead -- ``cash_ledger.resolve_anchor`` for the
+    # origination assertion and, since plan step X-f3c-2a,
+    # ``cash_ledger.account_opening_fact`` for the opening equity the fold
+    # seeds from.  A hand-built row reached this page's own agreement fold and
+    # raised, which is that guard doing its job on a fixture rather than on a
+    # defect: direct construction "belongs only in tests that deliberately
+    # exercise that failure", and this test is about the page's COPY.
+    account = create_account_of_type(
+        seed_user, db.session, "Checking", "Second Checking",
+        anchor_balance=Decimal("0.00"),
     )
-    db.session.add(account)
-    db.session.flush()
     _seed_import(
         db, account, stated=None, lines=[(date(2026, 3, 2), "-60.00")],
     )
@@ -207,7 +215,7 @@ class TestThePageReportsForItsOwner:
             seed_user["account"].id,
             get_baseline_scenario(seed_user["user"].id).id,
         )
-        before = walk.anchor_corrections[0].observed_on - timedelta(days=3)
+        before = walk.anchor_facts[0].observed_on - timedelta(days=3)
         _seed_import(
             db, seed_user["account"], stated="1000.00",
             effective_on=before, evidence=_FILE_CHAIN,
@@ -366,7 +374,7 @@ class TestThePageSaysWhatTheStepIsOBLIGEDToSay:
             seed_user["account"].id,
             get_baseline_scenario(seed_user["user"].id).id,
         )
-        opening = walk.anchor_corrections[0].observed_on
+        opening = walk.anchor_facts[0].observed_on
         first, second = (
             opening + timedelta(days=1), opening + timedelta(days=2),
         )

@@ -1,9 +1,17 @@
 """Tests for pay-period CRUD slice (e): regenerate (rebuild the future tail).
 
 Regenerate = truncate the not-yet-started, unlocked tail, then generate a
-fresh schedule from a corrected start/cadence and repopulate it.  It
-composes truncate (so it inherits the hard-lock and discard gates) with
-generate + populate + a cadence upsert.
+fresh schedule from a corrected start/cadence.  It composes truncate (so it
+inherits the hard-lock and discard gates) with generate + a cadence upsert.
+
+**It does NOT repopulate; the ROUTE does, and that is ruling R-R38** (plan
+step R7d-c-1).  The door records the rebuilt tail EMPTY and returns, because
+the read pass the recurrence resolves in may only be opened above the service
+layer and only after the periods exist.  A case here that asserts recurring
+ROWS therefore runs ``_regenerate_and_populate``, which is what the route
+runs; a case about the door's own contract calls the door alone.  ``POST
+/pay-periods/regenerate`` is graded in
+``tests/test_routes/test_pay_period_admin.py``.
 
 ``today`` is pinned with ``freeze_today`` so the past / current / future
 split is deterministic regardless of when the suite runs.  All four
@@ -28,22 +36,23 @@ from app.exceptions import (
 from app.enums import StatusEnum
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
+from app.routes._period_population import populate_new_periods
 from app.services import (
     pay_period_admin,
     pay_period_write,
     pay_schedule_service,
-    period_population,
 )
 from scripts.integrity_check import (
     check_balance_anomalies,
     check_referential_integrity,
 )
 from tests._test_helpers import (
-    all_periods,
     add_txn,
+    all_periods,
     assert_pay_period_invariants,
     freeze_today,
     make_expense_template,
+    populate_in_a_fresh_pass,
     seam_cash_balance_at,
 )
 
@@ -88,6 +97,27 @@ def _index_set(user_id):
         p.period_index
         for p in all_periods(user_id)
     }
+
+
+def _regenerate_and_populate(user_id, **kwargs):
+    """Run BOTH halves of a regenerate, exactly as the route does.
+
+    ``regenerate_pay_periods`` truncates and records the rebuilt tail;
+    ``populate_new_periods`` opens the generate pass afterwards and fills it.
+    Ruling **R-R38**: the pass may only be opened above the service layer, and
+    only after the write.
+
+    Args:
+        user_id: The owning user's id.
+        **kwargs: Forwarded to
+            :func:`~app.services.pay_period_admin.regenerate_pay_periods`.
+
+    Returns:
+        The rebuilt periods, now populated.
+    """
+    new_periods = pay_period_admin.regenerate_pay_periods(user_id, **kwargs)
+    populate_new_periods(user_id, new_periods)
+    return new_periods
 
 
 class TestRegenerateHappyPath:
@@ -155,8 +185,13 @@ class TestRegenerateHappyPath:
             assert all(r.passed for r in check_balance_anomalies(db.session))
             assert all(r.passed for r in check_referential_integrity(db.session))
 
-    def test_rebuilt_periods_get_recurring_rows(self, app, db, seed_user):
-        """The rebuilt tail is repopulated with active templates' rows."""
+    def test_the_door_leaves_the_rebuilt_tail_EMPTY(self, app, db, seed_user):
+        """The door rebuilds the tail and generates nothing into it.
+
+        The door's half of ruling **R-R38**.  The case below runs both halves
+        over the same fixture and finds one row per period, so this one cannot
+        pass by the template being unable to generate at all.
+        """
         with app.app_context():
             periods = _spanning_periods(db.session, seed_user, count=6)
             user_id = seed_user["user"].id
@@ -164,6 +199,27 @@ class TestRegenerateHappyPath:
             new_start = periods[3].end_date + timedelta(days=1)
 
             new_periods = pay_period_admin.regenerate_pay_periods(
+                user_id, new_start_date=new_start, num_periods=3,
+                cadence_days=14,
+            )
+            db.session.commit()
+            for period in new_periods:
+                assert db.session.query(Transaction).filter_by(
+                    pay_period_id=period.id,
+                ).count() == 0, (
+                    "regenerate_pay_periods generated a recurring row; since "
+                    "R-R38 it records the tail and the caller populates it"
+                )
+
+    def test_rebuilt_periods_get_recurring_rows(self, app, db, seed_user):
+        """Regenerate + populate fills the rebuilt tail from the templates."""
+        with app.app_context():
+            periods = _spanning_periods(db.session, seed_user, count=6)
+            user_id = seed_user["user"].id
+            make_expense_template(db.session, seed_user)
+            new_start = periods[3].end_date + timedelta(days=1)
+
+            new_periods = _regenerate_and_populate(
                 user_id, new_start_date=new_start, num_periods=3,
                 cadence_days=14,
             )
@@ -208,9 +264,7 @@ class TestRegenerateHappyPath:
         with app.app_context():
             periods = _spanning_periods(db.session, seed_user, count=8)
             make_expense_template(db.session, seed_user, amount="1200.00")
-            period_population.populate_periods_from_active_templates(
-                user_id, {p.id for p in periods},
-            )
+            populate_in_a_fresh_pass(user_id, {p.id for p in periods})
             db.session.commit()
             retained_end = periods[3].end_date  # index 4
             new_start = retained_end + timedelta(days=1)
@@ -220,7 +274,7 @@ class TestRegenerateHappyPath:
             )
             assert before == Decimal("-3800.00")  # 1000 - 4*1200
 
-            pay_period_admin.regenerate_pay_periods(
+            _regenerate_and_populate(
                 user_id, new_start_date=new_start, num_periods=4,
                 cadence_days=14,
             )

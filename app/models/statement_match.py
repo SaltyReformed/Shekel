@@ -183,6 +183,12 @@ class StatementMatchMember(db.Model):
         transaction_id -- the app's row, when this member is one.
         transaction_entry_id -- the app's purchase, when this member is one.
 
+    **Whichever of the three the arc carries is reachable as :attr:`line`,
+    :attr:`transaction` or :attr:`entry`**, joined on the composite key so the
+    account equality travels IN the join.  A reader that holds a member of an
+    act it has proved the owner's therefore cannot reach another account's row
+    through one; see the relationships themselves for what that replaced.
+
     **What an act CREATED is a DIFFERENT relation and lives in
     :class:`StatementMatchCreation`** (plan step ``bank_import:X-f6f``,
     developer ruling **R-GG**).  It was a ``created_version_id`` column here
@@ -255,8 +261,9 @@ class StatementMatchMember(db.Model):
         # satisfies the line key whatever ``account_id`` says.
         # **No ``ondelete`` -- the default NO ACTION, deliberately.**  The
         # database refuses to remove a bank line while a match names it, so a
-        # match that has lost its lines (invisible on the review screen and
-        # permanently blocking its app rows) is unrepresentable rather than
+        # match that has lost its lines (invisible on the register that lists
+        # accepted acts, and permanently blocking its app rows) is
+        # unrepresentable rather than
         # merely unproduced.  NO ACTION rather than RESTRICT because the check
         # is then deferred to the end of the statement, which is what lets a
         # whole-account delete cascade the members away and the lines with them
@@ -317,6 +324,39 @@ class StatementMatchMember(db.Model):
         "StatementMatch", back_populates="members",
         foreign_keys=[match_id, account_id],
     )
+    # **THE SUBJECT, reached through the COMPOSITE key, which is what puts the
+    # account in the JOIN rather than in a filter a reader has to remember**
+    # (finding **bank_import:N-358**, plan step ``bank_import:X-gf-2``).  Each
+    # of these emits
+    # ``ON subject.id = member.<id> AND subject.account_id = member.account_id``
+    # -- so a reader holding a member of an act it has proved the owner's
+    # cannot reach another account's row through one, whatever it forgets.
+    # The readers used to collect the ids and SELECT them back by primary key
+    # alone; nothing leaked, because every id came from a scoped act, but that
+    # is safety by DERIVATION over an open set of future callers, which is the
+    # ground N-353 was refused on one function away.
+    #
+    # ``viewonly`` because the WRITER states the id columns
+    # (:func:`~app.services.statement_match._accept._record`): these are a read
+    # projection of a key the database already holds, and a second, writable
+    # path to the same column pair is exactly the drift this arc keeps
+    # removing.  It is also what keeps SQLAlchemy from trying to manage one
+    # ``account_id`` through four overlapping relationships.
+    line = db.relationship(
+        "BankStatementLine",
+        foreign_keys=[bank_statement_line_id, account_id],
+        viewonly=True,
+    )
+    transaction = db.relationship(
+        "Transaction",
+        foreign_keys=[transaction_id, account_id],
+        viewonly=True,
+    )
+    entry = db.relationship(
+        "TransactionEntry",
+        foreign_keys=[transaction_entry_id, account_id],
+        viewonly=True,
+    )
 
     def __repr__(self):
         subject = (
@@ -365,6 +405,10 @@ class StatementMatchCreation(db.Model):
         created_version_id -- the subject's ``version_id`` as this act left it.
             NOT NULL: a row here IS a creation, so there is no "already
             existed" state left for a NULL to mean.
+
+    Whichever of the two the arc carries is reachable as :attr:`transaction` or
+    :attr:`entry`, joined on the composite key exactly as
+    :class:`StatementMatchMember`'s three are.
 
     **The revision is the whole predicate, and that is why it is a version
     rather than a flag.**  "Still has no category and still holds the figure we
@@ -469,6 +513,24 @@ class StatementMatchCreation(db.Model):
     match = db.relationship(
         "StatementMatch", back_populates="creations",
         foreign_keys=[match_id, account_id],
+    )
+    # The same two-column join, for the same reason, as
+    # :class:`StatementMatchMember`'s three -- and here it does one more thing.
+    # The undo reached each subject with ``db.session.get`` and paid 478
+    # queries folding 230 acts, so a bulk reader had to WARM the identity map
+    # first and then HOLD the result, SQLAlchemy's identity map being weak.  A
+    # relationship is loaded by the same eager option as the rest of the act
+    # and is held by the act itself, so neither the warm nor the holding is a
+    # thing a caller can forget.
+    transaction = db.relationship(
+        "Transaction",
+        foreign_keys=[transaction_id, account_id],
+        viewonly=True,
+    )
+    entry = db.relationship(
+        "TransactionEntry",
+        foreign_keys=[transaction_entry_id, account_id],
+        viewonly=True,
     )
 
     def __repr__(self):

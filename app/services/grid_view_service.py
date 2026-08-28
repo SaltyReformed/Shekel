@@ -33,6 +33,7 @@ Architecture (per CLAUDE.md "Architecture" and
 
 from collections import namedtuple
 from collections.abc import Iterable
+from datetime import date
 
 
 from app.models.category import Category
@@ -298,3 +299,69 @@ def build_matched_by_row_period(
                         period.period_id,
                     )] = matched
     return matched_by_row_period
+
+
+def due_captions_by_id(
+    transactions: "Iterable[Transaction]",
+    payday_by_period_id: "dict[int, date]",
+) -> "dict[int, date | None]":
+    """Return ``{transaction_id: the due date to caption, or None}``.
+
+    **The grid cell's due-date caption, decided in PYTHON and indexed by the
+    template** (pay-calendar plan step C4-a-1).  A row carries a ``due_date``
+    only when the money is owed on a day other than the paycheck's own; where
+    the two coincide the date says nothing and the cell stays quiet.  That is
+    one rule, and before this it was written in Jinja as
+    ``t.due_date != t.pay_period.start_date`` -- a comparison that reached
+    through an ORM relationship, so a page drawing N cells issued a lazy load
+    per distinct paycheck FROM INSIDE THE RENDER, and a template cannot be
+    given a query budget.
+
+    **Both surfaces that draw that cell call this**, which is what makes the
+    caption the same on a page and in the HTMX fragment the same click swaps
+    in: ``routes/grid/page`` for the grid and
+    ``routes/_render_helpers.render_transaction_cell`` for the fragment.  It is
+    the rule :class:`~app.routes._render_helpers.RenderAmounts` states for the
+    three amount maps, applied to the fourth thing a cell draws.
+
+    **Keyed by transaction id and INDEXED rather than guarded**, on this
+    template's standing rule: Jinja's default ``Undefined`` compares unequal to
+    a date without raising, so a caption read as a bare variable renders on
+    EVERY dated row when a surface forgets to publish it -- silently.  A map
+    subscript raises instead, which is why ``budgets`` is a map and why this
+    is one.
+
+    Args:
+        transactions: The rows being drawn.  Each must carry a
+            ``pay_period_id`` present in *payday_by_period_id*.
+        payday_by_period_id: ``{budget.pay_periods.id: the day it opened}`` for
+            every paycheck those rows are filed in.  Taken rather than derived
+            because each caller already holds it for free and by a different
+            route -- the grid from the DERIVED window whose columns it is
+            drawing, the fragment from the ``pay_period`` its own ownership
+            check has already loaded -- and deriving a second answer here would
+            be the redundant read this arc exists to remove.  A ``start_date``
+            is the one fact ``budget.pay_periods`` stores, carried through
+            :func:`~app.services.pay_calendar.derive_periods` untouched, so the
+            two routes cannot disagree.
+
+    Returns:
+        One entry per row: its ``due_date`` where that differs from its
+        paycheck's payday, else ``None``.
+
+    Raises:
+        KeyError: A row is filed in a paycheck *payday_by_period_id* does not
+            cover.  Loud rather than skipped: a missing entry means the caller
+            built its map from a different row set than it is drawing, and a
+            quiet ``None`` would draw a cell that silently omits a caption it
+            owes.
+    """
+    return {
+        txn.id: (
+            txn.due_date
+            if txn.due_date is not None
+            and txn.due_date != payday_by_period_id[txn.pay_period_id]
+            else None
+        )
+        for txn in transactions
+    }

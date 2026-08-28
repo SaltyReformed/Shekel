@@ -512,16 +512,14 @@ _FENCED_MODULE_RULINGS = {
         # gone: both walks now advance their own sources against
         # ``ReconciledThrough.covers``, so the order is applied where the
         # replay happens rather than published as a fact of its own.
-        # ``observed_on`` is a public METHOD on ``CashAnchorCorrection`` (W9909
-        # sees public methods of public classes, which is the surface D3's review
-        # found W9910 structurally blind to): it returns the civil DAY one
-        # assertion is the closing balance FOR -- a date, not a figure.
-        # ``delta`` beside it is the correction that ONE assertion booked
-        # (``anchor_balance - balance_before``), the assertion twin of
-        # ``CashSourceFact.delta``: what one event contributed, never what the
-        # account holds.  Both are per-EVENT, and a per-event figure is not a
-        # balance per ACCOUNT -- the same ground the ``settled_cash_leg`` /
-        # ``split_*`` rulings stand on.
+        # ``observed_on`` and ``delta`` LEFT this set at plan step X-f3c-1 with
+        # the class that carried them: ``CashAnchorCorrection`` is
+        # ``balance_at._assertions``' now, because its ``balance_before`` is a
+        # prefix sum and this package's producer set is empty and stays empty.
+        # A ruling for a name the package no longer defines classifies nothing
+        # and would un-fence whatever took the name, which is what
+        # ``test_classification_sets_match_the_real_fenced_modules`` is for --
+        # it caught exactly this pair.
         #
         # ``settled_civil_day`` REPLACED ``attribution_instant`` at ruling R-DH
         # (2026-07-31), and ``visible_on`` left this set with it: both facts now
@@ -531,21 +529,23 @@ _FENCED_MODULE_RULINGS = {
         # on ``CashSourceFact`` for this set to rule on.  The classification is
         # unchanged in substance: a day is not a balance.
         "cash_anchor_facts",
-        "delta",
-        "observed_on",
         "settled_cash_facts",
-        # ``_walk`` (plan step X-a) -- the running-balance REPLAY and the
-        # visible-day re-key of its events.  Ruled NON-producers on exactly the
-        # grounds ``loan_ledger``'s twins below are, and the ruling is only
-        # honest because the same structure holds: the walk returns per-source
-        # and per-assertion FACTS in instant order, ``dated_deltas`` returns what
-        # each event contributed and when, and the PREFIX-SUM that turns either
-        # into "what is held at time T" is seam-private.  If that sampling ever
-        # moved into this package these two would become producers -- which is
-        # the same thing as saying they belong inside ``balance_at``, since this
-        # package's producer set is empty and stays empty.  Both sides take the
-        # walk: the seam's read pass folds it, and the posting writer projects it
-        # into corrections at plan step X-d.
+        # ``account_opening_fact`` (X-f3c-2a, R-GX) -- a LOADER of the stored
+        # ``account_openings`` row, on its neighbours' ground: returning a
+        # recorded balance is not computing one.  The FOLD seeds from it.
+        "account_opening_fact",
+        # ``_walk`` (plan step X-a) -- the account's FACT stream and the
+        # visible-day re-key of its source events.  Ruled NON-producers on
+        # exactly the grounds ``loan_ledger``'s twins below are, and since plan
+        # step X-f3c-1 the ruling rests on less: the walk holds no running
+        # balance at all, returning settled sources ascending by settle day and
+        # assertions ascending by BUSINESS date, while ``dated_deltas`` returns
+        # what each source contributed and when.  Applying an assertion to a
+        # running total, and the PREFIX-SUM that turns either into "what is held
+        # at time T", are both seam-private.  If either moved into this package
+        # these two would become producers -- which is the same thing as saying
+        # they belong inside ``balance_at``, since this package's producer set
+        # is empty and stays empty.
         "dated_deltas",
         "walk_cash_ledger",
         # ``_clearing`` (plan step X-f3a-1, ruling **R-FL**) -- WHICH STATEMENT

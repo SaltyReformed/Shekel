@@ -225,7 +225,7 @@ class TestSettlePostsEntry:
 
             transfer_service.update_transfer(
                 transfer.id, user_id,
-                status_id=ref_cache.status_id(StatusEnum.SETTLED),
+                status_id=ref_cache.status_id(StatusEnum.DONE),
             )
             _db.session.commit()
 

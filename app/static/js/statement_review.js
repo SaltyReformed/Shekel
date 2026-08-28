@@ -1,4 +1,8 @@
-// Statement review: the per-class sweep, and the new-envelope reveal.
+// Statement review: the per-class sweep, and the create arm's envelope reveal.
+//
+// The merchant-rule control's own reveal is statement_rules.js, which this
+// page also loads: that control is rendered on two surfaces since plan step
+// bank_import:X-gf-2 and its behaviour belongs to neither of them alone.
 //
 // Plan step bank_import:X-f6a-3c-2.  Both behaviours are conveniences over a
 // form that works entirely without them, and that is deliberate: with
@@ -125,10 +129,6 @@
       }
       return;
     }
-    if (target.matches("select[data-rule]")) {
-      revealRuleFields(target);
-      return;
-    }
     if (target.matches("select[data-destination]")) {
       revealNewEnvelope(target);
     }
@@ -139,24 +139,10 @@
   // line alone", so the fields start hidden and nothing needs re-syncing.  The
   // one case that does is a browser restoring a select's value on a back /
   // reload, which fires no change event.
-  // The rule control's own reveal: its name and category boxes are
-  // parameters of ONE of its options, exactly as the create form's are.
-  function revealRuleFields(select) {
-    const row = select.closest("[data-rule-row]");
-    if (!row) {
-      return;
-    }
-    const wanted = select.value === "new";
-    row.querySelectorAll("[data-rule-new-field]").forEach(function (field) {
-      field.classList.toggle("d-none", !wanted);
-    });
-  }
-
   function syncAll() {
     document
       .querySelectorAll("select[data-destination]")
       .forEach(revealNewEnvelope);
-    document.querySelectorAll("select[data-rule]").forEach(revealRuleFields);
   }
 
   document.addEventListener("DOMContentLoaded", syncAll);

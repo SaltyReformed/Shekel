@@ -71,6 +71,7 @@ from app.routes.accounts._statement_doors import (
     run_statement_door,
 )
 from app.routes.accounts._cash_page import load_cash_account_or_404
+from app.routes.accounts._statement_release import release_and_return
 from app.schemas.validation import form_payload
 from app.schemas.validation.statements import (
     StatementImportDeleteSchema,
@@ -440,13 +441,18 @@ def _filing_sentence(filing) -> str:
         # rules' below and can be undone there", which the step's own
         # measurement makes false by 60 on the developer's first real import:
         # 80 lines file and ``RECEIPT_LIMIT`` shows 20.  The place every act is
-        # listed without a bound is the review screen's accepted-matches panel,
-        # so that is where the sentence sends an owner who wants all of them.
+        # listed without a bound is the REGISTER's accepted list -- and only
+        # behind its own *show everything* link, the register itself rendering
+        # the newest 50 (ruling **bank_import:R-GX**) -- so that is where the
+        # sentence sends an owner who wants all of them.  It said "the review
+        # screen" until plan step ``bank_import:X-gf-2`` moved those acts off
+        # it, at which point the sentence named a page listing none of them.
         parts.append(
             f"  Your standing rules filed {filing.filed_count} of them as "
             f"purchases worth {filing.filed_total:+,.2f}{envelopes}.  The most "
             f"recent are under 'Filed by your rules' below, each with an undo; "
-            f"every one of them is on the review screen."
+            f"every one of them is on the page of what you have already "
+            f"decided."
         )
     if filing.withheld:
         parts.append(
@@ -750,7 +756,7 @@ def delete_statement_import(account_id):
     day an accepted match wrote is the app's own record and stays, which is the
     rule ``release_match`` already states for the same reason.
 
-    **It is a plain POST-redirect-GET**, like ``release_statement_match`` and
+    **It is a plain POST-redirect-GET**, like ``release_filed_match`` and
     unlike the review screen's batch: it names ONE act and either does it or
     refuses it, so a flash carries the whole answer.
 
@@ -786,3 +792,33 @@ def delete_statement_import(account_id):
         lambda: delete_import(import_id, current_user.id, account.id),
         lambda removal: _removal_flash(account.id, removal),
     )
+
+
+@accounts_bp.route(
+    "/accounts/<int:account_id>/statements/release", methods=["POST"],
+)
+@login_required
+@require_owner
+def release_filed_match(account_id):
+    """Undo one match from this page's receipt, and come back to it.
+
+    Plan step ``bank_import:X-gf-2``.  The receipt above lists what standing
+    rules filed at import (ruling **R-GH**), each act carrying the same undo
+    the register offers -- and the owner reading a receipt of twenty acts
+    belongs on the receipt afterwards.  It posted to the review screen's own
+    release door until this step, which redirected there: a different page,
+    mid-receipt, and after the split a page that lists no accepted match at
+    all.
+
+    The act, its refusals and its wording are
+    :func:`~._statement_release.release_and_return`'s; what this route owns is
+    the ownership proof and the page to return to.
+
+    Args:
+        account_id: The account whose import receipt this is.
+
+    Returns:
+        A redirect back to the bank statements page.
+    """
+    account = load_cash_account_or_404(account_id)
+    return release_and_return(account, "accounts.statements")

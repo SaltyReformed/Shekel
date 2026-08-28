@@ -73,14 +73,25 @@ class ReviewScope:
             ``calendar_for`` separately inside one request until adversarial
             financial review 2026-08-19, and two of them can disagree under
             READ COMMITTED -- which since plan step balance:X-i3 is true of
-            the THREE POST doors that build a scope
-            (``apply_statement_review``, ``state_merchant_rules``,
-            ``statement_review_totals``) and not of the GET that renders the
-            screen, whose whole request is one snapshot.
-            ``apply_statement_review`` builds TWO, and that is the one place
-            two scopes in one request is right: the second is a FRESH one for
+            the POST doors that build a scope and not of the GET that renders
+            a screen, whose whole request is one snapshot.
+            **FOUR POST doors build one** since plan step
+            ``bank_import:X-gf-3b`` split the workbench off:
+            ``statement_matches.apply_statement_review`` and
+            ``.state_merchant_rules``, and
+            ``statement_workbench.apply_hand_match`` and
+            ``.statement_match_totals``.  *This list said THREE and named
+            ``statement_review_totals``, a route that step DELETED* -- an
+            enumeration quoted as a reason decays invisibly, because nobody
+            re-counts a premise.  Named by adversarial money review 2026-08-28.
+            **The two APPLY doors build TWO apiece, and that is the one place
+            two scopes in one request is right**: the second is a FRESH one for
             the ANSWER, taken only on the path that WROTE, because the pass it
-            was applied against describes a state that no longer exists.
+            was applied against describes a state that no longer exists.  It is
+            structural rather than remembered now --
+            ``_statement_doors.run_statement_fragment_door`` owns which scope
+            each arm renders from, so a door cannot report a pass against the
+            state that pass replaced.
             **The parameter stays either way, and not only for the arms it
             still protects**: three reads of one fact in one request is this
             project's DRY violation rather than a cost, and the doors it

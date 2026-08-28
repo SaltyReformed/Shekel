@@ -52,6 +52,7 @@ from app.utils.period_projections import (
     offered_spans,
 )
 
+from app.routes._period_population import populate_new_periods
 from app.routes.grid._bp import grid_bp
 from app.routes.grid._shared import (
     _accrual_row_label,
@@ -343,6 +344,12 @@ class _GridRowData(NamedTuple):
         entry_lists: Pre-rendered inline mobile entries list per
             envelope card (``{txn_id -> list data}``), computed
             server-side to avoid per-card HTMX fan-out.
+        due_captions: ``{txn_id -> the due date to caption, or None}``
+            for the cell template's "Due:" line
+            (:func:`~app.services.grid_view_service.due_captions_by_id`,
+            pay-calendar plan step C4-a-1).  The template decided it
+            itself off ``t.pay_period.start_date`` until then, which is
+            a lazy relationship load issued from inside the render.
     """
 
     income_row_keys: list[RowKey]
@@ -350,6 +357,7 @@ class _GridRowData(NamedTuple):
     matched_by_row_period: dict[tuple[int, int | None, str, int], list[Transaction]]
     entry_sums: dict[int, dict]
     entry_lists: dict[int, dict]
+    due_captions: dict[int, "date | None"]
 
 
 def _build_grid_row_data(
@@ -374,9 +382,9 @@ def _build_grid_row_data(
     were never going to render.
 
     Returns a :class:`_GridRowData` carrying ``income_row_keys``,
-    ``expense_row_keys``, ``matched_by_row_period``, ``entry_sums``, and
-    ``entry_lists``.  ``entry_sums`` is the pre-computed tracked-progress
-    map for the cell template's "spent / budget" display.
+    ``expense_row_keys``, ``matched_by_row_period``, ``entry_sums``,
+    ``entry_lists`` and ``due_captions``.  ``entry_sums`` is the pre-computed
+    tracked-progress map for the cell template's "spent / budget" display.
     """
     if show_all:
         row_source_txns = transactions
@@ -406,6 +414,15 @@ def _build_grid_row_data(
     # templates each, the lazy-load shape generated ~60 parallel GETs
     # and the over-limit cards stuck on the loading spinner forever.
     entry_lists = build_entry_lists_dict(transactions, budgets)
+    # The caption map is built over exactly the rows that get a CELL -- the
+    # values of the match index -- rather than over ``transactions``, which
+    # carries rows outside the visible window.  That is what makes the payday
+    # lookup total: every key it needs is a period being drawn, and a row it
+    # cannot cover would raise rather than caption silently.
+    due_captions = grid_view_service.due_captions_by_id(
+        [txn for cell in matched_by_row_period.values() for txn in cell],
+        {period.period_id: period.start_date for period in periods},
+    )
 
     return _GridRowData(
         income_row_keys=income_row_keys,
@@ -413,6 +430,7 @@ def _build_grid_row_data(
         matched_by_row_period=matched_by_row_period,
         entry_sums=entry_sums,
         entry_lists=entry_lists,
+        due_captions=due_captions,
     )
 
 
@@ -590,8 +608,15 @@ def index():
     # append.  The block writes, commits, and the read pass below then takes
     # its snapshot of a database that already holds the new periods -- which is
     # the ordering this route always needed and stated in prose.
+    #
+    # The top-up APPENDS and this fills what it appended (ruling **R-R38**):
+    # the door leaves the new paydays empty, and the pass their recurring rows
+    # are resolved in is opened here, after they exist.  It opens NOTHING when
+    # nothing was appended, which is every render but the rare short-window
+    # one -- so this page still holds ONE read pass on the render path.
     with write_transaction():
-        pay_period_rolling.top_up_rolling_window(user_id)
+        appended = pay_period_rolling.top_up_rolling_window(user_id)
+        populate_new_periods(user_id, appended)
 
     ctx = _resolve_grid_context(
         user_id, request.args, current_user.settings,
@@ -737,6 +762,7 @@ def index():
         entry_sums=row_data.entry_sums,
         entry_lists=row_data.entry_lists,
         matched_by_row_period=row_data.matched_by_row_period,
+        due_captions=row_data.due_captions,
         **plan_view,
     )
 

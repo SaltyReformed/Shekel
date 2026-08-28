@@ -49,6 +49,7 @@ from app.extensions import db
 from app.models.journal_entry import JournalEntry, Posting
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.services.balance_at import BalanceContext
 from app.services import (
     carry_forward_service,
     credit_workflow,
@@ -65,7 +66,6 @@ from tests._test_helpers import (
     linked_ledger_account,
 )
 from app.services import cash_ledger
-from app.services.pay_calendar import calendar_for
 
 
 # ---------------------------------------------------------------------------
@@ -1193,7 +1193,7 @@ class TestCarryForwardPostsSettledSources:
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, scenario_id,
-                calendar=calendar_for(user_id),
+                balance_ctx=BalanceContext.build(user_id),
             )
             db.session.commit()
 
@@ -1226,7 +1226,7 @@ class TestCarryForwardPostsSettledSources:
 
             carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, scenario_id,
-                calendar=calendar_for(user_id),
+                balance_ctx=BalanceContext.build(user_id),
             )
             db.session.commit()
 

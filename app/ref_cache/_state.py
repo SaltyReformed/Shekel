@@ -30,6 +30,7 @@ from typing import TypedDict
 import sqlalchemy.exc
 
 from app.enums import (
+    AccountOpeningSourceEnum,
     AcctCategoryEnum,
     AcctTypeEnum,
     AmountSourceEnum,
@@ -217,6 +218,9 @@ def _build_ref_specs(ref_models) -> list[_RefSpec]:
         _RefSpec(IncomeUnitEnum, ref_models.IncomeUnit),
         _RefSpec(RoleEnum, ref_models.UserRole),
         _RefSpec(LoanAnchorSourceEnum, ref_models.LoanAnchorSource),
+        _RefSpec(
+            AccountOpeningSourceEnum, ref_models.AccountOpeningSource
+        ),
         _RefSpec(
             EmployerContributionTypeEnum, ref_models.EmployerContributionType
         ),

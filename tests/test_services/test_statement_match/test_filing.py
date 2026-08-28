@@ -604,7 +604,7 @@ class TestAPassThatCouldNotFinishLookingWITHHOLDS:
             assert [item.line.amount for item in filing.withheld] == [
                 Decimal("-10.89"),
             ]
-            assert "count that money twice" in filing.withheld[0].reason
+            assert "makes that match impossible to accept" in filing.withheld[0].reason
             assert _purchases_in(envelope) == []
 
 
@@ -619,7 +619,7 @@ class TestALineOutsideTheCalendarIsLeftAlone:
         A purchase is budgeted in the period holding the day it was made, so a
         swipe past the last saved payday has no budget for a rule to file it
         into -- and there is no destination to resolve, which is what
-        ``_reads._one_creatable`` answers with no placement at all.  A door
+        ``_leftovers._one_creatable`` answers with no placement at all.  A door
         that guessed the nearest period would file already-spent money against
         the wrong paycheck.
 
@@ -674,6 +674,7 @@ class TestARefusedItemCostsOnlyItself:
             outcome = statement_match.apply_reviewed(
                 ReviewedBatch(
                     consent=Consent.STANDING_RULE,
+                    incomes=(),
                     matches=(),
                     creations=(
                         PurchaseCreation(
@@ -863,8 +864,8 @@ class TestEveryBoundThePassPublishesWITHHOLDS:
     def _a_review(**bounds):
         """Return a ReviewSet publishing *bounds* and nothing else."""
         return ReviewSet(
-            proposals=(), unmatched=(), unmatched_rows=(), accepted=(),
-            creatable=(), parked=(),
+            proposals=(), unmatched=(), unmatched_rows=(),
+            creatable=(), parked=(), recordable_inflows=(),
             merchants=MerchantSection(merchants=(), templates=()),
             bounds=ReviewBounds(
                 calendar_opens=None,
@@ -971,6 +972,7 @@ class TestARuleMayNotModifyAHandMadeRow:
         with pytest.raises(ValueError) as refused:
             ReviewedBatch(
                 consent=Consent.STANDING_RULE,
+                incomes=(),
                 matches=(MatchSubmission(
                     line_ids=frozenset({1}),
                     rows=frozenset({"transaction:1"}),
@@ -988,6 +990,7 @@ class TestARuleMayNotModifyAHandMadeRow:
         """
         batch = ReviewedBatch(
             consent=Consent.TICKED,
+            incomes=(),
             matches=(MatchSubmission(
                 line_ids=frozenset({1}), rows=frozenset({"transaction:1"}),
             ),),
@@ -1001,6 +1004,7 @@ class TestARuleMayNotModifyAHandMadeRow:
         """...and the arm the filing door actually builds is not refused."""
         batch = ReviewedBatch(
             consent=Consent.STANDING_RULE,
+            incomes=(),
             matches=(),
             creations=(PurchaseCreation(line_id=1, transaction_id=2),),
         )
@@ -1036,6 +1040,7 @@ class TestTheReceiptCarriesTheUndo:
             statement_match.apply_reviewed(
                 ReviewedBatch(
                     consent=Consent.TICKED,
+                    incomes=(),
                     matches=(),
                     creations=(PurchaseCreation(
                         line_id=ticked_line.id,

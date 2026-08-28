@@ -53,10 +53,28 @@ Module map:
 * :mod:`app.routes.accounts.statement_matches` -- What the app DOES about it
   (plan step ``bank_import:X-f6a-2``, ruling R-FS): the review screen that
   proposes which of this account's rows each recorded line IS, and the two
-  write doors that accept and release one.  Its boundary against ``statements``
+  write doors that apply a reviewed pass and answer for a merchant nobody has
+  answered for yet.  **The door that RELEASES one is no longer here**: it went
+  with the accepted acts at ``bank_import:X-gf-2``, to
+  ``_statement_release`` and the two surfaces that render it.  Its boundary against ``statements``
   is the one ``reconcile`` cuts against ``anchor``: a read of an outside record
   against the door that acts on it.  **It MOVES MONEY** -- an accepted match
   writes the bank's posted day onto every row it names.
+* :mod:`app.routes.accounts.statement_register` -- What has already been
+  DECIDED (plan step ``bank_import:X-gf-2``, ruling **bank_import:R-GX**): the
+  merchant answers already given and the matches already accepted, each with
+  its undo.  Its boundary against ``statement_matches`` is the one that step
+  exists for -- a QUEUE holds what is still being decided and a REGISTER holds
+  what is not, and the two were one 578,523-byte page of which 76% was the
+  register half.
+* :mod:`app.routes.accounts.statement_workbench` -- The TOOL, not the queue
+  (plan step ``bank_import:X-gf-3b``, ruling **bank_import:R-HC**): the
+  hand-build match form, where the owner asserts a correspondence the matcher
+  would not guess.  **It MOVES MONEY** -- recording a group writes the bank's
+  posted day onto every row it names, which makes it the SECOND door here that
+  does, beside ``statement_matches``.  Its boundary against that one is that a
+  queue holds exceptions and this holds the tool three of them send the owner
+  to; its two pick lists were 59% of the review page.
 * :mod:`app.routes.accounts.bank_agreement` -- The two records SIDE BY SIDE
   (plan step ``bank_import:X-f6e-2``, ruling R-GF): a per-day comparison of
   what the app's own rows moved against what the bank's lines did, and of the
@@ -103,6 +121,8 @@ from app.routes.accounts import types  # noqa: F401, E402
 from app.routes.accounts import detail  # noqa: F401, E402
 from app.routes.accounts import statements  # noqa: F401, E402
 from app.routes.accounts import statement_matches  # noqa: F401, E402
+from app.routes.accounts import statement_register  # noqa: F401, E402
+from app.routes.accounts import statement_workbench  # noqa: F401, E402
 from app.routes.accounts import bank_agreement  # noqa: F401, E402
 
 

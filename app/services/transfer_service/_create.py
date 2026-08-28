@@ -168,15 +168,15 @@ def _build_shadow(
 class TransferSpec:  # pylint: disable=too-many-instance-attributes
     """The canonical inputs for creating a transfer.
 
-    Bundles the twelve fields :func:`create_transfer` needs into one
+    Bundles the fourteen fields :func:`create_transfer` needs into one
     cohesive value object so the sole transfer-creation path takes a
-    single argument rather than a twelve-field signature.  Every field
+    single argument rather than a fourteen-field signature.  Every field
     is read by ``create_transfer`` and supplied together by every caller
     (the new-transfer route, the recurrence engine, the materialize path)
     -- this is one "transfer to create" request, mirroring the columns
     of the ``Transfer`` row it produces.
 
-    Pylint: ``too-many-instance-attributes`` (12/7) -- these are the
+    Pylint: ``too-many-instance-attributes`` (14/7) -- these are the
     irreducible inputs of one creation request, read as a flat unit by
     the single consumer; there is NO cohesive sub-group to nest, so
     splitting would fragment one concept for no gain.  Mirrors the
@@ -210,6 +210,13 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
             status, so :func:`create_transfer` rejects that combination loudly
             rather than recording a settle day for a payment that has not
             happened.
+        occurs_on: WHICH OCCURRENCE of its template's cadence this transfer
+            answers, or ``None`` for a transfer no cadence named -- an ad-hoc
+            one, or the one-time branch of ``routes/transfers/_instances``.
+            Only the transfer recurrence engine states it, and it is NOT
+            mirrored to the shadows: a shadow is created from its parent rather
+            than from an occurrence, and no generate pass asks a shadow whether
+            an occurrence has been written (plan step **R17**).
     """
 
     user_id: int
@@ -225,6 +232,7 @@ class TransferSpec:  # pylint: disable=too-many-instance-attributes
     name: str | None = None
     due_date: date | None = None
     settle_day: SettleDay | None = None
+    occurs_on: date | None = None
 
 
 def create_transfer(spec: TransferSpec) -> Transfer:
@@ -311,6 +319,7 @@ def create_transfer(spec: TransferSpec) -> Transfer:
         category_id=spec.category_id,
         notes=spec.notes,
         due_date=spec.due_date,
+        occurs_on=spec.occurs_on,
         is_override=False,
         is_deleted=False,
     )

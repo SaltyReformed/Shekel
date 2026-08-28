@@ -102,7 +102,6 @@ _REF_TABLE_SEEDS = (
         {"name": "Received",  "is_settled": True,  "is_immutable": True,  "excludes_from_balance": False},
         {"name": "Credit",    "is_settled": False, "is_immutable": True,  "excludes_from_balance": True},
         {"name": "Cancelled", "is_settled": False, "is_immutable": True,  "excludes_from_balance": True},
-        {"name": "Settled",   "is_settled": True,  "is_immutable": True,  "excludes_from_balance": False},
     ]),
     ("FilingStatus", [
         "single", "married_jointly", "married_separately",
@@ -125,6 +124,17 @@ _REF_TABLE_SEEDS = (
     # DB resolves the enum before this idempotent reseed runs).  Same
     # idempotent upsert semantics as the other reference tables.
     ("LoanAnchorSource", ["origination", "user_trueup", "tracking_start"]),
+    # ``AccountOpeningSource`` -- the provenance tag carried by every row in
+    # ``budget.account_openings`` (plan step X-f3c-2a, ruling R-HE).
+    # ``user_declared`` is what ``account_service.create_account`` writes from
+    # the balance its owner typed; ``migration_derived`` marks the rows the
+    # X-f3c-2a migration computed for accounts that already existed, and two of
+    # those are already known wrong (N-275, N-379) -- which is why the split is
+    # a financial statement rather than a label.  Seeded HERE as well as in the
+    # migration for the reason the twin above is: the create_all path never
+    # runs a migration, and ``ref_cache.init()`` treats a missing row in an
+    # existing table as fatal.
+    ("AccountOpeningSource", ["user_declared", "migration_derived"]),
     # ``EmployerContributionType`` / ``CompoundingFrequency`` (#38) --
     # the two logic-bearing enums promoted off free-string columns to
     # ref tables so the growth/interest engines branch on IDs.  Names

@@ -505,19 +505,17 @@ def grid_balance_view(
     folded = _cash_fold.assembled_fold(account, ctx)
     view = _cash_periods.period_view_of(folded, window)
     modelled = _asset_fold.period_columns(
+        # No calendar is passed: the contribution tier reads the one ``folded``
+        # was CLAMPED by (pay-calendar plan step C4-a-1).  It was ``ctx.calendar()``
+        # here, which was the pass's own and therefore right -- but only because
+        # this call site named one ``ctx`` twice, which is the pairing plan step
+        # X-i4 removed for the account and X-au-c2b for the scenario.  Plan step
+        # C2-f2a's ruling that the tier takes a CALENDAR and never a WINDOW is
+        # unchanged; ``window`` above is that same calendar's ``saved()`` view.
         _asset_fold.resolve(
             account, folded,
             max(period.end_date for period in window),
             _contribution_inputs_for_account(account, ctx),
-            # The pass's OWN calendar, and ``window`` above is its
-            # ``saved()`` view -- one memoized derivation read twice, not two
-            # readings of one schedule.  Plan step C2-f2a made this an
-            # argument rather than a query the contribution tier issued for
-            # itself (ledger row **P37**), and it is the CALENDAR rather than
-            # the window so that no caller here can hand that tier a slice:
-            # the annual limit is a calendar-year accumulation and a slice
-            # restarts it mid-year.
-            ctx.calendar(),
         ),
         window,
     )

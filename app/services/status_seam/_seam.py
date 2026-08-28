@@ -288,7 +288,7 @@ def apply_status_change(
 
       1. ``verify_transition`` -- the state-machine legality gate, which picks
          the workflow from *row*'s own model class; raises ``ValidationError``
-         on an illegal move (e.g. Settled -> Projected), which the route layer
+         on an illegal move (e.g. Cancelled -> Paid), which the route layer
          surfaces as a 400.
       2. assign ``status_id``.
       3. maintain the SETTLEMENT RECORD -- ``settled_on``,
@@ -321,8 +321,8 @@ def apply_status_change(
         new_status_id: The ``ref.statuses.id`` to move to.
         settle_day: Settle-day policy, read only for a ``Transaction``.
             ``None`` (the default) DERIVES the day from *new_status_id*: stamp
-            ``display_today()`` on entering a settled status (Paid / Received /
-            Settled) that has none yet, **preserve an existing one on an
+            ``display_today()`` on entering a settled status (Paid or
+            Received) that has none yet, **preserve an existing one on an
             idempotent re-settle**, and clear it on entering a non-settled
             status (so a reverted / cancelled / credited row drops its stale
             settle day and the basis that described it).  A non-``None``
@@ -368,13 +368,17 @@ def apply_status_change(
             by however long ago it really settled.  Neither route passes one
             now, so the preserve rule is the only rule.
 
-            **``Paid -> Settled`` is a RE-ENTRY, not a first entry**, and that
-            is why preservation matters beyond the edit forms: archiving a
-            payment must not move its money to the day it was archived.  That
-            transition has zero production rows today (finding N-177, which
-            proposes deleting the status), and the rule is pinned by a test
-            regardless, because a status with no rows is not a status with no
-            transitions.
+            **A RE-SETTLE is a RE-ENTRY, not a first entry**, and that is why
+            preservation matters beyond the edit forms: re-submitting a row's
+            own settled status -- which the full-edit popover does on every
+            Save, since it posts the whole row and not a delta -- must not move
+            its money to the day the form was saved.
+
+            The sharpest case used to be ``Paid -> Settled``, the ARCHIVE: it
+            was a genuine STATUS CHANGE that still had to preserve the day.
+            Plan step **X-am** deleted that status, so every within-band move
+            left is the identity one, and preservation is what makes an
+            untouched Save a no-op instead of a re-dating.
 
         settlement: WHAT moved, when this change RECORDS a settle
             (:class:`Settlement`).  Written to ``settled_amount`` and

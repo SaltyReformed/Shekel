@@ -199,20 +199,20 @@ class TransactionType(db.Model):
 class Status(db.Model):
     """Transaction status reference.
 
-    Values: Projected, Paid, Received, Credit, Cancelled, Settled.
+    Values: Projected, Paid, Received, Credit, Cancelled.
 
     Boolean columns capture logical groupings so that application code
     can branch on a single column instead of comparing against sets of
     status names:
 
         is_settled          -- The real-world transaction has completed
-                               (Paid, Received, Settled).  Such a row RECORDS
+                               (Paid, Received).  Such a row RECORDS
                                what moved, and the balance counts that record
                                rather than the row's plan (plan step X-au-c3;
                                it read actual_amount until then).
         is_immutable        -- The recurrence engine must not overwrite
                                this transaction (Paid, Received, Credit,
-                               Cancelled, Settled).
+                               Cancelled).
         excludes_from_balance -- This status contributes zero to the
                                projected checking balance (Credit,
                                Cancelled).
@@ -439,6 +439,39 @@ class LoanAnchorSource(db.Model):
 
     def __repr__(self):
         return f"<LoanAnchorSource {self.name}>"
+
+
+class AccountOpeningSource(db.Model):
+    """Account opening source reference: 'user_declared', 'migration_derived'.
+
+    Tags every row in :class:`budget.account_openings` with the provenance of
+    that opening equity figure (plan step X-f3c-2a).  ``user_declared`` is
+    written by ``account_service.create_account`` from the balance the owner
+    typed; ``migration_derived`` marks the seven rows the X-f3c-2a migration
+    computed for accounts that already existed, off the posted ledger's own
+    ``account_opening`` entry.
+
+    **The split is not clerical.**  A derived figure is the pre-X-f3c-2a
+    inference frozen, and finding **N-275** measures account 1's wrong by
+    ``$436.05``; a declared one is an observation.  A surface that cannot tell
+    them apart presents a guess and a fact identically.
+
+    The loan twin is :class:`LoanAnchorSource`, and the shape is the same by
+    design: a typed provenance column on an append-only balance record.
+    Application code resolves these via ``ref_cache.account_opening_source_id``
+    and compares against the integer ID -- never the string name -- matching
+    the project-wide ``ref-table: IDs for logic, strings for display only``
+    invariant.
+    """
+
+    __tablename__ = "account_opening_sources"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(20), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<AccountOpeningSource {self.name}>"
 
 
 class UserRole(db.Model):

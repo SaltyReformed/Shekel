@@ -1266,6 +1266,33 @@ def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
         # the balance-history card to have been entered months later.
         "recorded_on": new_anchor_period.start_date,
     })
+    # **The account's OPENING RECORD moves with its assertion** (plan step
+    # X-f3c-2a).  ``budget.account_openings`` stores the day the books opened
+    # beside the equity, and ``create_account`` wrote both from the factory's
+    # bootstrap day.  Leaving it behind builds the very shape this fixture
+    # exists to eliminate, one table over: books opening in 2024 against a
+    # first assertion in 2026, with the posted ``account_opening`` entry dated
+    # off a period step 2 is about to delete.  It is invisible until something
+    # reads it -- the balance-history card's "Opening" badge asks whether an
+    # assertion falls on the books' opening day, and would badge nothing at all
+    # on the account almost every suite uses.
+    #
+    # The table is APPEND-ONLY, so this restates rather than edits, exactly as
+    # a production restatement would.
+    from app.models.account_opening import AccountOpening  # pylint: disable=import-outside-toplevel
+    governing = (
+        db.session.query(AccountOpening)
+        .filter_by(account_id=account.id)
+        .order_by(AccountOpening.created_at.desc(), AccountOpening.id.desc())
+        .first()
+    )
+    if governing is not None:
+        db.session.add(AccountOpening(
+            account_id=account.id,
+            opened_on=new_anchor_period.start_date,
+            opening_equity=governing.opening_equity,
+            source_id=governing.source_id,
+        ))
     db.session.flush()
     # Step 2: delete the bootstrap row.
     db.session.query(PayPeriod).filter_by(id=bootstrap_id).delete()

@@ -823,21 +823,24 @@ class TestTransactionCRUD:
             ).data.decode()
             assert "Mark as paid" in projected_html
 
-            # Settled: the Paid action is suppressed (mark_done would 400).
-            # Driven through the SEAM rather than by assigning ``status_id``:
-            # since plan step X-au-c3 a settle records what moved in the same
-            # call, and a raw column write produces a settled row that records
-            # nothing -- a state no door can create and one
+            # SETTLED: the Paid action is suppressed.  Driven through the
+            # SEAM rather than by assigning ``status_id``: since plan step
+            # X-au-c3 a settle records what moved in the same call, and a raw
+            # column write produces a settled row that records nothing -- a
+            # state no door can create and one
             # ``row_valuation.settled_figure`` refuses outright, so the page
             # under test would 500 on a row the app could never have.
-            settled = db.session.query(Status).filter_by(name="Settled").one()
+            #
+            # It walked Paid -> the terminal ``Settled`` archive until plan
+            # step **balance:X-am** deleted that status.  The button is gated
+            # on ``Status.is_settled``, so the first step was always the one
+            # that suppressed it.
             status_seam.apply_status_change(
                 txn, ref_cache.status_id(StatusEnum.DONE),
                 settlement=settlement_if_settling(
                     txn, ref_cache.status_id(StatusEnum.DONE),
                 ),
             )
-            status_seam.apply_status_change(txn, settled.id)
             db.session.commit()
             settled_html = auth_client.get(
                 f"/transactions/{txn.id}/full-edit"
@@ -2202,7 +2205,7 @@ class TestAccountIdColumn:
 
         created = recurrence_engine.generate_for_template(
             template, GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in periods},
+                BalanceContext.build(template.user_id), {p.id for p in periods},
             ), scenario.id
         )
 
@@ -6947,15 +6950,21 @@ class TestMobileCardActionBar:
             assert f'/transactions/{txn.id}/mark-done' in rendered
             assert "Mark Paid" in rendered
 
-    def test_action_bar_excludes_mark_paid_when_settled(
+    def test_action_bar_excludes_mark_paid_when_paid(
         self, app, seed_user, seed_periods_today,
     ):
-        """C7-4: Settled txns do NOT get a ``[Mark Paid]`` form.
+        """C7-4: Paid txns do NOT get a ``[Mark Paid]`` form.
 
-        Settled is a state-machine terminal for the mark-done path;
-        offering the button would let the user fire a request the
-        route would reject with 400.  The partial's guard on
-        ``status_id`` is the source of truth here.
+        The button would fire an identity re-submit at best and, on the row
+        types that settle from entries, a re-price of money that already
+        moved.
+
+        **The partial's guard is ``status_id == STATUS_PROJECTED``**, which is
+        narrower than the settled band and is the source of truth here: Mark
+        Paid is suppressed on Credit and Cancelled rows too.  The specimen was
+        ``Settled`` -- the terminal archive -- until plan step
+        **balance:X-am** deleted that status; Paid is the same specimen because
+        it is equally not-Projected.
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel
@@ -6969,8 +6978,8 @@ class TestMobileCardActionBar:
                 account_id=seed_user["account"].id,
                 pay_period_id=current.id,
                 scenario_id=seed_user["scenario"].id,
-                status_id=ref_cache.status_id(StatusEnum.SETTLED),
-                name="C7-4 Settled Groceries",
+                status_id=ref_cache.status_id(StatusEnum.DONE),
+                name="C7-4 Paid Groceries",
                 category_id=seed_user["categories"]["Groceries"].id,
                 transaction_type_id=ref_cache.txn_type_id(TxnTypeEnum.EXPENSE),
                 estimated_amount=Decimal("42.00"),
@@ -7040,8 +7049,12 @@ class TestMobileCardActionBar:
         ``status_id != STATUS_DONE and status_id != STATUS_SETTLED``
         guard missed RECEIVED and kept the Mark Paid button visible
         on already-received income.  Switched to the semantic
-        ``Status.is_settled`` boolean which covers Paid, Received,
-        and Settled uniformly.
+        ``Status.is_settled`` boolean, which covered Paid, Received and
+        Settled uniformly then and covers the two that remain now.  (The
+        DESKTOP action bar has since narrowed further, to
+        ``status_id == STATUS_PROJECTED``; this case is the MOBILE card's,
+        whose guard is the boolean.  Plan step **balance:X-am** deleted
+        ``STATUS_SETTLED`` and neither partial needed an edit.)
         """
         from app import ref_cache  # pylint: disable=import-outside-toplevel
         from app.enums import StatusEnum, TxnTypeEnum  # pylint: disable=import-outside-toplevel

@@ -247,7 +247,7 @@ def balance_at(
     rounded to cents -- today's balance, reported for a date months earlier
     (the real Roth answered ``$28,000.00`` for 2026-01-15 against a
     back-projected ``$22,909.02``).  The fold is TOTAL: it answers a date before
-    every event with ruling R-I's back-projection and a date past the horizon by
+    every event with the account's stored opening equity and a date past the horizon by
     continuing to accrue, so there is no out-of-range state to fall back FROM.
     Finding **N-82** records what the far end costs: past the last pay period
     the ACCRUAL tier keeps running while the CONTRIBUTION tier stops, because a

@@ -18,6 +18,37 @@ class StatusEnum(enum.Enum):
 
     Values match ``ref.statuses.name`` after the Commit #1 migration
     renames the display names.
+
+    **The SETTLED BAND HAS TWO MEMBERS -- Paid and Received -- and a THIRD is
+    not how a row is frozen** (plan step **X-am**, ruling **balance:R-HA**,
+    closing finding **N-177**).  A sixth member ``SETTLED`` sat here as the
+    ARCHIVE: a terminal state the state machine gave no outgoing edge but
+    itself, reachable only from the full-edit popover's Status ``<select>``.
+    Nothing has ever carried it: 1,591 ``system.audit_log`` rows for the two
+    status-bearing tables since 2026-05-07, including 229 DELETEs and 208
+    status changes, name it NOWHERE -- which is what rules out a row that was
+    archived and hard-deleted between snapshots -- and every snapshot that
+    exists reads zero besides.  Its
+    only content beyond ``DONE`` was *and you may never revert*, since
+    ``is_immutable`` already locks a Paid row's fields.  It refused every act
+    that CORRECTS a row (revert, re-price, add or remove a purchase, match a
+    bank line) and permitted the one that DESTROYS it, because
+    ``transaction_service.deletion_refusal`` never named it.
+
+    **How firmly a settled row is known is PROVENANCE, and it already ships**:
+    ``settled_basis_id`` (how the FIGURE is known), ``settled_day_basis_id``
+    (how the DAY is known) and ``reconciled_by_id`` (which statement was seen
+    to show it) -- three columns answering three different questions, each
+    correctable without destroying the row.  A status member is a cruder fourth
+    answer to the same question and the only one with no way back.
+
+    ``pay_period_locks`` answers the neighbouring question -- whether a SPAN may
+    still be rewritten -- but it is a read-only CLASSIFIER rather than a second
+    place to store the fact, and it is not the row-level answer: no row-edit
+    door consults it, and its ``SETTLED_TXN`` reason is itself DERIVED from
+    ``settled_status_ids()``.  So the honest statement is narrower than *neither
+    is a status*: the settled BAND is load-bearing everywhere, and what X-am
+    refuses is a member INSIDE it whose distinct meaning is a lock.
     """
 
     PROJECTED = "Projected"
@@ -25,7 +56,6 @@ class StatusEnum(enum.Enum):
     RECEIVED = "Received"  # Income has been deposited
     CREDIT = "Credit"      # Paid via credit card, not checking
     CANCELLED = "Cancelled"
-    SETTLED = "Settled"    # Archived / fully reconciled
 
 
 class TxnTypeEnum(enum.Enum):
@@ -276,6 +306,39 @@ class LoanAnchorSourceEnum(enum.Enum):
     # the year-end summary report negative principal paid on real data).
     # See ``app.services.loan_loaders.load_loan_anchor_facts``.
     TRACKING_START = "tracking_start"
+
+
+class AccountOpeningSourceEnum(enum.Enum):
+    """Where an ``account_openings`` row's figure CAME FROM (plan step X-f3c-2a).
+
+    An account's opening equity is what it held before its records begin, and
+    the two members answer the one question a reader of that figure has: did a
+    HUMAN state it, or did the app compute it?  The distinction is financial
+    rather than clerical.  A ``MIGRATION_DERIVED`` figure is the pre-X-f3c-2a
+    inferred rule frozen -- the earliest assertion minus the movements it
+    already contained -- and finding **N-275** measures one of them wrong by
+    ``$436.05`` (account 1's opening asserts ``$2,746.58`` for 2026-03-27 where
+    the bank's own closing that day is ``$3,182.63``).  A ``USER_DECLARED``
+    figure is one somebody actually asserted.  Reading which is which off the
+    row is what lets a later surface say "this opening has never been
+    confirmed" instead of presenting a guess and a fact identically.
+
+    Values match ``ref.account_opening_sources.name``.  The loan twin is
+    :class:`LoanAnchorSourceEnum`, and the shape is deliberately the same: a
+    typed provenance column on an append-only balance record, resolved through
+    ``ref_cache`` and compared by ID.
+    """
+
+    # The figure a human stated: ``account_service.create_account`` writing an
+    # account's declared opening balance, which IS its opening equity because a
+    # just-created account has no records for the assertion to already contain.
+    USER_DECLARED = "user_declared"
+    # The figure the X-f3c-2a migration computed for an account that already
+    # existed, from the posted ledger's own ``account_opening`` entry.  It
+    # reproduces what every balance already rested on, so the migration moves
+    # ``$0.00`` -- but it is a DERIVATION preserved, not an observation, which
+    # is exactly what N-275 is about.
+    MIGRATION_DERIVED = "migration_derived"
 
 
 class EmployerContributionTypeEnum(enum.Enum):

@@ -28,7 +28,7 @@ from app.models.salary_raise import SalaryRaise
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from tests._test_helpers import make_every_period_rule
-from app.services.pay_calendar import calendar_for
+from app.services.balance_at import BalanceContext
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -598,7 +598,7 @@ class TestCarryForwardDoubleSubmit:
             # First carry-forward: moves 3 items.
             count1 = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
             assert count1 == 3
@@ -606,7 +606,7 @@ class TestCarryForwardDoubleSubmit:
             # Second carry-forward: source is empty, moves 0 items.
             count2 = carry_forward_service.carry_forward_unpaid(
                 seed_periods[0].id, seed_periods[1].id, seed_user["scenario"].id,
-                calendar=calendar_for(seed_user["user"].id),
+                balance_ctx=BalanceContext.build(seed_user["user"].id),
             )
             db.session.commit()
             assert count2 == 0

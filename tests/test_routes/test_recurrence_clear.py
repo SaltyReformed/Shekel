@@ -52,6 +52,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
+from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.services import (
     account_service,
@@ -62,7 +63,6 @@ from app.services import (
 )
 from tests._test_helpers import create_loan_account, make_cadence_rule, all_periods
 from tests.oracles.recurrence_baseline import EVERY_PERIOD
-from app.services.pay_calendar import calendar_for
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -105,7 +105,7 @@ def _recurring_txn_template(seed_user, recurs=True):
         recurrence_engine.generate_for_template(
             template,
             GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in all_periods(seed_user["user"].id)},
+                BalanceContext.build(template.user_id), {p.id for p in all_periods(seed_user["user"].id)},
             ),
             seed_user["scenario"].id,
         )
@@ -150,7 +150,7 @@ def _recurring_transfer_template(seed_user, savings, recurs=True):
         transfer_recurrence.generate_for_template(
             template,
             GenerationSchedule.for_period_ids(
-                calendar_for(template.user_id), {p.id for p in all_periods(seed_user["user"].id)},
+                BalanceContext.build(template.user_id), {p.id for p in all_periods(seed_user["user"].id)},
             ),
             seed_user["scenario"].id,
         )

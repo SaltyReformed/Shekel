@@ -80,11 +80,22 @@ class TestTheOrderIsATotalOrderTheGraphAllows:
         ), problems
 
     def test_the_control_fires_on_an_unparseable_order_cell(self, stage):
-        """A row a reader cannot place in the sequence."""
-        line = row_of("steps", "| balance | X-am |")
+        """A row a reader cannot place in the sequence.
+
+        **Its specimen was ``balance:X-am`` and that step SHIPPED**, which
+        broke this control: a shipped row has no rank to make unparseable.
+        That is finding **N-355** -- a control may not derive its specimen from
+        a live row -- firing on this very suite, and it is `balance:X-bb`'s to
+        close properly.  Re-pointed at another live row meanwhile, which
+        re-arms it for whoever ships THAT one; the arm X-bb owes is one that
+        builds its own specimen.
+        """
+        line = row_of("steps", "| balance | X-aj2 |")
         stage("steps", line, with_cell(line, 4, "soon"))
         problems = order.rank_violations()
-        assert any("balance:X-am" in p and "'soon'" in p for p in problems), problems
+        assert any(
+            "balance:X-aj2" in p and "'soon'" in p for p in problems
+        ), problems
 
     def test_two_unrelated_steps_may_not_share_one_rank(self, stage):
         """A rank repeats only where two names are ONE commit.
@@ -168,10 +179,10 @@ class TestTheStartsCellIsDerivedAndReconciled:
         """
         line = row_of("steps", "| credit_card | CC0a |")
         stage("steps", line, with_cell(
-            line, 6, "after #1 / balance:X-f4 / balance:X-am",
+            line, 6, "after #1 / balance:X-f4 / balance:X-aj2",
         ))
         latest = max(
-            order.rank_map()[key] for key in ("balance:X-f4", "balance:X-am")
+            order.rank_map()[key] for key in ("balance:X-f4", "balance:X-aj2")
         )
         problems = order.starts_violations()
         assert any(
@@ -297,10 +308,12 @@ class TestTheStartsCellIsDerivedAndReconciled:
 
     def test_the_control_fires_on_an_unparseable_head(self, stage):
         """Every other spelling of readiness used to read as legal."""
-        line = row_of("steps", "| balance | X-am |")
+        line = row_of("steps", "| balance | X-aj2 |")
         stage("steps", line, with_cell(line, 6, "whenever"))
         problems = order.starts_violations()
-        assert any("balance:X-am" in p and "'whenever'" in p for p in problems), problems
+        assert any(
+            "balance:X-aj2" in p and "'whenever'" in p for p in problems
+        ), problems
 
 
 class TestEveryStepSaysWhatItIsInOneSentence:

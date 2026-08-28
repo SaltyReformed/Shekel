@@ -77,10 +77,15 @@ What an occurrence IS, per unit
   and a BOUND for the fourth -- and it is what ruling R-R16 removed.
 
 **A consequence worth stating rather than discovering: placement is INERT
-under the ``PERIOD`` unit.**  Every occurrence it emits is a period's own
-``start_date``, and both placements carry such a date back to that same period
--- ``CONTAINING_DATE`` because the period contains its own opening day, and
-``PERIOD_STARTING_ON_OR_AFTER`` because no earlier period starts later.  The
+under the ``PERIOD`` unit.**  Every occurrence it emits is a paycheck's own
+``start_date``, and both placements carry such a date back to that same
+paycheck -- ``CONTAINING_DATE`` because the period contains its own opening
+day, and ``PERIOD_STARTING_ON_OR_AFTER`` because no earlier period starts
+later.  Past the SAVED horizon both answer ``None`` instead, and they still
+agree: since plan step R16-b-1 the walk names PROJECTED paydays too, and a
+projected payday is not a row either search can return.  That is the ordinary
+"the schedule has not got there yet", which is what ``period is None`` means
+everywhere else here.  The
 plan's section 3 says the opposite ("a mid-period bound places differently
 under the two placements"); that claim reads the anchor as the emitted
 occurrence, which the paragraph above is exactly the decision not to do.
@@ -238,7 +243,7 @@ from app.enums import (
     RecurrenceUnitEnum,
 )
 from app.exceptions import ShekelError
-from app.services.pay_calendar import DerivedPeriod, PayCalendar
+from app.services.pay_calendar import DerivedPeriod, PayCalendar, paychecks_from
 from app.services.recurrence._months import (
     month_ordinal,
     months_per_step,
@@ -347,18 +352,40 @@ def _period_walk(
     ending before it, which is this loop's admission test read directly.
     Nothing has to agree with anything.
 
-    Naturally bounded by the schedule, unlike its two siblings.
+    **It walks the owner's paychecks, saved AND projected, since plan step
+    R16-b-1 -- and until then it TRUNCATED in silence.**  It iterated
+    ``calendar.periods``, the SAVED set, so a caller asking for occurrences
+    past the schedule's horizon got fewer dates than it asked for and no
+    signal that it had: measured on a production clone (2026-08-27), an
+    every-paycheck rule asked through ``2036-01-01`` answered 62 dates ending
+    ``2028-07-27`` against the 255 that owner is actually paid in the window,
+    the last ``2035-12-20`` -- 193 paydays dropped in silence.
+    A truncated walk and a completed one are indistinguishable from the
+    occurrences alone, which is the shape ledger row **P23** refuses one
+    concept over -- an axis that covers part of its range reads exactly like
+    one that covers all of it.
+
+    The horizon is a MATERIALISATION boundary, not a fact about the cadence:
+    an owner goes on being paid after the last payday anyone has saved, so
+    this sequence goes on naming paydays.
+    :func:`~app.services.pay_calendar.paychecks_from` is where
+    that continuation lives, beside the derivation it continues, and it bounds
+    the sequence at :data:`~app.utils.dates.CALENDAR_DATE_MAX` exactly as
+    :func:`~._months.walk_months` does -- so this walk stops where the MONTH
+    walk stops, and :func:`_bounded` is once again the ONLY place a bound is
+    applied.  (:func:`_week_walk`, the third sibling, is bounded by ``date``
+    itself rather than by that constant; the unit is unreachable until plan
+    step R8-b opens it, and bounding it is that step's.)
 
     Args:
         resolved: The recurrence's two-axis meaning.
         calendar: The owner's pay-period schedule.
 
     Yields:
-        Qualifying periods' ``start_date`` values, ascending.
+        Qualifying paychecks' ``start_date`` values, ascending -- saved where
+        the schedule reaches, projected at the owner's cadence beyond it.
     """
-    for period in calendar.periods:
-        if period.end_date < resolved.starts_on:
-            continue
+    for period in paychecks_from(calendar, resolved.starts_on):
         phase = period.period_index - resolved.offset_periods
         if phase % resolved.interval_n != 0:
             continue
@@ -379,8 +406,14 @@ def _unbounded(
         calendar: The owner's pay-period schedule.
 
     Returns:
-        An ascending iterator of occurrence dates, unbounded except for the
-        ``PERIOD`` unit, which the schedule bounds.
+        An ascending iterator of occurrence dates, unbounded for every unit in
+        the sense that nothing about the SCHEDULE stops one -- plan step
+        R16-b-1 removed the ``PERIOD`` unit's exception, which was a SILENT
+        truncation at the saved horizon rather than a bound anything had
+        chosen.  Where each walk finally runs out still differs: ``PERIOD`` and
+        the month-spanning units stop at
+        :data:`~app.utils.dates.CALENDAR_DATE_MAX`, ``WEEK`` at ``date``'s own
+        maximum.
 
     Raises:
         RecurrenceGenerationError: When *resolved* names a unit this engine
@@ -612,8 +645,15 @@ def occurrences(
     Returns:
         An ascending iterator of occurrence dates.  Empty when *through*
         precedes the anchor, when the rule's closing bound admits none of
-        them, or -- for the ``PERIOD`` unit -- when the schedule reaches no
-        qualifying paycheck.
+        them, or -- for the ``PERIOD`` unit -- when the owner has no payday at
+        all.  **It is COMPLETE through *through* since plan step R16-b-1**, up to
+        :data:`~app.utils.dates.CALENDAR_DATE_MAX`, past which this application
+        names no date: the ``PERIOD`` walk used to stop at the SAVED schedule's
+        horizon and say nothing, so a caller asking past it was answered short
+        (62 dates against 255, measured on a production clone 2026-08-27).  The
+        schedule having "not got there yet" is a fact about PLACEMENT
+        (:func:`place` answering ``None``), never about whether the cadence
+        fires.
 
     Raises:
         RecurrenceGenerationError: See :func:`_require_generable`, plus a unit

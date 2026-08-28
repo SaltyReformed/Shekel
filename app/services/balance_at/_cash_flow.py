@@ -352,8 +352,11 @@ def records_balance_at(
     NOT what the app currently reports, which after a balance is recorded for a
     day IS that recorded balance.
 
-    **The distinction exists because an assertion RESETS the walk**
-    (``cash_ledger._walk``: ``running = anchor.anchor_balance``).  So
+    **The distinction exists because the fold applies an assertion as a RESET**
+    (``balance_at._assertions``: ``running = anchor.anchor_balance``, merged
+    into the step list by ``_cash_fold._actual_steps`` for EVERY account kind
+    today -- plan step X-f3c-5 is what stops merging it for the PLAIN ones).
+    So
     :func:`cash_balance_at` on a day that already carries an assertion answers
     with that assertion, and a difference measured against it is zero by
     construction -- or worse, on a CORRECTION it is the gap between the user's
@@ -363,16 +366,17 @@ def records_balance_at(
     entry the third reads ``-$45.86``; against the records it reads
     ``-$92.29``.
 
-    **It is the walk's OWN field, not arithmetic over the fold.**
-    :attr:`~app.services.cash_ledger.CashAnchorCorrection.balance_before` is
+    **It is the replay's OWN field, not arithmetic over the fold.**
+    :attr:`~._assertions.CashAnchorCorrection.balance_before` is
     documented as the running balance *just before this assertion resets it*,
     which is exactly this question, already public and already the figure the
     LOAN side's drift card renders (``loan_posting_service._display``:
     ``computed``).  Subtracting correction deltas out of
     :func:`cash_balance_at` instead would be a second statement of the fold's
-    step rule -- and a wrong one, because ``_cash_fold._actual_steps`` moves the
-    OPENING correction into the seed and books a compensator for it, so the
-    opening's delta is not a step to subtract.
+    step rule, and this field is the rule's own output.  *It was also WRONG
+    until plan step X-f3c-2a, for a reason that has since been deleted: the
+    fold moved the OPENING correction into its seed and booked a compensator
+    for it, so the opening's delta was not a step anyone could subtract.*
 
     Two branches, and they are one rule rather than a special case:
 
@@ -416,8 +420,7 @@ def records_balance_at(
         # precedence this codebase has already been bitten by stating twice
         # (S6-03).
         return None
-    walk = _cash_fold.assembled_fold(account, ctx).walk
-    for correction in walk.anchor_corrections:
+    for correction in _cash_fold.assembled_fold(account, ctx).corrections:
         if correction.observed_on == as_of:
             return correction.balance_before
     return cash_balance_at(account, ctx, as_of)
@@ -432,19 +435,8 @@ class CashAnchorRow:
 
     **:attr:`ledger` and :attr:`correction` are OPTIONAL, and their absence is
     a statement rather than a gap.**  Both are ``None`` exactly where the pair
-    has no agreed meaning, and the two cases are one rule:
+    has no agreed meaning, which since plan step **X-f3c-2a** is ONE case:
 
-    * **the OPENING row.**  Its ``balance_before`` is the sum of settled rows
-      dated BEFORE the account's first assertion, replayed from a zero seed --
-      which :func:`app.services.cash_ledger.dated_deltas` documents as "not a
-      balance the account ever had", and what a reader should answer there is
-      OPEN finding **N-37**.  On the real Checking account it reads
-      ``$2,057.42`` against an opening of ``$2,746.58``, and the ``$689.16``
-      between them is the account's opening EQUITY (the figure plan step X-f5
-      books), not a correction -- so publishing it would say "the records were
-      off by $689.16 the day the account opened", which is false.  The loan
-      twin renders the same two cells ``--`` for the same reason, one tier
-      down: a loan opens from nothing.
     * **an account whose balance carries a MODELLED tier.**  The walk sees
       recorded CASH only; an HYSA's accrued interest and a brokerage's growth
       never were transactions, so the figure would name a model-vs-market gap
@@ -497,10 +489,10 @@ class CashAnchorRow:
             every account kind, which is why it is never ``None``.
         ledger: What the running balance held immediately before this assertion
             RESET it
-            (:attr:`~app.services.cash_ledger.CashAnchorCorrection.balance_before`),
+            (:attr:`~._assertions.CashAnchorCorrection.balance_before`),
             or ``None`` in the two cases above.
         correction: ``recorded - ledger``
-            (:attr:`~app.services.cash_ledger.CashAnchorCorrection.delta`) --
+            (:attr:`~._assertions.CashAnchorCorrection.delta`) --
             the jump THIS assertion booked, or ``None`` alongside
             :attr:`ledger`.
 
@@ -523,7 +515,14 @@ class CashAnchorRow:
             working: ``recorded - ledger`` reconciles on the row, and a day's
             corrections telescope to the day's total (``-7.46 + -38.97 +
             -45.86 = -92.29``, the gap the preview names).
-        is_opening: ``True`` for the account's first assertion.
+        is_opening: ``True`` for the assertion made on the day the account's
+            books OPENED, read from ``budget.account_openings`` rather than
+            from a position in the assertion series.  A LABEL for the card's
+            "Opening" badge and nothing more: no figure on this row is
+            conditioned on it.  *It was ``CashAnchorFact.is_opening`` until
+            plan step X-f3c-2a, and a back-dated assertion moved the badge onto
+            the earlier row -- captioning a day the owner had merely typed a
+            balance for as the day their books opened.*
     """
 
     observed_on: date
@@ -552,10 +551,15 @@ class CashAnchorHistory:
 
             **It cannot be derived from the rows, and that is a trap worth
             naming.**  ``any(row.correction is not None)`` looks equivalent and
-            is wrong for a PLAIN account carrying exactly ONE assertion: its
-            only row is the opening, whose pair is ``None`` for the ruled
-            reason above, and the derived flag would then hide the columns on
-            an account that reconciles perfectly well.  It is read from
+            is wrong for a PLAIN account whose every assertion agrees with its
+            books: every ``correction`` is then ``0.00`` -- not ``None``, but a
+            derived flag written as ``any(row.correction)`` would hide the
+            columns on the healthiest account there is.  A PLAIN account
+            carrying exactly ONE assertion was the older statement of this trap
+            and it was sharper still: until plan step X-f3c-2a that single row
+            was the OPENING, whose pair was suppressed outright, so the derived
+            flag hid the columns on an account that reconciles perfectly well.
+            It is read from
             :func:`~app.services.account_projection.classify_account`, stated
             once, here.
     """
@@ -577,11 +581,12 @@ def cash_anchor_history(
     by definition is not the back-dated row (finding **N-205**).
 
     **It needs no new producer and adds no new rule.**  Every column is a field
-    the walk already publishes: :class:`~app.services.cash_ledger.CashAnchorCorrection`
-    carries ``observed_on``, its anchor's ``anchor_balance`` and ``asserted_at``,
-    ``balance_before`` and ``delta``.  Re-deriving any of them here would be a
-    second statement of the walk's own arithmetic, which is the shape plan step
-    X-f2-a corrected in the difference preview.
+    the fold's assertion replay already publishes:
+    :class:`~._assertions.CashAnchorCorrection` carries ``observed_on``, its
+    anchor's ``anchor_balance`` and ``asserted_at``, ``balance_before`` and
+    ``delta``.  Re-deriving any of them here would be a second statement of that
+    replay's arithmetic, which is the shape plan step X-f2-a corrected in the
+    difference preview.
 
     **It takes no valuation date, and that is exact rather than an omission.**
     The loan twin
@@ -622,7 +627,26 @@ def cash_anchor_history(
     # would collapse ONE of this module's walks and quietly leave the other --
     # and plan step **X-i4** put that memo on the pass, so every reading here
     # shares the one assembly it holds.
-    walk = _cash_fold.assembled_fold(account, ctx).walk
+    folded = _cash_fold.assembled_fold(account, ctx)
+    corrections = folded.corrections
+    # **The badge reads the account's OPENING RECORD, not a position** (plan
+    # step X-f3c-2a).  It was ``CashAnchorFact.is_opening`` -- the earliest
+    # assertion by ``(observed_on, created_at, id)`` -- so recording a balance
+    # for a day before the books opened moved the badge onto that row and told
+    # the owner their books opened at a figure they had merely typed, beside a
+    # ledger/correction pair computed against the real opening.  The badged row
+    # is now the first assertion on the day ``budget.account_openings`` says the
+    # books opened; an account whose assertions all postdate that day carries no
+    # badge, which is honest rather than a gap.
+    opened_on = folded.walk.opening.opened_on
+    badged = next(
+        (
+            correction.anchor.anchor_id
+            for correction in corrections
+            if correction.observed_on == opened_on
+        ),
+        None,
+    )
     # ``booked`` rather than ``correction``: the walk's record and the row's
     # field would otherwise share a name inside one expression, and
     # ``correction=correction.delta`` reads as a self-reference.
@@ -632,20 +656,19 @@ def cash_anchor_history(
             recorded_at=booked.anchor.asserted_at,
             recorded_on=booked.anchor.recorded_on,
             recorded=booked.anchor.anchor_balance,
-            # One condition, both cases: the pair is published only where it
-            # has an agreed meaning (see :class:`CashAnchorRow`).
-            ledger=(
-                booked.balance_before
-                if reconcilable and not booked.anchor.is_opening
-                else None
-            ),
-            correction=(
-                booked.delta
-                if reconcilable and not booked.anchor.is_opening
-                else None
-            ),
-            is_opening=booked.anchor.is_opening,
+            # ONE condition now, where there were two (plan step X-f3c-2a):
+            # the OPENING row is no longer suppressed.  Its pair was hidden
+            # because the fold swallowed the opening's correction into its seed,
+            # so ``balance_before`` was the records summed from zero and the gap
+            # between them was opening EQUITY rather than a correction --
+            # publishing it would have said "the records were off by $689.16 the
+            # day the account opened", which is false.  With the equity a stored
+            # fact the pair means what the column headers say on every row: what
+            # the books held, and what the owner's declaration moved it by.
+            ledger=booked.balance_before if reconcilable else None,
+            correction=booked.delta if reconcilable else None,
+            is_opening=booked.anchor.anchor_id == badged,
         )
-        for booked in reversed(walk.anchor_corrections)
+        for booked in reversed(corrections)
     ]
     return CashAnchorHistory(rows=rows, reconcilable=reconcilable)

@@ -174,7 +174,7 @@ def preview_carry_forward(
     target_period_id: int,
     scenario_id: int,
     *,
-    calendar,
+    balance_ctx,
 ) -> CarryForwardPreview:
     """Return a read-only preview of a planned carry-forward batch.
 
@@ -204,19 +204,20 @@ def preview_carry_forward(
             it the same way the mutating route does.
         scenario_id: scenario filter; mirrors the mutating path so
             preview and execution see the same set of rows.
-        calendar: The owner's
-            :class:`~app.services.pay_calendar.PayCalendar`, derived once by
-            the route (pay-calendar plan step C2-f3c).  It names the owner and
-            answers both period lookups, so a period that is not this owner's
-            is simply not found.
+        balance_ctx: The request's
+            :class:`~app.services.balance_at.BalanceContext`, opened once by
+            the route (pay-calendar plan step C2-f3c; plan step R7d-c-1 moved
+            it from the calendar to the pass that derives one).  It names the
+            owner and its calendar answers both period lookups, so a period
+            that is not this owner's is simply not found.
 
     Returns:
         CarryForwardPreview.  Empty plans list when source == target
         or there are no projected rows in the source period.
 
     Raises:
-        NotFoundError: if either period is not in *calendar* -- it is missing,
-            or it is not this owner's.
+        NotFoundError: if either period is not in *balance_ctx*'s calendar
+            -- it is missing, or it is not this owner's.
 
     Side effects:
         None.  All database access is read-only and no session
@@ -225,7 +226,7 @@ def preview_carry_forward(
         any persisted side effects.
     """
     ctx = _build_carry_forward_context(
-        source_period_id, target_period_id, scenario_id, calendar,
+        source_period_id, target_period_id, scenario_id, balance_ctx,
     )
 
     plans: List[CarryForwardPlan] = []

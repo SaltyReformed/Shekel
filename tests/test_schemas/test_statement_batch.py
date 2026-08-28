@@ -30,23 +30,48 @@ from werkzeug.datastructures import MultiDict
 
 from app.services.statement_match import ReviewedRow, RowKind
 
-from app.schemas.validation.statements import (  # pylint: disable=protected-access
+from app.schemas.validation.merchant_rules import (  # pylint: disable=protected-access
     _MAX_RULE_ITEMS,
     ALWAYS_ASK,
-    LEAVE_ALONE,
     NEVER,
-    NEW_ENVELOPE,
     NOT_SAID,
     MerchantRuleBatchSchema,
+    rule_payload,
+)
+from app.schemas.validation.statements import (
+    StatementMatchSchema,
+    hand_match_payload,
+    LEAVE_ALONE,
+    NEW_ENVELOPE,
     StatementBatchSchema,
     batch_payload,
-    rule_payload,
 )
 
 
 def _form(pairs):
     """Return a ``MultiDict`` the way a browser would submit one."""
     return MultiDict(pairs)
+
+
+def _load_hand(form):
+    """Regroup and validate the WORKBENCH's one-group submission.
+
+    Plan step ``bank_import:X-gf-3b``: the consent box moved to a surface with
+    a door of its own, so the body it rides in is read by
+    :func:`~app.schemas.validation.statements.hand_match_payload` and graded by
+    :class:`~app.schemas.validation.statements.StatementMatchSchema` directly --
+    there is no ordering index, so there is no list of items to index into.
+
+    Args:
+        form: The request's ``MultiDict``.
+
+    Returns:
+        The loaded match.
+
+    Raises:
+        ValidationError: With marshmallow's own error structure.
+    """
+    return StatementMatchSchema().load(hand_match_payload(form))
 
 
 def _load(form):
@@ -219,11 +244,19 @@ class TestOnlyWhatWasTickedIsAnAct:
 class TestTheDifferenceTheOwnerAccepted:
     """Plan step ``bank_import:X-f6d-4``: the one field that is not per-row.
 
-    The consent box is rendered DISABLED and only ``statement_review.js``
-    enables it, filling its value with the running total -- so an unticked
-    group, and a browser with no JavaScript, both submit nothing at all.  What
-    this grades is that the three states are distinguishable on the wire and
-    that a hostile spelling cannot reach the door as a figure.
+    The consent box is rendered DISABLED with ``value=""`` in lockstep, so an
+    unticked group, and a browser with no JavaScript, both submit nothing at
+    all.  What this grades is that the three states are distinguishable on the
+    wire and that a hostile spelling cannot reach the door as a figure.
+
+    **It grades ``hand_match_payload``, not ``batch_payload``, since plan step
+    ``bank_import:X-gf-3b``.**  Every case here used to send ``apply=hand`` and
+    ``match-hand-*`` -- a shape no rendered control emits any more, because the
+    consent box moved to the workbench and its door reads flat field names.
+    The assertions are unchanged; the reader beneath them is the one that now
+    receives this body.  A class grading a payload nothing submits is a class
+    that has stopped testing what it names, which is what an adversarial
+    test-quality review found on 2026-08-28.
     """
 
     def test_an_unticked_group_carries_NONE(self):
@@ -232,36 +265,33 @@ class TestTheDifferenceTheOwnerAccepted:
         ``batch_payload`` omits the key rather than sending ``None``, so the
         default lives in exactly one place.
         """
-        loaded = _load(_form([
-            ("apply", "hand"),
-            ("match-hand-line_ids", "11"),
-            ("match-hand-rows", "transaction:42:-180.00:1"),
+        loaded = _load_hand(_form([
+            ("line_ids", "11"),
+            ("rows", "transaction:42:-180.00:1"),
         ]))
 
-        assert loaded["matches"][0]["residual"] is None
+        assert loaded["residual"] is None
 
     def test_a_ticked_group_carries_the_figure_it_showed(self):
         """A signed decimal, read into a ``Decimal`` for the door to compare."""
-        loaded = _load(_form([
-            ("apply", "hand"),
-            ("match-hand-line_ids", "11"),
-            ("match-hand-rows", "transaction:42:2473.38:1"),
-            ("match-hand-rows", "transaction:43:100.00:1"),
-            ("match-hand-residual", "0.05"),
+        loaded = _load_hand(_form([
+            ("line_ids", "11"),
+            ("rows", "transaction:42:2473.38:1"),
+            ("rows", "transaction:43:100.00:1"),
+            ("residual", "0.05"),
         ]))
 
-        assert loaded["matches"][0]["residual"] == Decimal("0.05")
+        assert loaded["residual"] == Decimal("0.05")
 
     def test_a_NEGATIVE_difference_is_read_as_one(self):
         """The bank took more than the rows say, which is the expense arm."""
-        loaded = _load(_form([
-            ("apply", "hand"),
-            ("match-hand-line_ids", "11"),
-            ("match-hand-rows", "transaction:42:-180.00:1"),
-            ("match-hand-residual", "-0.06"),
+        loaded = _load_hand(_form([
+            ("line_ids", "11"),
+            ("rows", "transaction:42:-180.00:1"),
+            ("residual", "-0.06"),
         ]))
 
-        assert loaded["matches"][0]["residual"] == Decimal("-0.06")
+        assert loaded["residual"] == Decimal("-0.06")
 
     @pytest.mark.parametrize("spelling, why", [
         ("NaN", "compares unequal to every figure, so a guard becomes a no-op"),
@@ -288,14 +318,13 @@ class TestTheDifferenceTheOwnerAccepted:
             why: What is wrong with it, for the failure message.
         """
         with pytest.raises(ValidationError) as caught:
-            _load(_form([
-                ("apply", "hand"),
-                ("match-hand-line_ids", "11"),
-                ("match-hand-rows", "transaction:42:-180.00:1"),
-                ("match-hand-residual", spelling),
+            _load_hand(_form([
+                    ("line_ids", "11"),
+                ("rows", "transaction:42:-180.00:1"),
+                ("residual", spelling),
             ]))
 
-        assert "matches" in caught.value.messages, why
+        assert "residual" in caught.value.messages, why
 
     def test_a_SUB_CENT_figure_is_read_verbatim_and_left_to_the_door(self):
         """The reader is about the FORMAT; the VALUE is the door's question.
@@ -308,14 +337,13 @@ class TestTheDifferenceTheOwnerAccepted:
         door's own figure, and the door says so
         (``test_residual.TestTheFigureTheOwnerAcceptedIsReconciled``).
         """
-        loaded = _load(_form([
-            ("apply", "hand"),
-            ("match-hand-line_ids", "11"),
-            ("match-hand-rows", "transaction:42:-180.00:1"),
-            ("match-hand-residual", "0.054"),
+        loaded = _load_hand(_form([
+            ("line_ids", "11"),
+            ("rows", "transaction:42:-180.00:1"),
+            ("residual", "0.054"),
         ]))
 
-        assert loaded["matches"][0]["residual"] == Decimal("0.054")
+        assert loaded["residual"] == Decimal("0.054")
 
     def test_an_EMPTY_consent_box_is_UNTOUCHED_rather_than_malformed(self):
         """This module's founding principle, on the newest control.
@@ -325,14 +353,13 @@ class TestTheDifferenceTheOwnerAccepted:
         ``disabled`` in lockstep so no browser sends this -- and a body that
         does would otherwise 400 the WHOLE pass over a field nobody filled in.
         """
-        loaded = _load(_form([
-            ("apply", "hand"),
-            ("match-hand-line_ids", "11"),
-            ("match-hand-rows", "transaction:42:-180.00:1"),
-            ("match-hand-residual", ""),
+        loaded = _load_hand(_form([
+            ("line_ids", "11"),
+            ("rows", "transaction:42:-180.00:1"),
+            ("residual", ""),
         ]))
 
-        assert loaded["matches"][0]["residual"] is None
+        assert loaded["residual"] is None
 
     def test_a_REPEATED_consent_cannot_desynchronise_the_item(self):
         """One consent per item, so a repeated key keeps the first.
@@ -342,15 +369,14 @@ class TestTheDifferenceTheOwnerAccepted:
         gets written -- which is why this reads with ``get`` rather than
         growing a list the schema would then have to reconcile.
         """
-        loaded = _load(_form([
-            ("apply", "hand"),
-            ("match-hand-line_ids", "11"),
-            ("match-hand-rows", "transaction:42:-180.00:1"),
-            ("match-hand-residual", "0.05"),
-            ("match-hand-residual", "-999.00"),
+        loaded = _load_hand(_form([
+            ("line_ids", "11"),
+            ("rows", "transaction:42:-180.00:1"),
+            ("residual", "0.05"),
+            ("residual", "-999.00"),
         ]))
 
-        assert loaded["matches"][0]["residual"] == Decimal("0.05")
+        assert loaded["residual"] == Decimal("0.05")
 
 
 
@@ -551,7 +577,11 @@ class TestTheBatchSchemaRefusesWhatItDoesNotDeclare:
             ("csrf_token", "x"),
         ])))
 
-        assert loaded == {"matches": [], "creations": []}
+        # SPELLED OUT rather than derived from the schema's own field list:
+        # deriving it would make this a tautology, and the whole point is that
+        # a THIRD kind of act (ruling **bank_import:R-GW**'s incomes) added on one side
+        # and not the other is caught here.
+        assert loaded == {"matches": [], "creations": [], "incomes": []}
 
 
 class TestTheRuleSectionOnTheWire:
@@ -679,7 +709,7 @@ class TestTheRuleSectionOnTheWire:
         ``apply=%C2%B2`` was a 500 on the money door until plan step
         X-f6a-3c-2, because ``str.isdigit`` is true for 888 characters and
         ``int()`` refuses 128 of them.  These keys are sorted through the same
-        ``_sort_key``, so the fix covers them -- and this is what says so.
+        ``order_token_key``, so the fix covers them -- and this is what says so.
         """
         payload = rule_payload(_form(
             [("rule-\N{SUPERSCRIPT TWO}", NEVER),

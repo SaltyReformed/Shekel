@@ -1,13 +1,33 @@
 """
-Shekel Budget App -- The statement review screen and its two write doors
+Shekel Budget App -- The statement review QUEUE and its write doors
 
 "Which of my rows is this bank line?" -- the page that proposes matches, the
-POST that applies a whole reviewed pass, and the POST that releases one match.
-Plan steps **bank_import:X-f6a-2** and **X-f6a-3c-2**, rulings **R-FS**,
-**R-FP** and **R-FV**.
+POST that applies a whole reviewed pass, and the POST that answers for a
+merchant nobody has answered for yet.  Plan steps **bank_import:X-f6a-2** and
+**X-f6a-3c-2**, rulings **R-FS**, **R-FP** and **R-FV**.
 
-**It MOVES MONEY, and it is the only screen in the app where the BANK gets the
-last word on a date.**  Accepting a match writes the bank's posted day onto
+**It is the EXCEPTION QUEUE and nothing else**, and TWO steps made that true
+rather than one.
+
+* Plan step ``bank_import:X-gf-2`` (ruling **bank_import:R-GX**) took away the
+  decisions already MADE: the matches already accepted and the merchants
+  already answered for are :mod:`.statement_register`'s, and the undo that acts
+  on one went with them.  Measured on the developer's own data before that
+  split: they were 442,109 bytes of a 578,523-byte page, and the work a routine
+  import leaves was 136,414.
+* Plan step ``bank_import:X-gf-3b`` (ruling **bank_import:R-HC**) took away the
+  TOOL: the hand-build match form is what three separate exceptions send the
+  owner to and is not itself an exception, so it is
+  :mod:`.statement_workbench`'s -- with its own write door, its own live-totals
+  endpoint and no ordering token to collide with this one's.  Measured through
+  this route on a clone of his data 2026-08-28: the review body rendered
+  150,853 bytes of which that form's two unbounded pick lists were **89,247**
+  (finding **bank_import:N-374**).
+
+**It MOVES MONEY, and it is one of the TWO screens where the BANK gets the
+last word on a date** -- :mod:`.statement_workbench` is the other since plan
+step ``bank_import:X-gf-3b``, and this sentence said *the only* until then.
+Accepting a match writes the bank's posted day onto
 every row the match names -- settling one still Projected and correcting one
 whose recorded day was wrong.  Recording a line adds a movement the app did not
 have at all.  Measured on the developer's own 2026-08-16 export against a
@@ -57,48 +77,35 @@ and write to :mod:`app.services.statement_match`.
 """
 
 import logging
+from functools import partial
 
-from flask import flash, redirect, render_template, request, url_for
+from flask import render_template, request
 from flask_login import current_user, login_required
-from sqlalchemy.exc import SQLAlchemyError
-
-from app.exceptions import ValidationError
-from app.extensions import db
 from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts._statement_doors import (
-    StatementDoorContext,
+    fragment_door,
+    outcome_counts,
     refusal_sentence,
-    run_statement_door,
+    run_statement_fragment_door,
 )
 from app.routes.accounts._cash_page import load_cash_account_or_404
-from app.schemas.validation import form_payload
+from app.routes.accounts._statement_rules import record_submitted_rules
 from app.schemas.validation.statements import (
-    ALWAYS_ASK,
-    NEVER,
     NEW_ENVELOPE,
-    NOT_SAID,
-    MerchantRuleBatchSchema,
     StatementBatchSchema,
-    StatementMatchReleaseSchema,
     batch_payload,
-    rule_payload,
 )
 from app.services.category_service import list_active_categories
 from app.services.statement_match import (
     Consent,
-    HandTotals,
+    IncomeCreation,
     MatchSubmission,
     NewEnvelope,
-    RuleAnswer,
-    RuleSubmission,
     PurchaseCreation,
     ReviewedBatch,
     ReviewScope,
     apply_reviewed,
-    preview_hand_build,
-    release_match,
     review_set,
-    state_rules,
 )
 from app.utils.auth_helpers import require_owner
 from app.utils.error_fragments import designed_error
@@ -110,17 +117,16 @@ from app.utils.log_events import (
 
 _logger = logging.getLogger(__name__)
 
-#: One schema instance each, constructed at import like every sibling's.
+#: One schema instance, constructed at import like every sibling's.  The
+#: merchant-rule form has its own, beside the door that reads it
+#: (:mod:`._statement_rules`).
 _batch_schema = StatementBatchSchema()
-_release_schema = StatementMatchReleaseSchema()
-_rule_schema = MerchantRuleBatchSchema()
 
 #: The partial both the page and the batch POST render.  Extracted at plan step
 #: X-f6a-3c-2 so the answer to "apply this pass" is the SCREEN carrying its own
 #: receipt: ONE template, so what a batch swaps in cannot drift from what a
 #: reload shows.
 _BODY = "accounts/_statement_review_body.html"
-_HAND_TOTALS = "accounts/_statement_hand_totals.html"
 
 #: What a database failure tells the owner.  It names no table -- the traceback
 #: goes to the log -- and it ends the way every refusal in this package does,
@@ -166,16 +172,13 @@ def _review_context(
     return {
         "account": account,
         "review": review_set(scope),
-        # The hand-build panel, drawn EMPTY on every full render and re-drawn
-        # by its own endpoint as the owner ticks (plan step
-        # ``bank_import:X-f6d-4``).  Empty rather than derived, because a full
-        # render answers a request that ticked nothing -- and after a pass the
-        # form's checkboxes come back unticked, so a panel showing a total
-        # would be describing a selection that no longer exists.
-        "totals": HandTotals.untouched(),
-        "total_url": url_for(
-            "accounts.statement_review_totals", account_id=account.id,
-        ),
+        # **No hand-build panel and no totals URL** since plan step
+        # ``bank_import:X-gf-3b`` (ruling **bank_import:R-HC**): the form those
+        # served is a surface of its own, with its own context builder, its own
+        # live-totals endpoint and its own write door
+        # (:mod:`.statement_workbench`).  What this queue keeps is a LINK to it
+        # on every exception, carrying the line that exception is about.
+        #
         # The picker the NEW-ENVELOPE arm needs (plan step X-f6a-3b).  Loaded
         # here rather than inside the review set because it is not a fact about
         # the statement: it is what any create form on this account offers, and
@@ -186,6 +189,47 @@ def _review_context(
         "error": error,
         "rules": rules,
     }
+
+
+def _render(account, scope, *, outcome=None, error=None, rules=None):
+    """Return this door's own surface, carrying whatever there is to say.
+
+    **ONE answer for all three outcomes** (plan step ``bank_import:X-gf-3b``):
+    a plain render, a receipt after a pass, and a refusal are the same page
+    with a different thing to say, and this module used to state "answer with
+    the review body" in three places -- ``_refused`` beside two renders --
+    which is three places for the answer to drift.
+
+    **A refusal is a designed 400** and carries the marker htmx needs, because
+    htmx leaves a 4xx non-swapping: a refusal that renders NOTHING reads as a
+    broken button, which is worse than the error it reports.  It is rendered
+    from whichever scope the caller passes, and on the money door that choice
+    belongs to :func:`~._statement_doors.run_statement_fragment_door` -- the
+    request's own on every refusal arm, because a refused pass wrote nothing
+    and re-deriving on the ``SQLAlchemyError`` path would run the very read
+    whose failure is being handled.
+
+    Args:
+        account: The owned, attached account.
+        scope: The pass to render from.
+        outcome: The :class:`~app.services.statement_match.BatchOutcome` to
+            report, or ``None``.
+        error: A sentence explaining why nothing was applied at all, or
+            ``None``.
+        rules: The :class:`~app.services.statement_match.StatedRules` a pass
+            over the merchant section produced, or ``None``.
+
+    Returns:
+        The rendered body at 200, or the designed-fragment
+        ``(body, 400, headers)`` triple when *error* is set.
+    """
+    body = render_template(
+        _BODY,
+        **_review_context(
+            account, scope, outcome=outcome, error=error, rules=rules,
+        ),
+    )
+    return body if error is None else designed_error(body, 400)
 
 
 @accounts_bp.route("/accounts/<int:account_id>/statements/review")
@@ -262,6 +306,13 @@ def _submitted_batch(submitted) -> ReviewedBatch:
             )
             for item in submitted["creations"]
         ),
+        # **The lines of money COMING IN the owner ticked** (ruling **bank_import:R-GW**).
+        # One id each and nothing to unpack: an income row is filed against no
+        # container, so there is no arm to read out of the submission.
+        incomes=tuple(
+            IncomeCreation(line_id=item["line_id"])
+            for item in submitted["incomes"]
+        ),
     )
 
 
@@ -303,134 +354,67 @@ def apply_statement_review(account_id):
     payload = batch_payload(request.form)
     errors = _batch_schema.validate(payload)
     if errors:
-        return _refused(account, scope, refusal_sentence(errors))
+        return _render(account, scope, error=refusal_sentence(errors))
     submitted = _batch_schema.load(payload)
 
-    try:
-        outcome = apply_reviewed(_submitted_batch(submitted), scope)
-        db.session.commit()
-    except ValidationError as exc:
-        # **Nothing inside this ``try`` raises one today, and the arm stands
-        # anyway.**  Every per-item refusal is caught by ``_batch._run`` and
-        # reported on the outcome, which is the whole point of the savepoints;
-        # ``_submitted_batch`` builds frozen values and cannot refuse; and the
-        # commit raises ``SQLAlchemyError``.  Two earlier versions of this
-        # comment each named a path that does not exist, which is worse than
-        # naming none.
-        #
-        # What justifies keeping it is the SURFACE rather than a known caller:
-        # a designed refusal escaping an htmx POST is answered by the app-wide
-        # handler with a page htmx will not swap (no marker header), so the
-        # owner presses Apply and sees nothing at all.  This arm is the only
-        # thing that can answer with the screen.  It has a firing control --
-        # ``test_a_refusal_raised_OUTSIDE_an_item_still_answers_with_the_screen``
-        # -- so it is a guard something can observe rather than one nothing can.
-        db.session.rollback()
-        return _refused(account, scope, str(exc))
-    except SQLAlchemyError:
-        db.session.rollback()
-        _logger.exception(
-            "user_id=%d failed to apply a statement review on account %d",
-            current_user.id, account_id,
+    def _record(outcome):
+        """Log what this pass did, AFTER the commit that made it true.
+
+        It is the pass-level event beside the per-act ones, and the only place
+        a REFUSED item is counted at all.
+
+        Args:
+            outcome: The :class:`~app.services.statement_match.BatchOutcome`
+                the door applied.
+        """
+        log_event(
+            _logger, logging.INFO, EVT_STATEMENT_BATCH_APPLIED, BUSINESS,
+            "A reviewed statement pass was applied.",
+            user_id=current_user.id,
+            account_id=account_id,
+            item_count=(
+                len(submitted["matches"])
+                + len(submitted["creations"])
+                # **Every kind of act this pass carried** (ruling
+                # **bank_import:R-GW**).  A count that named two of three kinds
+                # would make the audit trail disagree with ``applied_count``
+                # for any pass holding a deposit.
+                + len(submitted["incomes"])
+            ),
+            # **The eleven money effects, stated ONCE for both doors that
+            # apply a BatchOutcome** (:func:`~._statement_doors
+            # .outcome_counts`).  They were spelled out here until plan step
+            # ``bank_import:X-gf-3b`` gave the hand-built match a door of its
+            # own, at which point the list existed twice -- and it is a list
+            # this event has already been caught missing two entries from,
+            # both of them effects that move MONEY rather than dates.
+            **outcome_counts(outcome),
         )
-        return _refused(account, scope, _DB_ERROR_MESSAGE)
 
-    # AFTER the commit, so an event asserting a pass landed cannot sit in the
-    # log for a transaction that failed -- the discipline ``statements``' own
-    # import event states for itself.  It is the pass-level event beside the
-    # per-act ones, and the only place a REFUSED item is counted at all.
-    log_event(
-        _logger, logging.INFO, EVT_STATEMENT_BATCH_APPLIED, BUSINESS,
-        "A reviewed statement pass was applied.",
-        user_id=current_user.id,
-        account_id=account_id,
-        item_count=len(submitted["matches"]) + len(submitted["creations"]),
-        applied_count=outcome.applied_count,
-        refused_count=outcome.refused_count,
-        settled_count=outcome.settled_count,
-        corrected_count=outcome.corrected_count,
-        redated_count=outcome.redated_count,
-        # **The two effects this event was silent about**, and they are the
-        # ones that move money rather than dates: a repricing changes what a
-        # payment cost, and a residual records a row the app did not hold at
-        # all.  Named by adversarial financial review 2026-08-23; the first
-        # had been missing since the pass event was written.
-        repriced_count=outcome.repriced_count,
-        residual_count=outcome.residual_count,
-        residual_total=str(outcome.residual_total),
-        recorded_count=outcome.recorded_count,
-        envelopes_created=outcome.envelopes_created,
-    )
-
-    # A FRESH scope for the ANSWER, and only on the path that WROTE.  The pass
-    # has just settled rows, moved days and created purchases, so the one it
-    # was applied against describes a state that no longer exists -- and this
-    # screen is where the owner checks what happened.  Two derivations for a
-    # whole pass, against the 215 the single-act doors took.
-    return render_template(
-        _BODY,
-        **_review_context(
-            account, ReviewScope.build(current_user.id, account_id),
-            outcome=outcome,
+    # ONE failure story AND one answer for every fragment-shaped statement door
+    # (:func:`~._statement_doors.run_statement_fragment_door`), which owns the
+    # commit and chooses the scope each arm renders from: a failure outside a
+    # designed refusal writes nothing at all, and a pass is never reported
+    # against the state it replaced.
+    #
+    # **Nothing inside the act raises a ``ValidationError`` today, and the arm
+    # in that helper stands anyway.**  Every per-item refusal is caught by
+    # ``_batch._run`` and reported on the outcome, which is the whole point of
+    # the savepoints; ``_submitted_batch`` builds frozen values and cannot
+    # refuse; and the commit raises ``SQLAlchemyError``.  Two earlier versions
+    # of this comment each named a path that does not exist, which is worse
+    # than naming none.  What justifies keeping it is the SURFACE, and it has a
+    # firing control --
+    # ``test_a_refusal_raised_OUTSIDE_an_item_still_answers_with_the_screen``.
+    return run_statement_fragment_door(
+        fragment_door(
+            _logger, render=partial(_render, account), scope=scope,
+            account_id=account_id, act="apply a statement review",
+            db_error_message=_DB_ERROR_MESSAGE,
         ),
+        lambda: apply_reviewed(_submitted_batch(submitted), scope),
+        _record,
     )
-
-
-def _submitted_rules(submitted) -> "tuple[RuleSubmission, ...]":
-    """Return the loaded payload as the statements the service records.
-
-    **The wire's five values become the service's four answers, and the fifth
-    becomes NOTHING** (ruling **R-GS**, plan step ``bank_import:X-gd-2``).  The
-    mapping happens HERE because it is a fact about the FORM rather than about
-    the domain: the service's
-    :class:`~app.services.statement_match.RuleAnswer` has no member for *I have
-    not said*, since not having said something is the absence of a row.
-
-    **:data:`~app.schemas.validation.statements.NOT_SAID` is DROPPED rather
-    than carried as a null answer.**  It used to travel to the door as
-    ``answer=None`` and mean *withdraw*, so the door had a delete arm and an
-    optional answer; there is no withdrawal now, so a submission that states
-    nothing is an item with nothing in it.  Dropping it here is what lets
-    :class:`~app.services.statement_match.RuleSubmission` require its answer,
-    which is what makes an answer-less rule row unconstructible one tier down.
-    It is most of an ordinary pass: the section submits every merchant it
-    renders, and a merchant with no rule submits this.
-
-    Args:
-        submitted: What :class:`~app.schemas.validation.statements
-            .MerchantRuleBatchSchema` loaded.
-
-    Returns:
-        One :class:`~app.services.statement_match.RuleSubmission` per merchant
-        the section rendered AND ANSWERED FOR, in the order it rendered them.
-    """
-    statements = []
-    for item in submitted["rules"]:
-        answer = item["answer"]
-        if answer == NOT_SAID:
-            continue
-        if answer == NEVER:
-            statements.append(RuleSubmission(
-                merchant_id=item["merchant_id"], answer=RuleAnswer.NEVER,
-            ))
-        elif answer == ALWAYS_ASK:
-            statements.append(RuleSubmission(
-                merchant_id=item["merchant_id"], answer=RuleAnswer.ALWAYS_ASK,
-            ))
-        elif answer == NEW_ENVELOPE:
-            statements.append(RuleSubmission(
-                merchant_id=item["merchant_id"],
-                answer=RuleAnswer.NEW_ENVELOPE,
-                envelope_name=item["envelope_name"],
-                category_id=item["category_id"],
-            ))
-        else:
-            statements.append(RuleSubmission(
-                merchant_id=item["merchant_id"],
-                answer=RuleAnswer.TEMPLATE,
-                template_id=answer,
-            ))
-    return tuple(statements)
 
 
 @accounts_bp.route(
@@ -466,7 +450,7 @@ def state_merchant_rules(account_id):
 
     # ONE derivation, built BEFORE the write, and both halves of that are the
     # point.  **Once**, because every arm below renders the screen and
-    # ``_refused``'s own docstring records what re-deriving costs: on the
+    # ``_render``'s own docstring records what re-deriving costs: on the
     # database arm, the connection that produced the first error very likely
     # produces a second, which escapes as an unhandled 500 that htmx will not
     # swap -- so the owner presses Save and sees nothing at all.  **Before**,
@@ -484,219 +468,9 @@ def state_merchant_rules(account_id):
     # X-f6a-3c-2.
     scope = ReviewScope.build(current_user.id, account_id)
 
-    payload = rule_payload(request.form)
-    errors = _rule_schema.validate(payload)
-    if errors:
-        return _refused(account, scope, refusal_sentence(errors))
-    statements = _submitted_rules(_rule_schema.load(payload))
-
-    try:
-        recorded = state_rules(statements, current_user.id, account_id)
-        db.session.commit()
-    except ValidationError as exc:
-        db.session.rollback()
-        return _refused(account, scope, str(exc))
-    except SQLAlchemyError:
-        db.session.rollback()
-        _logger.exception(
-            "user_id=%d failed to record merchant rules on account %d",
-            current_user.id, account_id,
-        )
-        return _refused(account, scope, _DB_ERROR_MESSAGE)
-
-    return render_template(
-        _BODY, **_review_context(account, scope, rules=recorded),
+    outcome = record_submitted_rules(
+        request.form, current_user.id, account_id, _logger,
     )
-
-
-def _refused(account, scope, message: str):
-    """Re-render the review body carrying *message*, as a designed 400.
-
-    **The re-render happens AFTER the rollback**, so the surface describes the
-    state that survives rather than one about to be discarded -- the discipline
-    ``reconcile._refusal`` states for the same shape.  It carries the
-    designed-fragment marker because htmx leaves a 4xx non-swapping, and a
-    refusal that renders NOTHING reads as a broken button, which is worse than
-    the error it reports.
-
-    **It reuses the request's OWN scope rather than deriving a second one**,
-    and that is a correctness fix rather than a saving.  A refused pass wrote
-    nothing, so the scope it was applied against still describes the state that
-    survives -- and re-deriving would run the very read whose failure this arm
-    is handling: on the ``SQLAlchemyError`` path, the connection or timeout
-    that produced the first error very likely produces a second, which escapes
-    as an unhandled 500.  htmx does not swap a 500 (it carries no marker
-    header), so the owner would see nothing at all.  Found by adversarial
-    security review 2026-08-19.
-
-    Args:
-        account: The owned, attached account.
-        scope: The request's derived offer set, still valid because nothing
-            was written.
-        message: The user-facing reason, one sentence.
-
-    Returns:
-        The designed-fragment ``(body, 400, headers)`` triple.
-    """
-    return designed_error(
-        render_template(
-            _BODY,
-            **_review_context(account, scope, error=message),
-        ),
-        400,
-    )
-
-
-@accounts_bp.route(
-    "/accounts/<int:account_id>/statements/review/totals", methods=["POST"],
-)
-@login_required
-@require_owner
-def statement_review_totals(account_id):
-    """Answer what the hand-build form's ticked lines and rows come to.
-
-    Plan step ``bank_import:X-f6d-4``, ruling **R-FN**.  A difference is a
-    transaction the owner ACCEPTS, and the group they are assembling is one
-    nothing has computed -- so this computes it, and the consent box the
-    fragment renders carries the SERVER's own figure.
-
-    **It MOVES NO MONEY and writes nothing**, which is why it may fire on
-    every tick.  It runs the accept door's reads and refusals through
-    :func:`~app.services.statement_match.preview_hand_build` and renders the
-    answer; the only door that writes is still
-    ``apply_statement_review``.  It is a POST rather than a GET because it
-    carries a list of ids and a CSRF token, not because it changes anything --
-    the same reason the rule section posts.
-
-    **It takes the body Apply would send**, read through the same
-    ``batch_payload`` regrouping, so the panel is that act asked what it would
-    do rather than a second opinion about it.  A submission naming no hand
-    item -- which is what an untouched form sends -- renders the empty panel.
-
-    Args:
-        account_id: The account being reviewed.
-
-    Returns:
-        The re-rendered panel, at 200; or the same panel carrying one refusal
-        sentence at 400, marked as a designed fragment so htmx swaps it.
-    """
-    # The ownership proof, for its refusal rather than for its value: this
-    # answer names no account, and the project's rule is 404 for both "not
-    # found" and "not yours".
-    load_cash_account_or_404(account_id)
-    scope = ReviewScope.build(current_user.id, account_id)
-    context = {
-        "total_url": url_for(
-            "accounts.statement_review_totals", account_id=account_id,
-        ),
-    }
-
-    payload = batch_payload(request.form)
-    errors = _batch_schema.validate(payload)
-    if errors:
-        return designed_error(
-            render_template(
-                _HAND_TOTALS,
-                totals=HandTotals.refused(refusal_sentence(errors)),
-                **context,
-            ),
-            400,
-        )
-    submitted = _batch_schema.load(payload)
-    matches = _submitted_batch(submitted).matches
-    totals = (
-        preview_hand_build(matches[0], scope) if matches
-        else HandTotals.untouched()
-    )
-    # NO event and NO commit.  Nothing was written, and a read pass that logged
-    # would put a line in the audit trail for every checkbox on the page.
-    return render_template(_HAND_TOTALS, totals=totals)
-
-
-def _release_report(released) -> "tuple[str, str]":
-    """Return the flash for one released match: what came back, and what went.
-
-    **The removal half is not an aside**, which is why it names a figure and
-    not only a count (plan step ``bank_import:X-f6f``): this act destroys the
-    app's record of money that moved, and a receipt saying "1 row" over a
-    `$213.49` swipe is the *"Nothing moved."* sentence ruling **R-GD** has
-    already had to correct once, one door over.
-
-    Args:
-        released: The :class:`~app.services.statement_match.ReleasedMatch`.
-
-    Returns:
-        ``(message, category)``.
-    """
-    removed = (
-        f"  It also removed the {released.removed_rows} row(s) that match had "
-        f"created, worth {released.removed_cash:+,.2f}."
-        if released.removed_rows else ""
-    )
-    kept = (
-        f"  {released.kept_containers} budget line(s) it created were kept: "
-        f"something is still filed under them, or you have edited them since."
-        if released.kept_containers else ""
-    )
-    return (
-        "Match undone.  Those statement lines are unexplained again; the days "
-        f"they corrected are unchanged.{removed}{kept}",
-        "info",
-    )
-
-
-@accounts_bp.route(
-    "/accounts/<int:account_id>/statements/review/release", methods=["POST"],
-)
-@login_required
-@require_owner
-def release_statement_match(account_id):
-    """Undo one match: put its bank lines back, and take back what it created.
-
-    **It does NOT put the settle days back**, and the page says so: the bank is
-    still the best evidence the app has about when that money moved, so
-    reverting a correction in order to tidy a relation would throw away the
-    fact and keep the bookkeeping.  What comes back is the QUESTION.
-
-    **It DOES remove the rows the act created** (plan step
-    ``bank_import:X-f6f``, ruling **R-GG**), which is why the button carries a
-    ``data-confirm`` naming them and their figure: a purchase a bank line
-    became is money the app records only because this act recorded it, and the
-    control that withdraws it is the one place the owner can see how much.
-
-    **It stays a plain POST-redirect-GET** where its sibling became an htmx
-    swap, and the difference is the subject rather than an inconsistency: this
-    names ONE act and either does it or refuses it, so a flash carries the
-    whole answer.  Its sibling reports per-item outcomes no flash can hold.
-
-    Args:
-        account_id: The account being reviewed.
-
-    Returns:
-        A redirect back to the review page.
-    """
-    account = load_cash_account_or_404(account_id)
-    target = url_for("accounts.review_statements", account_id=account_id)
-
-    payload = form_payload(request.form, _release_schema)
-    errors = _release_schema.validate(payload)
-    if errors:
-        flash(refusal_sentence(errors), "warning")
-        return redirect(target)
-
-    match_id = _release_schema.load(payload)["match_id"]
-    return run_statement_door(
-        StatementDoorContext(
-            logger=_logger,
-            refusal=ValidationError,
-            log_message="user_id=%d failed to release a match on account %d",
-            log_args=(current_user.id, account_id),
-            flash_message=(
-                "Something went wrong undoing that match.  Nothing was "
-                "changed."
-            ),
-            target=target,
-        ),
-        lambda: release_match(match_id, current_user.id, account.id),
-        _release_report,
-    )
+    if outcome.refusal is not None:
+        return _render(account, scope, error=outcome.refusal)
+    return _render(account, scope, rules=outcome.recorded)

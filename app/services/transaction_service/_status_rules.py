@@ -87,17 +87,28 @@ def _mismatched_settled_status_ids(txn: Transaction) -> frozenset[int]:
     :func:`._row_rules.settles_from_entries` is published.
 
     **It is the TYPE PAIR minus this row's, NOT the settled band minus this
-    row's, and the difference is a capability.**  The band has THREE members and
-    the third is ``Settled`` -- the archive, which is not type-specific: an
-    expense reaches it from Paid and an income row from Received.  A first draft
+    row's -- and since plan step X-am those two sets are EQUAL, which makes the
+    distinction easier to lose and no less real.**  The band held a third
+    member, ``Settled``, the archive, which was not type-specific: an expense
+    reached it from Paid and an income row from Received.  A first draft
     subtracted the whole band, so ``Settled`` counted as "mismatched" for every
     row and :func:`offerable_status_ids` removed it from every dropdown --
-    silently retiring the only control that offers the archive, while the state
+    silently retiring the only control that offered the archive, while the state
     machine still called ``Paid -> Settled`` legal and the seam still preserved
     the settle day across it.  Caught by adversarial review, and two assertions
     written in the same step said the opposite ("the full-edit Status dropdown
     can still reach it"), which is what made it a mistake rather than a
     decision.
+
+    **So the pair stays written out rather than collapsing to
+    ``settled_status_ids()``, and the coincidence is the reason, not an
+    argument against it.**  The question this asks is *which settled statuses
+    belong to a TYPE OTHER THAN THIS ROW'S* -- and "is settled" is a different
+    predicate that happens to select the same two rows today.  Reading the band
+    here would re-arm the exact defect above the moment a settled status exists
+    that no transaction type settles into, which is live territory: the
+    credit_card arc's own plan makes ``Credit`` terminal and adds card states.
+    A set that must not widen with the band cannot be derived from the band.
 
     A SET rather than an equality, and deliberately: an inline equality against
     a resolved status id is the D6-09 shape the project's own census test

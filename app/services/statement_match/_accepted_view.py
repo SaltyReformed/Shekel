@@ -4,8 +4,16 @@ Plan step ``bank_import:X-f6a-2`` built this reader; plan step
 ``bank_import:X-f6a-3d`` moved it out of :mod:`._reads`, which had grown past
 the 1,000-line module ceiling.  The boundary is a real one rather than a place
 to cut: :mod:`._reads` answers *what is there to do*, and this answers *what
-was already done and does it still say what it said*.  They are read in one
-request and share nothing but the account.
+was already done and does it still say what it said*.
+
+**They are read by two different SCREENS since plan step
+``bank_import:X-gf-2``** (ruling **bank_import:R-GX**), which is the same
+boundary made visible: the review screen is the exception queue, and every act
+already accepted is on the register, where it is found and undone.  So this
+module no longer runs inside the review pass at all -- it was valuing 221 acts
+on the developer's own account on every render of a page whose panel for them
+he was not reading -- and it needs no :class:`~._scope.ReviewScope`, no
+calendar and no candidate derivation of its own.
 
 **Agreement is DERIVED, never stored** (:mod:`app.models.statement_match`).
 Nothing records the day a match asserted -- that is ``max(posted_on)`` over its
@@ -26,10 +34,8 @@ from datetime import date
 from decimal import Decimal
 
 from app.exceptions import AmountUnresolvable
-from app.extensions import db
 from app.models.statement_import import BankStatementLine
 from app.models.transaction import Transaction
-from app.models.transaction_entry import TransactionEntry
 from app.services import cash_ledger
 from app.utils.balance_predicates import is_balance_contributing
 from app.utils.log_events import (
@@ -42,7 +48,6 @@ from ._release import (
     PlannedRemovals,
     acts_of,
     planned_removals,
-    warm_subjects,
 )
 from ._sides import MatchSides
 
@@ -117,7 +122,7 @@ class AcceptedGroup:  # pylint: disable=too-many-instance-attributes
             against a foreign key to the rule row -- and a fact written and
             never seen is the shape this arc keeps finding.  It is what lets
             the import receipt list exactly the acts nobody pressed, and what
-            lets the review screen say which of its accepted matches the owner
+            lets the register say which of the accepted matches the owner
             agreed to line by line.  **No default, which is the discipline every
             other link in this chain keeps**: ``ReviewedBatch.consent``,
             ``create_purchase_from_line``'s keyword-only flag and the column
@@ -175,43 +180,26 @@ def accepted_groups(
     """
     # ONE loader, shared with the import page's delete preview
     # (:func:`~._release.acts_of`): an act is only readable with BOTH its
-    # relations -- what it names decides whether it still holds, and what it
-    # created decides what the Undo control would take back.  It narrows by
-    # the owner as well as the account, which is the pair the write door
-    # itself uses.
+    # relations AND the row each of them names -- what it names decides
+    # whether it still holds, and what it created decides what the Undo
+    # control would take back.  It narrows by the owner as well as the
+    # account, which is the pair the write door itself uses, and every subject
+    # below arrives through a join carrying that account
+    # (:data:`~._release._WHOLE_ACT`, finding **bank_import:N-358**).
+    #
+    # **That replaced three by-id reads and a warm** (plan step
+    # ``bank_import:X-gf-2``).  This fold collected the member ids and selected
+    # the lines, transactions and purchases back by primary key alone, and
+    # separately warmed the creations' subjects into the identity map -- a warm
+    # whose result had to be held, because that map's references are weak.
+    # Nothing leaked through the by-id reads, every id having come from a
+    # scoped act, but that is safety by DERIVATION over an open set of future
+    # callers; and a discipline about holding a variable is one a reader can
+    # drop without anything saying so.  Both are now properties of how the act
+    # is loaded.
     matches = acts_of(owner_id, account_id, match_ids)
     if not matches:
         return []
-
-    # **The creations' SUBJECTS, warmed in two statements before the fold**
-    # (plan step ``bank_import:X-ge``).  :func:`planned_removals` reaches each
-    # with ``db.session.get``, which is the right shape for the DOOR and the
-    # wrong one for a reader folding many acts -- measured by the helper's own
-    # docstring at 478 queries and 0.458 s over 230 acts against 9 and 0.039 s.
-    # ``removals_by_match`` has warmed since it was written; this fold, which
-    # is the same fold, did not, and it looked cheap only because 218 of the
-    # developer's 221 acts pre-date the creations relation and short-circuit.
-    # **Every act from X-ge on carries one**, and this reader is now on the
-    # IMPORT path, so the difference stopped being a slow page.
-    #
-    # ``warmed`` is read for its LIFETIME rather than its value: SQLAlchemy's
-    # identity map holds WEAK references, so a warm nothing points at is
-    # collected before the fold reaches it.
-    warmed = warm_subjects([match for match in matches if match.creations])
-
-    member_rows = [member for match in matches for member in match.members]
-    lines = _by_id(BankStatementLine, {
-        member.bank_statement_line_id for member in member_rows
-        if member.bank_statement_line_id is not None
-    })
-    transactions = _by_id(Transaction, {
-        member.transaction_id for member in member_rows
-        if member.transaction_id is not None
-    })
-    entries = _by_id(TransactionEntry, {
-        member.transaction_entry_id for member in member_rows
-        if member.transaction_entry_id is not None
-    })
 
     groups = []
     for match in matches:
@@ -241,7 +229,7 @@ def accepted_groups(
         # not a group.  So the screen stays up, the operator is told, and the
         # state itself is what the three guarantees above prevent.
         match_lines = [
-            lines[member.bank_statement_line_id] for member in match.members
+            member.line for member in match.members
             if member.bank_statement_line_id is not None
         ]
         if not match_lines:
@@ -254,9 +242,8 @@ def accepted_groups(
         posts_on = max(line.posted_on for line in match_lines)
         rows = [
             _accepted_row(
-                transactions[member.transaction_id]
-                if member.transaction_id is not None
-                else entries[member.transaction_entry_id],
+                member.transaction
+                if member.transaction_id is not None else member.entry,
                 posts_on,
             )
             for member in match.members
@@ -276,10 +263,77 @@ def accepted_groups(
             removes=planned_removals(match),
             applied_by_rule=match.applied_by_rule,
         ))
-    # The warm is held until HERE, past the last ``planned_removals``, for the
-    # reason the comment at the top of this function gives.
-    del warmed
     return groups
+
+
+#: How many SETTLED acts the register renders before it stops.
+#:
+#: **A bound on what is RENDERED, never on what is read** (ruling
+#: **bank_import:R-GX**, developer 2026-08-27).  Whether an act still holds is
+#: a VALUATION over its member rows (:func:`_still_holds`) and not a query, so
+#: the fold has to reach every act to know which ones no longer do -- and an
+#: act that no longer holds is the one thing on that page worth finding.  So
+#: every such act is rendered whatever its age, and the bound falls only on the
+#: remainder, which is a log.
+#:
+#: Measured on the developer's own data 2026-08-27: 221 acts, 216,637 bytes,
+#: 0 of them out of agreement -- so this cuts the register's own card to about
+#: a quarter of that, and cuts nothing an owner is looking for.
+REGISTER_LIMIT = 50
+
+
+@dataclass(frozen=True)
+class AcceptedRegister:
+    """The accepted acts a register renders, and how many it withheld.
+
+    Plan step ``bank_import:X-gf-2``, ruling **bank_import:R-GX**.  **The
+    count travels with the rows** because a truncated list that does not say
+    it is truncated is a page claiming to be the whole record -- and this one
+    is the only surface where an act can be found and undone.
+
+    Attributes:
+        shown: The acts to render: every one that NO LONGER HOLDS, newest
+            first, then the newest :data:`REGISTER_LIMIT` of the rest.  The
+            two orders are one sort, so an act that stops agreeing rises to
+            the top of the page rather than staying where its date put it.
+        withheld_count: How many acts the bound left out -- ``0`` when the
+            whole record is on screen, which is what tells the surface whether
+            to offer the link that shows everything.
+    """
+
+    shown: "tuple[AcceptedGroup, ...]"
+    withheld_count: int
+
+
+def accepted_register(
+    owner_id: int, account_id: int, limit: "int | None" = REGISTER_LIMIT,
+) -> AcceptedRegister:
+    """Return this account's accepted acts as the register renders them.
+
+    Args:
+        owner_id: The user whose acts to list.
+        account_id: The account.
+        limit: How many SETTLED acts to render, or ``None`` for all of them --
+            which is what the *show everything* link asks for.  An act that no
+            longer holds is never subject to it.
+
+    Returns:
+        The :class:`AcceptedRegister`.
+    """
+    groups = accepted_groups(owner_id, account_id)
+    # **Stable, so the second key is the order** :func:`~._release.acts_of`
+    # **already returned** (newest first) rather than a second sort restating
+    # it -- and so an act that stops agreeing moves to the top without
+    # disturbing anything else's order.
+    ordered = sorted(groups, key=lambda group: group.agrees)
+    if limit is None:
+        return AcceptedRegister(shown=tuple(ordered), withheld_count=0)
+    asking = sum(1 for group in ordered if not group.agrees)
+    keep = asking + limit
+    return AcceptedRegister(
+        shown=tuple(ordered[:keep]),
+        withheld_count=max(len(ordered) - keep, 0),
+    )
 
 
 def _accepted_row(row, posts_on: date) -> AcceptedRow:
@@ -384,22 +438,3 @@ def _still_holds(
     # exposing ``amount`` / ``cash_amount``, which is exactly why these two
     # shapes can reach it.
     return not MatchSides.of(lines, rows).difference
-
-
-def _by_id(model, ids: "set[int]") -> dict:
-    """Return ``{id: row}`` for *ids*, in one statement or none at all.
-
-    Args:
-        model: The mapped class to load.
-        ids: The primary keys wanted.  Empty issues no query -- ``IN ()`` is a
-            statement with no rows to find.
-
-    Returns:
-        The rows by id.
-    """
-    if not ids:
-        return {}
-    return {
-        row.id: row
-        for row in db.session.query(model).filter(model.id.in_(ids)).all()
-    }

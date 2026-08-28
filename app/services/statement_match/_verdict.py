@@ -1,0 +1,301 @@
+"""What a standing rule comes to for one line, and what the screen says.
+
+Plan step ``bank_import:X-gf-3a``, finding **N-359**.  :mod:`._placement`
+answers *where does this merchant's money go* for one line; :mod:`._filing` is
+the door that files it without a press; and this answers the question BETWEEN
+them, which neither owned: *would this pass file this line under that rule, and
+if not, why not*.
+
+**It exists because that verdict had exactly one reader and no surface.**
+``_rule_filings`` decided it inside the import request and reported it on
+:class:`~._filing.RuleFiling`, whose only rendering is the import's FLASH.  The
+review screen then re-rendered the same lines and could say nothing about it --
+so a line the owner's own rule was supposed to have handled sat in the queue
+looking like one nobody had answered for.  The screen could not restate the
+rule either: a second spelling of *would this have filed* is a second place for
+it to be wrong, on the one door in the app that moves money with no press.  So
+the verdict is derived ONCE, here, and both read it (finding **N-359**).
+
+**The SENTENCE the screen prints is derived here too, whole**, and that is not
+convenience.  A first version of this step set two facts in Jinja and picked
+between them with ``{% if %}``/``{% elif %}`` -- the shape
+:attr:`~._bars.ParkedLine.reason` and :attr:`~._leftovers.RecordableInflow
+.withheld` exist to refuse, stated in as many words in the very template it was
+written into: *a template restating a partition is a second place for it to be
+wrong*.  Found by adversarial design review 2026-08-27.
+
+**Two reasons withhold a filing, and they are not the same kind of fact.**
+
+* **The pass did not finish LOOKING** (:func:`~._gaps.search_gap`, developer
+  ruling 2026-08-26).  Membership of :attr:`~._reads.ReviewSet.creatable` is a
+  set defined by SUBTRACTION -- no proposal claimed the line -- and that is two
+  facts wearing one name: *the pass looked and there is nothing*, and *the pass
+  threw the only candidate away*.  Under a human tick the person reading the
+  screen is the check; ruling **R-GH**'s door has no person, so it withholds.
+* **A proposal on this pass explains the rule's destination on its own**
+  (ruling **R-FZ(d)**, inverted).  That ruling settled that where two TICKED
+  items collide over one envelope the PROPOSAL wins; auto-apply files at import
+  and the proposal is ticked afterwards, so the same rule is applied from the
+  other side.
+
+**What that second collision actually costs, measured rather than asserted.**
+It does NOT double-count, in either order, and a first version of this header
+said it did -- inheriting the wording ``X-ge`` gave the receipt.  Adversarial
+financial review 2026-08-27 traced the arithmetic: a purchase created from a
+bank line is born carrying the bank's posting day,
+:func:`~app.services.cash_ledger.posted_purchase_sum` counts exactly those, and
+the cash leg is ``gross - off_statement_sum``.  Filing `X` into envelope `E`
+raises both terms by `X` and leaves `E`'s cash leg **unchanged to the cent** --
+so the books record `E` plus the new purchase against the bank's two lines, and
+no dollar is counted twice.
+
+**What it costs instead is the MATCH.**  The created purchase is a match member
+by ``transaction_entry_id``, so
+:func:`~._accept._reject_parent_and_its_own_purchase` refuses any later act
+naming `E` as a whole -- the proposal beside it becomes impossible to accept,
+and the bank line that proposal explained stays unexplained until the purchase
+is undone.  That is the sentence both registers carry now.
+
+**The same trace REFUTED this module's first stated backstop.**  It claimed the
+create-then-accept order is refused because :func:`~._candidates.repriced`
+re-prices every named row and finding **N-336** rejects an item whose row has
+moved.  N-336 cannot fire here: the price is invariant by the arithmetic above,
+and ``_container._close_day`` returns ``None`` on the existing-envelope arm so
+``version_id`` does not move either -- and those two coordinates are exactly
+what :meth:`~._submission.ReviewedRow.disagrees_with` compares.  The order IS
+refused, by ``_reject_parent_and_its_own_purchase``'s second arm.  The
+invariant held; the reason given for it was one unread call chain from false.
+
+**So this module adds a SENTENCE and not a refusal**, which is the consent
+split ruling **R-GH** made: the screen says what the automatic door saw, and
+the person decides.
+
+Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in,
+frozen dataclasses out, no Flask import, no clock read, no query -- every fact
+it needs arrives from the pass that derived it.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+
+from ._creations import PurchaseCreation
+from ._gaps import search_gap
+from ._leftovers import CreatableLine
+from ._offers import MatchProposal, RowKind
+
+#: What the screen and the receipt both say about a rule whose destination this
+#: statement already explains on its own.  One spelling, because the door that
+#: withholds and the screen that reports it describe one decision -- and the
+#: wording is the CONSEQUENCE rather than *counted twice*, which adversarial
+#: financial review 2026-08-27 measured to be false of both orders.
+_ALREADY_EXPLAINED = (
+    "this statement explains that budget line on its own, and a purchase "
+    "filed inside it makes that match impossible to accept, so the line it "
+    "explains would stay unexplained"
+)
+
+#: What the SCREEN adds to a withholding it is showing a live control beside --
+#: the register-specific half, exactly as :func:`~._bars._refusal_for` adds
+#: *nothing was changed* to a sentence the screen ends differently.  They
+#: differ because the acts do: a line the pass never finished looking at is a
+#: reason to go and look, and one whose destination a proposal explains is a
+#: reason to accept that proposal first.
+#:
+#: **Neither names a POSITION**, and the first one did until plan step
+#: ``bank_import:X-gf-3b`` (ruling **bank_import:R-HC**): it read *"Check the
+#: match form BELOW"*, which went false the moment that form moved to a surface
+#: of its own.  A service sentence naming where something sits on a page is
+#: coupled to a layout the service cannot see -- EIGHT owner-visible sentences
+#: carried that coupling and all eight broke in one step, THREE of them derived
+#: here or in :mod:`._bars`.  *A first version of this note said five and two*,
+#: which counts the literal string "the match form below" and not the coupling
+#: (adversarial design review 2026-08-28).  What the sentence
+#: states is the ACT; the row renders the link, which is the one fact a service
+#: may not build (:attr:`~._bars.ParkedLine.answer_door` sets the precedent).
+_LOOK_FIRST = (
+    "Match it against rows you already hold before recording it as new "
+    "spending."
+)
+_ACCEPT_FIRST = "Accept that match first, or file this line somewhere else."
+
+
+@dataclass(frozen=True)
+class RuleVerdict:
+    """What the owner's standing rule comes to for one unexplained line.
+
+    **One value with two readers**, which is the whole of finding **N-359**'s
+    remedy: :func:`~._filing._rule_filings` performs it or reports it withheld,
+    and the review screen prints
+    :attr:`~._leftovers.CreatableLine.warning`, composed by :func:`ruled` from
+    this same decision.  A line no rule reaches has no verdict at all rather
+    than an empty one -- the absence is the answer, and a value meaning *no
+    rule* would be a second spelling of ``None`` a reader could forget to
+    branch on.
+
+    Attributes:
+        creation: The act the rule names for this line
+            (:meth:`~._placement.Placement.creation_for`), which is the same
+            :class:`~._creations.PurchaseCreation` the screen's own destination
+            select submits.  Never ``None``: a placement that names no
+            destination reaches no line, so it produces no verdict.
+        withheld: Why this pass would NOT perform it, or ``None`` when nothing
+            stands in its way.  **This is the RECEIPT's register** -- the
+            sentence :class:`~._filing.WithheldLine` carries after an import --
+            and the screen's is :attr:`~._leftovers.CreatableLine.warning`,
+            which wraps this one rather than restating it.
+            **A withheld verdict is not a refusal**: the create door is still
+            open for this line and its select still renders, because ruling
+            **R-GH** withholds only the act nobody watches.
+    """
+
+    creation: PurchaseCreation
+    withheld: "str | None" = None
+
+
+def _proposed_destinations(
+    proposals: "tuple[MatchProposal, ...]",
+) -> "frozenset[int]":
+    """Return the transaction ids this pass proposes as WHOLE-row matches.
+
+    Ruling **R-FZ(d)** from the other side (plan step ``bank_import:X-ge``).
+    That ruling settles a collision between two TICKED items -- an envelope a
+    proposal names is also a destination a recorded line was aimed at -- in the
+    proposal's favour, because a proposal explains money the records already
+    hold against a line the bank showed, which can be re-aimed next pass.
+    Auto-apply files BEFORE the proposal is ticked, so the same answer has to be
+    reached by withholding rather than by ordering.
+
+    **Only rows the proposal names WHOLE.**  A proposal naming a PURCHASE
+    inside an envelope is not a claim on the envelope: the two acts name
+    disjoint subjects, each match's members still sum to its own lines, and
+    ``_accept._reject_parent_and_its_own_purchase`` refuses only the pairing
+    where ONE act names both.  Measured on the developer's own statement: 33 of
+    the 80 lines a rule would file aim at an envelope holding a purchase a
+    proposal names, and withholding those would withhold the whole Groceries
+    case this step exists for.  **0** aim at an envelope a proposal names
+    directly, which is the population this function bounds.
+
+    Moved here from :mod:`._filing` at plan step ``bank_import:X-gf-3a``, with
+    the decision that read it (finding **N-359**): the filing door and the
+    review screen ask one question about one pass, and asking it inside the
+    door left the screen unable to ask it at all.  It takes the PROPOSALS
+    rather than the whole review set, because that is all it reads and because
+    the set does not exist yet when the verdict is derived.
+
+    Args:
+        proposals: What this pass proposes.
+
+    Returns:
+        The transaction ids, empty when this pass proposes no whole-row match.
+    """
+    return frozenset(
+        row.row_id
+        for proposal in proposals
+        for row in proposal.rows
+        if row.kind is RowKind.TRANSACTION
+    )
+
+
+def _look_first(gap: str) -> str:
+    """Return what the screen says about a line the pass did not finish.
+
+    **The no-rule twin of** :data:`_LOOK_FIRST`, and it lost the same
+    positional clause for the same reason (plan step ``bank_import:X-gf-3b``):
+    it read *"check the match form BELOW"*, which the hand-build form's move to
+    its own surface made false.
+
+    Args:
+        gap: The pass's own sentence (:func:`~._gaps.search_gap`).
+
+    Returns:
+        The sentence, for a line no rule reaches.
+    """
+    return (
+        f"Before recording this as new spending, match it against rows you "
+        f"already hold: {gap}."
+    )
+
+
+def ruled(
+    creatable: "tuple[CreatableLine, ...]",
+    proposals: "tuple[MatchProposal, ...]",
+    declined_lines: "dict[int, str]",
+    bounds,
+) -> "tuple[CreatableLine, ...]":
+    """Return this pass's creatable lines, each carrying what it is owed.
+
+    **A post-pass over the built list**, which is the shape
+    :func:`~._leftovers._marked_joining` already has one tier down and for the
+    same reason: the facts it needs -- what this pass PROPOSED, and what it
+    declined to conclude -- belong to the pass rather than to any one line, and
+    the line values are built before either is known.
+
+    Args:
+        creatable: This pass's offerable unexplained outflows, each carrying
+            the placement the owner's rule comes to for it.
+        proposals: What this pass proposes, from which the whole-row
+            destinations are taken (:func:`_proposed_destinations`).
+        declined_lines: What each tier declined about a line, by line id
+            (:attr:`~._propose.ProposedMatches.declined_lines`).
+        bounds: What this pass did not look at
+            (:class:`~._gaps.ReviewBounds`), read for the two limits that
+            belong to the PASS rather than to any one line.
+
+    Returns:
+        The same lines, with :attr:`~._leftovers.CreatableLine.verdict` set on
+        every line a stated rule names a destination for, and
+        :attr:`~._leftovers.CreatableLine.warning` set on every line this pass
+        has something to say about -- a WIDER set, because a line no rule
+        reaches can still be one the pass never finished looking at.
+
+        **A rule that names no container reaches nothing**, and the three
+        states that produce one are not this pass withholding anything: the
+        owner has said nothing about the merchant, or said *ask me every time*,
+        or said *never a purchase* -- which is a BAR that keeps the line out of
+        ``creatable`` entirely (ruling **R-GJ**).  None of the three is
+        reported as a withholding, because a receipt saying *your rules
+        withheld this* about a merchant with no rule is false.
+    """
+    proposed = _proposed_destinations(proposals)
+    lines = []
+    for item in creatable:
+        placement = item.placement
+        creation = (
+            None if placement is None
+            else placement.creation_for(item.line.line_id)
+        )
+        gap = search_gap(
+            item.line, declined_lines,
+            bounds.crowded_days, bounds.unpriceable_count,
+        )
+        if creation is None:
+            # No rule reaches it, so there is no verdict -- but the pass may
+            # still have failed to LOOK, which is the line's own fact and not
+            # the rule's, and the screen owes it either way.
+            lines.append(replace(
+                item, warning=None if gap is None else _look_first(gap),
+            ))
+            continue
+        # **The gap is asked FIRST**, and the order is the one the receipt
+        # reads in: a line the pass never finished looking at has not been
+        # shown to collide with anything, so naming the collision first would
+        # report a conclusion this pass did not reach.
+        if gap is not None:
+            withheld, advice = gap, _LOOK_FIRST
+        elif creation.transaction_id in proposed:
+            withheld, advice = _ALREADY_EXPLAINED, _ACCEPT_FIRST
+        else:
+            withheld, advice = None, None
+        lines.append(replace(
+            item,
+            verdict=RuleVerdict(creation=creation, withheld=withheld),
+            warning=(
+                None if withheld is None
+                else (
+                    f"Your rules will not record this one by themselves: "
+                    f"{withheld}.  {advice}"
+                )
+            ),
+        ))
+    return tuple(lines)

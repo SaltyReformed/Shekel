@@ -329,10 +329,19 @@ class TestTheSubtotalsCountEveryAttributedRow:
         is restamped to 01-31 (finding N-132 / R8: a purchase gets inside a
         declared balance by the user declaring the balance after it posted), so
         that assertion absorbs the ``$120.00`` and the balance stays
-        ``1000 - 80 = $920.00``.  Both remainders stay ``$0.00``: 01-31 is
+        ``1000 - 80 = $920.00``.  ``period_timing`` stays ``$0.00``: 01-31 is
         inside period 2's own span so the cash clock and the budget clock agree,
-        the due date is past ``as_of + 1`` so ruling R-G's clamp is a no-op, and
-        the OPENING assertion is excluded from ``book_vs_bank`` by ruling R-I.
+        and the due date is past ``as_of + 1`` so ruling R-G's clamp is a no-op.
+
+        ``book_vs_bank`` reads ``$120.00``, and that is plan step X-f3c-2a
+        rather than a defect here.  The books opened at ``$1,000.00``; the
+        posted purchase took them to ``$880.00``; the owner then declared
+        ``$1,000.00``, which is a ``+$120.00`` correction and belongs on the row
+        that holds what the app did not know.  *It read ``$0.00`` until
+        X-f3c-2a, because the opening assertion was excluded from this row
+        outright -- the fold had swallowed its whole delta into the seed
+        (ruling R-I), so what remained was not a correction anyone could
+        report.*
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         # The opening is the account's ONLY assertion, so it is what absorbs
@@ -354,7 +363,7 @@ class TestTheSubtotalsCountEveryAttributedRow:
         )[seed_periods[2].id]
         assert figures.expense == Decimal("200.00")
         assert figures.period_timing == Decimal("0.00")
-        assert figures.book_vs_bank == Decimal("0.00")
+        assert figures.book_vs_bank == Decimal("120.00")
         assert figures.balance == Decimal("920.00")
 
 
@@ -455,25 +464,33 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         assert figures.book_vs_bank == Decimal("500.00")
         assert figures.balance == Decimal("1500.00")
 
-    def test_the_opening_assertion_books_nothing_in_its_own_period(
+    def test_the_OPENING_EQUITY_books_nothing_but_a_correction_to_it_does(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """Ruling R-I puts the OPENING in the fold's seed, not in a column.
+        """Plan step X-f3c-2a: the SEED is level; the assertion is movement.
 
-        Opening asserted 2026-01-05 at ``$1,000.00``, inside period 0
-        (2026-01-02..01-15), with a ``$400.00`` expense already settled 01-03 --
-        two days before it, in the same column.
+        Books opened at ``$1,000.00``, asserted 2026-01-05 inside period 0
+        (2026-01-02..01-15), with a ``$400.00`` expense settled 01-03 -- two
+        days BEFORE the books opened, in the same column.
 
-        Hand-computed.  The fold back-projects: the records at or before the
-        opening sum to ``-$400.00``, so the seed is
-        ``1000.00 - (-400.00) = $1,400.00`` and the account read ``$1,400.00``
-        before the spend.  Period 0 therefore changes by
-        ``1000.00 - 1400.00 = -$400.00``, which its own expense row explains in
-        full -- BOTH remainders ``$0.00``.  Counting the opening's ``+$1,400.00``
-        correction here would claim a jump the balance never took, and it is
-        ``book_vs_bank`` specifically that it would land on (an assertion is
-        what that row holds), so pinning that half at ``$0.00`` is what makes
-        this test name the rule it is about.
+        Hand-computed.  The account reads its stored ``$1,000.00`` before the
+        spend, ``$600.00`` after it, and the assertion resets it to
+        ``$1,000.00`` -- a ``+$400.00`` correction, which is what
+        ``book_vs_bank`` holds.  Period 0's balance therefore changes by
+        ``$0.00`` overall: the expense row's ``-$400.00`` and the assertion's
+        ``+$400.00`` cancel, and BOTH are reported rather than netted away.
+
+        **That ``$400.00`` is the pre-opening double count made visible**, and
+        it is the shape plan step X-f3c-2b closes by refusing a movement dated
+        before an account's books open.  The remainder naming it is the correct
+        reporting of it: the app cannot explain that period's arithmetic from
+        its rows alone, and says so.
+
+        *This asserted ``book_vs_bank == 0.00`` and a ``$1,400.00`` pre-period
+        balance until X-f3c-2a.  Ruling R-I back-computed a ``$1,400.00`` seed
+        so the expense would be explained in full and the remainder would read
+        clean -- a figure nothing recorded, chosen to make a disagreement
+        disappear.*
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         restamp_opening_assertion(db.session, account, _instant(2026, 1, 5))
@@ -487,14 +504,16 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         assert figures.expense == Decimal("400.00")
         assert figures.net == Decimal("-400.00")
         assert figures.period_timing == Decimal("0.00")
-        assert figures.book_vs_bank == Decimal("0.00")
+        assert figures.book_vs_bank == Decimal("400.00")
         assert figures.balance == Decimal("1000.00")
 
+        # The day before the window: the stored opening equity, flat, with no
+        # record yet against it.
         folded = balances_at(
             assembled_fold(account, read_pass(account, scenario, _EARLY_AS_OF)),
             [seed_periods[0].start_date - _ONE_DAY],
         )
-        assert folded[seed_periods[0].start_date - _ONE_DAY] == Decimal("1400.00")
+        assert folded[seed_periods[0].start_date - _ONE_DAY] == Decimal("1000.00")
 
     def test_the_clamp_moves_an_overdue_plan_out_of_its_own_column(
         self, db, seed_user, seed_periods,
@@ -637,7 +656,7 @@ class TestTheIdentityHoldsOnEveryPeriod:
           elsewhere.  No assertion touches it, so ``book_vs_bank`` is ``$0.00``.
         * period 4 -- book-vs-bank ``-$1,300.00``: the true-up, which no
           transaction row can explain.  The records had walked the account to
-          ``1400.00 - 400.00 + 1800.00 = $2,800.00`` by 2026-03-01, and the user
+          ``1000.00 + 1800.00 = $2,800.00`` by 2026-03-01, and the user
           asserted ``$1,500.00``, so the correction is ``1500 - 2800``.  Note it
           is NOT ``1500 - 1000``: an assertion's correction is measured against
           the RECORDS, which is the whole reason this row exists.  Nothing
@@ -670,9 +689,22 @@ class TestTheIdentityHoldsOnEveryPeriod:
         assert timing[4] == Decimal("0.00")
         assert timing[5] == Decimal("-250.00")
         assert timing[6] == Decimal("-50.00")
-        # The ONLY non-zero book-vs-bank in the run is period 4's true-up.
+        # TWO non-zero book-vs-bank columns, and the pair is the point since
+        # plan step X-f3c-2a: period 4 holds the true-up, and period 0 holds the
+        # FIRST assertion's own correction -- which this shape makes non-zero
+        # because ``_rich_shape`` settles rows before the books opened.  The
+        # opening used to be excluded from this row outright (ruling R-I moved
+        # its whole delta into the fold's seed), so the run read a single
+        # non-zero column.
         assert book[4] == Decimal("-1300.00")
-        assert {index for index, value in book.items() if value} == {4}
+        # Hand-computed, on the row its CAUSE belongs to like every other
+        # figure here: the books open at $1,000.00, the pre-opening spend of
+        # $400.00 on 2026-01-03 walks the records to $600.00, and the opening
+        # assertion on 01-05 declares $1,000.00 -- a +$400.00 correction, which
+        # is what ``book_vs_bank`` holds.  It nets against period 0's own
+        # -$400.00 expense, which is why the identity still closes at $0.00.
+        assert book[0] == Decimal("400.00")
+        assert {index for index, value in book.items() if value} == {0, 4}
         assert len({figures[p.id].balance for p in seed_periods}) > 1
 
     def test_a_gapped_window_is_REFUSED_rather_than_reported_over(
@@ -972,36 +1004,44 @@ class TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn:
         assert figures[seed_periods[1].id].net == Decimal("0.00")
         assert figures[seed_periods[1].id].period_timing == Decimal("-250.00")
 
-    def test_a_PROJECTED_row_clamped_against_the_stored_span_still_reconciles(
+    def test_a_corrupted_stored_end_moves_no_PROJECTED_figure_either(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The two-source coupling C2-c creates, MEASURED rather than argued.
+        """The two-source coupling C2-c created is CLOSED at **C4-a-1**.
 
-        An adversarial design review of this step claimed R-K's identity
-        breaks here, and the claim is REFUTED by this test.  The coupling is
-        real: :func:`~app.services.balance_at._cash_fold._period_balances`
-        samples each column at its DERIVED end while
-        :func:`~app.services.balance_at._cash_fold._cash_plan` still clamps a
-        projected row's landing day against the STORED span it reads off
-        ``txn.pay_period`` (the reader plan step C4 owns).  What does NOT
-        follow is a broken identity, and the reason is structural: the fold's
-        steps and this view's cash-clock grouping read the SAME
-        ``day_nets``, so wherever the clamp puts a row, both sides put it
-        there.  A disagreement surfaces as ``period_timing`` -- the figure
-        that exists to say "budgeted here, moved there" -- and never as an
-        unexplained balance step.
+        C2-c pointed :func:`~app.services.balance_at._cash_fold.period_balances`
+        at each column's DERIVED end and left
+        :func:`~app.services.balance_at._cash_fold._cash_plan` clamping a
+        projected row against the STORED span it read off ``txn.pay_period``:
+        one module, two ends, which is pay-calendar finding **P38**.  An
+        adversarial design review of C2-c claimed R-K's identity breaks on that
+        split, and it did not -- the fold's steps and this view's cash-clock
+        grouping read the SAME ``day_nets``, so wherever the clamp put a row
+        both sides put it there.  What the split DID cost was a row rendering
+        in a column its budget period is not, reported as ``period_timing``,
+        and that is what this test measures gone.
 
-        Hand-computed against a ``$1,000.00`` opening asserted 2026-01-01.
-        Period 0's stored end is pushed to 2026-01-20 while its derived end
-        stays 2026-01-15, and a still-projected ``$250.00`` expense budgeted
-        to period 0 carries ``due_date`` 2026-01-18 -- inside the corrupted
-        span, so ``attribution_date`` does NOT clamp it, and outside the real
-        one.  Period 0 budgets it (net ``-$250.00``) while nothing lands
-        inside 01-02..01-15, so its timing is ``+$250.00`` and its balance
-        holds at ``$1,000.00``.  Period 1 budgets nothing and the money lands
-        in its span, so its timing is ``-$250.00`` against a ``$750.00``
-        close.  Both columns satisfy the identity, and the assertion below is
-        the identity itself over every column.
+        Hand-computed against a ``$1,000.00`` opening asserted 2026-01-01, with
+        ``as_of`` 2026-01-05 so ruling R-G's floor (01-06) never binds.  Period
+        0's stored end is pushed to 2026-01-20 while its paydays keep its
+        derived end at 2026-01-15, and a still-projected ``$250.00`` expense
+        budgeted to period 0 carries ``due_date`` 2026-01-18 -- inside the
+        corrupted span and outside the real one.  Reading the DERIVED span,
+        ``attribution_date`` clamps 01-18 down to 01-15, so the row lands
+        INSIDE the column that budgeted it: net ``-$250.00``, ``period_timing``
+        ``$0.00``, and a ``$750.00`` close.  Period 1 budgets nothing, nothing
+        lands in its span, and it closes at ``$750.00`` too.
+
+        **Every figure here distinguishes the two arms.**  Against the stored
+        span the row was not clamped at all: period 0 held ``$1,000.00`` with
+        ``+$250.00`` of timing and period 1 ``-$250.00``, which is what this
+        test asserted until C4-a-1.  The FIRING control for the clamp lives
+        beside the clamp, in
+        ``test_cash_fold.TestThePlanClampsAgainstTheDerivedSpan``; the control
+        below shows the same corruption is observable in the SAMPLING half this
+        class was written for.  The identity held on the old arm and holds
+        here, which is why it is asserted BESIDE the figures rather than
+        instead of them: it is the property, and the figures are the behaviour.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         as_of = date(2026, 1, 5)
@@ -1018,9 +1058,10 @@ class TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn:
         figures = _view(account, scenario, seed_periods, as_of=as_of)
 
         assert figures[seed_periods[0].id].net == Decimal("-250.00")
-        assert figures[seed_periods[0].id].period_timing == Decimal("250.00")
-        assert figures[seed_periods[0].id].balance == Decimal("1000.00")
-        assert figures[seed_periods[1].id].period_timing == Decimal("-250.00")
+        assert figures[seed_periods[0].id].period_timing == Decimal("0.00")
+        assert figures[seed_periods[0].id].balance == Decimal("750.00")
+        assert figures[seed_periods[1].id].net == Decimal("0.00")
+        assert figures[seed_periods[1].id].period_timing == Decimal("0.00")
         assert figures[seed_periods[1].id].balance == Decimal("750.00")
 
         rows = _identity_holds(account, scenario, seed_periods, as_of=as_of)

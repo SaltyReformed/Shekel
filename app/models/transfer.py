@@ -235,6 +235,21 @@ class Transfer(
     # the PARENT, so a stale parent would be written back over a corrected shadow
     # by a no-op save.
     due_date = db.Column(db.Date, nullable=True)
+    # WHICH OCCURRENCE this transfer is -- the date its template's cadence
+    # named when the transfer recurrence engine wrote it.  The parallel of
+    # ``Transaction.occurs_on``, which carries the full statement; both engines
+    # write it from the same ``PlannedOccurrence.occurrence`` and the shared
+    # skip predicate reads it identically, so a divergence here would be the
+    # drift ``_recurrence_common`` exists to prevent (plan step **R17**).
+    #
+    # **It is NOT mirrored onto the two shadow transactions.**  Transfer
+    # Invariant 3 makes the shadows equal to their parent in amount, status and
+    # period, and a shadow is not the rule's own row: it is created by
+    # ``transfer_service`` from the parent, never by the recurrence engine from
+    # an occurrence, and no generate pass ever asks a shadow whether an
+    # occurrence has been written.  Mirroring it would put a second writer on a
+    # column whose whole purpose is that only the engine writes it.
+    occurs_on = db.Column(db.Date, nullable=True)
     # version_id + its version_id_col mapper config: from OptimisticLockMixin.
 
     # Relationships

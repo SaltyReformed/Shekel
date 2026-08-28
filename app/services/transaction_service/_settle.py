@@ -483,7 +483,7 @@ def settle_transaction(
     #
     # **It tests the row's own settled status, NOT the settled BAND**, and the
     # difference is a refusal: a first version asked ``status_id in
-    # settled_status_ids()`` and thereby swallowed ``Settled -> Paid``, an
+    # settled_status_ids()`` and thereby swallowed ``Paid -> Received``, an
     # ILLEGAL transition ``state_machine.verify_transition`` exists to reject,
     # turning a designed 400 into a silent 200.  Only the identity move is
     # nothing to do; every other settled-to-settled move still owes the state
@@ -794,8 +794,8 @@ def settle_from_entries(
          a programming error and surfaces as a ``ValidationError``.
       3. ``txn.status`` is mutable (``status.is_immutable`` is False).
          The only mutable status in the current schema is ``Projected``;
-         settling a row that is already Paid, Received, Cancelled,
-         Credit, or Settled is meaningless and indicates a caller bug.
+         settling a row that is already Paid, Received, Cancelled or
+         Credit is meaningless and indicates a caller bug.
 
     Args:
         txn: The Transaction to settle.  Must be attached to the

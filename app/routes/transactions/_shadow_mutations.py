@@ -229,7 +229,7 @@ def _mark_done_shadow(txn, txn_id, submitted, target):
     except ValidationError as exc:
         # transfer_service.update_transfer runs the transition through
         # the state machine (commit C-21).  A mark-done request against
-        # a Cancelled or Settled transfer shadow surfaces here as a
+        # a Cancelled transfer shadow surfaces here as a
         # designed 400 fragment instead of crashing the request.
         return _error_transaction_response(txn_id, str(exc), target)
     db.session.refresh(txn)
@@ -268,7 +268,7 @@ def _cancel_shadow(txn, txn_id, cancelled_id):
         return _stale_transaction_response(txn_id)
     except ValidationError as exc:
         # transfer_service runs the transition through the state
-        # machine.  An attempt to cancel a Paid/Received/Settled
+        # machine.  An attempt to cancel a Paid/Received
         # transfer surfaces here as a designed 400 fragment instead of
         # crashing the request -- the transfer-service path was wired
         # by commit C-21; this clause is the route's translation.
