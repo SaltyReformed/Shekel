@@ -9,11 +9,21 @@ owner assembles from two checkbox lists is theirs, so nothing has computed it
 yet.  This is what computes it.
 
 **It runs the ACCEPT door's own reads and refusals, minus the writes.**  The
-body it takes is the body Apply would send -- the same ``apply=hand``, the same
-line ids, the same reviewed row tokens -- so the panel is not a second opinion
-about the act, it is that act asked what it would do.  A screen that summed
-differently from the door is finding **N-336** one tier up, and the surest way
-to have one number is to have one derivation.
+body it takes is the body Apply would send -- the same line ids and the same
+reviewed row tokens, read through the same
+:func:`~app.schemas.validation.statements.hand_match_payload` -- so the panel
+is not a second opinion about the act, it is that act asked what it would do.
+A screen that summed differently from the door is finding **N-336** one tier
+up, and the surest way to have one number is to have one derivation.
+
+**There is no longer an ordering token in that body**, and its absence is plan
+step ``bank_import:X-gf-3b`` (ruling **bank_import:R-HC**).  It carried
+``apply=hand`` while this form shared a page with the reviewed pass, where a
+non-numeric index was the only thing keeping its ticks out of proposal ``0``'s
+submission -- a money-correctness hazard held off by the two controls being
+separate ``<form>`` elements, which is a property of the DOCUMENT.  The form is
+a surface of its own now and posts a group with no index at all, so there is no
+shared namespace left for two acts to collide in.
 
 **It is a READ and it never writes** (:func:`~._accept.record_match` is the
 only thing that does).  What it can do is REFUSE early: a group naming a

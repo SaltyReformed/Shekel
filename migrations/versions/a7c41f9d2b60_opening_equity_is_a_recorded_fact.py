@@ -70,7 +70,7 @@ tables and inserts; it drops nothing, renames nothing, and alters no existing
 column.
 
 Revision ID: a7c41f9d2b60
-Revises: f2a9c4d7e310
+Revises: 94628d09816b
 Create Date: 2026-08-27
 """
 
@@ -81,7 +81,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "a7c41f9d2b60"
-down_revision = "f2a9c4d7e310"
+down_revision = "94628d09816b"
 branch_labels = None
 depends_on = None
 

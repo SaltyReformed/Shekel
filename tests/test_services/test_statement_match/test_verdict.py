@@ -486,8 +486,14 @@ class TestTheSentenceTheScreenPrintsIsComposedHERE:
             "Your rules will not record this one by themselves:",
         )
         assert gap in item.warning
+        # **It names the ACT and not a position** -- ``_LOOK_FIRST`` read
+        # "Check the match form BELOW" until plan step ``bank_import:X-gf-3b``
+        # moved that form to a surface of its own (ruling
+        # **bank_import:R-HC**), at which point a sentence composed in the
+        # SERVICE was pointing at a place on a page the service cannot see.
         assert item.warning.endswith(
-            "Check the match form below before recording it as new spending.",
+            "Match it against rows you already hold before recording it as "
+            "new spending.",
         )
 
     def test_a_COLLISION_advises_the_match_rather_than_the_match_form(self):
@@ -535,9 +541,16 @@ class TestTheSentenceTheScreenPrintsIsComposedHERE:
         item = _lines((_creatable(None),), declined_lines={7: gap})[0]
 
         assert item.verdict is None
+        # **The sentence NAMES THE ACT, not a position**, and it said
+        # "check the match form BELOW" until plan step ``bank_import:X-gf-3b``
+        # moved that form to a surface of its own (ruling
+        # **bank_import:R-HC**).  A sentence composed in the SERVICE that names
+        # where something sits on a page is coupled to a layout the service
+        # cannot see; five on that screen carried the coupling and all five
+        # went false in one commit.
         assert item.warning == (
-            f"Before recording this as new spending, check the match form "
-            f"below: {gap}."
+            f"Before recording this as new spending, match it against rows "
+            f"you already hold: {gap}."
         )
 
     def test_a_clean_line_is_told_NOTHING(self):

@@ -110,61 +110,6 @@ def _merchants_url(account_id):
     return f"/accounts/{account_id}/statements/review/merchants"
 
 
-def _never_showed_panel(body):
-    """Return just the "rows no line explains" card's markup.
-
-    **An assertion about ONE panel has to read that panel.**  This page renders
-    five cards and hundreds of badges, so "the words are somewhere in the body"
-    is satisfied by any of them -- the failure mode ``_delete_form`` in
-    ``test_statements.py`` records and which that file then went on to make
-    anyway.
-
-    **It is bounded by the NEXT CARD, not by the next ``</table>``, and a first
-    version was bounded by the table.**  When this card lists nothing it
-    renders ``<p>None.</p>`` and holds no table at all, so that cut ran past
-    the card, past the hand-build totals and into the keyboard-help modal --
-    4,605 characters, ending in ``<kbd>Esc</kbd>``.  Every negative assertion
-    made against that region was then graded by markup from a different
-    feature, and :func:`_never_showed_rows`' own empty-guard was satisfied by
-    the help modal's ``<tbody>``.  Found by adversarial review of this step's
-    own tests, 2026-08-25.
-
-    Args:
-        body: The rendered review page, as text.
-
-    The card carries an ``id`` for exactly this reason, and the totals panel
-    below it carries the one that bounds the far end.
-
-    Args:
-        body: The rendered review page, as text.
-
-    Returns:
-        The card's markup, from its own id to the hand-totals panel below it.
-    """
-    start = body.index('id="rows-no-line-explains"')
-    return body[start:body.index('id="hand-totals"', start)]
-
-
-def _never_showed_rows(body):
-    """Return just the ROW LIST of that card, without its caption.
-
-    The caption names the tag in order to explain it, so a search for the tag
-    across the whole card is satisfied by the paragraph that describes it and
-    says nothing about which rows wear one.  Every assertion about a ROW reads
-    this instead.
-
-    Args:
-        body: The rendered review page, as text.
-
-    Returns:
-        The card's ``<tbody>`` markup, or ``""`` when it lists nothing.
-    """
-    panel = _never_showed_panel(body)
-    if "<tbody>" not in panel:
-        return ""
-    return panel[panel.index("<tbody>"):]
-
-
 def _apply_form_controls(page):
     """Return what a browser would submit for the APPLY form, untouched.
 
@@ -222,42 +167,6 @@ def _rendered_match_fields(page):
     return reader.fields
 
 
-class _ConsentReader(HTMLParser):
-    """Read the hand-build panel's consent box, exactly as a browser would.
-
-    Plan step ``bank_import:X-f6d-4``.  The box's VALUE is the figure the
-    server computed and the door will compare, so scraping it is the only way
-    a test can post what the screen actually offered rather than a figure of
-    its own.
-    """
-
-    def __init__(self):
-        super().__init__()
-        self.value = None
-        self.disabled = None
-
-    def handle_starttag(self, tag, attrs):
-        """Record the consent control the panel rendered."""
-        attributes = dict(attrs)
-        if tag == "input" and attributes.get("name") == "match-hand-residual":
-            self.value = attributes.get("value", "")
-            self.disabled = "disabled" in attributes
-
-
-def _rendered_consent(page):
-    """Return ``(value, disabled)`` for the panel's consent box.
-
-    Args:
-        page: The rendered review body, or the panel fragment alone.
-
-    Returns:
-        The box's submitted value and whether a browser would submit it.
-    """
-    reader = _ConsentReader()
-    reader.feed(page)
-    return reader.value, reader.disabled
-
-
 class _VisibleText(HTMLParser):
     """Collect the text a reader would SEE, with the markup out of the way.
 
@@ -280,45 +189,6 @@ def _visible_text(page):
     reader.feed(page)
     return " ".join(" ".join(reader.parts).split())
 
-
-def _element_carrying(page, needle):
-    """Return the source of the ``<div>`` whose start tag contains *needle*.
-
-    Depth-counted over ``<div`` / ``</div>``, so what comes back is that
-    element and everything nested inside it -- which is the question these
-    cases ask: which controls sit INSIDE a given element.  Every other tag on
-    this page is either void or cannot contain a div, so a div counter is
-    exact here.
-
-    Args:
-        page: The rendered body.
-        needle: A string appearing in the wanted element's start tag.
-
-    Returns:
-        The element's full source, or ``None`` when nothing carries *needle*.
-    """
-    at = page.find(needle)
-    if at == -1:
-        return None
-    start = page.rfind("<div", 0, at)
-    if start == -1:
-        return None
-    depth, cursor = 0, start
-    for match in re.finditer(r"<div\b|</div>", page[start:]):
-        depth += 1 if match.group().startswith("<div") else -1
-        if depth == 0:
-            cursor = start + match.end()
-            break
-    else:
-        cursor = len(page)
-    return page[start:cursor]
-
-
-def _totals_url(seed_user):
-    """Return the endpoint the hand-build panel re-renders through."""
-    return (
-        f"/accounts/{seed_user['account'].id}/statements/review/totals"
-    )
 
 
 class TestTheReviewPage:
@@ -533,11 +403,23 @@ class TestTheReviewPage:
         # ON the line in the create card, where the WRONG act is cheapest...
         assert "Before recording this as new spending" in said
         assert "would not choose between the candidates for you" in said
-        # ...and on the line in the hand-build list, where the RIGHT one is.
-        assert "One of your own rows is close enough to this" in said
         # ...and NOT as a bare number in the bounds panel any more.
         assert "line(s) have a row of yours" not in said
         assert b'data-proposal-class=' not in body
+
+        # ...and on the line in the hand-build list, where the RIGHT act is --
+        # which is a surface of its own since plan step
+        # ``bank_import:X-gf-3b`` (ruling **bank_import:R-HC**).  **The
+        # assertion FOLLOWED the render rather than being dropped**: it is the
+        # half of this case that proves one derivation reaches both places the
+        # owner can act, and a case that stopped checking the second half
+        # because the second half moved would be the shape
+        # ``docs/testing-standards.md`` calls a test that has quietly stopped
+        # testing what it names.
+        workbench = " ".join(auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements/match",
+        ).data.decode().split())
+        assert "One of your own rows is close enough to this" in workbench
 
 
 class TestWhatTheTEMPLATEEmittedIsWhatTheDOORAccepts:
@@ -639,70 +521,6 @@ class TestWhatTheTEMPLATEEmittedIsWhatTheDOORAccepts:
         db.session.refresh(txn)
         assert txn.settled_amount == Decimal("500.00")
 
-
-    def test_the_HAND_BUILD_form_s_own_token_is_graded_too(
-        self, auth_client, db, seed_user,
-    ):
-        """The SECOND emission site, and it was ungraded.
-
-        The proposal card and the hand-build form each render a
-        ``match-*-rows`` value through the same filter, and a control over one
-        says nothing about the other.  **Measured 2026-08-23**: fabricating the
-        hand form's value in the template left **418** tests green, while in a
-        browser every hand-built match would refuse -- the token would claim
-        `0.00` for a row worth something else -- so the one door ruling
-        **R-FP** reserves to the owner, *assert a grouping the proposer would
-        not guess*, would be 100% dead with CI green.  On the developer's own
-        data that form offers 61 rows against 109 lines, so it is a populated
-        surface rather than a corner.  Found by adversarial financial review.
-
-        Its index is ``hand`` rather than a number, and the form posts its own
-        ``apply`` as a hidden field, so the payload is scraped whole.
-        """
-        statement = an_import(seed_user)
-        bank_day = seed_user["bootstrap_period"].start_date
-        line = a_bank_line(
-            seed_user, statement, amount="-180.00", posted_on=bank_day,
-            description="ACH DEBIT NOTHING EXPLAINS THIS",
-        )
-        # A row NO tier can reach: not equal (so no 1:1), alone (so no group),
-        # and 2.8% out with no merchant (so no near miss).  The hand form is
-        # the only door to it, which is what that form is FOR.
-        row = a_transaction(
-            seed_user, name="Ghost Payment", amount="175.00",
-            status=StatusEnum.DONE, settled_on=bank_day,
-        )
-        db.session.commit()
-
-        page = auth_client.get(
-            _review_url(seed_user["account"].id)
-        ).get_data(as_text=True)
-        hand = [
-            (name, value) for name, value in _rendered_match_fields(page)
-            if name.startswith("match-hand-")
-        ]
-
-        assert sum(1 for name, _ in hand if name.endswith("-rows")) == 1, (
-            "the hand form rendered no row token, so this graded nothing"
-        )
-        payload = MultiDict(
-            [("apply", "hand"), ("csrf_token", "x")]
-            + [(name, value) for name, value in hand
-               if name.endswith("-rows")]
-            + [("match-hand-line_ids", str(line.id))]
-        )
-
-        response = auth_client.post(
-            _review_url(seed_user["account"].id), data=payload,
-        )
-
-        assert response.status_code == 200
-        assert db.session.query(StatementMatch).count() == 1, (
-            "the page's own hand-form token was refused by the door"
-        )
-        db.session.refresh(row)
-        # ...and the bank's figure was written to it (R-GD(a)).
-        assert row.settled_amount == Decimal("180.00")
 
 
 class TestTheAcceptPost:
@@ -1320,522 +1138,6 @@ class TestOneRequestWorksTheWholeStatement:
         assert envelope.entries == []
 
 
-class TestTheHandBuildForm:
-    """The door that makes every accept-door refusal REACHABLE.
-
-    **Without it the refusals fire only on a crafted POST**, which an
-    adversarial design review measured on 2026-08-17: every proposal balances
-    by construction, so `_reject_unbalanced` -- the refusal ruling **R-FV**
-    calls the instrument that can see finding **N-239** -- had no path from the
-    screen at all, and the `$0.05` payroll gap landed silently in "lines with
-    no proposal" under copy telling the user it was probably a card swipe.
-    """
-
-    def test_the_page_offers_both_sides_to_pick_from(
-        self, auth_client, db, seed_user,
-    ):
-        """Ruling **R-FP**: unmatched lines on BOTH sides are shown.
-
-        The first draft of this screen showed one side.  An app row inside the
-        statement's span that the bank never showed is a payment the records
-        claim happened and the bank did not make -- the more valuable half for
-        a budget, and the fact `balance:X-f3a-2` consumes.
-        """
-        statement = an_import(seed_user)
-        bank_day = seed_user["bootstrap_period"].start_date
-        a_bank_line(
-            seed_user, statement, amount="-11.11", posted_on=bank_day,
-            description="ACH DEBIT NOTHING EXPLAINS THIS",
-        )
-        a_transaction(
-            seed_user, name="Ghost Payment", amount="22.22",
-            status=StatusEnum.DONE, settled_on=bank_day,
-        )
-        db.session.commit()
-
-        response = auth_client.get(_review_url(seed_user["account"].id))
-
-        assert b"ACH DEBIT NOTHING EXPLAINS THIS" in response.data
-        assert b"Ghost Payment" in response.data
-        # The card's HEADER names what it LISTS since plan step X-gc -- rows no
-        # line explains -- because its badge counts all of them while the
-        # caption now says the bank-failed-to-pay reading holds for only some.
-        assert b"Rows you recorded that no line explains" in response.data
-        assert b'name="match-hand-line_ids"' in response.data
-        # The ROW side posts one token per row rather than an id list (plan
-        # step bank_import:X-f6d-3), and the assertion follows the field it is
-        # about: it is here to prove the hand-build form renders BOTH sides to
-        # pick from, which is what makes the accept door's refusals reachable
-        # from a browser at all.
-        assert b'name="match-hand-rows"' in response.data
-        # **Its index cannot collide with a rendered proposal's.**  Both forms
-        # post to one door; only their separateness as <form> elements keeps
-        # proposal 0's hidden ids out of this group today, and that is a
-        # property of the document rather than of the form.
-        assert b'name="apply" value="hand"' in response.data
-
-    def test_a_CC_PAYBACK_is_still_offered_and_is_TAGGED_not_a_line(
-        self, auth_client, db, seed_user,
-    ):
-        """Plan step X-gc: the panel keeps the row and withdraws the claim.
-
-        **The membership assertion is the regression guard, and it is the
-        important half.**  X-gc's plan text said the panel should "stop listing
-        rows the bank could never show".  Taken literally that removes the CC
-        paybacks -- and they are the ONLY thing a parked card-payment line can
-        be grouped against, which ruling **R-GJ** leaves as that line's one
-        remaining arm.  Measured on the developer's dev database 2026-08-25:
-        18 paybacks in this panel against 10 unexplained ``ACH DEBIT CAPITAL
-        ONE ... PMT`` lines in the panel beside it.  So the row is listed, its
-        tick token is rendered, and only the CAPTION is corrected.
-
-        The tag is asserted INSIDE the panel rather than page-wide: this page
-        renders many badges, and a body-wide search would be graded by whatever
-        else happened to say the same words.
-        """
-        statement = an_import(seed_user)
-        bank_day = seed_user["bootstrap_period"].start_date
-        a_bank_line(
-            seed_user, statement, amount="-500.00", posted_on=bank_day,
-            description="ACH DEBIT CAPITAL ONE      MOBILE PMT",
-        )
-        envelope = a_transaction(
-            seed_user, name="Groceries", amount="100.00", is_envelope=True,
-        )
-        db.session.flush()
-        payback = a_transaction(
-            seed_user, name="CC Payback: Groceries", amount="60.00",
-            template=False, status=StatusEnum.DONE, settled_on=bank_day,
-        )
-        payback.credit_payback_for_id = envelope.id
-        db.session.commit()
-
-        body = auth_client.get(
-            _review_url(seed_user["account"].id)
-        ).get_data(as_text=True)
-        rows = _never_showed_rows(body)
-
-        # It is LISTED, and it is TICKABLE -- the group arm R-GJ leaves open.
-        assert "CC Payback: Groceries" in rows
-        assert f'id="row-transaction-{payback.id}"' in rows
-        # ...and the alarm is withdrawn for it, in as many words.
-        assert "not a line of its own" in rows
-        assert "never shows it as a line by itself" in rows
-
-    def test_the_panel_does_NOT_tag_a_row_the_bank_would_have_shown(
-        self, auth_client, db, seed_user,
-    ):
-        """The discriminating half of the pair above.
-
-        A tag on every row would withdraw the panel's alarm from the payments
-        the bank really did fail to make, which is the half of ruling **R-FP**
-        this panel exists for.
-        """
-        statement = an_import(seed_user)
-        bank_day = seed_user["bootstrap_period"].start_date
-        a_bank_line(
-            seed_user, statement, amount="-11.11", posted_on=bank_day,
-            description="ACH DEBIT NOTHING EXPLAINS THIS",
-        )
-        a_transaction(
-            seed_user, name="Ghost Payment", amount="22.22",
-            status=StatusEnum.DONE, settled_on=bank_day,
-        )
-        db.session.commit()
-
-        rows = _never_showed_rows(
-            auth_client.get(
-                _review_url(seed_user["account"].id)
-            ).get_data(as_text=True)
-        )
-
-        assert "Ghost Payment" in rows
-        assert "not a line of its own" not in rows
-        assert "never shows it as a line by itself" not in rows
-
-    def test_the_panel_CAPTION_no_longer_claims_it_of_every_row(
-        self, auth_client, db, seed_user,
-    ):
-        """Plan step X-gc: the sentence that was false for 18 of 67 rows.
-
-        It read *"A row here that you expected the bank to show is a payment
-        your records claim happened and your bank did not make"* -- of every
-        row, unconditionally.  What replaces it makes the alarm conditional on
-        the owner's own expectation and names the other case.
-        """
-        statement = an_import(seed_user)
-        a_bank_line(
-            seed_user, statement, amount="-11.11",
-            posted_on=seed_user["bootstrap_period"].start_date,
-            description="ACH DEBIT NOTHING EXPLAINS THIS",
-        )
-        db.session.commit()
-
-        panel = _never_showed_panel(
-            auth_client.get(
-                _review_url(seed_user["account"].id)
-            ).get_data(as_text=True)
-        )
-
-        assert "A row here that you expected the bank to show is" not in panel
-        # Whitespace-normalised: the sentence wraps across template lines, and
-        # an assertion carrying the indentation would be graded by the editor.
-        flat = " ".join(panel.split())
-        assert (
-            "One you expected the bank to show is a payment your records "
-            "claim happened and your bank did not make." in flat
-        )
-        assert (
-            "One marked <em>not a line of its own</em> is not: tick it with "
-            "the line that carries its money." in flat
-        )
-
-    def test_a_hand_built_group_that_does_not_add_up_is_REFUSED_on_screen(
-        self, auth_client, db, seed_user,
-    ):
-        """N-239's own shape, reaching the user who can fix it.
-
-        This is the arm that did not exist: the bank paid `$2,573.43`, the
-        app's two rows sum to `$2,573.38`, and the screen must NAME the five
-        cents rather than list the line as unexplainable.
-        """
-        statement = an_import(seed_user)
-        line = a_bank_line(seed_user, statement, amount="2573.43")
-        salary = a_transaction(
-            seed_user, name="Salary", amount="2473.38", income=True,
-        )
-        allowance = a_transaction(
-            seed_user, name="Allowance", amount="100.00", income=True,
-        )
-        db.session.commit()
-
-        response = auth_client.post(
-            _review_url(seed_user["account"].id),
-            data=match_item(index="hand", lines=[line],
-                        transactions=[salary, allowance]),
-        )
-
-        assert b"do not add up" in response.data
-        assert b"0.05" in response.data
-        db.session.expire_all()
-        assert salary.settled_on is None
-
-    def test_the_panel_ships_DISABLED_and_wired_to_its_endpoint(
-        self, auth_client, db, seed_user,
-    ):
-        """Plan step ``bank_import:X-f6d-4``: the consent control, before any
-        selection exists for the server to price.
-
-        **Disabled is the fail-closed state and it is what a JavaScript-off
-        browser submits**, which is exactly the behaviour that shipped before
-        this step: the door refuses the group and names both sums.  The
-        endpoint attribute is what makes it reachable at all, so its absence
-        would leave a control nobody can enable and a whole ruled act dead in a
-        browser with the suite green.
-        """
-        statement = an_import(seed_user)
-        bank_day = seed_user["bootstrap_period"].start_date
-        a_bank_line(
-            seed_user, statement, amount="2573.43", posted_on=bank_day,
-        )
-        a_transaction(
-            seed_user, name="Salary", amount="2473.38", income=True,
-        )
-        db.session.commit()
-
-        page = auth_client.get(
-            _review_url(seed_user["account"].id),
-        ).get_data(as_text=True)
-
-        assert 'id="hand-build-form"' in page
-        assert _totals_url(seed_user) in page
-        assert 'hx-trigger="change"' in page
-        assert _rendered_consent(page) == ("", True)
-
-    def test_the_TRIGGER_does_not_contain_the_control_it_replaces(
-        self, auth_client, db, seed_user,
-    ):
-        """The consent box may not be inside the element that re-renders it.
-
-        **Driven in a real browser 2026-08-23, and it was dead there.**  The
-        trigger sat on the panel as ``change from:#hand-build-form``, so
-        TICKING THE CONSENT BOX fired a re-render and the swap replaced it with
-        a fresh unchecked one.  The owner could never keep it ticked and Apply
-        submitted no consent at all -- the whole ruled act unreachable, with
-        every server test green.
-
-        Asserted structurally rather than by driving a browser, because that
-        is the property: the element carrying ``hx-trigger`` must not contain
-        the control the swap replaces.
-        """
-        statement = an_import(seed_user)
-        bank_day = seed_user["bootstrap_period"].start_date
-        a_bank_line(
-            seed_user, statement, amount="2573.43", posted_on=bank_day,
-        )
-        a_transaction(
-            seed_user, name="Salary", amount="2473.38", income=True,
-        )
-        db.session.commit()
-
-        page = auth_client.get(
-            _review_url(seed_user["account"].id),
-        ).get_data(as_text=True)
-
-        trigger = _element_carrying(page, "hx-trigger")
-        assert trigger is not None, "nothing re-prices the panel at all"
-        assert "match-hand-line_ids" in trigger, (
-            "the trigger does not contain the tick lists, so nothing fires"
-        )
-        assert "match-hand-residual" not in trigger, (
-            "the consent box is inside the element that triggers its own "
-            "replacement -- ticking it would swap it away"
-        )
-        # ...and the panel it targets is not itself a trigger.
-        assert 'id="hand-totals"' in page
-        assert 'hx-trigger' not in _element_carrying(page, 'id="hand-totals"')
-
-    def test_ONE_side_ticked_shows_that_SIDES_total(
-        self, auth_client, db, seed_user,
-    ):
-        """A ticked line is not nothing, and the panel may not say it is.
-
-        A first version answered the empty panel until BOTH sides were ticked,
-        so a `$2,573.43` line the owner had just picked read `$0.00`.  Caught
-        by driving the real screen; a match still needs both halves, so no
-        consent is offered.
-        """
-        statement = an_import(seed_user)
-        bank_day = seed_user["bootstrap_period"].start_date
-        line = a_bank_line(
-            seed_user, statement, amount="2573.43", posted_on=bank_day,
-        )
-        db.session.commit()
-
-        response = auth_client.post(
-            _totals_url(seed_user), data=match_item(index="hand", lines=[line]),
-        )
-
-        text = _visible_text(response.get_data(as_text=True))
-        assert "Your bank shows $2,573.43" in text
-        assert "the rows you ticked come to $0.00" in text
-        assert _rendered_consent(
-            response.get_data(as_text=True),
-        ) == ("", True)
-
-    def test_the_SERVER_prices_what_is_ticked_and_offers_the_figure(
-        self, auth_client, db, seed_user,
-    ):
-        """The panel is the accept door asked what it would do.
-
-        No arithmetic happens in the browser: the body posted here is the body
-        Apply would send, and everything on the answer -- both sums, the
-        difference, the label and the box's value -- is the server's.
-        """
-        statement = an_import(seed_user)
-        bank_day = seed_user["bootstrap_period"].start_date
-        line = a_bank_line(
-            seed_user, statement, amount="2573.43", posted_on=bank_day,
-        )
-        salary = a_transaction(
-            seed_user, name="Salary", amount="2473.38", income=True,
-        )
-        allowance = a_transaction(
-            seed_user, name="Allowance", amount="100.00", income=True,
-        )
-        db.session.commit()
-
-        response = auth_client.post(
-            _totals_url(seed_user),
-            data=match_item(index="hand", lines=[line],
-                        transactions=[salary, allowance]),
-        )
-
-        assert response.status_code == 200
-        text = _visible_text(response.get_data(as_text=True))
-        # 2,573.43 - (2,473.38 + 100.00) = 0.05
-        assert "Your bank shows $2,573.43" in text
-        assert "the rows you ticked come to $2,573.38" in text
-        assert "difference $0.05" in text
-        assert "Record the $0.05 difference as a row with no category" in text
-        assert _rendered_consent(
-            response.get_data(as_text=True),
-        ) == ("0.05", False)
-
-    def test_the_PANELS_OWN_figure_is_what_the_door_accepts(
-        self, auth_client, db, seed_user,
-    ):
-        """The loop closed: price it, scrape what it offered, post that, land.
-
-        This is the only control that grades the panel's figure against the
-        door's own arithmetic.  Every other case states the figure itself, so
-        all of them would pass a panel that priced the wrong thing -- and in a
-        browser every hand-built difference would then be refused as "reviewed
-        against a difference of ...".
-        """
-        statement = an_import(seed_user)
-        bank_day = seed_user["bootstrap_period"].start_date
-        line = a_bank_line(
-            seed_user, statement, amount="2573.43", posted_on=bank_day,
-        )
-        salary = a_transaction(
-            seed_user, name="Salary", amount="2473.38", income=True,
-        )
-        allowance = a_transaction(
-            seed_user, name="Allowance", amount="100.00", income=True,
-        )
-        db.session.commit()
-        ticked = match_item(index="hand", lines=[line],
-                        transactions=[salary, allowance])
-
-        panel = auth_client.post(
-            _totals_url(seed_user), data=ticked,
-        ).get_data(as_text=True)
-        offered, disabled = _rendered_consent(panel)
-        assert disabled is False, (
-            "the panel offered no consent, so this graded nothing"
-        )
-
-        response = auth_client.post(
-            _review_url(seed_user["account"].id),
-            data={**ticked, "match-hand-residual": [offered]},
-        )
-
-        assert response.status_code == 200
-        assert b"do not add up" not in response.data
-        assert b"recorded the +0.05 difference" in response.data
-        db.session.expire_all()
-        assert salary.settled_on == bank_day
-        minted = (
-            db.session.query(Transaction)
-            .filter(
-                Transaction.account_id == seed_user["account"].id,
-                Transaction.category_id.is_(None),
-            )
-            .all()
-        )
-        assert len(minted) == 1
-        assert minted[0].estimated_amount == Decimal("0.05")
-
-    def test_the_panel_names_a_refusal_BEFORE_the_press(
-        self, auth_client, db, seed_user,
-    ):
-        """A selection the door will not record says so beside the boxes.
-
-        An envelope is worth whatever its purchases are, so a difference on one
-        is a purchase that is missing -- and learning that from the panel is
-        the difference between fixing it and pressing a button that refuses.
-        """
-        statement = an_import(seed_user)
-        bank_day = seed_user["bootstrap_period"].start_date
-        line = a_bank_line(
-            seed_user, statement, amount="-280.06", posted_on=bank_day,
-        )
-        envelope = a_transaction(
-            seed_user, name="Groceries", amount="180.00", is_envelope=True,
-        )
-        a_purchase(seed_user, envelope, amount="180.00")
-        power = a_transaction(seed_user, name="Power", amount="100.00")
-        db.session.commit()
-
-        response = auth_client.post(
-            _totals_url(seed_user),
-            data=match_item(index="hand", lines=[line],
-                        transactions=[envelope, power]),
-        )
-
-        text = _visible_text(response.get_data(as_text=True))
-        assert "no figure of its own to correct" in text
-        assert _rendered_consent(
-            response.get_data(as_text=True),
-        ) == ("", True)
-
-    def test_ONE_row_is_offered_the_CORRECTION_rather_than_a_new_row(
-        self, auth_client, db, seed_user,
-    ):
-        """The two remedies are different acts, so the panel names which."""
-        statement = an_import(seed_user)
-        bank_day = seed_user["bootstrap_period"].start_date
-        first = a_bank_line(
-            seed_user, statement, amount="-100.00", posted_on=bank_day,
-        )
-        second = a_bank_line(
-            seed_user, statement, amount="-80.06",
-            posted_on=bank_day + timedelta(days=1),
-        )
-        txn = a_transaction(seed_user, amount="180.00")
-        db.session.commit()
-
-        response = auth_client.post(
-            _totals_url(seed_user),
-            data=match_item(index="hand", lines=[first, second],
-                        transactions=[txn]),
-        )
-
-        text = _visible_text(response.get_data(as_text=True))
-        assert "Write your bank's -$180.06 to the row you ticked" in text
-        assert "in place of the -$180.00 your records hold" in text
-        assert _rendered_consent(
-            response.get_data(as_text=True),
-        ) == ("-0.06", False)
-
-    def test_the_receipt_names_the_difference_it_recorded(
-        self, auth_client, db, seed_user,
-    ):
-        """The panel's own line, beside the per-item sentence."""
-        statement = an_import(seed_user)
-        bank_day = seed_user["bootstrap_period"].start_date
-        line = a_bank_line(
-            seed_user, statement, amount="2573.43", posted_on=bank_day,
-        )
-        salary = a_transaction(
-            seed_user, name="Salary", amount="2473.38", income=True,
-        )
-        allowance = a_transaction(
-            seed_user, name="Allowance", amount="100.00", income=True,
-        )
-        db.session.commit()
-
-        response = auth_client.post(
-            _review_url(seed_user["account"].id),
-            data=match_item(index="hand", lines=[line],
-                        transactions=[salary, allowance], residual="0.05"),
-        )
-
-        # Tags stripped and whitespace collapsed, because the sentence wraps
-        # in the template and a byte match would grade the indentation.
-        text = _visible_text(response.get_data(as_text=True))
-        assert (
-            "1 difference(s) totalling $0.05 recorded as rows with no "
-            "category."
-        ) in text
-        assert "Nothing moved." not in text
-
-    def test_a_hand_built_group_that_adds_up_is_accepted(
-        self, auth_client, db, seed_user,
-    ):
-        """The control: the same door, on figures that agree."""
-        statement = an_import(seed_user)
-        bank_day = seed_user["bootstrap_period"].start_date
-        line = a_bank_line(
-            seed_user, statement, amount="2573.38", posted_on=bank_day,
-        )
-        salary = a_transaction(
-            seed_user, name="Salary", amount="2473.38", income=True,
-        )
-        allowance = a_transaction(
-            seed_user, name="Allowance", amount="100.00", income=True,
-        )
-        db.session.commit()
-
-        auth_client.post(
-            _review_url(seed_user["account"].id),
-            data=match_item(lines=[line], transactions=[salary, allowance]),
-        )
-
-        db.session.expire_all()
-        assert salary.settled_on == bank_day
-        assert allowance.settled_on == bank_day
 
 
 class TestTheDepositArmOnTheWire:
@@ -2687,9 +1989,16 @@ class TestTheStandingRuleSection:
         # page's text**: "-- a new envelope --" still appears on the page as an
         # ANSWER the rule section offers, which is a different control on a
         # different form posting to a door that moves no money.
-        assert _apply_form_controls(response.data.decode()) == {
-            "apply": "hand",
-        }
+        #
+        # **EMPTY, where this expected ``{"apply": "hand"}`` until plan step
+        # ``bank_import:X-gf-3b``.**  That entry was never this case's subject:
+        # it was the hand-build form's hidden index, which shared the page and
+        # therefore the scrape.  With the form on a surface of its own (ruling
+        # **bank_import:R-HC**) the money form for a barred line submits
+        # NOTHING AT ALL, which is the stronger statement of exactly what this
+        # case is about -- ruling **R-GJ**'s refusal being structural rather
+        # than a control the owner is trusted not to touch.
+        assert _apply_form_controls(response.data.decode()) == {}
         # It places nothing either, so the sweep has nothing to offer.
         assert "data-placement=" not in body
         assert "data-tick-placed" not in body
@@ -3422,36 +2731,6 @@ class TestALineThatMayNeverBecomeAPurchase:
         assert db.session.query(TransactionEntry).count() == 0
         assert db.session.query(StatementMatch).count() == 0
 
-    def test_a_parked_line_is_still_tickable_in_the_HAND_MATCH_form(
-        self, auth_client, db, seed_user,
-    ):
-        """The arm ruling R-GJ leaves open, reachable from the rendered page.
-
-        A card payment meets the payback rows it repays by being ticked beside
-        them and matched, with any difference NAMED (**R-FN**).  On the
-        developer's own data the one Capital One line handled that way --
-        `-$466.47` on 2026-06-17 -- is grouped with four ``CC Payback`` rows
-        whose recorded figures sum to exactly `$466.47`.  Take the line out of
-        that form and the ruling's only remaining arm is unreachable.
-        """
-        an_envelope(seed_user)
-        line = an_unexplained_outflow(seed_user, merchant="Capital One Credit Card")
-        db.session.commit()
-        auth_client.post(
-            _merchants_url(seed_user["account"].id),
-            data=rule_item(
-                0, a_merchant(seed_user, "Capital One Credit Card").id,
-                answer="never",
-            ),
-        )
-
-        page = auth_client.get(
-            _review_url(seed_user["account"].id),
-        ).data.decode()
-
-        assert f'name="match-hand-line_ids" value="{line.id}"' in page
-
-
 class TestWhyARuleDidNotFileALineItReaches:
     """Finding **N-359** at the route tier, plan step ``bank_import:X-gf-3a``.
 
@@ -3609,10 +2888,25 @@ class TestWhyARuleDidNotFileALineItReaches:
         card = self._create_card(body)
         assert "Your rules will not record this one by themselves" in card
         assert card.count("held too many rows for the app to search them") == 1
-        assert "Before recording this as new spending, check the match" not in card
-        # ...and the hand-build list still carries the same sentence, which is
-        # a second RENDER of one fact rather than a second derivation of it.
-        assert body.count("held too many rows for the app to search them") == 2
+        # **The NO-RULE wording, which must not appear on a line a rule DOES
+        # reach.**  The needle is `_verdict._look_first`'s opening, and it
+        # changed at plan step ``bank_import:X-gf-3b`` because the old one
+        # named a POSITION ("check the match form below") that the form's move
+        # made false.  It is re-pointed rather than dropped: a negative
+        # assertion whose needle no longer exists anywhere passes for the wrong
+        # reason and discriminates nothing.
+        assert "Before recording this as new spending, match it" not in card
+        # ONE render on this page -- the create card's -- and the second is on
+        # the hand-build surface, which is where the same fact is rendered
+        # beside the act it prompts.  Still one derivation and two renders;
+        # what changed is that the second render is a page away.
+        assert body.count("held too many rows for the app to search them") == 1
+        workbench = " ".join(auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements/match",
+        ).data.decode().split())
+        assert workbench.count(
+            "held too many rows for the app to search them"
+        ) == 1
 
 
 class TestWhereAParkedLineSendsTheOwner:
@@ -3677,3 +2971,221 @@ class TestWhereAParkedLineSendsTheOwner:
         # ...and the reason says why no answer would help, rather than leaving
         # the owner to discover it at a refusal.
         assert "which no answer lifts" in body
+
+
+class TestEveryExceptionLinksToTheTool:
+    """Ruling **bank_import:R-HC**: the queue's rows reach the workbench.
+
+    The hand-build match form moved to a surface of its own at plan step
+    ``bank_import:X-gf-3b`` because it is the TOOL three exceptions send the
+    owner to and not an exception itself.  **Moving it is only half the
+    ruling**: the other half is that each of those exceptions links to it
+    "with its own line already ticked", and without that half the queue names
+    a remedy the owner has to go and find.
+
+    **The link is rendered UNCONDITIONALLY on every row**, and that is a fact
+    about the act rather than a shortcut: every line the three cards show is in
+    ``review.unmatched``, which is exactly the set the workbench renders a
+    checkbox for, so there is no line here the tool cannot take.  Compare
+    ``ParkedLine.answer_door`` beside it, which the service withholds on 9 of 9
+    of the developer's parked lines because restating that answer would change
+    nothing.
+    """
+
+    @staticmethod
+    def _linked_lines(page):
+        """Return the line ids the page links to the workbench with."""
+        return sorted(
+            int(found) for found in re.findall(
+                r"/statements/match\?line=(\d+)", page,
+            )
+        )
+
+    def test_a_CREATABLE_line_links_to_the_tool_carrying_itself(
+        self, auth_client, db, seed_user,
+    ):
+        """The card where the WRONG act is cheapest gets the right one beside it.
+
+        Recording a line the app already holds in another shape is the
+        duplicate finding **N-335** measures at `$356.61` for one `$178.29`
+        movement, and matching is what that owner should have done instead.
+        """
+        an_envelope(seed_user)
+        line = an_unexplained_outflow(seed_user, merchant="Lowe's")
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+
+        assert "Lines that are a purchase you never recorded" in page
+        assert self._linked_lines(page) == [line.id]
+
+    def test_a_PARKED_line_links_to_the_tool_carrying_itself(
+        self, auth_client, db, seed_user,
+    ):
+        """Ruling **R-GJ**'s only remaining arm, reachable from the row.
+
+        A card payment meets the payback rows it repays by being ticked beside
+        them.  The reason beside such a line USED to end "tick them together
+        below and match them" -- a sentence composed in the SERVICE
+        (``ParkedLine.reason``) naming a position on a page the service cannot
+        see.  It states the bar now, and this link states the act.
+        """
+        an_envelope(seed_user)
+        line = an_unexplained_outflow(
+            seed_user, merchant="Capital One Credit Card",
+        )
+        db.session.commit()
+        auth_client.post(
+            _merchants_url(seed_user["account"].id),
+            data=rule_item(
+                0, a_merchant(seed_user, "Capital One Credit Card").id,
+                answer="never",
+            ),
+        )
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+        body = " ".join(page.split())
+
+        assert "Payments waiting for their home" in body
+        assert self._linked_lines(page) == [line.id]
+        # **NO SENTENCE ON THIS PAGE NAMES A POSITION.**  Five did until this
+        # step and all five went false in the commit that moved the form; two
+        # of them were composed in the service, which cannot see a layout at
+        # all.  The needles are the exact clauses that broke.
+        assert "tick them together below" not in body.lower()
+        assert "match form below" not in body
+        assert "match it below" not in body
+
+    def test_a_RECORDABLE_INFLOW_links_to_the_tool_carrying_itself(
+        self, auth_client, db, seed_user,
+    ):
+        """Ruling **bank_import:R-GW**'s card, where the duplicate runs the
+        other way.
+
+        Seven of the sixteen inflows on the developer's own statement are
+        payroll deposits his app already holds as two or three rows each, and
+        recording one here would book `$2,573.42` of income the books already
+        carry.  Matching it against those rows is the act, and it is one click
+        from the line.
+        """
+        statement = an_import(seed_user)
+        bank_day = seed_user["bootstrap_period"].start_date
+        line = a_bank_line(
+            seed_user, statement, amount="2573.42", posted_on=bank_day,
+            description="ACH DEPOSIT PAYROLL",
+        )
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+
+        assert "Money that arrived and your records do not hold" in page
+        assert self._linked_lines(page) == [line.id]
+
+
+class TestTheQueueDoesNotRenderTheTool:
+    """N-374's own regression, and until 2026-08-28 nothing graded it.
+
+    **This is the step's HEADLINE claim and it had no control.** An adversarial
+    test-quality review put the two pick lists back into
+    ``_statement_review_body.html`` and ran both statement route files: **102
+    passed, 0 failed.** Every case here dies to that edit.
+
+    What the claim is worth: those two lists were **89,247 bytes, 59% of the
+    review body**, on the developer's own data -- 22,830 for 27 bank lines and
+    66,417 for 67 rows, against 1 unanswered merchant, 2 creatable lines, 16
+    deposits and 9 parked payments of actual work. Both are UNBOUNDED and the
+    right one grows with the whole span the statements cover, for ever, which
+    is why ruling **bank_import:R-HC** bounds the queue by the tool LEAVING it
+    rather than by capping either list.
+    """
+
+    def test_the_queue_renders_NEITHER_pick_list(
+        self, auth_client, db, seed_user,
+    ):
+        """The absence itself, by the captions and the field names.
+
+        **Both**, because the two lists are separate cards and an edit could
+        restore one: the byte cost is 22,830 for the left and 66,417 for the
+        right, so either alone is most of what this step removed.
+        """
+        an_envelope(seed_user)
+        an_unexplained_outflow(seed_user, merchant="Geico")
+        a_transaction(
+            seed_user, name="Ghost Payment", amount="22.22",
+            status=StatusEnum.DONE,
+            settled_on=seed_user["bootstrap_period"].start_date,
+        )
+        db.session.commit()
+
+        page = auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode()
+
+        assert "Lines your bank shows and nothing explains" not in page
+        assert "Rows you recorded that no line explains" not in page
+        assert 'name="line_ids"' not in page
+        assert 'name="rows"' not in page
+        assert 'id="hand-build-form"' not in page
+        assert 'id="hand-totals"' not in page
+
+    def test_the_queue_renders_no_control_that_posts_to_the_tool(
+        self, auth_client, db, seed_user,
+    ):
+        """The FORM, not just its lists.
+
+        A restored form with its captions reworded would pass the case above.
+        This asks the one question a browser asks: is there anything here that
+        POSTS to the workbench's write door?
+        """
+        an_envelope(seed_user)
+        an_unexplained_outflow(seed_user, merchant="Geico")
+        db.session.commit()
+        account_id = seed_user["account"].id
+
+        page = auth_client.get(_review_url(account_id)).data.decode()
+
+        match_url = f"/accounts/{account_id}/statements/match"
+        # It LINKS there -- that is ruling R-HC's other half -- so the
+        # assertion has to be about a form ACTION rather than about the URL
+        # appearing at all, which is what an earlier draft of this case got
+        # wrong and what would have made it pass on an empty page.
+        assert match_url in page, (
+            "the queue no longer links to the tool at all, so this case would "
+            "pass for the wrong reason"
+        )
+        assert f'action="{match_url}"' not in page
+        assert f'hx-post="{match_url}"' not in page
+
+    def test_the_TOOL_still_renders_both_lists(
+        self, auth_client, db, seed_user,
+    ):
+        """THE PAIR: the lists moved rather than being deleted.
+
+        Without this, every assertion above is satisfied by a step that simply
+        removed the hand-build form from the app -- which would take ruling
+        **R-GJ**'s only remaining arm with it, since a parked card payment
+        meets its payback rows nowhere else.
+        """
+        an_envelope(seed_user)
+        line = an_unexplained_outflow(seed_user, merchant="Geico")
+        a_transaction(
+            seed_user, name="Ghost Payment", amount="22.22",
+            status=StatusEnum.DONE,
+            settled_on=seed_user["bootstrap_period"].start_date,
+        )
+        db.session.commit()
+
+        page = auth_client.get(
+            f"/accounts/{seed_user['account'].id}/statements/match",
+        ).data.decode()
+
+        assert "Lines your bank shows and nothing explains" in page
+        assert "Rows you recorded that no line explains" in page
+        assert f'name="line_ids" value="{line.id}"' in page
+        assert "Ghost Payment" in page

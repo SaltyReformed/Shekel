@@ -1,0 +1,39 @@
+{# The acts a queue row offers that are not its own control.
+
+   Plan step bank_import:X-gf-3b, ruling bank_import:R-HC. #}
+
+{% macro match_by_hand(account_id, line_id) %}
+{# THE LINK EVERY EXCEPTION CARRIES, and it carries its own line.
+
+   Ruling bank_import:R-HC: the hand-build match form is the TOOL that three
+   separate exceptions send the owner to -- a parked card payment meeting its
+   payback rows, a line a tier declined, a deposit the books may already hold
+   -- so each of them links to it "with its own line already ticked".
+
+   IT IS RENDERED UNCONDITIONALLY, and that is a fact about the act rather than
+   a shortcut.  Every line the three cards show is in `review.unmatched`, which
+   is exactly the set the workbench renders a checkbox for, so there is no line
+   here the tool cannot take.  Compare ParkedLine.answer_door beside it, which
+   the service withholds on 9 of 9 lines because restating that answer would
+   change nothing: a link whose destination cannot act is the
+   chooser-that-cannot-succeed shape this package has closed five times, and
+   the distinction is whether the act is open, not whether a link is easy.
+
+   THE SENTENCE NAMES THE ACT, NOT A POSITION.  EIGHT owner-visible sentences
+   pointed at the form's position until this step and all eight went false in
+   the commit that moved it -- THREE of them derived in the SERVICE, which
+   cannot see a layout at all (`_verdict._LOOK_FIRST`, `_verdict._look_first`,
+   `ParkedLine.reason`).  A first version of this comment said FIVE and two,
+   which is the count of the literal string "the match form below" rather than
+   the count of the COUPLING; a short census recorded as a completed sweep is
+   what the next reader trusts.  Found by adversarial design review 2026-08-28.
+
+   What a service states now is the FACT; the URL is the one thing a service
+   may not build, and it is built here. #}
+<div class="mt-1">
+  <a class="small"
+     href="{{ url_for('accounts.statement_workbench', account_id=account_id, line=line_id) }}">
+    <i class="bi bi-tools"></i> Match it against rows you already hold
+  </a>
+</div>
+{% endmacro %}

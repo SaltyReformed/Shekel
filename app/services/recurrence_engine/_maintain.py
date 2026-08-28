@@ -38,6 +38,7 @@ from app.services._recurrence_common import (
     MaintainOutcome,
     check_scenario_ownership,
     classify_maintain_work,
+    occurrence_by_period,
     refuse_repeats_this_pass,
     rows_this_pass_may_maintain,
 )
@@ -344,6 +345,14 @@ def _apply_maintain_work(work, derived, template_id, scenario_id, projected_id):
         ``(created, updated)`` -- the rows this pass added and the rows it
         brought into line.
     """
+    # ``occurs_on`` is deliberately absent from this loop, and that is plan
+    # step **R17**'s central claim: a row's OCCURRENCE is what it IS, not
+    # something its definition re-derives per pass.  It is not in
+    # ``DerivedRowFields``, so this splat cannot reach it, and a maintained row
+    # therefore keeps the occurrence it was created for.  What a pass should do
+    # when a rule EDIT moves the occurrence set out from under an existing row
+    # is the question the skip-predicate leaf owns; baking the answer in here
+    # would decide it silently.
     updated = []
     for row in work.update:
         for field, value in derived[row.pay_period_id]._asdict().items():
@@ -351,11 +360,12 @@ def _apply_maintain_work(work, derived, template_id, scenario_id, projected_id):
         updated.append(row)
 
     created = []
-    for period_id in work.create_in:
+    for create in work.create_in:
         txn = Transaction(
-            **derived[period_id]._asdict(),
+            **derived[create.period_id]._asdict(),
             template_id=template_id,
-            pay_period_id=period_id,
+            pay_period_id=create.period_id,
+            occurs_on=create.occurs_on,
             scenario_id=scenario_id,
             status_id=projected_id,
             is_override=False,
@@ -436,7 +446,7 @@ def _maintain_instances(template, plan, calendar, scenario_id, existing):
         for placement in placements
     }
     work = classify_maintain_work(
-        existing, set(derived),
+        existing, occurrence_by_period(placements),
         with_records=_rows_holding_owner_records(existing),
         reattributed=_rows_the_definition_reattributes(
             existing, template.account_id,

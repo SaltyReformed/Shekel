@@ -716,11 +716,13 @@ a.acct-cell__link:focus-visible {
   max-width: 16rem;
 }
 
-/* The statement REVIEW page's two pick-lists (plan step bank_import:X-f6a-2).
-   The hand-build form offers every unmatched bank line beside every unmatched
+/* The hand-build WORKBENCH's two pick-lists (plan step bank_import:X-f6a-2;
+   moved off the review page at X-gf-3b, ruling bank_import:R-HC, which is why
+   this no longer says "the REVIEW page's" or names its Accept button).
+   The form offers every unmatched bank line beside every unmatched
    app row, and a first import produces hundreds of each -- measured at 121
    lines and 112 rows on the developer's own account -- so each list scrolls
-   inside a bounded box rather than pushing the Accept button below three
+   inside a bounded box rather than pushing the Match button below three
    screens of table.
 
    A class rather than an inline style for the reason `.stmt-file-name` above

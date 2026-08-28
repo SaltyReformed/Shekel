@@ -502,6 +502,35 @@ class Transaction(
     )
     notes = db.Column(db.Text)
     due_date = db.Column(db.Date, nullable=True)
+    # WHICH OCCURRENCE this row is -- the date the template's cadence named
+    # when the recurrence engine wrote it (plan step **R17**, the first leaf of
+    # **R5**).  It is the row's IDENTITY under its definition, which is why it
+    # sits here beside ``template_id`` / ``pay_period_id`` / ``scenario_id``
+    # (what the row IS) and deliberately NOT in
+    # ``recurrence_engine._amounts.DerivedRowFields`` (what the definition
+    # DERIVES for a period).  A maintain pass therefore never rewrites it: a
+    # row's occurrence does not change because its definition did.
+    #
+    # **It is what makes a MOVED row durable**, which is finding **D57**.  The
+    # generate pass used to ask "does this PAY PERIOD hold a row", so a row the
+    # owner moved to a neighbouring paycheck emptied the period its occurrence
+    # named and the next whole-schedule pass wrote a second one -- measured on
+    # a production clone 2026-08-27 at **8 rows / $1,482.93 from ONE pass**,
+    # seven of them already Paid.  ``pay_period_id`` is the FUNDING and the
+    # owner may move it; this column is the cadence and nothing moves it.
+    #
+    # **NULL means the row answers no occurrence**, and that is a real state
+    # rather than a gap -- so this is nullable where plan step R5's
+    # specification said ``NOT NULL``.  Two live writers create a
+    # template-linked row that no cadence named: ``carry_forward_service``
+    # rolls an unspent envelope forward as an ``is_override`` row (and writes
+    # ``due_date = None`` for the same reason), and the one-time branch of
+    # ``routes/transfers/_instances.py`` materialises a transfer whose template
+    # has no rule at all.  On a production clone the backfill considered 736 of
+    # 788 template-linked rows -- the rest sit on archived templates it does not
+    # walk -- stamped 726 and left 10 NULL.  A NULL row claims no occurrence and
+    # so blocks none.
+    occurs_on = db.Column(db.Date, nullable=True)
     # settled_on, settled_day_basis_id and reconciled_by_id are provided by
     # SettleDatedMixin -- the three columns that ARE this row's ASSERTION, and
     # its ``settled_on`` validator refuses a ``datetime`` on every write path
