@@ -35,7 +35,6 @@ from app.utils.balance_predicates import (
     balance_contributing_clause,
     is_balance_contributing,
 )
-from app.utils.dates import attribution_date
 
 logger = logging.getLogger(__name__)
 
@@ -393,12 +392,12 @@ def _query_transactions_for_range(
     as ruling R-Q and plan step C2-c answered it for the balance seam.
 
     Fetches by PERIOD MEMBERSHIP -- all balance-contributing rows whose
-    ``pay_period_id`` is one of *periods* --
-    NOT by raw ``due_date``.  This is the basis the clamped
-    :func:`~app.utils.dates.attribution_date` display rule and the daily
-    balance producer both use: a transaction is attributed to a day inside
-    its own pay period, so the day cell that renders it and the balance line
-    that steps for it share one period-anchored day.  A ``due_date`` that
+    ``pay_period_id`` is one of *periods* -- NOT by raw ``due_date``.  This is
+    the basis the clamped
+    :meth:`~app.services.pay_calendar.DerivedPeriod.attribution_day` display
+    rule and the daily balance producer both use: a transaction is attributed
+    to a day inside its own pay period, so the day cell that renders it and the
+    balance line that steps for it share one period-anchored day.  A ``due_date`` that
     strays outside its period (the reason the prior query needed a second
     due-date-in-range path) is pulled back to the period boundary by the
     clamp; fetching by membership means such a row is still loaded for the
@@ -890,10 +889,13 @@ def _get_display_day(
     month boundaries).
 
     The attribution date is the shared
-    :func:`~app.utils.dates.attribution_date` rule -- ``due_date`` (fallback:
-    the pay period ``start_date``) clamped into the transaction's own pay
-    period span.  The clamp prevents a due_date that strays just outside its
-    period from leaking a flow onto a neighboring period's day.
+    :meth:`~app.services.pay_calendar.DerivedPeriod.attribution_day` rule --
+    ``due_date`` (fallback: the pay period ``start_date``) clamped into the
+    transaction's own pay period span, which prevents a due_date that strays
+    just outside its period from leaking a flow onto a neighboring period's
+    day.  **It is asked OF the period since plan step C4-a-2**, which deleted
+    the three-argument ``utils.dates.attribution_date`` this called: the span
+    and the rule now travel as one value.
 
     **The span is the one the row was SELECTED by, passed in for exactly that
     reason** (plan step C2-f1, caught by adversarial review before it shipped).
@@ -915,12 +917,12 @@ def _get_display_day(
     display-timezone civil day since ruling R-DH (b)) and a still-projected one
     on ``max(attribution, as_of + 1)`` (ruling R-G).  Neither is the budget
     attribution date this function returns, so a chip and its own balance step
-    can sit days apart -- median 2, p75 6, max 25
-    on the real Checking account (finding N-42).  The two agreed by
-    construction before the cutover because the retired ramp distributed the
-    same still-projected rows over these same attribution days.  The grid met
-    the identical split and answered it with ruling R-K's remainder rows
-    row; the calendar has no such row yet, and which way it should go -- move
+    can sit days apart -- median 2, p75 7, max 25 over 126 settled Checking
+    rows, re-measured 2026-08-28 (N-42).  The two agreed by construction
+    before the cutover because the retired ramp distributed the same
+    still-projected rows over these same attribution days.  The grid met the
+    identical split and answered it with ruling R-K's remainder rows row; the
+    calendar has no such row yet, and which way it should go -- move
     the chip to the cash clock, add a reconciling figure, or label the
     divergence -- is the developer's to rule.
 
@@ -935,9 +937,7 @@ def _get_display_day(
         The day of *target_month* to render the row on, or ``None`` when its
         attribution date falls in another month.
     """
-    landing = attribution_date(
-        txn.due_date, period.start_date, period.end_date,
-    )
+    landing = period.attribution_day(txn.due_date)
     if landing.month == target_month and landing.year == target_year:
         return landing.day
     return None

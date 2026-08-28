@@ -522,9 +522,11 @@ Data layer shipped; presentation (P2) not started. What landed:
   nets from `balance_calculator.sum_projected`. Oracle test:
   `series[P.end_date] == cash_balance_at(P.end_date)` for each overlapping period, plus continuity,
   per-day step, pre-anchor-flat, settled-excluded, clamp, and within-period-entry reconciliation.
-- **Shared attribution rule:** `app/utils/dates.attribution_date` (due_date or period start, clamped
-  into the period span) is used by BOTH the producer's ramp and the calendar's day grouping, so a
-  flow's cell and the line's step share one day.
+- **Shared attribution rule:** `pay_calendar.DerivedPeriod.attribution_day` (due_date or period
+  start, clamped into the period span) is used by BOTH the producer's ramp and the calendar's day
+  grouping, so a flow's cell and the line's step share one day. It was
+  `app/utils/dates.attribution_date` until pay-calendar plan step `C4-a-2` moved the rule onto the
+  value that carries the span and deleted the free function.
 - **Calendar query change:** `calendar_service._query_transactions_for_range` now selects by PERIOD
   MEMBERSHIP (`pay_period_id.in_(period_ids)`), not raw `due_date` (`monthly_attribution_clause`
   retired from calendar) -- required by the clamp so a stray-dated flow is not dropped. Two tests

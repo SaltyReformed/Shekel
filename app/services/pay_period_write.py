@@ -755,7 +755,8 @@ def _reject_backward_payday(
     paydays define adjacent intervals -- so there is nothing left here to refuse
     except a payday landing INSIDE an existing paycheck, which splits it.  C6
     owns that, behind two questions ledger row **P10** records as unruled: what
-    happens to a row ``attribution_date`` would now clamp into the wrong half,
+    happens to a row ``DerivedPeriod.attribution_day`` would now clamp into the
+    wrong half,
     and whether the split-off payday is repopulated (a monthly billed twice) or
     left empty (income understated for the whole horizon).  **When C6 answers
     them, this function is what it deletes.**
