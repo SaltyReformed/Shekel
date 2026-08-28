@@ -185,8 +185,11 @@ load the essentials automatically when you touch matching files and point you to
 ~5,500 tests, ~65 s at `-n 12`. Run via `./scripts/test.sh` (not bare `pytest`) -- it restarts the
 `shekel-dev-test-db` container first and falls through to plain pytest in CI. Single test:
 `./scripts/test.sh tests/path/test_file.py::test_name -v`; `SKIP_DB_RESTART=1` skips the restart on
-chained runs. Rebuild the template after migrations: `python scripts/build_test_template.py`.
-`.claude/rules/testing.md` and `docs/testing-standards.md` carry the full guidance.
+chained runs. Rebuild the template after migrations: `python scripts/build_test_template.py`. **The
+wrapper also defaults to `-m "not docker"`, which DESELECTS 28 container-spawning
+`tests/test_deploy` tests -- they vanish from the report entirely rather than appearing as skips, so
+a green `./scripts/test.sh` run is not a claim about them; CI runs bare `pytest` and executes all
+28.** `.claude/rules/testing.md` and `docs/testing-standards.md` carry the full guidance.
 
 ## Deployment
 
