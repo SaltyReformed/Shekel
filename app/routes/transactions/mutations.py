@@ -163,10 +163,16 @@ def _apply_field_updates(txn, data):
        would let a salary row's recompute overwrite the estimate the same form
        just submitted.  And act 3 FLUSHES (see below), so a flag written after
        it is written after the UPDATE it belongs in -- which for a period move
-       leaves the row inside
-       ``idx_transactions_template_period_scenario``'s partial predicate
-       (``is_override = FALSE``) and trips a unique violation on a move into a
-       period the recurrence engine has already populated.
+       leaves the row inside the generation index's partial predicate
+       (``is_override = FALSE``) while its period is already the new one.
+       **Plan step R17 narrowed what that can collide with but did not remove
+       it**: the dated index is keyed
+       ``(template, scenario, occurs_on)``, and a move does not touch
+       ``occurs_on``, so a DATED row no longer collides with whatever the
+       engine put in the target period.  An UNDATED template-linked row
+       (``occurs_on IS NULL``) is still keyed on its paycheck by
+       ``idx_transactions_template_scenario_undated``, so for that row the
+       ordering is exactly as load-bearing as it was.
     2b. **(NEW to this list, shipped at X-au-c2b)** ``amount_source_id = None``
        whenever a figure is typed: a hand-priced row OWNS its figure, and
        ``ck_transactions_amount_ownership`` pairs the two one-to-one, so
@@ -379,8 +385,9 @@ def _apply_regular_update(txn, txn_id, data):
         # was the request's FIRST flush sitting outside its own exception net: a
         # concurrent commit surfaced as a 500 instead of the designed 409, and a
         # period move whose ``is_override`` had not yet been written tripped
-        # ``idx_transactions_template_period_scenario`` as an uncaught
-        # ``IntegrityError``.  Found by adversarial review; the comment below
+        # the generation index (then keyed on the paycheck, now
+        # ``idx_transactions_template_scenario_undated`` for an undated row)
+        # as an uncaught ``IntegrityError``.  Found by adversarial review; the comment below
         # claimed the three excepts covered the whole tail, and they covered the
         # tail while the first flush had moved above it.
         field_error = _apply_field_updates(txn, data)

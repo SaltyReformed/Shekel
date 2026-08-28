@@ -173,21 +173,48 @@ class Transaction(
             "due_date",
             postgresql_where=db.text("due_date IS NOT NULL"),
         ),
-        # One non-deleted, non-override transaction per template per
-        # period per scenario.  Override siblings (is_override = TRUE)
-        # may coexist with their rule-generated parent -- carry-forward
-        # relies on this so a moved unpaid item lives alongside the
-        # recurrence-engine-generated instance for the target period.
-        # The recurrence engine in app/services/recurrence_engine.py
-        # already skips generation when an is_override = TRUE row
-        # exists in the period, so the rule-generated row remains
-        # unique even with the relaxed index.
+        # WHAT A GENERATED ROW IS, stated as storage (plan step **R17**).  A
+        # row answers ONE occurrence of its template's cadence; the pay period
+        # is where that occurrence's money lands, which is a DERIVED placement
+        # and not the row's identity -- the owner may move it, and moving it is
+        # exactly what ledger row **D57** was.  Keyed on the paycheck, this
+        # index made a moved row vacate its own occurrence, so the next
+        # generate pass answered it a second time: 8 rows, $1,482.93, measured
+        # on a production clone 2026-08-28.
+        #
+        # TWO indexes rather than one, because ``occurs_on`` is NULLABLE and
+        # PostgreSQL treats NULLs as distinct -- a single index over it would
+        # let a template hold unlimited undated rows in one paycheck, which is
+        # the "one row per template per paycheck" rule this table has always
+        # had.  A row that answers NO occurrence therefore keeps the OLD key,
+        # and that split is the same rule
+        # ``_recurrence_common.OccurrenceClaims`` applies in Python: identity is
+        # the occurrence where it is known, and the paycheck where it is not.
+        # Letting an undated row claim nothing was measured at 41 phantom
+        # transfers / $20,500 at the unarchive door.
+        #
+        # Both stay PARTIAL over ``is_deleted = FALSE AND is_override = FALSE``:
+        # an override sibling may coexist with its rule-generated parent, which
+        # carry-forward relies on so a moved unpaid item lives beside the
+        # generated row for its target period.
         db.Index(
-            "idx_transactions_template_period_scenario",
-            "template_id", "pay_period_id", "scenario_id",
+            "idx_transactions_template_scenario_occurrence",
+            "template_id", "scenario_id", "occurs_on",
             unique=True,
             postgresql_where=db.text(
                 "template_id IS NOT NULL "
+                "AND occurs_on IS NOT NULL "
+                "AND is_deleted = FALSE "
+                "AND is_override = FALSE"
+            ),
+        ),
+        db.Index(
+            "idx_transactions_template_scenario_undated",
+            "template_id", "scenario_id", "pay_period_id",
+            unique=True,
+            postgresql_where=db.text(
+                "template_id IS NOT NULL "
+                "AND occurs_on IS NULL "
                 "AND is_deleted = FALSE "
                 "AND is_override = FALSE"
             ),
@@ -528,8 +555,15 @@ class Transaction(
     # ``routes/transfers/_instances.py`` materialises a transfer whose template
     # has no rule at all.  On a production clone the backfill considered 736 of
     # 788 template-linked rows -- the rest sit on archived templates it does not
-    # walk -- stamped 726 and left 10 NULL.  A NULL row claims no occurrence and
-    # so blocks none.
+    # walk -- stamped 726 and left 10 NULL.
+    #
+    # **A NULL row answers no occurrence, so it claims its whole PAY
+    # PERIOD instead** -- the pre-R17 rule, which is the only claim that
+    # can be made about a row no cadence names.  It does NOT claim
+    # nothing: ``_recurrence_common.OccurrenceClaims`` carries the
+    # measurement, and letting such a row block nothing writes 52 rows /
+    # $26,000 where the correct answer is 11 / $5,500, at the unarchive
+    # door on the developer's own data.
     occurs_on = db.Column(db.Date, nullable=True)
     # settled_on, settled_day_basis_id and reconciled_by_id are provided by
     # SettleDatedMixin -- the three columns that ARE this row's ASSERTION, and

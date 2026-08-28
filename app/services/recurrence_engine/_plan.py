@@ -89,9 +89,9 @@ class GenerationPlan(NamedTuple):
             may write, ascending by occurrence date.  **A pay period can
             appear more than once** -- at a pay cadence of 30 days or more a
             monthly bill legitimately falls inside one paycheck several times
-            -- which is what :func:`refuse_unstorable_repeats` refuses while
-            ``idx_transactions_template_period_scenario`` is keyed on the
-            paycheck (plan ledger row D19).
+            -- and since plan step **R17** re-keyed the unique index onto the
+            occurrence, both rows STORE.  It was refused until then (plan
+            ledger row D19), because the index held one row per paycheck.
         projected_id: The ``Projected`` status id every generated row carries.
 
     **It carried a fourth field until plan step C2-b2**, ``gaps`` -- the
@@ -134,7 +134,7 @@ def resolve_generation_plan(
     **It answers in ``(occurrence, period)`` pairs** (plan step R4b-2).  It
     used to answer in periods alone, so the date a row's cadence actually
     named was computed, used to select a paycheck, and then thrown away --
-    leaving :func:`refuse_unstorable_repeats` able to say only how MANY times a
+    leaving the repeat refusal of the day able to say only how MANY times a
     definition fell inside one paycheck, and leaving an occurrence in a
     schedule gap indistinguishable from one that was never generated.
 

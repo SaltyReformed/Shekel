@@ -33,10 +33,10 @@ copies is two places for that order to drift.
 **Why the FORK at step 4 is about the template and not about the status.**  A
 template-linked row is one instance of a rule that keeps generating: deleting
 it hard would let the next regeneration put it straight back, so the row stays
-as a tombstone the engine reads (``recurrence_engine`` skips a
-``is_deleted`` row's period, and ``idx_transactions_template_period_scenario``
-excludes it so a replacement can be created only where the owner has not said
-no).  An ad-hoc row answers to nobody, so it goes.
+as a tombstone the engine reads (``recurrence_engine`` skips the OCCURRENCE
+a ``is_deleted`` row answers -- ``_recurrence_common.OccurrenceClaims`` counts
+every state -- and both generation indexes exclude it so a replacement can be
+created only where the owner has not said no).  An ad-hoc row answers to nobody, so it goes.
 
 Boundary discipline (``CLAUDE.md`` Architecture): an ORM row in, a frozen
 dataclass out, no Flask import.  It MUTATES and does NOT commit -- the caller

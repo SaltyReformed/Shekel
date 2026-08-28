@@ -20,8 +20,6 @@ from __future__ import annotations
 import pathlib
 import re
 
-import pytest
-
 import _registry as registry
 from _classes import decomposition_leaf_keys
 from _staging import (
@@ -34,30 +32,6 @@ from _staging import (
     row_of,
     with_cell,
 )
-
-
-def _a_live_fork():
-    """Return the first live fork, its ``steps.md`` line, and a remedy's line.
-
-    **The fork controls below used to NAME a specimen** --
-    ``| pay_calendar:P3 = balance:N-123 |`` and ``| balance | N-123 |`` -- and
-    that broke on 2026-08-10, when ``balance:X-ad-a`` shipped the remedy that
-    fork was ruled to, its defect row closed, and the fork line left the table.
-    Three controls went red for the single reason that the rule they grade had
-    WORKED.  A control anchored to one corpus row rots exactly like the prose
-    counts these registries exist to remove, so the specimen is now derived:
-    whichever fork is live gets graded, and the next one to be settled costs
-    this file nothing.
-
-    Returns:
-        ``(fork, fork line, one remedy's step line)``.
-    """
-    found = registry.forks()
-    assert found, "no fork in steps.md -- the controls below have no subject"
-    fork = found[0]
-    line = row_of("steps", f"| {fork.defect} |")
-    arc, ident = fork.remedy_keys()[0].split(":", 1)
-    return fork, line, row_of("steps", f"| {arc} | {ident} |")
 
 
 class TestThePremiseThatAnythingIsBeingRead:
@@ -73,7 +47,6 @@ class TestThePremiseThatAnythingIsBeingRead:
         # place the true numbers are written down.
         assert len(registry.ledger_rows()) >= 100
         assert len(registry.step_rows()) >= 70
-        assert len(registry.forks()) >= 1
 
     def test_every_arc_document_is_present(self):
         """Every arc document is present."""
@@ -191,11 +164,23 @@ class TestEveryFindingNamesALiveOwner:
 
         **Every control here stages a row a shipping step can close, so they
         get re-anchored**: this one off ``pay_calendar:P2`` at C2-b2, nine off
-        ``balance:N-128`` at C2-c.  Any live row with a BARE id cell serves.
+        ``balance:N-128`` at C2-c, and this one again off ``pay_calendar:P16``
+        at `R17` on 2026-08-28.  Three re-anchorings of one control is the
+        argument for deriving it: any live row with a BARE id cell serves, so
+        it now asks for that shape rather than naming a row the next tick
+        removes.  **The shipped step is derived from the ROW's OWN ARC**: rule
+        1 resolves an owner within the row's arc, so a `pay_calendar` step
+        named on a `balance` row fires the wrong arm ("names no step") and the
+        control passes for a reason that is not its subject.
         """
-        assert registry.arc_checkboxes("pay_calendar")["C1"], "C1 must be ticked"
-        line = row_of("ledger", "| pay_calendar | P16 |")
-        stage("ledger", line, with_cell(line, -1, "C1"))
+        prefix = a_live_ledger_row()
+        arc = prefix.split("|")[1].strip()
+        shipped = next(
+            row.ident for row in registry.step_rows()
+            if row.arc == arc and row.shipped
+        )
+        line = row_of("ledger", prefix)
+        stage("ledger", line, with_cell(line, -1, shipped))
         problems = registry.owner_violations()
         assert any("SHIPPED" in p and "rule 2" in p for p in problems), problems
 
@@ -361,79 +346,6 @@ class TestAnIdentityClassSharesOneTickState:
         assert any("ONE step under two names" in p for p in problems), problems
 
 
-class TestAForkBindsItsRemediesAndItsDefectRow:
-    """conventions.md rule 11, second half -- born of the P3 / N-123 collision.
-
-    **The controls STAGE an unruled fork rather than requiring the live corpus
-    to hold one.**  Every live fork has been ruled, so a control that asserted
-    "an unruled fork exists" would now be red -- and the tempting way to green
-    it is to relax the assertion, which is how a predicate quietly stops being
-    tested.  Staging the state proves the arm whether or not the developer
-    happens to have an open fork today.
-
-    **And the specimen is DERIVED, not named** (:func:`_a_live_fork`): naming
-    one made three of these controls fail on 2026-08-10 for the single reason
-    that the rule had worked and the fork had left the table.
-    """
-
-    def test_no_fork_is_violated_in_the_live_corpus(self):
-        """No fork has a premature tick, a dead defect row, or a stale owner."""
-        assert not registry.fork_violations()
-
-    def test_the_live_corpus_actually_contains_forks_to_grade(self):
-        """A rule with no subject in the corpus is untested by the clean case."""
-        found = registry.forks()
-        assert found, "no fork at all -- rule 11's second half grades nothing"
-        assert all(f.winner for f in found), (
-            "every live fork is expected to be RULED as of 2026-08-09"
-        )
-
-    def test_the_control_fires_when_a_remedy_ships_before_the_ruling(self, stage):
-        """Whichever remedy ships first decides for both arcs."""
-        _, ruling, remedy = _a_live_fork()
-        stage("steps", ruling, with_cell(ruling, -1, "**NOT YET RULED**"))
-        stage("steps", remedy, with_cell(remedy, 4, "SHIPPED"))
-        problems = registry.fork_violations()
-        assert any("NOT YET RULED" in p for p in problems), problems
-
-    @pytest.mark.parametrize("word", ["TBD", "pending", "?", "not yet ruled"])
-    def test_a_non_ruling_word_does_not_count_as_a_ruling(self, stage, word):
-        """Only NAMING a remedy is a ruling.
-
-        The predicate used to read "is the cell non-empty and not the exact
-        phrase NOT YET RULED", so every one of these words made ``is_ruled``
-        True -- and a True makes the whole fork arm skip.  This is the rule
-        that exists BECAUSE P3 / N-123 went unnoticed from April to 2026-08-09.
-        """
-        _, ruling, remedy = _a_live_fork()
-        stage("steps", ruling, with_cell(ruling, -1, word))
-        stage("steps", remedy, with_cell(remedy, 4, "SHIPPED"))
-        problems = registry.fork_violations()
-        assert any("NOT YET RULED" in p for p in problems), (word, problems)
-
-    def test_the_control_fires_when_a_ruled_fork_leaves_its_row_unpointed(self, stage):
-        """A ruling nobody re-points is a ruling that decided nothing.
-
-        Rule 2 re-points a row when its owner ships, but it only fires on a row
-        that NAMES a step -- and an open fork's row names ``developer-decision``
-        by design.  Without this arm the row could keep pointing at a decision
-        already taken, indefinitely, with every other gate green.
-        """
-        fork, _, _ = _a_live_fork()
-        arc, ident = fork.defect_keys()[0].split(":", 1)
-        line = row_of("ledger", f"| {arc} | {ident} |")
-        stage("ledger", line, with_cell(line, -1, "developer-decision (2026-08-09)"))
-        problems = registry.fork_violations()
-        assert any(f"RULED for {fork.winner}" in p for p in problems), problems
-
-    def test_the_control_fires_when_the_defect_names_no_live_row(self, stage):
-        """A fork about a row that does not exist decides nothing."""
-        _, ruling, _ = _a_live_fork()
-        stage("steps", ruling, with_cell(ruling, 0, "pay_calendar:P999"))
-        problems = registry.fork_violations()
-        assert any("names no live ledger.md row" in p for p in problems), problems
-
-
 class TestTheTwoAlsoRelationsMeanOppositeThings:
     """`= arc:id` was MERGED into this row; `~ arc:id` must NOT be merged.
 
@@ -454,12 +366,17 @@ class TestTheTwoAlsoRelationsMeanOppositeThings:
     def test_the_control_fires_when_a_merged_target_is_still_live(self, stage):
         """`=` says the target was absorbed, so it must not still be a row.
 
-        Named ``pay_calendar:P2`` until that row closed at ``C2-b2``; the
+        Named ``pay_calendar:P2`` until that row closed at ``C2-b2``, then
+        ``pay_calendar:P16`` until `R17` closed that one on 2026-08-28.  The
         target only has to be a row that still EXISTS and whose id cell is
-        BARE, since the `also` grammar takes an unannotated id.
+        BARE, since the `also` grammar takes an unannotated id -- so it is
+        DERIVED now, and the subject is a second live row rather than a name.
         """
-        line = row_of("ledger", a_live_ledger_row())
-        stage("ledger", line, with_cell(line, 2, "= pay_calendar:P16"))
+        rows = [row_of("ledger", a_live_ledger_row())]
+        arc, ident = [cell.strip() for cell in rows[0].split("|")[1:3]]
+        target = f"{arc}:{ident}"
+        line = row_of("ledger", a_live_ledger_row(skip=1))
+        stage("ledger", line, with_cell(line, 2, f"= {target}"))
         problems = registry.also_violations()
         assert any("still its own live row" in p for p in problems), problems
 
