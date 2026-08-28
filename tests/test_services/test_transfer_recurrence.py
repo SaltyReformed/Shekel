@@ -26,6 +26,7 @@ from app.enums import SettlementBasisEnum, StatusEnum
 from app.services import (
     pay_period_write, transfer_recurrence, transfer_service,
 )
+from app.services.recurrence_engine import resolve_generation_plan
 from app.exceptions import (
     RecurrenceCadenceUnsupported,
     RecurrenceConflict,
@@ -2903,3 +2904,100 @@ class TestRegenerateDeletionRoutedThroughService:
             "Found db.session.delete(transfer) in transfer_recurrence.py "
             "-- regen must route through transfer_service.delete_transfer."
         )
+
+
+class TestATransferRecordsItsOccurrence:
+    """``Transfer.occurs_on`` -- plan step **R17**, ledger row **D57**.
+
+    The transfer half of the same leaf.  Both engines write the occurrence from
+    the same ``PlannedOccurrence`` through the same shared helpers, so what is
+    specific here is the pair: a transfer's two SHADOW transactions are created
+    by ``transfer_service`` from their parent rather than by the engine from an
+    occurrence, and no generate pass asks a shadow whether an occurrence has
+    been written.  Mirroring the column onto them would put a second writer on
+    it, so the control asserts they stay NULL.
+    """
+
+    def _make_template_with_rule(self, seed_user, cadence):
+        """Helper: savings account + transfer template with an authored rule."""
+        savings_type = (
+            db.session.query(AccountType).filter_by(name="Savings").one()
+        )
+        savings = account_service.create_account(
+            account_service.AccountSpec(
+                user_id=seed_user["user"].id,
+                account_type_id=savings_type.id,
+                name="Savings",
+                anchor_balance=Decimal("500.00"),
+            ),
+        )
+        db.session.add(savings)
+        db.session.flush()
+        template = TransferTemplate(
+            user_id=seed_user["user"].id,
+            from_account_id=seed_user["account"].id,
+            to_account_id=savings.id,
+            name="Occurrence Transfer",
+            default_amount=Decimal("100.00"),
+        )
+        db.session.add(template)
+        db.session.flush()
+        make_cadence_rule(template, cadence, interval_n=1)
+        db.session.refresh(template)
+        return template
+
+    def test_generate_writes_the_occurrence_on_the_transfer(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Each generated transfer carries the date its cadence names."""
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            plan = resolve_generation_plan(
+                template, schedule, seed_user["scenario"].id, None,
+                block_message="test",
+            )
+            created = transfer_recurrence.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            assert created, "the control needs the engine to create something"
+            assert (
+                sorted(row.occurs_on for row in created)
+                == sorted(p.occurrence for p in plan.placements)
+            )
+
+    def test_the_shadows_carry_no_occurrence(
+        self, app, db, seed_user, seed_periods
+    ):
+        """A shadow is created from its PARENT, never from an occurrence.
+
+        Transfer Invariant 4 makes ``transfer_service`` the only writer of a
+        shadow; this control is what keeps ``occurs_on`` from acquiring a
+        second writer through the mirroring the amount, status and period go
+        through.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            created = transfer_recurrence.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            shadows = (
+                db.session.query(Transaction)
+                .filter(Transaction.transfer_id.in_([x.id for x in created]))
+                .all()
+            )
+            assert len(shadows) == 2 * len(created), (
+                "the control needs both shadows of every transfer"
+            )
+            assert all(shadow.occurs_on is None for shadow in shadows)

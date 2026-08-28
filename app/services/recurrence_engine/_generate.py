@@ -84,7 +84,8 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
     salary_profile = _get_salary_profile(template)
 
     created = []
-    for period in (row.period for row in plan.placements):
+    for placement in plan.placements:
+        period = placement.period
         existing_txns = existing.get(period.period_id, [])
 
         # Skip periods that already hold a template-linked row (immutable,
@@ -98,12 +99,21 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
         # same definition.  The three columns below that are NOT in it say what
         # this row IS rather than what the template says: it is the rule's own
         # row, live, and not yet an actual event.
+        #
+        # ``occurs_on`` is the FOURTH of that identity group and joins
+        # ``template_id`` / ``pay_period_id`` / ``scenario_id`` rather than the
+        # derived fields, which is the whole of plan step **R17**: it is WHICH
+        # occurrence this row answers, so it is deliberately not something
+        # ``DerivedRowFields`` restates per period and not something a maintain
+        # pass may rewrite.  The walk has carried it since plan step R4b-2 and
+        # this loop DISCARDED it -- ledger row **D57**.
         txn = Transaction(
             **_derive_row_fields(
                 template, plan.rule, salary_profile, period, schedule.calendar,
             )._asdict(),
             template_id=template.id,
             pay_period_id=period.period_id,
+            occurs_on=placement.occurrence,
             scenario_id=scenario_id,
             status_id=plan.projected_id,
             is_override=False,

@@ -266,17 +266,37 @@ passed with every refusal accepted.
 exactly what made the mismatch invisible.
 
 - [ ] **R17 -- a MOVED row's period is not RE-FILLED** (**D57** carries the measurement).
-      `should_skip_period` asks whether `(template, period, scenario)` holds a row while the
-      occurrence walk names the period an occurrence's own DATE falls in, so a row moved to a
-      neighbouring paycheck empties the period its occurrence names and the next whole-schedule
-      generate writes a second one. **`pay_calendar:C5b` is the RULED remedy for this predicate** --
-      row `pay_calendar:P16`, 2026-08-09, "make `should_skip_period` occurrence-aware" -- and is its
-      UNDER-generation face, one paycheck owing a template twice, so R17 replaces nothing and must
-      say on shipping what is left for `C5b`. **R5 is the structural fix and R17 is AHEAD of both**
-      (developer, 2026-08-27): `occurs_on` answers "has this occurrence got a row" whatever period
-      holds it, and until then the predicate cannot ask at all. What R17 owes is the interim answer
-      that does not have to be un-taught -- the skip question asked about the OCCURRENCE -- and what
-      a pass does with a row it cannot identify. **MOVES MONEY, OWN PR.**
+      `should_skip_period` asks whether `(template, period, scenario)` holds a row while the walk
+      names the period an occurrence's own DATE falls in, so a row moved to a neighbouring paycheck
+      empties the period its occurrence names and the next pass writes a second one.
+      **MOVES MONEY, OWN PR.**
+
+**RESPECIFIED by ruling R-R46** (2026-08-27), from an interim due-date match to
+**R5's column leaf brought forward**: `pay_calendar:C5b` is the step that makes this predicate
+occurrence-aware and waits on `R5` only for `occurs_on`, so the interim would have been written to
+be deleted. What R17 still owes `C5b` is the UNDER-generation face and the index re-key it needs.
+Two leaves, one PR: (a) the row RECORDS its occurrence, both engines writing the `PlannedOccurrence`
+they already carry and discard; (b) the predicate READS it -- `should_skip_period`,
+`classify_maintain_work`'s `occupied` and `can_generate_in_period`, all three in lockstep.
+
+**`occurs_on` is NULLABLE where R5's specification said `NOT NULL`**: `carry_forward_service` rolls
+an envelope forward as a template-linked `is_override` row with `due_date = None`, and the one-time
+transfer branch materialises one whose template has no rule. NULL MEANS "answers no occurrence", and
+blocks none.
+
+**The backfill is `scripts/stamp_occurrences.py` run by `entrypoint.sh`, not the migration**
+(R-R46): the walk is required -- `due_date` is not the occurrence for 30 of 780 rows, a
+`Monthly First` rule occurring on the 1st and dated on the payday -- and no migration here imports
+app code, because `build_test_template.py` replays the chain from zero. It runs once on a SENTINEL,
+not its pre-flight count, which cannot reach zero. Two deductions, no inference: the due date its
+occurrence computes, then its own period -- that order because an `is_override` row may share a
+paycheck with that paycheck's own. Of 788 rows it walks 736 (archived templates are not), stamps
+726, leaves 10.
+
+**A THIRD rule was CUT by adversarial review**: "one row and one occurrence left, so they are each
+other" deduces nothing unless every row answers some occurrence, which the NULL case denies. It
+paired an extra row with an unrelated rowless occurrence -- a `$12.34` envelope stamped as a car
+payment nine paychecks away, SUPPRESSING the real bill.
 
 - [ ] **R5 -- a generated row carries THREE dates, in three places.**
 

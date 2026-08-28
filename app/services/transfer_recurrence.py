@@ -57,9 +57,11 @@ from app.services._recurrence_common import (
     MaintainOutcome,
     TemplateRowSelector,
     check_scenario_ownership,
+    PlacedRow,
     classify_maintain_work,
     existing_rows_refusing_repeats,
     log_resource_access_denied,
+    occurrence_by_period,
     refuse_repeats_this_pass,
     rows_this_pass_may_maintain,
     should_skip_period,
@@ -334,7 +336,8 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
     )
 
     created = []
-    for period in (row.period for row in plan.placements):
+    for placement in plan.placements:
+        period = placement.period
         existing_xfers = existing.get(period.period_id, [])
 
         # Skip periods that already hold a template-linked transfer
@@ -359,7 +362,8 @@ def generate_for_template(template, schedule, scenario_id, effective_from=None):
         # fall back to period.start_date inside the helper.
         created.append(_create_from_definition(
             _derive_row_fields(template, plan.rule, period),
-            template, period.period_id, scenario_id, plan.projected_id,
+            template, PlacedRow(period.period_id, placement.occurrence),
+            scenario_id, plan.projected_id,
         ))
 
     db.session.flush()
@@ -640,7 +644,7 @@ def _rows_the_definition_reattributes(existing, template) -> "set[int]":
 
 
 def _create_from_definition(
-    fields, template, period_id, scenario_id, projected_id,
+    fields, template, placed, scenario_id, projected_id,
 ):
     """Create one transfer and its two shadows from *fields*.
 
@@ -653,7 +657,11 @@ def _create_from_definition(
         fields: The :class:`DerivedTransferFields` for this (template, period)
             pair.
         template: The TransferTemplate the row is linked to.
-        period_id: The ``budget.pay_periods.id`` the row lands in.
+        placed: The :class:`~app.services._recurrence_common.PlacedRow` -- which
+            paycheck funds this row and which occurrence it answers.  It is ONE
+            argument rather than two so neither call site can pair a period with
+            another period's occurrence, and so this door stays inside pylint's
+            five-argument ceiling (plan step **R17**).
         scenario_id: The scenario it is written into.
         projected_id: The ``Projected`` status id.
 
@@ -663,7 +671,8 @@ def _create_from_definition(
     return transfer_service.create_transfer(
         transfer_service.TransferSpec(
             user_id=template.user_id,
-            pay_period_id=period_id,
+            pay_period_id=placed.period_id,
+            occurs_on=placed.occurs_on,
             scenario_id=scenario_id,
             status_id=projected_id,
             transfer_template_id=template.id,
@@ -746,9 +755,10 @@ def _apply_maintain_work(work, derived, template, scenario_id, projected_id):
 
     created = [
         _create_from_definition(
-            derived[period_id], template, period_id, scenario_id, projected_id,
+            derived[create.period_id], template, create,
+            scenario_id, projected_id,
         )
-        for period_id in work.create_in
+        for create in work.create_in
     ]
 
     # **This is the ONLY path here that deletes**, and it is reached only when
@@ -800,7 +810,7 @@ def _maintain_instances(template, plan, scenario_id, existing):
         for placement in placements
     }
     work = classify_maintain_work(
-        existing, set(derived),
+        existing, occurrence_by_period(placements),
         with_records=_rows_holding_owner_records(existing),
         reattributed=_rows_the_definition_reattributes(existing, template),
     )

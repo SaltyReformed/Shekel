@@ -4701,3 +4701,215 @@ class TestDueDateGeneration:
             assert weekly_occurrences & {
                 date(2026, 3, 17), date(2026, 3, 24),
             } == {date(2026, 3, 17), date(2026, 3, 24)}
+
+
+class TestARowRecordsItsOccurrence:
+    """``occurs_on`` -- WHICH occurrence a generated row answers.
+
+    Plan step **R17**, the first leaf of **R5**, closing ledger row **D57**:
+    both engines decided "has this already been created" by asking whether a
+    PAY PERIOD held a row, so a row the owner moved to a neighbouring paycheck
+    emptied the period its occurrence named and the next whole-schedule pass
+    wrote a second one -- 8 rows / $1,482.93 from ONE pass on a production
+    clone, seven already ``Paid``.
+
+    This leaf makes the row STATE its occurrence.  The predicate that reads it
+    is the second leaf, so nothing here asserts a changed generation decision:
+    what these controls pin is that the value is written, is the CADENCE's date
+    and not the row's ``due_date``, and survives both a maintain pass and a
+    move.
+    """
+
+    def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
+        """Build a template with an AUTHORED rule.
+
+        The same door ``TestRecurrenceGeneration`` uses; duplicated here rather
+        than shared because the two classes seed different owners and pylint's
+        duplicate-code checker does not read test bodies.
+        """
+        expense_type = (
+            db.session.query(TransactionType).filter_by(name="Expense").one()
+        )
+        template = TransactionTemplate(
+            user_id=seed_user["user"].id,
+            account_id=seed_user["account"].id,
+            category_id=seed_user["categories"]['Car Payment'].id,
+            transaction_type_id=expense_type.id,
+            name='Occurrence Recorder',
+            default_amount=Decimal("100.00"),
+        )
+        db.session.add(template)
+        db.session.flush()
+        make_cadence_rule(template, cadence, **rule_kwargs)
+        db.session.flush()
+        db.session.refresh(template)
+        return template
+
+    def test_generate_writes_the_date_the_cadence_names(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Every created row carries its own occurrence, not its period's date.
+
+        The set equality is the load-bearing half: it fails both if a row is
+        written without an occurrence and if two rows are given the same one.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            plan = recurrence_engine.resolve_generation_plan(
+                template, schedule, seed_user["scenario"].id, None,
+                block_message="test",
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            assert created, "the control needs the engine to create something"
+            assert all(row.occurs_on is not None for row in created)
+            assert (
+                sorted(row.occurs_on for row in created)
+                == sorted(p.occurrence for p in plan.placements)
+            )
+
+    def test_the_occurrence_is_not_the_due_date(
+        self, app, db, seed_user, seed_periods
+    ):
+        """A ``Monthly First`` row occurs on the 1st and is DATED on the payday.
+
+        This is the case that refutes reading ``occurs_on`` off ``due_date``:
+        ``compute_due_date`` dates a day-less cadence from its period's start,
+        so the two columns disagree by design.  Measured on production at 30 of
+        780 rows, 27 of them one ``Phone Allowance`` rule.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, MONTHLY_FIRST)
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            assert created, "the control needs a Monthly First row"
+            assert all(row.occurs_on.day == 1 for row in created), (
+                "a Monthly First occurrence is the 1st of its month"
+            )
+            assert any(row.occurs_on != row.due_date for row in created), (
+                "the control is measuring nothing if the two columns agree"
+            )
+
+    def test_a_maintained_row_keeps_the_occurrence_it_was_created_for(
+        self, app, db, seed_user, seed_periods
+    ):
+        """A regeneration may not rewrite a row's occurrence.
+
+        ``occurs_on`` is deliberately absent from ``DerivedRowFields``, so the
+        maintain pass's ``setattr`` loop cannot reach it.  Mutating the column
+        to a sentinel and running a full maintain pass is what proves the loop
+        does not restore it: if ``occurs_on`` were ever added to the derived
+        fields this control fails.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+            row = created[0]
+            sentinel = date(1999, 12, 31)
+            row.occurs_on = sentinel
+            db.session.flush()
+
+            recurrence_engine.regenerate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+            db.session.refresh(row)
+
+            assert row.occurs_on == sentinel, (
+                "a maintain pass rewrote the row's occurrence"
+            )
+
+    def test_a_moved_row_keeps_its_occurrence(
+        self, app, db, seed_user, seed_periods
+    ):
+        """Moving a row to another paycheck changes its FUNDING, not its cadence.
+
+        The whole point of the column, and the shape of ledger row **D57**:
+        ``pay_period_id`` is what the owner may move and ``occurs_on`` is what
+        no move touches.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            row, neighbour = created[0], created[1]
+            was = row.occurs_on
+            assert was is not None
+            # What the PATCH door does to a template-linked row whose period
+            # moves (``routes/transactions/mutations``): the period changes and
+            # the row becomes the owner's.
+            row.pay_period_id = neighbour.pay_period_id
+            row.is_override = True
+            db.session.flush()
+            db.session.refresh(row)
+
+            assert row.occurs_on == was
+            assert row.pay_period_id == neighbour.pay_period_id
+
+    def test_maintain_creates_a_missing_row_with_its_occurrence(
+        self, app, db, seed_user, seed_periods
+    ):
+        """The maintain pass's CREATE arm states an occurrence too.
+
+        ``MaintainWork.create_in`` held bare period ids before this step, so
+        the create arm had nothing to write.  Deleting one generated row and
+        re-running the pass is what reaches that arm.
+        """
+        with app.app_context():
+            template = self._make_template_with_rule(seed_user, EVERY_PERIOD)
+            schedule = GenerationSchedule.for_period_ids(
+                BalanceContext.build(template.user_id),
+                {p.id for p in seed_periods},
+            )
+            created = recurrence_engine.generate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            gap = created[0]
+            gap_period_id, gap_occurrence = gap.pay_period_id, gap.occurs_on
+            db.session.delete(gap)
+            db.session.flush()
+
+            recurrence_engine.regenerate_for_template(
+                template, schedule, seed_user["scenario"].id,
+            )
+            db.session.flush()
+
+            refilled = (
+                db.session.query(Transaction)
+                .filter_by(template_id=template.id,
+                           pay_period_id=gap_period_id)
+                .one()
+            )
+            assert refilled.occurs_on == gap_occurrence, (
+                "the maintain create arm wrote no occurrence, or the wrong one"
+            )
