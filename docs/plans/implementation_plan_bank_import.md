@@ -127,45 +127,32 @@ the constraints it leaves a LATER step are on that step's own entry.
       cost the IMPORT path paid too. Closed **N-358** -- three by-id reads of RENDERED user data
       became composite-FK relationships, so the account travels in the JOIN and `accepted_groups`
       fell from 139 statements to 7 -- and **N-349**. Opened **bank_import:N-371**, **N-372**.
-- [ ] **X-gf-3** `feat(import): the review is an exception queue` -- **the DECOMPOSED parent**,
-      split 2026-08-27 on the developer's ruling into the rule verdict both readers share and the
-      queue's own shape. It ticks with the last of its two leaves.
+- [x] **X-gf-3** `ff744d79` -- **the DECOMPOSED parent**, split 2026-08-27 on the developer's ruling
+      into the rule verdict both readers share and the queue's own shape. Ticked with the last of
+      its two leaves.
 - [x] **X-gf-3a** `44f1cc7b` -- one rule VERDICT and one screen SENTENCE, derived where the decision
       is and read by ruling **R-GH**'s door and by the review screen. Closed **N-359** and
       **N-371**. **What a LATER step must obey**: the withholding sentence is composed in
       `_verdict.ruled` and printed unbranched, because the partition behind it is the service's; and
       a parked line names the register only where a different answer would open the create door,
       which was 0 of 9 on the developer's own data.
-- [ ] **X-gf-3b** `feat(import): the review is an exception queue` -- **the DECOMPOSED parent**,
-      split 2026-08-28 on measurement: the step's sentence carried two rulings and they are not the
-      same size. **R-HC**'s half is 59% of the page and closes **N-374**; **R-HB**'s is a re-shaping
-      of what is left. R-HC goes FIRST, because merging the three cards while the form was still on
-      the page renders the same 27 lines twice -- the duplication R-HB itself names.
+- [x] **X-gf-3b** `ff744d79` -- **the DECOMPOSED parent**, split 2026-08-28 on measurement: the
+      step's sentence carried two rulings and they are not the same size. **R-HC**'s half was 59% of
+      the page and closed **N-374**; **R-HB**'s was a re-shaping of what was left. R-HC went FIRST,
+      because merging the three cards while the form was still on the page would have rendered the
+      same 27 lines twice -- the duplication R-HB itself names.
 - [x] **X-gf-3b-1** `d2248fe6` -- **the workbench leaves** (**R-HC**): the hand-build form, its
       live-totals endpoint and a write door of its own moved to `/accounts/<id>/statements/match`,
       and every exception links to it carrying its own line, which arrives ticked and PRICED. The
       review body fell from **150,853 bytes to 65,005**. Closes **N-374**.
       **What a LATER step must obey**: `apply=hand` is DELETED not moved, and no sentence may name a
       POSITION -- five did, two of them in the SERVICE, and all five went false in this one commit.
-- [ ] **X-gf-3b-2** `feat(import): the queue is one list, grouped by the decision` -- **R-HB**: the
-      three cards that partition the unexplained lines by MECHANISM -- an outflow that may be
-      recorded, an outflow **R-GJ** bars, an inflow that may be recorded -- become ONE list ordered
-      by what the decision IS. That partition is the SERVICE's and is right, the three reaching
-      different doors; it is not the READER's, because all three pose one question:
-      *is this money my books already hold, or is it new?*
-      **The grouping is on the EVIDENCE the pass already derives**, not on a new fact and not on the
-      act: a row carries every act open to it, and the group says which answer the evidence points
-      to. Measured 2026-08-28 after `X-gf-3b-1`: **17** lines carry a counterpart signal (9 Capital
-      One payments at `-$7,412.94` the books hold as CC Payback rows, 8 deposits whose period
-      already holds unexplained income), **10** carry none (8 dividends and refunds at `$58.87`, 2
-      purchases), **0** cannot be decided. **One ASYMMETRY it also resolves**: the create card and
-      the deposit card each print `search_gap_for` beside their line and the PARKED card does not,
-      so the `-$1,000.44` line of 2026-06-01 -- 1 of his 9 -- carries its bar reason on the queue
-      and its gap only on the workbench. Three cards is three places to decide what a line is owed.
-      *A first version of this entry called that "rendered nowhere" and a hole this split exposed;
-      both are FALSE. Measurement anchored on the line's own `<tr>` is what showed it --
-      `search_gap` returns identical wording for every line a tier declined, so a substring test
-      over the page cannot say which line it was rendered for.*
+- [x] **X-gf-3b-2** `ff744d79` -- **the queue is one list grouped by the decision** (**R-HB**), the
+      mechanism load-bearing underneath. 17 / 10 / 0 by evidence on the developer's own data,
+      conserving 27 against `unmatched`. Closes **N-380**; opens **N-381**; rules **R-HD** (a sweep
+      reaches only the group that offers it). **What a LATER step must obey**: the grouping reads
+      BOTH of `_verdict.ruled`'s withholding arms, and a third one must teach `_positive_for` or
+      `TestNoSweptRowCarriesASentence` fails.
 - [ ] **X-gg** `docs(plans): the envelope-semantics design loop` -- **R-GK**'s owed loop, run WITH
       the developer: filling, closure on coverage, carry-forward and the grid's row identity (whose
       same-name double-render the review measured); it mints the build steps rather than building.
