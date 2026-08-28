@@ -1181,7 +1181,7 @@ class TestTheDepositArmOnTheWire:
         ).data.decode()
 
         assert f'name="record_income-{line.id}"' in page
-        assert "Money that arrived and your records do not hold" in page
+        assert "Nothing of yours accounts for these" in page
 
     def test_an_UNTOUCHED_apply_records_no_deposit(
         self, auth_client, db, seed_user,
@@ -1535,7 +1535,7 @@ class TestTheCreateArm:
         response = auth_client.get(_review_url(seed_user["account"].id))
 
         assert response.status_code == 200
-        assert b"a purchase you never recorded" in response.data
+        assert b"Nothing of yours accounts for these" in response.data
         assert b"-- a new envelope --" in response.data
         # The name box is prefilled with the MERCHANT the bank NAMED -- the
         # recorded column since plan step X-f6a-3d -- not the whole line.
@@ -1982,7 +1982,7 @@ class TestTheStandingRuleSection:
         body = " ".join(response.data.decode().split())
 
         assert "Capital One Credit Card is never a purchase" in body
-        assert "Payments waiting for their home" in body
+        assert "Your records may already hold these" in body
         # THE CONTROLS THEMSELVES, gone: no destination select, no envelope
         # name box and no category select for this line, so a browser has
         # nothing to submit for it.  **The APPLY form's controls, not the
@@ -2578,7 +2578,17 @@ class TestALineThatMayNeverBecomeAPurchase:
         body = " ".join(response.data.decode().split())
 
         assert self._destinations_offered(response.data.decode()) == []
-        assert "Payments waiting for their home" in body
+        # **The GROUP, not a card heading** (ruling **bank_import:R-HB**, plan
+        # step ``bank_import:X-gf-3b-2``): a barred line groups under the
+        # evidence that its money is already held, and carries no control.
+        #
+        # This assertion named "Payments waiting for their home" until that
+        # step, and it was **passing for the wrong reason** -- the merchant
+        # card's own prose contained the same words across a line break, and
+        # `body` is whitespace-normalised, so the needle matched a SENTENCE
+        # rather than the card it was meant to grade.  It stayed green through
+        # the commit that deleted that card outright.
+        assert "Your records may already hold these" in body
         assert "payment to an account you hold" in body
         # ...and the row where an answer is given says which ones will not be
         # taken, and which one fits.
@@ -2749,21 +2759,43 @@ class TestWhyARuleDidNotFileALineItReaches:
     """
 
     @staticmethod
-    def _create_card(body):
-        """Return just the *purchase you never recorded* card's markup.
+    def _group_card(body, evidence):
+        """Return just the queue group card for *evidence*.
 
-        **An assertion about ONE card has to read that card.**  This page
-        renders the same search-gap sentence in TWO places on purpose -- here,
-        where the wrong act is cheapest, and in the hand-build list, where the
-        remedy is -- so a body-wide count would read the deliberate second
-        render as the duplicate this step exists to prevent.  Bounded by the
-        card's own footer, which no other card carries.
+        **An assertion about ONE group has to read that group** (ruling
+        **bank_import:R-HB**, plan step ``bank_import:X-gf-3b-2``).  The queue
+        is one list now, so a body-wide assertion cannot say WHICH group a
+        line was placed in -- and the group is the whole claim this step makes
+        about a line.
+
+        **Bounded by the card's own id at BOTH ends**, which is the shape
+        ``test_statement_workbench.py``'s ``_never_showed_panel`` already
+        uses.  A first version sliced from the group HEADING to the next
+        ``data-queue-group``, and an adversarial review measured that it
+        bounded nothing: with one group on the page there is no next
+        occurrence after the heading, so the slice ran to ``</html>`` --
+        8,795 of 18,246 characters, swallowing the bounds panel, the apply
+        button and the register pointer. Every assertion "about the card" was
+        a page-wide assertion.
+
+        Args:
+            body: The whitespace-normalised review page.
+            evidence: The group's ``Evidence`` value, e.g. ``"unfinished"``.
+
+        Returns:
+            That group's markup alone.
+
+        Raises:
+            AssertionError: When the group is not on the page at all, which a
+                slice would otherwise report as an empty string that every
+                negative assertion passes against.
         """
-        opens = body.index("Lines that are a purchase you never recorded")
-        closes = body.index(
-            "The name and category appear only when you pick", opens,
-        )
-        return body[opens:closes]
+        opens = body.find(f'id="queue-group-{evidence}"')
+        assert opens != -1, f"no {evidence} group on the page"
+        rest = body.find('id="queue-group-', opens + 1)
+        tail = body.find('<div class="card mb-3">', opens)
+        ends = min(x for x in (rest, tail, len(body)) if x != -1)
+        return body[opens:ends]
 
     def _a_collision(self, seed_user, db):
         """Stage a rule whose destination this statement explains as a whole.
@@ -2885,7 +2917,12 @@ class TestWhyARuleDidNotFileALineItReaches:
             _review_url(seed_user["account"].id),
         ).data.decode().split())
 
-        card = self._create_card(body)
+        # **The UNFINISHED group**, and this case is what makes it reachable:
+        # the crowded day means this pass cannot say the line has no
+        # counterpart, so its evidence is neither "already held" nor "nothing
+        # found".  It is empty on the developer's own data and this is the
+        # arrangement that proves the predicate is real.
+        card = self._group_card(body, "unfinished")
         assert "Your rules will not record this one by themselves" in card
         assert card.count("held too many rows for the app to search them") == 1
         # **The NO-RULE wording, which must not appear on a line a rule DOES
@@ -2938,7 +2975,7 @@ class TestWhereAParkedLineSendsTheOwner:
             _review_url(seed_user["account"].id),
         ).data.decode()
 
-        assert "Payments waiting for their home" in page
+        assert "Your records may already hold these" in page
         assert (
             f'<a href="{self._register_url(seed_user)}">Change what you have '
             f"said about Walmart</a>" in " ".join(page.split())
@@ -2966,11 +3003,184 @@ class TestWhereAParkedLineSendsTheOwner:
         ).data.decode()
         body = " ".join(page.split())
 
-        assert "Payments waiting for their home" in body
+        assert "Your records may already hold these" in body
         assert "Change what you have said about" not in body
         # ...and the reason says why no answer would help, rather than leaving
         # the owner to discover it at a refusal.
         assert "which no answer lifts" in body
+
+
+class TestWhatTheRENDEREDQueueOwesEachLine:
+    """The half that broke last time: what a browser actually receives.
+
+    Plan step ``bank_import:X-gf-3b-2``.  Three claims this step makes are
+    RENDERING claims, and each was graded only in the service until an
+    adversarial review measured the gap 2026-08-28 -- one of them by deleting
+    the markup outright and watching 705 route tests stay green.
+    """
+
+    def test_the_group_card_carries_the_hook_the_SWEEP_S_REACH_depends_on(
+        self, auth_client, db, seed_user,
+    ):
+        """``data-queue-group`` is the whole structural guard of ruling R-HD.
+
+        ``statement_review.js`` roots the sweep at
+        ``target.closest("[data-queue-group]")`` and returns when there is
+        none.  Delete the attribute and every sweep silently stops working --
+        or, before the fallback was closed, reverted to the whole money form
+        and could tick a placed row in another group.  An adversarial review
+        deleted it and **705 tests passed**, because the only test naming the
+        string treated its absence as a valid outcome.
+
+        The PAIR is what states the invariant: the card carries the hook, and
+        the swept row carries its placement class INSIDE that card.
+        """
+        envelope = a_transaction(
+            seed_user, name="Groceries", amount="500.00", is_envelope=True,
+        )
+        an_unexplained_outflow(seed_user, merchant="Amazon", amount="-57.96")
+        a_rule(seed_user, "Amazon", template_id=envelope.template_id)
+        db.session.commit()
+
+        body = " ".join(auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode().split())
+        card = TestWhyARuleDidNotFileALineItReaches._group_card(
+            body, "nothing_found",
+        )
+
+        assert 'data-queue-group="nothing_found"' in card
+        assert 'data-placement-class="into_open"' in card
+        assert "data-tick-placed=" in card
+
+    def test_a_PARKED_line_prints_its_search_gap_ON_THE_PAGE(
+        self, auth_client, db, seed_user,
+    ):
+        """The asymmetry ruling **bank_import:R-HB** is named for.
+
+        A parked line was the one kind that never printed its gap, and that is
+        a RENDERING fact -- the service case alone would have stayed green if
+        the template dropped the sentence, which is the half that broke when
+        the hand-build form moved.
+        """
+        day = seed_user["bootstrap_period"].start_date
+        an_envelope(seed_user)
+        for index in range(33):
+            a_transaction(
+                seed_user, name=f"Bill {index}", amount=f"{index + 11}.00",
+                status=StatusEnum.DONE, settled_on=day,
+            )
+        an_unexplained_outflow(
+            seed_user, merchant="Capital One Credit Card", amount="-793.23",
+            source_category=_CARD_PAYMENT,
+        )
+        db.session.commit()
+
+        body = " ".join(auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode().split())
+        card = TestWhyARuleDidNotFileALineItReaches._group_card(
+            body, "already_held",
+        )
+
+        assert "payment to an account you hold" in card
+        assert "held too many rows for the app to search them" in card
+
+    def test_an_INFLOW_S_gap_names_the_act_and_not_only_the_fact(
+        self, auth_client, db, seed_user,
+    ):
+        """An outflow's gap is framed by ``_look_first``; an inflow's owed it.
+
+        The deleted deposit card wrapped the same sentence in *before
+        recording this ... match it against rows you already hold*, and
+        printing the bare gap would state a FACT where the outflow path states
+        an ACT -- the per-mechanism asymmetry this step exists to end,
+        reintroduced in the other direction.
+        """
+        day = seed_user["bootstrap_period"].start_date
+        an_envelope(seed_user)
+        for index in range(33):
+            a_transaction(
+                seed_user, name=f"Bill {index}", amount=f"{index + 11}.00",
+                status=StatusEnum.DONE, settled_on=day,
+            )
+        a_bank_line(
+            seed_user, an_import(seed_user), amount="41.10", posted_on=day,
+            description="DIVIDEND EARNED", sequence_in_group=7,
+        )
+        db.session.commit()
+
+        body = " ".join(auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode().split())
+
+        assert (
+            "Before recording this, match it against rows you already hold:"
+            in body
+        )
+        assert "held too many rows for the app to search them" in body
+
+
+class TestWhatTheStatementNeverShowed:
+    """Finding **bank_import:N-380**, on the rendered page.
+
+    The panel prints two counts and two money figures and is the whole
+    user-visible half of the finding.  An adversarial review replaced its
+    guard with ``{% if False %}`` and **4,153 tests passed**: it could have
+    been deleted and CI would have been green.
+    """
+
+    def test_both_directions_are_stated_and_never_summed(
+        self, auth_client, db, seed_user,
+    ):
+        """One unshown payment and one unshown deposit, counted APART.
+
+        Their signed net would be `$2,385.38` and their absolute total
+        `$2,561.38`; the panel must state neither, because a net cancels
+        income the bank never credited against payments it never made.
+        """
+        day = seed_user["bootstrap_period"].start_date
+        an_unexplained_outflow(seed_user, merchant="Amazon", amount="-57.96")
+        a_transaction(
+            seed_user, name="Water Bill", amount="88.00",
+            status=StatusEnum.DONE, settled_on=day,
+        )
+        a_transaction(
+            seed_user, name="Data Manager", amount="2473.38", income=True,
+            status=StatusEnum.DONE, settled_on=day,
+        )
+        db.session.commit()
+
+        body = " ".join(auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode().split())
+
+        assert "What your records hold and this statement did not show" in body
+        assert "1 payment(s) totalling $88.00" in body
+        assert "1 deposit(s) totalling $2,473.38" in body
+        # Neither aggregate is offered: the net is the misleading one.
+        assert "$2,385.38" not in body
+        assert "$2,561.38" not in body
+
+    def test_a_pass_that_explains_every_row_states_NOTHING(
+        self, auth_client, db, seed_user,
+    ):
+        """Silence is the empty state, not a zero.
+
+        Without this the panel could render "0 payment(s)" for ever and the
+        case above would still pass.
+        """
+        an_unexplained_outflow(seed_user, merchant="Amazon", amount="-57.96")
+        db.session.commit()
+
+        body = " ".join(auth_client.get(
+            _review_url(seed_user["account"].id),
+        ).data.decode().split())
+
+        assert (
+            "What your records hold and this statement did not show"
+            not in body
+        )
 
 
 class TestEveryExceptionLinksToTheTool:
@@ -3018,7 +3228,7 @@ class TestEveryExceptionLinksToTheTool:
             _review_url(seed_user["account"].id),
         ).data.decode()
 
-        assert "Lines that are a purchase you never recorded" in page
+        assert "Nothing of yours accounts for these" in page
         assert self._linked_lines(page) == [line.id]
 
     def test_a_PARKED_line_links_to_the_tool_carrying_itself(
@@ -3050,7 +3260,7 @@ class TestEveryExceptionLinksToTheTool:
         ).data.decode()
         body = " ".join(page.split())
 
-        assert "Payments waiting for their home" in body
+        assert "Your records may already hold these" in body
         assert self._linked_lines(page) == [line.id]
         # **NO SENTENCE ON THIS PAGE NAMES A POSITION.**  Five did until this
         # step and all five went false in the commit that moved the form; two
@@ -3084,7 +3294,7 @@ class TestEveryExceptionLinksToTheTool:
             _review_url(seed_user["account"].id),
         ).data.decode()
 
-        assert "Money that arrived and your records do not hold" in page
+        assert "Nothing of yours accounts for these" in page
         assert self._linked_lines(page) == [line.id]
 
 

@@ -1027,7 +1027,7 @@ class TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn:
         derived end at 2026-01-15, and a still-projected ``$250.00`` expense
         budgeted to period 0 carries ``due_date`` 2026-01-18 -- inside the
         corrupted span and outside the real one.  Reading the DERIVED span,
-        ``attribution_date`` clamps 01-18 down to 01-15, so the row lands
+        ``attribution_day`` clamps 01-18 down to 01-15, so the row lands
         INSIDE the column that budgeted it: net ``-$250.00``, ``period_timing``
         ``$0.00``, and a ``$750.00`` close.  Period 1 budgets nothing, nothing
         lands in its span, and it closes at ``$750.00`` too.

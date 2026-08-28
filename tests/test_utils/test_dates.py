@@ -16,7 +16,6 @@ from datetime import date, datetime, time, timezone
 
 from app.utils.dates import (
     DISPLAY_TIMEZONE,
-    attribution_date,
     display_today,
     has_settled_by,
     months_between,
@@ -189,58 +188,6 @@ class TestDisplayToday:
 
         monkeypatch.setattr("app.utils.dates.datetime", _FixedDateTime)
         assert display_today() == date(2026, 6, 12)
-
-
-class TestAttributionDate:
-    """Pin the shared calendar-attribution clamp.
-
-    ``attribution_date`` is the one rule both the calendar's day-cell
-    grouping and the daily balance ramp use, so a flow's cell and the
-    balance line's step land on the same day.  An item lands on its
-    ``due_date`` (fallback: the period ``start_date``), clamped into the
-    period's inclusive span so a period's flows always sum by its
-    ``end_date`` -- the calendar/grid reconciliation invariant.
-    """
-
-    def test_due_date_within_period_is_unchanged(self):
-        """An in-period due_date is the attribution day verbatim."""
-        assert attribution_date(
-            date(2026, 7, 6), date(2026, 7, 1), date(2026, 7, 14),
-        ) == date(2026, 7, 6)
-
-    def test_missing_due_date_falls_back_to_period_start(self):
-        """A None due_date attributes to the period start_date."""
-        assert attribution_date(
-            None, date(2026, 7, 1), date(2026, 7, 14),
-        ) == date(2026, 7, 1)
-
-    def test_due_date_before_period_clamps_to_start(self):
-        """A due_date before the period start is pulled up to start_date."""
-        # Recurrence engine dated the item Jun 28; its period is Jul 1-14,
-        # so it lands on Jul 1 rather than escaping into June.
-        assert attribution_date(
-            date(2026, 6, 28), date(2026, 7, 1), date(2026, 7, 14),
-        ) == date(2026, 7, 1)
-
-    def test_due_date_after_period_clamps_to_end(self):
-        """A due_date after the period end is pulled down to end_date.
-
-        An item in the Jul 1-14 period dated Jul 20 lands on Jul 14 so the
-        period's running-balance sum still closes by its end_date and
-        reconciles with the grid period-end.
-        """
-        assert attribution_date(
-            date(2026, 7, 20), date(2026, 7, 1), date(2026, 7, 14),
-        ) == date(2026, 7, 14)
-
-    def test_boundary_dates_are_inclusive(self):
-        """Both period endpoints are valid landing days (inclusive clamp)."""
-        assert attribution_date(
-            date(2026, 7, 1), date(2026, 7, 1), date(2026, 7, 14),
-        ) == date(2026, 7, 1)
-        assert attribution_date(
-            date(2026, 7, 14), date(2026, 7, 1), date(2026, 7, 14),
-        ) == date(2026, 7, 14)
 
 
 class TestHasSettledBy:

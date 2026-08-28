@@ -48,9 +48,9 @@ from datetime import date
 from decimal import Decimal
 
 from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
-from app.services.cash_ledger import AnchorPoint, baseline_amount_basis
+from app.services.cash_ledger import baseline_amount_basis
+from app.services.pay_calendar import DerivedPeriod
 
 from . import _purchases, _rows, _transactions, _transfers
 from ._offers import (
@@ -64,28 +64,43 @@ from ._offers import (
 
 
 def _block_headings(
-    owner_id: int, transaction_ids: "set[int]",
-) -> "dict[int, tuple[str, date, date]]":
-    """Return ``{transaction_id: (name, period_start, period_end)}``.
+    statement: _rows.Statement, transaction_ids: "set[int]",
+) -> "dict[int, tuple[str, DerivedPeriod]]":
+    """Return ``{transaction_id: (name, period)}``.
 
-    The three scalars a block's heading needs, in ONE statement over the ids
-    the arms have already established -- not a relationship walk.  See
-    :func:`outstanding_set` for why the ``joinedload`` alternative costs 13
-    joins to fetch one name.
+    The two things a block's heading needs, over the ids the arms have already
+    established -- not a relationship walk.  See :func:`outstanding_set` for why
+    the ``joinedload`` alternative costs 13 joins to fetch one name.
 
     It is keyed on the ids the caller HOLDS rather than re-deriving any arm's
     offers, so it cannot answer about a different set than the one being
     grouped.
+
+    **The SPAN is DERIVED, and that is pay-calendar plan step C4-a-2's half of
+    this function.**  It SELECTed ``pay_periods.start_date`` and ``end_date``
+    -- the second of those is a stored copy of a derivable fact and C4-c drops
+    it, which was the one QUERY-position read of it plan finding **P70** had
+    left in ``app/``.  The query now asks for the ``pay_period_id`` the row
+    already carries and the owner's calendar answers the span, through
+    :meth:`~app.services.pay_calendar.PayCalendar.require_period` -- the same
+    lookup :func:`~._rows.attributed_on` makes for the same rows, so a block's
+    heading and the offer inside it cannot describe two different paychecks.
 
     **It scopes to the OWNER anyway**, and the redundancy is deliberate.  Every
     id here comes from an arm that already scoped it, so the clause can never
     change an answer today -- which is exactly the argument that would let a
     future caller pass an unscoped set into the one query in a package whose
     stated security property is that scope is SHARED rather than remembered.
-    The cost is one indexed predicate.
+    **It is the SAME scope the arms used** -- :attr:`~._rows.Statement.owned_period_ids`,
+    the calendar's own saved ids -- rather than a second spelling of it on
+    ``pay_periods.user_id``, and that is what makes ``require_period`` below
+    unable to refuse: every id reaching this came from a query narrowed by these
+    ids, and this query is narrowed by them again.  The cost is one indexed
+    predicate.
 
     Args:
-        owner_id: The user_id the parents must belong to.
+        statement: The statement being reconciled -- its calendar is both who
+            the parents must belong to and what dates them.
         transaction_ids: The parents to label.  Empty is answered with an empty
             map and issues no query -- ``IN ()`` is a statement with no rows to
             find.
@@ -95,6 +110,15 @@ def _block_headings(
         inside one transaction, so a missing parent is not reachable; a caller
         that indexed a missing id would raise ``KeyError`` rather than render a
         block with no heading, which is the honest failure.
+
+    Raises:
+        RuntimeError: A parent names a pay period the statement's calendar does
+            not hold.  Unconstructible: the clause above admits only that
+            calendar's own period ids.  Kept as the raising twin a caller
+            holding a stored ``pay_period_id`` is supposed to use, so a future
+            caller reaching this from an unscoped set fails loudly rather than
+            publishing a heading nobody can date
+            (:meth:`~app.services.pay_calendar.PayCalendar.require_period`).
     """
     if not transaction_ids:
         return {}
@@ -102,17 +126,20 @@ def _block_headings(
         db.session.query(
             Transaction.id,
             Transaction.name,
-            PayPeriod.start_date,
-            PayPeriod.end_date,
+            Transaction.pay_period_id,
         )
-        .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
         .filter(
             Transaction.id.in_(transaction_ids),
-            PayPeriod.user_id == owner_id,
+            Transaction.pay_period_id.in_(statement.owned_period_ids),
         )
         .all()
     )
-    return {row[0]: (row[1], row[2], row[3]) for row in rows}
+    return {
+        row[0]: (
+            row[1], statement.calendar.require_period(row[2], row[0]),
+        )
+        for row in rows
+    }
 
 
 def _block_order(group: OutstandingGroup) -> "tuple[int, date, int, int]":
@@ -206,9 +233,54 @@ def _tally(
     )
 
 
-def outstanding_set(
-    owner_id: int, account_id: int, anchor: AnchorPoint,
+def _summarise(
+    groups: "tuple[OutstandingGroup, ...]",
 ) -> OutstandingSet:
+    """Reduce the assembled blocks into the set the boundary publishes.
+
+    **Every tally is read off the BLOCKS, so the three pairs describe exactly
+    what the panel renders.**  The two settle tallies were reduced over the
+    arms' own map until pay-calendar plan step C4-a-2 moved them here; a block
+    carries the settle the map held, so the answer is the same and it now has
+    one source instead of two.  Each pair goes through :func:`_tally` for that
+    function's own reason: three sums of one set written three ways is where one
+    of them ends up counting another's rows.
+
+    Split from :func:`outstanding_set` because assembling the blocks and
+    reducing them are two jobs, and holding both put sixteen names in one
+    frame.
+
+    Args:
+        groups: The blocks, ordered and sectioned -- the value the set will
+            publish, so nothing here can tally a set the caller does not ship.
+
+    Returns:
+        The :class:`~app.services.reconcile_service.OutstandingSet`.
+    """
+    settles = [
+        group.settle for group in groups if group.settle is not None
+    ]
+    purchase_count, purchase_total = _tally(
+        [purchase for group in groups for purchase in group.purchases],
+    )
+    payment_count, payment_total = _tally(
+        [offer for offer in settles if not offer.is_income],
+    )
+    deposit_count, deposit_total = _tally(
+        [offer for offer in settles if offer.is_income],
+    )
+    return OutstandingSet(
+        groups=groups,
+        purchase_count=purchase_count,
+        purchase_total=purchase_total,
+        payment_count=payment_count,
+        payment_total=payment_total,
+        deposit_count=deposit_count,
+        deposit_total=deposit_total,
+    )
+
+
+def outstanding_set(statement: _rows.Statement) -> OutstandingSet:
     """Return what this account has not been seen to have paid for, grouped.
 
     The reconcile panel's list.  It asks each arm what it still owes against
@@ -231,21 +303,22 @@ def outstanding_set(
     LEFT OUTER JOINs and around a hundred columns**, because ``Transaction``
     eager-joins its account, status, category and type and ``Account`` eager-
     joins four parameter tables -- all to fetch one name.  The grouping needs
-    three scalars per parent, so it asks for three.
+    two scalars and a period id per parent, so it asks for three columns.
 
     Reads only (no writes, no commit).
 
     Args:
-        owner_id: The user_id whose offers to list.
-        account_id: The cash account whose balance was asserted.
-        anchor: The governing assertion -- the STATEMENT being reconciled
-            against.  Nothing dated after its ``observed_on`` can be inside it,
-            and no arm offers one.  The READ takes the whole assertion rather
-            than its day because the arms build a
-            :class:`~app.services.reconcile_service._rows.Statement` from it and
-            the WRITE half stamps its id (ruling **R-FL**); one value threaded
-            through both halves is what stops the offer set and the tick
-            describing different statements.
+        statement: The :class:`~app.services.reconcile_service.Statement` being
+            reconciled -- the owner's pay calendar, the account whose balance
+            was asserted, and the governing assertion.  **Built by the ROUTE and
+            threaded to all three arms since pay-calendar plan step C4-a-2**,
+            where it was three loose arguments each arm reassembled for itself.
+            The calendar arrived because this panel DATES every row it offers
+            and a pay period's span is derived; it stayed as the whole value
+            because whose rows these are, which account, and which assertion are
+            not independent facts, and the same value is what the WRITE half
+            takes (:class:`ReconcileSubmission`) -- so the offer set and the
+            tick cannot describe different statements.
 
     Raises:
         BaselineMissingError: From
@@ -271,9 +344,7 @@ def outstanding_set(
         siblings said 53 and 46, so one package held two answers to one count.
         Finding **N-227** owns that bound.
     """
-    blocks = _purchases.outstanding_purchases(
-        owner_id, account_id, anchor.observed_on,
-    )
+    blocks = _purchases.outstanding_purchases(statement)
     # **ONE amount basis for the whole panel** (plan step X-au-j, finding
     # **N-295**).  Both source-row arms price every offered row through their
     # own ``settle_amount``, and each of those built its own basis -- so K
@@ -294,27 +365,22 @@ def outstanding_set(
     # catches ``AmountUnresolvable`` and drops the row into ``unpriceable``).
     # The two passes answer it differently on purpose and neither is reachable
     # today; stated so the next reader does not assume symmetry.
-    basis = baseline_amount_basis(owner_id)
+    basis = baseline_amount_basis(statement.owner_id)
     # The two source-row arms union into ONE map, and they can: their scopes
     # are complements (``transfer_id IS NULL`` against ``IS NOT NULL``), so no
     # id is in both and the merge cannot silently drop one arm's offer.
     settles = {
-        **_transactions.outstanding_transactions(
-            owner_id, account_id, anchor, basis,
-        ),
-        **_transfers.outstanding_transfers(
-            owner_id, account_id, anchor, basis,
-        ),
+        **_transactions.outstanding_transactions(statement, basis),
+        **_transfers.outstanding_transfers(statement, basis),
     }
     parents = set(blocks) | set(settles)
-    headings = _block_headings(owner_id, parents)
+    headings = _block_headings(statement, parents)
 
     groups = [
         OutstandingGroup(
             transaction_id=transaction_id,
             name=headings[transaction_id][0],
-            period_start=headings[transaction_id][1],
-            period_end=headings[transaction_id][2],
+            period=headings[transaction_id][1],
             purchases=tuple(blocks.get(transaction_id, ())),
             settle=settles.get(transaction_id),
             # Resolved by ``_sectioned`` once the order is known: a block
@@ -325,29 +391,7 @@ def outstanding_set(
         for transaction_id in parents
     ]
     groups.sort(key=_block_order)
-
-    # Every pair through ``_tally``, including the purchases -- which were
-    # counted off ``blocks`` and totalled off ``groups`` until a review pointed
-    # out that ``_tally``'s whole reason for existing is that two sums of one
-    # set cannot be written two ways.
-    purchase_count, purchase_total = _tally(
-        [purchase for group in groups for purchase in group.purchases],
-    )
-    payment_count, payment_total = _tally(
-        [offer for offer in settles.values() if not offer.is_income],
-    )
-    deposit_count, deposit_total = _tally(
-        [offer for offer in settles.values() if offer.is_income],
-    )
-    return OutstandingSet(
-        groups=_sectioned(groups),
-        purchase_count=purchase_count,
-        purchase_total=purchase_total,
-        payment_count=payment_count,
-        payment_total=payment_total,
-        deposit_count=deposit_count,
-        deposit_total=deposit_total,
-    )
+    return _summarise(_sectioned(groups))
 
 
 def record_reconciliation(submission: ReconcileSubmission) -> int:
@@ -415,13 +459,14 @@ def record_reconciliation(submission: ReconcileSubmission) -> int:
         ValidationError: Propagated from a settle verb -- an illegal transition
             a stale panel can still submit.
         PostingError: Propagated from a verb's ledger reconcile.  Fails loud.
+        RuntimeError: A ticked row names a pay period the submission's calendar
+            does not hold
+            (:meth:`~app.services.pay_calendar.PayCalendar.require_period`, via
+            :func:`~._rows.attributed_on`'s share of the offer bound).
     """
+    statement = submission.statement
     purchases = _purchases.record_settled_days(
-        submission.owner_id, submission.account_id,
-        submission.entry_ids, submission.anchor,
-    )
-    statement = _rows.Statement(
-        submission.owner_id, submission.account_id, submission.anchor,
+        statement, submission.entry_ids,
     )
     source_rows = sum(
         _rows.record_settled(
@@ -430,7 +475,7 @@ def record_reconciliation(submission: ReconcileSubmission) -> int:
         )
         for arm in (
             _transactions.ARM,
-            _transfers.arm(submission.owner_id),
+            _transfers.arm(statement.owner_id),
         )
     )
     return purchases + source_rows

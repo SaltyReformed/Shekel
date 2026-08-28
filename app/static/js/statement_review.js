@@ -123,8 +123,24 @@
     if (target.matches("[data-tick-placed]")) {
       const form = target.closest("form");
       if (form) {
+        // **The GROUP is the root, not the form** (plan step
+        // bank_import:X-gf-3b-2, developer ruling 2026-08-28).  A sweep may
+        // only reach the rows inside its own evidence group, so its reach is
+        // the DOM subtree it lives in rather than a class name that happens
+        // to be unique today.  A row in "your records may already hold these"
+        // cannot be ticked by a click in another card even if a later edit
+        // gave it a placement class.
+        // **FAILS CLOSED.** This was `closest(...) || form`, and the
+        // fallback was the page-wide reach R-HD calls structural, restored
+        // silently by any future edit that drops the attribute -- a sweep
+        // could then tick a placed row in "Your records may already hold
+        // these". A sweep with no group is a sweep with no reach.
+        const group = target.closest("[data-queue-group]");
+        if (!group) {
+          return;
+        }
         sweepPlaced(
-          form, target.getAttribute("data-tick-placed"), target.checked,
+          group, target.getAttribute("data-tick-placed"), target.checked,
         );
       }
       return;

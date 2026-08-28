@@ -94,7 +94,8 @@ from app.services.balance_at import (
     cash_balance_map,
 )
 from app.services.balance_at._cash_fold import assembled_fold
-from app.utils.dates import attribution_date, display_today
+from app.services.pay_calendar import DerivedPeriod
+from app.utils.dates import display_today
 
 
 def _clamped(due, start, end):
@@ -102,6 +103,14 @@ def _clamped(due, start, end):
 
     The shared clamp, applied here rather than reached through the fold, so the
     probe reads the same on both sides of the step.
+
+    **It builds a ``DerivedPeriod`` to ask** (pay-calendar plan step C4-a-2):
+    the clamp is a method on the derived value now and there is no free
+    function left that takes two loose dates.  This probe's whole subject is
+    comparing a STORED span against a derived one, so it constructs the value
+    for whichever span it is asking about; ``period_index`` and
+    ``end_is_projected`` are not read by the clamp and are filled with the
+    values that make the object legal.
 
     Args:
         due: The row's ``due_date``, or ``None``.
@@ -111,7 +120,13 @@ def _clamped(due, start, end):
     Returns:
         The clamped :class:`datetime.date`.
     """
-    return attribution_date(due, start, end)
+    return DerivedPeriod(
+        period_id=None,
+        period_index=0,
+        start_date=start,
+        end_date=end,
+        end_is_projected=False,
+    ).attribution_day(due)
 
 
 def _probe_owner(calendar, periods, rows):

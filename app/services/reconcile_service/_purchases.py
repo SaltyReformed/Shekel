@@ -32,19 +32,15 @@ Architecture (``CLAUDE.md``):
 """
 
 import logging
-from datetime import date
 
 from app import ref_cache
 from app.enums import SettledDayBasisEnum
 from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import posting_service
-from app.services.cash_ledger import (
-    AnchorPoint,
-    reject_movement_before_books_open,
-)
+from app.services.cash_ledger import reject_movement_before_books_open
+from app.services.reconcile_service import _rows
 from app.services.reconcile_service._offers import OutstandingPurchase
 from app.utils.balance_predicates import balance_contributing_clause
 from app.utils.log_events import (
@@ -56,7 +52,7 @@ from app.utils.log_events import (
 logger = logging.getLogger(__name__)
 
 
-def _outstanding_scope(owner_id: int, account_id: int, observed_on: date):
+def _outstanding_scope(statement: "_rows.Statement"):
     """Return the filter clauses for "not yet seen on a statement".
 
     The ONE definition of the outstanding PURCHASE set, shared by this arm's
@@ -66,7 +62,7 @@ def _outstanding_scope(owner_id: int, account_id: int, observed_on: date):
     "outstanding" means, which is the shape this whole step exists to end.
 
     **"Purchase" is load-bearing in that sentence.**  Plan step X-f2-c2 adds a
-    TRANSACTION twin with its own bound (``attribution_date <= observed_on``,
+    TRANSACTION twin with its own bound (``attribution_day <= observed_on``,
     applied in Python over an SQL superset), so this becomes one of two scopes
     and the sharing property has to hold per scope rather than over the set as
     a whole.  Writing "the outstanding set" here would make that leaf falsify a
@@ -87,11 +83,29 @@ def _outstanding_scope(owner_id: int, account_id: int, observed_on: date):
       ``ck_transaction_entries_settled_not_before_purchase`` refuses at the
       database; filtering here means that constraint is a backstop rather than
       a reachable 500.
-    * the parent is this OWNER's and on THIS account -- a balance assertion
-      declares the real balance of one account, and a user may hold more than
-      one checking account (there is no per-type uniqueness).  Reconciling
-      across accounts would drop another account's reservation without ever
-      raising its anchor.
+    * the parent is filed in one of :attr:`~._rows.Statement.owned_period_ids`
+      and is on THIS account -- a balance assertion declares the real balance of
+      one account, and a user may hold more than one checking account (there is
+      no per-type uniqueness).  Reconciling across accounts would drop another
+      account's reservation without ever raising its anchor.
+      **The owner half came off a ``pay_periods.user_id`` join until
+      pay-calendar plan step C4-a-2** and comes off the CALENDAR now, for the
+      reason that property states: it is what makes
+      :func:`~._assemble._block_headings`' span lookup total, and that function
+      labels the parents THIS arm produces as well as the source-row arms'.
+      Scoping two arms by the calendar and one by the table would have left the
+      refusal reachable through the third.
+      **The UNBOUNDED set, deliberately, and MEASURED rather than argued**:
+      this arm's day bound is on the ENTRY's ``purchased_on``, never on the
+      parent's period, so a purchase made today against NEXT period's envelope
+      is offerable and :attr:`~._rows.Statement.offerable_period_ids` -- the
+      narrower set the source-row arms take -- would silently drop it.  Planted
+      on a prod-shape clone 2026-08-28: a `$61.20` purchase dated 2026-08-17
+      against a Groceries envelope filed in the period OPENING 2026-08-27 is
+      offered against the 2026-08-18 statement, on this tree and on the merge
+      base alike.  Worth planting because the clone carries no outstanding
+      purchase of its own, so the whole before/after would have diffed clean
+      over an arm it never ran.
     * the parent is CONTRIBUTING -- a Credit or Cancelled parent's purchases
       are not money this account owes, and a soft-deleted one's are not money
       at all (``settled_cash_leg`` and ``_events.settled_cash_facts`` both zero
@@ -122,9 +136,10 @@ def _outstanding_scope(owner_id: int, account_id: int, observed_on: date):
     too -- the same deferral ``clear_entries_for_anchor_true_up`` carried.
 
     Args:
-        owner_id: The user_id whose purchases to scope to.
-        account_id: The cash account the balance was asserted for.
-        observed_on: The civil day that balance was true for.
+        statement: The :class:`~._rows.Statement` being reconciled -- whose
+            calendar, which account, which assertion.  It replaced the three
+            loose values at pay-calendar plan step C4-a-2; see
+            :func:`~._transactions.outstanding_transactions` for why one value.
 
     Returns:
         A list of SQLAlchemy filter clauses to apply to a
@@ -133,13 +148,11 @@ def _outstanding_scope(owner_id: int, account_id: int, observed_on: date):
     return [
         TransactionEntry.settled_on.is_(None),
         TransactionEntry.is_credit.is_(False),
-        TransactionEntry.purchased_on <= observed_on,
+        TransactionEntry.purchased_on <= statement.observed_on,
         TransactionEntry.transaction_id.in_(
-            db.session.query(Transaction.id)
-            .join(PayPeriod, Transaction.pay_period_id == PayPeriod.id)
-            .filter(
-                PayPeriod.user_id == owner_id,
-                Transaction.account_id == account_id,
+            db.session.query(Transaction.id).filter(
+                Transaction.pay_period_id.in_(statement.owned_period_ids),
+                Transaction.account_id == statement.account_id,
                 balance_contributing_clause(),
             )
         ),
@@ -147,7 +160,7 @@ def _outstanding_scope(owner_id: int, account_id: int, observed_on: date):
 
 
 def outstanding_purchases(
-    owner_id: int, account_id: int, observed_on: date,
+    statement: "_rows.Statement",
 ) -> "dict[int, list[OutstandingPurchase]]":
     """Return this arm's offers, ``{parent transaction id: purchases}``.
 
@@ -175,9 +188,10 @@ def outstanding_purchases(
     Reads only (no writes, no commit).
 
     Args:
-        owner_id: The user_id whose purchases to list.
-        account_id: The cash account whose balance was asserted.
-        observed_on: The civil day that balance was true for -- purchases made
+        statement: The :class:`~._rows.Statement` being reconciled, built
+            ONCE by :func:`~._assemble.outstanding_set` and threaded to all
+            three arms (pay-calendar plan step C4-a-2).  Its ``observed_on``
+            is the civil day the balance was true for -- purchases made
             after it cannot be inside it and are not listed.
 
     Returns:
@@ -195,7 +209,7 @@ def outstanding_purchases(
     """
     rows = (
         db.session.query(TransactionEntry)
-        .filter(*_outstanding_scope(owner_id, account_id, observed_on))
+        .filter(*_outstanding_scope(statement))
         .order_by(TransactionEntry.purchased_on, TransactionEntry.id)
         .all()
     )
@@ -308,12 +322,10 @@ def _post_stamped_purchases(
 
 
 def record_settled_days(
-    owner_id: int,
-    account_id: int,
+    statement: "_rows.Statement",
     entry_ids: "set[int]",
-    anchor: AnchorPoint,
 ) -> int:
-    """Record that *anchor*'s statement showed *entry_ids*.
+    """Record that *statement* showed *entry_ids*.
 
     This arm's writer: the user ticked these purchases off a statement, so each
     one records WHICH statement showed it (``reconciled_by_id``, ruling
@@ -349,18 +361,18 @@ def record_settled_days(
     Does NOT commit -- the caller owns the session boundary.
 
     Args:
-        owner_id: The user_id whose purchases these must be.
-        account_id: The cash account the balance was asserted for.
+        statement: The :class:`~._rows.Statement` being reconciled -- whose
+            purchases these must be, which account, and which assertion.
         entry_ids: The entry ids the user ticked.  An empty set is a no-op.
-        anchor: The governing assertion -- the STATEMENT being reconciled.  Its
-            id is what each ticked purchase records, and its ``observed_on`` is
+            Its anchor id is what each ticked purchase records, and its
+            ``observed_on`` is
             the day each is recorded as having settled by.
 
     Returns:
         The number of entries actually stamped.
 
     Raises:
-        ValidationError: When *anchor*'s day is on or before the account's
+        ValidationError: When *statement*'s day is on or before the account's
             opening day (from
             :func:`app.services.cash_ledger.reject_movement_before_books_open`,
             plan step X-f3c-2b).  Refused whole rather than per entry: the day
@@ -369,7 +381,8 @@ def record_settled_days(
     """
     if not entry_ids:
         return 0
-    observed_on = anchor.observed_on
+    account_id = statement.account_id
+    observed_on = statement.observed_on
     # **The boundary the bulk UPDATE below cannot inherit** (plan step
     # X-f3c-2b, finding **N-378**).  Every other writer of ``settled_on``
     # reaches the column through ``settle_day.record_settle_day``, which asks
@@ -426,25 +439,27 @@ def record_settled_days(
         db.session.query(TransactionEntry)
         .filter(
             TransactionEntry.id.in_(entry_ids),
-            *_outstanding_scope(owner_id, account_id, observed_on),
+            *_outstanding_scope(statement),
         )
         .update(
             {
                 TransactionEntry.settled_on: observed_on,
                 TransactionEntry.settled_day_basis_id: asserted_basis_id,
-                TransactionEntry.reconciled_by_id: anchor.anchor_id,
+                TransactionEntry.reconciled_by_id: statement.anchor.anchor_id,
             },
             synchronize_session=False,
         )
     )
 
     if updated:
-        _post_stamped_purchases(account_id, entry_ids, anchor.anchor_id)
+        _post_stamped_purchases(
+            account_id, entry_ids, statement.anchor.anchor_id,
+        )
         log_event(
             logger, logging.INFO,
             EVT_ENTRIES_SETTLED_DAY_RECORDED, BUSINESS,
             "Outstanding purchases confirmed against a bank statement",
-            user_id=owner_id,
+            user_id=statement.owner_id,
             account_id=account_id,
             observed_on=observed_on.isoformat(),
             recorded_count=updated,

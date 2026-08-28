@@ -413,6 +413,15 @@ class TestTheHandBuildForm:
         your records claim happened and your bank did not make"* -- of every
         row, unconditionally.  What replaces it makes the alarm conditional on
         the owner's own expectation and names the other case.
+
+        **And it states no DIRECTION** since finding **bank_import:N-380**,
+        plan step ``bank_import:X-gf-3b-2``.  It said *a payment ... your bank
+        did not make*, which is a claim about an OUTFLOW, over a list that is
+        17 deposits in 49 of the developer's own rows -- his `Data Manager`
+        salary at `$2,473.38`, whose payroll credit sits unexplained in the
+        queue at `$2,573.42`.  A caption naming one direction is wrong about
+        the other whichever way it is written, so each ROW states its own by
+        its figure.
         """
         statement = an_import(seed_user)
         a_bank_line(
@@ -433,9 +442,11 @@ class TestTheHandBuildForm:
         # an assertion carrying the indentation would be graded by the editor.
         flat = " ".join(panel.split())
         assert (
-            "One you expected the bank to show is a payment your records "
-            "claim happened and your bank did not make." in flat
+            "One you expected the bank to show is money your records say "
+            "moved that this statement never showed moving" in flat
         )
+        # The OUTFLOW-only claim is gone, which is N-380's other half.
+        assert "your bank did not make" not in flat
         assert (
             "One marked <em>not a line of its own</em> is not: tick it with "
             "the line that carries its money." in flat

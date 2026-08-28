@@ -11,7 +11,7 @@ what reached `main` is a MEASUREMENT (`git log --oneline origin/main..dev`).
 section 3 named were two stale and two moved, and five more were named by no step at all, which row
 **P70**'s query-position census structurally could not see. The leaves ARE that census: five take
 the readers off the columns one PACKAGE at a time, one makes an owner's recorded cadence a foreign
-key, and the last drops the columns. **`C4-a-1` has SHIPPED; `C4-a-2` is next.**
+key, and the last drops the columns. **`C4-a-1` and `C4-a-2` have SHIPPED; `C4-a-3` is next.**
 
 **`C10`-`C12` came OUT of `C2-f3`** on 2026-08-19 for gating C4 on work it does not depend on: the
 salary package's clock (**P49**, which `C2-f3a` wrongly closed), the layer predicate (**P56**) and
@@ -145,12 +145,14 @@ per period from the paydays alone. **But "consumers do not change shape" is FALS
 reader and saying so is the correction** (adversarial review, 2026-08-08): the hot path reads the
 bounds off the ORM RELATIONSHIP, not off a calendar --
 `period = txn.pay_period; attribution_date(txn.due_date, period.start_date, period.end_date)` on
-every grid, dashboard and account render. `PayPeriod.label` (`models/pay_period.py:73-85`) is a
-model property built from `end_date`. Those callers hold a `Transaction`, not a calendar, so C4 is a
-seam signature change for them and C1's oracle proves nothing about it. ***The four sites this
-paragraph used to NAME are not the live set and two of them had already migrated*** (AST census
-2026-08-25): `calendar_service` takes a `DerivedPeriod` since `C2-f2`, and
-`routes/transactions/_helpers.py:156` reads only `.user_id`, which survives C4.
+every grid, dashboard and account render. ***That spelling no longer exists***: `C4-a-2` deleted
+`utils.dates.attribution_date` for `DerivedPeriod.attribution_day`, so the shape a remaining reader
+has is `period.end_date` off the relationship rather than a three-argument call. `PayPeriod.label`
+(`models/pay_period.py:73-85`) is a model property built from `end_date`. Those callers hold a
+`Transaction`, not a calendar, so C4 is a seam signature change for them and C1's oracle proves
+nothing about it. ***The four sites this paragraph used to NAME are not the live set and two of them
+had already migrated*** (AST census 2026-08-25): `calendar_service` takes a `DerivedPeriod` since
+`C2-f2`, and `routes/transactions/_helpers.py:156` reads only `.user_id`, which survives C4.
 **Section 4 carries the measured census** rather than a list here that goes stale between the two.
 **Two constraints on the producer, both structural:**
 
@@ -283,19 +285,24 @@ untouched; each survivor is an `AttributeError` or a `ProgrammingError` the day 
 (`:939`) and `pay_period_locks` (`:215`) read `DerivedPeriod` values, and
 `settings/_pay_periods_manage.html` has since `C2-f3b`.
 
+**RE-CENSUSED 2026-08-28 at `C4-a-2`, and the earlier census was blind to a SHAPE**: it saw
+`PayPeriod.end_date` in query position and `<row>.pay_period.end_date`, but not a read through a
+LOCAL bound from `.pay_period`, which is how two of the survivors are written. Widened, `app/` holds
+FOUR Python reads and one Jinja read, each already named by the leaf that owns it below -- so this
+is a correction to those line numbers, not a second list. `_candidates` is `:941` and the conflict
+chooser `:196`; `resolve_cadence` reads `last.end_date` off a ROW rather than in query position,
+which is why `_block_headings` was the last query-position read of that column.
+
 - [x] **C4-a-1 -- the balance seam's attribution clamp.** `8962e073` + `2895f693`. Closed **P38**.
       *Its specification here described a build `balance:X-i4` had already made impossible -- five
       public entries each taking a `PayCalendar` -- and the shipped shape changes no public
       signature at all. The commits are the record.*
-- [ ] **C4-a-2 -- the reconcile panel, and the clamp moves onto the value.** `_rows.attributed_on`
-      reads `txn.pay_period` (`:271-273`) and `_assemble._block_headings` SELECTS
-      `PayPeriod.end_date` (`:106`); `lands_on_or_before` and `outstanding_rows` thread between
-      them, and the panel holds no read pass, so its calendar comes from the route.
-      **This leaf is where `utils.dates.attribution_date` is DELETED** and
-      `DerivedPeriod.attribution_day` becomes the rule: its last mis-pairable caller leaves here,
-      and shipping a state where every caller holds a `DerivedPeriod` while the three-argument
-      signature survives is a signature with no remaining reason. Blocked by `C4-a-1`, which moves
-      the other caller.
+- [x] **C4-a-2 -- the reconcile panel, and the clamp moves onto the value.** `82bd762c`. Both reads
+      gone; `utils.dates.attribution_date` DELETED for `DerivedPeriod.attribution_day` (**R-PC31**).
+      `DerivedPeriod.covers` did NOT land with it -- the step order gives it to `C4-a-3`.
+      **What a later leaf must obey**: all three arms of that panel now scope ownership by the
+      calendar's own saved period ids, because the first build's "the refusal is unreachable"
+      argument was measured FALSE (`/grid` appends a payday AND populates it in one transaction).
 - [ ] **C4-a-3 -- the purchase-date warning.** `entry_service/_sums` (`:344-345`) plus four route
       call sites, and the containment test becomes `DerivedPeriod.covers`, which also retires the
       open-coded pair at `recurrence_engine/_plan.py:317` and `pay_calendar/_searches.py:77`. This

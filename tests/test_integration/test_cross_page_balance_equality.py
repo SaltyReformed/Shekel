@@ -104,7 +104,7 @@ def _freeze_today_mid_month(monkeypatch):
     **The production behaviour it trips over was MEASURED CORRECT and is NOT
     changed**, which is the only reason freezing the clock here is a fix and not
     a cover-up.  Ruling R-G lands a still-projected row on
-    ``max(attribution_date, as_of + 1)`` -- a plan cannot have already happened
+    ``max(attribution_day, as_of + 1)`` -- a plan cannot have already happened
     -- so on a period's last day ``as_of + 1`` is outside the period and the
     whole remaining plan legitimately rolls into the next one.  The column then
     equals the settled balance, and the money is conserved: measured on the

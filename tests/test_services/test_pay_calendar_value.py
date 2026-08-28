@@ -1735,6 +1735,104 @@ class TestTheDerivedPeriodContract:
         assert span.period_id is None
 
 
+class TestTheAttributionClamp:
+    """Pin the shared BUDGET-attribution rule (plan step **C4-a-2**).
+
+    ``DerivedPeriod.attribution_day`` is the one rule the calendar's day cells,
+    the balance seam's planned tier and the reconcile panel's offer bound all
+    use, so no two of them can place one row on different days.  An item lands
+    on its ``due_date`` (fallback: the period's ``start_date``), clamped into
+    the period's inclusive span so a period's flows always sum by its
+    ``end_date`` -- the calendar/grid reconciliation invariant.
+
+    **It was ``utils.dates.attribution_date(preferred, start, end)`` and these
+    cases came with it**, unchanged in what they assert and rewritten to ask
+    the period rather than to pass its two dates.  That is the whole point of
+    the move: the three-argument form let a caller pair one period's item with
+    another period's bounds, which is not a crash but a row rendered on the
+    wrong day.  The pairing is asserted directly below rather than left as
+    prose, since the signature is now the only thing enforcing it.
+
+    Asserted on the SPAN a calendar derives, never on a hand-built pair: the
+    projected last period is included for exactly that reason -- its end comes
+    from the cadence rather than from a following payday, and a consumer
+    holding one cannot tell the difference.
+    """
+
+    def test_a_due_date_inside_the_period_is_the_landing_day_verbatim(self):
+        """No clamp applies, so the item lands where it is dated."""
+        period = calendar().periods[0]
+
+        assert period.start_date == date(2026, 1, 2)
+        assert period.end_date == date(2026, 1, 15)
+        assert period.attribution_day(date(2026, 1, 6)) == date(2026, 1, 6)
+
+    def test_no_due_date_falls_back_to_the_PAYDAY(self):
+        """A row with no ``due_date`` is budgeted on the day money arrived."""
+        period = calendar().periods[0]
+
+        assert period.attribution_day(None) == date(2026, 1, 2)
+
+    def test_a_due_date_BEFORE_the_period_clamps_up_to_the_payday(self):
+        """A stray early date does not escape onto the previous paycheck.
+
+        The recurrence engine can date a row just outside its own period's
+        range; pulling it back is what keeps that period's running balance
+        summing to the period-end figure the grid shows.
+        """
+        period = calendar().periods[1]
+
+        assert period.start_date == date(2026, 1, 16)
+        assert period.attribution_day(date(2026, 1, 9)) == date(2026, 1, 16)
+
+    def test_a_due_date_AFTER_the_period_clamps_down_to_its_last_day(self):
+        """The same rule at the other boundary, which is the load-bearing one.
+
+        Every contributing item must fall on or before ``end_date`` or the
+        period's daily sum stops equalling its period-end balance.
+        """
+        period = calendar().periods[1]
+
+        assert period.end_date == date(2026, 1, 29)
+        assert period.attribution_day(date(2026, 2, 4)) == date(2026, 1, 29)
+
+    def test_both_boundary_days_are_THEMSELVES_valid_landing_days(self):
+        """The clamp is inclusive at both ends, so neither boundary moves."""
+        period = calendar().periods[1]
+
+        assert period.attribution_day(date(2026, 1, 16)) == date(2026, 1, 16)
+        assert period.attribution_day(date(2026, 1, 29)) == date(2026, 1, 29)
+
+    def test_the_PROJECTED_last_period_clamps_to_its_projected_end(self):
+        """A cadence-derived end bounds the clamp as a fact-derived one does.
+
+        The one span whose end no payday dictates, and the one a caller reading
+        ``pay_periods.end_date`` would have answered differently the moment the
+        stored cadence moved (plan finding **P12**).
+        """
+        period = calendar().periods[-1]
+
+        assert period.end_is_projected is True
+        assert period.end_date == date(2026, 2, 26)
+        assert period.attribution_day(date(2026, 3, 20)) == date(2026, 2, 26)
+
+    def test_the_SPAN_it_clamps_against_is_THIS_periods_and_no_other(self):
+        """The mis-pairing the deleted three-argument signature allowed.
+
+        One date, asked of three adjacent periods of one calendar, answers
+        three different days -- and each answer is inside the period that was
+        asked.  A caller that could supply the bounds separately could produce
+        the WRONG one of these with no error, which is why the rule moved onto
+        the value that carries the span.
+        """
+        cal = calendar()
+        stray = date(2026, 1, 20)
+
+        assert cal.periods[0].attribution_day(stray) == date(2026, 1, 15)
+        assert cal.periods[1].attribution_day(stray) == date(2026, 1, 20)
+        assert cal.periods[2].attribution_day(stray) == date(2026, 1, 30)
+
+
 class TestTheRaisingTwinOfTheIdentityLookup:
     """``require_period`` REFUSES where ``period_by_id`` answers ``None``.
 
