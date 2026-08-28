@@ -77,6 +77,7 @@ from tests._test_helpers import (
     override_anchor,
     period_window,
     restamp_opening_assertion,
+    restate_account_opening,
 )
 
 
@@ -141,9 +142,44 @@ def _fold(account, scenario, days, as_of=_LATE_AS_OF):
     return balances_at(assembled_fold(account, ctx), list(days))
 
 
-def _opened_at(account, at):
-    """Pin the account's OPENING assertion instant (shared builder)."""
-    return restamp_opening_assertion(db.session, account, at)
+#: The day the books open for the two streams below that carry a record dated
+#: before their opening ASSERTION.  Chosen BEFORE the 2026-01-15 record they
+#: carry, because ruling **R-HG** (plan step X-f3c-2b) makes a movement dated
+#: on or before the books unstorable -- and a record sitting between the books
+#: and the FIRST assertion is the production shape this fold has to get right
+#: (Checking's books open 2026-03-26 and its first assertion is 2026-03-27).
+#:
+#: **It is NOT the default, and that is this constant's whole discipline.**  A
+#: blanket default here re-dated the books of every fixture in the file: it
+#: moved the two real-shape cases 80-odd days off the day their own docstrings
+#: name, and at the ~15 sites asserting 2026-01-01 it moved the books FORWARD,
+#: to a fortnight AFTER the opening assertion -- a state production cannot
+#: reach by any door, and one those fixtures cannot detect because their seed
+#: equity and their opening assertion are the same $1,000.00.  Found by
+#: adversarial review, 2026-08-28.
+_BOOKS_OPEN_ON = date(2026, 1, 14)
+
+
+def _opened_at(account, at, books_open_on=None):
+    """Pin the account's OPENING assertion instant (shared builder).
+
+    Args:
+        account: The account whose opening assertion to pin.
+        at: The aware-UTC instant to stamp it with.
+        books_open_on: The civil day the account's BOOKS open.  ``None``, the
+            default, leaves them where ``restamp_opening_assertion`` puts them
+            -- one day before *at*, which is the shape ``create_account`` and
+            the migration both produce.  Pass a day only when the case needs
+            the SPAN between the books and the first assertion, and pass the
+            day that case names rather than a shared one.
+
+    Returns:
+        The re-stamped assertion row.
+    """
+    row = restamp_opening_assertion(db.session, account, at)
+    if books_open_on is not None:
+        restate_account_opening(db.session, account, books_open_on)
+    return row
 
 
 def _stored_opening_equity(account):
@@ -220,7 +256,11 @@ class TestTheOpeningEquityIsTheSeed:
         would be a second statement of a rule the database holds.
         """
         account = seed_user["account"]
-        _opened_at(account, _instant(2026, 2, 1))
+        # ``books_open_on=None`` leaves the books where the restamp puts them,
+        # one day before the assertion.  The default in this file opens them
+        # EARLIER so the streams can carry a record between the books and the
+        # first assertion; here the tight books are the subject.
+        _opened_at(account, _instant(2026, 2, 1), books_open_on=None)
         db.session.flush()
         with pytest.raises(ValidationError) as exc:
             create_settled_cash_transaction(
@@ -252,7 +292,8 @@ class TestTheOpeningEquityIsTheSeed:
         pins the boundary rather than only one side of it.
         """
         account = seed_user["account"]
-        _opened_at(account, _instant(2026, 2, 1))
+        # Tight books, for the reason the case above states.
+        _opened_at(account, _instant(2026, 2, 1), books_open_on=None)
         db.session.flush()
         with pytest.raises(ValidationError):
             create_settled_cash_transaction(
@@ -260,7 +301,7 @@ class TestTheOpeningEquityIsTheSeed:
                 settled_on=date(2026, 1, 31), name="on-the-opening-day",
             )
         db.session.rollback()
-        _opened_at(account, _instant(2026, 2, 1))
+        _opened_at(account, _instant(2026, 2, 1), books_open_on=None)
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("500.00"),
             settled_on=date(2026, 2, 1), name="the-first-recordable-day",
@@ -407,13 +448,13 @@ class TestTheOpeningEquityIsTheSeed:
         -$500.00 record dated before it (2026-01-15), a true-up to $2,000.00
         (2026-03-01), and a -$250.00 record after that (2026-04-01).
         Hand-computed: $1,000.00 on 01-14, $500.00 from 01-15 (the pre-opening
-        double count :meth:`test_a_record_dated_before_the_books_opened_is_COUNTED_TWICE`
+        double count :meth:`test_a_record_dated_before_the_books_opened_is_REFUSED`
         pins), $1,000.00 from 02-01, $2,000.00 from 03-01 and $1,750.00 from
         04-01.  **The three at-and-after figures are unchanged from before this
         step**, which is the evidence the assembly moved and the money did not.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        _opened_at(account, _instant(2026, 2, 1))
+        _opened_at(account, _instant(2026, 2, 1), books_open_on=_BOOKS_OPEN_ON)
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("500.00"),
             settled_on=date(2026, 1, 15), name="pre-opening",
@@ -1020,7 +1061,7 @@ class TestTotality:
         became the figure ``budget.account_openings`` holds.*
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        _opened_at(account, _instant(2026, 2, 1))
+        _opened_at(account, _instant(2026, 2, 1), books_open_on=_BOOKS_OPEN_ON)
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("500.00"),
             settled_on=date(2026, 1, 15), name="pre-opening",

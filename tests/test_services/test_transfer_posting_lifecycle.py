@@ -379,10 +379,19 @@ class TestDeleteAndRestore:
 
         Arithmetic: settle +100 (1 entry); hard-delete first reverses -100 (2nd
         entry), then removes the transfer row, SET-NULLing ``transfer_id`` on
-        both entries.  The immutable legs survive: the Savings LINKED ledger
-        holds its +100.00 opening leg plus the +100 settle and -100 reversal
-        (net 100.00, the opening); the transfer row is gone.  This is the
-        append-only correction proven through a hard delete.
+        both entries.  The immutable legs survive and the transfer row is gone.
+        This is the append-only correction proven through a hard delete.
+
+        **The Savings LINKED ledger holds FIVE legs, and it held three until
+        plan step X-f3c-2b.**  Its opening is now posted, reversed and
+        re-posted, because ``create_account_of_type`` restates the account's
+        books so a fixture can date a row before the account's own creation day
+        -- which is production's own shape after the same act.  Those three net
+        to the ``$100.00`` opening exactly as the single leg did, so the ledger
+        still reads ``+$100.00`` in total.  Both counts are asserted: the whole
+        ledger, which is what catches an amount-NEUTRAL pair of extra legs
+        landing during the delete, and the TRANSFER-sourced pair alone, which
+        is the append-only correction this case is named for.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -419,14 +428,39 @@ class TestDeleteAndRestore:
                 .all()
             )
             assert len(surviving) == 2
-            # The Savings legs (+100 settle, -100 reversal) survive and net 0.
-            savings_legs = (
+            # THE WHOLE LEDGER first, which is the reading a source filter
+            # cannot give: five legs -- the opening posted, reversed and
+            # re-posted by the factory's restatement, plus the settle and its
+            # reversal -- netting to the $100.00 opening.  An amount-NEUTRAL
+            # extra pair landing here during the delete moves this count and
+            # nothing else, so dropping it for the filtered count below would
+            # have been the cheaper repair rather than the stronger one.
+            all_savings_legs = (
                 _db.session.query(Posting)
                 .filter_by(ledger_account_id=savings_ledger)
                 .all()
             )
-            assert len(savings_legs) == 3
-            assert sum(leg.amount for leg in savings_legs) == Decimal("100.00")
+            assert len(all_savings_legs) == 5
+            assert sum(
+                leg.amount for leg in all_savings_legs
+            ) == Decimal("100.00")
+
+            # THEN the TRANSFER-sourced pair alone (+100 settle, -100
+            # reversal), which is the append-only correction this case is named
+            # for: it survives the parent's disposal and nets to zero.
+            savings_legs = (
+                _db.session.query(Posting)
+                .join(JournalEntry, Posting.journal_entry_id == JournalEntry.id)
+                .filter(
+                    Posting.ledger_account_id == savings_ledger,
+                    JournalEntry.source_kind_id == ref_cache.posting_source_id(
+                        PostingSourceEnum.TRANSFER,
+                    ),
+                )
+                .all()
+            )
+            assert len(savings_legs) == 2
+            assert sum(leg.amount for leg in savings_legs) == Decimal("0.00")
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
             ) == Decimal("100.00")

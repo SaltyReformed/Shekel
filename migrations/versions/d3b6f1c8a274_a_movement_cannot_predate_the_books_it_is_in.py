@@ -41,13 +41,50 @@ balance of the day before it.  Moving the day is what makes the stored pair say
 what the figure already means; it is a correction of the DAY's semantics, not a
 restatement of the money.
 
-**MEASURED MONEY-NEUTRAL, both harnesses, on a production clone (2026-08-28).**
-``tests/manual/verify_balance_baseline.py`` -- 9 accounts, 441 grid cells, 6,174
-daily points -- and ``tests/manual/verify_anchor_surfaces.py`` -- 2 users, 9
-accounts -- are byte-identical before and after.  The positive control the
-harness docstring requires was run: ``+$0.01`` on one account's opening equity
-moves 180 lines, so the empty diff is a measurement rather than a harness that
-saw nothing.
+**IT MOVES TWO BALANCE SHEETS, AND THE FIRST DRAFT OF THIS PARAGRAPH CLAIMED IT
+MOVED NOTHING** (measured on a production clone 2026-08-28; the wrong claim was
+caught by adversarial review the same day).
+
+The claim was "``verify_balance_baseline`` and ``verify_anchor_surfaces`` are
+byte-identical, so this is money-neutral".  Both ARE byte-identical, and it is
+worth nothing: this migration changes ``opened_on`` alone, and the cash fold
+seeds at ``walk.opening.opening_equity`` -- a SCALAR.  No figure either harness
+captures can move under a pure day restatement, for any account, ever.  The
+positive control offered as proof varied ``opening_equity``, a DIFFERENT
+variable, so it demonstrated that the harness sees equity and never that it
+sees the day.  Re-measured on the right axis: moving one account's
+``opened_on`` by a single day produces **zero diff lines**.  That is the
+verification standard's rule 3 -- ask of every harness whether it can SEE the
+code under test -- failing in the direction that reads as a free pass.
+
+**The surface that moves is the posted ledger, and it moves at DEPLOY rather
+than here.**  ``entrypoint.sh`` runs ``backfill_all_account_anchor_postings``
+after the migration chain, which re-dates each restated account's
+``account_opening`` journal entry onto its new day and into the pay period
+containing it; ``ledger_report_service`` buckets those corrections by
+``entry_date``.  Reproducing that whole sequence on both clones,
+``tests/manual/verify_statement_baseline.py`` (2 users, 139 statements, 3,915
+leaves) moves **38 leaves and gains 4**, and all of it is one change:
+
+* the balance sheets for **2026-04-08** and **2026-04-22** gain
+  ``Fidelity Money Market Savings -- Opening`` at **$4,879.26**, lifting assets
+  and equity by that amount on each;
+* every other moved leaf is the positional shift of one inserted equity line;
+* the two-part tie-out still closes on both sides, and no income statement
+  moves -- an opening books to equity, never to income.
+
+**That change is the correction this step exists to make.**  Account 10 records
+its earliest movement on 2026-04-06 while its books said 2026-05-01, so a
+balance sheet dated 2026-04-08 showed the account holding nothing 
+after money had already moved in it.  The other four restatements move no
+statement: accounts 3 and 8 are loans, which post ``loan_opening`` and are
+outside this backfill, and accounts 1 and 2 have no statement date inside the
+span their books moved across.
+
+``verify_balance_baseline`` (9 accounts, 441 grid cells, 6,174 daily points)
+and ``verify_anchor_surfaces`` (2 users, 9 accounts) are byte-identical after
+the deploy backfill too -- reported as what they are, a statement about
+surfaces this change cannot reach, rather than as evidence.
 
 The five accounts it restates, and the day each moves to:
 
@@ -112,6 +149,12 @@ depends_on = None
 #:
 #: The predicate is ``<=`` and not ``<``: an opening equity is the closing
 #: balance for its own day, so a movement dated ON it is inside it (R-HG).
+#:
+#: **SOFT-DELETED rows are counted here too**, matching
+#: ``budget.assert_account_books_hold_its_movements`` exactly -- see that
+#: function for why the constraint's row set is deliberately wider than the
+#: fold's.  The two must agree or this migration would move an opening to a
+#: day the constraint installed four lines later immediately refuses.
 _ACCOUNTS_TO_RESTATE = """
     WITH governing AS (
         SELECT DISTINCT ON (account_id)
@@ -142,6 +185,77 @@ _ACCOUNTS_TO_RESTATE = """
      WHERE m.earliest <= g.opened_on
      ORDER BY g.account_id
 """
+
+
+#: The provenance every restated figure must carry, and the reason the
+#: migration may carry it forward unchanged.
+_MIGRATION_DERIVED = "migration_derived"
+
+#: The accounts :data:`_ACCOUNTS_TO_RESTATE` would move whose opening figure a
+#: HUMAN stated.  Empty on every database this has been run against, and
+#: checked rather than assumed, because it is the one input that would make
+#: this migration's whole money argument false.
+_DECLARED_OPENINGS_IN_THE_WAY = _ACCOUNTS_TO_RESTATE.replace(
+    "WHERE m.earliest <= g.opened_on",
+    """WHERE m.earliest <= g.opened_on
+       AND g.source_id <> (
+             SELECT id FROM ref.account_opening_sources WHERE name = :derived
+           )""",
+)
+
+
+def _reject_declared_openings(bind) -> None:
+    """Refuse to restate an opening figure a human stated.
+
+    **This migration carries every equity forward verbatim, and that is only
+    safe for a DERIVED figure.**  The X-f3c-2a backfill computed each one as
+    "the earliest assertion's balance, less the movements it already
+    contained", which is by construction the level BEFORE the earliest
+    recorded movement -- so moving the DAY back to meet it makes the stored
+    pair say what the figure already meant, and no money moves.
+
+    A ``user_declared`` opening carries no such guarantee.  An owner who typed
+    "on 2026-05-01 I had $X" for an account that already recorded a 2026-04-20
+    settle stated a figure that INCLUDES that settle, and moving the day back
+    removes nothing: the fold seeds at the equity as a scalar, so the double
+    count survives at exactly its old magnitude -- and the constraint installed
+    four lines later guarantees nothing will ever surface it again.  The
+    migration would have LEGALISED finding **N-378** for that account instead
+    of closing it.
+
+    All nine production accounts are ``migration_derived`` today, so this
+    refuses nothing there.  It is stated because the premise is doing
+    load-bearing work in a money migration that will also run on dev clones
+    and on databases nobody has censused, and because an undated measurement
+    quoted as a reason decays invisibly -- nobody re-checks a premise.  Found
+    by adversarial review, 2026-08-28.
+
+    Args:
+        bind: The Alembic connection.
+
+    Raises:
+        RuntimeError: When any account in the way carries a non-derived
+            opening, naming each one.
+    """
+    declared = bind.execute(
+        sa.text(_DECLARED_OPENINGS_IN_THE_WAY), {"derived": _MIGRATION_DERIVED},
+    ).fetchall()
+    if not declared:
+        return
+    offenders = "; ".join(
+        f"account {row.account_id} (books open {row.was_opened_on}, "
+        f"equity {row.opening_equity})"
+        for row in declared
+    )
+    raise RuntimeError(
+        "X-f3c-2b: these accounts hold a movement inside their opening AND an "
+        f"opening figure that was not derived: {offenders}.  Carrying such a "
+        "figure forward to an earlier day removes no double count -- the fold "
+        "seeds at the equity, not at the day -- so this migration would "
+        "legalise N-378 for them rather than close it.  Decide each figure "
+        "with the owner (plan step X-f3c-2b-2's restatement door) before "
+        "retrying."
+    )
 
 
 def _restate(bind) -> list:
@@ -199,6 +313,7 @@ def upgrade():
             opening equity disagree.
     """
     bind = op.get_bind()
+    _reject_declared_openings(bind)
     restated = _restate(bind)
     print(f"X-f3c-2b: {len(restated)} account(s) restated")
 
@@ -225,6 +340,81 @@ def upgrade():
         "budget.transactions, budget.transaction_entries and "
         "budget.account_openings"
     )
+
+
+#: An opening still carrying this migration's SIGNATURE -- the day before the
+#: account's earliest movement, over an older row of identical equity -- on an
+#: account the downgrade did not withdraw.  That is what a hand restatement
+#: made after the upgrade leaves behind, and the set comparison below cannot
+#: see it: the account appears in neither the withdrawn set nor the violating
+#: one, so both stay equal and the row survives in silence.
+_RESTATEMENTS_LEFT_BEHIND = """
+    WITH ordered AS (
+        SELECT id, account_id, opened_on, opening_equity,
+               ROW_NUMBER() OVER (
+                   PARTITION BY account_id
+                   ORDER BY created_at DESC, id DESC
+               ) AS recency
+          FROM budget.account_openings
+    ),
+    movements AS (
+        SELECT account_id, MIN(settled_on) AS earliest
+          FROM (
+                SELECT account_id, settled_on
+                  FROM budget.transactions
+                 WHERE settled_on IS NOT NULL
+                UNION ALL
+                SELECT account_id, settled_on
+                  FROM budget.transaction_entries
+                 WHERE settled_on IS NOT NULL
+               ) AS dated
+         GROUP BY account_id
+    )
+    SELECT o.account_id, o.opened_on
+      FROM ordered o
+      JOIN ordered older
+        ON older.account_id = o.account_id
+       AND older.recency > o.recency
+       AND older.opening_equity = o.opening_equity
+      JOIN movements m ON m.account_id = o.account_id
+     WHERE o.opened_on = (m.earliest - 1)::date
+     GROUP BY o.account_id, o.opened_on
+     ORDER BY o.account_id
+"""
+
+
+def _report_restatements_left_behind(bind, withdrawn_ids) -> None:
+    """Print every restatement this downgrade declined to withdraw.
+
+    The docstring above promises that a row not matching the upgrade's shape is
+    "left alone and REPORTED", and until this existed only the first half was
+    true: the set comparison that follows compares the withdrawn accounts
+    against the still-violating ones, and a row the ``DELETE`` predicate
+    skipped appears in NEITHER -- so the two stay equal and nothing prints.
+    Found by adversarial review, 2026-08-28.
+
+    Reports rather than raises, which is the same judgement the DELETE makes:
+    a hand restatement made after the upgrade is somebody's decision, and a
+    downgrade may not guess which day to return it to.  Saying so is the whole
+    obligation.
+
+    Args:
+        bind: The Alembic connection.
+        withdrawn_ids: The account ids this downgrade did withdraw, which are
+            reported by their own line and are not left behind.
+    """
+    left = [
+        row for row in bind.execute(sa.text(_RESTATEMENTS_LEFT_BEHIND))
+        if row.account_id not in withdrawn_ids
+    ]
+    for row in left:
+        print(
+            f"X-f3c-2b downgrade: account {row.account_id} still carries an "
+            f"opening at {row.opened_on} in this migration's shape and was "
+            "NOT withdrawn -- its books were restated by hand after the "
+            "upgrade, so the day to return to is a decision rather than an "
+            "inverse.  Left alone; withdraw by hand if that is wrong."
+        )
 
 
 def downgrade():
@@ -293,6 +483,8 @@ def downgrade():
             f"X-f3c-2b downgrade: account {row.account_id} restatement to "
             f"{row.opened_on} withdrawn"
         )
+
+    _report_restatements_left_behind(bind, {row.account_id for row in withdrawn})
 
     still_violating = bind.execute(sa.text(_ACCOUNTS_TO_RESTATE)).fetchall()
     expected = {row.account_id for row in withdrawn}

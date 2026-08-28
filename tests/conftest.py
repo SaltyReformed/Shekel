@@ -656,6 +656,7 @@ from app.services.auth_service import hash_password
 from tests._test_helpers import (
     bind_db_clock_rewriter,
     create_loan_account,
+    governing_opening_row,
     insert_trueup_event,
     make_appreciating_account,
     make_every_period_rule,
@@ -663,6 +664,7 @@ from tests._test_helpers import (
     open_books_before_the_first_assertion,
     posted_loan_balance_at,
     restamp_opening_assertion,
+    restate_account_opening,
     settle_day_columns,
 )
 
@@ -1206,6 +1208,15 @@ def _pin_opening_to(db, account, anchor_period):
             anchor_period.start_date, dt_time.min, tzinfo=DISPLAY_TIMEZONE,
         ).astimezone(timezone.utc),
     )
+    # **The BOOKS then go back further than the assertion** (plan step
+    # X-f3c-2b, ruling **R-HG**).  The restamp above opens them one day before
+    # the anchor period, and these fixtures settle rows in EARLIER periods of
+    # their own calendar -- the off-schedule loan payment lands two periods
+    # back.  An opening equity is its own day's closing balance, so those rows
+    # would be inside it and unstorable.  Backward-only, so the pin above
+    # still decides where the ASSERTION sits, which is what this helper is
+    # for.
+    open_books_before_the_first_assertion(db.session, account)
 
 
 def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
@@ -1305,13 +1316,7 @@ def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
     #
     # The table is APPEND-ONLY, so this restates rather than edits, exactly as
     # a production restatement would.
-    from app.models.account_opening import AccountOpening  # pylint: disable=import-outside-toplevel
-    governing = (
-        db.session.query(AccountOpening)
-        .filter_by(account_id=account.id)
-        .order_by(AccountOpening.created_at.desc(), AccountOpening.id.desc())
-        .first()
-    )
+    governing = governing_opening_row(db.session, account)
     if governing is not None:
         # **BACKWARD only, never forward** (plan step X-f3c-2b).  Moving the
         # books to just before the new calendar reads as the production shape,
@@ -1323,14 +1328,9 @@ def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
         # bulk") and the statement-match suites are built on it.  Ruling R-HG
         # bounds a MOVEMENT by the books, not by the calendar, so the fixture
         # must not narrow the books to the calendar either.
-        opened_on = min(
-            governing.opened_on, new_anchor_period.start_date - timedelta(days=1),
-        )
-        db.session.add(AccountOpening(
-            account_id=account.id,
-            opened_on=opened_on,
-            opening_equity=governing.opening_equity,
-            source_id=governing.source_id,
+        restate_account_opening(db.session, account, min(
+            governing.opened_on,
+            new_anchor_period.start_date - timedelta(days=1),
         ))
     db.session.flush()
     # Step 2: delete the bootstrap row.

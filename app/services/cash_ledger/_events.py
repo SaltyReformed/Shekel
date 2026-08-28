@@ -539,8 +539,18 @@ def reject_movement_before_books_open(account_id: int, day: date) -> None:
     ``ck_transactions_settle_day_needs_a_record`` has with
     :func:`app.services.status_seam.reject_settle_day_without_a_record`.
 
+    **The CALLER owns the ownership scoping, and the message is why that
+    matters.**  The refusal names the account's opening equity so a date box
+    can render it verbatim, and this function applies no ``user_id`` filter of
+    its own.  Every caller today reaches it behind an ownership check -- the
+    routes resolve the row by owner before any settle door is entered -- so
+    the figure only ever reaches the owner.  A future caller that took an
+    account id straight from a request would turn this message into a balance
+    oracle.
+
     Args:
-        account_id: The account the movement belongs to.
+        account_id: The account the movement belongs to.  Assumed already
+            scoped to the acting user by the caller.
         day: The civil day the movement's cash moved.
 
     Raises:

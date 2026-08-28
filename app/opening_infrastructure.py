@@ -11,15 +11,34 @@ resets it -- and on a MODELLED account (ruling **R-FO**) the correction that
 resets it books to ``unrealized_change``, turning a transfer into market
 performance that never unwinds (finding **N-378**).
 
-**This module is what makes that state UNSTORABLE rather than merely refused.**
+**This module is what makes that state UNSTORABLE BY ANY SINGLE TRANSACTION,
+rather than merely refused.**  Two limits are worth naming rather than leaving
+a reader to assume more:
+
+* Under READ COMMITTED two CONCURRENT transactions -- one recording a movement,
+  one restating the books past it -- each see a snapshot without the other's
+  uncommitted row, so both predicates pass and both commit.  Neither trigger
+  takes a lock.  The window is narrow (a restatement is rare and has no UI door
+  until plan step X-f3c-2b-2) and closing it means ``SELECT ... FOR UPDATE`` on
+  the governing opening, which is the right fix if a door ever makes
+  restatement ordinary.
+* ``session_replication_role = replica`` disables constraint triggers outright,
+  which is what ``pg_restore --disable-triggers`` sets.  The prod-to-dev clone
+  is a documented workflow here, so a restore can land rows this module would
+  have refused; the CONSTRAINT is not re-validated afterwards, only future
+  writes are.
+
 The invariant spans three tables and two directions, so PostgreSQL cannot state
 it as a row-level CHECK:
 
 * a MOVEMENT may not move back past its account's opening
   (``budget.transactions`` and ``budget.transaction_entries``, both of which
   carry ``account_id`` and ``settled_on``);
-* an OPENING may not move forward past a movement that already exists
-  (``budget.account_openings``).
+* an account's GOVERNING opening may not sit on or after a movement that
+  already exists (``budget.account_openings``) -- stated over the rows that
+  survive an event rather than over the row written, so restating forward,
+  raw-updating the governing row and DELETING it (which promotes an older
+  restatement) are one rule rather than three arms.
 
 Both are cross-table facts, so they live in **deferred constraint triggers**
 validating at COMMIT.  Deferral is not incidental: restating an account's
@@ -94,6 +113,12 @@ _OPENED_ON_FUNCTION = "budget.account_books_opened_on"
 _MOVEMENT_FUNCTION = "budget.assert_movement_after_books_open"
 _OPENING_FUNCTION = "budget.assert_books_open_before_books_movements"
 
+#: The openings-side PREDICATE, stated once and asked per affected account.
+#: The trigger above it is dispatch: which account this event touched.  Keeping
+#: the two apart is what lets one event ask about TWO accounts -- a raw
+#: ``UPDATE`` moving a row between them -- without spelling the check twice.
+_OPENING_PREDICATE_FUNCTION = "budget.assert_account_books_hold_its_movements"
+
 _MOVEMENT_TRIGGER = "ck_movement_after_books_open"
 _OPENING_TRIGGER = "ck_books_open_before_movements"
 
@@ -164,48 +189,94 @@ $$ LANGUAGE plpgsql
 """
 
 
-_CREATE_OPENING_FUNC_SQL = f"""
-CREATE OR REPLACE FUNCTION {_OPENING_FUNCTION}()
-RETURNS TRIGGER AS $$
+_CREATE_OPENING_PREDICATE_SQL = f"""
+CREATE OR REPLACE FUNCTION {_OPENING_PREDICATE_FUNCTION}(p_account_id INTEGER)
+RETURNS VOID AS $$
 DECLARE
+    v_opened_on DATE;
     v_earliest DATE;
 BEGIN
-    -- Only the GOVERNING record constrains anything.  An earlier restatement
-    -- is history: the table is append-only precisely so what the opening USED
-    -- to be survives, and a superseded row saying something the live data now
-    -- contradicts is a record, not a violation.  Evaluated at COMMIT, so a
-    -- transaction inserting two restatements checks only the one that wins.
-    IF NEW.id IS DISTINCT FROM (
-        SELECT id
-          FROM budget.account_openings
-         WHERE account_id = NEW.account_id
-         ORDER BY created_at DESC, id DESC
-         LIMIT 1
-    ) THEN
-        RETURN NULL;
+    -- **The predicate is over the account's RESULTING STATE, not over the row
+    -- that was written**, and that is what makes one function serve every
+    -- event.  An INSERT, an UPDATE and a DELETE on
+    -- ``budget.account_openings`` all change the same thing -- which row
+    -- governs -- so each is checked by asking the same question afterwards:
+    -- do this account's books, as they now stand, hold every movement it
+    -- records?  The alternative (grade the written row, and skip it when some
+    -- other row governs) needs the governing lookup spelled a SECOND time to
+    -- find out, and it is blind to a DELETE, where the row that breaks the
+    -- invariant is the one that SURVIVED.
+    v_opened_on := {_OPENED_ON_FUNCTION}(p_account_id);
+
+    -- No opening record at all.  Two ways to get here and neither is a
+    -- violation: a CASCADE from ``budget.accounts`` has just disposed of the
+    -- whole account, and (unreachably, but stated rather than assumed) an
+    -- account that never got one.  The READ side already refuses the second
+    -- loudly -- ``cash_ledger.account_opening_fact`` raises rather than
+    -- fabricating a level -- so raising here would make this function enforce
+    -- a SECOND invariant no other constraint states, and would surface it as
+    -- a COMMIT abort on an unrelated write path.
+    IF v_opened_on IS NULL THEN
+        RETURN;
     END IF;
 
     -- The earliest day the account records money moving, over BOTH movement
     -- tables -- the same union the movement trigger's two attachments cover
     -- from the other side.
+    --
+    -- **SOFT-DELETED rows are counted, and this row set is deliberately WIDER
+    -- than the fold's.**  ``balance_contributing_clause`` excludes
+    -- ``is_deleted`` rows and the Credit / Cancelled statuses; this counts
+    -- them, so a soft-deleted settled row still bounds how far back its
+    -- account's books may be restated.  Narrowing to match the fold would
+    -- open a hole on RESTORE: un-deleting is an ``UPDATE`` of ``is_deleted``
+    -- alone, and the movement trigger fires ``UPDATE OF settled_on,
+    -- account_id``, so a restored pre-books row would pass both tiers
+    -- untouched.  The cost is over-refusal -- the books cannot move past a
+    -- day whose only row the owner cannot see -- and that is the safe
+    -- direction: it refuses a legal act loudly rather than admitting an
+    -- illegal one silently.  Stated because two statements of one rule that
+    -- differ silently is the failure this arc names as its own root cause.
     SELECT MIN(settled_on) INTO v_earliest FROM (
         SELECT settled_on
           FROM budget.transactions
-         WHERE account_id = NEW.account_id AND settled_on IS NOT NULL
+         WHERE account_id = p_account_id AND settled_on IS NOT NULL
         UNION ALL
         SELECT settled_on
           FROM budget.transaction_entries
-         WHERE account_id = NEW.account_id AND settled_on IS NOT NULL
+         WHERE account_id = p_account_id AND settled_on IS NOT NULL
     ) AS movements;
 
-    IF v_earliest IS NOT NULL AND v_earliest <= NEW.opened_on THEN
+    IF v_earliest IS NOT NULL AND v_earliest <= v_opened_on THEN
         RAISE EXCEPTION
             'account % cannot open its books on %: a movement is already '
             'dated %, and an opening equity is the closing balance for its '
             'own day, so that money would be counted twice',
-            NEW.account_id, NEW.opened_on, v_earliest;
+            p_account_id, v_opened_on, v_earliest;
     END IF;
+END;
+$$ LANGUAGE plpgsql
+"""
 
+
+_CREATE_OPENING_FUNC_SQL = f"""
+CREATE OR REPLACE FUNCTION {_OPENING_FUNCTION}()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- DISPATCH ONLY: name the accounts this event could have changed the
+    -- books of, and ask the predicate about each.  There are two of them
+    -- only for a raw ``UPDATE`` that moves a row BETWEEN accounts, which no
+    -- door does and which would otherwise leave the abandoned account's books
+    -- ungraded -- the same reason the arms below are written out rather than
+    -- collapsed into ``NEW``.
+    IF TG_OP <> 'INSERT' THEN
+        PERFORM {_OPENING_PREDICATE_FUNCTION}(OLD.account_id);
+    END IF;
+    IF TG_OP <> 'DELETE' AND (
+        TG_OP = 'INSERT' OR NEW.account_id IS DISTINCT FROM OLD.account_id
+    ) THEN
+        PERFORM {_OPENING_PREDICATE_FUNCTION}(NEW.account_id);
+    END IF;
     RETURN NULL;
 END;
 $$ LANGUAGE plpgsql
@@ -262,17 +333,30 @@ def _create_movement_trigger_sql(table: str) -> str:
     )
 
 
-#: The openings side fires on INSERT alone: the table is append-only, so a
-#: restatement IS an insert, and the ORM guard
-#: (``AccountOpening._block_update`` / ``_block_delete``) plus the absence of
-#: any UPDATE door mean there is no legitimate update path to police.  A raw
-#: ``UPDATE`` would slip past -- which is why the arm is stated rather than
-#: assumed away: closing it would mean policing every superseded row on every
-#: write, and the row that decides money is the governing one, which can only
-#: be reached by inserting.
+#: **INSERT, UPDATE and DELETE**, where the movement side needs only the first
+#: two.  The table is append-only and a restatement IS an insert, so INSERT is
+#: the only door; the other two arms exist because the invariant is a property
+#: of the SURVIVING rows rather than of the written one.  A raw ``UPDATE``
+#: moving the governing row's ``opened_on`` forward, and a raw ``DELETE`` of
+#: the governing row -- which promotes an older restatement whose day the live
+#: movements may contradict -- both break it without any door being opened.
+#: Neither is reachable through the ORM (``AccountOpening._block_update`` /
+#: ``_block_delete`` refuse both), which is exactly why the DATABASE is where
+#: they are stated: this tier's whole job is the writer nobody enumerated.  No
+#: column list, because a ``DELETE`` has no columns to name and the table is
+#: written to only when an account is created or restated.
+#:
+#: **The DELETE arm cannot make an account undeletable, and the reason is an
+#: FK asymmetry rather than the predicate's own care.**  Disposing of an
+#: account CASCADEs its openings away (``AccountScopedMixin.account_id`` is
+#: ``ON DELETE CASCADE``) while ``budget.transactions.account_id`` is ON
+#: DELETE **RESTRICT** -- so an account that still records a movement cannot
+#: be deleted at all, and one that can be has no movement for the surviving
+#: books to fail against.  At COMMIT the predicate finds no governing opening
+#: and returns before it counts anything.
 _CREATE_OPENING_TRIGGER_SQL = (
     f"CREATE CONSTRAINT TRIGGER {_OPENING_TRIGGER} "
-    f"AFTER INSERT OR UPDATE ON {_OPENINGS_TABLE} "
+    f"AFTER INSERT OR UPDATE OR DELETE ON {_OPENINGS_TABLE} "
     "DEFERRABLE INITIALLY DEFERRED "
     f"FOR EACH ROW EXECUTE FUNCTION {_OPENING_FUNCTION}()"
 )
@@ -289,8 +373,14 @@ def apply_opening_infrastructure(executor: Callable[[str], object]) -> None:
        and its constraint trigger on ``budget.transactions`` AND
        ``budget.transaction_entries``.
     3. ``CREATE OR REPLACE FUNCTION
-       budget.assert_books_open_before_books_movements`` and its constraint
-       trigger on ``budget.account_openings``.
+       budget.assert_account_books_hold_its_movements`` -- the openings-side
+       predicate -- then
+       ``CREATE OR REPLACE FUNCTION
+       budget.assert_books_open_before_books_movements``, the trigger function
+       that dispatches to it, and its constraint trigger on
+       ``budget.account_openings``.  The predicate goes first: the dispatcher
+       ``PERFORM``s it, and ``check_function_bodies`` validates that reference
+       at ``CREATE FUNCTION`` time.
 
     Every statement is idempotent (``CREATE OR REPLACE FUNCTION`` swaps the
     body; ``DROP TRIGGER IF EXISTS`` + ``CREATE`` re-pins each trigger), so a
@@ -314,6 +404,7 @@ def apply_opening_infrastructure(executor: Callable[[str], object]) -> None:
     for table in _MOVEMENT_TABLES:
         executor(_drop_trigger_sql(_MOVEMENT_TRIGGER, table))
         executor(_create_movement_trigger_sql(table))
+    executor(_CREATE_OPENING_PREDICATE_SQL)
     executor(_CREATE_OPENING_FUNC_SQL)
     executor(_drop_trigger_sql(_OPENING_TRIGGER, _OPENINGS_TABLE))
     executor(_CREATE_OPENING_TRIGGER_SQL)
@@ -322,10 +413,13 @@ def apply_opening_infrastructure(executor: Callable[[str], object]) -> None:
 def remove_opening_infrastructure(executor: Callable[[str], object]) -> None:
     """Inverse of :func:`apply_opening_infrastructure` for a migration downgrade.
 
-    Drops the three triggers first and then the three functions, so a function
-    is never dropped while a trigger still references it.  Every statement uses
-    ``IF EXISTS``, so this is idempotent and a clean no-op on a database that
-    never carried the infrastructure.
+    Drops the three triggers first and then the four functions, innermost
+    caller last, so nothing is dropped while something still references it: the
+    triggers name the two trigger functions, the openings dispatcher
+    ``PERFORM``s the openings predicate, and both predicates read the
+    governing-day lookup.  Every statement uses ``IF EXISTS``, so this is
+    idempotent and a clean no-op on a database that never carried the
+    infrastructure.
 
     Args:
         executor: Single-argument callable that accepts a SQL string and runs
@@ -336,4 +430,7 @@ def remove_opening_infrastructure(executor: Callable[[str], object]) -> None:
     executor(_drop_trigger_sql(_OPENING_TRIGGER, _OPENINGS_TABLE))
     executor(f"DROP FUNCTION IF EXISTS {_MOVEMENT_FUNCTION}()")
     executor(f"DROP FUNCTION IF EXISTS {_OPENING_FUNCTION}()")
+    executor(
+        f"DROP FUNCTION IF EXISTS {_OPENING_PREDICATE_FUNCTION}(INTEGER)"
+    )
     executor(f"DROP FUNCTION IF EXISTS {_OPENED_ON_FUNCTION}(INTEGER)")

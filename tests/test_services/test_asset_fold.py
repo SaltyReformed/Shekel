@@ -79,6 +79,7 @@ from tests._test_helpers import (
     make_salary_profile,
     period_window,
     restamp_opening_assertion,
+    restate_account_opening,
     settle_instant_on,
 )
 
@@ -155,7 +156,8 @@ def _params_for(account):
     return load_investment_params_for_accounts([account])[account.id]
 
 
-def _401k(seed_user, period, balance, *, opened_on, **kwargs):
+def _401k(seed_user, period, balance, *, opened_on, books_open_on=None,
+          **kwargs):
     """Build a 7%-return 401(k) whose OPENING assertion is on a CHOSEN day.
 
     ``make_investment_account`` now pins its own opening to the anchor period's
@@ -164,6 +166,22 @@ def _401k(seed_user, period, balance, *, opened_on, **kwargs):
     whole subject is WHERE an accrual window opens, and several cases need that
     day to be somewhere other than the period's start (mid-period, or on a later
     period's payday).
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        period: The anchor period to build against.
+        balance: The declared balance.
+        opened_on: The civil day the opening ASSERTION is dated.
+        books_open_on: The civil day the account's BOOKS open, when a case
+            records money moving before the assertion.  ``None`` leaves them
+            where ``restamp_opening_assertion`` puts them, one day before
+            *opened_on* -- which is right until a case needs the span between
+            the two (plan step X-f3c-2b, ruling **R-HG**: nothing may be dated
+            on or before the books).
+        **kwargs: Passed through to ``make_investment_account``.
+
+    Returns:
+        The created 401(k) account.
     """
     account = make_investment_account(
         seed_user, db.session, period, balance, **kwargs,
@@ -171,6 +189,8 @@ def _401k(seed_user, period, balance, *, opened_on, **kwargs):
     restamp_opening_assertion(
         db.session, account, settle_instant_on(opened_on),
     )
+    if books_open_on is not None:
+        restate_account_opening(db.session, account, books_open_on)
     db.session.commit()
     return account
 
@@ -475,10 +495,17 @@ class TestAnAssertionAlwaysWins:
         which is ruling R-S: the reverse growth projection leaves the balance
         path rather than becoming a direction.
 
-        **The $55,000.00 is the pre-opening double count, and it is PINNED
-        rather than endorsed** (finding **N-378**, closed by plan step
-        X-f3c-2b): the contribution is dated before the books opened, so it is
-        already inside the declared $50,000.00 and the fold counts it again.
+        **The contribution sits BETWEEN the books and the assertion, and that
+        is what changed at plan step X-f3c-2b** (finding **N-378**).  It used
+        to be dated before the books OPENED, which made the $55,000.00 a
+        genuine double count -- money already inside the declared $50,000.00,
+        counted a second time from its own day.  Ruling **R-HG** deletes that
+        state rather than the reading: books opening 2026-01-19 hold a
+        01-20 contribution honestly, and the assertion's reset on 02-13 is then
+        a real ``-$5,000.00`` correction rather than the healing of an error.
+        **Every figure below is unchanged by that move**, which is the evidence
+        the state was repaired and the fold was not.
+
         *This read $45,000.00 / $50,000.00 until X-f3c-2a, when the seed
         stopped being the first assertion back-computed over its own records
         (ruling R-I) and became the stored ``budget.account_openings`` figure.
@@ -488,6 +515,7 @@ class TestAnAssertionAlwaysWins:
         account = _401k(
             seed_user, seed_periods[3], Decimal("50000.00"),
             opened_on=date(2026, 2, 13),
+            books_open_on=date(2026, 1, 19),
         )
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[1], Decimal("5000.00"),

@@ -46,6 +46,7 @@ from app.enums import (
     StatusEnum,
     TxnTypeEnum,
 )
+from app.exceptions import ValidationError
 from app.models.account import Account, AccountAnchorHistory
 from app.models.interest_params import InterestParams
 from app.models.pay_period import PayPeriod
@@ -90,6 +91,7 @@ from tests._test_helpers import (
     add_txn,
     append_balance_assertion,
     create_account_of_type,
+    create_account_via_service,
     create_hysa_account,
     create_loan_account,
     create_settled_cash_transaction,
@@ -5445,29 +5447,38 @@ class TestCashAnchorHistory:
             assert history.opening.equity == Decimal("1000.00")
             assert history.opening.declared is True
 
-    def test_the_opening_row_PUBLISHES_its_pair_like_every_other_row(
+    def test_the_opening_is_a_RECORD_and_the_assertions_publish_the_pair(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """The opening's ledger and correction mean what the headers say.
+        """The books are their own record; the ASSERTIONS carry the pair.
 
-        **The suppression this replaces was correct for the reason it named,
-        and plan step X-f3c-2a removed that reason.**  The opening's
-        ``balance_before`` used to be the rows dated before the account's first
-        assertion replayed from a ZERO seed -- on production Checking
-        ``$2,057.42`` against a ``$2,746.58`` opening -- so the ``$689.16``
-        between them was the account's opening EQUITY, not a correction, and
-        publishing it would have told the owner "your records were off by
-        $689.16 the day this account opened", which is false.  Opening equity
-        is a stored ``budget.account_openings`` fact now, so
-        ``balance_before`` starts from it and the gap is a real correction.
+        **Two changes, one after the other, and the name of this case follows
+        the second.**  The opening's ``balance_before`` used to be the rows
+        dated before the account's first assertion replayed from a ZERO seed --
+        on production Checking ``$2,057.42`` against a ``$2,746.58`` opening --
+        so the ``$689.16`` between them was the account's opening EQUITY, not a
+        correction, and publishing it would have told the owner "your records
+        were off by $689.16 the day this account opened", which is false.  Plan
+        step X-f3c-2a made opening equity a stored
+        ``budget.account_openings`` fact and removed that reason.
 
-        Seeded with the production SHAPE: a settled row dated BEFORE the
-        opening assertion, which is what makes the correction non-zero and this
-        test non-vacuous.  Hand-computed: the books open at ``$2,746.58`` (what
-        ``create_account`` recorded), a ``+$300.00`` income lands before the
-        assertion's own day so the assertion absorbs it, giving
-        ``ledger = 2746.58 + 300.00 = $3,046.58`` and a correction of
-        ``2746.58 - 3046.58 = -$300.00``.
+        Ruling **R-HG** (plan step X-f3c-2b) then separated the two records
+        outright, and this case was called
+        ``test_the_opening_row_PUBLISHES_its_pair_like_every_other_row`` until
+        it did.  An opening is no longer a row of the assertion series at all:
+        it is :class:`CashOpeningRow`, and its ledger / correction cells are
+        empty BY CONSTRUCTION, because nothing precedes an opening for a
+        correction to be measured against.  What this case grades now is the
+        pair either side of that split -- the opening's own day, equity and
+        provenance, and the TRUE-UP publishing a non-zero pair.
+
+        **The refusal is asserted rather than the state seeded**, because the
+        state this case used to build is the one R-HG makes unstorable: a
+        settled row dated before the books.  Hand-computed on what replaces it:
+        the books open at ``$2,746.58`` (what ``create_account`` recorded), a
+        ``+$300.00`` income lands after them, and the true-up declares
+        ``$2,746.58`` again -- giving ``ledger = 2746.58 + 300.00 = $3,046.58``
+        and a correction of ``2746.58 - 3046.58 = -$300.00``.
 
         That ``-$300.00`` is the pre-opening double count plan step X-f3c-2b
         closes -- and the card naming it is the point, where the old behaviour
@@ -5476,7 +5487,12 @@ class TestCashAnchorHistory:
         with app.app_context():
             user_id = seed_user["user"].id
             periods = all_periods(user_id)
-            later = create_account_of_type(
+            # Built through the PRIMITIVE, so the books stay exactly where
+            # ``create_account`` put them (plan step X-f3c-2b): this case
+            # asserts on ``history.opening.opened_on``, and the shared factory
+            # would open the books earlier -- which is right for a fixture that
+            # records movements and wrong for one whose subject is the day.
+            later = create_account_via_service(
                 seed_user, db.session, "Checking", "Statement Checking",
                 anchor_balance=Decimal("2746.58"),
                 observed_on=periods[2].start_date,
@@ -5496,7 +5512,7 @@ class TestCashAnchorHistory:
                 )
             db.session.rollback()
 
-            later = create_account_of_type(
+            later = create_account_via_service(
                 seed_user, db.session, "Checking", "Statement Checking",
                 anchor_balance=Decimal("2746.58"),
                 observed_on=periods[2].start_date,

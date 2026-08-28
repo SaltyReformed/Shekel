@@ -36,6 +36,7 @@ from app.services import balance_at, pay_period_write, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 
 from tests._test_helpers import (
+    create_account_of_type,
     create_hysa_account,
     create_loan_account,
     freeze_today,
@@ -105,16 +106,16 @@ def _create_savings_account(
         and a request holds a transaction of its own in which an uncommitted
         row does not.
     """
-    savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-    acct = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=savings_type.id,
-            name=name,
-            anchor_balance=anchor_balance,
-        ),
+    # Through the shared factory rather than the ``AccountType`` lookup +
+    # ``AccountSpec`` block spelled by hand, which is the same four lines it
+    # is.  It also opens the account's BOOKS before anything a fixture dates
+    # (plan step X-f3c-2b, ruling **R-HG**) -- what the expenses below need,
+    # since they settle in the seeded periods rather than on the day
+    # ``create_account`` would otherwise open the books.
+    acct = create_account_of_type(
+        seed_user, db.session, "Savings", name,
+        anchor_balance=anchor_balance,
     )
-    db.session.add(acct)
     db.session.commit()
     return acct
 

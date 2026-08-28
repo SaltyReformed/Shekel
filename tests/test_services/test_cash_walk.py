@@ -917,17 +917,29 @@ class TestASourceCannotPredateTheBooks:
         assert "2026-01-15" in str(exc.value)
         db.session.rollback()
 
-    def test_the_walk_carries_no_such_source_and_needs_no_filter(
+    def test_the_walk_yields_each_source_at_its_OWN_day_and_adds_none(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """Every source the walk yields is dated strictly after the opening.
+        """The whole source list, by day and amount, hand-computed.
 
-        Asserted over the whole list rather than on one row, so a source that
-        reached the table by some path this suite does not model would fail
-        here rather than be folded silently.  Hand-computed: books opened
-        2026-02-01, one $500.00 expense settling 2026-02-05, so the only source
-        is 2026-02-05 and it is after 2026-01-31 -- the day
-        ``restamp_opening_assertion`` leaves the books on.
+        **This replaces an assertion that could not fail.**  Its first version
+        checked that every source the walk yields is dated after the opening --
+        over rows read from a database the constraint will not let hold a
+        violating one, using the same governing-row rule the constraint uses.
+        It could only have failed if the SQL and Python lookups disagreed,
+        which is graded properly and from both sides by
+        ``test_books_boundary.TestTheTwoGoverningLookupsElectTheSameRow``.  As
+        a control over what the walk EMITS, which is what its name promised, it
+        was a tautology (found by adversarial review, 2026-08-28).
+
+        So this computes instead.  Books open 2026-01-31 (one day before the
+        2026-02-01 opening assertion), a ``$500.00`` expense settles 2026-02-05
+        and a ``$120.00`` one settles 2026-02-20.  Hand-computed: the walk
+        yields exactly two sources, ``-$500.00`` on 02-05 and ``-$120.00`` on
+        02-20, each at its OWN day.  A leaf that filtered its inputs, re-keyed
+        one onto the opening, folded the two together or emitted a third would
+        fail on the exact pair rather than on a predicate that is true of any
+        list.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
@@ -936,14 +948,20 @@ class TestASourceCannotPredateTheBooks:
             seed_user, db.session, period, Decimal("500.00"),
             settled_on=date(2026, 2, 5), name="after-the-books",
         )
+        create_settled_cash_transaction(
+            seed_user, db.session, period, Decimal("120.00"),
+            settled_on=date(2026, 2, 20), name="later-still",
+        )
         db.session.commit()
 
         walk = walk_cash_ledger(account.id, scenario.id)
-        assert walk.source_facts
-        assert all(
-            fact.settled_on > walk.opening.opened_on
-            for fact in walk.source_facts
-        )
+        assert walk.opening.opened_on == date(2026, 1, 31)
+        assert sorted(
+            (fact.settled_on, fact.delta) for fact in walk.source_facts
+        ) == [
+            (date(2026, 2, 5), Decimal("-500.00")),
+            (date(2026, 2, 20), Decimal("-120.00")),
+        ]
 
 
 

@@ -497,7 +497,7 @@ _FENCED_MODULE_RULINGS = {
         # ``period_subtotals`` siblings carried this same ruling until plan step
         # X-c2b3 deleted them: ruling R-K changed what a subtotal COUNTS, so
         # ``_cash_periods.period_view_of`` is their successor and two rulings
-        # went with the names (the reverse-staleness meta-test flags them).
+        # went with the names (else the reverse-staleness meta-test flags them).
         "sum_projected",
         # ``_events`` (plan step X-a) -- the cash EVENT STREAM, the exact
         # counterpart of the ``loan_ledger`` non-producer rulings below and

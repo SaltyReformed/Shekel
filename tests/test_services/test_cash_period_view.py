@@ -65,10 +65,20 @@ from tests._test_helpers import (
     period_window,
     read_pass,
     restamp_opening_assertion,
+    restate_account_opening,
 )
 from tests.test_services.test_cash_fold import _instant
 
 _ONE_DAY = timedelta(days=1)
+
+#: The day the books open for the two shapes below that carry a record dated
+#: before their opening ASSERTION.  Ruling **R-HG** (plan step X-f3c-2b) makes
+#: a movement on or before the books unstorable, so the record has to sit
+#: BETWEEN the books and the first assertion -- which is the production shape
+#: after that step's migration, and is what leaves the assertion's correction
+#: non-zero.  Every other shape in this file asserts 2026-01-01, whose books
+#: already precede its records.
+_BOOKS_OPEN_ON = date(2025, 12, 31)
 # An as-of before every fixture date below, so ruling R-G's clamp is a no-op
 # except in the tests that exist for it.  The tiers are graded separately on
 # purpose: a test that mixed them could pass with either one wrong.
@@ -469,9 +479,10 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
     ):  # pylint: disable=unused-argument
         """Plan step X-f3c-2a: the SEED is level; the assertion is movement.
 
-        Books opened at ``$1,000.00``, asserted 2026-01-05 inside period 0
-        (2026-01-02..01-15), with a ``$400.00`` expense settled 01-03 -- two
-        days BEFORE the books opened, in the same column.
+        Books opened at ``$1,000.00`` on 2025-12-31, asserted 2026-01-05 inside
+        period 0 (2026-01-02..01-15), with a ``$400.00`` expense settled 01-03
+        -- after the books and two days BEFORE the assertion, in the same
+        column.
 
         Hand-computed.  The account reads its stored ``$1,000.00`` before the
         spend, ``$600.00`` after it, and the assertion resets it to
@@ -480,11 +491,17 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         ``$0.00`` overall: the expense row's ``-$400.00`` and the assertion's
         ``+$400.00`` cancel, and BOTH are reported rather than netted away.
 
-        **That ``$400.00`` is the pre-opening double count made visible**, and
-        it is the shape plan step X-f3c-2b closes by refusing a movement dated
-        before an account's books open.  The remainder naming it is the correct
-        reporting of it: the app cannot explain that period's arithmetic from
-        its rows alone, and says so.
+        **The ``$400.00`` sits between the books and the first assertion**, and
+        that is what changed at plan step X-f3c-2b.  It used to be dated before
+        the books OPENED, which made it a genuine double count -- money already
+        inside the declared figure, counted a second time from its own day.
+        Ruling **R-HG** deletes that state rather than the reading: the books
+        now open 2025-12-31 and hold the 01-03 expense honestly, so the
+        assertion's ``+$400.00`` is a real correction rather than the healing
+        of an error.  **Every figure below is unchanged by that move**, which
+        is the evidence the state was repaired and the fold was not.  The
+        remainder naming it is still the correct reporting: the app cannot
+        explain that period's arithmetic from its rows alone, and says so.
 
         *This asserted ``book_vs_bank == 0.00`` and a ``$1,400.00`` pre-period
         balance until X-f3c-2a.  Ruling R-I back-computed a ``$1,400.00`` seed
@@ -494,9 +511,10 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         restamp_opening_assertion(db.session, account, _instant(2026, 1, 5))
+        restate_account_opening(db.session, account, _BOOKS_OPEN_ON)
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("400.00"),
-            settled_on=date(2026, 1, 3), name="pre-opening spend",
+            settled_on=date(2026, 1, 3), name="pre-assertion spend",
         )
         db.session.commit()
 
@@ -572,9 +590,12 @@ class TestTheIdentityHoldsOnEveryPeriod:
     def _rich_shape(self, seed_user, seed_periods):
         """Build a shape triggering every component the remainder can hold.
 
-        A pre-opening record, an in-column settle, an out-of-column settle, a
-        mid-history true-up, an entries-carrying envelope, an overdue plan the
-        clamp moves forward, and ordinary future rows.
+        A record dated between the books and the first ASSERTION (which is
+        what a "pre-opening record" became at plan step X-f3c-2b -- ruling
+        R-HG makes anything on or before the books unstorable), an in-column
+        settle, an out-of-column settle, a mid-history true-up, an
+        entries-carrying envelope, an overdue plan the clamp moves forward,
+        and ordinary future rows.
 
         Returns:
             The ``as_of`` the caller reads at.
@@ -582,9 +603,10 @@ class TestTheIdentityHoldsOnEveryPeriod:
         account = seed_user["account"]
         as_of = date(2026, 4, 2)
         restamp_opening_assertion(db.session, account, _instant(2026, 1, 5))
+        restate_account_opening(db.session, account, _BOOKS_OPEN_ON)
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("400.00"),
-            settled_on=date(2026, 1, 3), name="pre-opening spend",
+            settled_on=date(2026, 1, 3), name="pre-assertion spend",
         )
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[2], Decimal("1800.00"),
@@ -622,9 +644,10 @@ class TestTheIdentityHoldsOnEveryPeriod:
     ):  # pylint: disable=unused-argument
         """All ten periods, not a sample of them.
 
-        The shape carries a pre-opening record, a settle inside its own column,
-        a settle two columns late, a true-up, an entries-aware envelope and a
-        clamped overdue bill, so no single component can carry the whole run.
+        The shape carries a record between the books and the first assertion, a
+        settle inside its own column, a settle two columns late, a true-up, an
+        entries-aware envelope and a clamped overdue bill, so no single
+        component can carry the whole run.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         as_of = self._rich_shape(seed_user, seed_periods)
@@ -698,8 +721,8 @@ class TestTheIdentityHoldsOnEveryPeriod:
         # non-zero column.
         assert book[4] == Decimal("-1300.00")
         # Hand-computed, on the row its CAUSE belongs to like every other
-        # figure here: the books open at $1,000.00, the pre-opening spend of
-        # $400.00 on 2026-01-03 walks the records to $600.00, and the opening
+        # figure here: the books open at $1,000.00 on 2025-12-31, the $400.00
+        # spend of 2026-01-03 walks the records to $600.00, and the opening
         # assertion on 01-05 declares $1,000.00 -- a +$400.00 correction, which
         # is what ``book_vs_bank`` holds.  It nets against period 0's own
         # -$400.00 expense, which is why the identity still closes at $0.00.

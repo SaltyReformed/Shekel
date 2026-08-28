@@ -1532,6 +1532,14 @@ class TestTieOutIsNotVacuous:
             opening_source = ref_cache.posting_source_id(
                 PostingSourceEnum.ACCOUNT_OPENING,
             )
+            # The LATEST opening entry, and named as a choice rather than
+            # taken as the only one.  Since plan step X-f3c-2b the seeded
+            # account's books are restated, and a restatement REVERSES the
+            # opening entry and re-posts it -- three opening-sourced entries
+            # where there used to be one, which is production's own shape
+            # after the same act.  Any of them carries a leg on this ledger,
+            # so the injection below is equally unbalanced whichever is
+            # picked; ``.scalar()`` over the set would simply raise.
             entry_id = (
                 db.session.query(JournalEntry.id)
                 .join(Posting, Posting.journal_entry_id == JournalEntry.id)
@@ -1540,7 +1548,14 @@ class TestTieOutIsNotVacuous:
                     JournalEntry.scenario_id == scenario_id,
                     JournalEntry.source_kind_id == opening_source,
                 )
+                .order_by(JournalEntry.id.desc())
+                .limit(1)
                 .scalar()
+            )
+            assert entry_id is not None, (
+                "no opening entry to inject into -- this class's whole name is "
+                "a promise that it is not vacuous, and a None here would "
+                "inject nothing and still pass"
             )
             db.session.execute(_db.text(
                 "INSERT INTO budget.account_postings "
