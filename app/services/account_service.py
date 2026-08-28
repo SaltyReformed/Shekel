@@ -39,10 +39,11 @@ from datetime import date
 from decimal import Decimal
 
 from app import ref_cache
-from app.enums import AcctCategoryEnum
+from app.enums import AccountOpeningSourceEnum, AcctCategoryEnum
 from app.extensions import db
 from app.exceptions import ValidationError
 from app.models.account import Account
+from app.models.account_opening import AccountOpening
 from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
 from app.services import (
@@ -273,6 +274,28 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
     )
     db.session.add(account)
     db.session.flush()
+
+    # **The books OPEN here** (plan step X-f3c-2a, ruling R-GX).  A brand-new
+    # account holds no records for an assertion to already contain, so its
+    # opening EQUITY is exactly the balance the owner typed -- which is why
+    # this is a ``user_declared`` row and not a derivation.  Every account gets
+    # one, an amortizing loan included: ``balance_at.balance_at`` falls through
+    # to the cash fold for an amortizing account carrying no ``LoanParams``
+    # (``_resolution.configured_loan`` answers ``None``), and that fold refuses
+    # an account with no opening rather than fabricating a level for it.
+    #
+    # It is written BEFORE the assertion and the posting sync below, and the
+    # order is load-bearing: ``account_posting_service`` walks this record to
+    # book the ``account_opening`` journal entry, and
+    # ``cash_ledger.account_opening_fact`` raises without it.
+    db.session.add(AccountOpening(
+        account_id=account.id,
+        opened_on=observed_on.civil_day,
+        opening_equity=anchor_balance,
+        source_id=ref_cache.account_opening_source_id(
+            AccountOpeningSourceEnum.USER_DECLARED,
+        ),
+    ))
 
     # The origination assertion goes through the ONE write door (ruling R-ES,
     # plan step X-f1e2).  This function constructed the row itself until then,

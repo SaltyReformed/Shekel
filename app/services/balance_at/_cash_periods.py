@@ -43,6 +43,7 @@ from app.services.cash_ledger import (
 from app.services.pay_calendar import PeriodWindow
 from app.utils.money import round_money
 
+from ._assertions import CashAnchorCorrection
 from ._cash_fold import (
     AssembledCashFold,
     _CashPlan,
@@ -204,18 +205,25 @@ def period_view_of(
     the real account's 130 settled rows; nets to ``$0.00`` across history and
     swings to ``-$2,007.46`` inside one period), and a still-projected row
     ruling R-G clamped forward out of its column.
-    :attr:`~CashPeriodFigures.book_vs_bank` carries the balance ASSERTIONS (51
-    after the opening on the real account, ``-$2,906.31`` net), which are about
-    what the app did not know.  Rejected at the ruling: leaving the subtotals
+    :attr:`~CashPeriodFigures.book_vs_bank` carries EVERY balance ASSERTION
+    (the first one included since plan step X-f3c-2a, where the opening used to
+    be held back because the fold had swallowed its correction into the seed)
+    (``-$2,906.31`` net over the 51 that follow the opening on the real
+    account, measured 2026-08-01), which are about what the app did not know.
+    Rejected at the ruling: leaving the subtotals
     unpaid-only, which turns the remainder into a garbage bucket holding all
     real past activity; shipping no remainder at all, which leaves a visible
     contradiction on the screen; and summing the two, which is what shipped
     until 2026-08-01 and produced a figure with no action attached to it.
 
-    **The OPENING assertion is in neither** (ruling R-I): the fold moves that one
-    correction into its seed -- back-projecting the first assertion over the
-    records it already contains -- so it moves no balance inside any period and
-    must not appear in a period's remainder either.
+    **The OPENING EQUITY is in neither, and since plan step X-f3c-2a the reason
+    is structural rather than an exclusion.**  What an account held before its
+    records begin is the fold's SEED -- a stored
+    ``budget.account_openings`` fact, not a correction -- so it is part of the
+    level every period is measured from and steps no period's balance.  The
+    first ASSERTION does appear here like any other, because it is now an
+    ordinary correction: ``0.00`` where the owner's declaration agrees with the
+    books, and a real movement where it does not.
 
     Kind-blind, exactly as the fold is (ruling R-J): this is the CASH-FLOW view,
     whose balance has to reconcile with the transaction rows rendered beside it.
@@ -249,7 +257,7 @@ def period_view_of(
             period_balances(folded, window),
             _budget_legs(folded.walk, folded.plan, window),
             _cash_sums(folded.walk, folded.day_nets, window),
-            _assertion_sums(folded.walk, window),
+            _assertion_sums(folded.corrections, window),
         ),
         amount_overrides=live_amounts(folded.plan.basis, folded.plan.rows),
     )
@@ -418,33 +426,44 @@ def _cash_sums(
 
 
 def _assertion_sums(
-    walk: CashLedgerWalk, window: PeriodWindow,
+    corrections: "list[CashAnchorCorrection]", window: PeriodWindow,
 ) -> "dict[int, Decimal]":
-    """Return ``{period_id: correction}`` -- what the user's true-ups booked.
+    """Return ``{period_id: correction}`` -- what the user's assertions booked.
 
-    Every assertion correction EXCEPT the opening's, on the civil day it was
-    asserted.  The opening is excluded because ruling R-I moves it into the
-    fold's seed (:func:`~._cash_fold._actual_steps`), where it back-projects
-    over the records it already contains rather than stepping the balance on its
-    own day; counting it here would put a jump in a column the balance never
-    took.
+    EVERY assertion correction, on the civil day it was asserted (plan step
+    **X-f3c-2a**).
 
-    The slice is the exact COMPLEMENT of ``_actual_steps``' ``[0]``, and
-    that is why it is a slice rather than a second ``is_opening`` test: two
-    independent predicates could come to disagree about which correction the
-    seed swallowed, while ``[0]`` and ``[1:]`` partition the list by
-    construction.
+    **The opening used to be excluded and the exclusion is GONE with the thing
+    that required it.**  While the fold computed its own seed, the first
+    assertion's correction WAS that seed -- back-projected over the records it
+    already contained and cancelled on its own day (ruling R-I) -- so counting
+    it here would have put a jump in a column the balance never took, and this
+    function took ``corrections[1:]`` as the exact complement of the fold's
+    ``[0]``.  The seed is a stored fact now
+    (:attr:`~app.services.cash_ledger.CashLedgerWalk.opening`), so no correction
+    is swallowed, the two functions partition nothing between them, and the
+    first assertion books what it is: ``0.00`` where the owner's declaration
+    agrees with the books, and a real movement where a BACK-DATED assertion
+    disagrees with the recorded opening -- which belongs in this remainder
+    exactly as any other disagreement does.
+
+    All the corrections are replayed ONCE per fold
+    (:func:`~._assertions.assertion_corrections`) and carried on
+    :class:`~._cash_fold.AssembledCashFold`, which is plan step X-f3c-1's doing:
+    this reader and the fold's step list read one object rather than two replays
+    that could have applied different assertion policies.
 
     Args:
-        walk: The account's walk.  Its ``anchor_corrections`` are chronological
-            and the FIRST is the opening (the leaf's own contract).
+        corrections: The account's assertion corrections, chronological
+            (:attr:`~._cash_fold.AssembledCashFold.corrections`).  All of them
+            are counted; there is no longer a first one to hold back.
         window: The reported periods.
 
     Returns:
         ``{period_id: correction}`` -- signed, UNROUNDED, total over the window.
     """
     asserted = _zeroed(window)
-    for correction in walk.anchor_corrections[1:]:
+    for correction in corrections:
         period_id = _column_for(window, correction.observed_on)
         if period_id is not None:
             asserted[period_id] += correction.delta

@@ -67,9 +67,9 @@ periods read the numbers the user typed in.
   daily ACCRUAL has no period boundary to convert, so there is no convention left
   to misstate.
 * **Ruling R-S.**  There is no backward direction.  Before the FIRST assertion
-  the balance is ruling R-I's back-projection over the records it already
-  contains -- the cash fold's own answer, inherited here for free -- and the
-  reverse growth projection leaves the balance path entirely.
+  the balance is the account's stored OPENING EQUITY plus its records by then --
+  the cash fold's answer, inherited free -- and the reverse growth projection
+  leaves the balance path entirely.
 * **Ruling R-T.**  ACCRUAL is DAILY.  A step exists for every day, so a sampled
   date never falls inside an unresolved span and the answer never depends on
   which OTHER dates were asked for.
@@ -347,7 +347,7 @@ class ModelledFold:
     :func:`asset_growth_at` totals.
 
     Attributes:
-        seed: The balance before every step (the cash fold's ruling R-I seed).
+        seed: The balance before every step (the cash fold's stored seed).
         steps: The resolved dated deltas, ASCENDING by date -- the cash tiers,
             the contributions and the accruals merged into one running total.
         accrual_by_day: day -> the cent-quantized accrual credited on it.  Days
@@ -473,7 +473,7 @@ def _latest_assertion_boundary(
     Raises:
         RuntimeError: When the account carries no assertion at all.
     """
-    if not walk.anchor_corrections:
+    if not walk.anchor_facts:
         raise RuntimeError(
             f"_asset_fold: account id={account.id} models a return but has "
             "zero AccountAnchorHistory rows, so there is no assertion to open "

@@ -94,9 +94,15 @@ class AgreementDay:
             :class:`~app.models.statement_import.BankStatementLine` states once
             and the app's own cash leg already shares.
         recorded: What the app's own SETTLED rows moved that day.
-        asserted: What a balance assertion moved that day.  The account's
-            OPENING assertion contributes nothing here: it establishes the
-            level rather than moving money on its day (ruling R-I).
+        asserted: What a balance assertion moved that day, EVERY assertion
+            included.  What an account's books OPENED with contributes nothing
+            here -- it is the fold's seed, a stored
+            ``budget.account_openings`` fact establishing the level rather than
+            moving money on any day.  *The account's first ASSERTION was held
+            back too until plan step X-f3c-2a, because the fold had swallowed
+            its whole correction into that seed (ruling R-I); it books an
+            ordinary correction now, ``$0.00`` wherever the declaration agrees
+            with the books.*
         app_balance: What the app says the account held at the day's end.
         bank_balance: What the bank's own record says it held, or ``None``
             when no anchored import places a figure, or when the recorded

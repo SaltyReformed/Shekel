@@ -36,9 +36,11 @@ from decimal import Decimal
 
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
+from app.models.account_opening import AccountOpening
 from app.models.transaction import Transaction
 from app.services import balance_at, cash_ledger
 from app.services.balance_at import BalanceContext
+from app.services.balance_at._assertions import assertion_corrections
 from app.services.scenario_resolver import get_baseline_scenario
 from tests._test_helpers import (
     append_balance_assertion,
@@ -149,30 +151,99 @@ class TestTheThreeTiersSumToTheDaysMovement:
             assert facts[date(2026, 4, 6)].recorded == _ZERO
             assert facts[date(2026, 4, 6)].asserted == Decimal("300.00")
 
-    def test_the_OPENING_assertion_contributes_NOTHING_to_its_own_day(
+    def test_a_RESTATED_opening_makes_the_first_assertion_a_real_movement(
         self, app, seed_user, seed_periods, db,
     ):
-        """Ruling R-I puts it in the SEED, so it is level and not movement.
+        """The FIRING control that the first assertion is counted at all.
 
-        **A FIRING control.**  Summing every correction by its day -- the
-        obvious spelling -- puts the opening's whole delta on the opening's own
-        day, which on the developer's real account is ``$798.03`` of movement
-        the bank is then expected to explain and never can.  The account's
-        first assertion is the ``seed_user`` fixture's own, so every case in
-        this file runs over it and only this one names it.
+        **Every other case in this file has a zero here, and that is the
+        problem this test exists for.**  A fixture built through
+        ``create_account`` records the opening equity as the balance its owner
+        typed, so the first assertion agrees with the books and its correction
+        is ``$0.00`` -- which means ``day_facts`` summing every correction and
+        ``day_facts`` skipping the first one give the identical answer, and an
+        adversarial review measured exactly that: re-introducing the deleted
+        ``corrections[1:]`` slice left 191 tests green.
+
+        So this restates the opening to a DIFFERENT figure and asserts the
+        difference lands on the assertion's own day.  Hand-computed: the books
+        are restated to open at ``$400.00`` where the account was declared at
+        ``$1,000.00``, so the first assertion now corrects the books UP by
+        ``$600.00`` and that is what its day's ``asserted`` must read.  Under
+        the old slice it would read ``$0.00``.
+        """
+        with app.app_context():
+            account = seed_user["account"]
+            governing = (
+                db.session.query(AccountOpening)
+                .filter_by(account_id=account.id)
+                .order_by(
+                    AccountOpening.created_at.desc(), AccountOpening.id.desc(),
+                )
+                .first()
+            )
+            db.session.add(AccountOpening(
+                account_id=account.id,
+                opened_on=governing.opened_on,
+                opening_equity=Decimal("400.00"),
+                source_id=governing.source_id,
+            ))
+            db.session.commit()
+
+            walk = cash_ledger.walk_cash_ledger(
+                account.id,
+                get_baseline_scenario(seed_user["user"].id).id,
+            )
+            opening = assertion_corrections(walk)[0]
+            assert walk.opening.opening_equity == Decimal("400.00")
+            assert opening.delta == Decimal("600.00")
+
+            facts = _series(
+                seed_user, opening.observed_on, opening.observed_on,
+            ).facts
+            assert facts[opening.observed_on].asserted == Decimal("600.00")
+
+    def test_the_OPENING_EQUITY_is_level_and_the_first_assertion_is_movement(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """What an account opened with moves no day; a CORRECTION to it does.
+
+        The two halves of plan step **X-f3c-2a**, on one fixture:
+
+        * the account's OPENING EQUITY is the fold's SEED, so it appears in no
+          day's ``asserted`` at all -- it is the level every day is measured
+          FROM, and putting it on a day would ask the bank to explain a
+          movement that never happened (on the developer's real account that
+          would have been ``$798.03`` of phantom movement);
+        * the FIRST ASSERTION is an ordinary correction, so its delta lands on
+          its own day like any other.  Here it is ``$0.00`` because the account
+          was created through ``create_account``, which records the opening
+          equity as the balance the owner typed -- so the books and the
+          declaration agree by construction.
+
+        *This test asserted ``opening.delta != 0`` and ``asserted == 0`` until
+        X-f3c-2a: the opening's delta WAS the account's opening equity then, and
+        the fold had to hold it out of every day to keep it off the bank's
+        books.  The exclusion is gone because the conflation is.*
         """
         with app.app_context():
             walk = cash_ledger.walk_cash_ledger(
                 seed_user["account"].id,
                 get_baseline_scenario(seed_user["user"].id).id,
             )
-            opening = walk.anchor_corrections[0]
+            opening = assertion_corrections(walk)[0]
 
             facts = _series(
                 seed_user, opening.observed_on, opening.observed_on,
             ).facts
 
-            assert opening.delta != _ZERO
+            # The seed is the level, and it is a real figure -- so "asserted is
+            # zero" below is a statement about where that figure lives, not an
+            # empty account.
+            assert walk.opening.opening_equity != _ZERO
+            # The declaration agrees with the books it opened, so it corrects
+            # nothing and the day carries no assertion movement.
+            assert opening.delta == _ZERO
             assert facts[opening.observed_on].asserted == _ZERO
 
     def test_the_three_tiers_sum_to_the_days_change_in_balance(
@@ -214,7 +285,7 @@ class TestTheThreeTiersSumToTheDaysMovement:
             opening = cash_ledger.walk_cash_ledger(
                 seed_user["account"].id,
                 get_baseline_scenario(seed_user["user"].id).id,
-            ).anchor_corrections[0]
+            ).anchor_facts[0]
             first, last = opening.observed_on, date(2026, 4, 30)
             series = _series(seed_user, first - timedelta(days=1), last)
             facts = series.facts
@@ -257,7 +328,7 @@ class TestTheThreeTiersSumToTheDaysMovement:
     ):
         """Only the FIRST correction is the seed; a later one that day is not.
 
-        ``anchor_corrections[1:]`` skips exactly one row, and this is the case
+        ``corrections[1:]`` skips exactly one row, and this is the case
         that says whether "one" is the right number: two assertions sharing the
         opening day means the opening is in the seed and the second is an
         ordinary true-up on its own day.  Skipping by DAY instead of by
@@ -268,7 +339,7 @@ class TestTheThreeTiersSumToTheDaysMovement:
                 seed_user["account"].id,
                 get_baseline_scenario(seed_user["user"].id).id,
             )
-            opening = walk.anchor_corrections[0]
+            opening = walk.anchor_facts[0]
             append_balance_assertion(
                 db.session, seed_user["account"], seed_periods[0],
                 Decimal("1750.00"),
@@ -281,7 +352,7 @@ class TestTheThreeTiersSumToTheDaysMovement:
                 seed_user["account"].id,
                 get_baseline_scenario(seed_user["user"].id).id,
             )
-            second = reread.anchor_corrections[1]
+            second = assertion_corrections(reread)[1]
             facts = _series(
                 seed_user,
                 opening.observed_on - timedelta(days=1),
@@ -359,7 +430,7 @@ class TestWhereTheAccountsRecordsBegin:
                 seed_user["account"].id,
                 get_baseline_scenario(seed_user["user"].id).id,
             )
-            opening = walk.anchor_corrections[0]
+            opening = walk.anchor_facts[0]
             earlier = opening.observed_on - timedelta(days=10)
             _settled(
                 db, seed_user, seed_periods[0], "Early", "20.00", earlier,

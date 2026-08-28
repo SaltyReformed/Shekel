@@ -2,33 +2,28 @@
 
 **This is the ONLY live document for the balance arc, and it carries the work that REMAINS.**
 Amendments are edits HERE, a shipped step gets its checkbox ticked with its commit hash HERE, and no
-new planning documents get written for this arc. **It is line-capped and the cap is a gate**
-(`tools/plan_gate/`, where the number lives -- quoting it here would be a second copy, and the one
-this sentence used to carry was 200 lines adrift) -- when it binds, archive a completed span rather
-than trimming a live one. **The rules are `../../plans/conventions.md`**; read rule 6 before
-recording a finding and rule 4 before adding prose.
+new planning documents get written for this arc. **The rules are `../../plans/conventions.md`** and
+`tools/plan_gate/` grades this file against them, line cap included -- when the cap binds, rule 5
+says archive a completed span rather than trim a live one.
 
 **What is already done is in `archive/`, indexed by `archive/README.md`. None of it governs
 anything, and no live sentence here depends on one** (rule 5) -- an obligation a live step inherits
-is stated at that step. The index carried a second copy of four of those rows until 2026-08-13,
-which is rule 16's own shape; it is a pointer now.
+is stated at that step.
 
 ## Where the arc stands
 
-**A signpost, not a log.** It orients a reader arriving cold and POINTS at the detail. REPLACED
-each session, never appended to, capped, and it may store **no volatile value** (rule 6): branch
-state, what production runs and the migration head are MEASUREMENTS, named by their command rather
-than copied -- a stored copy went stale here twice, which is this arc's own root cause worn as a
-signpost.
+**A signpost, not a log**, and `../../plans/conventions.md` rule 6 is what it is held to: replaced
+each session, capped, and carrying no volatile value -- branch state, what production runs and the
+migration head are MEASUREMENTS, named by their command rather than copied.
 
 | | | detail |
 |---|---|---|
-| **just landed** | **X-i3 CLOSED, with its own first leaf corrected.** `X-i3-b` narrowed every accommodation for "under READ COMMITTED the two reads can differ" to the COMMAND it still describes, deleting none: one is also an ownership scope, and one pairs two different REQUESTS, which no per-request snapshot could reconcile. Its re-taken census found three query-reachable sites the step never named and one claim `X-i3-a` had FALSIFIED -- `anchor_service` justified its lock-then-reread with "no override anywhere", and there is an override now. **And `X-i3-a` itself was corrected at `4dddfe73`**: it decided a request's kind in a `before_request` hook, which is not the first thing a request does, so a render's FIRST transaction ran at READ COMMITTED and was then discarded -- a MEASURED cost that reached CI as a 30-second timeout, and a latent correctness hazard: the discarded transaction held only the user row, but WHICH hook runs first is not a property anything holds. The decision is taken on `request_started` now, and a query is no longer told who is ACTING, because READ ONLY means no trigger in it can fire. Opened **N-364** | Section 5, `archive/x_i_binding_as_built_2026-08-26.md` |
+| **just landed** | **X-f3c-1 -- the assertion RESET left the walk.** `walk_cash_ledger` yields FACTS and nothing else; what an assertion does to a running total is `balance_at._assertions`, applied by whichever fold owns that total. It had to move before the cutover could be written: ruling **R-FO** KEEPS the reset for the modelled kinds and the flip DELETES it for the PLAIN ones, so a kind-blind walk (**R-J**) was stating one kind's answer for both. Byte-identical: `tests/manual/verify_balance_baseline.py` over a production clone 2026-08-27, 9 accounts / 434 grid cells / 6,076 daily points, zero diff. It also DELETED `AssembledCashFold.scenario_id`: a field with no reader in `app/` or `tests/`, whose own rationale named a downstream reader that reads `plan.basis.scenario_id` instead | Section 5, X-f3c-1 |
 | **in flight** | Nothing. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app`. What to pick up next is `../../plans/steps.md`'s first row | Section 5 |
-| **what changed the plan** | **X-f3 DECOMPOSED and X-f6 moved AHEAD of the cutover** (developer, 2026-08-13), because two of R-EB's premises were refuted by measurement against the developer's own YTD bank exports: the residual it would classify is dominated by date misplacement rather than by spending (lag-1 autocorrelation `-0.306`; bank-anchored untracked spend `$2,096.37`, not the `$15,413.71` gross), and an assertion is **not** the closing balance for its civil day (17 of 55 equal the bank's closing; only 30% of 110 matched movements carry the day the bank posted them). What X-f3 needed was never the import surface but CLEARING FACTS -- rulings **R-FL**..**R-FO** here and **R-FP** in the import arc. **X-f5 is superseded** by X-f3c | Section 3.3, Section 4 |
-| **blocked on you** | What to do next is `../../plans/steps.md`'s first row, never this section. Six `developer-decision` / `operator` rows carry this arc's open questions (`ledger.md`); the one this change ADDS is **R-FO**, the modelled half of the cutover -- whether a Roth / Traditional / 401(k) / Property true-up books to a per-account `investment_return` account (`$10,623.66` measured) or stays on `anchor_equity` with its own step. Stated as a recommendation, not a decision. Outside this arc, the recurrence arc's X-an-a sequencing ruling is still open | Section 4, R-FO |
+| **what changed the plan** | **X-f3c's ORDER was reversed and it decomposed into five leaves** (developer, 2026-08-27, **R-GW**): the residual is RECORDED before the reset is DELETED, because recording moves no rendered balance while the reset lives and the flip then lands on the balance already asserted. The measurement is `tests/manual/measure_cutover_against_bank.py`, and it is reported SPLIT by whether a day carries an assertion -- pooled, a same-day assertion cancels the balance gap to the cent, which is `bank_agreement`'s own reason for scoring the residue (**N-337**). The earlier redesign (X-f3 decomposed, X-f6 moved ahead, **R-FL**..**R-FO**) stands and is Section 3.3 | Section 4, R-GW |
+| **blocked on you** | **One OPERATOR act gates the money-moving leaves: import the account's own statement history.** Production holds 0 statement imports, 0 bank lines and 0 matches, while the SECU exports the shipped adapter reads sit on disk covering 2026-01-02 to 2026-07-19 -- and X-f3c's correctness is measurable only against them (**N-368**). Everything else this arc owes is a `developer-decision` / `operator` row in `ledger.md`; what to do next is `../../plans/steps.md`'s first row, never this section | ledger.md, N-368 |
 | **complementary arcs** | TWO, neither part of this arc and neither pausing it: the recurrence redesign (block 9) and the pay calendar (block 10). **The pay calendar's `C2` IS this arc's `X-l`**, and also recurrence `R-F12` -- one commit under three names, so whoever builds it must satisfy all three specifications | `implementation_plan_recurrence_redesign.md`, `implementation_plan_pay_calendar.md` |
-| **the live lesson** | **A rule that must run FIRST cannot be installed by a mechanism whose order somebody else decides.** `X-i3-a` put its decision in a `before_request` hook, which Flask calls in REGISTRATION order, and `setup_logging`'s hook is registered earlier and reads `current_user` -- so the guarantee arrived one transaction late, in production as much as under the test client, and its own docstring asserted the opposite in two places. Nothing graded the ordering, because nothing could: the defect is invisible to every reader of that module and lives in a third one. The fix was to stop having an order at all (`request_started` precedes every before-request hook by Flask's dispatch code), and the control that catches a regression asserts EVERY transaction of a GET is one snapshot rather than that some transaction was read-only | Section 5, X-i3-a |
+| **the live lesson** | **A comparison against an outside record can be confounded by the very mechanism under test, and the pooled number reads as the strongest evidence.** X-f3c's order was measured against the developer's own bank file, and the headline -- today's code equals the bank on 17 of 75 days where the cutover-as-specified equals it on 0 -- is dominated by the 46 days carrying an assertion, which is exactly where the RESET forces the answer. This arc had already ruled that metric misleading one screen over (`bank_agreement` scores the RESIDUE for this reason, **N-337**, 11 of 35 real disagreements reading as exact agreement). Splitting it is what makes it evidence: on the 29 days no assertion touches, `$529.48` against `$1,956.64`. The conclusion survived; the pooled figure was not what established it | Section 4, R-GW |
 | **resuming cold** | Branch from `dev`; whether it leads `main` is a MEASUREMENT (`git log --oneline origin/main..dev`). Read the repo's migration head from `alembic_version` rather than from prose, and rebuild the test template only if you add a migration. **Pass `TEST_DB_PREFIX=<name>` when another checkout may be running the suite**, put the venv on `PATH` (`scripts/test.sh` execs bare `pytest`) and keep it ACTIVE for `git commit` (pre-commit hooks are `language: system`). The registries have their own gate: `pytest tools/plan_gate -c /dev/null -q`. Two REFERENCE tags, neither a rebase candidate: `xd-attempt-1-parked-n155` (X-d) and `xx-attempt-1-held-rde` (X-x) | `../../plans/verification.md` |
 
 Section 5 is the work that remains and Section 4 the rulings that govern it; `archive/` is what
@@ -161,12 +156,8 @@ what the records say, and an unexplained difference becomes a recorded, categori
 | 3 | a cleared purchase's cash | leaves the book only when its ENVELOPE closes | posts when the purchase clears (R-FM) |
 | 4 | an unexplained difference | an automatic plug to `anchor_equity`, invisible | derived, displayed, and RECORDED on an explicit act (R-FN) |
 
-**Fact 2 is why the reset cannot simply be deleted.** `ReconciledThrough`'s own docstring already
-says the date rule is a guess and names its remedy -- *"what removes it is an OBSERVATION, not a
-second derived date"* -- and the developer's YTD bank exports measure the guess: of 55 Checking
-assertions only 17 equal the bank's closing balance for their day, and of 110 movements matched to
-bank lines on exact amount only 33 (30%) carry the day the bank posted them. The steps that
-carry it are below; their sequence is `../../plans/steps.md`'s.
+**Fact 2 is why the reset cannot simply be deleted, and ruling R-FL carries the measurement that
+says so.** The steps are section 5; their sequence is `../../plans/steps.md`'s.
 
 ## 4. The rulings
 
@@ -232,9 +223,6 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
 
 * [x] **X-f1** `8d812662` a settle carries the day the money moved; absorbs **S2-b**; fourteen leaves in `archive/…2026-08-04.md` 1a. Did NOT close **N-173** (**X-f6a**'s).
 
-*NINE of this span's shipped steps left under rule 5 -- X-an, X-f2's four leaves, X-aq, X-as and X-ap
-on 2026-08-13; X-f1 with five others on 2026-08-26 (`archive/five_shipped_steps_2026-08-26.md`).*
-
 * [ ] **X-ax** `fix(carry-forward): a rollover is reconciled against the source it divided` --
   closes **N-249**. **MOVES MONEY.** Carry-forward splits one budget across two periods: it settles
   the source at `sum(entries)` and rolls `estimated - sum(entries)` into the next period's row. The
@@ -251,11 +239,9 @@ on 2026-08-13; X-f1 with five others on 2026-08-26 (`archive/five_shipped_steps_
   RECORDED before it can be reconciled -- and that recording is a derived quantity, which is
   **R-FI**'s subject, so the design belongs beside the amount model rather than beneath it.
 * [ ] **X-f3** `feat(cash): the ledger is sum-of-postings` -- the DECOMPOSED parent of THE CUTOVER,
-  carrying **N-171**, **N-172** and **N-174**, and **decomposed 2026-08-13 (R-FL..R-FO)** because its
-  one-commit form was refuted twice by measurement: the residual it would classify is dominated by
-  date misplacement rather than spending (R-FN), and deleting the reset breaks its own ship gate
-  while a cleared purchase's cash is not in the book (R-FM). It ticks with X-f3c; **X-f5 is
-  SUPERSEDED**, its outcome being what the cutover produces by construction.
+  split 2026-08-13 (**R-FL**..**R-FO**, Section 3.3) when measurement refuted its one-commit form
+  twice over. It ticks with X-f3c; **X-f5 is SUPERSEDED**, its outcome being what the cutover
+  produces by construction.
   * [ ] **X-f3a** the DECOMPOSED parent of "clearing is a recorded fact", split 2026-08-14 (**R-FQ**).
     Carries **N-273**.
   * [ ] **X-f3a-2** `feat(reconcile): a walked statement's silence is a fact` -- record that a
@@ -263,23 +249,41 @@ on 2026-08-13; X-f1 with five others on 2026-08-26 (`archive/five_shipped_steps_
     and widen the offer set to every uncleared line. **MOVES MONEY.** Closes **N-273**. **It follows
     X-f3c and R-FQ's theorem is why**: while an assertion RESETS the ledger a line no assertion
     clears reads as `anchor + X` at every later date (**N-285**).
-  * [x] **X-f3b** `38ffd87b` -- a purchase carrying a recorded bank posting day is a cash movement of its OWN (**R-FM**, refined by **R-FR**). Closed **N-274**, **N-286**, **N-288**; opened **N-290**-**N-292**.
-  * [ ] **X-f3c** `feat(cash): an assertion is a check, not a reset` -- **THE CUTOVER. MOVES MONEY.
-    OWN PR, NO BACKLOG.** Closes **N-171**, **N-172**, **N-174**, **N-275**, **N-276**.
-    `cash_ledger/_walk.py:300` goes, `balance(T)` becomes `opening equity + SUM(postings <= T)`, the
-    opening becomes a STORED equity fact rather than the R-I seed's compensator, and an unexplained
-    difference is derived, displayed and RECORDED on an explicit act as an uncategorized transaction
-    (**R-FN**), which is when **PLAIN's arm of X-f3d's dispatch flips** (R-FO) -- the only moment
-    classifying it is honest. **The history is materialised from the BANK** (X-f6a's clearing facts),
-    not the date heuristic: that collapses the historical residual from `$15,413.71` gross to about
-    `$4,513.89`. A statement is RE-OPENABLE, so a recorded difference is released and recomputed when
-    its clearing facts change -- ruling R-FI's freeze-and-inverse shape. **Ship-gated on R-DH (c)
-    passing without a true-up, in both orders**, and on the opening equity being re-derived: it
-    asserts `$2,746.58` for 2026-03-27 against the bank's `$3,182.63` (**N-275**). **It owes two
-    rulings the first draft missed**: what becomes of the 102 posted `account_trueup` entries when
-    R-FN forbids the automatic recording the self-heal needs to zero them; and what happens when a
-    user ACCEPTS a residual and the purchase explaining it clears afterwards -- R-DH (c) row 3
-    double-counts, and "re-openable" would rewrite a transaction the user authored and categorised.
+  * [ ] **X-f3c** the DECOMPOSED parent of THE CUTOVER, re-decomposed 2026-08-27 (**R-GW**, with
+    **R-GX** and **R-GY**, the two rulings its first draft owed). Carries **N-172**, **N-174**.
+    * [x] **X-f3c-1** `2dad8512` -- the assertion RESET left the kind-blind walk (**R-J**) for `balance_at._assertions`, so `walk_cash_ledger` yields FACTS and each fold applies the policy its own kind needs. Byte-identical.
+    * [x] **X-f3c-2a** `2aa2296d` -- opening equity is a RECORDED fact (**R-GX**, **R-HE**): an
+      append-only `budget.account_openings` carrying the day, the equity and a typed provenance,
+      read by BOTH the fold and the posted ledger. `is_opening` decides no figure and R-I's
+      compensator is gone. Seeded at the derived value: 1,829 readings and 148 posted rows identical.
+    * [ ] **X-f3c-2b** `feat(cash): a movement cannot predate the books it is in` -- **MOVES
+      MONEY.** A row dated before its account's books opened is already inside the declared opening,
+      so the fold counts it twice (**N-378**, eight rows, every one a transfer leg). Refuse one at
+      the write door and move each opening back to where its bank statement starts, importing what
+      the records lack (**R-HF**): account 10 opens at `$1,345.74` on 2026-01-30, not the derived
+      `$4,879.26` (**N-379**). Every changed figure goes to the developer first. Closes **N-378**.
+    * [ ] **X-f3c-2c** `feat(accounts): an assertion is append-only` -- give
+      `account_anchor_history` the `before_update` / `before_delete` refusal `LoanAnchorEvent` and
+      `JournalEntry` carry. Its cost is the fixtures: `restamp_opening_assertion` and
+      `append_balance_assertion` INSERT then UPDATE to pin an instant. Closes **N-287**.
+    * [ ] **X-f3c-3** `feat(cash): the app says what it cannot explain` -- the account's
+      OUTSTANDING DIFFERENCE (`latest asserted - (opening equity + SUM(postings))`, ONE figure per
+      account and not a per-assertion correction) derived off the fold and displayed beside whether
+      an imported statement reconciles the span. Money-neutral; the instrument the next leaf needs.
+    * [ ] **X-f3c-4** `feat(cash): an unexplained difference is a transaction you accept` --
+      **MOVES MONEY.** The explicit act **R-FN** requires, under **R-GY**'s three bounds: dated on
+      the latest assertion's own day so that assertion clears it and the balance line does not move
+      (R-DH (a)); amount DERIVED from the postings OTHER than itself until the owner categorises
+      it; offered only where a `statement_imports` row covers the span at a zero residue. The
+      posted ledger, the Book-vs-bank row and the income statement all move. Closes **N-171** --
+      Checking's `$1,776.88` leaves `Checking -- Opening` equity -- and flips **PLAIN's arm of
+      X-f3d's dispatch** (R-FO).
+    * [ ] **X-f3c-5** `feat(cash): an assertion is a check, not a reset` -- **THE FLIP. MOVES MONEY.
+      OWN PR, NO BACKLOG.** `balance(T)` becomes `opening equity + SUM(postings <= T)`, PLAIN stops
+      booking `account_trueup`, the reconcile reverses the 162 entries that stand, and what a
+      clearing link SURVIVES is settled (**N-307**). **Ship-gated on R-DH (c) in both orders
+      without a true-up** and on the import **N-368** names. Closes **N-172**, **N-174**, **N-285**,
+      **N-290**, **N-307**, **N-308**.
 * [ ] **X-ay** `feat(ledger): a modelled account's own inflows are postings` -- closes **N-277**.
   A modelled account's true-up residual is what it EARNED only where the app models no inflow it
   fails to post, and it fails to post all of them: `ref.posting_sources` holds no accrual and no
@@ -297,8 +301,8 @@ on 2026-08-13; X-f1 with five others on 2026-08-26 (`archive/five_shipped_steps_
   **N-169 closed already** at `C2-d` (`3e6cd4ec`). **GATES the recurrence redesign's `R5`**, which
   edits `cash_ledger/_events.py` inside this deletion set -- a column rename in a file this step
   deletes from is avoided by ordering rather than by merge.
-*The statement importer moved to its own arc 2026-08-13: `../../plans/implementation_plan_bank_import.md`.*
-*X-f3a-1 and X-f3d were ARCHIVED 2026-08-16 to `archive/x_f3_clearing_as_built_2026-08-16.md`, the completed span that took `steps.md` back under its cap (rule 5). Three sentences above name them for how the code came to be, which rule 15 sanctions.*
+*THIRTEEN of this span's shipped steps left under rule 5, indexed by `archive/README.md`: X-an, X-f2's four leaves, X-aq, X-as and X-ap (2026-08-13); X-f3a-1 and X-f3d (2026-08-16); X-f1 with five others (2026-08-26); X-f3b and X-i3 (2026-08-27). Sentences above name several of them for how the code came to be, which rule 15 sanctions. The statement importer moved to its own arc 2026-08-13: `../../plans/implementation_plan_bank_import.md`.*
+
 ### Phase X -- the amount model (ruling R-FI)
 
 **What this phase is about, in one sentence: the app stores five amounts it also computes, and each
@@ -625,7 +629,6 @@ hides.
     contribution load costs `2.7 -> 14.8 ms` per render entry, so shipping X-j first ships that
     regression and then removes it. Forks for its trace: which salary profile a historical read
     picks when several are active, and whether deductions resolve at the read date.
-  * [x] **X-i3 THE SNAPSHOT** `1feb0930` -- the DECOMPOSED parent, ticked with `X-i3-b`, its last leaf (ruling **R-GU**). These four are as built in `archive/x_i_binding_as_built_2026-08-26.md`, which carries what `4dddfe73` corrected: `X-i3-a` decided a request's kind in a `before_request` hook, which is not the first thing a request does, so a render's FIRST transaction ran at `READ COMMITTED` and was then discarded -- a measured cost, and a hazard one hook registration away from a money read.
   * [x] **X-i3-a THE BOUNDARY** `765daebd`, corrected at `4dddfe73` -- a request is a QUERY or a COMMAND and its transaction says which. Closed **N-353**; opened **N-358**, **N-359**.
   * [x] **X-i3-b THE ACCOMMODATIONS** `1feb0930` -- each accommodation for "the two reads can differ" narrowed to the COMMAND it still describes. Opened **N-364**, **N-365**.
   * [x] **X-i4 THE BINDING** `79a1730c` -- `_memoize_once` takes the `Account` and refuses a foreign one. Ruling **R-GV**. Closed **N-354**; opened **N-360**-**N-363**.

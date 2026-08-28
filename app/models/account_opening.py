@@ -1,0 +1,225 @@
+"""Shekel Budget App -- Account Opening Equity Model (budget schema).
+
+**What an account held before its records begin, as a RECORDED FACT** (plan
+step X-f3c-2a, ruling **R-GX**).  One append-only row per restatement; the
+latest recorded row governs.
+
+**The quantity, in one sentence.**  An account's opening equity is the capital
+its books opened with -- the level every balance the app has ever rendered is
+stacked on top of.  On the developer's own Checking account it is ``$689.16``:
+the ``$2,746.58`` asserted for 2026-03-27 less the ``$2,057.42`` of movements
+that assertion already contained.
+
+**It was INFERRED on every read until this step, and each of the four defects
+that caused has the same root.**  The balance fold re-derived it as
+"the earliest assertion minus the movements dated at or before it"
+(``balance_at._cash_fold._actual_steps``' seed, ruling **R-I**), which meant:
+
+1. **It moved when an assertion was BACK-DATED.**  Which assertion was "the
+   opening" was decided by SORT POSITION -- ``is_opening = index == 0`` over
+   ``(observed_on, created_at, id)`` in ``cash_ledger._events`` -- and
+   ``anchor_service.resolve_observation_day`` permits a back-dated assertion.
+   Recording a balance for a day earlier than any on file silently re-elected
+   the opening, recomputed the constant, and moved every pre-opening balance,
+   with no surface saying so.
+2. **It differed per SCENARIO.**  The subtraction ran over
+   ``settled_cash_facts(account_id, scenario_id)``, so two scenarios holding
+   different settled rows produced two opening equities for one real bank
+   account.  Money that existed before tracking began cannot be a function of
+   a what-if.
+3. **It could not be CORRECTED.**  Finding **N-275**: account 1's opening
+   asserts ``$2,746.58`` for 2026-03-27 where the bank's own closing that day
+   is ``$3,182.63``, so the inferred figure is wrong by ``$436.05`` and there
+   was nowhere to say so.
+4. **It was derived TWICE.**  The read fold seeded it; the posted ledger
+   booked it again as the ``account_opening`` journal entry's linked leg
+   (``asserted - ledger_before``).  Measured on a production clone 2026-08-27
+   the two agree to the cent on all seven non-loan accounts -- because both ran
+   the same subtraction, not because either read a fact.
+
+This table is the fact both now read.
+
+**Why a satellite table rather than a column or a journal entry** (developer,
+2026-08-27).  A column on ``budget.accounts`` would have to be NULLABLE for an
+amortizing loan, a rule the schema cannot state because the kind lives on
+``ref.account_types``, and it would sit exactly where ruling **R-EH** deleted
+``accounts.current_anchor_balance``.  The posted ``account_opening`` journal
+entry cannot be the source of truth for three separate reasons: it is
+scenario-scoped (defect 2 returns), a ``$0.00`` opening books no entry at all
+so "zero" is indistinguishable from "none", and the posted ledger is a
+PROJECTION of the walk in this codebase, so reading it from the balance seam
+would invert the arc's own dependency direction.  What is left is a per-account,
+scenario-free, always-present record -- the shape ``loan_params`` /
+``interest_params`` / ``investment_params`` already use.
+
+**EVERY account carries one, including an amortizing loan, and that is a
+REACHABILITY fact rather than a tidiness preference.**  The spec's first draft
+said the two loans get no row.  They must: ``balance_at.balance_at`` -- the
+KIND-CORRECT public entry the savings page and the net-worth surfaces read --
+dispatches on ``_resolution.configured_loan``, which returns ``None`` for an
+amortizing account carrying no :class:`~app.models.loan_params.LoanParams`, and
+falls through to the replay over this fold.  That state is ordinary (create a
+Mortgage, do not finish the loan-params form), so a loan without a row would
+raise on a live screen.  With every account carrying one, absence is
+unreachable and :func:`app.services.cash_ledger.account_opening_fact` refuses it
+rather than falling back to a fabricated ``$0.00``.  A CONFIGURED loan never
+reads its row: its opening is ``LoanParams.original_principal``, materialised
+by ``loan_loaders.synthesize_origination_anchor``.
+
+**It carries the DAY as well as the amount, and fixing only the amount would
+have left half of defect 1 alive.**  ``opened_on`` is the civil day the books
+opened.  The posted ``account_opening`` journal entry is dated on it; before
+this step that entry was dated on whichever assertion sorted first, so
+back-dating still silently re-dated the opening posting and demoted the
+previous one to a true-up.  With the day stored, ``is_opening`` stops existing
+as a money concept: this row books the ``account_opening`` kind and every
+assertion books ``account_trueup``, with no positional flag left to read.
+
+**Append-only, latest governs -- the same shape as its two siblings.**
+:class:`~app.models.account.AccountAnchorHistory` records what a bank said and
+:class:`~app.models.loan_anchor_event.LoanAnchorEvent` records what a loan owed;
+both are append-only and this is the third member of that family.  An UPDATE
+would make a restatement invisible to the app -- ``system.audit_log`` would hold
+it, but nothing could render it, which is the exact gap finding **N-205** built
+the balance-history card to close.  Restating the number every balance rests on
+is not a state this app may enter silently.
+
+**"Latest governs" is NOT the positional read this step deletes**, and the
+difference is which clock orders it.  ``is_opening`` inferred a TYPE from
+position in a list ordered by ``observed_on`` -- a business date the owner may
+back-date -- so an ordinary user action changed the inference.  This orders by
+``created_at``, the recording instant, which no door lets a user move; it is
+the same rule ``cash_ledger.governing_anchor_on`` already applies to
+assertions, and it is monotone by construction.
+
+Reads: :func:`app.services.cash_ledger.account_opening_fact`.  Writes:
+``account_service.create_account`` (``user_declared``) and migration
+``a7c41f9d2b60`` (``migration_derived``).
+"""
+
+from sqlalchemy import event
+
+from app.extensions import db
+from app.models.mixins import AccountScopedMixin, CreatedAtMixin
+
+
+class AccountOpeningImmutableError(RuntimeError):
+    """Raised when ORM code tries to UPDATE or DELETE an AccountOpening.
+
+    The table is append-only: a restatement is a NEW row, so the record of
+    what the opening used to be survives it.  The twin of
+    :class:`~app.models.loan_anchor_event.LoanAnchorEventImmutableError`, and
+    the same scope -- the guard fires on ORM-mediated writes to catch a
+    programmer error at its call site.  A bulk ``query.update()`` /
+    ``query.delete()`` and a direct SQL statement bypass it, as they bypass the
+    loan twin; the ``ON DELETE CASCADE`` from ``budget.accounts`` also flows
+    through the database FK action without loading rows into the session, so
+    deleting an account is unaffected.
+    """
+
+
+class AccountOpening(AccountScopedMixin, CreatedAtMixin, db.Model):
+    """One statement of what an account held before its records begin.
+
+    See the module docstring for what the quantity is, why it is stored, and
+    why every account carries one.  The GOVERNING row for an account is the one
+    with the greatest ``(created_at, id)``; earlier rows are the restatement
+    history.
+
+    Attributes:
+        opened_on: The civil day the account's books opened -- the day this
+            equity was the whole of what the account held.  A recorded fact,
+            not ``min(assertion.observed_on)``, which is what let a back-dated
+            assertion re-date the opening.
+        opening_equity: The capital the books opened with, LEDGER-NATIVE and
+            signed exactly as an assertion's ``anchor_balance`` is (ruling
+            R-J: the walk never branches on account class, and neither does
+            this).  ``Decimal`` money, never ``float``.
+        source_id: Where the figure came from --
+            :class:`~app.enums.AccountOpeningSourceEnum` through
+            ``ref.account_opening_sources``.  A ``migration_derived`` figure is
+            the pre-X-f3c-2a inference frozen and may be wrong (**N-275**
+            measures one wrong by ``$436.05``); a ``user_declared`` one is an
+            observation.  A reader that cannot tell them apart presents a guess
+            and a fact identically.
+        created_at: The recording instant, from :class:`CreatedAtMixin`.  It
+            ORDERS the restatements and dates nothing -- ``opened_on`` is the
+            business date, exactly the two-clock split
+            :class:`~app.models.account.AccountAnchorHistory` documents.
+
+    ``account_id`` is NOT unique, which is the whole of what makes this
+    append-only rather than a mutable scalar: :class:`AccountScopedMixin`
+    rather than the ``AccountScopedUniqueMixin`` the 1:1 params satellites use.
+    """
+
+    __tablename__ = "account_openings"
+    __table_args__ = (
+        # The per-account lookup the loader reads, leading on ``account_id``
+        # and carrying ``created_at`` so "the governing row" is an index scan
+        # rather than a sort -- the same shape and the same reason as
+        # ``idx_anchor_history_account`` on the assertion table.
+        db.Index(
+            "idx_account_openings_account",
+            "account_id",
+            "created_at",
+        ),
+        {"schema": "budget"},
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    opened_on = db.Column(db.Date, nullable=False)
+    # NO sign CHECK, and its absence is a statement rather than an omission.
+    # The figure is LEDGER-NATIVE: positive for an asset's opening capital and
+    # negative for a liability's (the Van Loan's derived opening is
+    # ``-$531.94``), and ruling **R-J** forbids this tier branching on account
+    # class -- so there is no sign rule to write down.  ``Numeric(12, 2)`` and
+    # NOT NULL are the constraints the quantity actually has.  Contrast
+    # ``loan_anchor_events.anchor_balance``, which carries ``>= 0`` because a
+    # loan's OWED is positive-only by construction.
+    opening_equity = db.Column(db.Numeric(12, 2), nullable=False)
+    source_id = db.Column(
+        db.Integer,
+        db.ForeignKey(
+            "ref.account_opening_sources.id",
+            name="fk_account_openings_source_id",
+            ondelete="RESTRICT",
+        ),
+        nullable=False,
+    )
+
+    def __repr__(self):
+        return (
+            f"<AccountOpening account={self.account_id} "
+            f"opened_on={self.opened_on} equity={self.opening_equity}>"
+        )
+
+
+@event.listens_for(AccountOpening, "before_update")
+def _block_update(_mapper, _connection, target):
+    """Refuse every ORM-mediated UPDATE on an AccountOpening.
+
+    Fires before SQLAlchemy emits the UPDATE so the offending session rolls
+    back cleanly with a named exception a test can assert against.  A
+    restatement is expressed as a NEW row -- which is what keeps the record of
+    what the opening used to be, and what lets a surface show that it changed.
+    The twin of ``loan_anchor_event._block_update``.
+    """
+    raise AccountOpeningImmutableError(
+        f"AccountOpening is append-only; UPDATE rejected for id={target.id!r}. "
+        "Restate an opening by inserting a new row."
+    )
+
+
+@event.listens_for(AccountOpening, "before_delete")
+def _block_delete(_mapper, _connection, target):
+    """Refuse every ORM-mediated DELETE on an AccountOpening.
+
+    Same rationale as :func:`_block_update`: the table is structurally
+    append-only, and every account must carry at least one row for the balance
+    fold to have a level to stand on.  CASCADE deletes from ``budget.accounts``
+    flow through the database FK action and do NOT load each row into the ORM
+    session, so this guard does not interfere with account deletion.
+    """
+    raise AccountOpeningImmutableError(
+        f"AccountOpening is append-only; DELETE rejected for id={target.id!r}."
+    )

@@ -961,7 +961,16 @@ class TestPreAnchorAbsorption:
             assert posting_service.account_posting_total(
                 savings.id, scenario_id,
             ) == Decimal("500.00")
-            # The opening delta absorbed the spend (linked leg net +700.00).
+            # The OPENING books the account's opening equity ($500.00, the
+            # stored fact) and the $200.00 the records moved books separately
+            # as an ``account_trueup`` against the origination assertion.  The
+            # account's TOTAL is unchanged at $500.00, which is the property
+            # this test is about.
+            #
+            # *One $700.00 ``account_opening`` entry until plan step X-f3c-2a,
+            # which conflated capital brought on with a correction to it -- and
+            # that conflation is why a BACK-DATED assertion could re-elect the
+            # whole figure.*
             linked = linked_ledger_account(db.session, savings.id)
             opening_source = ref_cache.posting_source_id(
                 PostingSourceEnum.ACCOUNT_OPENING,
@@ -978,7 +987,7 @@ class TestPreAnchorAbsorption:
                 )
                 .scalar()
             )
-            assert opening_net == Decimal("700.00")
+            assert opening_net == Decimal("500.00")
             # Nothing rides on top: the spend is pre-assertion.
             latest_asserted_day, _latest = _latest_assertion(savings.id)
             assert _independent_post_assertion_source_effect(
@@ -1230,11 +1239,24 @@ class TestBackDatedTrueUpReBasesTheLedger:
         re-designation and asked for it to be blocked; it was ruled ALLOWED and
         graded instead, which is what this case is.
 
-        ``cash_anchor_facts`` marks the earliest row ``is_opening``, and that
-        flag chooses which correction books ``account_opening`` versus
-        ``account_trueup``.  So back-dating below the origination flips the flag,
-        REVERSES the original opening entry and re-posts it as a true-up.  The
-        money must not move: the linked ledger still lands on the latest anchor.
+        **What that ruling MEANT changed at plan step X-f3c-2a, and the money
+        did not.**  ``cash_anchor_facts`` still marks the earliest row
+        ``is_opening``, so the re-designation the 2026-08-04 ruling allows is
+        still visible on the FACTS -- and it no longer decides a posting.  Which
+        correction books ``account_opening`` is now read from the stored
+        ``budget.account_openings`` row (**R-GX**, **R-HE**), so the opening
+        entry stays where the books actually opened and the back-dated
+        assertion books an ordinary ``account_trueup`` on its own day.
+
+        *Until then the flag chose the posting: back-dating below the
+        origination REVERSED the original opening entry and re-posted it as a
+        true-up, moving the account's opening equity onto a day the owner had
+        merely typed a balance for.  An owner who genuinely means "my books
+        opened earlier, at $250" restates the opening record -- X-f3c-2b's
+        door -- rather than having a true-up re-designate it implicitly.*
+
+        The money must not move either way: the linked ledger still lands on
+        the latest anchor, which is what the totals below grade.
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
@@ -1298,12 +1320,16 @@ class TestBackDatedTrueUpReBasesTheLedger:
                 .group_by(JournalEntry.entry_date)
                 .all()
             )
-            # The earlier day now carries the whole opening; the old opening
-            # day's opening-sourced legs net to zero because they were reversed.
-            assert opening_by_day.get(earlier) == Decimal("250.00")
-            assert opening_by_day.get(opening_day, Decimal("0")) == Decimal("0")
-            # ...and the balance it used to carry is now booked as a TRUE-UP on
-            # its own day: 1000.00 asserted over a running 250.00 = +750.00.
+            # The OPENING stays where the books opened, carrying the stored
+            # opening equity ($1,000.00); the back-dated day gets no opening
+            # entry at all.  Nothing is reversed, because nothing was
+            # re-designated.
+            assert opening_by_day.get(opening_day) == Decimal("1000.00")
+            assert opening_by_day.get(earlier) is None
+            # The two assertions book TRUE-UPS that net to zero: the back-dated
+            # $250.00 corrects the books DOWN by $750.00 and the original
+            # $1,000.00 assertion corrects them back UP by $750.00.  Their sum
+            # is what keeps the account on $1,000.00.
             trueup_source = ref_cache.posting_source_id(
                 PostingSourceEnum.ACCOUNT_TRUEUP,
             )
@@ -1315,7 +1341,7 @@ class TestBackDatedTrueUpReBasesTheLedger:
                 Posting.ledger_account_id == linked.id,
                 JournalEntry.scenario_id == scenario_id,
                 JournalEntry.source_kind_id == trueup_source,
-            ).scalar() == Decimal("750.00")
+            ).scalar() == Decimal("0.00")
 
 
 # ---------------------------------------------------------------------------

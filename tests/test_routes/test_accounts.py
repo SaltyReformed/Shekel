@@ -9590,15 +9590,23 @@ class TestTheBalanceHistoryCard:
             assert "Ledger" in html
             assert "Correction" in html
 
-    def test_the_opening_row_publishes_no_difference(
+    def test_the_opening_row_is_badged_and_publishes_its_pair(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The opening is badged and its reconciliation cells are withheld.
+        """The opening is badged, and its reconciliation cells now MEAN something.
 
-        Its "ledger" is the sum of rows dated before the account existed
-        (open finding **N-37**) and its gap is opening EQUITY, the figure plan
-        step X-f5 books -- not a correction, so the card refuses to caption it
-        as one.
+        The card withheld both cells on this row until plan step X-f3c-2a,
+        because the opening's "ledger" was the records summed from a zero seed
+        and the gap between it and the asserted balance was opening EQUITY
+        rather than a correction -- rendering it would have told the owner
+        their records were off by that equity on the day the account opened,
+        which is false.  Opening equity is a stored
+        ``budget.account_openings`` fact now, so the pair says what the column
+        headers say: what the books held, and what the declaration moved them
+        by.
+
+        The seeded account's declaration agrees with the books it opened, so
+        the correction renders ``$0.00`` -- a figure, not a dash.
         """
         with app.app_context():
             acct_id = seed_user["account"].id
@@ -9608,9 +9616,10 @@ class TestTheBalanceHistoryCard:
             ).data.decode()
 
             assert "Opening" in html
-            # The lone row is the opening, so every reconciliation cell on the
-            # page is the withheld dash.
-            assert html.count(">--<") == 2
+            # No withheld dash anywhere: the lone row publishes both cells.
+            assert html.count(">--<") == 0
+            # And the correction it publishes is the real figure, rendered.
+            assert "$0.00" in html
 
     def test_a_companion_cannot_reach_the_card(
         self, app, companion_client, seed_user, seed_periods_today,

@@ -70,6 +70,7 @@ AUDITED_TABLES: tuple[tuple[str, str], ...] = (
     # ── budget schema ────────────────────────────────────────────────
     ("budget", "account_anchor_history"),
     ("budget", "account_external_identities"),
+    ("budget", "account_openings"),
     ("budget", "account_postings"),
     ("budget", "accounts"),
     ("budget", "asset_appreciation_params"),

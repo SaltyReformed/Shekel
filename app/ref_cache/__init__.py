@@ -53,6 +53,7 @@ anywhere -- and collapsing what survives into one generic lookup is finding
 """
 
 from ._accessors import (
+    account_opening_source_id,
     acct_category_id,
     acct_category_member,
     acct_type_icon,
@@ -91,6 +92,7 @@ from ._state import (
 )
 
 __all__ = [
+    "account_opening_source_id",
     "acct_category_id",
     "acct_category_member",
     "acct_type_icon",

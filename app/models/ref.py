@@ -441,6 +441,39 @@ class LoanAnchorSource(db.Model):
         return f"<LoanAnchorSource {self.name}>"
 
 
+class AccountOpeningSource(db.Model):
+    """Account opening source reference: 'user_declared', 'migration_derived'.
+
+    Tags every row in :class:`budget.account_openings` with the provenance of
+    that opening equity figure (plan step X-f3c-2a).  ``user_declared`` is
+    written by ``account_service.create_account`` from the balance the owner
+    typed; ``migration_derived`` marks the seven rows the X-f3c-2a migration
+    computed for accounts that already existed, off the posted ledger's own
+    ``account_opening`` entry.
+
+    **The split is not clerical.**  A derived figure is the pre-X-f3c-2a
+    inference frozen, and finding **N-275** measures account 1's wrong by
+    ``$436.05``; a declared one is an observation.  A surface that cannot tell
+    them apart presents a guess and a fact identically.
+
+    The loan twin is :class:`LoanAnchorSource`, and the shape is the same by
+    design: a typed provenance column on an append-only balance record.
+    Application code resolves these via ``ref_cache.account_opening_source_id``
+    and compares against the integer ID -- never the string name -- matching
+    the project-wide ``ref-table: IDs for logic, strings for display only``
+    invariant.
+    """
+
+    __tablename__ = "account_opening_sources"
+    __table_args__ = {"schema": "ref"}
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(20), unique=True, nullable=False)
+
+    def __repr__(self):
+        return f"<AccountOpeningSource {self.name}>"
+
+
 class UserRole(db.Model):
     """User role reference: 'owner', 'companion'.
 

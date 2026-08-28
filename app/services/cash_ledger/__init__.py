@@ -43,12 +43,15 @@ facts at a date is the seam's, exactly as plan step D-fold split the loan pair.
 **The walk (plan step X-a, ruling R-H).**  :mod:`._events` and :mod:`._walk`
 build the account's ONE event stream -- every balance ASSERTION, every SETTLED
 row, and every PURCHASE whose bank posting day the owner recorded (ruling
-**R-FM**, plan step X-f3b) -- and replay it into per-assertion corrections, each
-source assigned to the assertion that CLEARED it (:mod:`._clearing`, ruling
-R-FL) and, where no statement has recorded showing it, to the first assertion
-dated on or after it (ruling R-DH).  The seam's
-read fold TAKES it, and since plan step X-c2b2 every cash figure on every screen
-is that fold sampled at a date.  The second consumer is still to come: at step
+**R-FM**, plan step X-f3b) -- and :mod:`._clearing` answers which assertion
+CLEARED each source (ruling **R-FL**), falling to the first assertion dated on
+or after it where no statement is recorded as having shown it (ruling R-DH).
+**What an assertion then DOES to a running total is not here** and has not been
+since plan step X-f3c-1: that is a policy an account's KIND decides (ruling
+**R-FO**), this package is kind-blind (ruling **R-J**), and the replay lives in
+``balance_at._assertions`` beside the total it is a policy about.  The seam's
+read fold TAKES these facts, and since plan step X-c2b2 every cash figure on
+every screen is that fold sampled at a date.  The second consumer is still to come: at step
 X-d the posting WRITER reads this walk too, replacing the postings-sourced
 :func:`app.services.account_posting_service.walk_account_ledger`, which is what
 makes a stale posting a detectable cache inconsistency rather than a second
@@ -129,7 +132,9 @@ from ._clearing import (
 )
 from ._events import (
     CashAnchorFact,
+    CashOpeningFact,
     CashSourceFact,
+    account_opening_fact,
     cash_anchor_facts,
     coverage_for,
     settled_cash_facts,
@@ -144,7 +149,6 @@ from ._facts import (
 )
 from ._flows import sum_projected
 from ._walk import (
-    CashAnchorCorrection,
     CashLedgerWalk,
     dated_deltas,
     walk_cash_ledger,
@@ -156,9 +160,9 @@ __all__ = [
     "AnchorPoint",
     "governing_anchor",
     "governing_anchor_on",
-    "CashAnchorCorrection",
     "CashAnchorFact",
     "CashLedgerWalk",
+    "CashOpeningFact",
     "CashSourceFact",
     "ClearableLine",
     "ReconciledThrough",
@@ -167,6 +171,7 @@ __all__ = [
     "baseline_amount_basis",
     "amount_rule",
     "amounts_by_id",
+    "account_opening_fact",
     "cash_anchor_facts",
     "coverage_for",
     "contributed_amount",

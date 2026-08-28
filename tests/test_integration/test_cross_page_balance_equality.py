@@ -681,15 +681,43 @@ class TestSubtotalReconciliation:
             anchor_column = columns[ctx["anchor_period"].id]
             next_column = columns[next_period.id]
 
-            # The anchor column's remainder IS the fixture's re-assertion: the
-            # factory's $1,000.00 origination corrected to the case's anchor.
+            # The anchor column's remainder holds BOTH assertions the fixture
+            # puts in this period, and naming them separately is what keeps
+            # this a hand-computed claim (plan step X-f3c-2a).
+            #
+            #   (a) the fixture's RE-ASSERTION: the factory's $1,000.00
+            #       origination corrected to the case's anchor;
+            #   (b) the ORIGINATION's own correction, which is the sum of the
+            #       case's CLEARED DEBIT entries.  A cleared purchase is a cash
+            #       fact in its own right (ruling R-FM) dated before this
+            #       fixture's origination assertion, so the books carry it and
+            #       the origination then corrects it straight back out.  That
+            #       is the pre-opening double count plan step X-f3c-2b closes,
+            #       and until X-f3c-2a it was invisible here: the fold moved
+            #       the origination's whole delta into its seed (ruling R-I)
+            #       and this row excluded it by construction.
+            #
+            # The cases with no cleared debit -- ``negative_overdraft`` and
+            # ``credit_only`` -- put $0.00 in (b), which is why they read the
+            # same figure before and after that step.
             expected_trueup = (
                 case["anchor_balance"] - _FACTORY_ORIGINATION_BALANCE
             )
-            assert anchor_column.book_vs_bank == expected_trueup, (
+            expected_opening = sum(
+                (
+                    amount
+                    for amount, is_credit, is_cleared in case["entries"]
+                    if is_cleared and not is_credit
+                ),
+                Decimal("0.00"),
+            )
+            assert anchor_column.book_vs_bank == (
+                expected_trueup + expected_opening
+            ), (
                 f"case {case['id']!r}: anchor column book-vs-bank "
                 f"{anchor_column.book_vs_bank!r} != the fixture's true-up "
-                f"{expected_trueup!r} "
+                f"{expected_trueup!r} plus its origination's own correction "
+                f"{expected_opening!r} "
                 f"({case['anchor_balance']!r} asserted over the factory's "
                 f"{_FACTORY_ORIGINATION_BALANCE!r} origination).  R-K's "
                 f"book-vs-bank row exists to carry exactly this."
