@@ -77,10 +77,14 @@ class CashAnchorCorrection:
         anchor: The :class:`~app.services.cash_ledger.CashAnchorFact` this
             correction books for.
         balance_before: The replay's running balance JUST BEFORE this assertion
-            resets it -- ``Decimal("0.00")`` for an opening with no
-            pre-assertion settled history, and otherwise the sum of every source
-            this assertion or an earlier one cleared, on top of the prior
-            assertions.
+            resets it -- the account's OPENING EQUITY plus every source this
+            assertion or an earlier one cleared, on top of the prior
+            assertions.  It starts from the stored opening rather than from
+            zero since plan step **X-f3c-2a**, which is what makes the FIRST
+            assertion an ordinary correction: for an account whose books opened
+            at the level its records imply, the opening's ``delta`` is
+            ``0.00``, where it used to be the whole opening equity that the
+            fold then had to back-project.
     """
 
     anchor: CashAnchorFact
@@ -131,11 +135,25 @@ def assertion_corrections(
 ) -> list[CashAnchorCorrection]:
     """Replay *walk*'s facts under the RESET, returning one correction each.
 
-    Seeds a running balance at zero and, per assertion in business-date order,
-    advances it by every settled source that assertion CLEARED
+    Seeds the running balance at the account's stored OPENING EQUITY
+    (:attr:`~app.services.cash_ledger.CashLedgerWalk.opening`) and, per
+    assertion in business-date order, advances it by every settled source that
+    assertion CLEARED
     (:meth:`app.services.cash_ledger.StatementCoverage.clearing_anchor_id`),
     records what the balance was JUST BEFORE, then RESETS it to the asserted
     value.
+
+    **The seed is a RECORDED FACT since plan step X-f3c-2a, and that is what
+    makes every assertion the same kind of thing.**  This replay started at
+    zero, so the first assertion's correction came out as the whole of what the
+    account held before its records began -- a quantity the fold then had to
+    move into its own seed and cancel with an equal-and-opposite step (ruling
+    **R-I**), and which was silently re-elected whenever an assertion was
+    BACK-DATED, because "the opening" was decided by sort position.  Reading
+    the level from ``budget.account_openings`` deletes the special case rather
+    than relocating it: ``corrections[0]`` is now an ordinary correction whose
+    delta is the difference between what the owner declared and what the books
+    say, ``$0.00`` on every production account the migration seeded.
 
     **Resetting at EVERY assertion -- not seeding from the latest one -- is what
     makes the past the assertion history.**  The shipping projection read only
@@ -204,7 +222,13 @@ def assertion_corrections(
             cleared[anchor_id] = cleared.get(anchor_id, _ZERO_MONEY) + source.delta
 
     corrections: list[CashAnchorCorrection] = []
-    running = _ZERO_MONEY
+    # The books start at what the account HELD before its records begin, a
+    # recorded fact since plan step X-f3c-2a rather than a constant this replay
+    # backed out of its own first assertion.  Seeding at zero is what made the
+    # opening's correction the whole opening equity and forced the fold to
+    # back-project it (ruling R-I); from the real level every assertion is one
+    # kind of thing, and the FIRST is no longer special.
+    running = walk.opening.opening_equity
     for anchor in walk.anchor_facts:
         running += cleared.get(anchor.anchor_id, _ZERO_MONEY)
         corrections.append(

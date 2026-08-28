@@ -18,13 +18,20 @@
    data moves with the data.
 
    TWO COLUMNS ARE CONDITIONAL, and their absence is a statement.  ``ledger``
-   and ``correction`` are published only where the pair has an agreed meaning:
-   never on the OPENING row (whose "ledger" is the sum of rows dated before the
-   account existed -- open finding N-37 -- and whose gap is opening EQUITY, not
-   a correction), and never on an account whose balance carries a MODELLED tier
-   (an HYSA's accrued interest is not untracked spend; finding N-213).  The
-   producer decides both, so this template asks no question about kind and
-   re-derives no figure.
+   and ``correction`` are published only where the pair has an agreed meaning,
+   which since plan step X-f3c-2a is one case: never on an account whose
+   balance carries a MODELLED tier (an HYSA's accrued interest is not untracked
+   spend; finding N-213).  The producer decides it, so this template asks no
+   question about kind and re-derives no figure.
+
+   THE OPENING ROW IS NO LONGER ONE OF THOSE CASES.  Its pair was suppressed
+   while the fold backed the account's opening equity out of that very row --
+   its "ledger" was the records summed from a zero seed, and the gap between
+   them was capital brought on rather than a correction, so publishing it would
+   have said "the records were off by $689.16 the day the account opened".
+   Opening equity is a stored ``budget.account_openings`` fact now, so the
+   opening row's two cells mean exactly what the column headers say, and read
+   $0.00 wherever the owner's first declaration agrees with the books.
 
    Expected context, all under ``history``
    (``accounts.history.balance_history_context``):

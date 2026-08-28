@@ -3778,8 +3778,57 @@ def _restamp_assertion(db_session, account, at, *, newest):
     # (``resolve_observation_day`` refuses a future ``observed_on``) and would
     # put a spurious "entered" caption on a row that is not back-dated.
     row.recorded_on = observed_day_of(at)
+    # **The account's OPENING RECORD moves with its opening assertion** (plan
+    # step X-f3c-2a).  ``budget.account_openings`` stores the day the books
+    # opened beside the equity, and ``account_service.create_account`` wrote
+    # both from the factory's day.  A helper that placed the assertion and left
+    # the opening record behind would build a fixture whose books opened on one
+    # day and whose first assertion is on another -- which is a real state
+    # (finding balance:N-377, eight production rows) but not what any caller of
+    # a *restamp* helper means, and it would silently date the posted
+    # ``account_opening`` journal entry off the FIXTURE's stale day.
+    #
+    # The table is APPEND-ONLY, so this is a restatement rather than an edit,
+    # exactly as a production restatement would be.
+    if not newest:
+        _restate_opening_record(db_session, account, observed_day_of(at))
     db_session.flush()
     return row
+
+
+def _restate_opening_record(db_session, account, opened_on):
+    """Append an opening record restating WHEN the account's books opened.
+
+    ``budget.account_openings`` is append-only and the latest recorded row
+    governs, so moving the day means inserting a row rather than updating one.
+    The EQUITY is carried forward unchanged: a restamp places the opening in
+    time and says nothing about how much the books opened with.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` whose books to
+            re-date.
+        opened_on: The civil day the books now open on.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep avoidance
+    # as the loan helpers above.
+    from app.models.account_opening import AccountOpening
+
+    governing = (
+        db_session.query(AccountOpening)
+        .filter_by(account_id=account.id)
+        .order_by(AccountOpening.created_at.desc(), AccountOpening.id.desc())
+        .first()
+    )
+    if governing is None or governing.opened_on == opened_on:
+        return
+    db_session.add(AccountOpening(
+        account_id=account.id,
+        opened_on=opened_on,
+        opening_equity=governing.opening_equity,
+        source_id=governing.source_id,
+    ))
+    db_session.flush()
 
 
 def append_balance_assertion(

@@ -373,9 +373,10 @@ def records_balance_at(
     LOAN side's drift card renders (``loan_posting_service._display``:
     ``computed``).  Subtracting correction deltas out of
     :func:`cash_balance_at` instead would be a second statement of the fold's
-    step rule -- and a wrong one, because ``_cash_fold._actual_steps`` moves the
-    OPENING correction into the seed and books a compensator for it, so the
-    opening's delta is not a step to subtract.
+    step rule, and this field is the rule's own output.  *It was also WRONG
+    until plan step X-f3c-2a, for a reason that has since been deleted: the
+    fold moved the OPENING correction into its seed and booked a compensator
+    for it, so the opening's delta was not a step anyone could subtract.*
 
     Two branches, and they are one rule rather than a special case:
 
@@ -434,19 +435,8 @@ class CashAnchorRow:
 
     **:attr:`ledger` and :attr:`correction` are OPTIONAL, and their absence is
     a statement rather than a gap.**  Both are ``None`` exactly where the pair
-    has no agreed meaning, and the two cases are one rule:
+    has no agreed meaning, which since plan step **X-f3c-2a** is ONE case:
 
-    * **the OPENING row.**  Its ``balance_before`` is the sum of settled rows
-      dated BEFORE the account's first assertion, replayed from a zero seed --
-      which :func:`app.services.cash_ledger.dated_deltas` documents as "not a
-      balance the account ever had", and what a reader should answer there is
-      OPEN finding **N-37**.  On the real Checking account it reads
-      ``$2,057.42`` against an opening of ``$2,746.58``, and the ``$689.16``
-      between them is the account's opening EQUITY (the figure plan step X-f5
-      books), not a correction -- so publishing it would say "the records were
-      off by $689.16 the day the account opened", which is false.  The loan
-      twin renders the same two cells ``--`` for the same reason, one tier
-      down: a loan opens from nothing.
     * **an account whose balance carries a MODELLED tier.**  The walk sees
       recorded CASH only; an HYSA's accrued interest and a brokerage's growth
       never were transactions, so the figure would name a model-vs-market gap
@@ -525,7 +515,12 @@ class CashAnchorRow:
             working: ``recorded - ledger`` reconciles on the row, and a day's
             corrections telescope to the day's total (``-7.46 + -38.97 +
             -45.86 = -92.29``, the gap the preview names).
-        is_opening: ``True`` for the account's first assertion.
+        is_opening: ``True`` for the account's first assertion.  A LABEL for
+            the card's "Opening" badge and nothing more since plan step
+            X-f3c-2a: no figure on this row is conditioned on it, because what
+            an account's books opened with is a stored
+            ``budget.account_openings`` fact rather than a property of whichever
+            assertion sorts first.
     """
 
     observed_on: date
@@ -554,10 +549,15 @@ class CashAnchorHistory:
 
             **It cannot be derived from the rows, and that is a trap worth
             naming.**  ``any(row.correction is not None)`` looks equivalent and
-            is wrong for a PLAIN account carrying exactly ONE assertion: its
-            only row is the opening, whose pair is ``None`` for the ruled
-            reason above, and the derived flag would then hide the columns on
-            an account that reconciles perfectly well.  It is read from
+            is wrong for a PLAIN account whose every assertion agrees with its
+            books: every ``correction`` is then ``0.00`` -- not ``None``, but a
+            derived flag written as ``any(row.correction)`` would hide the
+            columns on the healthiest account there is.  A PLAIN account
+            carrying exactly ONE assertion was the older statement of this trap
+            and it was sharper still: until plan step X-f3c-2a that single row
+            was the OPENING, whose pair was suppressed outright, so the derived
+            flag hid the columns on an account that reconciles perfectly well.
+            It is read from
             :func:`~app.services.account_projection.classify_account`, stated
             once, here.
     """
@@ -635,18 +635,17 @@ def cash_anchor_history(
             recorded_at=booked.anchor.asserted_at,
             recorded_on=booked.anchor.recorded_on,
             recorded=booked.anchor.anchor_balance,
-            # One condition, both cases: the pair is published only where it
-            # has an agreed meaning (see :class:`CashAnchorRow`).
-            ledger=(
-                booked.balance_before
-                if reconcilable and not booked.anchor.is_opening
-                else None
-            ),
-            correction=(
-                booked.delta
-                if reconcilable and not booked.anchor.is_opening
-                else None
-            ),
+            # ONE condition now, where there were two (plan step X-f3c-2a):
+            # the OPENING row is no longer suppressed.  Its pair was hidden
+            # because the fold swallowed the opening's correction into its seed,
+            # so ``balance_before`` was the records summed from zero and the gap
+            # between them was opening EQUITY rather than a correction --
+            # publishing it would have said "the records were off by $689.16 the
+            # day the account opened", which is false.  With the equity a stored
+            # fact the pair means what the column headers say on every row: what
+            # the books held, and what the owner's declaration moved it by.
+            ledger=booked.balance_before if reconcilable else None,
+            correction=booked.delta if reconcilable else None,
             is_opening=booked.anchor.is_opening,
         )
         for booked in reversed(corrections)

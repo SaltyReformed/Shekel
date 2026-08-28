@@ -5421,32 +5421,48 @@ class TestCashAnchorHistory:
             assert [row.recorded for row in history.rows] == [
                 Decimal("400.00"), Decimal("500.00"), Decimal("1000.00"),
             ]
+            # The OPENING row carries its pair like every other row since plan
+            # step X-f3c-2a (it read ``None`` before, because the fold had
+            # swallowed the opening's whole delta into its seed).  The account
+            # was created asserting $1,000.00, so its books opened at
+            # $1,000.00 and the declaration corrects nothing.
             assert [row.ledger for row in history.rows] == [
-                Decimal("500.00"), Decimal("875.00"), None,
+                Decimal("500.00"), Decimal("875.00"), Decimal("1000.00"),
             ]
             assert [row.correction for row in history.rows] == [
-                Decimal("-100.00"), Decimal("-375.00"), None,
+                Decimal("-100.00"), Decimal("-375.00"), Decimal("0.00"),
             ]
             assert [row.is_opening for row in history.rows] == [
                 False, False, True,
             ]
 
-    def test_the_opening_row_withholds_the_pair_it_cannot_caption(
+    def test_the_opening_row_PUBLISHES_its_pair_like_every_other_row(
         self, app, db, seed_user, seed_periods_today,
     ):
-        """The opening publishes its balance and NOTHING about a difference.
+        """The opening's ledger and correction mean what the headers say.
 
-        Its ``balance_before`` is the sum of rows dated before the account's
-        first assertion, replayed from a zero seed, and what a reader should
-        answer there is open finding **N-37**.  Measured on production Checking
-        that is ``$2,057.42`` against a ``$2,746.58`` opening, whose
-        ``$689.16`` difference is the account's opening EQUITY (the figure plan
-        step X-f5 books), not a correction -- so the pair is withheld rather
-        than rendered.
+        **The suppression this replaces was correct for the reason it named,
+        and plan step X-f3c-2a removed that reason.**  The opening's
+        ``balance_before`` used to be the rows dated before the account's first
+        assertion replayed from a ZERO seed -- on production Checking
+        ``$2,057.42`` against a ``$2,746.58`` opening -- so the ``$689.16``
+        between them was the account's opening EQUITY, not a correction, and
+        publishing it would have told the owner "your records were off by
+        $689.16 the day this account opened", which is false.  Opening equity
+        is a stored ``budget.account_openings`` fact now, so
+        ``balance_before`` starts from it and the gap is a real correction.
 
         Seeded with the production SHAPE: a settled row dated BEFORE the
-        opening assertion, which is what makes ``balance_before`` non-zero and
-        this test non-vacuous.
+        opening assertion, which is what makes the correction non-zero and this
+        test non-vacuous.  Hand-computed: the books open at ``$2,746.58`` (what
+        ``create_account`` recorded), a ``+$300.00`` income lands before the
+        assertion's own day so the assertion absorbs it, giving
+        ``ledger = 2746.58 + 300.00 = $3,046.58`` and a correction of
+        ``2746.58 - 3046.58 = -$300.00``.
+
+        That ``-$300.00`` is the pre-opening double count plan step X-f3c-2b
+        closes -- and the card naming it is the point, where the old behaviour
+        rendered ``--`` and said nothing.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -5470,15 +5486,16 @@ class TestCashAnchorHistory:
             assert opening.is_opening is True
             assert opening.observed_on == periods[2].start_date
             assert opening.recorded == Decimal("2746.58")
-            assert opening.ledger is None
-            assert opening.correction is None
-            # Non-vacuity: the walk really does hold a non-zero figure there,
-            # so ``None`` is this entry WITHHOLDING one rather than the walk
-            # having nothing to report.
+            assert opening.ledger == Decimal("3046.58")
+            assert opening.correction == Decimal("-300.00")
+            # Non-vacuity: the correction is non-zero because a real record
+            # sits before the books opened, not because the account is empty.
+            # The row's two cells ARE the walk's own figures, read back.
             walk = cash_ledger.walk_cash_ledger(later.id, ctx.scenario_id)
-            assert assertion_corrections(walk)[0].balance_before == Decimal(
-                "300.00",
-            )
+            booked = assertion_corrections(walk)[0]
+            assert booked.balance_before == Decimal("3046.58")
+            assert booked.delta == Decimal("-300.00")
+            assert walk.opening.opening_equity == Decimal("2746.58")
 
     def test_a_modelled_account_withholds_the_pair_on_every_row(
         self, app, db, seed_user, seed_periods_today,
@@ -5535,12 +5552,20 @@ class TestCashAnchorHistory:
     ):
         """A PLAIN account with ONE assertion still reconciles.
 
-        The trap this test exists for: ``any(row.correction is not None)``
-        looks like a serviceable definition of ``reconcilable`` and is wrong
-        exactly here.  Such an account's only row is its opening, whose pair is
-        withheld for the ruled reason -- so an inferred flag would hide the
-        columns on an account that reconciles perfectly well, and every freshly
-        created checking account would render the wrong card.
+        The trap this test exists for: an inferred definition of
+        ``reconcilable`` read off the ROWS is wrong exactly here.  A freshly
+        created account's one row corrects ``$0.00``, because its books opened
+        at the balance its owner typed -- so ``any(row.correction)`` is falsey
+        and would hide the reconciliation columns on the healthiest account
+        there is.
+
+        *The trap was sharper still until plan step X-f3c-2a: that single row
+        was the OPENING, whose pair was withheld outright, so even
+        ``any(row.correction is not None)`` -- the careful spelling -- failed
+        here.  The suppression is gone and the trap survives it, which is why
+        the flag is read from
+        :func:`~app.services.account_projection.classify_account` rather than
+        inferred at all.*
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -5555,7 +5580,12 @@ class TestCashAnchorHistory:
             )
 
             assert [row.is_opening for row in history.rows] == [True]
-            assert history.rows[0].correction is None
+            # A freshly created account's books open at what its owner typed,
+            # so its one row corrects $0.00 -- NOT ``None``.  That is what makes
+            # the trap in the docstring above live: ``any(row.correction)`` is
+            # falsey here, and would hide the columns on the healthiest account
+            # there is.
+            assert history.rows[0].correction == Decimal("0.00")
             assert history.reconcilable is True
 
     def test_a_back_dated_row_carries_the_day_it_was_entered(

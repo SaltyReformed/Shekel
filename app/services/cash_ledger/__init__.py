@@ -132,7 +132,9 @@ from ._clearing import (
 )
 from ._events import (
     CashAnchorFact,
+    CashOpeningFact,
     CashSourceFact,
+    account_opening_fact,
     cash_anchor_facts,
     coverage_for,
     settled_cash_facts,
@@ -160,6 +162,7 @@ __all__ = [
     "governing_anchor_on",
     "CashAnchorFact",
     "CashLedgerWalk",
+    "CashOpeningFact",
     "CashSourceFact",
     "ClearableLine",
     "ReconciledThrough",
@@ -168,6 +171,7 @@ __all__ = [
     "baseline_amount_basis",
     "amount_rule",
     "amounts_by_id",
+    "account_opening_fact",
     "cash_anchor_facts",
     "coverage_for",
     "contributed_amount",

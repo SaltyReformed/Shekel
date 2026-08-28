@@ -278,6 +278,39 @@ class LoanAnchorSourceEnum(enum.Enum):
     TRACKING_START = "tracking_start"
 
 
+class AccountOpeningSourceEnum(enum.Enum):
+    """Where an ``account_openings`` row's figure CAME FROM (plan step X-f3c-2a).
+
+    An account's opening equity is what it held before its records begin, and
+    the two members answer the one question a reader of that figure has: did a
+    HUMAN state it, or did the app compute it?  The distinction is financial
+    rather than clerical.  A ``MIGRATION_DERIVED`` figure is the pre-X-f3c-2a
+    inferred rule frozen -- the earliest assertion minus the movements it
+    already contained -- and finding **N-275** measures one of them wrong by
+    ``$436.05`` (account 1's opening asserts ``$2,746.58`` for 2026-03-27 where
+    the bank's own closing that day is ``$3,182.63``).  A ``USER_DECLARED``
+    figure is one somebody actually asserted.  Reading which is which off the
+    row is what lets a later surface say "this opening has never been
+    confirmed" instead of presenting a guess and a fact identically.
+
+    Values match ``ref.account_opening_sources.name``.  The loan twin is
+    :class:`LoanAnchorSourceEnum`, and the shape is deliberately the same: a
+    typed provenance column on an append-only balance record, resolved through
+    ``ref_cache`` and compared by ID.
+    """
+
+    # The figure a human stated: ``account_service.create_account`` writing an
+    # account's declared opening balance, which IS its opening equity because a
+    # just-created account has no records for the assertion to already contain.
+    USER_DECLARED = "user_declared"
+    # The figure the X-f3c-2a migration computed for an account that already
+    # existed, from the posted ledger's own ``account_opening`` entry.  It
+    # reproduces what every balance already rested on, so the migration moves
+    # ``$0.00`` -- but it is a DERIVATION preserved, not an observation, which
+    # is exactly what N-275 is about.
+    MIGRATION_DERIVED = "migration_derived"
+
+
 class EmployerContributionTypeEnum(enum.Enum):
     """Employer retirement-contribution type values (#38).
 

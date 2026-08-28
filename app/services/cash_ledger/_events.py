@@ -90,6 +90,7 @@ from decimal import Decimal
 
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
+from app.models.account_opening import AccountOpening
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.utils.balance_predicates import (
@@ -103,6 +104,49 @@ from ._amounts import ReconciledThrough
 from ._cash_leg import settled_cash_leg
 from ._clearing import StatementCoverage, statement_coverage
 from ._facts import _unwindowed_contributing_rows
+
+
+@dataclass(frozen=True)
+class CashOpeningFact:
+    """What an account held BEFORE its records begin, as a loaded fact.
+
+    The governing :class:`~app.models.account_opening.AccountOpening` row for
+    one account (plan step **X-f3c-2a**, ruling **R-GX**), read once per walk
+    and carried on :class:`~._walk.CashLedgerWalk` beside the assertions and the
+    movements.  It is the LEVEL the fold's running total starts from: every
+    balance the app renders is this figure plus what the records say happened
+    since.
+
+    **It replaces a derivation, and the model docstring lists the four defects
+    that derivation caused.**  Until this step the same quantity was recomputed
+    on every read as "the earliest assertion minus the movements dated at or
+    before it" (ruling **R-I**), which made it move when an assertion was
+    back-dated, differ between scenarios, impossible to correct, and derived a
+    second time by the posted ledger.
+
+    Attributes:
+        opening_id: The ``budget.account_openings`` row's own id -- the
+            restatement this fact is, so a reader can tell two apart.
+        account_id: The account whose books these are.
+        opened_on: The civil day the books opened.  The ``account_opening``
+            journal entry is dated on it, which is what stops a back-dated
+            assertion re-dating that entry.
+        opening_equity: The capital the books opened with, LEDGER-NATIVE and
+            in the same sign convention as
+            :attr:`CashAnchorFact.anchor_balance`.
+        source_id: ``ref.account_opening_sources.id`` -- whether a human stated
+            this figure or the X-f3c-2a migration derived it.  Carried because
+            a derived figure is the old inference frozen and may be WRONG
+            (finding **N-275** measures one wrong by ``$436.05``), so a surface
+            must be able to tell a guess from an observation.  The walk itself
+            never branches on it: an opening is an opening whatever wrote it.
+    """
+
+    opening_id: int
+    account_id: int
+    opened_on: date
+    opening_equity: Decimal
+    source_id: int
 
 
 @dataclass(frozen=True)
@@ -365,6 +409,73 @@ class CashSourceFact:
     settled_on: date
     reconciled_by_id: "int | None"
     delta: Decimal
+
+
+def account_opening_fact(account_id: int) -> CashOpeningFact:
+    """Return *account_id*'s GOVERNING opening-equity record.
+
+    The level a cash fold starts from (plan step **X-f3c-2a**).  The table is
+    append-only, so an account may carry several rows -- each a restatement of
+    what its books opened with -- and the one with the greatest
+    ``(created_at, id)`` governs.
+
+    **The order is the RECORDING instant, and that is what makes it safe.**
+    The positional read this step deletes (``is_opening = index == 0``) ordered
+    by ``observed_on``, a business date any owner may back-date, so an ordinary
+    act silently re-elected the opening.  ``created_at`` is set by the database
+    on INSERT and no door lets a user move it, so "the latest restatement" is
+    monotone by construction.  ``id`` breaks a same-instant tie, exactly as
+    :func:`~._facts._governing_row` breaks one for an assertion, and for the
+    same reason: without it the plan decides which of two rows is authoritative.
+
+    **It RAISES on an account with no row, and that is reachable only through a
+    broken invariant.**  Every account gets one at creation
+    (``account_service.create_account``) and migration ``a7c41f9d2b60``
+    backfilled every account that predated the table -- including the two
+    amortizing loans, because ``balance_at.balance_at`` falls through to this
+    fold for an amortizing account carrying no ``LoanParams``.  Answering a
+    missing row with ``Decimal("0.00")`` was the alternative and it is exactly
+    the fabrication this step exists to delete: it would silently move every
+    balance on the account to a level nothing recorded.  The same fail-loud
+    placement :func:`~._facts.resolve_anchor` documents for the assertion half.
+
+    Args:
+        account_id: The account whose opening to load.
+
+    Returns:
+        The account's governing :class:`CashOpeningFact`.
+
+    Raises:
+        RuntimeError: When the account carries no ``AccountOpening`` row --
+            a broken invariant, not an empty state.
+    """
+    row = (
+        db.session.query(AccountOpening)
+        .filter_by(account_id=account_id)
+        .order_by(
+            AccountOpening.created_at.desc(),
+            AccountOpening.id.desc(),
+        )
+        .first()
+    )
+    if row is None:
+        raise RuntimeError(
+            f"account_opening_fact: account id={account_id} has zero "
+            "AccountOpening rows.  Every account carries one -- "
+            "account_service.create_account writes it and migration "
+            "a7c41f9d2b60 backfilled every account that predated the table -- "
+            "so investigate any code path that constructed the Account row "
+            "without routing through the canonical factory.  A balance cannot "
+            "be folded without the level it starts from, and answering 0.00 "
+            "would move every figure on this account silently."
+        )
+    return CashOpeningFact(
+        opening_id=row.id,
+        account_id=account_id,
+        opened_on=row.opened_on,
+        opening_equity=Decimal(str(row.opening_equity)),
+        source_id=row.source_id,
+    )
 
 
 def cash_anchor_facts(account_id: int) -> list[CashAnchorFact]:

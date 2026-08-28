@@ -29,8 +29,9 @@ exists** (finding N-95, deleted at plan step X-g4b).
   brokerage and a Property are therefore not four dispatches; they are one
   producer given different facts, which is what ruling R-AD deleted the ladder
   to say.  Every period is answered: a past one reads the balance in force
-  THEN, and a period before the account's FIRST assertion reads that assertion
-  back-projected over the records it already contains (ruling R-I).
+  THEN, and a period before the account's FIRST assertion reads the account's
+  stored OPENING EQUITY plus whatever its records hold by then (plan step
+  X-f3c-2a, ruling R-GX).
 
 The seam does NOT reimplement the growth math.  It loads each account's
 modelled-contribution feed (its investment params, its deductions and the

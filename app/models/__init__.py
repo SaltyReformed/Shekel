@@ -38,6 +38,10 @@ from app.models.user import MfaConfig, User, UserSettings
 from app.models.pay_period import PayPeriod
 from app.models.pay_schedule import PaySchedule
 from app.models.account import Account, AccountAnchorHistory
+from app.models.account_opening import (
+    AccountOpening,
+    AccountOpeningImmutableError,
+)
 from app.models.category import Category
 from app.models.recurrence_rule import RecurrenceRule
 from app.models.recurrence_anchors import (
@@ -125,6 +129,8 @@ __all__ = [
     "PaySchedule",
     "Account",
     "AccountAnchorHistory",
+    "AccountOpening",
+    "AccountOpeningImmutableError",
     "Category",
     "RecurrenceRule",
     "RecurrenceWeekdayAnchor",

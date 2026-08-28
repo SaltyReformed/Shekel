@@ -93,7 +93,9 @@ from ._amounts import ReconciledThrough
 from ._clearing import StatementCoverage, statement_coverage
 from ._events import (
     CashAnchorFact,
+    CashOpeningFact,
     CashSourceFact,
+    account_opening_fact,
     cash_anchor_facts,
     settled_cash_facts,
 )
@@ -126,10 +128,20 @@ class CashLedgerWalk:
             BUSINESS date first, so the FIRST is the account's OPENING and the
             LAST is the balance in force.  Both properties below rest on that
             order and neither re-derives it (finding N-133 / R1).
+        opening: The account's governing
+            :class:`~._events.CashOpeningFact` -- what its books opened with,
+            and the level the fold's running total starts from (plan step
+            **X-f3c-2a**, ruling **R-GX**).  A FACT like the other two, loaded
+            in the same pass, which is what stops a consumer resolving it
+            separately from the movements it is the level for.  It is not
+            optional: :func:`~._events.account_opening_fact` raises for an
+            account carrying no record, because a balance folded from a
+            fabricated level is worse than no balance at all.
     """
 
     source_facts: list[CashSourceFact]
     anchor_facts: list[CashAnchorFact]
+    opening: CashOpeningFact
 
     @property
     def reconciled_through(self) -> ReconciledThrough:
@@ -239,10 +251,18 @@ def walk_cash_ledger(account_id: int, scenario_id: int) -> CashLedgerWalk:
         than raised because a walk of no facts is honestly empty; the caller that
         must distinguish "no account" asks the account row, never this emptiness.
     """
+    # The OPENING is loaded first and unconditionally (plan step X-f3c-2a).
+    # It is the level the fold starts from, so an account missing it has no
+    # balance to report -- and unlike the assertion list, an empty answer is
+    # not honest here: it would silently re-level every figure on the account
+    # to zero.  :func:`~._events.account_opening_fact` raises instead.
+    opening = account_opening_fact(account_id)
     anchors = cash_anchor_facts(account_id)
     if not anchors:
-        return CashLedgerWalk([], [])
-    return CashLedgerWalk(settled_cash_facts(account_id, scenario_id), anchors)
+        return CashLedgerWalk([], [], opening)
+    return CashLedgerWalk(
+        settled_cash_facts(account_id, scenario_id), anchors, opening,
+    )
 
 
 def dated_deltas(walk: CashLedgerWalk) -> list[tuple[date, Decimal]]:
@@ -287,18 +307,23 @@ def dated_deltas(walk: CashLedgerWalk) -> list[tuple[date, Decimal]]:
     (plan step E1a's finding, on the loan side).
 
     **Sources attributed BEFORE the account's opening assertion are emitted at
-    their OWN dates, and that is deliberate but not yet ruled.**  The opening's
-    correction absorbs them (they are inside the asserted balance), so the
-    running total lands exactly on the assertion at its date and every date
-    after -- but the prefix at a date BEFORE the opening is those sources summed
-    from a zero seed, which is not a balance the account ever had.  It is
-    faithful to the POSTED ledger, which holds the same partial sum there, so
-    keying them onto the opening instead would break the equality above.  On
-    production data 2026-07-25 two accounts carry the shape (Fidelity Savings 1
-    row, the Money Market 4), and the prefix reads ``$500.00`` on both.  What a
-    READER should answer before an account's first assertion is the fold's
-    ruling, recorded as finding **N-37** for plan step X-b; this leaf states the
-    facts and does not decide it.
+    their OWN dates, and the prefix they produce is no longer summed from
+    nothing.**  The opening's correction absorbs them (they are inside the
+    asserted balance), so the running total lands exactly on the assertion at
+    its date and every date after; and since plan step **X-f3c-2a** the fold
+    seeds at the account's stored OPENING EQUITY, so a date before the opening
+    reads that level plus the sources dated by then rather than a partial sum
+    from zero.  Finding **N-37** asked what a reader should answer there and was
+    RULED (**R-I**, 2026-07-25) and archived; X-f3c-2a replaced R-I's
+    back-projection with the recorded fact.
+
+    **What the shape still costs is that the recorded level may be the WRONG
+    one, and that is plan step X-f3c-2b.**  Eight production rows are dated
+    before their account's books opened, every one a transfer leg (measured
+    2026-08-27: Fidelity Savings 1, the Money Market 3 in and 1 out, the
+    Mortgage 2, the Van Loan 1) -- so for those accounts the day the owner
+    first recorded a balance is later than the day money first moved, and
+    ``opened_on`` names the former.
 
     **The clearing question and this re-key are on ONE granularity, and that is
     ruling R-DH.**  They were not: the replay partitioned on the INSTANT while

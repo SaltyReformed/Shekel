@@ -150,17 +150,28 @@ class TestTheThreeTiersSumToTheDaysMovement:
             assert facts[date(2026, 4, 6)].recorded == _ZERO
             assert facts[date(2026, 4, 6)].asserted == Decimal("300.00")
 
-    def test_the_OPENING_assertion_contributes_NOTHING_to_its_own_day(
+    def test_the_OPENING_EQUITY_is_level_and_the_first_assertion_is_movement(
         self, app, seed_user, seed_periods, db,
     ):
-        """Ruling R-I puts it in the SEED, so it is level and not movement.
+        """What an account opened with moves no day; a CORRECTION to it does.
 
-        **A FIRING control.**  Summing every correction by its day -- the
-        obvious spelling -- puts the opening's whole delta on the opening's own
-        day, which on the developer's real account is ``$798.03`` of movement
-        the bank is then expected to explain and never can.  The account's
-        first assertion is the ``seed_user`` fixture's own, so every case in
-        this file runs over it and only this one names it.
+        The two halves of plan step **X-f3c-2a**, on one fixture:
+
+        * the account's OPENING EQUITY is the fold's SEED, so it appears in no
+          day's ``asserted`` at all -- it is the level every day is measured
+          FROM, and putting it on a day would ask the bank to explain a
+          movement that never happened (on the developer's real account that
+          would have been ``$798.03`` of phantom movement);
+        * the FIRST ASSERTION is an ordinary correction, so its delta lands on
+          its own day like any other.  Here it is ``$0.00`` because the account
+          was created through ``create_account``, which records the opening
+          equity as the balance the owner typed -- so the books and the
+          declaration agree by construction.
+
+        *This test asserted ``opening.delta != 0`` and ``asserted == 0`` until
+        X-f3c-2a: the opening's delta WAS the account's opening equity then, and
+        the fold had to hold it out of every day to keep it off the bank's
+        books.  The exclusion is gone because the conflation is.*
         """
         with app.app_context():
             walk = cash_ledger.walk_cash_ledger(
@@ -173,7 +184,13 @@ class TestTheThreeTiersSumToTheDaysMovement:
                 seed_user, opening.observed_on, opening.observed_on,
             ).facts
 
-            assert opening.delta != _ZERO
+            # The seed is the level, and it is a real figure -- so "asserted is
+            # zero" below is a statement about where that figure lives, not an
+            # empty account.
+            assert walk.opening.opening_equity != _ZERO
+            # The declaration agrees with the books it opened, so it corrects
+            # nothing and the day carries no assertion movement.
+            assert opening.delta == _ZERO
             assert facts[opening.observed_on].asserted == _ZERO
 
     def test_the_three_tiers_sum_to_the_days_change_in_balance(

@@ -530,6 +530,10 @@ _FENCED_MODULE_RULINGS = {
         # unchanged in substance: a day is not a balance.
         "cash_anchor_facts",
         "settled_cash_facts",
+        # ``account_opening_fact`` (X-f3c-2a, R-GX) -- a LOADER of the stored
+        # ``account_openings`` row, on its neighbours' ground: returning a
+        # recorded balance is not computing one.  The FOLD seeds from it.
+        "account_opening_fact",
         # ``_walk`` (plan step X-a) -- the account's FACT stream and the
         # visible-day re-key of its source events.  Ruled NON-producers on
         # exactly the grounds ``loan_ledger``'s twins below are, and since plan

@@ -295,21 +295,35 @@ class TestWalkAccountLedger:
     """
 
     def test_opening_only_walk(self, app, db, seed_user):
-        """A fresh account walks to one opening correction from zero.
+        """A fresh account walks to its OPENING EQUITY plus an agreeing assertion.
 
-        Savings anchored $500.00 with no settled activity: one correction,
-        the opening, with ledger_before 0.00 (so its delta is the full
-        anchor, 500.00).
+        Savings anchored $500.00 with no settled activity.  TWO corrections
+        since plan step X-f3c-2a, and the pair is the point:
+
+        * the account's OPENING EQUITY -- ``budget.account_openings``, written
+          by ``create_account`` from the balance the owner typed -- booking
+          ``500.00 - 0.00`` onto the linked ledger against ``anchor_equity``;
+        * the owner's ASSERTION, whose ``ledger_before`` is already 500.00, so
+          it corrects NOTHING and books no journal entry.
+
+        The posted ledger is identical to what it was before the step: one
+        ``account_opening`` entry of $500.00.  What changed is where that
+        figure comes FROM -- a stored fact rather than the earliest assertion's
+        delta, so a BACK-DATED assertion can no longer re-elect it.
         """
         with app.app_context():
             account = _make_account(seed_user, "500.00")
             corrections = account_posting_service.walk_account_ledger(
                 account.id, seed_user["scenario"].id,
             )
-            assert len(corrections) == 1
-            assert corrections[0].anchor.is_opening is True
-            assert corrections[0].anchor.anchor_balance == Decimal("500.00")
+            assert len(corrections) == 2
+            assert corrections[0].opens_the_books is True
+            assert corrections[0].target_balance == Decimal("500.00")
             assert corrections[0].ledger_before == Decimal("0.00")
+            # The assertion agrees with the books, so it books nothing.
+            assert corrections[1].opens_the_books is False
+            assert corrections[1].target_balance == Decimal("500.00")
+            assert corrections[1].ledger_before == Decimal("500.00")
 
     def test_a_settle_on_an_earlier_day_is_inside_the_opening(
         self, app, db, seed_user,
@@ -317,9 +331,15 @@ class TestWalkAccountLedger:
         """A settle dated an EARLIER DAY than the opening is in ledger_before.
 
         Savings anchored $500.00; a $200.00 expense settled the day BEFORE the
-        origination assertion: the source is absorbed, so the opening's
-        ledger_before is -200.00 (and its delta 500 - (-200) = +700.00 -- the
-        anchor already reflected that spend).
+        origination assertion: the source is absorbed, so the ASSERTION's
+        ledger_before is 300.00 and its delta is ``500 - 300 = +200.00`` -- the
+        anchor already reflected that spend.
+
+        *It read ``ledger_before == -200.00`` and a ``+700.00`` delta until plan
+        step X-f3c-2a, because the walk seeded at ZERO and the opening's delta
+        had to carry the whole of the account's opening equity on top of the
+        correction.  The two are separated now: the books open at $500.00 and
+        the assertion corrects the $200.00 the records moved.*
 
         **The boundary is a DAY, inclusive, for every assertion kind** (ruling
         R-DH (a)).  This case is the strictly-earlier one, which no variant of
@@ -339,8 +359,10 @@ class TestWalkAccountLedger:
             corrections = account_posting_service.walk_account_ledger(
                 account.id, seed_user["scenario"].id,
             )
-            assert len(corrections) == 1
-            assert corrections[0].ledger_before == Decimal("-200.00")
+            assert len(corrections) == 2
+            assert corrections[0].ledger_before == Decimal("0.00")
+            assert corrections[0].target_balance == Decimal("500.00")
+            assert corrections[1].ledger_before == Decimal("300.00")
 
     def test_a_settle_on_the_openings_own_day_is_absorbed(
         self, app, db, seed_user,
@@ -349,10 +371,12 @@ class TestWalkAccountLedger:
 
         Savings anchored $500.00 with its opening pinned to 12:00 EDT; a $200.00
         expense settled an hour after it, and again an hour before it -- both the
-        SAME civil day.  The opening's ``ledger_before`` is -200.00 both times:
-        the settle is inside the asserted balance, so the opening's own delta is
-        ``500 - (-200) = +700.00`` and the walk lands on $500.00, the balance
-        the user typed.
+        SAME civil day.  The ASSERTION's ``ledger_before`` is 300.00 both times:
+        the settle is inside the asserted balance, so the assertion's delta is
+        ``500 - 300 = +200.00`` and the walk lands on $500.00, the balance the
+        user typed.  (It read -200.00 and a +700.00 delta until plan step
+        X-f3c-2a seeded the walk at the account's stored opening equity instead
+        of at zero.)
 
         **This is ruling R-DH (a) with no exception for the opening** (finding
         N-133 / F1, ruled 2026-07-31).  An assertion is the CLOSING balance for
@@ -400,8 +424,8 @@ class TestWalkAccountLedger:
             corrections = account_posting_service.walk_account_ledger(
                 account.id, seed_user["scenario"].id,
             )
-            assert len(corrections) == 1
-            assert corrections[0].ledger_before == Decimal("-200.00")
+            assert len(corrections) == 2
+            assert corrections[1].ledger_before == Decimal("300.00")
 
     def test_a_settle_dated_before_the_origination_is_absorbed(
         self, app, db, seed_user,
@@ -410,7 +434,9 @@ class TestWalkAccountLedger:
 
         The $200.00 expense carries the 2024 bootstrap period's start day, which
         precedes the origination assertion (test-run time, 2026+), so it is
-        absorbed: ledger_before -200.00.
+        absorbed: the assertion's ledger_before is 300.00 -- the account's
+        $500.00 opening equity less the $200.00 the records moved (it read
+        -200.00 against a zero seed until plan step X-f3c-2a).
 
         **It reached that day through a FALLBACK until plan step X-f1** -- the
         row carried no ``paid_at`` and every reader substituted its pay period's
@@ -429,7 +455,7 @@ class TestWalkAccountLedger:
             corrections = account_posting_service.walk_account_ledger(
                 account.id, seed_user["scenario"].id,
             )
-            assert corrections[0].ledger_before == Decimal("-200.00")
+            assert corrections[1].ledger_before == Decimal("300.00")
 
     def test_a_settled_row_with_no_day_is_REFUSED_by_this_walk_too(
         self, app, db, seed_user,
@@ -661,8 +687,12 @@ class TestWalkAccountLedger:
             corrections = account_posting_service.walk_account_ledger(
                 account.id, seed_user["scenario"].id,
             )
-            assert len(corrections) == 1
-            assert corrections[0].ledger_before == Decimal("50.00")
+            assert len(corrections) == 2
+            # [0] is the account's OPENING EQUITY; the assertion follows it and
+            # absorbs the pre-anchor transfer leg (plan step X-f3c-2a).
+            assert corrections[0].opens_the_books is True
+            assert corrections[0].ledger_before == Decimal("0.00")
+            assert corrections[1].ledger_before == Decimal("550.00")
 
     def test_trueup_day_partition(self, app, db, seed_user):
         """The CRITICAL-1 case: a true-up absorbs only settles up to its own day.
@@ -703,11 +733,18 @@ class TestWalkAccountLedger:
             corrections = account_posting_service.walk_account_ledger(
                 account.id, seed_user["scenario"].id,
             )
-            assert len(corrections) == 2
-            assert corrections[0].anchor.is_opening is True
+            assert len(corrections) == 3
+            assert corrections[0].opens_the_books is True
             assert corrections[0].ledger_before == Decimal("0.00")
-            assert corrections[1].anchor.is_opening is False
-            assert corrections[1].ledger_before == Decimal("300.00")
+            assert corrections[0].target_balance == Decimal("500.00")
+            # The ORIGINATION assertion: the books already read 500.00, so it
+            # corrects nothing.
+            assert corrections[1].opens_the_books is False
+            assert corrections[1].ledger_before == Decimal("500.00")
+            # The TRUE-UP: 500.00 opening less the 200.00 settle on its own
+            # side of the day boundary, asserted up to 350.00.
+            assert corrections[2].opens_the_books is False
+            assert corrections[2].ledger_before == Decimal("300.00")
 
     def test_two_assertions_on_one_day_both_absorb_it_in_recording_order(
         self, app, db, seed_user,
@@ -762,10 +799,16 @@ class TestWalkAccountLedger:
             corrections = account_posting_service.walk_account_ledger(
                 account.id, seed_user["scenario"].id,
             )
-            assert corrections[0].anchor.is_opening is True
-            assert corrections[0].ledger_before == Decimal("-75.00")
-            assert corrections[1].anchor.is_opening is False
-            assert corrections[1].ledger_before == Decimal("500.00")
+            assert corrections[0].opens_the_books is True
+            assert corrections[0].ledger_before == Decimal("0.00")
+            # The two assertions, in recording order.  The first absorbs the
+            # day's settle on top of the 500.00 the books opened with (it read
+            # -75.00 against a zero seed until plan step X-f3c-2a); the second
+            # sees the first's reset.
+            assert corrections[1].opens_the_books is False
+            assert corrections[1].ledger_before == Decimal("425.00")
+            assert corrections[2].opens_the_books is False
+            assert corrections[2].ledger_before == Decimal("500.00")
 
     def test_reverted_source_drops_out(self, app, db, seed_user):
         """A reverted settle nets to zero in the ledger and leaves the walk.
@@ -1594,8 +1637,15 @@ class TestSyncEntryPoints:
         A settle dated in the 2024 bootstrap period -- BEFORE the account's
         origination assertion -- so the effect-time self-heal at the
         ``sync_transaction_postings`` tail re-derives the opening in the same
-        transaction: the opening key moves to +700.00 (500 - (-200)) and the
-        account's total stays exactly on the 500.00 anchor.
+        transaction: the account's total stays exactly on the 500.00 anchor.
+
+        **The $700.00 is now TWO entries, and the split is the improvement**
+        (plan step X-f3c-2a).  The ``account_opening`` entry books the
+        account's opening EQUITY -- $500.00, the stored fact -- and the
+        $200.00 the records moved books as an ``account_trueup`` against the
+        origination assertion.  It was one $700.00 opening entry before, which
+        conflated capital brought on with a correction to it and is why a
+        BACK-DATED assertion could re-elect the whole figure.
 
         The row reached that day through the NULL-``paid_at`` fallback until
         plan step X-f1; it states the day directly now, and the figure is
@@ -1620,7 +1670,14 @@ class TestSyncEntryPoints:
             assert sum(
                 (_entry_legs(entry.id)[linked.id][0] for entry in openings),
                 Decimal("0"),
-            ) == Decimal("700.00")
+            ) == Decimal("500.00")
+            trueups = _correction_entries(
+                account.id, scenario_id, PostingSourceEnum.ACCOUNT_TRUEUP,
+            )
+            assert sum(
+                (_entry_legs(entry.id)[linked.id][0] for entry in trueups),
+                Decimal("0"),
+            ) == Decimal("200.00")
 
     def test_wired_trueup_and_revert_self_heal_end_to_end(
         self, app, db, seed_user,

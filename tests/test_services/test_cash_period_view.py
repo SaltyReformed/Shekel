@@ -329,10 +329,19 @@ class TestTheSubtotalsCountEveryAttributedRow:
         is restamped to 01-31 (finding N-132 / R8: a purchase gets inside a
         declared balance by the user declaring the balance after it posted), so
         that assertion absorbs the ``$120.00`` and the balance stays
-        ``1000 - 80 = $920.00``.  Both remainders stay ``$0.00``: 01-31 is
+        ``1000 - 80 = $920.00``.  ``period_timing`` stays ``$0.00``: 01-31 is
         inside period 2's own span so the cash clock and the budget clock agree,
-        the due date is past ``as_of + 1`` so ruling R-G's clamp is a no-op, and
-        the OPENING assertion is excluded from ``book_vs_bank`` by ruling R-I.
+        and the due date is past ``as_of + 1`` so ruling R-G's clamp is a no-op.
+
+        ``book_vs_bank`` reads ``$120.00``, and that is plan step X-f3c-2a
+        rather than a defect here.  The books opened at ``$1,000.00``; the
+        posted purchase took them to ``$880.00``; the owner then declared
+        ``$1,000.00``, which is a ``+$120.00`` correction and belongs on the row
+        that holds what the app did not know.  *It read ``$0.00`` until
+        X-f3c-2a, because the opening assertion was excluded from this row
+        outright -- the fold had swallowed its whole delta into the seed
+        (ruling R-I), so what remained was not a correction anyone could
+        report.*
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         # The opening is the account's ONLY assertion, so it is what absorbs
@@ -354,7 +363,7 @@ class TestTheSubtotalsCountEveryAttributedRow:
         )[seed_periods[2].id]
         assert figures.expense == Decimal("200.00")
         assert figures.period_timing == Decimal("0.00")
-        assert figures.book_vs_bank == Decimal("0.00")
+        assert figures.book_vs_bank == Decimal("120.00")
         assert figures.balance == Decimal("920.00")
 
 
@@ -455,25 +464,33 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         assert figures.book_vs_bank == Decimal("500.00")
         assert figures.balance == Decimal("1500.00")
 
-    def test_the_opening_assertion_books_nothing_in_its_own_period(
+    def test_the_OPENING_EQUITY_books_nothing_but_a_correction_to_it_does(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """Ruling R-I puts the OPENING in the fold's seed, not in a column.
+        """Plan step X-f3c-2a: the SEED is level; the assertion is movement.
 
-        Opening asserted 2026-01-05 at ``$1,000.00``, inside period 0
-        (2026-01-02..01-15), with a ``$400.00`` expense already settled 01-03 --
-        two days before it, in the same column.
+        Books opened at ``$1,000.00``, asserted 2026-01-05 inside period 0
+        (2026-01-02..01-15), with a ``$400.00`` expense settled 01-03 -- two
+        days BEFORE the books opened, in the same column.
 
-        Hand-computed.  The fold back-projects: the records at or before the
-        opening sum to ``-$400.00``, so the seed is
-        ``1000.00 - (-400.00) = $1,400.00`` and the account read ``$1,400.00``
-        before the spend.  Period 0 therefore changes by
-        ``1000.00 - 1400.00 = -$400.00``, which its own expense row explains in
-        full -- BOTH remainders ``$0.00``.  Counting the opening's ``+$1,400.00``
-        correction here would claim a jump the balance never took, and it is
-        ``book_vs_bank`` specifically that it would land on (an assertion is
-        what that row holds), so pinning that half at ``$0.00`` is what makes
-        this test name the rule it is about.
+        Hand-computed.  The account reads its stored ``$1,000.00`` before the
+        spend, ``$600.00`` after it, and the assertion resets it to
+        ``$1,000.00`` -- a ``+$400.00`` correction, which is what
+        ``book_vs_bank`` holds.  Period 0's balance therefore changes by
+        ``$0.00`` overall: the expense row's ``-$400.00`` and the assertion's
+        ``+$400.00`` cancel, and BOTH are reported rather than netted away.
+
+        **That ``$400.00`` is the pre-opening double count made visible**, and
+        it is the shape plan step X-f3c-2b closes by refusing a movement dated
+        before an account's books open.  The remainder naming it is the correct
+        reporting of it: the app cannot explain that period's arithmetic from
+        its rows alone, and says so.
+
+        *This asserted ``book_vs_bank == 0.00`` and a ``$1,400.00`` pre-period
+        balance until X-f3c-2a.  Ruling R-I back-computed a ``$1,400.00`` seed
+        so the expense would be explained in full and the remainder would read
+        clean -- a figure nothing recorded, chosen to make a disagreement
+        disappear.*
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         restamp_opening_assertion(db.session, account, _instant(2026, 1, 5))
@@ -487,14 +504,16 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         assert figures.expense == Decimal("400.00")
         assert figures.net == Decimal("-400.00")
         assert figures.period_timing == Decimal("0.00")
-        assert figures.book_vs_bank == Decimal("0.00")
+        assert figures.book_vs_bank == Decimal("400.00")
         assert figures.balance == Decimal("1000.00")
 
+        # The day before the window: the stored opening equity, flat, with no
+        # record yet against it.
         folded = balances_at(
             assembled_fold(account, read_pass(account, scenario, _EARLY_AS_OF)),
             [seed_periods[0].start_date - _ONE_DAY],
         )
-        assert folded[seed_periods[0].start_date - _ONE_DAY] == Decimal("1400.00")
+        assert folded[seed_periods[0].start_date - _ONE_DAY] == Decimal("1000.00")
 
     def test_the_clamp_moves_an_overdue_plan_out_of_its_own_column(
         self, db, seed_user, seed_periods,
@@ -670,9 +689,15 @@ class TestTheIdentityHoldsOnEveryPeriod:
         assert timing[4] == Decimal("0.00")
         assert timing[5] == Decimal("-250.00")
         assert timing[6] == Decimal("-50.00")
-        # The ONLY non-zero book-vs-bank in the run is period 4's true-up.
+        # TWO non-zero book-vs-bank columns, and the pair is the point since
+        # plan step X-f3c-2a: period 4 holds the true-up, and period 0 holds the
+        # FIRST assertion's own correction -- which this shape makes non-zero
+        # because ``_rich_shape`` settles rows before the books opened.  The
+        # opening used to be excluded from this row outright (ruling R-I moved
+        # its whole delta into the fold's seed), so the run read a single
+        # non-zero column.
         assert book[4] == Decimal("-1300.00")
-        assert {index for index, value in book.items() if value} == {4}
+        assert {index for index, value in book.items() if value} == {0, 4}
         assert len({figures[p.id].balance for p in seed_periods}) > 1
 
     def test_a_gapped_window_is_REFUSED_rather_than_reported_over(

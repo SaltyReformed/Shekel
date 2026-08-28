@@ -20,6 +20,7 @@ and ``_require_init()`` became ``require_init()``, uniformly, thirty-one times.
 """
 
 from app.enums import (
+    AccountOpeningSourceEnum,
     AcctCategoryEnum,
     AcctTypeEnum,
     AmountSourceEnum,
@@ -400,6 +401,30 @@ def loan_anchor_source_id(member):
     """
     require_init()
     return cache().enum_ids[LoanAnchorSourceEnum][member]
+
+
+def account_opening_source_id(member):
+    """Return the integer primary key for an AccountOpeningSourceEnum member.
+
+    Used by the opening-equity writer (``account_service.create_account``) and
+    by any reader telling a DECLARED opening from a MIGRATION-DERIVED one, to
+    compare against ``budget.account_openings.source_id`` without ever reading
+    the string ``name``.  Matches the project-wide IDs-for-logic invariant, and
+    is the exact twin of :func:`loan_anchor_source_id` one account kind over.
+
+    Args:
+        member: An ``AccountOpeningSourceEnum`` member
+                (e.g. ``AccountOpeningSourceEnum.USER_DECLARED``).
+
+    Returns:
+        int -- the ``ref.account_opening_sources.id`` value.
+
+    Raises:
+        RuntimeError: If the cache has not been initialized.
+        KeyError: If *member* is not a valid AccountOpeningSourceEnum member.
+    """
+    require_init()
+    return cache().enum_ids[AccountOpeningSourceEnum][member]
 
 
 def employer_contribution_type_id(member):

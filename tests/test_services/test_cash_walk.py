@@ -120,15 +120,22 @@ def _corrections(account, scenario):
 
 
 def _running_balance(account, scenario):
-    """Return the replay's final running balance from the fold's own two tiers.
+    """Return the replay's final running balance from the fold's own three tiers.
 
-    ``dated_deltas`` (the SOURCE facts) plus the assertion corrections -- which
-    is exactly what ``_cash_fold._actual_steps`` merges, minus the opening
-    compensator that only re-bases the seed.  It was ``dated_deltas`` alone
-    until plan step X-f3c-1, when the assertion steps left the leaf because
-    applying them is a policy an account's KIND decides (see
-    :func:`_corrections`); the total is the same total, assembled from two
-    named pieces instead of one.
+    The account's stored OPENING EQUITY, plus ``dated_deltas`` (the SOURCE
+    facts), plus the assertion corrections -- which is exactly what
+    ``_cash_fold._actual_steps`` merges.  It was ``dated_deltas`` alone until
+    plan step X-f3c-1, when the assertion steps left the leaf because applying
+    them is a policy an account's KIND decides (see :func:`_corrections`).
+
+    **The SEED term arrived at plan step X-f3c-2a and its absence before then
+    was not an omission**: the fold seeded at the opening's own correction and
+    booked an equal-and-opposite compensator, so the two cancelled and the
+    total equalled the zero-seeded walk.  With opening equity a stored fact
+    there is no compensator, so the seed is a real term and a reconstruction
+    that drops it is short by the whole of it.  *Every assertion in this module
+    kept its expected figure across that change, which is the evidence the
+    assembly moved and the money did not.*
 
     :class:`TestTheStepsReconstructTheReplay` proves this equals the replay's
     own terminal balance by reconstructing that balance INDEPENDENTLY from the
@@ -136,7 +143,7 @@ def _running_balance(account, scenario):
     is a convenience rather than the only statement of the total.
     """
     walk = walk_cash_ledger(account.id, scenario.id)
-    return sum(
+    return walk.opening.opening_equity + sum(
         (delta for _day, delta in dated_deltas(walk)),
         Decimal("0.00"),
     ) + sum(
@@ -883,11 +890,16 @@ class TestPreOpeningSources:
         """At and after the opening the answer is correct, and that is the half
         the walk owes.
 
-        Hand-computed: a $500.00 expense attributed 2026-01-15, an opening
-        asserting $1,000.00 on 2026-02-01.  ``balance_before`` is -$500.00, so
-        the opening's correction is $1,500.00 and the total lands on $1,000.00
-        -- the asserted balance, with the pre-opening row absorbed exactly as
-        the posted ledger absorbs it.
+        Hand-computed: books opened at $1,000.00, a $500.00 expense attributed
+        2026-01-15, an assertion of $1,000.00 on 2026-02-01.
+        ``balance_before`` is $500.00 -- the opening equity carrying that spend
+        -- so the assertion's correction is $500.00 and the total lands on
+        $1,000.00, the asserted balance, with the pre-opening row absorbed
+        exactly as the posted ledger absorbs it.
+
+        *The pair read -$500.00 / $1,500.00 until plan step X-f3c-2a seeded the
+        replay at the stored opening equity instead of at zero.  The TOTAL is
+        unchanged, which is the half this test exists for.*
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
@@ -900,8 +912,8 @@ class TestPreOpeningSources:
         db.session.commit()
 
         before, delta = _corrections(account, scenario)[opening_at]
-        assert before == Decimal("-500.00")
-        assert delta == Decimal("1500.00")
+        assert before == Decimal("500.00")
+        assert delta == Decimal("500.00")
         assert _running_balance(account, scenario) == Decimal("1000.00")
 
     def test_the_prefix_before_the_opening_is_the_un_absorbed_partial_sum(
@@ -989,10 +1001,22 @@ class TestDegenerateShapes:
         assert walk.anchor_facts == []
         assert dated_deltas(walk) == []
 
-    def test_an_opening_with_no_prior_activity_corrects_from_zero(
+    def test_an_opening_that_agrees_with_the_books_corrects_NOTHING(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """The first assertion's ``balance_before`` is the empty prefix, 0.00."""
+        """The first assertion's ``balance_before`` is the account's OPENING EQUITY.
+
+        With no activity at all, the books read exactly what they opened with,
+        so the owner's first assertion moves them by nothing.  That ``$0.00``
+        is the healthy steady state for EVERY assertion, and since plan step
+        X-f3c-2a the first one is not exempt from it.
+
+        *It asserted ``before == 0.00`` and ``delta == 1000.00`` until then,
+        because the replay seeded at zero and the first assertion's delta had
+        to carry the whole of what the account held before its records began.
+        That quantity is ``budget.account_openings`` now, so the correction is
+        a correction.*
+        """
         account, scenario = seed_user["account"], seed_user["scenario"]
         opening = _restamp_opening(account, _instant(2026, 1, 1))
         db.session.commit()
@@ -1002,8 +1026,8 @@ class TestDegenerateShapes:
         before, delta = _corrections(account, scenario)[
             opening.created_at.astimezone(timezone.utc)
         ]
-        assert before == Decimal("0.00")
-        assert delta == Decimal("1000.00")
+        assert before == Decimal("1000.00")
+        assert delta == Decimal("0.00")
 
 
 class TestTheStepsReconstructTheReplay:
