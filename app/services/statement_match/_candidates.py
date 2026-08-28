@@ -916,7 +916,14 @@ def destinations_for(
     )
     rows = (
         db.session.query(Transaction)
-        .options(joinedload(Transaction.pay_period))
+        .options(
+            joinedload(Transaction.pay_period),
+            # ``tracks_purchases`` below reads ``template.is_envelope`` for
+            # every template-generated row, so the template travels with the
+            # scan for the same reason ``_transaction_candidates`` loads it:
+            # a predicate in the comprehension must not cost a query per row.
+            joinedload(Transaction.template),
+        )
         .filter(
             Transaction.account_id == account_id,
             Transaction.transfer_id.is_(None),
