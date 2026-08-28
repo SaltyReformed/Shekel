@@ -88,7 +88,10 @@ def rule_form_controls(page):
     return reader.controls
 
 
-def match_item(index=0, lines=(), transactions=(), entries=(), residual=None):
+def match_item(
+    index=0, lines=(), transactions=(), entries=(), residual=None,
+    scope=None,
+):
     """Return the form fields a TICKED match item submits.
 
     The FIELD NAMES ``_statement_review_body.html`` emits: the tick names the
@@ -116,6 +119,14 @@ def match_item(index=0, lines=(), transactions=(), entries=(), residual=None):
             difference the screen showed (plan step ``bank_import:X-f6d-4``).
             ``None`` leaves the field off entirely, which is what an unticked
             checkbox submits.
+        scope: The pass whose render this item is standing in for, or ``None``
+            for one derived per row.  **A page renders ONE scope and emits
+            every item off it**, so a case building several items for a single
+            Apply passes the same one -- which is both faithful to what the
+            screen does and the difference between one derivation and one per
+            row.  :func:`~tests.test_services.test_statement_match._builders
+            .a_reviewed_token` carries the freshness contract: the scope must
+            be derived after every row it will be asked about is staged.
 
     Returns:
         The form fields, as a plain ``dict`` for the test client.
@@ -124,9 +135,10 @@ def match_item(index=0, lines=(), transactions=(), entries=(), residual=None):
         "apply": [str(index)],
         f"match-{index}-line_ids": [str(line.id) for line in lines],
         f"match-{index}-rows": (
-            [a_reviewed_token(txn, RowKind.TRANSACTION)
+            [a_reviewed_token(txn, RowKind.TRANSACTION, scope)
              for txn in transactions]
-            + [a_reviewed_token(entry, RowKind.PURCHASE) for entry in entries]
+            + [a_reviewed_token(entry, RowKind.PURCHASE, scope)
+               for entry in entries]
         ),
     }
     if residual is not None:

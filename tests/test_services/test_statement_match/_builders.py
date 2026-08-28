@@ -730,7 +730,7 @@ def a_submission(
     )
 
 
-def a_reviewed_token(orm_row, kind):
+def a_reviewed_token(orm_row, kind, scope=None):
     """Return the form value the review screen would emit for *orm_row*.
 
     **Through the real producer, never composed here** -- a helper that spelled
@@ -751,12 +751,41 @@ def a_reviewed_token(orm_row, kind):
         orm_row: A ``Transaction`` or ``TransactionEntry``.
         kind: Which of the two it is
             (:class:`~app.services.statement_match.RowKind`).
+        scope: The pass to read the reviewed state out of, or ``None`` to
+            derive one for this row alone.
+
+            **Passing one is what the SCREEN does**, and deriving per row is a
+            shape the app never has: a render builds ONE
+            :class:`~app.services.statement_match.ReviewScope` and emits every
+            row's token off it.  It is also the twin of :func:`a_submission`,
+            which has always taken the scope rather than building its own.
+
+            **The caller owns FRESHNESS, and that is the whole of the
+            contract**: the scope must be derived after every row it will be
+            asked about is staged.  A row it has not got is not an error here
+            -- it takes the not-offerable fallback below, which is deliberate
+            and therefore SILENT, so a stale scope downgrades a live row's
+            token to ``0.00`` rather than failing.  :func:`a_scope` states the
+            same hazard from the other side ("a case that stages a row and then
+            re-uses an older scope is asserting against a state the app would
+            never have"), which is why this is an explicit parameter and not a
+            cache: a cache would make the staleness a property of call order
+            that no caller declared.
+
+            **Why it exists**: ``ReviewScope.build`` is the expensive object in
+            this package -- 0.59-0.75 s and 202 queries on the developer's own
+            account, and the reason ``apply_statement_review`` derives two per
+            request rather than one per act (finding **N-306**).  A case
+            tokenising many rows and building one scope EACH is the same shape
+            at the test tier, and one such case (51 acts) was the slowest test
+            in the suite and timed out in CI.
 
     Returns:
         Its ``"<kind>:<row_id>:<cash_amount>:<version_id>"`` token.
     """
-    account = db.session.get(Account, orm_row.account_id)
-    scope = ReviewScope.build(account.user_id, account.id)
+    if scope is None:
+        account = db.session.get(Account, orm_row.account_id)
+        scope = ReviewScope.build(account.user_id, account.id)
     for candidate in scope.candidates.rows:
         if candidate.kind is kind and candidate.row_id == orm_row.id:
             return as_reviewed(candidate).token
