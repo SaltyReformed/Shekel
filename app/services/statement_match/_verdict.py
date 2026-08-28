@@ -101,7 +101,19 @@ _ALREADY_EXPLAINED = (
 #: differ because the acts do: a line the pass never finished looking at is a
 #: reason to go and look, and one whose destination a proposal explains is a
 #: reason to accept that proposal first.
-_LOOK_FIRST = "Check the match form below before recording it as new spending."
+#:
+#: **Neither names a POSITION**, and the first one did until plan step
+#: ``bank_import:X-gf-3b`` (ruling **bank_import:R-HC**): it read *"Check the
+#: match form BELOW"*, which went false the moment that form moved to a surface
+#: of its own.  A service sentence naming where something sits on a page is
+#: coupled to a layout the service cannot see -- five sentences on this screen
+#: carried that coupling and all five broke in one step.  What the sentence
+#: states is the ACT; the row renders the link, which is the one fact a service
+#: may not build (:attr:`~._bars.ParkedLine.answer_door` sets the precedent).
+_LOOK_FIRST = (
+    "Match it against rows you already hold before recording it as new "
+    "spending."
+)
 _ACCEPT_FIRST = "Accept that match first, or file this line somewhere else."
 
 
@@ -185,6 +197,11 @@ def _proposed_destinations(
 def _look_first(gap: str) -> str:
     """Return what the screen says about a line the pass did not finish.
 
+    **The no-rule twin of** :data:`_LOOK_FIRST`, and it lost the same
+    positional clause for the same reason (plan step ``bank_import:X-gf-3b``):
+    it read *"check the match form BELOW"*, which the hand-build form's move to
+    its own surface made false.
+
     Args:
         gap: The pass's own sentence (:func:`~._gaps.search_gap`).
 
@@ -192,8 +209,8 @@ def _look_first(gap: str) -> str:
         The sentence, for a line no rule reaches.
     """
     return (
-        f"Before recording this as new spending, check the match form below: "
-        f"{gap}."
+        f"Before recording this as new spending, match it against rows you "
+        f"already hold: {gap}."
     )
 
 

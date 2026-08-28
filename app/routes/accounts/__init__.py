@@ -114,6 +114,7 @@ from app.routes.accounts import detail  # noqa: F401, E402
 from app.routes.accounts import statements  # noqa: F401, E402
 from app.routes.accounts import statement_matches  # noqa: F401, E402
 from app.routes.accounts import statement_register  # noqa: F401, E402
+from app.routes.accounts import statement_workbench  # noqa: F401, E402
 from app.routes.accounts import bank_agreement  # noqa: F401, E402
 
 

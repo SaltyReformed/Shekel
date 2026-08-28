@@ -89,9 +89,9 @@ class ReviewBounds:
     def any_limit(self) -> bool:
         """Return whether this pass left anything unexamined.
 
-        The one question the template asks, answered here rather than as four
-        ``or``-ed truth tests in a Jinja condition -- where a fifth limit
-        added later would silently not appear.
+        The one question the QUEUE's template asks, answered here rather than
+        as four ``or``-ed truth tests in a Jinja condition -- where a fifth
+        limit added later would silently not appear.
         """
         return bool(
             self.before_calendar_count
@@ -99,6 +99,42 @@ class ReviewBounds:
             or self.unpriceable_count
             or self.impossible_day_count
         )
+
+    @property
+    def any_pick_list_limit(self) -> bool:
+        """Return whether anything is missing from the WORKBENCH's two lists.
+
+        Plan step ``bank_import:X-gf-3b``, ruling **bank_import:R-HC**.  The
+        hand-build form is a surface of its own now, and it renders two lists
+        that are each SHORTER than the fact they are captioned as: so it owes
+        the same *no silent caps* sentence :attr:`any_limit` owes the queue.
+
+        **Two of the four limits, and the partition is decided HERE rather
+        than by the template picking two** -- which would be this package's own
+        *a template restating a partition is a second place for it to be
+        wrong* stated a sixth time.  Each of the four was traced to the list it
+        does or does not bound:
+
+        * :attr:`before_calendar_count` bounds the LINE list.
+          ``_reads._split_at_calendar_open`` removes those lines before
+          ``unmatched`` is derived, so 130 of the developer's own 361 are
+          absent from it.
+        * :attr:`unpriceable_count` bounds the ROW list.
+          :class:`~._offers.Candidates` keeps unpriceable ids OUT of ``rows``,
+          so they never reach ``unmatched_rows`` either.
+        * :attr:`impossible_day_count` bounds NEITHER.
+          ``_leftovers._creatable_lines`` drops those lines from ``creatable``
+          only; they stay in ``unmatched`` and the line list renders them, so
+          naming them here would claim an absence that is not one.
+        * :attr:`crowded_days` bounds NEITHER, and it is the one worth stating
+          why.  A crowded day means the GROUP search did not run, which leaves
+          MORE lines unexplained rather than fewer -- every one of them in the
+          line list.  The reason such a line is still there is already printed
+          against the line itself (:func:`search_gap`), where it can be acted
+          on, which is the same argument plan step ``bank_import:X-f6d-3``
+          made when it moved the near tier's bound out of the panel.
+        """
+        return bool(self.before_calendar_count or self.unpriceable_count)
 
 
 def search_gap(

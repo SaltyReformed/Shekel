@@ -599,9 +599,16 @@ def _match_items(form) -> list:
     """Return the match items the form ticked, in rendered order.
 
     A match item is applied only when its index appears in ``apply``, which is
-    what a ticked checkbox submits.  The hand-build form renders that index as
-    a HIDDEN field instead, because its whole submission IS one group -- there
-    is nothing to tick that is not already a member.
+    what a ticked checkbox submits.
+
+    **Every index it reads is now a rendered POSITION**, and until plan step
+    ``bank_import:X-gf-3b`` one was not: the hand-build form shared this
+    screen and submitted the reserved index ``"hand"``.  That form is a surface
+    of its own now with a door of its own
+    (:func:`hand_match_payload`), so this function reads the reviewed pass and
+    nothing else.  :func:`~app.schemas.validation._helpers.order_token_key`
+    still tolerates a non-numeric token, and must: that is what stops a crafted
+    ``apply=%C2%B2`` raising inside the sort.
 
     Args:
         form: The request's ``MultiDict``.
@@ -717,6 +724,61 @@ def _income_items(form) -> list:
         if field.startswith(_INCOME_PREFIX)
     ]
     return [{"line_id": key} for key in sorted(keys, key=order_token_key)]
+
+
+def hand_match_payload(form) -> dict:
+    """Return one hand-built group as :class:`StatementMatchSchema` loads it.
+
+    Plan step ``bank_import:X-gf-3b``, ruling **bank_import:R-HC**.  The
+    workbench posts ONE group -- its whole submission IS the match -- so this
+    reads three flat keys and there is no ordering token to sort, no prefix to
+    strip and no list of items to build.
+
+    **THE ABSENT INDEX IS THE POINT, and it deletes a money-correctness hazard
+    rather than moving it.**  This group rode :func:`_match_items` while the
+    hand-build form shared a page with the reviewed pass, under the reserved
+    index ``"hand"``.  That index was never a label: proposal 0 emits
+    ``apply=0`` and ``match-0-line_ids``, this form emitted the same shape, and
+    the only thing keeping one submission's ticks out of the other's was that
+    they were separate ``<form>`` elements -- **a property of the document**.
+    Adding an ``hx-include``, or merging the two controls, would have unioned
+    proposal 0's hidden row ids with this group's ticks into ONE act naming
+    rows the owner never grouped.  Two surfaces posting to two doors share no
+    namespace, so there is nothing left for that hazard to be expressed in.
+
+    **It reuses :class:`StatementMatchSchema` rather than declaring a schema of
+    its own.**  A hand-built group and a ticked proposal are the same ACT -- a
+    correspondence between bank lines and rows, with an accepted difference --
+    and they reach the same door (``_accept.record_match``).  A second schema
+    would be a second statement of what a match submission is, free to grade
+    ``residual`` less strictly than the one beside it, which is exactly what
+    :attr:`StatementMatchSchema.residual` records having cost once.
+
+    **It carries no validation of its own**, for the reason
+    :func:`batch_payload` states: every value it moves is a raw submitted
+    string, so a forged id and an unparseable figure are the schema's to refuse.
+
+    Args:
+        form: The request's ``MultiDict``.
+
+    Returns:
+        ``{"line_ids": [...], "rows": [...]}``, plus ``"residual"`` where the
+        consent box carried one.  **Omitted rather than sent as ``None``** when
+        it did not, so the schema's own ``load_default`` is the one statement
+        of what absence means -- and an EMPTY consent is untouched rather than
+        malformed, which is :func:`_match_items`' own founding principle: the
+        panel renders that box ``value=""`` and ``disabled`` in lockstep, so a
+        browser cannot send one, but a body that does must not 400 the act over
+        a field nobody filled in.
+    """
+    item = {
+        "line_ids": form.getlist("line_ids"),
+        "rows": form.getlist("rows"),
+    }
+    residual = form.get("residual")
+    if residual:
+        item["residual"] = residual
+    return item
 
 
 def batch_payload(form) -> dict:

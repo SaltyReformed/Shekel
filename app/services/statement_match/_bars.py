@@ -365,8 +365,8 @@ class ParkedLine:
     """One unexplained OUTFLOW that may not become a purchase.
 
     Ruling **R-GJ**'s other arm: a line the create door is closed for is not
-    hidden, it is PARKED -- listed with the reason, and still tickable in the
-    hand-build form below, which is where a card payment meets the payback rows
+    hidden, it is PARKED -- listed with the reason, and still tickable on the
+    hand-build surface, which is where a card payment meets the payback rows
     it repays.  Measured: the one Capital One line handled that way
     (`-$466.47`, 2026-06-17) is grouped with four ``CC Payback`` rows whose
     RECORDED figures sum to exactly `$466.47`, so that one needed no difference
@@ -414,11 +414,20 @@ class ParkedLine:
         restating a partition is a second place for it to be wrong, and here
         the two arms say opposite things about whether the owner has already
         decided.
+
+        **It states the BAR and stops there** (plan step
+        ``bank_import:X-gf-3b``, ruling **bank_import:R-HC**).  It used to end
+        *"If some of your own rows are what this paid, tick them together
+        BELOW and match them"*, and that clause went false the moment the
+        hand-build form moved to a surface of its own -- a sentence naming a
+        POSITION is coupled to a layout the service cannot see, and it was one
+        of five on this screen that broke together.  The act is offered as a
+        LINK on the row instead, which is where the URL can be built and where
+        the line it preselects is known; this sentence says why the create door
+        is shut, which is the fact it is derived to state.
         """
-        return (
-            f"{_core_sentence(self.barred_by, self.line.merchant, self.also_pays_an_account)}"
-            f"  If some of your own rows are what this paid, tick them "
-            f"together below and match them."
+        return _core_sentence(
+            self.barred_by, self.line.merchant, self.also_pays_an_account,
         )
 
     @property

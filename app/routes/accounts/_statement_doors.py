@@ -8,6 +8,15 @@ cross-file ``duplicate-code`` reported when the second one landed, and the
 report was right: three copies of a rollback-and-flash are three places for a
 refusal to stop being rendered.
 
+**TWO ANSWER SHAPES, and the split is the answer rather than the story.**
+:func:`run_statement_door` sets a flash and redirects;
+:func:`run_statement_fragment_door` re-renders the surface, because a per-item
+receipt overflows the 4 KB a browser stores for the signed session cookie a
+flash rides in.  The second arrived at plan step ``bank_import:X-gf-3b``, when
+the hand-build match form got a write door of its own and ``duplicate-code``
+reported the second copy of the fragment story -- the same report, one shape
+along.
+
 **The story, once:**
 
 * the act runs and the request commits, so the unit of work is the request and
@@ -33,10 +42,13 @@ from dataclasses import dataclass
 from typing import Callable
 
 from flask import Response, flash, redirect
+from flask_login import current_user
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.extensions import db
+from app.exceptions import ValidationError
 from app.routes._commit_helpers import DbErrorContext, handle_db_error
+from app.services.statement_match import ReviewScope
 
 
 @dataclass(frozen=True)
@@ -104,6 +116,237 @@ def run_statement_door(
     message, category = on_success(result)
     flash(message, category)
     return redirect(ctx.target)
+
+
+@dataclass(frozen=True)
+class StatementFragmentDoorContext:
+    """What one FRAGMENT-shaped statement door needs in order to fail well.
+
+    :class:`StatementDoorContext`'s twin, and a parameter object for the reason
+    ``CLAUDE.md``'s own too-many-arguments rule gives: a PUBLIC function over
+    the limit takes one, and only a private helper decomposes instead.
+
+    **Built by :func:`fragment_door` rather than at the call site**, and that
+    is what dissolved the ``duplicate-code`` this class was created in response
+    to.  Constructing it inline left the two doors with nine byte-identical
+    lines of configuration -- ``logger=``, the refusal lambda, the log-args
+    tuple, the fresh-scope render -- because two doors that differ only in
+    their payload and their surface CONFIGURE identically.  Extracting the
+    helper made the invariant half invariant in one place; what is left at each
+    call site is the two facts that genuinely differ.
+
+    Attributes:
+        logger: The calling module's logger, so a database error is logged
+            under the module that owns the door rather than under this one.
+        render: ``(scope, *, outcome=None, error=None) -> response``.  This
+            door's own surface.  **One callable for all three outcomes**, where
+            each door used to carry a ``_refused`` beside the success render
+            and state "answer with this door's body" twice: the designed 400
+            and the 200 carrying the receipt are the same page with a different
+            thing to say.
+        scope: The REQUEST's own pass, which every refusal arm renders from.  A
+            refused act wrote nothing, so it still describes the state that
+            survives -- and re-deriving on the ``SQLAlchemyError`` path would
+            run the very read whose failure is being handled, which escapes as
+            an unhandled 500 that htmx will not swap.
+        reread: ``() -> scope``.  A FRESH pass for the success arm, because the
+            act has just settled rows and moved days, so the one it was applied
+            against describes a state that no longer exists.
+        log_message: The ``%``-style message for a database error.
+        log_args: Its arguments.
+        db_error_message: What to tell the owner when the database refused.  It
+            names no table -- the traceback goes to the log -- and it ends the
+            way every refusal in this package does, which is true because
+            :func:`run_statement_fragment_door` owns the unit of work.
+
+    **There is no ``refusal`` field, and its sibling has one.**  That class
+    serves doors that genuinely differ -- the import door raises
+    ``StatementImportError`` -- while every fragment-shaped statement door
+    refuses through the ``ValidationError`` the service package raises
+    throughout.  A field with one possible value is configurability nobody
+    asked for.
+    """
+
+    logger: logging.Logger
+    render: Callable
+    scope: object
+    reread: Callable
+    log_message: str
+    log_args: tuple
+    db_error_message: str
+
+
+def fragment_door(  # pylint: disable=too-many-arguments
+    logger: logging.Logger,
+    *,
+    render: Callable,
+    scope,
+    account_id: int,
+    act: str,
+    db_error_message: str,
+) -> StatementFragmentDoorContext:
+    """Return the context for one fragment-shaped statement door.
+
+    Pylint: ``too-many-arguments`` (6/5) -- these six are the door's own
+    independent facts rather than a cohesive entity, and **the usual remedy is
+    circular here**: this function IS the parameter-object factory that
+    ``CLAUDE.md``'s rule points a public over-limit signature at, and wrapping
+    its arguments in a second value would be a parameter object for a parameter
+    object.  Five are what a door supplies (its logger, its surface, its pass,
+    its account, what it was doing) and the sixth is the one sentence the owner
+    reads.  Reducing the count by deriving ``db_error_message`` from ``act``
+    was tried and rejected: ``act`` is developer wording that names the door in
+    a log line, and the owner's sentence is not, so one string serving both
+    audiences makes one of them worse.
+
+    **The invariant configuration, stated once.**  Both doors that apply a
+    statement money pass report a database failure the same way -- same logger
+    call, same ``user_id``/``account_id`` arguments, same rollback-then-render
+    -- and re-derive the same fresh scope on success.  Written at the call
+    sites, that was nine identical lines apiece and pylint's cross-file
+    ``duplicate-code`` reported it correctly: two doors differing only in their
+    payload and their surface configure identically, so the configuration
+    belongs here.
+
+    Args:
+        logger: The calling module's logger.
+        render: ``(scope, *, outcome=None, error=None) -> response`` -- this
+            door's own surface.
+        scope: The request's own derived pass.
+        account_id: The account, for the fresh read and the log arguments.
+        act: What this door was doing, as an infinitive phrase, e.g.
+            ``"apply a statement review"``.  It is the only per-door part of
+            the failure log line, so the SENTENCE is written once here and
+            cannot end up saying two different things about one shape.
+        db_error_message: What to tell the owner when the database refused.
+
+    Returns:
+        The :class:`StatementFragmentDoorContext`.
+    """
+    return StatementFragmentDoorContext(
+        logger=logger,
+        render=render,
+        scope=scope,
+        # **Read AFTER the write, and only on the path that wrote** -- built
+        # here as a thunk rather than a value so nothing derives a second pass
+        # on the refusal arms, where the request's own is what must be shown.
+        reread=lambda: ReviewScope.build(current_user.id, account_id),
+        log_message=f"user_id=%d failed to {act} on account %d",
+        log_args=(current_user.id, account_id),
+        db_error_message=db_error_message,
+    )
+
+
+def run_statement_fragment_door(
+    ctx: StatementFragmentDoorContext,
+    act: Callable,
+    on_applied: Callable,
+):
+    """Run *act*, commit, and answer with this door's own surface either way.
+
+    :func:`run_statement_door`'s twin for the doors that answer with the SCREEN
+    rather than with a redirect, added at plan step ``bank_import:X-gf-3b``
+    when the hand-build form got a write door of its own and pylint's
+    cross-file ``duplicate-code`` reported the second copy of the story -- the
+    same report that produced its sibling, and right for the same reason: two
+    copies of a rollback-and-answer are two places for a refusal to stop being
+    rendered.
+
+    **Why the two cannot be one.**  A redirect door sets a flash and sends the
+    browser somewhere; these re-render the whole surface, because the ruled
+    failure policy is that a refused item leaves nothing behind while the rest
+    still land, each refusal quoted -- and flash messages ride in the signed
+    session cookie, where the longest sentence a batch item can carry measures
+    497 bytes against the 4 KB a browser will store.  Nine of those overflow
+    it, and an overflowed cookie is dropped, which logs the owner out.  A
+    single helper carrying both shapes would have to branch on which kind of
+    door called it, which is the caller-sniffing this package refuses.
+
+    **It owns the ANSWER as well as the failure**, unlike its sibling, and that
+    is what makes the fresh-scope-on-success rule structural: a door cannot
+    accidentally report a pass against the state that pass replaced, because it
+    no longer chooses which scope to render from.
+
+    The unit of work is the REQUEST: this function owns the commit, so a
+    failure outside a designed refusal writes nothing at all -- which is what
+    makes "nothing was changed" true rather than reassuring.
+
+    Args:
+        ctx: What this door needs in order to fail well
+            (:func:`fragment_door` builds it).
+        act: The service call, taking no arguments and returning whatever the
+            door wants to report.  It MUST NOT commit.
+        on_applied: ``result -> None``.  The audit event, called AFTER the
+            commit so an event asserting money moved cannot sit in the log for
+            a transaction that failed.  It does NOT render: the answer is this
+            function's, from the re-read pass.
+
+    Returns:
+        This door's surface -- carrying the outcome at 200, or one refusal
+        sentence as a designed 400.
+    """
+    try:
+        result = act()
+        db.session.commit()
+    except ValidationError as exc:
+        # **Nothing raises one from inside ``act`` on either door today, and
+        # the arm stands for the SURFACE rather than for a known caller**: a
+        # designed refusal escaping an htmx POST is answered by the app-wide
+        # handler with a page htmx will not swap (no marker header), so the
+        # owner presses the button and sees nothing at all.  This arm is the
+        # only thing that can answer with the screen, and it has a firing
+        # control -- ``test_a_refusal_raised_OUTSIDE_an_item_still_answers
+        # _with_the_screen``.
+        db.session.rollback()
+        return ctx.render(ctx.scope, error=str(exc))
+    except SQLAlchemyError:
+        db.session.rollback()
+        ctx.logger.exception(ctx.log_message, *ctx.log_args)
+        return ctx.render(ctx.scope, error=ctx.db_error_message)
+    on_applied(result)
+    return ctx.render(ctx.reread(), outcome=result)
+
+
+def outcome_counts(outcome) -> dict:
+    """Return one applied pass's money effects, as ``log_event`` keywords.
+
+    Stated ONCE for both doors that apply a
+    :class:`~app.services.statement_match.BatchOutcome` -- the reviewed pass
+    and the hand-built match -- because they write the same event about the
+    same value and a second copy of the list is a second place to forget a
+    field.  **Two were forgotten once already**: ``repriced_count`` and
+    ``residual_count`` were missing from the pass event from the day it was
+    written, and they are the two that move MONEY rather than dates.  Named by
+    adversarial financial review 2026-08-23.
+
+    **Every count, including the ones a given door cannot produce.**  A
+    hand-built match carries no creation and no income, so ``recorded_count``,
+    ``envelopes_created`` and ``deposited_count`` are structurally zero there
+    -- and they are still emitted, because an audit trail whose FIELDS depend
+    on which door wrote the row cannot be queried across the two.
+
+    Args:
+        outcome: The :class:`~app.services.statement_match.BatchOutcome` the
+            door applied.
+
+    Returns:
+        The keyword arguments, ready to splat into ``log_event``.
+    """
+    return {
+        "applied_count": outcome.applied_count,
+        "refused_count": outcome.refused_count,
+        "settled_count": outcome.settled_count,
+        "corrected_count": outcome.corrected_count,
+        "redated_count": outcome.redated_count,
+        "repriced_count": outcome.repriced_count,
+        "residual_count": outcome.residual_count,
+        # A STRING, because the audit trail stores what was written rather than
+        # a float of it -- the discipline every money field in this log keeps.
+        "residual_total": str(outcome.residual_total),
+        "recorded_count": outcome.recorded_count,
+        "envelopes_created": outcome.envelopes_created,
+        "deposited_count": outcome.deposited_count,
+    }
 
 
 def _messages(errors, path=()):
