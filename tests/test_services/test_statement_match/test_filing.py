@@ -604,7 +604,7 @@ class TestAPassThatCouldNotFinishLookingWITHHOLDS:
             assert [item.line.amount for item in filing.withheld] == [
                 Decimal("-10.89"),
             ]
-            assert "count that money twice" in filing.withheld[0].reason
+            assert "makes that match impossible to accept" in filing.withheld[0].reason
             assert _purchases_in(envelope) == []
 
 
@@ -864,7 +864,7 @@ class TestEveryBoundThePassPublishesWITHHOLDS:
     def _a_review(**bounds):
         """Return a ReviewSet publishing *bounds* and nothing else."""
         return ReviewSet(
-            proposals=(), unmatched=(), unmatched_rows=(), accepted=(),
+            proposals=(), unmatched=(), unmatched_rows=(),
             creatable=(), parked=(), recordable_inflows=(),
             merchants=MerchantSection(merchants=(), templates=()),
             bounds=ReviewBounds(

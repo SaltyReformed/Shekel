@@ -46,6 +46,7 @@ from tests._test_helpers import (
 )
 
 from ._builders import (
+    accepted_acts,
     a_bank_line,
     a_purchase,
     a_scope,
@@ -1003,7 +1004,7 @@ class TestAnAcceptedMatchStopsAgreeingWhenItStopsHolding:
 
     def _groups(self, seed_user):
         """Return the accepted groups the screen would render."""
-        return statement_match.review_set(a_scope(seed_user)).accepted
+        return accepted_acts(seed_user)
 
     def test_it_agrees_while_it_holds(self, app, db, seed_user):
         """The control, without which every arm below could pass vacuously."""
@@ -1071,13 +1072,13 @@ class TestAMatchStopsHoldingWhenAPURCHASELEAVESTHEACCOUNT:
             seed_user, statement, amount="-25.00", posted_on=bank_day,
         )
         _submit(seed_user, lines=[line], entries=[purchase])
-        before = statement_match.review_set(a_scope(seed_user)).accepted
+        before = accepted_acts(seed_user)
         assert before[0].agrees is True
 
         purchase.is_credit = True
         db.session.flush()
 
-        after = statement_match.review_set(a_scope(seed_user)).accepted
+        after = accepted_acts(seed_user)
         assert after[0].agrees is False
         assert after[0].rows[0].settled_on == bank_day, (
             "the day is untouched -- which is why a day-only test was blind"

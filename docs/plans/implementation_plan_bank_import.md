@@ -115,28 +115,48 @@ the constraints it leaves a LATER step are on that step's own entry.
       212,576 -- **79% of the page is two registers of decisions already made** -- while the work a
       routine import leaves is **two creatable lines** at 15,842 bytes, starting at byte 227,166.
       224 `<form>` elements, 64 selects, 96 checkboxes. It ticks with the last of its three leaves.
-- [ ] **X-gf-1** `feat(import): an inflow the books have no row for becomes one` -- **ruling R-GW**,
-      **MOVES MONEY, OWN PR**. The door for the direction that has never had one, over the writer
-      `_variance.mint` already is, the two callers sharing it rather than spelling one money rule
-      twice. **What it does NOT do**: it leaves the 9 PARKED Capital One lines, whose only act is a
-      group match -- `$7,412.94` of card payments against `$5,819.99` of unmatched `CC Payback`
-      rows, so **`$1,592.95` of card spending the books never recorded** can be matched by nothing.
-      That residue is TRUE and `credit_card:CC3b` dissolves it (**N-337**).
-- [ ] **X-gf-2** `refactor(import): the register is not the queue` -- move the two panels that are
-      not decisions off the review screen: the 221 accepted matches and the 29 answered merchants.
-      Closes **N-358** -- three by-id reads whose rows are RENDERED (`_accepted_view._by_id` and
-      `_release._warm_subjects`), safe today only by derivation from a scoped `acts_of` -- and
-      **N-349**, whose remaining cost is a DEAD act on this panel and a press that destroys an
-      accepted match with no dialog. **What `X-gd` left here**: an ANSWERED merchant outlives its
-      lines, so the register's control is one table read and not a union; and a rule is RESTATED and
-      never un-stated (**R-GS**), so *ask me every time* BARS NOTHING. The statement schema module
-      is at 995 of its 1,000-line bound and the merchant-rule half is its natural split.
-- [ ] **X-gf-3** `feat(import): the review is an exception queue` -- what remains once the register
-      leaves and the rules file: new merchants, contested lines, group residuals and every proposal
-      touching a hand-made row, ordered by what the decision IS. Closes **N-359**: a line a standing
-      rule WOULD have filed and the pass withheld is indistinguishable here from one nobody has
-      answered for, and only the import's transient flash renders `search_gap_for`'s reason -- so it
-      is rendered per LINE, the ground **R-GD**'s third amendment moved the near-miss arm onto.
+- [x] **X-gf-1** `a4db019f` -- an inflow the books hold no row for becomes an uncategorized INCOME
+      row (**R-GW**), **MOVING MONEY**: two correct refusals pointed at each other and left every
+      unmatched DEPOSIT with no act at all -- 8 lines, `$58.87`, on his own data.
+      **The 9 parked Capital One lines still have only a group match**: `$7,412.94` of card payments
+      against `$5,819.99` of unmatched `CC Payback` rows, so `$1,592.95` of card spending the books
+      never recorded can be matched by nothing, which `credit_card:CC3b` dissolves (**N-337**).
+- [x] **X-gf-2** `64cfca05` -- the register is not the queue (**R-GX**, **R-GY**): 29 answered
+      merchants and 221 accepted acts left the review screen for their own surface, taking the
+      review body from 578,523 bytes to 149,103 and `review_set` from 146 SQL statements to 7, a
+      cost the IMPORT path paid too. Closed **N-358** -- three by-id reads of RENDERED user data
+      became composite-FK relationships, so the account travels in the JOIN and `accepted_groups`
+      fell from 139 statements to 7 -- and **N-349**. Opened **bank_import:N-371**, **N-372**.
+- [ ] **X-gf-3** `feat(import): the review is an exception queue` -- **the DECOMPOSED parent**,
+      split 2026-08-27 on the developer's ruling into the rule verdict both readers share and the
+      queue's own shape. It ticks with the last of its two leaves.
+- [x] **X-gf-3a** `44f1cc7b` -- one rule VERDICT and one screen SENTENCE, derived where the decision
+      is and read by ruling **R-GH**'s door and by the review screen. Closed **N-359** and
+      **N-371**. **What a LATER step must obey**: the withholding sentence is composed in
+      `_verdict.ruled` and printed unbranched, because the partition behind it is the service's; and
+      a parked line names the register only where a different answer would open the create door,
+      which was 0 of 9 on the developer's own data.
+- [ ] **X-gf-3b** `feat(import): the review is an exception queue` -- what remains once the register
+      and the workbench leave: contested lines, group residuals and every proposal touching a
+      hand-made row, as ONE list of unexplained bank lines grouped by the DECISION each poses rather
+      than the three cards that partition them by MECHANISM -- outflow-that-may-be-recorded,
+      outflow-that-is-barred, inflow-that-may-be-recorded -- when the question all three pose is the
+      same: *is this money my books already hold, or is it new?* (**bank_import:R-HB**).
+      **The hand-build match form moves to a surface of its own** (**bank_import:R-HC**), on the
+      argument **R-GX** made about the register: it is not an exception, it is the TOOL three
+      exceptions send the owner to, and each of them links to it. Closes **N-374**, whose narrative
+      lives here under rule 4: **a CAP is the wrong remedy for those two lists** -- the row that
+      explains a line may be number 51, and a scored shortlist is what ruling **R-GD**'s third
+      amendment already withdrew on this screen after measuring 0 of 18 inspected correct -- and the
+      finding is distinct from **N-326** (the merchant control, bounded) and **bank_import:N-372**
+      (the register's fold, valued): those are bounded or valued, and these two lists are neither.
+      **Measured through the real route on the developer's own data 2026-08-27**, after `X-gf-3a`:
+      the review body renders **146,907 bytes** of which that form's two pick lists are
+      **89,247, or 61%** -- 22,830 for 27 bank lines and 66,417 for 67 rows -- against 1 unanswered
+      merchant, 2 creatable lines, 16 deposits and 9 parked payments of actual work.
+      *The 149,103 figure `R-GX` states is not contradicted*: it was measured at `X-gf-2`, before
+      `X-gf-1`'s deposit card and this step's per-line sentence were both in the page and before the
+      developer worked lines off it.
 - [ ] **X-gg** `docs(plans): the envelope-semantics design loop` -- **R-GK**'s owed loop, run WITH
       the developer: filling, closure on coverage, carry-forward and the grid's row identity (whose
       same-name double-render the review measured); it mints the build steps rather than building.

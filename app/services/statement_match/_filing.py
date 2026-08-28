@@ -84,7 +84,7 @@ from app.models.statement_match import StatementMatch
 from ._accepted_view import AcceptedGroup, accepted_groups
 from ._batch import BatchOutcome, Consent, ReviewedBatch, apply_reviewed
 from ._creations import PurchaseCreation
-from ._offers import BankLine, RowKind
+from ._offers import BankLine
 from ._reads import ReviewSet, review_set
 from ._scope import ReviewScope
 
@@ -264,8 +264,8 @@ def rule_filed_acts(
     after a reload, still there tomorrow, and identical whether the owner
     arrived from the import they just performed or from the menu.
 
-    **It is the accepted-matches panel's OWN value type**
-    (:class:`~._accepted_view.AcceptedGroup`), narrowed.  That panel already
+    **It is the REGISTER's OWN value type**
+    (:class:`~._accepted_view.AcceptedGroup`), narrowed.  That list already
     answers everything a receipt item needs -- what the bank showed, what an
     Undo would remove and what that is worth, and whether the act still holds
     -- from :func:`~._release.planned_removals`, which is the door's own
@@ -339,40 +339,6 @@ def _has_a_container_rule(owner_id: int, account_id: int) -> bool:
     ).scalar()
 
 
-def _proposed_destinations(review: ReviewSet) -> "frozenset[int]":
-    """Return the budget lines this pass PROPOSES as a whole-row match.
-
-    Ruling **R-FZ(d)** from the other side (plan step ``bank_import:X-ge``).
-    That ruling settles a collision between two TICKED items -- an envelope a
-    proposal names is also a destination a recorded line was aimed at -- in the
-    proposal's favour, because a proposal explains money the records already
-    hold against a line the bank showed, which can be re-aimed next pass.
-    Auto-apply files BEFORE the proposal is ticked, so the same answer has to be
-    reached by withholding rather than by ordering.
-
-    **Only rows the proposal names WHOLE.**  A proposal naming a PURCHASE
-    inside an envelope is not a claim on the envelope: the two acts name
-    disjoint subjects, each match's members still sum to its own lines, and
-    ``_accept._reject_parent_and_its_own_purchase`` refuses only the pairing
-    where ONE act names both.  Measured on the developer's own statement: 33 of
-    the 80 lines a rule would file aim at an envelope holding a purchase a
-    proposal names, and withholding those would withhold the whole Groceries
-    case this step exists for.
-
-    Args:
-        review: What this pass offers.
-
-    Returns:
-        The transaction ids, empty when this pass proposes no whole-row match.
-    """
-    return frozenset(
-        row.row_id
-        for proposal in review.proposals
-        for row in proposal.rows
-        if row.kind is RowKind.TRANSACTION
-    )
-
-
 def _rule_filings(
     review: ReviewSet, fresh: "frozenset[int]",
 ) -> "tuple[list[PurchaseCreation], list[WithheldLine]]":
@@ -390,41 +356,35 @@ def _rule_filings(
         order :class:`~._create.MintedEnvelopes` converges a new-envelope
         answer in, so the envelope a press mints belongs to the earliest line
         that reaches it.
+
+    **It no longer DECIDES which of the two it is** (plan step
+    ``bank_import:X-gf-3a``, finding **N-359**).  The verdict is
+    :attr:`~._reads.ReviewSet.rule_verdicts`, derived once by the pass, so the
+    sentence this receipt reports and the sentence the review screen prints
+    beside the same line are the same value rather than two spellings of one
+    rule.  What stays here is the one narrowing that belongs to this DOOR and
+    to no screen: ruling **R-GI**'s *new swipe lines only*.
     """
-    proposed = _proposed_destinations(review)
     creations: "list[PurchaseCreation]" = []
     withheld: "list[WithheldLine]" = []
     for item in review.creatable:
         if item.line.line_id not in fresh:
             continue
-        placement = item.placement
         # A rule that names no container REACHES nothing: the owner has said
         # nothing, or said *ask me every time*, or said *never a purchase* --
         # which is a BAR that keeps the line out of ``creatable`` entirely
         # (ruling **R-GJ**).  None of the three is this pass withholding
-        # anything, so none of them is reported as one.
-        creation = (
-            None if placement is None else placement.creation_for(
-                item.line.line_id,
+        # anything, so none of them is reported as one, and none of them has a
+        # verdict.
+        verdict = item.verdict
+        if verdict is None:
+            continue
+        if verdict.withheld is not None:
+            withheld.append(
+                WithheldLine(line=item.line, reason=verdict.withheld),
             )
-        )
-        if creation is None:
             continue
-        gap = review.search_gap_for(item.line)
-        if gap is not None:
-            withheld.append(WithheldLine(line=item.line, reason=gap))
-            continue
-        if creation.transaction_id in proposed:
-            withheld.append(WithheldLine(
-                line=item.line,
-                reason=(
-                    "the budget line your rule files it into is one this "
-                    "statement already explains as a whole, so filing into it "
-                    "would count that money twice"
-                ),
-            ))
-            continue
-        creations.append(creation)
+        creations.append(verdict.creation)
     return creations, withheld
 
 
@@ -494,9 +454,13 @@ def file_new_swipes(scope: ReviewScope, import_id: int) -> RuleFiling:
     # rather than leaving to the general path because that derivation is not
     # free on the WRITE door: measured on the developer's own account
     # 2026-08-26, ``ReviewScope.build`` plus ``review_set`` is 0.59-0.75 s and
-    # 202 queries, and the accepted-matches half of it grows with every act the
-    # account accumulates.  These two cover every import that has nothing to do,
-    # which is every re-import the owner performs.
+    # 202 queries.  **The second half of that reason has been retired**: it
+    # read "and the accepted-matches half of it grows with every act the
+    # account accumulates", which plan step ``bank_import:X-gf-2`` made false
+    # by taking the accepted acts out of ``review_set`` altogether.  What
+    # survives is the candidate derivation, which grows with the account's ROWS
+    # and is the bulk of that figure.  These two cover every import that has
+    # nothing to do, which is every re-import the owner performs.
     fresh = _fresh_line_ids(scope.account_id, import_id)
     if not fresh or not _has_a_container_rule(scope.owner_id, scope.account_id):
         return RuleFiling(outcome=BatchOutcome.nothing(), withheld=())

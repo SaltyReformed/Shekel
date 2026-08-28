@@ -290,13 +290,23 @@ class MerchantRule(AccountScopedMixin, UserScopedMixin, TimestampMixin,
     # named the other way round, *never a purchase*.
     never_a_purchase = db.Column(db.Boolean, nullable=False)
 
-    # **No relationships, deliberately.**  Both arms are reached through a
-    # COMPOSITE key whose other half comes from a mixin, so a relationship here
-    # would have to name its foreign keys as strings and would then lazy-load
-    # one row per rule on a screen that renders every merchant on the
-    # account.  ``statement_match._rules`` loads the templates and categories
-    # it needs in one statement each, which is the same shape
-    # ``_reads._by_id`` already uses for a match's members.
+    # **No relationships, deliberately, and the reason is the GRAIN rather
+    # than the key.**  Both controls that render these rows render EVERY rule
+    # on the account at once and need only a NAME for each subject, so
+    # ``statement_match._rules`` reads the templates and the categories in one
+    # statement each and indexes them -- where a relationship would be loaded
+    # per rule unless every caller remembered an eager option.
+    #
+    # **The composite key is NOT the reason**, and this comment said it was
+    # until plan step ``bank_import:X-gf-2``: a composite-key relationship is
+    # perfectly expressible and its sibling
+    # :class:`~app.models.statement_match.StatementMatchMember` now carries
+    # three of them, joined on ``(subject_id, account_id)`` and loaded whole
+    # with the act.  What that step ALSO did was delete ``_reads._by_id``,
+    # which this comment cited as the shape it followed -- so the argument was
+    # refuted and its citation resolved to nothing in the same commit.  A
+    # citation that resolves to nothing is how a second spelling survives
+    # (:func:`~app.services.statement_match._accepted_view._still_holds`).
 
     def __repr__(self):
         answer = (

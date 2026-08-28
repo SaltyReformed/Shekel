@@ -54,6 +54,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import date
+from typing import TYPE_CHECKING
 
 from app.services.status_seam import day_is_in_the_future
 
@@ -64,6 +65,12 @@ from ._placement import Placement, placements_for
 from ._rules import RuleView
 from ._scope import ReviewScope
 from ._section import MerchantSection, merchant_section
+
+if TYPE_CHECKING:  # pragma: no cover -- the edge back would be a cycle
+    # :mod:`._verdict` imports THIS module, so the annotation is a forward
+    # reference and the import is type-checking only.  The direction is
+    # right: a line is built before the pass that rules on it exists.
+    from ._verdict import RuleVerdict
 
 
 @dataclass(frozen=True)
@@ -103,12 +110,31 @@ class CreatableLine:
             into an act is the owner pressing the sweep.  A remembered
             destination that arrived already selected would be a default
             pointing at money, which is what ruling **R-FZ** removed.
+        verdict: What ruling **R-GH**'s automatic door would do about this line
+            (:class:`~._verdict.RuleVerdict`), or ``None`` where no stated rule
+            names a destination for its merchant.  Set by
+            :func:`~._verdict.ruled` after the pass exists, exactly as
+            :attr:`~._placement.Placement.joins_new` is set by
+            :func:`_marked_joining` -- the facts it rests on belong to the PASS
+            and are not known when this value is built.
+        warning: The whole sentence the screen prints beside this line, or
+            ``None``.  **Composed in the service and printed unbranched**
+            (finding **N-359**, plan step ``bank_import:X-gf-3a``): it is the
+            partition *why is this line still here* -- a rule the pass
+            withheld, or a search it did not finish -- and a template picking
+            between those two with ``{% if %}``/``{% elif %}`` is the second
+            place for it to be wrong that :attr:`~._bars.ParkedLine.reason`
+            and :attr:`RecordableInflow.withheld` both exist to refuse.
+            **A WIDER set than** :attr:`verdict`: a line no rule reaches can
+            still be one the pass never finished looking at.
     """
 
     line: BankLine
     pay_period_id: "int | None"
     destinations: "tuple[PurchaseDestination, ...]"
     placement: Placement | None = None
+    verdict: "RuleVerdict | None" = None
+    warning: "str | None" = None
 
 
 @dataclass(frozen=True)
@@ -226,7 +252,18 @@ def _creatable_lines(
         # the redundant producer call this module already refuses above.
         barred_by = bars.bar_for(line.merchant_id)
         if barred_by is not None:
-            parked.append(ParkedLine(line=line, barred_by=barred_by))
+            # **BOTH facts, because both bars can hold** (plan step
+            # ``bank_import:X-gf-3a``): which one the line is parked BY decides
+            # what the screen says happened, and whether the OTHER also holds
+            # decides whether the owner has a door -- an answer they gave can
+            # be given again, and a source's filing is lifted by nothing.  Both
+            # come off the bars this pass already derived; the value asks
+            # nothing for itself.
+            parked.append(ParkedLine(
+                line=line,
+                barred_by=barred_by,
+                also_pays_an_account=bars.pays_an_account(line.merchant_id),
+            ))
             continue
         creatable.append(_one_creatable(
             line, _period_id_for(calendar, line.happened_on), by_period, view,

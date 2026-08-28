@@ -42,14 +42,13 @@ from app.services.statement_match import (
     RuleView,
     PurchaseDestination,
     account_merchants,
+    answered_merchants,
+    register_set,
     review_set,
     state_rules,
 )
 from app.services.statement_match._placement import (  # pylint: disable=protected-access
     placements_for,
-)
-from app.services.statement_match._section import (  # pylint: disable=protected-access
-    merchant_section,
 )
 from app.services.statement_match._bars import (  # pylint: disable=protected-access
     CreationBars,
@@ -927,15 +926,24 @@ class TestWhatARuleMayNAME:
 
 
 class TestTheSectionTheScreenRenders:
-    """What the rule control lists, and what it counts."""
+    """What each rule control lists, and what the queue's rows count.
 
-    def test_it_lists_every_merchant_with_work_and_every_one_answered_for(
+    **The membership rule changed at plan step ``bank_import:X-gf-2``** (ruling
+    **bank_import:R-GX**): one control was every merchant with pending work
+    PLUS every merchant answered for, and it is now two -- the queue asks about
+    the merchants with no answer, and the register shows the answers.  These
+    grade both halves, because the defect the split can produce is a merchant
+    that reaches NEITHER.
+    """
+
+    def test_the_queue_lists_only_the_merchants_with_no_answer(
         self, app, db, seed_user,
     ):
-        """Both halves, and the second is what makes an answer withdrawable.
+        """A decision already made is not a question the queue asks.
 
-        Without it a rule could only be changed while there was still work
-        outstanding for that merchant.
+        Measured on the developer's own data 2026-08-27: this control was 30
+        rows of which 29 were answers he had already given, and 225,472 bytes
+        of a 578,523-byte page.
         """
         envelope = a_transaction(
             seed_user, name="Groceries", is_envelope=True,
@@ -946,23 +954,96 @@ class TestTheSectionTheScreenRenders:
             seed_user, statement, amount="-30.00", merchant="Walmart",
             sequence_in_group=1,
         )
-        # Answered for, with nothing pending: its lines are all explained.
-        a_rule(seed_user, "Old Merchant", template_id=envelope.template_id)
+        # Answered for, and its line is still waiting: the answer is a
+        # decision made, so the row is the register's whatever is pending.
+        a_rule(seed_user, "Amazon", template_id=envelope.template_id)
         db.session.commit()
 
         review = review_set(a_scope(seed_user))
 
-        assert [row.merchant for row in review.merchants.merchants] == [
-            "Amazon", "Old Merchant", "Walmart",
-        ]
-        assert review.merchants.answered_count == 1
+        assert [
+            row.summary.merchant for row in review.merchants.merchants
+        ] == ["Walmart"]
 
-    def test_a_row_carries_how_many_lines_and_how_much_money_it_decides(
+    def test_the_register_lists_an_answer_whose_lines_are_all_explained(
         self, app, db, seed_user,
     ):
-        """The section decides several lines at once, so it says how much.
+        """This is what makes an answer changeable once its work is done.
+
+        Without it a rule could only be changed while there was still an
+        unexplained line for that merchant -- and the register's membership is
+        ONE TABLE READ (the answers themselves), so a merchant with no line at
+        all is in it exactly as one with ten is.
+        """
+        envelope = a_transaction(
+            seed_user, name="Groceries", is_envelope=True,
+        )
+        statement = an_import(seed_user)
+        a_bank_line(seed_user, statement, amount="-30.00", merchant="Walmart")
+        a_rule(seed_user, "Old Merchant", template_id=envelope.template_id)
+        db.session.commit()
+
+        register = register_set(
+            seed_user["user"].id, seed_user["account"].id,
+        )
+
+        # ...and the merchant with work and no answer is NOT here: it is the
+        # queue's, which is the other half of the same partition.  ONE
+        # assertion, because an equality already says what is absent and a
+        # second test of the same set reads as a second subject.
+        assert [
+            row.merchant for row in register.merchants.merchants
+        ] == ["Old Merchant"]
+
+    def test_every_merchant_reaches_exactly_ONE_of_the_two_controls(
+        self, app, db, seed_user,
+    ):
+        """The partition itself, which is what a split can silently break.
+
+        Each of the two tests above could pass while a merchant fell through
+        the gap between them -- answered and pending is the shape that would --
+        so this asserts the two sets over one account are disjoint and cover
+        every merchant either of them could be about.
+        """
+        envelope = a_transaction(
+            seed_user, name="Groceries", is_envelope=True,
+        )
+        statement = an_import(seed_user)
+        a_bank_line(seed_user, statement, amount="-25.00", merchant="Amazon")
+        a_bank_line(
+            seed_user, statement, amount="-30.00", merchant="Walmart",
+            sequence_in_group=1,
+        )
+        a_rule(seed_user, "Amazon", template_id=envelope.template_id)
+        a_rule(seed_user, "Old Merchant", template_id=envelope.template_id)
+        db.session.commit()
+
+        review = review_set(a_scope(seed_user))
+        register = register_set(
+            seed_user["user"].id, seed_user["account"].id,
+        )
+
+        asked = {row.summary.merchant for row in review.merchants.merchants}
+        answered = {row.merchant for row in register.merchants.merchants}
+        assert asked == {"Walmart"}
+        assert answered == {"Amazon", "Old Merchant"}
+        # ...and TOGETHER they are every merchant either control could be
+        # about -- one with a waiting line, one with an answer, one with both
+        # -- which is what "partition" claims and what neither equality above
+        # says on its own: a merchant dropped by BOTH would leave this union
+        # short while each equality still held.
+        assert asked | answered == {"Amazon", "Old Merchant", "Walmart"}
+        assert not asked & answered
+
+    def test_a_queue_row_carries_how_many_lines_and_how_much_money(
+        self, app, db, seed_user,
+    ):
+        """The queue decides several lines at once, so it says how much.
 
         On the developer's own statement one row of it covers `-$7,412.94`.
+        **The register carries no such figure and must not**: it runs no pass,
+        so it has not measured one -- see
+        ``TestTheRegisterStatesNoFigureItHasNotMeasured``.
         """
         statement = an_import(seed_user)
         a_bank_line(seed_user, statement, amount="-25.00", merchant="Amazon")
@@ -975,7 +1056,7 @@ class TestTheSectionTheScreenRenders:
         review = review_set(a_scope(seed_user))
 
         row = review.merchants.merchants[0]
-        assert row.merchant == "Amazon"
+        assert row.summary.merchant == "Amazon"
         assert row.line_count == 2
         assert row.total == Decimal("-55.00")
 
@@ -1014,12 +1095,73 @@ class TestTheSectionTheScreenRenders:
         assert [item.line.merchant for item in review.creatable] == ["Amazon"]
         assert [item.line.merchant for item in review.parked] == ["Capital One"]
         assert review.placed_by_class == {"into_open": 1}
-        # ...and the merchant control still asks about BOTH, because the
-        # parked one is parked for want of an answer and this is where an
-        # answer is given.
-        assert {row.merchant for row in review.merchants.merchants} == {
-            "Amazon", "Capital One",
-        }
+        # ...and the ANSWER that parked it is still reachable, on the register:
+        # both of these merchants have been answered for, so the queue asks
+        # about neither and the register shows both (ruling
+        # **bank_import:R-GX**).  A parked line whose answer had no row
+        # anywhere would be ruling R-GJ's own dead end -- an act refused with
+        # the door that permits it hidden.
+        assert review.merchants.merchants == ()
+        assert {
+            row.merchant for row in register_set(
+                seed_user["user"].id, seed_user["account"].id,
+            ).merchants.merchants
+        } == {"Amazon", "Capital One"}
+
+
+class TestTheRegisterStatesNoFigureItHasNotMeasured:
+    """The register runs no pass, so it carries no count of waiting lines.
+
+    Plan step ``bank_import:X-gf-2``.  ``line_count`` and ``total`` used to sit
+    on :class:`~app.services.statement_match.MerchantSummary`, which both
+    surfaces share -- so the register would have carried a ``0`` for a merchant
+    whose lines are waiting, and printed *none right now* over the developer's
+    own ``Capital One``, whose *never a purchase* answer parks 9 lines worth
+    `-$7,412.94`.  A figure that is FALSE rather than absent.
+
+    The remedy is the composition: the pass's share is
+    :class:`~app.services.statement_match.WaitingMerchant`'s and only the queue
+    builds one, so the surface with no pass cannot state one.
+    """
+
+    def test_the_register_row_has_no_waiting_figure_to_state(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL: the fields are not reachable, not merely unset.
+
+        An assertion that a count READ zero would pass against exactly the
+        defect this exists to prevent, so what is asserted is that the value
+        has no such attribute at all.
+        """
+        envelope = a_transaction(
+            seed_user, name="Groceries", is_envelope=True,
+        )
+        statement = an_import(seed_user)
+        a_bank_line(seed_user, statement, amount="-25.00", merchant="Amazon")
+        a_rule(seed_user, "Amazon", template_id=envelope.template_id)
+        db.session.commit()
+
+        row = register_set(
+            seed_user["user"].id, seed_user["account"].id,
+        ).merchants.merchants[0]
+
+        assert row.merchant == "Amazon"
+        assert not hasattr(row, "line_count")
+        assert not hasattr(row, "total")
+
+    def test_the_QUEUE_row_states_it_because_the_queue_measured_it(
+        self, app, db, seed_user,
+    ):
+        """The other side, so the absence above is a boundary and not a hole."""
+        statement = an_import(seed_user)
+        a_bank_line(seed_user, statement, amount="-25.00", merchant="Amazon")
+        db.session.commit()
+
+        row = review_set(a_scope(seed_user)).merchants.merchants[0]
+
+        assert row.summary.merchant == "Amazon"
+        assert row.line_count == 1
+        assert row.total == Decimal("-25.00")
 
 
 class TestALineDatedMadeAfterItPosted:
@@ -1569,9 +1711,9 @@ class TestAMerchantSectionOverMixedLines:
         review = review_set(a_scope(seed_user))
 
         assert len(review.creatable) == 2
-        assert [row.merchant for row in review.merchants.merchants] == [
-            "Amazon",
-        ]
+        assert [
+            row.summary.merchant for row in review.merchants.merchants
+        ] == ["Amazon"]
 
     def test_two_spellings_of_one_merchant_are_two_rules(
         self, app, db, seed_user,
@@ -1594,9 +1736,9 @@ class TestAMerchantSectionOverMixedLines:
 
         review = review_set(a_scope(seed_user))
 
-        assert [row.merchant for row in review.merchants.merchants] == [
-            "Amazon", "amazon",
-        ]
+        assert [
+            row.summary.merchant for row in review.merchants.merchants
+        ] == ["Amazon", "amazon"]
 
 
 class TestANewEnvelopeAnswerReusesOneOfThatNameHere:
@@ -2245,8 +2387,11 @@ class TestTheControlAlwaysCarriesTheAnswerItHOLDS:
             stale_categories={},
         )
 
-        section = merchant_section(
-            [], view,
+        # THE REGISTER'S control, because an answered merchant is where a
+        # stored answer can be stale and the queue asks about none (ruling
+        # **bank_import:R-GX**).
+        section = answered_merchants(
+            view,
             CreationBars(never=frozenset(), account_payments=frozenset()),
         )
 
@@ -2281,8 +2426,8 @@ class TestTheControlAlwaysCarriesTheAnswerItHOLDS:
             stale_categories={},
         )
 
-        section = merchant_section(
-            [], view,
+        section = answered_merchants(
+            view,
             CreationBars(never=frozenset(), account_payments=frozenset()),
         )
 
