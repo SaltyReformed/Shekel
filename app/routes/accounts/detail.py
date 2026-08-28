@@ -67,9 +67,9 @@ from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts._cash_page import load_cash_account_or_404
 from app.routes.accounts.history import balance_history_context
 from app.routes.accounts.reconcile import (
-    governing_statement,
     panel_id,
     reconcile_context,
+    reconcile_statement,
 )
 from app.services import (
     balance_at,
@@ -481,10 +481,14 @@ def _cash_detail_context(account: Account, ctx: BalanceContext) -> dict:
         # The outstanding list (plan step S1-c, widened at X-f2-c), built by
         # the SAME helper the post-true-up prompt uses so the page and the
         # modal cannot come to disagree about what is still unreconciled.
-        # The asserted day is resolved once and handed in (finding N-222).
+        # The statement is resolved once and handed in (finding N-222), and the
+        # CALENDAR inside it is this pass's own memoized one -- the same value
+        # the horizon chips and the current-period caption above were built
+        # from, so the panel dates its offers by the paydays the rest of this
+        # page already reported (pay-calendar plan step C4-a-2).
         **reconcile_context(
             account, panel=panel_id(account.id),
-            statement=governing_statement(account),
+            statement=reconcile_statement(account, calendar),
         ),
     }
 

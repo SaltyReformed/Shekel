@@ -56,15 +56,14 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from app.enums import SettledDayBasisEnum
 from app.extensions import db
-from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.services.cash_ledger import AnchorPoint
+from app.services.pay_calendar import PayCalendar
 from app.services.settle_day import SettleDay
 from app.utils.balance_predicates import (
     balance_contributing_clause,
     is_projected_clause,
 )
-from app.utils.dates import attribution_date
 from app.utils.log_events import BUSINESS, log_event
 
 logger = logging.getLogger(__name__)
@@ -89,8 +88,22 @@ class Statement:
     caller can mismatch, and here the mismatch would stamp a line with a
     statement it was not measured against.
 
+    **It carried a bare ``owner_id`` until pay-calendar plan step C4-a-2** and
+    now carries that owner's CALENDAR, with the id derived from it, for exactly
+    the same reason one line up.  This package has to date every row it offers
+    (:func:`attributed_on`), and a pay period's span is DERIVED -- so the
+    calendar arrived as a fact this value needs.  Carrying both an ``owner_id``
+    and a calendar would have been two statements of whose rows these are, and
+    the mismatch -- one owner's rows dated against another owner's paydays --
+    produces a plausible wrong day rather than an error.  Every scope clause in
+    this module now reads its owner THROUGH the calendar it dates by.
+
     Attributes:
-        owner_id: The user_id whose rows may be offered or settled.
+        calendar: The owner's :class:`~app.services.pay_calendar.PayCalendar`,
+            resolved by the ROUTE and threaded (this package holds no read pass
+            of its own).  It answers two questions here: whose rows may be
+            offered or settled (:attr:`owner_id`), and which span each offered
+            row is budgeted in (:func:`attributed_on`).
         account_id: The cash account whose balance was asserted.
         anchor: The governing :class:`~app.services.cash_ledger.AnchorPoint` --
             the assertion being reconciled against.  Its ``anchor_id`` is what a
@@ -99,9 +112,96 @@ class Statement:
             what says (plan step **X-az**).
     """
 
-    owner_id: int
+    calendar: PayCalendar
     account_id: int
     anchor: AnchorPoint
+
+    @property
+    def owner_id(self) -> int:
+        """Return the user_id whose rows may be offered or settled.
+
+        Read THROUGH the calendar rather than stored beside it, so the rows a
+        scope admits and the paydays they are dated against always describe one
+        owner.
+
+        Returns:
+            The calendar's ``user_id``.
+        """
+        return self.calendar.user_id
+
+    @property
+    def owned_period_ids(self) -> "frozenset[int]":
+        """Return every SAVED pay-period id of this statement's owner.
+
+        **The OWNERSHIP scope for every arm of this package, and it comes off
+        the CALENDAR rather than off ``pay_periods.user_id``** (pay-calendar
+        plan step C4-a-2).  ``budget.transactions`` carries no ``user_id``, so
+        whose a row is has to be reached through its paycheck; doing that with
+        a correlated subquery asks the TABLE a question this value already
+        answers, which is two statements of one fact inside one request -- the
+        same defect :attr:`owner_id` exists to remove, one clause down.
+
+        **What it buys is a REFUSAL becoming unconstructible rather than
+        merely unlikely.**  A row this scope admits names a period the calendar
+        was built from, so :meth:`~app.services.pay_calendar.PayCalendar.require_period`
+        -- which :func:`attributed_on` and
+        :func:`~._assemble._block_headings` both call, on these rows -- cannot
+        answer for a period the calendar lacks.  That is the rule
+        ``require_period``'s own docstring states: *where the precondition is
+        carried by the QUERY, the total form is honest; where it rests on two
+        reads agreeing, it is not.*  It is also the shape
+        ``statement_match._candidates._transaction_candidates`` already has,
+        for the same reason and at the same scale.
+
+        **The state it makes inexpressible is REACHABLE, which is why this is
+        not decoration** (balance finding **N-358**).  Under ``READ COMMITTED``
+        a command's post-write re-render is a second snapshot, and ``/grid``
+        and ``/dashboard`` append paydays AND generate rows into them inside
+        one ``write_transaction`` (``routes/grid/page.py``,
+        ``routes/_period_population.py``, ruling **R-R38**).  So a concurrent
+        render on a lapsed schedule can create a period dated on or before the
+        statement's day and file projected rows in it between this request's
+        calendar read and its row read.  Scoped by ``pay_periods.user_id`` the
+        query returns those rows and the span lookup raises; scoped by the
+        calendar's own ids it does not ask about them, which is the answer the
+        request would have given had the concurrent write not landed.
+
+        Returns:
+            The owner's saved period ids.  A projected period carries no id and
+            is not here; the empty set for an owner with no paydays, which
+            admits nothing and is the correct offer set for them.
+        """
+        return frozenset(
+            period.period_id for period in self.calendar.periods
+            if period.period_id is not None
+        )
+
+    @property
+    def offerable_period_ids(self) -> "frozenset[int]":
+        """Return the owned period ids a row could be OFFERED from.
+
+        :attr:`owned_period_ids` narrowed to the periods that had started by
+        the statement's day -- ownership, and the SQL superset of the
+        landing-day bound :func:`lands_on_or_before` applies in Python.
+
+        **The two sets are not interchangeable and the difference is an arm.**
+        The source-row arms bound the ROW's own landing day, so a period that
+        starts after the statement can hold nothing they may offer.  The
+        purchase arm bounds the ENTRY's ``purchased_on`` instead and its
+        parent's period is unbounded -- a purchase made today against next
+        period's envelope is a state the app can express, and it is the
+        purchase-date warning ``pay_calendar:C4-a-3`` owns -- so that arm takes
+        :attr:`owned_period_ids` whole.  Handing it this narrower set would
+        silently stop offering those purchases.
+
+        Returns:
+            The offerable subset, empty when no period had started yet.
+        """
+        return frozenset(
+            period.period_id for period in self.calendar.periods
+            if period.period_id is not None
+            and period.start_date <= self.observed_on
+        )
 
     @property
     def observed_on(self) -> date:
@@ -218,8 +318,13 @@ def outstanding_scope(statement: Statement, kind_clauses: tuple) -> list:
     * PROJECTED -- a settled row has already been recorded, and a Credit or
       Cancelled row is not money this account owes.
     * contributing and not soft-deleted -- the shared gate above.
-    * the parent period is this OWNER's and starts on or before *observed_on*
-      -- ownership, and the SQL superset of the landing-day bound.
+    * the parent period is one of :attr:`Statement.offerable_period_ids` --
+      ownership, and the SQL superset of the landing-day bound, as ONE clause.
+      **It was a correlated subquery on ``pay_periods.user_id`` and
+      ``start_date`` until pay-calendar plan step C4-a-2**; the ids come off
+      the calendar now, which is what makes :func:`attributed_on`'s span
+      lookup total rather than merely unlikely to refuse.  That property, and
+      the reachable state it closes, are on :attr:`Statement.owned_period_ids`.
     * *kind_clauses* -- which rows are this ARM's.  See the module docstring
       for why it has no default.
 
@@ -243,16 +348,11 @@ def outstanding_scope(statement: Statement, kind_clauses: tuple) -> list:
         *kind_clauses,
         is_projected_clause(Transaction),
         balance_contributing_clause(),
-        Transaction.pay_period_id.in_(
-            db.session.query(PayPeriod.id).filter(
-                PayPeriod.user_id == statement.owner_id,
-                PayPeriod.start_date <= statement.observed_on,
-            )
-        ),
+        Transaction.pay_period_id.in_(statement.offerable_period_ids),
     ]
 
 
-def attributed_on(txn: Transaction) -> date:
+def attributed_on(statement: Statement, txn: Transaction) -> date:
     """Return the day the projection lands *txn* on.
 
     Stated once because two things read it: the bound
@@ -262,25 +362,69 @@ def attributed_on(txn: Transaction) -> date:
     "a figure and its caption never disagree" rule broken on the one screen a
     user reads against a paper statement.
 
+    **The SPAN it clamps against is DERIVED, since pay-calendar plan step
+    C4-a-2**, which is why this takes the statement -- see
+    :meth:`~app.services.pay_calendar.PayCalendar.require_period`, the ONE
+    statement of that rule for every caller placing a stored row, and
+    :meth:`~app.services.pay_calendar.DerivedPeriod.attribution_day`, the rule
+    itself.  It read ``txn.pay_period`` until then, so this panel offered and
+    captioned a row against the STORED ``end_date`` while the cash fold under
+    the same balance clamped the very same row at its derived one.
+
+    **The refusal cannot fire, and it is carried by the QUERY rather than by an
+    argument.**  Every row reaching this comes back from
+    :func:`outstanding_scope`, whose ownership clause is
+    :attr:`Statement.offerable_period_ids` -- the calendar's OWN saved ids -- so
+    a row it returns names a period the calendar was built from and
+    :meth:`~app.services.pay_calendar.PayCalendar.require_period` has nothing to
+    refuse.  ``require_period`` stays anyway, as the raising twin a caller
+    holding a stored ``pay_period_id`` is supposed to use: it now documents an
+    invariant nothing can violate instead of guarding a state something could.
+
+    **A first cut of this leaf scoped on ``pay_periods.user_id`` and argued the
+    refusal was unreachable; the argument was measured FALSE** (adversarial
+    design review, 2026-08-28), which is why the scope moved rather than the
+    prose.  It said an appended payday could hold no rows because the doors that
+    record one no longer generate into it -- true of the DOOR and false of the
+    REQUEST: ``/grid`` and ``/dashboard`` append and then populate inside one
+    ``write_transaction`` (``routes/_period_population.py``, ruling **R-R38**),
+    so a concurrent render on a lapsed schedule creates exactly the rows the
+    argument said could not exist.  Both of this package's COMMAND doors then
+    render after committing -- the reconcile POST, and the true-up PATCH through
+    ``prompt_fragment`` -- which is balance finding **N-358**'s shape on two
+    money screens.  The query-carried scope closes it here without waiting for
+    ``balance:X-i5``, and follows the rule ``require_period``'s own docstring
+    states: *where the precondition is carried by the QUERY, the total form is
+    honest; where it rests on two reads agreeing, it is not.*
+
     Args:
-        txn: The row, with ``pay_period`` loaded.
+        statement: The statement being reconciled, carrying the owner's
+            calendar.
+        txn: The row, whose ``pay_period_id`` names its span.
 
     Returns:
         Its clamped attribution date.
+
+    Raises:
+        RuntimeError: *txn* names a pay period the statement's calendar does
+            not hold -- unconstructible through :func:`outstanding_scope`, and
+            loud rather than silent if a future caller reaches this with a row
+            from somewhere else
+            (:meth:`~app.services.pay_calendar.PayCalendar.require_period`).
     """
-    period = txn.pay_period
-    return attribution_date(
-        txn.due_date, period.start_date, period.end_date,
-    )
+    period = statement.calendar.require_period(txn.pay_period_id, txn.id)
+    return period.attribution_day(txn.due_date)
 
 
-def lands_on_or_before(txn: Transaction, observed_on: date) -> bool:
-    """Return whether the projection lands *txn* on or before *observed_on*.
+def lands_on_or_before(statement: Statement, txn: Transaction) -> bool:
+    """Return whether the projection lands *txn* on or before the statement day.
 
     The Python half of the bound, and the reason it is not SQL: the landing day
-    is :func:`~app.utils.dates.attribution_date`, the clamp the calendar's day
-    cells and the balance line's daily ramp already share, so writing it as a
-    ``LEAST(GREATEST(...))`` here would be a second implementation of one rule.
+    is :meth:`~app.services.pay_calendar.DerivedPeriod.attribution_day`, the
+    clamp the calendar's day cells and the balance line's daily ramp already
+    share, so writing it as a ``LEAST(GREATEST(...))`` here would be a second
+    implementation of one rule -- and since plan step C4-a-2 the span it clamps
+    against is not in the row's own table to join to.
 
     The offer set is the OVERDUE set: ruling **R-G** clamps a projected row's
     landing day up to ``as_of + 1`` (``balance_at/_cash_fold.py``), so a row
@@ -289,17 +433,18 @@ def lands_on_or_before(txn: Transaction, observed_on: date) -> bool:
     latest assertion: the SQL superset admits 5 rows and this narrows them to 3.
 
     Args:
-        txn: A row from the SQL superset, with ``pay_period`` loaded.
-        observed_on: The civil day the balance was asserted for.
+        statement: The statement being reconciled -- its ``observed_on`` is the
+            bound and its calendar dates the row.
+        txn: A row from the SQL superset.
 
     Returns:
         True when the row is OVERDUE against that day.
     """
-    return attributed_on(txn) <= observed_on
+    return attributed_on(statement, txn) <= statement.observed_on
 
 
-def wholly_spent_by(txn: Transaction, observed_on: date) -> bool:
-    """Return whether everything *txn* would BOOK moved by *observed_on*.
+def wholly_spent_by(statement: Statement, txn: Transaction) -> bool:
+    """Return whether everything *txn* would BOOK moved by the statement day.
 
     **The second half of "a statement of this day could settle this row", and
     it is about the row's VALUE rather than its landing day.**  An envelope
@@ -342,14 +487,23 @@ def wholly_spent_by(txn: Transaction, observed_on: date) -> bool:
     that is the point of a shared bound: an arm does not get to decide that
     half of "could this statement settle this row" does not apply to it.
 
+    **It takes the STATEMENT rather than a bare day**, which is the shape all
+    three per-row predicates here share since plan step C4-a-2.  Two of them
+    need the calendar the statement carries; leaving the third on a loose
+    ``observed_on`` would be one predicate of three a caller can hand a
+    different day from the one the other two were measured against.
+
     Args:
+        statement: The statement being reconciled -- its ``observed_on`` is the
+            bound.
         txn: A row from the SQL superset, with ``entries`` loaded.
-        observed_on: The civil day the balance was asserted for.
 
     Returns:
         True when no entry against *txn* postdates the statement.
     """
-    return all(entry.purchased_on <= observed_on for entry in txn.entries)
+    return all(
+        entry.purchased_on <= statement.observed_on for entry in txn.entries
+    )
 
 
 def outstanding_rows(
@@ -366,12 +520,38 @@ def outstanding_rows(
     here because these arms' writers need the ROWS (their settle is a per-row
     service verb, not a bulk ``UPDATE``).
 
-    Two eager loads are ALWAYS applied because the shared bound reads them:
-    ``pay_period`` feeds the attribution clamp (:func:`attributed_on`) and
-    ``entries`` feeds :func:`wholly_spent_by`.  An arm adds its own through
-    :attr:`Arm.load_options` -- the transaction arm loads ``template`` because
-    it reads ``tracks_purchases``, which lazy-loads a template per row
-    otherwise.
+    Two eager loads are ALWAYS applied: ``entries`` feeds
+    :func:`wholly_spent_by`, and ``pay_period`` feeds ONE branch of the write
+    half.  **The second one's reason changed at pay-calendar plan step C4-a-2
+    and the load did not**, so the reason is written out rather than left to be
+    reconstructed from the load's presence.  It fed the attribution clamp until
+    then; :func:`attributed_on` now reads the span off the statement's calendar
+    and the row's ``pay_period_id`` column, so the READER touches no
+    relationship at all.
+
+    **The consumer it is KEPT for is one line, measured rather than assumed**:
+    ``transaction_service._settle.settle_from_entries`` logs
+    ``txn.pay_period.user_id`` (``Transaction`` carries no ``user_id`` of its
+    own), which is the ENVELOPE close alone -- a bill's settle reads no such
+    relationship.  The load stays for what that site SAYS about it rather than
+    for the join: it states that ``pay_period`` is already loaded by the
+    caller, so dropping the option here would put a lazy load, and with it an
+    AUTOFLUSH, in the middle of a settle that has already mutated the row.  It
+    goes when ``pay_calendar:C13`` makes that owner a column and the read has
+    no subject.
+
+    **What was NOT measured is said rather than implied** (adversarial code
+    review, 2026-08-28, which caught a wider claim here).  The transfer arm's
+    settle reaches ``loan_posting_service._payments``, which reads
+    ``shadow.pay_period.user_id`` at three sites and eager-loads the
+    relationship itself for one of them -- on the LOAN-side leg, which this
+    loader never returns.  Whether the transfer settle can reach those from a
+    row in THIS scope was not established, so the paragraph above claims the
+    transaction arm and no more.
+
+    An arm adds its own through :attr:`Arm.load_options` -- the transaction arm
+    loads ``template`` because it reads ``tracks_purchases``, which lazy-loads a
+    template per row otherwise.
 
     Args:
         arm: Which rows are the caller's, and what it needs loaded.
@@ -398,10 +578,10 @@ def outstanding_rows(
         query = query.filter(Transaction.id.in_(transaction_ids))
     rows = [
         txn for txn in query.all()
-        if lands_on_or_before(txn, statement.observed_on)
-        and wholly_spent_by(txn, statement.observed_on)
+        if lands_on_or_before(statement, txn)
+        and wholly_spent_by(statement, txn)
     ]
-    rows.sort(key=lambda txn: (attributed_on(txn), txn.id))
+    rows.sort(key=lambda txn: (attributed_on(statement, txn), txn.id))
     return rows
 
 

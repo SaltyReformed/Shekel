@@ -895,6 +895,45 @@ class TestOneCalendarDerivationPerRender:
             "list and the report"
         )
 
+    def test_the_cash_detail_page_derives_the_calendar_once(
+        self, app, db, auth_client, seed_user, seed_periods_today,
+    ):
+        """GET /accounts/<id>/details derives the pay calendar exactly once.
+
+        **It joined this class at pay-calendar plan step C4-a-2**, which is the
+        step that gave this page a SECOND consumer of the owner's paydays: the
+        reconcile panel now dates every row it offers against the derived span
+        and scopes its three arms by the calendar's own period ids.  The route
+        already held a memoized one on its read pass, and the panel takes that
+        value rather than deriving its own -- but nothing GRADED that, so a
+        later edit resolving a calendar inside ``reconcile_context`` would have
+        been free.  This is the arm that stops it, and the class docstring's
+        own history is why: ``/savings`` reached SEVEN derivations against one
+        read pass exactly that way.
+
+        The panel is asserted to have RENDERED, not merely the page to have
+        returned 200 -- an account whose owner has never asserted a balance
+        renders no panel at all, and a count taken over that render would read
+        1 on a tree where the panel derived a second calendar.
+        """
+        account_id = seed_user["account"].id
+
+        with counting_calls(_CALENDAR_DOOR) as counts:
+            resp = auth_client.get(f"/accounts/{account_id}/details")
+
+        assert resp.status_code == 200
+        body = resp.get_data(as_text=True)
+        assert f'id="reconcile-panel-{account_id}"' in body, (
+            "the reconcile panel did not render, so this count was taken over "
+            "a page that never asked the calendar the panel's question"
+        )
+        assert counts["derive_periods"] == 1, (
+            f"/accounts/<id>/details derived the pay calendar "
+            f"{counts['derive_periods']} times; the route opens one read pass "
+            "and the reconcile panel must take that pass's memoized calendar "
+            "rather than resolving its own"
+        )
+
     def test_the_transfer_create_form_derives_the_calendar_once(
         self, app, db, auth_client, seed_user, seed_periods_today,
     ):

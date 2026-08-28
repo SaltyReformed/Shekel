@@ -45,7 +45,7 @@ from sqlalchemy.orm import selectinload
 
 from app.models.transaction import Transaction
 from app.services import cash_ledger, transaction_service
-from app.services.cash_ledger import AmountBasis, AnchorPoint
+from app.services.cash_ledger import AmountBasis
 from app.services.reconcile_service import _rows
 from app.services.reconcile_service._offers import (
     OfferKind,
@@ -214,8 +214,7 @@ ARM = _rows.Arm(
 
 
 def outstanding_transactions(
-    owner_id: int, account_id: int, anchor: AnchorPoint,
-    basis: "AmountBasis",
+    statement: _rows.Statement, basis: "AmountBasis",
 ) -> "dict[int, OutstandingTransaction]":
     """Return this arm's offers, ``{transaction id: offer}``.
 
@@ -233,11 +232,14 @@ def outstanding_transactions(
     Reads only (no writes, no commit).
 
     Args:
-        owner_id: The user_id whose rows to list.
-        account_id: The cash account whose balance was asserted.
-        anchor: The governing assertion -- the STATEMENT being
-            reconciled against.  Its ``observed_on`` bounds the offer
-            set and its id is what a tick records (ruling **R-FL**).
+        statement: The :class:`~._rows.Statement` being reconciled -- whose
+            calendar, which account, which assertion.  **Built ONCE by
+            :func:`~._assemble.outstanding_set` and threaded**, rather than
+            assembled here from three arguments: it gained the owner's calendar
+            at pay-calendar plan step C4-a-2 (every offered row's span is
+            derived from it), and three constructions of one value would be
+            three chances to date one owner's rows against another's paydays.
+            The same reason *basis* below is threaded, one tier down.
         basis: The PANEL's :class:`~app.services.cash_ledger.AmountBasis`,
             built ONCE by :func:`~._assemble.outstanding_set` and threaded
             (plan step X-au-j, finding **N-295**).  Every offer built its own until
@@ -255,17 +257,20 @@ def outstanding_transactions(
         of its own period and only closing it clears it.  Finding **N-227**
         owns whether that bound is right.
     """
-    statement = _rows.Statement(owner_id, account_id, anchor)
     return {
-        txn.id: _offer(txn, basis)
+        txn.id: _offer(statement, txn, basis)
         for txn in _rows.outstanding_rows(ARM, statement)
     }
 
 
-def _offer(txn: Transaction, basis: AmountBasis) -> OutstandingTransaction:
+def _offer(
+    statement: _rows.Statement, txn: Transaction, basis: AmountBasis,
+) -> OutstandingTransaction:
     """Return the offer this arm makes for one row.
 
     Args:
+        statement: The statement being reconciled; its calendar is what dates
+            the offer (:func:`~._rows.attributed_on`).
         txn: A row in scope, with ``entries``, ``pay_period`` and ``template``
             loaded.
         basis: The panel's :class:`~app.services.cash_ledger.AmountBasis`,
@@ -280,7 +285,7 @@ def _offer(txn: Transaction, basis: AmountBasis) -> OutstandingTransaction:
     booked = transaction_service.settle_amount(txn, basis)
     return OutstandingTransaction(
         transaction_id=txn.id,
-        attributed_on=_rows.attributed_on(txn),
+        attributed_on=_rows.attributed_on(statement, txn),
         amount=booked,
         cash_amount=_cash_amount(txn, booked),
         is_correctable=not transaction_service.settles_from_entries(txn),

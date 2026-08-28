@@ -52,6 +52,7 @@ from app.enums import TxnTypeEnum
 from app.services import account_service
 from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
+from app.services.pay_calendar import calendar_for
 from app.utils.log_events import (
     ACCESS,
     BUSINESS,
@@ -567,8 +568,11 @@ class TestReconcileServiceLogging:
             )
             with _LogCapture("app.services.reconcile_service") as cap:
                 count = reconcile_service.record_settled_days(
-                    seed_user["user"].id, seed_user["account"].id,
-                    {entry.id}, statement,
+                    reconcile_service.Statement(
+                        calendar_for(seed_user["user"].id),
+                        seed_user["account"].id, statement,
+                    ),
+                    {entry.id},
                 )
 
         assert count == 1
@@ -608,8 +612,11 @@ class TestReconcileServiceLogging:
             )
             with _LogCapture("app.services.reconcile_service") as cap:
                 count = reconcile_service.record_settled_days(
-                    seed_user["user"].id, seed_user["account"].id,
-                    {entry.id}, statement,
+                    reconcile_service.Statement(
+                        calendar_for(seed_user["user"].id),
+                        seed_user["account"].id, statement,
+                    ),
+                    {entry.id},
                 )
 
         assert count == 0
