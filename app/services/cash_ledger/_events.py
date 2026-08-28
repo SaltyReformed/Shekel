@@ -232,13 +232,18 @@ class CashAnchorFact:
         is_opening: True for the account's first history row; False for a
             true-up.  **A LABEL, not a partition input** (finding N-133 / F1):
             the walk treats both kinds identically -- an assertion closes its
-            civil day, whichever kind it is -- and this flag survives only for
-            the two places the DISTINCTION is real: the posting source kind an
-            assertion books under (``account_opening`` vs ``account_trueup``,
-            ``account_posting_service._anchors``) and ruling R-I's back-
-            projection, which moves the FIRST assertion's correction into the
-            fold's seed.  It was a partition input for one day and cost
-            ``$2,057.42`` of period 0's remainder while it was.
+            civil day, whichever kind it is.  It was a partition input for one
+            day and cost ``$2,057.42`` of period 0's remainder while it was.
+
+            **NOTHING reads it any more, and plan step X-f3c-2a is why.**  Its
+            two consumers were the posting source kind an assertion books under
+            and ruling R-I's back-projection; the first reads
+            ``AccountAnchorCorrection.opens_the_books`` now (a stored fact) and
+            the second is deleted.  The balance-history card's "Opening" badge
+            asks ``budget.account_openings`` which day the books opened rather
+            than which assertion sorts first.  The field is kept because the
+            walk's ORDERING contract is still load-bearing and this is the
+            cheapest statement of it; it decides no figure.
     """
 
     anchor_id: int
@@ -492,15 +497,18 @@ def cash_anchor_facts(account_id: int) -> list[CashAnchorFact]:
     ``(created_at, id)`` while ``observed_on`` was DERIVED from ``created_at``
     and therefore monotone in it; plan step 2 made the column user-supplied and
     broke that, so the loader now states the order the partition actually uses.
-    Getting this wrong is not cosmetic: the flag chooses which correction books
-    ``account_opening`` versus ``account_trueup``
-    (:func:`app.services.account_posting_service._anchors._account_correction_kinds`)
-    while ruling R-I's seed takes the fold's ``corrections[0]`` and the period
-    view's assertion component takes ``[1:]``
-    (:mod:`app.services.balance_at._cash_fold`) -- three consumers, one of them
-    keyed on the flag and two on the position. Ordering here is what keeps
-    "the FIRST is the opening" a single true statement rather than three that
-    happen to agree.  Measured: a fixture that pinned a true-up's instant to an
+    Getting this wrong is not cosmetic, though what it costs CHANGED at plan
+    step X-f3c-2a.  It used to choose which correction books
+    ``account_opening`` versus ``account_trueup`` and which one the fold's seed
+    swallowed -- three consumers, one keyed on the flag and two on the
+    position, which is why "the FIRST is the opening" had to be a single true
+    statement rather than three that happen to agree.  All three read
+    ``budget.account_openings`` now.  What still rests on this order is the
+    REPLAY: :func:`app.services.balance_at._assertions.assertion_corrections`
+    walks the assertions in it, and each correction is measured against the one
+    before, so a mis-ordered pair still moves two corrections.
+
+    Measured: a fixture that pinned a true-up's instant to an
     exact second while the origination carried the same second plus microseconds
     inverted the two and posted a ``$1,307.66`` true-up to the ledger as the
     account's OPENING.

@@ -22,8 +22,16 @@ posted purchases``) in a migration that then goes stale the day that rule
 changes, which is exactly the two-statements-of-one-rule defect the balance arc
 exists to close.
 
-Two INDEPENDENT readings are taken and they must AGREE, or the migration
-refuses:
+Two readings are taken and they must AGREE, or the migration refuses. **They
+are not INDEPENDENT and an earlier draft of this docstring claimed they were**:
+both come from the posted ledger, so they are the stored result of
+``walk_account_ledger`` and its recomputation. What the pair detects is a posted
+ledger that is INCOMPLETE for an account -- which is the failure that would
+silently seed ``$0.00`` -- and not a divergence between the posted ledger and
+the cash fold. That equality is asserted by measurement instead: 1,829 balance
+readings across nine accounts, identical either side of this step.
+
+The two readings are:
 
 * ``E_entry``  -- the ``account_opening`` journal entry's LINKED leg;
 * ``E_checked`` -- the earliest assertion's balance, less the linked-leg
@@ -78,11 +86,6 @@ branch_labels = None
 depends_on = None
 
 
-#: The provenance values seeded into ``ref.account_opening_sources``.
-#: Mirrors :class:`app.enums.AccountOpeningSourceEnum`; the ref cache maps
-#: these names to their ids at startup and every comparison is by id.
-_SOURCE_NAMES = ("user_declared", "migration_derived")
-
 #: The journal sources whose LINKED-leg postings are cash movements rather than
 #: anchor corrections.  Subtracting these from the earliest asserted balance
 #: reproduces the fold's ``balance_before`` for that assertion, which is the
@@ -116,8 +119,18 @@ def _openings_from_the_journal(bind) -> dict[int, tuple]:
         asserted AS (
             SELECT h.account_id,
                    o.opened_on,
+                   -- The EARLIEST-recorded assertion of the opening day, which
+                   -- is the one both walks treat as the opening
+                   -- (``cash_anchor_facts`` orders ``(observed_on, created_at,
+                   -- id)`` ascending and ``walk_account_ledger`` books
+                   -- ``corrections[0]``).  Taking the day's LAST-recorded row
+                   -- instead made the two readings disagree by the correction
+                   -- between them on any account whose owner fixed a mistyped
+                   -- opening balance the same day -- an ordinary act -- and the
+                   -- migration then refused, permanently, with a remedy that
+                   -- changes neither number.
                    (ARRAY_AGG(h.anchor_balance
-                              ORDER BY h.created_at DESC, h.id DESC))[1]
+                              ORDER BY h.created_at, h.id))[1]
                        AS anchor_balance
               FROM budget.account_anchor_history h
               JOIN opening o
@@ -200,7 +213,9 @@ def _accounts_without_assertions(bind) -> list[tuple]:
     return [
         (row.id, row.opened_on)
         for row in bind.execute(sa.text("""
-            SELECT a.id, (a.created_at AT TIME ZONE 'UTC')::date AS opened_on
+            SELECT a.id,
+                   (a.created_at AT TIME ZONE 'America/New_York')::date
+                       AS opened_on
               FROM budget.accounts a
              WHERE NOT EXISTS (
                  SELECT 1 FROM budget.account_anchor_history h
@@ -314,13 +329,15 @@ def upgrade():
         schema="ref",
     )
     bind = op.get_bind()
-    for name in _SOURCE_NAMES:
-        bind.execute(
-            sa.text(
-                "INSERT INTO ref.account_opening_sources (name) VALUES (:name)"
-            ),
-            {"name": name},
-        )
+    # LITERAL values, not a parameterised loop: leg 1 of the dual seed is what
+    # a bare ``flask db upgrade`` runs, and ``test_posting_ref_seed_parity``
+    # reads this statement STATICALLY to prove every enum member is inline
+    # seeded.  A bound parameter is invisible to it, so the gate that exists to
+    # catch exactly this omission passed while the names were unreachable.
+    op.execute(
+        "INSERT INTO ref.account_opening_sources (name) "
+        "VALUES ('user_declared'), ('migration_derived')"
+    )
 
     op.create_table(
         "account_openings",
@@ -348,6 +365,29 @@ def upgrade():
         ["account_id", "created_at"],
         unique=False,
         schema="budget",
+    )
+
+    # **The audit trigger is attached HERE, and the deploy depends on it.**
+    # ``app.audit_infrastructure`` lists this table, so
+    # ``EXPECTED_TRIGGER_COUNT`` becomes 51; ``entrypoint.sh`` compares that
+    # against the live count AFTER migrations and exits 1 when it is short, so
+    # a table registered but never triggered stops the container from starting
+    # at all.  The rebuild migration ``a5be2a99ea14`` cannot do it -- its CREATE
+    # is guarded on the table already existing -- which is why every migration
+    # that creates an audited table attaches its own pair
+    # (``3f408018a71c`` is the precedent).
+    #
+    # It comes BEFORE the seeding INSERTs below so the backfill itself is
+    # audited: those rows are the level every balance rests on, and the
+    # downgrade's recovery story is that ``system.audit_log`` holds them.
+    op.execute(
+        "DROP TRIGGER IF EXISTS audit_account_openings "
+        "ON budget.account_openings"
+    )
+    op.execute(
+        "CREATE TRIGGER audit_account_openings "
+        "AFTER INSERT OR UPDATE OR DELETE ON budget.account_openings "
+        "FOR EACH ROW EXECUTE FUNCTION system.audit_trigger_func()"
     )
 
     derived_id = bind.execute(sa.text(

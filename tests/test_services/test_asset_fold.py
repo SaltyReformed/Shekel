@@ -467,12 +467,23 @@ class TestAnAssertionAlwaysWins:
 
         A $50,000 401(k) asserted 2026-02-13 with a $5,000.00 contribution
         already recorded on 2026-01-20.  Hand-computed: the records at or before
-        the assertion sum to +$5,000.00, so the seed is
-        ``50000.00 - 5000.00 = 45000.00`` and the fold reads $45,000.00 before
-        01-20 and $50,000.00 from it.  No ACCRUAL exists there at all -- the
-        region is before the LATEST assertion -- which is ruling R-S: the
-        reverse growth projection leaves the balance path rather than becoming a
-        direction.
+        the assertion sum to +$5,000.00.  The books were DECLARED at
+        $50,000.00 (``create_account`` records the balance its owner typed), so
+        the fold reads $50,000.00 before 01-20, $55,000.00 from it, and
+        $50,000.00 from the assertion's own day, which resets it.  No ACCRUAL
+        exists in that region at all -- it is before the LATEST assertion --
+        which is ruling R-S: the reverse growth projection leaves the balance
+        path rather than becoming a direction.
+
+        **The $55,000.00 is the pre-opening double count, and it is PINNED
+        rather than endorsed** (finding **N-378**, closed by plan step
+        X-f3c-2b): the contribution is dated before the books opened, so it is
+        already inside the declared $50,000.00 and the fold counts it again.
+        *This read $45,000.00 / $50,000.00 until X-f3c-2a, when the seed
+        stopped being the first assertion back-computed over its own records
+        (ruling R-I) and became the stored ``budget.account_openings`` figure.
+        The old answer hid the contradiction by choosing a level that made it
+        cancel; nothing recorded $45,000.00 either.*
         """
         account = _401k(
             seed_user, seed_periods[3], Decimal("50000.00"),
@@ -491,9 +502,9 @@ class TestAnAssertionAlwaysWins:
             [date(2026, 1, 19), date(2026, 1, 20), date(2026, 2, 12)],
             params=_params_for(account),
         )
-        assert folded[date(2026, 1, 19)] == Decimal("45000.00")
-        assert folded[date(2026, 1, 20)] == Decimal("50000.00")
-        assert folded[date(2026, 2, 12)] == Decimal("50000.00")
+        assert folded[date(2026, 1, 19)] == Decimal("50000.00")
+        assert folded[date(2026, 1, 20)] == Decimal("55000.00")
+        assert folded[date(2026, 2, 12)] == Decimal("55000.00")
 
 
 class TestTheDailyGrain:

@@ -656,7 +656,7 @@ class TestTheIdentityHoldsOnEveryPeriod:
           elsewhere.  No assertion touches it, so ``book_vs_bank`` is ``$0.00``.
         * period 4 -- book-vs-bank ``-$1,300.00``: the true-up, which no
           transaction row can explain.  The records had walked the account to
-          ``1400.00 - 400.00 + 1800.00 = $2,800.00`` by 2026-03-01, and the user
+          ``1000.00 + 1800.00 = $2,800.00`` by 2026-03-01, and the user
           asserted ``$1,500.00``, so the correction is ``1500 - 2800``.  Note it
           is NOT ``1500 - 1000``: an assertion's correction is measured against
           the RECORDS, which is the whole reason this row exists.  Nothing
@@ -697,6 +697,13 @@ class TestTheIdentityHoldsOnEveryPeriod:
         # its whole delta into the fold's seed), so the run read a single
         # non-zero column.
         assert book[4] == Decimal("-1300.00")
+        # Hand-computed, on the row its CAUSE belongs to like every other
+        # figure here: the books open at $1,000.00, the pre-opening spend of
+        # $400.00 on 2026-01-03 walks the records to $600.00, and the opening
+        # assertion on 01-05 declares $1,000.00 -- a +$400.00 correction, which
+        # is what ``book_vs_bank`` holds.  It nets against period 0's own
+        # -$400.00 expense, which is why the identity still closes at $0.00.
+        assert book[0] == Decimal("400.00")
         assert {index for index, value in book.items() if value} == {0, 4}
         assert len({figures[p.id].balance for p in seed_periods}) > 1
 

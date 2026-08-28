@@ -36,6 +36,7 @@ from decimal import Decimal
 
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
+from app.models.account_opening import AccountOpening
 from app.models.transaction import Transaction
 from app.services import balance_at, cash_ledger
 from app.services.balance_at import BalanceContext
@@ -149,6 +150,58 @@ class TestTheThreeTiersSumToTheDaysMovement:
 
             assert facts[date(2026, 4, 6)].recorded == _ZERO
             assert facts[date(2026, 4, 6)].asserted == Decimal("300.00")
+
+    def test_a_RESTATED_opening_makes_the_first_assertion_a_real_movement(
+        self, app, seed_user, seed_periods, db,
+    ):
+        """The FIRING control that the first assertion is counted at all.
+
+        **Every other case in this file has a zero here, and that is the
+        problem this test exists for.**  A fixture built through
+        ``create_account`` records the opening equity as the balance its owner
+        typed, so the first assertion agrees with the books and its correction
+        is ``$0.00`` -- which means ``day_facts`` summing every correction and
+        ``day_facts`` skipping the first one give the identical answer, and an
+        adversarial review measured exactly that: re-introducing the deleted
+        ``corrections[1:]`` slice left 191 tests green.
+
+        So this restates the opening to a DIFFERENT figure and asserts the
+        difference lands on the assertion's own day.  Hand-computed: the books
+        are restated to open at ``$400.00`` where the account was declared at
+        ``$1,000.00``, so the first assertion now corrects the books UP by
+        ``$600.00`` and that is what its day's ``asserted`` must read.  Under
+        the old slice it would read ``$0.00``.
+        """
+        with app.app_context():
+            account = seed_user["account"]
+            governing = (
+                db.session.query(AccountOpening)
+                .filter_by(account_id=account.id)
+                .order_by(
+                    AccountOpening.created_at.desc(), AccountOpening.id.desc(),
+                )
+                .first()
+            )
+            db.session.add(AccountOpening(
+                account_id=account.id,
+                opened_on=governing.opened_on,
+                opening_equity=Decimal("400.00"),
+                source_id=governing.source_id,
+            ))
+            db.session.commit()
+
+            walk = cash_ledger.walk_cash_ledger(
+                account.id,
+                get_baseline_scenario(seed_user["user"].id).id,
+            )
+            opening = assertion_corrections(walk)[0]
+            assert walk.opening.opening_equity == Decimal("400.00")
+            assert opening.delta == Decimal("600.00")
+
+            facts = _series(
+                seed_user, opening.observed_on, opening.observed_on,
+            ).facts
+            assert facts[opening.observed_on].asserted == Decimal("600.00")
 
     def test_the_OPENING_EQUITY_is_level_and_the_first_assertion_is_movement(
         self, app, seed_user, seed_periods, db,

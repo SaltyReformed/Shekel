@@ -205,7 +205,9 @@ def period_view_of(
     the real account's 130 settled rows; nets to ``$0.00`` across history and
     swings to ``-$2,007.46`` inside one period), and a still-projected row
     ruling R-G clamped forward out of its column.
-    :attr:`~CashPeriodFigures.book_vs_bank` carries the balance ASSERTIONS
+    :attr:`~CashPeriodFigures.book_vs_bank` carries EVERY balance ASSERTION
+    (the first one included since plan step X-f3c-2a, where the opening used to
+    be held back because the fold had swallowed its correction into the seed)
     (``-$2,906.31`` net over the 51 that follow the opening on the real
     account, measured 2026-08-01), which are about what the app did not know.
     Rejected at the ruling: leaving the subtotals

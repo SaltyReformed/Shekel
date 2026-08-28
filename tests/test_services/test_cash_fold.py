@@ -352,13 +352,15 @@ class TestTheOpeningEquityIsTheSeed:
         re-derivation and the compensator are gone: the seed is a stored fact
         and the steps are the replay's own output.
 
-        So the equality is now STRONGER than the one it replaces.  It held only
-        at and after the opening before, because the seed and its compensator
-        cancelled there and not earlier.  It holds on EVERY date now -- the fold
-        is ``sample_cumulative(stored opening equity, the same steps)`` -- and
-        that is exactly the property "the fold introduces no arithmetic of its
-        own" means.  A future term added to ``_actual_steps`` and not to
-        :func:`_recorded_steps` breaks it on the day it lands.
+        The equality holds on EVERY date now, where it held only at and after
+        the opening before -- but it is NOT a check on the seed, and an earlier
+        draft of this docstring claimed it was.  Both sides read
+        :func:`app.services.cash_ledger.account_opening_fact`, so a wrong
+        stored equity shifts them together and this comparison survives it.
+        What it does catch, which is the property it is named for, is a term
+        added to ``_actual_steps`` and not to :func:`_recorded_steps` -- a
+        compensator growing back, a re-key, a second seed.  The figures below
+        are what pin the seed, and only the two BEFORE the opening can.
 
         Stream: books declared $1,000.00, opening assertion 2026-02-01 with a
         -$500.00 record dated before it (2026-01-15), a true-up to $2,000.00

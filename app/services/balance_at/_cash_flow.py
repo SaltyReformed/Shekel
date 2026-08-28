@@ -515,12 +515,14 @@ class CashAnchorRow:
             working: ``recorded - ledger`` reconciles on the row, and a day's
             corrections telescope to the day's total (``-7.46 + -38.97 +
             -45.86 = -92.29``, the gap the preview names).
-        is_opening: ``True`` for the account's first assertion.  A LABEL for
-            the card's "Opening" badge and nothing more since plan step
-            X-f3c-2a: no figure on this row is conditioned on it, because what
-            an account's books opened with is a stored
-            ``budget.account_openings`` fact rather than a property of whichever
-            assertion sorts first.
+        is_opening: ``True`` for the assertion made on the day the account's
+            books OPENED, read from ``budget.account_openings`` rather than
+            from a position in the assertion series.  A LABEL for the card's
+            "Opening" badge and nothing more: no figure on this row is
+            conditioned on it.  *It was ``CashAnchorFact.is_opening`` until
+            plan step X-f3c-2a, and a back-dated assertion moved the badge onto
+            the earlier row -- captioning a day the owner had merely typed a
+            balance for as the day their books opened.*
     """
 
     observed_on: date
@@ -625,7 +627,26 @@ def cash_anchor_history(
     # would collapse ONE of this module's walks and quietly leave the other --
     # and plan step **X-i4** put that memo on the pass, so every reading here
     # shares the one assembly it holds.
-    corrections = _cash_fold.assembled_fold(account, ctx).corrections
+    folded = _cash_fold.assembled_fold(account, ctx)
+    corrections = folded.corrections
+    # **The badge reads the account's OPENING RECORD, not a position** (plan
+    # step X-f3c-2a).  It was ``CashAnchorFact.is_opening`` -- the earliest
+    # assertion by ``(observed_on, created_at, id)`` -- so recording a balance
+    # for a day before the books opened moved the badge onto that row and told
+    # the owner their books opened at a figure they had merely typed, beside a
+    # ledger/correction pair computed against the real opening.  The badged row
+    # is now the first assertion on the day ``budget.account_openings`` says the
+    # books opened; an account whose assertions all postdate that day carries no
+    # badge, which is honest rather than a gap.
+    opened_on = folded.walk.opening.opened_on
+    badged = next(
+        (
+            correction.anchor.anchor_id
+            for correction in corrections
+            if correction.observed_on == opened_on
+        ),
+        None,
+    )
     # ``booked`` rather than ``correction``: the walk's record and the row's
     # field would otherwise share a name inside one expression, and
     # ``correction=correction.delta`` reads as a self-reference.
@@ -646,7 +667,7 @@ def cash_anchor_history(
             # the books held, and what the owner's declaration moved it by.
             ledger=booked.balance_before if reconcilable else None,
             correction=booked.delta if reconcilable else None,
-            is_opening=booked.anchor.is_opening,
+            is_opening=booked.anchor.anchor_id == badged,
         )
         for booked in reversed(corrections)
     ]

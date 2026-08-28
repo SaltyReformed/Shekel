@@ -133,9 +133,18 @@ def _running_balance(account, scenario):
     booked an equal-and-opposite compensator, so the two cancelled and the
     total equalled the zero-seeded walk.  With opening equity a stored fact
     there is no compensator, so the seed is a real term and a reconstruction
-    that drops it is short by the whole of it.  *Every assertion in this module
-    kept its expected figure across that change, which is the evidence the
-    assembly moved and the money did not.*
+    that drops it is short by the whole of it.
+
+    **This total is INVARIANT in the opening equity, and saying so is the
+    honest version of a claim an earlier draft got wrong.**  The first
+    assertion's delta is ``A - E - cleared``, so the leading ``E`` cancels
+    against the ``-E`` inside it: perturb the stored equity by any amount and
+    every figure here is unchanged.  That is a real property of the REPLAY --
+    an assertion resets the total, so what preceded it cannot survive -- and it
+    is exactly why "the figures did not move" is NOT evidence that this step
+    moved no money.  A control on the SEED has to read a date BEFORE the first
+    assertion, which is what ``test_cash_fold.py``'s
+    :class:`TestTheOpeningEquityIsTheSeed` does.
 
     :class:`TestTheStepsReconstructTheReplay` proves this equals the replay's
     own terminal balance by reconstructing that balance INDEPENDENTLY from the
