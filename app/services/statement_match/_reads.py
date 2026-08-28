@@ -48,6 +48,7 @@ from ._bars import ParkedLine
 from ._gaps import ReviewBounds, search_gap
 from ._leftovers import CreatableLine, RecordableInflow, leftovers
 from ._propose import propose
+from ._queue import StatementQueue, statement_queue
 from ._scope import ReviewScope
 from ._section import MerchantSection
 from ._verdict import ruled
@@ -133,6 +134,88 @@ class ProposedAlready:
     def any(self) -> bool:
         """Return whether the proposals take anything out of either list."""
         return bool(self.lines or self.rows)
+
+
+@dataclass(frozen=True)
+class RowsNeverShown:
+    """The owner's own rows this statement never showed, BY DIRECTION.
+
+    Finding **bank_import:N-380**, plan step ``bank_import:X-gf-3b-2``.  The
+    other side of the reconciliation: :attr:`ReviewSet.unmatched` is every bank
+    line the owner's records do not explain, and this is every row of theirs no
+    bank line explains.  Both are leftovers of one pass and only one of them
+    was ever stated on the queue.
+
+    **The DIRECTION is the whole point of the value.**  The workbench captioned
+    the same list *a payment your records claim happened and your bank did not
+    make*, which is a claim about an OUTFLOW, while 17 of the developer's own
+    49 are DEPOSITS -- his `Data Manager` salary rows at `$2,473.38`, whose
+    matching payroll credits sit unexplained in the queue at `$2,573.42`
+    because the two differ by more than any tier's bound.  One caption over
+    both directions is wrong about one of them whichever way it is written.
+
+    **Measured 2026-08-28** through the real producer on a clone of the
+    developer's dev data at migration head ``a7c41f9d2b60``: 67 rows, of which
+    18 carry a :attr:`~._offers.CandidateRow.not_shown_alone` withdrawal and 49
+    do not -- 32 payments at `$3,815.64` and 17 deposits at `$18,132.28`.  The
+    signed net of those two is `$14,316.64` and is the misleading figure, since
+    it cancels income the bank never credited against payments it never made;
+    the queue states the two separately for exactly that reason.
+
+    Attributes:
+        payments: The bare OUTFLOW rows -- money the records say left and the
+            bank did not show leaving.
+        deposits: The bare INFLOW rows -- money the records say arrived and the
+            bank did not show arriving.
+
+    **A row whose** :attr:`~._offers.CandidateRow.not_shown_alone` **holds is
+    in NEITHER**, and that is the value's whole narrowing: the bank accounts
+    for its money through some OTHER row -- a ``CC Payback`` leaves inside one
+    lump payment to the card -- so the alarm is not true of it and stating it
+    here would be the claim plan step ``bank_import:X-gc`` withdrew.  They are
+    not carried as a third tuple: nothing reads one, and a field computed
+    every render for no reader is the speculative shape ``CLAUDE.md`` rule 13
+    refuses.
+    """
+
+    payments: "tuple[CandidateRow, ...]"
+    deposits: "tuple[CandidateRow, ...]"
+
+    @property
+    def payments_total(self) -> Decimal:
+        """Return what the unshown payments come to.
+
+        Returns:
+            The total as a POSITIVE figure, so the screen states it without
+            arithmetic in a template -- the rule
+            :attr:`IncomeAlreadyRecorded.total` already sets.
+        """
+        return -sum(
+            (row.cash_amount for row in self.payments), Decimal("0.00"),
+        )
+
+    @property
+    def deposits_total(self) -> Decimal:
+        """Return what the unshown deposits come to.
+
+        Returns:
+            The total, already positive.
+        """
+        return sum(
+            (row.cash_amount for row in self.deposits), Decimal("0.00"),
+        )
+
+    @property
+    def any(self) -> bool:
+        """Return whether this statement failed to show any row at all.
+
+        The one question the queue asks before stating this, answered here
+        rather than as two truth tests a third direction would silently miss.
+
+        Returns:
+            Whether either direction holds a row.
+        """
+        return bool(self.payments or self.deposits)
 
 
 @dataclass(frozen=True)
@@ -288,8 +371,8 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
         **A COUNT and a pointer, not a list**: these lines are not missing
         work, they are work waiting on a decision one screen away, and the
         remedy is to go and take it.  Counted here rather than in Jinja for
-        the reason :attr:`placed_by_class` is: a caption may not promise a
-        number a template computed.
+        the reason :func:`~._queue._sweeps_for` counts in the service: a caption
+        may not promise a number a template computed.
 
         Returns:
             The :class:`ProposedAlready`.  Rows are counted over the SUBJECTS
@@ -323,39 +406,58 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
         )
 
     @property
-    def placed_by_class(self) -> "dict[str, int]":
-        """Return how many creatable lines each sweep CLASS would tick.
+    def queue(self) -> "StatementQueue":
+        """Return the exception queue as ONE list grouped by the decision.
 
-        **Counted where the sweep's own rule is**
-        (:attr:`~._placement.Placement.sweep_class`) rather than as a Jinja
-        expression, so a caption cannot promise a number the control does not
-        deliver.  A placement that is not an act -- a rule that does not
-        reach this line's pay period -- has no class and is not counted, and a
-        line ruling **R-GJ** bars is not in :attr:`creatable` at all.
+        Ruling **bank_import:R-HB**, plan step ``bank_import:X-gf-3b-2``.  The
+        screen's spelling of :func:`~._queue.statement_queue`, which holds the
+        derivation and the whole argument for it -- delegated for the reason
+        :meth:`search_gap_for` delegates to :mod:`._gaps`: this value is what
+        the queue is assembled FROM, and a module that also assembled it would
+        be two subjects wearing one name.
 
-        The three partition, for the reason
-        :attr:`~._offers.MatchProposal.review_class`'s three do: filing into an
-        open budget line, raising what a closed one records, and minting one
-        the account did not have are different acts with different
-        consequences, and ruling **R-FZ(c)** is that the riskiest may not ride
-        the same click as the safest.
+        **It replaced** ``placed_by_class``, which counted the sweep over every
+        creatable line whatever the evidence said about it.  The sweep belongs
+        to one group now (:class:`~._queue.QueueSweep`), so the count and the
+        control's reach are the same fact.
+
+        Returns:
+            The :class:`~._queue.StatementQueue`.
         """
-        counts: "dict[str, int]" = {}
-        for item in self.creatable:
-            group = (
-                item.placement.sweep_class
-                if item.placement is not None else None
-            )
-            if group is not None:
-                counts[group] = counts.get(group, 0) + 1
-        return counts
+        return statement_queue(self)
+
+    @property
+    def rows_never_shown(self) -> RowsNeverShown:
+        """Return the owner's own rows this statement never showed.
+
+        Finding **bank_import:N-380**, plan step ``bank_import:X-gf-3b-2``.
+        **A property over** :attr:`unmatched_rows` **rather than a field**, for
+        the reason :meth:`income_already_recorded_in` is one: those rows are
+        derived after the leftovers are split, and a value built from a second
+        read of them could disagree with the list the workbench renders --
+        which is where this summary sends the owner.
+
+        Returns:
+            The :class:`RowsNeverShown`, partitioned by DIRECTION and with the
+            rows whose money the bank accounts for elsewhere counted apart.
+        """
+        return RowsNeverShown(
+            payments=tuple(
+                row for row in self.unmatched_rows
+                if row.not_shown_alone is None and row.cash_amount < 0
+            ),
+            deposits=tuple(
+                row for row in self.unmatched_rows
+                if row.not_shown_alone is None and row.cash_amount > 0
+            ),
+        )
 
     def income_already_recorded_in(
         self, line: BankLine,
     ) -> "IncomeAlreadyRecorded | None":
         """Return what the books already hold for *line*'s period, or ``None``.
 
-        The per-line safeguard on the deposit card
+        The per-line safeguard on an unexplained INFLOW
         (:class:`IncomeAlreadyRecorded`).  **A method over
         :attr:`unmatched_rows` rather than a field on
         :class:`~._leftovers.RecordableInflow`**, because those rows are
@@ -410,11 +512,11 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
             line: The bank line, which must be one this pass considered.
                 **THREE surfaces take it off three different lists**, and the
                 claim that "every caller takes it off :attr:`creatable`" was
-                already false when it was written: the create card reads it off
-                :attr:`creatable`, the hand-build form off :attr:`unmatched`
-                (which is the only one an inflow used to reach), and since
-                ruling **bank_import:R-GW** the deposit card off
-                :attr:`recordable_inflows`.  What every caller does share is
+                already false when it was written: the queue's OUTFLOW rows
+                read it off :attr:`creatable`, the hand-build form off
+                :attr:`unmatched` (which is the only one an inflow used to
+                reach), and since ruling **bank_import:R-GW** its INFLOW
+                rows off :attr:`recordable_inflows`.  What every caller does share is
                 that the line was in THIS pass, which is what makes
                 :attr:`declined_lines` answerable for it.
 

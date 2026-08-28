@@ -174,6 +174,14 @@ from ._submission import (
 from ._near import NEAR_MISS_BOUND
 from ._pairing import DAY_WINDOW
 from ._propose import ProposedMatches, propose
+from ._queue import (
+    Evidence,
+    QueueAct,
+    QueueGroup,
+    QueueRow,
+    QueueSweep,
+    StatementQueue,
+)
 from ._accepted_view import (
     REGISTER_LIMIT,
     AcceptedGroup,
@@ -197,6 +205,7 @@ from ._stating import (
 from ._gaps import ReviewBounds
 from ._reads import (
     ReviewSet,
+    RowsNeverShown,
     awaiting_review_count,
     review_set,
 )
@@ -269,9 +278,16 @@ __all__ = [
     "RecordedIncome",
     "PurchaseDestination",
     "ReleasedMatch",
+    "Evidence",
+    "QueueAct",
+    "QueueGroup",
+    "QueueRow",
+    "QueueSweep",
     "ReviewBounds",
     "ReviewScope",
     "ReviewSet",
+    "RowsNeverShown",
+    "StatementQueue",
     "ReviewedBatch",
     "ReviewedRow",
     "StatementRegister",

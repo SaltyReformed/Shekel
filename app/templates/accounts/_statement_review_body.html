@@ -149,9 +149,17 @@
           <em>never a purchase</em> for anything your budget already holds in
           another shape -- a card payment your app records as payback rows would
           be counted twice if you recorded it here. That answer is not advice:
+          {# **NAMES THE ACT, NEVER A POSITION OR A CARD** (plan step
+             bank_import:X-gf-3b-2).  It ended "they move to <em>Payments
+             waiting for their home</em> below", which named a card ruling
+             bank_import:R-HB deleted AND its position on the page -- the sixth instance
+             of the coupling plan step X-gf-3b-1 found five of, and it went
+             false in the same commit that merged the three cards.  Worse, a
+             route test asserting that card's HEADING was passing by matching
+             THIS sentence, so it would have stayed green with the card gone. #}
           once you have given it, no control on this page can record those lines
-          as purchases, and they move to <em>Payments waiting for their
-          home</em> below.
+          as purchases: they are listed with the reason instead, and the only
+          act left for them is to match them against rows you already hold.
         </p>
         <p class="text-body-secondary small mb-0">
           Pick <em>ask me every time</em> for a merchant you would rather decide
@@ -407,105 +415,89 @@
       {% endif %}
     </div>
 
-    {# ── Lines that are a purchase you never recorded ──────────────────── #}
-    {# Ruling R-FS's THIRD shape, plan step bank_import:X-f6a-3b.  THIS CARD
-       MOVES MONEY, and differently from the proposals above: accepting a match
-       re-dates a movement your records already held, and recording a line here
-       ADDS one they did not have.  Measured on the developer's own statement,
-       91 unmatched outflows survive every proposal -- 74 of them card swipes
-       worth $3,383.49 -- and none can ever be matched, because the app records
-       a period's groceries as one envelope and the bank records every swipe.
+    {# ── The queue: ONE list, grouped by the decision each line poses ──── #}
+    {# RULING bank_import:R-HB, plan step bank_import:X-gf-3b-2.  THIS LIST
+       MOVES MONEY.
 
-       A line appears BOTH here and in the hand-build form's own list on
-       purpose: the same fact can be something to group with existing rows or
-       something to record as new, and the owner is the one who knows which.
-       That is why every row here carries a link to it (ruling
-       bank_import:R-HC) -- the two acts are one click apart rather than one
-       screen apart.
+       It replaced THREE cards that partitioned the same lines by MECHANISM --
+       an outflow that may be recorded, an outflow ruling R-GJ bars, an inflow
+       that may be recorded.  That partition is the SERVICE's and it is the
+       right one, because the three reach different doors; it is not the
+       READER's, because all three pose one question: is this money my books
+       already hold, or is it new?  So the mechanism stays load-bearing
+       underneath -- each row still renders its own act -- and stops being
+       visible as a grouping.
 
-       Inflows are absent: a purchase is an expense, so a deposit or a card
-       refund is not one.  Since ruling bank_import:R-GW they have a card of their own
-       below -- "Money that arrived and your records do not hold" -- and
-       before it they had no act on this screen at all.
+       THE GROUP IS THE EVIDENCE AND THE ROW IS THE ACT.  Which group a line
+       sits in is what this pass's own evidence says about it (Evidence, in
+       _queue.py); what the row offers is what its mechanism opens.  Both are
+       decided in the service: the heading, the paragraph under it and every
+       sentence beside a line are server-derived and printed unbranched, which
+       is the rule ParkedLine.reason and RecordableInflow.withheld already
+       state -- a template restating a partition is a second place for it to
+       be wrong.  It was wrong exactly that way before this step: the create
+       card and the deposit card each printed the pass's search gap and the
+       PARKED card did not, so one of the developer's nine parked lines
+       carried its bar reason here and its gap only on the workbench.
 
-       THE SELECT IS THE TICK (developer ruling, 2026-08-19).  Its default is
-       "leave this line alone", so a line is recorded only where the owner
-       named a place for it.  It used to default to the first envelope in the
-       line's pay period -- which on the developer's own data has already
-       CLOSED at a fixed figure on 78 of these 91 lines -- and the category
-       select defaulted to the first active category, "Auto: Property Tax".
-       One press per line hid that; one press for forty would not. #}
-    {% if review.creatable %}
-    <div class="card mb-3">
+       THE ORDER IS RISKIEST FIRST, and it is load-bearing.  "Your records may
+       already hold these" comes before "Nothing of yours accounts for these"
+       so the owner disposes of the possible duplicates BEFORE reaching the
+       group that offers a one-click sweep.
+
+       THE PARKED ROWS ARE INSIDE THIS FORM NOW, where they were outside it
+       before.  That is safe because it is structural rather than positional:
+       such a row renders no named control at all, and _bars.reject_barred_line
+       refuses the act at the create door regardless of what a browser posts.
+       A separation held only by two separate form elements is the shape plan step
+       X-gf-3b-1 deleted an index over. #}
+    {% for group in review.queue.groups %}
+    <div class="card mb-3" id="queue-group-{{ group.evidence.value }}"
+         data-queue-group="{{ group.evidence.value }}">
       <div class="card-header d-flex justify-content-between align-items-center">
-        <span><i class="bi bi-plus-square"></i> Lines that are a purchase you never recorded</span>
-        <span class="badge text-bg-secondary">{{ review.creatable | length }}</span>
+        <span><i class="bi bi-list-check"></i> {{ group.heading }}</span>
+        <span class="badge text-bg-secondary">{{ group.rows | length }}</span>
       </div>
       <div class="card-body">
-        <p class="text-body-secondary small mb-0">
-          These are every line of money LEAVING your account that no match above
-          explains. Recording one adds a purchase your records did not have, dated
-          the day your bank took it. Whether your balance falls depends on the
-          envelope you file it under: one that had already reserved for this
-          spending absorbs it, and one that had not does not.
-        </p>
-        {# THE CARD-PAYMENT EXAMPLE STAYS, and an adversarial review of X-ga is
-           why. A first version of this step deleted it, on the premise that "a
-           recognised card payment is no longer in this list at all" -- which is
-           FALSE for a merchant the owner has answered: any answer but "never a
-           purchase" lifts the bar and puts those lines back in this card
-           (ruling R-GJ leaves the decision with the owner, because the bank's
-           own label is measurably wrong about 7 of the 22 lines it applies to).
-           So this card is exactly where an answered card merchant's warning has
-           to live, and deleting it removed the last one on that path. #}
-        <p class="text-body-secondary small mb-0">
-          <strong>Some of these may already be in your budget in another shape</strong>
-          -- a card payment your app records as payback rows, an insurance premium
-          you record as a bill, a subscription inside a bigger envelope. Recording
-          one of those here would count that money a second time. Those are
-          <em>matched</em> against the rows you already hold rather than
-          recorded, which is what the link on each line does.
-        </p>
+        <p class="text-body-secondary small mb-0">{{ group.explanation }}</p>
       </div>
-      {% if review.placed_by_class %}
-      {# THE SWEEPS, and they are what turn a suggestion into a tick.
+      {% if group.sweeps %}
+      {# THE SWEEPS, and they belong to THIS GROUP rather than to the page
+         (developer ruling 2026-08-28).  They used to be counted over every
+         creatable line with a placement, blind to whether that line also
+         carried a warning that its money may already be recorded -- so the
+         screen could print "the app found a row this might be" beside a line
+         and still tick it under a one-click that ignored the sentence.  That
+         is the warning-paragraph-above-a-working-control shape ruling R-GJ
+         cost $7,412.94 to learn, at the grain of one line rather than one
+         merchant.  Only the group whose own evidence says recording is safe
+         offers one now, and the sweep's REACH is the DOM subtree it lives in
+         (statement_review.js), so it cannot select a row outside this card
+         even if a later edit gave one a placement class.
 
-         PER CLASS, exactly as the proposal sweep above is, and for the reason
-         ruling R-FZ(c) gives: the riskiest class may not ride the same click
-         as the safest.  Filing into a budget line that is still open is
-         absorbed by what it reserved; raising what a CLOSED row records as its
-         cost is a bigger thing to do; and creating a budget line the account
-         did not have is bigger again -- and is the one act releasing the match
-         cannot undo, because the purchase and the envelope both stay.  A first
-         draft swept all three together, and 29 of this account's 220 offerable
-         destinations have already closed.
+         PER CLASS within the group, which is ruling R-FZ(c): filing into a
+         budget line that is still open is absorbed by what it reserved,
+         raising what a CLOSED one recorded changes a figure the owner had
+         finished with, and minting an envelope the account did not have is
+         the one act releasing the match cannot undo.
 
-         JS-only, like every sweep on this screen: with scripting off each line
-         still has its own select and the placement is still printed beside it,
-         so this is a convenience over a form that works without it and never
-         the only way to reach a control.
-
-         Nothing is swept for a rule that cannot reach this line's pay
-         period: it has no value to set, so it is not counted here. A merchant
-         the owner answered "never a purchase" is not in this card at all since
-         ruling R-GJ -- it is parked below. #}
+         JS-only, like every sweep on this screen: with scripting off each
+         line still has its own select and the placement is still printed
+         beside it. #}
       <div class="card-body border-top border-bottom py-2">
         <div class="d-flex flex-wrap gap-3 small">
-          {% for group, label in [
-            ('into_open', 'into a budget line that is still open'),
-            ('into_closed', 'into one that has already closed, raising what it recorded'),
-            ('creates', 'into a NEW envelope this would create'),
-          ] %}
-          {% set count = review.placed_by_class.get(group, 0) %}
-          {% if count %}
+          {% for sweep in group.sweeps %}
           <div class="form-check">
+            {# The id carries the GROUP as well as the class, so two groups
+               offering the same class could never mint the same id. #}
             <input class="form-check-input" type="checkbox"
-                   id="tick-placed-{{ group }}" data-tick-placed="{{ group }}">
-            <label class="form-check-label" for="tick-placed-{{ group }}">
-              record {{ count }} line(s) {{ label }}
+                   id="tick-placed-{{ group.evidence.value }}-{{ sweep.css_class }}"
+                   data-tick-placed="{{ sweep.css_class }}">
+            <label class="form-check-label"
+                   for="tick-placed-{{ group.evidence.value }}-{{ sweep.css_class }}">
+              record {{ sweep.count }} line(s) {{ sweep.label }}
             </label>
           </div>
-          {% endif %}
           {% endfor %}
         </div>
       </div>
@@ -515,64 +507,63 @@
           <thead>
             <tr>
               <th scope="col">Your bank says</th>
-              <th scope="col">Record it in</th>
+              <th scope="col">What you can do</th>
             </tr>
           </thead>
           <tbody>
-            {% for item in review.creatable %}
+            {% for row in group.rows %}
             <tr>
               <td>
-                <span class="fw-semibold">{{ money(item.line.amount) }}</span>
-                <span class="text-body-secondary">{{ item.line.posted_on }}</span>
-                {% if item.line.transaction_on %}
-                <span class="small text-body-secondary">(made {{ item.line.transaction_on }})</span>
+                <span class="fw-semibold">{{ money(row.line.amount) }}</span>
+                <span class="text-body-secondary">{{ row.line.posted_on }}</span>
+                {% if row.line.transaction_on %}
+                <span class="small text-body-secondary">(made {{ row.line.transaction_on }})</span>
                 {% endif %}
-                <div class="small text-body-secondary">{{ item.line.description }}</div>
-                {# THE WARNING, on the line rather than in a panel at the foot
-                   of the page (plan step bank_import:X-f6d-3).  It belongs
-                   HERE because this card is where the wrong act is cheapest:
-                   recording a line the app already holds in another shape is
-                   the duplicate finding N-335 measures, at $356.61 for one
-                   $178.29 movement.
-
-                   ONE SENTENCE, SERVER-DERIVED, PRINTED UNBRANCHED (finding
-                   N-359, plan step bank_import:X-gf-3a).  What is behind it is
-                   a partition -- a rule ruling R-GH's automatic door withheld,
-                   or a search this pass did not finish -- and the first
-                   version of this step picked between them with
-                   {% if %}/{% elif %} right here, which is the second place
-                   for a partition to be wrong that the parked card below and
-                   RecordableInflow.withheld both exist to refuse.  It said so
-                   in this same file, 200 lines down.  Found by adversarial
-                   design review 2026-08-27; the composition is now
-                   _verdict.ruled, which is also what stopped search_gap being
-                   derived twice per line per render. #}
-                {% if item.warning %}
+                <div class="small text-body-secondary">{{ row.line.description }}</div>
+                {% if row.income_already_held %}
+                {# WHAT THE BOOKS ALREADY HOLD for this line's own pay period.
+                   Server-derived and NAMED, so the owner can find the rows on
+                   the workbench rather than being told to go looking.  It is
+                   not a suggestion that this deposit IS them.  Carried on the
+                   row rather than re-asked here: the service reads it to
+                   decide the group, and asking again would be the redundant
+                   producer call inside one request this package refuses. #}
                 <div class="small text-warning-emphasis mt-1">
                   <i class="bi bi-exclamation-triangle"></i>
-                  {{ item.warning }}
+                  This pay period already holds {{ row.income_already_held.rows | length }} income row(s) totalling {{ money(row.income_already_held.total) }} that no line explains{% for held in row.income_already_held.rows %}{% if loop.first %}: {% else %}, {% endif %}{{ held.label }} {{ money(held.cash_amount) }}{% endfor %}. If this deposit is those, match it against them instead of recording it here.
                 </div>
                 {% endif %}
-                {{ match_by_hand(account.id, item.line.line_id) }}
+                {# EVERY sentence this row owes, composed in the service and
+                   printed unbranched.  ONE loop for all three mechanisms is
+                   what closes the asymmetry above: the three cards this
+                   replaced each composed their own in Jinja, so a line got
+                   whichever its card knew about. #}
+                {% for note in row.notes %}
+                <div class="small text-warning-emphasis mt-1">
+                  <i class="bi bi-exclamation-triangle"></i>
+                  {{ note }}
+                </div>
+                {% endfor %}
               </td>
               <td>
-                {% if item.pay_period_id is none %}
+                {% if row.records_a_purchase %}
+                {% if row.item.pay_period_id is none %}
                 <span class="small text-warning-emphasis">
-                  No pay period covers {{ item.line.transaction_on or item.line.posted_on }},
+                  No pay period covers {{ row.line.transaction_on or row.line.posted_on }},
                   the day this was made, so there is no budget for it to belong to.
                   That day is usually before your pay calendar opens, which no
                   amount of extending it forward will reach.
                 </span>
                 {% else %}
                 <div class="row g-2 align-items-center" data-creatable-row
-                     {% if item.placement and item.placement.select_value %}data-placement="{{ item.placement.select_value }}" data-placement-class="{{ item.placement.sweep_class }}"{% endif %}>
+                     {% if row.item.placement and row.item.placement.select_value %}data-placement="{{ row.item.placement.select_value }}" data-placement-class="{{ row.item.placement.sweep_class }}"{% endif %}>
                   <div class="col-12 col-lg-5">
                     <select class="form-select form-select-sm"
-                            name="destination-{{ item.line.line_id }}"
+                            name="destination-{{ row.line.line_id }}"
                             data-destination
                             aria-label="Where this line should be recorded">
                       <option value="" selected>-- leave this line alone --</option>
-                      {% for destination in item.destinations %}
+                      {% for destination in row.item.destinations %}
                       <option value="{{ destination.transaction_id }}">
                         {{ destination.label }}{% if destination.is_settled %} -- closed{% endif %}
                       </option>
@@ -589,27 +580,27 @@
                        no-script path filing the rule's line under the
                        merchant's name instead of the one the owner stated. #}
                     <input class="form-control form-control-sm" type="text"
-                           name="envelope_name-{{ item.line.line_id }}" maxlength="200"
-                           value="{{ item.placement.new_envelope.name if item.placement and item.placement.new_envelope else item.line.merchant_label }}"
+                           name="envelope_name-{{ row.line.line_id }}" maxlength="200"
+                           value="{{ row.item.placement.new_envelope.name if row.item.placement and row.item.placement.new_envelope else row.line.merchant_label }}"
                            aria-label="Name for the new envelope">
                   </div>
                   <div class="col-12 col-lg-3 d-none" data-new-envelope-field>
                     <select class="form-select form-select-sm"
-                            name="category_id-{{ item.line.line_id }}"
+                            name="category_id-{{ row.line.line_id }}"
                             aria-label="Category for the new envelope">
                       {# NO default, and that is deliberate: the category is
                          what every spending report groups by, so a new
                          envelope filed under whichever category sorts first is
                          a misclassification nobody chose.  The service refuses
                          a new envelope stated by halves. #}
-                      {% set chosen = item.placement.new_envelope.category_id if item.placement and item.placement.new_envelope else None %}
+                      {% set chosen = row.item.placement.new_envelope.category_id if row.item.placement and row.item.placement.new_envelope else None %}
                       <option value=""{% if not chosen %} selected{% endif %}>-- choose a category --</option>
                       {% for category in categories %}
                       <option value="{{ category.id }}"{% if chosen == category.id %} selected{% endif %}>{{ category.display_name }}</option>
                       {% endfor %}
                     </select>
                   </div>
-                  {% if not item.destinations %}
+                  {% if not row.item.destinations %}
                   <div class="col-12 small text-body-secondary">
                     No envelope in this pay period can take a purchase -- every one of
                     them closed at a fixed figure, so adding to it would not record
@@ -621,15 +612,15 @@
                      above still opens on "leave this line alone": a remembered
                      destination that arrived already chosen would be a default
                      pointing at money, which is what ruling R-FZ removed. #}
-                  {% if item.placement %}
+                  {% if row.item.placement %}
                   <div class="col-12 small">
-                    {% if item.placement.records_in %}
+                    {% if row.item.placement.records_in %}
                     <span class="text-body-secondary">
                       <i class="bi bi-signpost"></i>
-                      You file {{ item.placement.merchant }} in
-                      <strong>{{ item.placement.destination.label }}</strong>{% if item.placement.destination.is_settled %} -- closed{% endif %}.
+                      You file {{ row.item.placement.merchant }} in
+                      <strong>{{ row.item.placement.destination.label }}</strong>{% if row.item.placement.destination.is_settled %} -- closed{% endif %}.
                     </span>
-                    {% elif item.placement.creates %}
+                    {% elif row.item.placement.creates %}
                     {# CREATE_NEW has TWO sentences and one select value: a
                        press mints ONE envelope per answer per pay period
                        (MintedEnvelopes, finding N-327), so the second and
@@ -639,15 +630,15 @@
                        reader that sees more than a single line at a time. #}
                     <span class="text-body-secondary">
                       <i class="bi bi-signpost"></i>
-                      {% if item.placement.joins_new %}
-                      You give {{ item.placement.merchant }} an envelope called
-                      <strong>{{ item.placement.new_envelope.name }}</strong>, and an
+                      {% if row.item.placement.joins_new %}
+                      You give {{ row.item.placement.merchant }} an envelope called
+                      <strong>{{ row.item.placement.new_envelope.name }}</strong>, and an
                       earlier line here already creates it for this pay period --
                       this one goes in beside it. Pick a different destination if
                       you would rather it did not.
                       {% else %}
-                      You give {{ item.placement.merchant }} a new envelope
-                      called <strong>{{ item.placement.new_envelope.name }}</strong>.
+                      You give {{ row.item.placement.merchant }} a new envelope
+                      called <strong>{{ row.item.placement.new_envelope.name }}</strong>.
                       One is created per pay period, so this merchant's other
                       lines in the same period go in beside this one.
                       {% endif %}
@@ -655,168 +646,110 @@
                     {% else %}
                     <span class="text-warning-emphasis">
                       <i class="bi bi-exclamation-triangle"></i>
-                      {{ item.placement.unresolved_reason }}
+                      {{ row.item.placement.unresolved_reason }}
                     </span>
                     {% endif %}
                   </div>
                   {% endif %}
                 </div>
                 {% endif %}
+                {% elif row.records_income %}
+                {# THE TICK IS THE WHOLE CONTROL, and there is no select
+                   because there is nothing to choose between: an income row is
+                   filed against no container.  A browser submits a checkbox
+                   only when it is ticked, so an untouched line is not in the
+                   submission at all -- R-FP is structural here rather than a
+                   default that has to be got right.
+
+                   NO CONTROL where the door would refuse one.  Its reason is
+                   already printed beside the line as one of `row.notes`, so
+                   this renders the absence and never a second copy of the
+                   sentence. #}
+                {% if row.item.withheld is none %}
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox"
+                         name="record_income-{{ row.line.line_id }}" value="record"
+                         id="income-{{ row.line.line_id }}">
+                  {# The label CARRIES THE FIGURE, so a screen reader moving
+                     between ticks hears which deposit each one is. A bare
+                     "Record this as income" on every row is one accessible
+                     name repeated N times over N different sums of money. #}
+                  <label class="form-check-label" for="income-{{ row.line.line_id }}">
+                    Record {{ money(row.line.amount) }} of {{ row.line.posted_on }} as income
+                  </label>
+                </div>
+                {% endif %}
+                {% else %}
+                {# NO WRITE CONTROL AT ALL (ruling R-GJ), and the closure is
+                   structural rather than advisory: _bars.reject_barred_line
+                   refuses the act at the create door too, so this row is safe
+                   inside the same form as the controls above it.  Why it is
+                   barred is printed beside the line as one of `row.notes`;
+                   what is here is the act, where an answer would open one.
+
+                   THE CONDITION IS THE SERVICE's: a merchant a source files as
+                   a payment to an account the owner holds is barred by that
+                   filing, which no answer lifts, so a link rendered
+                   unconditionally would be the chooser-that-cannot-succeed
+                   shape this package has closed five times.  Measured
+                   2026-08-27: 9 of the developer's 9 parked lines.  What the
+                   template supplies is the URL, which is the one fact a
+                   service may not build. #}
+                {% if row.item.answer_door %}
+                <a href="{{ url_for('accounts.statement_register', account_id=account.id) }}">{{ row.item.answer_door }}</a>
+                {% endif %}
+                {% endif %}
+                {{ match_by_hand(account.id, row.line.line_id) }}
               </td>
             </tr>
             {% endfor %}
           </tbody>
         </table>
-      </div>
-      <div class="card-footer small text-body-secondary">
-        The name and category appear only when you pick "a new envelope"; the new
-        row budgets $0.00, because nothing budgeted this.
       </div>
     </div>
-    {% endif %}
+    {% endfor %}
 
-    {# ── Money that arrived and your records do not hold ─────────────── #}
-    {# RULING bank_import:R-GW, plan step bank_import:X-gf-1.  THIS CARD MOVES MONEY.
+    {# ── What pressing Apply creates ────────────────────────────────────── #}
+    {# THE TWO MONEY CONSEQUENCES, STATED BEFORE THE PRESS.
 
-       It is the mirror of the create card above, on the direction that had no
-       door at all.  A deposit is not a purchase -- a purchase is an expense
-       (ck_transaction_entries_positive_amount) -- so the create door refuses
-       one, and a match needs a row of yours on the other side.  Measured on
-       the developer's own data: EIGHT unmatched inflows are smaller than the
-       smallest row the hand-build form offers ($39.54), so no row and no sum
-       of rows can equal one, and every match that would dispose of one asserts
-       a falsehood.  They sat in the awaiting-review count forever.
+       Each of the three cards ruling bank_import:R-HB replaced carried its own
+       body paragraph saying what its act did, and merging the cards deleted
+       all three bodies with them.  Four owner-visible facts went with them and
+       were stated nowhere else on this screen: that a recorded purchase is
+       dated the day the bank took it, that whether the balance FALLS depends
+       on the envelope (one that had reserved for this spending absorbs it),
+       that a NEW envelope budgets $0.00, and what undoing an income match
+       does to a row the owner has since edited.  Found by two independent
+       adversarial reviews 2026-08-28; the receipt states the category fact
+       AFTER the write, which is not the same as stating it before.
 
-       THE TICK IS THE WHOLE CONTROL, and there is no select because there is
-       nothing to choose between: an income row is filed against no container.
-       A browser submits a checkbox only when it is ticked, so an untouched
-       line is not in the submission at all -- R-FP is structural here rather
-       than a default that has to be got right.
-
-       THE WARNING IS THE POINT OF THE CARD, not decoration.  SEVEN of the
-       sixteen inflows on the developer's own statement are PAYROLL deposits
-       his app already holds as two or three rows each, and recording one here
-       would book $2,573.42 of income the books already carry.
-
-       TWO signals render per line and the second is why this card is safe.
-       The pass's own near-miss reason (search_gap_for) fires only where some
-       TIER admitted a candidate and threw it away -- measured at 4 of these
-       16, and it MISSES three payroll deposits worth $7,838.92 whose app rows
-       sit $39 outside any tier's bound.  So the card also states what the
-       books already hold for that line's own pay period
-       (income_already_recorded_in), which is a FACT about the period rather
-       than a candidate for the line -- the distinction R-GD's third amendment
-       turns on.  Before it, those three rendered a bare one-click tick with
-       only the paragraph above between the owner and a duplicate, which is
-       the "a warning paragraph is not a door" shape R-GJ measured $7,412.94
-       going through. #}
-    {% if review.recordable_inflows %}
+       IT SITS AT THE PRESS rather than on a group, because the acts are
+       PER-MECHANISM and a group can hold both -- so a per-group paragraph
+       would either repeat itself or say the wrong thing to half its rows.
+       Rendered only where a control exists, since a page whose queue is empty
+       is not about to create anything. #}
+    {% if review.queue.groups %}
     <div class="card mb-3">
-      <div class="card-header d-flex justify-content-between align-items-center">
-        <span><i class="bi bi-box-arrow-in-down"></i> Money that arrived and your records do not hold</span>
-        <span class="badge text-bg-secondary">{{ review.recordable_inflows | length }}</span>
-      </div>
-      <div class="card-body">
-        <p class="text-body-secondary small mb-0">
-          These are every line of money COMING IN that no match above explains.
-          Ticking one records it as income you did not have, dated the day your
-          bank paid it in. It lands with <strong>no category</strong>, because
-          the app does not know what it was -- give it one whenever you do.
-        </p>
-        <p class="text-body-secondary small mb-0">
-          <strong>If your records may already hold it, match it instead.</strong>
-          A paycheck your records already hold as two or three rows is money you
-          HAVE recorded, and ticking it here would count it twice; the link on
-          each line opens the match form with that line already ticked. This
-          card is for money nothing of yours accounts for: a dividend, a refund,
-          a deposit you never budgeted.
-        </p>
-      </div>
-      <div class="table-responsive">
-        <table class="table table-sm align-middle mb-0">
-          <thead>
-            <tr>
-              <th scope="col" class="text-center">Record</th>
-              <th scope="col">Your bank says</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for item in review.recordable_inflows %}
-            <tr>
-              <td class="text-center">
-                {% if not item.withheld %}
-                <input class="form-check-input" type="checkbox"
-                       name="record_income-{{ item.line.line_id }}" value="record"
-                       id="income-{{ item.line.line_id }}"
-                       aria-label="Record this deposit as income">
-                {% endif %}
-              </td>
-              <td>
-                {# The LABEL is rendered only where its input is.  A `for=` that
-                   names no control is a dangling label, which is what the
-                   withheld rows had while the condition sat on the input
-                   alone. #}
-                {% if not item.withheld %}<label for="income-{{ item.line.line_id }}" class="mb-0">{% endif %}
-                  <span class="fw-semibold">{{ money(item.line.amount) }}</span>
-                  <span class="text-body-secondary">{{ item.line.posted_on }}</span>
-                {% if not item.withheld %}</label>{% endif %}
-                <div class="small text-body-secondary">{{ item.line.description }}</div>
-                {% if item.withheld %}
-                {# NO CONTROL, and the SERVER's sentence instead -- never a
-                   Jinja branch on the two arms, which is the rule
-                   ParkedLine.reason states: a template restating a partition
-                   is a second place for it to be wrong.  The door refuses both
-                   (a day no saved period covers, and a day that has not
-                   happened yet), so a tick here would be a control whose
-                   submission can never succeed. #}
-                <div class="small text-warning-emphasis mt-1">
-                  <i class="bi bi-exclamation-triangle"></i>
-                  {{ item.withheld }}
-                </div>
-                {% endif %}
-                {% set held = review.income_already_recorded_in(item.line) %}
-                {% if held %}
-                {# WHAT THE BOOKS ALREADY HOLD for this line's pay period.
-                   Server-derived and NAMED, so the owner can find the rows on
-                   the match surface rather than being told to go looking.  It
-                   is not a suggestion that this deposit IS them.
-
-                   IT NAMES THE ACT AND NOT A POSITION (plan step
-                   bank_import:X-gf-3b).  It ended "match it BELOW instead of
-                   recording it here" while the form stood on this page; the
-                   link the row carries is where "there" is now, and a sentence
-                   that pointed down the page would have been false the moment
-                   that form moved. #}
-                <div class="small text-warning-emphasis mt-1">
-                  <i class="bi bi-exclamation-triangle"></i>
-                  This pay period already holds {{ held.rows | length }} income row(s) totalling {{ money(held.total) }} that no line explains{% for row in held.rows %}{% if loop.first %}: {% else %}, {% endif %}{{ row.label }} {{ money(row.cash_amount) }}{% endfor %}. If this deposit is those, match it against them instead of recording it here.
-                </div>
-                {% endif %}
-                {% set gap = review.search_gap_for(item.line) %}
-                {% if gap %}
-                {# The pass's OWN sentence (plan step X-ge-1), rendered where
-                   the cheap wrong act is: recording a deposit the app already
-                   holds is the duplicate this arc measures at $356.61 for one
-                   $178.29 movement, in the other direction. #}
-                <div class="small text-warning-emphasis mt-1">
-                  <i class="bi bi-exclamation-triangle"></i>
-                  Before recording this as new income, match it against rows
-                  you already hold: {{ gap }}.
-                </div>
-                {% endif %}
-                {{ match_by_hand(account.id, item.line.line_id) }}
-              </td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-      <div class="card-footer small text-body-secondary">
-        A recorded deposit goes in with no category, so it shows under
-        Uncategorized Income until you file it. Undoing its match removes the
-        row again -- unless you have edited it since, including giving it a
-        category, in which case it is your record and the undo says so rather
-        than deleting your work.
+      <div class="card-body small text-body-secondary">
+        <div class="fw-semibold mb-1">What Apply will create</div>
+        <ul class="mb-0">
+          <li>
+            A line you name a destination for becomes <strong>a purchase your
+            records did not have</strong>, dated the day your bank took it.
+            Whether your balance falls depends on the envelope you file it
+            under: one that had already reserved for this spending absorbs it,
+            and one that had not does not. A <em>new</em> envelope budgets
+            $0.00, because nothing budgeted this.
+          </li>
+          <li>
+            A deposit you tick becomes <strong>income you did not have</strong>,
+            dated the day your bank paid it in, with <strong>no category</strong>
+            until you give it one. Undoing it removes the row again -- unless
+            you have edited it since, including giving it a category, in which
+            case it is your record and the undo says so rather than deleting
+            your work.
+          </li>
+        </ul>
       </div>
     </div>
     {% endif %}
@@ -831,115 +764,6 @@
       </button>
     </div>
   </form>
-
-  {# ── Payments waiting for their home ──────────────────────────────────── #}
-  {# RULING R-GJ, plan step bank_import:X-ga.  THIS CARD MOVES NO MONEY AND
-     RENDERS NO CONTROL, which is the whole of it: these are the lines the
-     create door is CLOSED for, and the closure is structural rather than
-     advisory.
-
-     What stood here before was a paragraph.  The card above told the owner
-     that "a card payment your app records as payback rows would be counted
-     twice", the line's own placement said "you have said this is never a
-     purchase, so nothing here records it" -- and directly beneath that
-     sentence sat a working destination select including "a new envelope".  One
-     YTD pass took $7,412.94 of Capital One ACH payments through it, into eight
-     $0.00-budget envelopes, while the app was already holding $6,286.46 of CC
-     Payback rows for the same card spending.  A missing door needs no
-     vigilance; a warning paragraph did not survive one contact with a 215-item
-     session.
-
-     EVERY ROW CARRIES A LINK TO THE HAND-MATCH FORM, because that form is
-     the remedy: a card payment meets the payback rows it repays by being
-     ticked beside them and matched, with any difference NAMED (ruling R-FN).
-     The one Capital One line handled that way -- -$466.47 on 2026-06-17 -- is
-     grouped with four CC Payback rows whose recorded figures sum to exactly
-     $466.47.  This said the card sat DELIBERATELY ABOVE that form until plan
-     step bank_import:X-gf-3b moved it to a surface of its own, at which point
-     a comment about relative position on one page described a layout that no
-     longer existed -- the same coupling the eight sentences this step rewrote
-     had.
-
-     THE REAL HOME IS THE CARD ARC's.  A payment to a credit card is a transfer
-     between two accounts the owner holds, and finding N-337 (owner
-     credit_card:CC3b) carries it.  This card, and everything behind it, is
-     meant to be deleted when that ships. #}
-  {% if review.parked %}
-  <div class="card mb-3">
-    <div class="card-header d-flex justify-content-between align-items-center">
-      <span><i class="bi bi-slash-circle"></i> Payments waiting for their home</span>
-      <span class="badge text-bg-secondary">{{ review.parked | length }}</span>
-    </div>
-    <div class="card-body">
-      <p class="text-body-secondary small mb-0">
-        These left your account, and none of them can be recorded as a purchase:
-        there is no control here that would do it. The reason is beside each
-        one. Where some of your own rows are what the money paid for, the link
-        on that line opens the match form with it already ticked, and you tick
-        those rows beside it.
-      </p>
-    </div>
-    <div class="table-responsive">
-      <table class="table table-sm align-middle mb-0">
-        <thead>
-          <tr>
-            <th scope="col">Your bank says</th>
-            <th scope="col">Why it is not offered</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for item in review.parked %}
-          <tr>
-            <td>
-              <span class="fw-semibold">{{ money(item.line.amount) }}</span>
-              <span class="text-body-secondary">{{ item.line.posted_on }}</span>
-              {% if item.line.transaction_on %}
-              <span class="small text-body-secondary">(made {{ item.line.transaction_on }})</span>
-              {% endif %}
-              <div class="small text-body-secondary">{{ item.line.description }}</div>
-            </td>
-            <td class="small text-body-secondary">
-              {# SERVER-DERIVED, never a Jinja branch on the bar: the two arms
-                 say opposite things about whether the owner has already
-                 decided, and a template restating that partition is a second
-                 place for it to be wrong. #}
-              {{ item.reason }}
-              {# THE DOOR, where there is one (plan step bank_import:X-gf-3a).
-                 Since ruling R-GX an ANSWERED merchant leaves this screen's
-                 own control for the register, so a line parked by an answer
-                 the owner now disagrees with had nowhere here to say so.
-
-                 The CONDITION is the service's and not this template's: a
-                 merchant a source files as a payment to an account the owner
-                 holds is barred by that filing, which no answer lifts, and
-                 state_rules refuses every answer but "never a purchase" for
-                 one -- so a link rendered unconditionally would be the
-                 chooser-that-cannot-succeed shape this package has closed five
-                 times.  Measured 2026-08-27: that is 9 of the developer's 9
-                 parked lines, so it would have been wrong on every line it
-                 ever appeared beside.  What the template supplies is the URL,
-                 which is the one fact a service may not build. #}
-              {% if item.answer_door %}
-              <div class="mt-1">
-                <a href="{{ url_for('accounts.statement_register', account_id=account.id) }}">{{ item.answer_door }}</a>
-              </div>
-              {% endif %}
-              {# THE ACT THAT IS ALWAYS OPEN, beside the one that usually is
-                 not.  `reason` used to end "tick them together BELOW and match
-                 them", which was the whole remedy ruling R-GJ leaves for a
-                 parked card payment -- and it was a sentence in the SERVICE
-                 naming a position on a page the service cannot see.  Plan step
-                 bank_import:X-gf-3b moved the form it pointed at, so the
-                 sentence states the bar and this link states the act. #}
-              {{ match_by_hand(account.id, item.line.line_id) }}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </div>
-  {% endif %}
 
   {# ── Build a match by hand ────────────────────────────────────────────── #}
   {# THE WORKBENCH IS NOT THE QUEUE (ruling bank_import:R-HC, plan step
@@ -982,6 +806,77 @@
       </a>
     </div>
   </div>
+
+  {# ── The other side of the reconciliation ────────────────────────────── #}
+  {# FINDING bank_import:N-380, plan step bank_import:X-gf-3b-2.
+
+     A RECONCILIATION HAS TWO SIDES AND THIS QUEUE STATED ONE.  Everything
+     above is a bank line the owner's records do not explain.  This is the
+     mirror: a row of THEIRS no bank line explains -- money their books claim
+     moved that the statement never showed.  Both are leftovers of the same
+     pass and only one of them was ever on this page.
+
+     WHY IT WENT SILENT: until plan step bank_import:X-gf-3b-1 the hand-build
+     form stood on this screen and its row-picker WAS this list, so the fact
+     was on the page even though nothing named it.  Moving the form to a
+     surface of its own took the list with it -- correctly, it was 59% of the
+     body -- and nothing replaced the fact.  The workbench names these rows
+     now; this page said nothing at all about them.
+
+     A COUNT AND A POINTER, NOT ROWS.  A decision about a ROW of the owner's
+     is a different act from a decision about a BANK LINE, and folding them
+     into one list would undo the grouping ruling bank_import:R-HB asks for.  The
+     act is on the workbench, where the row can be ticked beside the line
+     that explains it.
+
+     BOTH DIRECTIONS, SEPARATELY, and that is the half of N-380 the caption
+     got wrong.  Measured 2026-08-28 on the developer's own data: 32 payments
+     at $3,815.64 and 17 deposits at $18,132.28.  Their signed net is
+     $14,316.64 and is the misleading figure -- it cancels income the bank
+     never credited against payments it never made -- so the two are never
+     added together here.  The numbers are derived in the service
+     (ReviewSet.rows_never_shown): a caption may not promise a figure a
+     template computed. #}
+  {# RESOLVED ONCE. It is a property that rebuilds two tuples over
+     `unmatched_rows` on every access, and reading it seven times was 14
+     traversals of the developer's 67 rows to print one alert -- the redundant
+     producer call this package states in five docstrings. #}
+  {% set never_shown = review.rows_never_shown %}
+  {% if never_shown.any %}
+  <div class="alert alert-warning" role="alert">
+    <div class="fw-semibold mb-1">What your records hold and this statement did not show</div>
+    <ul class="mb-0 small">
+      {% if never_shown.payments %}
+      <li>
+        {{ never_shown.payments | length }} payment(s) totalling
+        {{ money(never_shown.payments_total) }} your records say left this
+        account, which no line of this statement shows leaving it.
+      </li>
+      {% endif %}
+      {% if never_shown.deposits %}
+      <li>
+        {{ never_shown.deposits | length }} deposit(s) totalling
+        {{ money(never_shown.deposits_total) }} your records say arrived in
+        this account, which no line of this statement shows arriving.
+      </li>
+      {% endif %}
+    </ul>
+    <div class="small mt-2">
+      {# NAMES THE ACT, NEVER A POSITION.  This read "or one that IS a line
+         above", and there is nothing above whenever every line is explained
+         -- the ordinary end state of working the queue, on which the page
+         renders no group at all.  That would have been the SEVENTH instance
+         of the coupling plan step X-gf-3b-1 found five of, 650 lines below
+         the comment recording the sixth.  Found by adversarial review
+         2026-08-28. #}
+      Each is either a row your bank has not shown yet, or one this statement
+      did show under a figure the app could not pair it to -- a paycheck your
+      records hold at one amount and your bank paid at another.
+      <a href="{{ url_for('accounts.statement_workbench', account_id=account.id) }}">Build a match by hand</a>
+      to tick a row beside the line it belongs to.
+    </div>
+  </div>
+  {% endif %}
 
   {# ── The bounds, stated rather than left silent ──────────────────────── #}
   {% if review.bounds.any_limit %}

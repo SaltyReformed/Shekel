@@ -62,12 +62,19 @@ class NotShownAlone:
     INFERENCE, and for two row shapes that inference is false** (plan step
     ``bank_import:X-gc``, ruling **R-GO**, the 2026-08-24 adversarial design
     review).  Its
-    caption reads *a payment your records claim happened and your bank did not
-    make*, which only follows if the row's money would have reached the bank as
-    a line of its own.  A CC PAYBACK's does not -- it leaves inside one lump
+    caption claims of every row that the owner's records say its money moved
+    and the statement never showed it moving, which only follows if that money
+    would have reached the bank as a line of its own.  A CC PAYBACK's does
+    not -- it leaves inside one lump
     payment to the card, so the bank shows the payment and never the payback --
     and an ENVELOPE whose figure is its purchases is the opposite shape with
     the same consequence: the bank showed the purchases, not the container.
+    **The caption also named one DIRECTION until finding
+    bank_import:N-380** -- it said *a payment ... your bank did not make*,
+    which is a claim about an outflow, over a list that is 17 deposits in 49;
+    plan step ``bank_import:X-gf-3b-2`` took the direction out of the sentence
+    and left each row to state its own by its figure.
+
     Measured on the developer's own dev database 2026-08-25: **18 of the
     panel's 67 rows are CC Paybacks**, and the left-hand list beside them holds
     **9 unexplained ``ACH DEBIT CAPITAL ONE ... PMT`` lines** those paybacks
