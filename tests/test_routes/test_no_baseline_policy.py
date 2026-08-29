@@ -43,11 +43,15 @@ from decimal import Decimal
 
 import pytest
 
+from flask import Flask
+
+import app as shekel_app_package
 from app.models.account import Account
 from app.models.ref import AccountType
 from app.models.scenario import Scenario
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service
+from app.url_converters import register_url_converters
 from tests._test_helpers import (
     cadence_payload,
     create_hysa_account,
@@ -101,7 +105,8 @@ _MEASURED_PAGE_DOORS = [
 #: The two FRAGMENT endpoints on the same loan door.  They are listed apart
 #: because a plain GET never reaches the seam through them at all: both redirect
 #: a non-HTMX request to the loan page before resolving anything
-#: (``dashboard.py:513``), which is why they take the 204 arm only.  The first
+#: (``dashboard.py:540-541`` and ``:568-569``), which is why they take the
+#: 204 arm only.  The first
 #: draft of this gate asserted the card for all six and FAILED on exactly these
 #: two -- kept as a comment rather than deleted, because it is the reason the
 #: split exists.
@@ -122,29 +127,15 @@ _ACCOUNT_KINDS = (
     "checking", "loan", "mortgage", "property", "hysa", "card", "invest",
 )
 
-#: The sweep's arms: one per account kind, plus ``""`` for the routes that take
-#: no account id.  **This is the axis the sweep is SPLIT along, and the split is
-#: about a wall-clock budget rather than about coverage** -- the same requests
-#: are made either way.
-#:
-#: As one test the sweep made 388 requests (194 concrete URLs, each in both
-#: request shapes) inside pytest-timeout's 30 s, which covers setup, call and
-#: teardown together.  It grows with the route table, and on 2026-08-16 it
-#: crossed: `test_no_get_route_returns_5xx` timed out on four of nine CI runs.
-#: Removing the cluster cost that made CI slow (PR #106) bought headroom and
-#: did not remove the shape -- the measured call was still 24.68 s against 30 s,
-#: a margin under five seconds that the next dozen routes would spend.
-#:
-#: Split this way the largest arm is the 54 account-less routes (108 requests)
-#: and each kind arm is 40, so no single arm's runtime grows with anything but
-#: its own share of the route table.
-_SWEEP_ARMS = ("",) + _ACCOUNT_KINDS
-
-#: Ids for the COVERAGE arm, which never issues a request.  The skip list and
-#: the URL count are properties of ``url_map`` alone -- substitution cannot
-#: fail differently for a real id than for a placeholder -- so that arm is
-#: spared the seven-account fixture the request arms need.
-_PLACEHOLDER_IDS = dict.fromkeys(_ACCOUNT_KINDS + ("period",), 1)
+#: The converters this fixture can fill.  A rule carrying any OTHER converter
+#: is one it cannot reach, and lands in :data:`_UNREACHED_RULES` instead --
+#: **including a rule that carries one of these AND something else**.  Deciding
+#: that on what REMAINS after these are removed is what keeps such a rule out of
+#: the sweep: testing for ``<int:account_id>`` first would emit seven cases
+#: whose URL still held a literal ``<int:line_id>``, and a URL like that 404s,
+#: which is under 500, which passes.  Six `escrow` rules are that shape today
+#: and are POST-only; one GET among them would have been graded by nobody.
+_FILLABLE = ("<int:account_id>", "<int:period_id>")
 
 
 @pytest.fixture()
@@ -214,47 +205,199 @@ def baseline_less_owner(app, db, seed_user, seed_periods_today):
         }
 
 
-def _concrete_urls(app, ids):
-    """Yield every GET route as concrete URLs, one per account kind.
+def _sweep_cases(app):
+    """Every ``(endpoint, kind, rule)`` this sweep grades, and what it skips.
 
-    A route taking ``<int:account_id>`` is requested once per account kind,
+    A route taking ``<int:account_id>`` becomes one case per account kind,
     because the kind decides which producer runs -- the loan doors are
     unreachable with a checking id, and the property door needs the Property.
-    Routes whose remaining converters this fixture cannot supply are skipped
-    and reported by the count arm, so a silent drop cannot read as coverage.
+
+    **Reachability is decided on what is left after :data:`_FILLABLE` is
+    removed**, before the per-kind fan-out, so a rule carrying an account id AND
+    an id this fixture has no row for is SKIPPED rather than swept with a
+    converter still in it.
+
+    It returns the RULE rather than a finished URL because a case has to exist
+    before any fixture does -- see :data:`_SWEEP_CASES`.  The owner's real ids
+    arrive later, through :func:`_case_url`.
+
+    Args:
+        app: any application whose ``url_map`` is the one to grade.
+
+    Returns:
+        ``(cases, skipped)`` -- the cases in ``url_map`` order, and the rule
+        strings this fixture cannot reach.
     """
     skipped = []
-    urls = []
+    cases = []
     with app.app_context():
         rules = sorted(app.url_map.iter_rules(), key=lambda r: r.rule)
     for rule in rules:
         if "GET" not in rule.methods or rule.rule.startswith("/static"):
             continue
-        url = (rule.rule
-               .replace("<int:period_id>", str(ids["period"]))
-               .replace("<int:year>", str(date.today().year))
-               .replace("<int:month>", str(date.today().month)))
-        if "<int:account_id>" in url:
-            for kind in _ACCOUNT_KINDS:
-                urls.append((rule.endpoint, kind,
-                             url.replace("<int:account_id>", str(ids[kind]))))
-        elif "<" in url:
+        residue = rule.rule
+        for token in _FILLABLE:
+            residue = residue.replace(token, "")
+        if "<" in residue:
             skipped.append(rule.rule)
+        elif "<int:account_id>" in rule.rule:
+            for kind in _ACCOUNT_KINDS:
+                cases.append((rule.endpoint, kind, rule.rule))
         else:
-            urls.append((rule.endpoint, "", url))
-    return urls, skipped
+            cases.append((rule.endpoint, "", rule.rule))
+    return cases, skipped
+
+
+def _case_url(rule_string, kind, ids):
+    """The concrete URL one case requests, with this owner's real ids."""
+    url = rule_string.replace("<int:period_id>", str(ids["period"]))
+    if kind:
+        url = url.replace("<int:account_id>", str(ids[kind]))
+    return url
+
+
+def _route_table_app():
+    """A Flask app carrying the route table and NOTHING else.
+
+    **Why not ``create_app``.**  The table this sweep needs is settled by
+    blueprint registration, but ``create_app`` under the testing config also
+    ensures schemas, seeds ``ref.*`` and populates ``ref_cache``
+    (`app/__init__.py:159-162` and the `ref_cache.init` at `:207`) -- 151 SQL
+    statements over 3 connections including 5 ``CREATE SCHEMA IF NOT EXISTS``,
+    measured 2026-08-29.  That work is orthogonal to ``url_map`` and it would
+    run at COLLECTION here, where a database failure is a collection ERROR:
+    under xdist a collection that DIFFERS BETWEEN WORKERS aborts the whole run
+    rather than failing one test.  The two are not the same event and the
+    difference matters: a uniform outage errors this file and lets the rest of
+    the suite finish, while an INTERMITTENT one -- the shape two concurrent
+    runs produce here -- aborts everything.  Seen once, 2026-08-29, against a
+    DRAFT of this design that did build through ``create_app``:
+    ``Different tests were collected between gw8 and gw3``, no test run.  It
+    also reconfigures logging process-wide.
+
+    **What this design costs in exchange, stated because it is not free.**  At
+    HEAD the parametrize list was a constant tuple, so collection COULD NOT
+    differ between workers whatever happened.  It is now derived, once per
+    worker, from an app built at import: nothing in `_register_blueprints` is
+    non-deterministic today, but the failure mode is no longer structurally
+    impossible, and its blast radius is the suite rather than this file.
+
+    ``register_url_converters`` is called FIRST because `create_app` documents
+    that order as required (`app/__init__.py:136`): a rule naming a converter
+    this app has not registered raises ``LookupError`` at import, which is that
+    same collection error arriving by another door.
+
+    Measured 2026-08-29, this table and ``create_app("testing")``'s are
+    IDENTICAL -- 218 rules, equal on endpoint, rule and methods.  `create_app`
+    adds no route of its own (no ``add_url_rule``, no ``@app.route``).
+
+    **The identity is asserted for the GET routes this sweep grades, not
+    assumed**: the coverage test compares this table against the one the
+    FIXTURE's app serves.  A non-GET route registered outside a blueprint would
+    not be covered by that comparison.
+
+    Registering the blueprints here also marks each one registered-once in this
+    process before any test runs.  Nothing in `app/` uses ``record_once`` today,
+    so this is inert; a blueprint that grew one would have it consumed here.
+
+    Returns:
+        A Flask app whose ``url_map`` is the application's.
+    """
+    app = Flask(shekel_app_package.__name__)
+    register_url_converters(app)
+    # Pylint: ``protected-access`` -- ``_register_blueprints`` is the app
+    # package's own single decider of what the route table holds, and reaching
+    # for it is what keeps this enumeration from becoming a second list of
+    # blueprints that could drift from it.  A public seam is worth minting;
+    # that is a change to ``app/`` and is raised with the developer, not
+    # assumed here.
+    # pylint: disable=protected-access
+    shekel_app_package._register_blueprints(app)
+    return app
+
+
+#: **Every route is its OWN test.**  This is the whole of the wall-clock fix,
+#: and it replaces a hand-cut partition rather than resizing one.
+#:
+#: As ONE test the sweep made 388 requests (194 concrete URLs, each in both
+#: request shapes) inside pytest-timeout's 30 s, which covers setup, call and
+#: teardown together.  On 2026-08-16 it crossed: `test_no_get_route_returns_5xx`
+#: timed out on four of nine CI runs.  Removing the cluster cost that made CI
+#: slow (PR #106) bought headroom and did not remove the shape -- the measured
+#: call was still 24.68 s against 30 s.
+#:
+#: **Splitting it into arms did not remove the shape either, whatever the arms
+#: were named.**  One test issuing every request is O(the route table) under a
+#: budget that is O(1) per test, and an arm only divides the constant: by
+#: account KIND (`910065a9`) the largest arm still grew, and re-measured
+#: 2026-08-29, eleven days later, the account-less arm was still exactly 54 URLs
+#: while every one of the 42 URLs the table had gained sat in the KIND arms,
+#: which grew 20 -> 26 each.  A kind axis cannot bound that by construction: one
+#: new account route adds a URL to ALL SEVEN kind arms at once.  Finding
+#: **N-364** reads the growth the other way round.  (An earlier draft cited a
+#: 35 -> 41 census of ``<int:account_id>`` decorators as corroboration.  That
+#: was an ARTIFACT: the grep only counted occurrences sharing a line with
+#: ``.route(``, and 22 of today's 63 sit on continuation lines -- the true
+#: count is 48 -> 63.  The +6 that matters is the GET rules per kind, 20 -> 26,
+#: measured directly off ``url_map``.)
+#:
+#: One case per test makes the per-test cost O(1) in the route table: two
+#: requests, whatever the app grows into.  Nothing here has a size to keep in
+#: step, and pytest-timeout's 30 s goes back to being the hang detector
+#: `pytest.ini` calibrated it as.  Measured CI-shaped (4 cores, ``-n 12``,
+#: 2026-08-29): the largest single arm read 2.16 s split by account kind, and
+#: no case's CALL reaches a `--durations` report ahead of this file's own
+#: setup entries -- a case's two requests are a 0.020 s median.
+#:
+#: **What it costs, and where that cost actually lives.**  Measured serially
+#: 2026-08-29, 252 items in 81.16 s: per-item SETUP is **87%** of that (236
+#: sweep items, 0.270 s median, 70.49 s) and the requests the sweep exists to
+#: make are **7%** (0.020 s median, 5.39 s).
+#:
+#: That 0.270 s splits, on matched serial probes of 30 items each the same day:
+#: **0.160 s (59%) is this module's own seven-account fixture** and 0.110 s
+#: (41%) is the per-test chain it inherits, whose floor is the autouse ``db``
+#: fixture dropping and re-cloning the per-worker database.  Two earlier
+#: readings of this file blamed the clone for the whole of it; both were
+#: confounded -- one divided an xdist wall clock by an item count, charging the
+#: fixed worker bootstrap to the items, and one compared against items that
+#: turned out to use the same fixture.
+#:
+#: **The sweep is READ-ONLY -- every request here is a GET -- so it buys none
+#: of that isolation.**  Paying once instead of 236 times is finding
+#: **N-387**, owned by **X-be-2**, and the split above is what that step is
+#: sized against: sharing a database alone recovers the 41%, so the shared
+#: state has to carry the seven accounts too.  It is not done here, and the
+#: obvious remedy is measured WRONG: a module-scoped clone is re-cloned out
+#: from under this module by the next test from ANY other module landing on the
+#: same worker, observed on three workers under ``-n 12`` (2026-08-29).
+#:
+#: Building an app at import is what a per-route test id costs -- ids are fixed
+#: before any fixture runs -- but it costs no DATABASE: see
+#: :func:`_route_table_app`, which registers the blueprints onto a bare Flask
+#: app rather than calling ``create_app``.
+_SWEEP_CASES = _sweep_cases(_route_table_app())[0]
+
+#: Readable ids, so a CI failure names the route it found rather than an
+#: index.  Keyed on the RULE and not the endpoint: `analytics.retired_tab`
+#: carries three rules and `dashboard.page` two, so an endpoint key left
+#: pytest to disambiguate five of the 236 by position -- which is the index
+#: this line exists to avoid, and it re-points when a route is added.
+_SWEEP_IDS = [f"{rule}[{kind}]" if kind else rule
+              for _, kind, rule in _SWEEP_CASES]
 
 
 class TestNoRouteCrashesWithoutABaseline:
     """The sweep: no GET route may 5xx for an owner with no baseline."""
 
-    def test_the_sweep_still_covers_the_whole_url_map(self, app):
+    def test_the_sweep_still_covers_the_whole_url_map(self, app,
+                                                      baseline_less_owner):
         """The COVERAGE claim, graded apart from the requests.
 
-        Two assertions that are properties of ``url_map`` and of nothing else,
-        so they belong in one cheap arm rather than being repeated in each of
-        the eight request arms -- where they would also be eight chances to
-        rot into disagreement.
+        Four assertions that are properties of ``url_map`` and the fixture and
+        of nothing else, so they belong in one test rather than being restated
+        in every case -- where they would also be one chance per case to rot
+        into disagreement.
 
         The skip list is PINNED, not merely described.  The first draft
         asserted ``all("<" in rule for rule in skipped)`` -- true by
@@ -264,12 +407,12 @@ class TestNoRouteCrashesWithoutABaseline:
         allowed.  A new route this fixture cannot reach turns this RED, which
         is the only way the sweep's coverage claim stays honest.
         """
-        urls, skipped = _concrete_urls(app, _PLACEHOLDER_IDS)
+        cases, skipped = _sweep_cases(app)
 
-        assert len(urls) > 100, (
-            f"the sweep collapsed to {len(urls)} urls -- it is meant to cover "
-            f"the whole url_map, so this means the substitution stopped, not "
-            f"that the app shrank"
+        assert len(cases) > 100, (
+            f"the sweep collapsed to {len(cases)} cases -- it is meant to "
+            f"cover the whole url_map, so this means the enumeration stopped, "
+            f"not that the app shrank"
         )
         assert sorted(skipped) == _UNREACHED_RULES, (
             "the set of routes this sweep cannot reach has changed. Add the "
@@ -279,64 +422,110 @@ class TestNoRouteCrashesWithoutABaseline:
             f"  expected: {_UNREACHED_RULES}"
         )
 
-        # **The hole the SPLIT opened, closed here.**  The request arms select
-        # by kind, so a URL tagged with a kind no arm names would be requested
-        # by nobody -- silently, with every arm still green, which is the exact
-        # "a silent drop reads as coverage" failure this file was built to
-        # refuse.  As one test that could not happen; the union WAS the loop.
-        assert {row[1] for row in urls} == set(_SWEEP_ARMS), (
-            "the sweep's arms no longer partition its URLs, so some route is "
-            "graded by no arm at all. Add the new kind to _ACCOUNT_KINDS.\n"
-            f"  tagged:   {sorted({row[1] for row in urls})}\n"
-            f"  arms:     {sorted(_SWEEP_ARMS)}"
+        # **The AXIS control, graded against the FIXTURE and not against
+        # `_ACCOUNT_KINDS`.**  Nothing else here reads the kind -- it selects no
+        # test and gates no branch -- so a kind dropped from `_ACCOUNT_KINDS`
+        # deletes every case for it, and the surfaces N-112 measured 500ing are
+        # reached through the loan, mortgage and property kinds.  Comparing the
+        # emitted kinds against `_ACCOUNT_KINDS` CANNOT catch that: both sides
+        # are built from that tuple, so both shrink together and the assertion
+        # stays green.  Measured 2026-08-29 -- cutting the tuple to two kinds
+        # deletes 130 of 236 cases, 55%, and every assertion in an earlier draft
+        # of this test passed, `len(cases) > 100` clearing 106 by six.
+        #
+        # So the axis is PINNED as a literal, the way `_UNREACHED_RULES` is and
+        # for the same reason -- a pin is the one form that cannot shrink along
+        # with what it grades.  It is NOT keyed on the fixture's dict minus a
+        # stop-list: a set defined by SUBTRACTION claims members nobody
+        # censused, and un-skipping any pinned rule would add a non-kind key
+        # (a goal, a template) and turn this red for an unrelated reason, whose
+        # natural repair grows the stop-list and decays the control back to
+        # blindness. The containment arm below keeps the pin honest against the
+        # fixture without inheriting that shape.
+        assert _ACCOUNT_KINDS == (
+            "checking", "loan", "mortgage", "property", "hysa", "card",
+            "invest",
+        ), (
+            f"an account kind left the sweep's axis: {_ACCOUNT_KINDS}. Deleting "
+            f"one deletes every case for it. If that is deliberate, say so "
+            f"here and in the fixture; if it is not, this is 26 producers "
+            f"going ungraded."
+        )
+        assert set(_ACCOUNT_KINDS) <= set(baseline_less_owner), (
+            f"the sweep names a kind the fixture creates no account for: "
+            f"{sorted(set(_ACCOUNT_KINDS) - set(baseline_less_owner))}"
+        )
+        assert {kind for _, kind, _ in cases} - {""} == set(_ACCOUNT_KINDS), (
+            "the fan-out stopped emitting a case for every kind on the axis, "
+            "so a family of producers is graded by nobody.\n"
+            f"  emitted: {sorted({kind for _, kind, _ in cases} - {''})}\n"
+            f"  axis:    {sorted(_ACCOUNT_KINDS)}"
         )
 
-    @pytest.mark.parametrize("arm", _SWEEP_ARMS)
-    def test_no_get_route_returns_5xx(self, app, auth_client,
-                                      baseline_less_owner, arm):
-        """Every GET route answers a baseline-less owner without crashing.
+        # The import-time table against the one the requests run on.  The cases
+        # are pytest IDS, fixed at collection from an app built before any
+        # fixture; if that table and this one ever disagree, some route is
+        # graded by no case at all and every case still passes.
+        assert cases == _SWEEP_CASES, (
+            "the route table read at collection is not the one the requests "
+            "run against, so the sweep is grading a stale set of routes.\n"
+            f"  at collection: {len(_SWEEP_CASES)} cases\n"
+            f"  at run time:   {len(cases)} cases"
+        )
+
+    @pytest.mark.parametrize("case", _SWEEP_CASES, ids=_SWEEP_IDS)
+    def test_no_get_route_returns_5xx(self, auth_client, baseline_less_owner,
+                                      case):
+        """ONE GET route answers a baseline-less owner without crashing.
 
         Both request shapes, because the handler branches on them and a sweep
         of one shape proves nothing about the other: a plain request must get
         the recovery page, an HTMX request must get 204 and leave the DOM
-        alone.  Before the X-v1 handler this arm reported 8 endpoints raising
+        alone.  Before the X-v1 handler this reported 8 endpoints raising
         ``ValueError`` from ``require_scenario``, 6 of them GETs.
 
-        **One arm per account kind, plus one for the account-less routes.**
-        The union of the arms is the same 388 requests the single test made;
-        see :data:`_SWEEP_ARMS` for the wall-clock budget that forced the
-        split.  Filtering on the kind ``_concrete_urls`` already tags each URL
-        with is what keeps the two halves from drifting: there is still exactly
-        one place that decides which URLs exist.
+        **Both are issued before either is graded.**  Asserting inside the loop
+        would mean a route that 5xx's on the plain GET never has its fragment
+        shape exercised at all, so the run would say nothing about the contract
+        the 204 branch exists to keep -- on exactly the routes most likely to
+        be breaking it.
+
+        **One case per test, which is what bounds this file.**  See
+        :data:`_SWEEP_CASES`: as one test, or as a hand-cut arm of one, the
+        wall clock grew with the route table under a budget that does not.
+        Here it cannot -- a case is two requests however large the app gets --
+        and a failure names the single route that failed instead of counting
+        them.
         """
-        urls, _ = _concrete_urls(app, baseline_less_owner)
-        arm_urls = [row for row in urls if row[1] == arm]
-        assert arm_urls, (
-            f"the {arm or 'account-less'!r} arm is empty -- every arm of "
-            f"{_SWEEP_ARMS} must select URLs, so this means the kind tag or "
-            f"the fixture ids stopped substituting, not that the app shrank"
+        endpoint, kind, rule = case
+        url = _case_url(rule, kind, baseline_less_owner)
+        # A URL still holding a converter 404s, and 404 is under 500, so it
+        # would pass while grading nothing.  `_sweep_cases` skips such a rule
+        # rather than emitting it; this refuses one that got through anyway.
+        assert "<" not in url, (
+            f"{rule} reached the sweep with a converter unfilled ({url}); it "
+            f"should have been skipped and pinned in _UNREACHED_RULES"
         )
-        crashed = []
-        card_in_fragment = []
-        for endpoint, kind, url in arm_urls:
-            for headers in ({}, {"HX-Request": "true"}):
-                resp = auth_client.get(url, headers=headers)
-                if resp.status_code >= 500:
-                    crashed.append((url, endpoint, kind, headers,
-                                    resp.status_code))
-                if headers and b"Setup Incomplete" in resp.data:
-                    card_in_fragment.append((url, endpoint, kind))
+
+        seen = []
+        for headers in ({}, {"HX-Request": "true"}):
+            resp = auth_client.get(url, headers=headers)
+            seen.append((bool(headers), resp.status_code,
+                         b"Setup Incomplete" in resp.data))
+
+        crashed = [shape for shape in seen if shape[1] >= 500]
         assert not crashed, (
-            f"{len(crashed)} route/kind pairs 5xx for an owner with no "
-            f"baseline scenario: {crashed}"
+            f"{url} ({endpoint}, kind={kind or 'none'}) returned "
+            f"{[s[1] for s in crashed]} for an owner with no baseline "
+            f"scenario (htmx={[s[0] for s in crashed]})"
         )
         # A fragment must never receive the full-page card: htmx would swap a
         # setup page into a balance cell.  The sweep used to grade only the
-        # 5xx, so THIS regression -- the one the 204 branch exists to prevent --
-        # would have passed it (X-v2's adversarial design review).
-        assert not card_in_fragment, (
-            f"{len(card_in_fragment)} HTMX requests received the full-page "
-            f"recovery card instead of 204: {card_in_fragment}"
+        # 5xx, so THIS regression -- the one the 204 branch exists to prevent
+        # -- would have passed it (X-v2's adversarial design review).
+        assert not [s for s in seen if s[0] and s[2]], (
+            f"{url} ({endpoint}) answered an HTMX request with the full-page "
+            f"recovery card instead of 204"
         )
 
     @pytest.mark.parametrize("label,template", _MEASURED_PAGE_DOORS)

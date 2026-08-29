@@ -92,10 +92,11 @@ than a second copy here (rule 16): **N-239** and **N-323**.
 **The X-ga..X-gh leaves are the standing-consent REDESIGN the developer approved 2026-08-24**
 (**R-GH**..**R-GL**); the argument and worked examples are
 `docs/audits/bank_import_redesign/README.md`. The retirement leaf -- deleting what the exception
-queue orphans -- is MINTED when `X-gf` ships. **The X-gb..X-ge-1 span is ARCHIVED under rule 5**
-(condensed 2026-08-26, cut to one line each 2026-08-27): the as-built records are the four
-`historical/bank_import_x_*` files, every finding it did not close is a live `ledger.md` row, and
-the constraints it leaves a LATER step are on that step's own entry.
+queue orphans -- is **X-gi**, minted when `X-gf` shipped.
+**The X-gb..X-ge-1 span is ARCHIVED under rule 5** (condensed 2026-08-26, cut to one line each
+2026-08-27): the as-built records are the four `historical/bank_import_x_*` files, every finding it
+did not close is a live `ledger.md` row, and the constraints it leaves a LATER step are on that
+step's own entry.
 
 - [x] **X-gb** `ec346c46` -- the delete door (**R-GM**) and the P-6 repair. Closed **N-344**; opened
       **N-348**.
@@ -109,12 +110,12 @@ the constraints it leaves a LATER step are on that step's own entry.
       Opens **N-359**.
 - [x] **X-ge-1** `6d3e3ca1` -- each matcher tier publishes the refusals it used to SWALLOW, so a
       pass reports three verdicts rather than two.
-- [ ] **X-gf** `feat(import): the review is an exception queue` -- **the DECOMPOSED parent**, split
-      2026-08-27 on measurement: the review body renders **554,122 bytes** against the developer's
-      own dev data, of which the merchant control is 225,474 and the accepted-matches panel
-      212,576 -- **79% of the page is two registers of decisions already made** -- while the work a
-      routine import leaves is **two creatable lines** at 15,842 bytes, starting at byte 227,166.
-      224 `<form>` elements, 64 selects, 96 checkboxes. It ticks with the last of its three leaves.
+- [x] **X-gf** `ff744d79` -- the review is an exception queue: ticked with the last of its seven
+      leaves. **What a LATER step must obey**: the queue is one list grouped by the decision, and
+      the two registers of decisions already made are not it -- the split that measurement forced
+      (554,122 bytes rendered, 79% of it those two registers, against 15,842 bytes of actual work)
+      is the shape, not the byte count. Closed nothing itself; its leaves closed **N-359** and
+      **N-371**. Minted **X-gi**.
 - [x] **X-gf-1** `a4db019f` -- an inflow the books hold no row for becomes an uncategorized INCOME
       row (**R-GW**), **MOVING MONEY**: two correct refusals pointed at each other and left every
       unmatched DEPOSIT with no act at all -- 8 lines, `$58.87`, on his own data.
@@ -153,6 +154,13 @@ the constraints it leaves a LATER step are on that step's own entry.
       reaches only the group that offers it). **What a LATER step must obey**: the grouping reads
       BOTH of `_verdict.ruled`'s withholding arms, and a third one must teach `_positive_for` or
       `TestNoSweptRowCarriesASentence` fails.
+- [ ] **X-gi** `refactor(import): the queue's replaced model leaves orphans` -- the retirement leaf
+      **X-gf** owed on shipping. **It is a CENSUS before it is a deletion**: the rebuild replaced
+      the exception queue's model, and what of the old one is now unreachable has not been measured.
+      The first deliverable is that census -- routes, templates, services and columns the new queue
+      no longer reaches -- and it may delete nothing it has not first shown to be orphaned, because
+      a route that looks dead to a reading is not the same as one no door reaches (**N-112**'s
+      shape).
 - [ ] **X-gg** `docs(plans): the envelope-semantics design loop` -- **R-GK**'s owed loop, run WITH
       the developer: filling, closure on coverage, carry-forward and the grid's row identity (whose
       same-name double-render the review measured); it mints the build steps rather than building.

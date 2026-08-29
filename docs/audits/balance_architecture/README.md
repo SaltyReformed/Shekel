@@ -835,15 +835,26 @@ hides.
   produces it, which a fork changes and a rebase changes. Two remedies are refused: stamp
   equality, measured GREEN on the broken template, and a `pg_indexes` spot check, which names
   one object where the next instance will be a different one -- the same shape as an allowlist.
-* [ ] **X-bd** `test(routes): the url_map sweep's arms are sized, not named` -- closes **N-364**,
-  whose row carries the measurements. **Root: the sweep is SPLIT by account KIND, and a kind is not
-  a size** -- the account-less arm is 54 routes against ~20 per kind arm and absorbs nearly all the
-  growth, since most new routes take no account id. **Two remedies are refused**: raising
-  `pytest.ini`'s `timeout = 30` hides a growth curve rather than bounding one, and `-n 4` was
-  measured and REJECTED there (52% MORE total -- these workers block on the database, not on CPU).
-  It owes the AXIS first, arms partitioning one URL set by a rule whose largest member is bounded,
-  with the coverage arm's `{row[1] for row in urls} == set(_SWEEP_ARMS)` rewritten to grade it --
-  that assertion is all that stands between a re-split and a silently un-graded route.
+* [x] **X-bd** `39935763` -- every route in the sweep is its OWN pytest item. Closed **N-364**,
+  whose diagnosis it measured FALSE: the account-less arm had not grown at all since `910065a9`,
+  and all 42 new URLs sat in the KIND arms, which one account route grows SEVEN at a time. The
+  root cause was neither axis -- one test issuing every request is O(the route table) under an
+  O(1) budget, so an arm only divides the constant. **A later step may not reintroduce one**, and
+  the routes must stay enumerable without a database. Opened **N-387**, owned by `X-be-2`.
+* [ ] **X-be-2** `test(routes): a read-only sweep owns its database` -- closes **N-387**,
+  whose row carries the split. **Root: the sweep mutates nothing and pays full per-test WRITE
+  isolation 236 times.** The remedy must cut BOTH halves: sharing a database alone recovers the
+  41%, so the shared state has to carry the seven accounts too, which is the 59%.
+  **One remedy is measured REFUSED**: a module- or class-scoped fixture cannot hold that state,
+  because every test on a worker shares ONE database and the next test from any OTHER module
+  re-clones it mid-module -- OBSERVED under `-n 12`, not inferred from the scheduler's docs, with
+  `gw0`, `gw10` and `gw11` each running two modules interleaved. `xdist_group` pins a group to one
+  worker and does not keep other tests off that worker, so it is not the fix either. It owes the
+  OWNERSHIP question first -- which database the sweep reads and who creates it -- and may not
+  answer it by making the sweep one test again. **A database it clones from the template carries
+  `X-f3c-2b`'s two `DEFERRABLE INITIALLY DEFERRED` constraint triggers**: inert for a GET-only
+  sweep, but any SETTLED write followed by DDL on `budget.transactions` needs a
+  `SET CONSTRAINTS ALL IMMEDIATE` drain first, which is what broke CI step 7b on 2026-08-29.
 * [ ] **X-be** `refactor(services): three modules are at the line ceiling, not near it` -- closes
   **N-365**, whose row carries the census and both instances. **Root: in a corpus whose docstrings
   ARE the design record, a per-module LINE cap binds what gets WRITTEN DOWN.** The fork, per module:
