@@ -64,6 +64,7 @@ from app.services import (
 # here takes (see ``test_release.py``).
 from app.services.statement_match import _create  # pylint: disable=protected-access
 
+from tests._test_helpers import open_books_before_the_first_assertion
 from ._builders import (
     accepted_acts,
     a_bank_line,
@@ -117,6 +118,11 @@ def _a_savings_account(seed_user):
         ),
     )
     db.session.flush()
+    # Its BOOKS open the day before that assertion (plan step X-f3c-2b,
+    # ruling **R-HG**): an opening equity is the closing balance for its own
+    # day, and this suite's bank lines post on ``bootstrap_period.start_date``
+    # itself.  Same shape ``tests/conftest.py``'s own factories take.
+    open_books_before_the_first_assertion(db.session, account)
     return account
 
 

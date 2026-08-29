@@ -38,6 +38,7 @@ from tests._test_helpers import (
     an_observed_day,
     cadence_payload,
     create_account_of_type,
+    open_books_before_the_first_assertion,
     create_loan_account,
     field_is_disabled,
     make_every_period_rule,
@@ -65,6 +66,12 @@ def _create_savings_account(seed_user):
         ),
     )
     db.session.add(acct)
+    # Its BOOKS open the day before its origination assertion (plan step
+    # X-f3c-2b, ruling **R-HG**).  The factory defaults ``observed_on`` to the
+    # owner's today and this suite settles transfers on days around it, so
+    # leaving the books on today makes every such fixture unrecordable -- an
+    # opening equity is the CLOSING balance for its own day.
+    open_books_before_the_first_assertion(db.session, acct)
     db.session.commit()
     return acct
 
@@ -169,6 +176,10 @@ def _create_other_user_with_template():
         ),
     )
     db.session.add_all([checking, savings])
+    # Both sets of BOOKS open the day before their origination -- see
+    # ``_create_savings_account`` above (plan step X-f3c-2b, ruling R-HG).
+    open_books_before_the_first_assertion(db.session, checking)
+    open_books_before_the_first_assertion(db.session, savings)
 
     scenario = Scenario(
         user_id=other_user.id, name="Baseline", is_baseline=True,

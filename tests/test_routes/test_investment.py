@@ -53,6 +53,7 @@ from app.services.investment_dashboard_service._context import (
 from app.services.pay_calendar import PayCalendar
 from tests._test_helpers import (
     make_investment_account,
+    open_books_before_the_first_assertion,
     read_pass_over_paydays,
 )
 
@@ -147,6 +148,10 @@ def _create_investment_account(seed_user, db_session, type_name="401(k)",
         ),
     )
     db_session.add(account)
+    # Its BOOKS open before anything this fixture dates (plan step X-f3c-2b,
+    # ruling **R-HG**): ``create_account`` opens them on the day it asserts --
+    # the owner's today -- and this suite settles on or before it.
+    open_books_before_the_first_assertion(db_session, account)
     db_session.commit()
     return account
 
@@ -183,6 +188,10 @@ def _create_other_investment(second_user, db_session):
         ),
     )
     db_session.add(account)
+    # Its BOOKS open before anything this fixture dates (plan step X-f3c-2b,
+    # ruling **R-HG**): ``create_account`` opens them on the day it asserts --
+    # the owner's today -- and this suite settles on or before it.
+    open_books_before_the_first_assertion(db_session, account)
     db_session.commit()
     return account
 
@@ -2351,6 +2360,12 @@ class TestInvestmentEntryAwareRouting:
                     Decimal("20.00"), Decimal("15.71"), Decimal("10.00"),
                 ),
             )
+            # The purchases above are dated by their builder, BEFORE this
+            # calendar's first period, so the books move again now that the
+            # rows exist (plan step X-f3c-2b, ruling **R-HG**).  The helper
+            # bounds on the earliest settled row as well as on the assertion,
+            # which is why calling it a second time is the whole repair.
+            open_books_before_the_first_assertion(db.session, acct)
             db.session.commit()
 
             # The entries-aware CASH BASIS the modelled balance is computed
@@ -2436,6 +2451,12 @@ class TestInvestmentEntryAwareRouting:
                     Decimal("20.00"), Decimal("15.71"), Decimal("10.00"),
                 ),
             )
+            # The purchases above are dated by their builder, BEFORE this
+            # calendar's first period, so the books move again now that the
+            # rows exist (plan step X-f3c-2b, ruling **R-HG**).  The helper
+            # bounds on the earliest settled row as well as on the assertion,
+            # which is why calling it a second time is the whole repair.
+            open_books_before_the_first_assertion(db.session, acct)
             db.session.commit()
 
             resp = auth_client.get(

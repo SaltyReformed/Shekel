@@ -20,7 +20,7 @@ from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.models.transfer_template import TransferTemplate
 from app.models.account import Account, AccountAnchorHistory
-from app.models.ref import AccountType, TransactionType
+from app.models.ref import TransactionType
 from app import ref_cache
 from app.enums import SettlementBasisEnum, StatusEnum
 from app.services import (
@@ -30,7 +30,6 @@ from app.services.recurrence_engine import resolve_generation_plan
 from app.exceptions import (
     RecurrenceConflict,
 )
-from app.services import account_service
 from app.utils.log_events import (
     EVT_TRANSFER_HARD_DELETED,
     EVT_TRANSFER_RECURRENCE_REGENERATED,
@@ -41,6 +40,7 @@ from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
     an_entered_day,
+    create_account_of_type,
     make_cadence_rule,
     open_calendar_hole,
     settlement_basis_id,
@@ -82,47 +82,56 @@ def _assert_shadows_valid(xfer):
     return expense, income
 
 
+def make_template_with_rule(seed_user, cadence, **rule_kwargs):
+    """Create a savings account, a transfer template and its cadence rule.
+
+    **ONE copy of what was three byte-identical methods.**  Four other classes
+    in this file define a `_make_template_with_rule` of their own and keep it:
+    each differs genuinely -- a second endpoint, an explicit bound, a loan
+    destination -- so collapsing those would be a shared helper with a flag per
+    caller, which is the shape being removed rather than a second instance of
+    it.
+
+    Args:
+        seed_user: The `seed_user` fixture's mapping.
+        cadence: The `RecurrenceUnitEnum` the rule fires on.
+        **rule_kwargs: `interval_n`, `day_of_month`, `month_of_year`.
+
+    Returns:
+        The refreshed `TransferTemplate`.
+    """
+    savings = create_account_of_type(
+        seed_user, db.session, "Savings", "Savings",
+        anchor_balance=Decimal("500.00"),
+    )
+
+    template = TransferTemplate(
+        user_id=seed_user["user"].id,
+        from_account_id=seed_user["account"].id,
+        to_account_id=savings.id,
+        name="Test Transfer",
+        default_amount=Decimal("100.00"),
+    )
+    db.session.add(template)
+    db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    make_cadence_rule(
+        template, cadence,
+        interval_n=rule_kwargs.get("interval_n", 1),
+        fires_on_day=rule_kwargs.get("day_of_month"),
+        fires_in_month=rule_kwargs.get("month_of_year"),
+    )
+
+    db.session.refresh(template)
+    return template
+
+
 class TestTransferGeneration:
     """Tests for generate_for_template()."""
 
     def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
-        """Helper: create a savings account + recurrence rule + transfer template."""
-        savings_type = (
-            db.session.query(AccountType)
-            .filter_by(name="Savings")
-            .one()
-        )
-
-        savings = account_service.create_account(
-            account_service.AccountSpec(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings",
-                anchor_balance=Decimal("500.00"),
-            ),
-        )
-        db.session.add(savings)
-        db.session.flush()
-
-        template = TransferTemplate(
-            user_id=seed_user["user"].id,
-            from_account_id=seed_user["account"].id,
-            to_account_id=savings.id,
-            name="Test Transfer",
-            default_amount=Decimal("100.00"),
-        )
-        db.session.add(template)
-        db.session.flush()
-        # The definition first, then the cadence onto it (plan step R-F6).
-        rule = make_cadence_rule(
-            template, cadence,
-            interval_n=rule_kwargs.get("interval_n", 1),
-            fires_on_day=rule_kwargs.get("day_of_month"),
-            fires_in_month=rule_kwargs.get("month_of_year"),
-        )
-
-        db.session.refresh(template)
-        return template
+        """Delegate to the module-level helper (see `make_template_with_rule`)."""
+        return make_template_with_rule(seed_user, cadence, **rule_kwargs)
 
     def test_every_period_generates_for_all(self, app, db, seed_user, seed_periods):
         """every_period creates a transfer in every pay period."""
@@ -187,21 +196,10 @@ class TestTransferGeneration:
     def test_no_rule_returns_empty(self, app, db, seed_user, seed_periods):
         """Template with recurrence_rule=None returns empty list."""
         with app.app_context():
-            savings_type = (
-                db.session.query(AccountType)
-                .filter_by(name="Savings")
-                .one()
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Savings",
+                anchor_balance=Decimal("500.00"),
             )
-            savings = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=savings_type.id,
-                    name="Savings",
-                    anchor_balance=Decimal("500.00"),
-                ),
-            )
-            db.session.add(savings)
-            db.session.flush()
 
             template = TransferTemplate(
                 user_id=seed_user["user"].id,
@@ -478,43 +476,8 @@ class TestTransferRegeneration:
     """Tests for regenerate_for_template()."""
 
     def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
-        """Helper: create a savings account + recurrence rule + transfer template."""
-        savings_type = (
-            db.session.query(AccountType)
-            .filter_by(name="Savings")
-            .one()
-        )
-
-        savings = account_service.create_account(
-            account_service.AccountSpec(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings",
-                anchor_balance=Decimal("500.00"),
-            ),
-        )
-        db.session.add(savings)
-        db.session.flush()
-
-        template = TransferTemplate(
-            user_id=seed_user["user"].id,
-            from_account_id=seed_user["account"].id,
-            to_account_id=savings.id,
-            name="Test Transfer",
-            default_amount=Decimal("100.00"),
-        )
-        db.session.add(template)
-        db.session.flush()
-        # The definition first, then the cadence onto it (plan step R-F6).
-        rule = make_cadence_rule(
-            template, cadence,
-            interval_n=rule_kwargs.get("interval_n", 1),
-            fires_on_day=rule_kwargs.get("day_of_month"),
-            fires_in_month=rule_kwargs.get("month_of_year"),
-        )
-
-        db.session.refresh(template)
-        return template
+        """Delegate to the module-level helper (see `make_template_with_rule`)."""
+        return make_template_with_rule(seed_user, cadence, **rule_kwargs)
 
     def test_regenerate_maintains_its_rows_in_place(
         self, app, db, seed_user, seed_periods
@@ -761,43 +724,8 @@ class TestTransferResolveConflicts:
     """Tests for resolve_conflicts()."""
 
     def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
-        """Helper: create a savings account + recurrence rule + transfer template."""
-        savings_type = (
-            db.session.query(AccountType)
-            .filter_by(name="Savings")
-            .one()
-        )
-
-        savings = account_service.create_account(
-            account_service.AccountSpec(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings",
-                anchor_balance=Decimal("500.00"),
-            ),
-        )
-        db.session.add(savings)
-        db.session.flush()
-
-        template = TransferTemplate(
-            user_id=seed_user["user"].id,
-            from_account_id=seed_user["account"].id,
-            to_account_id=savings.id,
-            name="Test Transfer",
-            default_amount=Decimal("100.00"),
-        )
-        db.session.add(template)
-        db.session.flush()
-        # The definition first, then the cadence onto it (plan step R-F6).
-        rule = make_cadence_rule(
-            template, cadence,
-            interval_n=rule_kwargs.get("interval_n", 1),
-            fires_on_day=rule_kwargs.get("day_of_month"),
-            fires_in_month=rule_kwargs.get("month_of_year"),
-        )
-
-        db.session.refresh(template)
-        return template
+        """Delegate to the module-level helper (see `make_template_with_rule`)."""
+        return make_template_with_rule(seed_user, cadence, **rule_kwargs)
 
     def test_resolve_keep_no_changes(self, app, db, seed_user, seed_periods):
         """action='keep' leaves overridden transfer unchanged."""
@@ -1039,21 +967,10 @@ class TestNegativePaths:
 
         # Create savings account for default to_account if not specified.
         if to_account_id is None:
-            savings_type = (
-                db.session.query(AccountType)
-                .filter_by(name="Savings")
-                .one()
+            savings = create_account_of_type(
+                seed_user, db.session, "Savings", "Savings NP",
+                anchor_balance=Decimal("500.00"),
             )
-            savings = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=savings_type.id,
-                    name="Savings NP",
-                    anchor_balance=Decimal("500.00"),
-                ),
-            )
-            db.session.add(savings)
-            db.session.flush()
             to_account_id = savings.id
 
         template = TransferTemplate(
@@ -1276,20 +1193,11 @@ class TestShadowTransactionCreation:
     def _make_template(self, seed_user, cadence, category_id=None,
                        **rule_kwargs):
         """Helper: create savings account + rule + template with optional category."""
-        savings_type = db.session.query(AccountType).filter_by(
-            name="Savings"
-        ).one()
 
-        savings = account_service.create_account(
-            account_service.AccountSpec(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings Shadow",
-                anchor_balance=Decimal("500.00"),
-            ),
+        savings = create_account_of_type(
+            seed_user, db.session, "Savings", "Savings Shadow",
+            anchor_balance=Decimal("500.00"),
         )
-        db.session.add(savings)
-        db.session.flush()
 
         template = TransferTemplate(
             user_id=seed_user["user"].id,
@@ -1493,22 +1401,11 @@ class TestResolveConflictsServiceRouting:
 
     def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
         """Helper: create a savings account + recurrence rule + template."""
-        savings_type = (
-            db.session.query(AccountType)
-            .filter_by(name="Savings")
-            .one()
-        )
 
-        savings = account_service.create_account(
-            account_service.AccountSpec(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings L1",
-                anchor_balance=Decimal("500.00"),
-            ),
+        savings = create_account_of_type(
+            seed_user, db.session, "Savings", "Savings L1",
+            anchor_balance=Decimal("500.00"),
         )
-        db.session.add(savings)
-        db.session.flush()
 
         template = TransferTemplate(
             user_id=seed_user["user"].id,
@@ -1816,16 +1713,9 @@ class TestTransferMaintain:
             ``(template, savings, rows)`` -- the definition, its destination
             account, and the transfers it generated, oldest first.
         """
-        savings_type = (
-            db.session.query(AccountType).filter_by(name="Savings").one()
-        )
-        savings = account_service.create_account(
-            account_service.AccountSpec(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name=f"{name} Savings",
-                anchor_balance=Decimal("500.00"),
-            ),
+        savings = create_account_of_type(
+            seed_user, db.session, "Savings", f'{name} Savings',
+            anchor_balance=Decimal("500.00"),
         )
         db.session.flush()
         template = TransferTemplate(
@@ -2254,16 +2144,9 @@ class TestTransferMaintain:
             template, _, rows = self._template_with_rows(
                 seed_user, seed_periods,
             )
-            savings_type = (
-                db.session.query(AccountType).filter_by(name="Savings").one()
-            )
-            elsewhere = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=savings_type.id,
-                    name="Elsewhere",
-                    anchor_balance=Decimal("0.00"),
-                ),
+            elsewhere = create_account_of_type(
+                seed_user, db.session, "Savings", "Elsewhere",
+                anchor_balance=Decimal("0.00"),
             )
             db.session.flush()
             old_ids = {xfer.id for xfer in rows}
@@ -2304,16 +2187,9 @@ class TestTransferMaintain:
             )
             recorded = rows[2]
             self._settle_then_revert(recorded, seed_user, Decimal("77.10"))
-            savings_type = (
-                db.session.query(AccountType).filter_by(name="Savings").one()
-            )
-            elsewhere = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=savings_type.id,
-                    name="Elsewhere",
-                    anchor_balance=Decimal("0.00"),
-                ),
+            elsewhere = create_account_of_type(
+                seed_user, db.session, "Savings", "Elsewhere",
+                anchor_balance=Decimal("0.00"),
             )
             db.session.flush()
 
@@ -2354,24 +2230,13 @@ class TestTransferMaintain:
             template, _, rows = self._template_with_rows(
                 seed_user, seed_periods,
             )
-            savings_type = (
-                db.session.query(AccountType).filter_by(name="Savings").one()
+            elsewhere = create_account_of_type(
+                seed_user, db.session, "Savings", "All Six Destination",
+                anchor_balance=Decimal("0.00"),
             )
-            elsewhere = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=savings_type.id,
-                    name="All Six Destination",
-                    anchor_balance=Decimal("0.00"),
-                ),
-            )
-            other_source = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=savings_type.id,
-                    name="All Six Source",
-                    anchor_balance=Decimal("900.00"),
-                ),
+            other_source = create_account_of_type(
+                seed_user, db.session, "Savings", "All Six Source",
+                anchor_balance=Decimal("900.00"),
             )
             category = Category(
                 user_id=seed_user["user"].id,
@@ -2428,16 +2293,9 @@ class TestTransferMaintain:
             )
             recorded = rows[1]
             self._settle_then_revert(recorded, seed_user, Decimal("64.20"))
-            savings_type = (
-                db.session.query(AccountType).filter_by(name="Savings").one()
-            )
-            new_source = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=savings_type.id,
-                    name="Moved Source",
-                    anchor_balance=Decimal("800.00"),
-                ),
+            new_source = create_account_of_type(
+                seed_user, db.session, "Savings", "Moved Source",
+                anchor_balance=Decimal("800.00"),
             )
             db.session.flush()
             was_from = recorded.from_account_id
@@ -2675,21 +2533,10 @@ class TestRegenerateDeletionRoutedThroughService:
 
     def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
         """Helper: create a savings account + recurrence rule + transfer template."""
-        savings_type = (
-            db.session.query(AccountType)
-            .filter_by(name="Savings")
-            .one()
+        savings = create_account_of_type(
+            seed_user, db.session, "Savings", "Savings C34",
+            anchor_balance=Decimal("500.00"),
         )
-        savings = account_service.create_account(
-            account_service.AccountSpec(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings C34",
-                anchor_balance=Decimal("500.00"),
-            ),
-        )
-        db.session.add(savings)
-        db.session.flush()
 
         template = TransferTemplate(
             user_id=seed_user["user"].id,
@@ -2936,19 +2783,10 @@ class TestATransferRecordsItsOccurrence:
 
     def _make_template_with_rule(self, seed_user, cadence):
         """Helper: savings account + transfer template with an authored rule."""
-        savings_type = (
-            db.session.query(AccountType).filter_by(name="Savings").one()
+        savings = create_account_of_type(
+            seed_user, db.session, "Savings", "Savings",
+            anchor_balance=Decimal("500.00"),
         )
-        savings = account_service.create_account(
-            account_service.AccountSpec(
-                user_id=seed_user["user"].id,
-                account_type_id=savings_type.id,
-                name="Savings",
-                anchor_balance=Decimal("500.00"),
-            ),
-        )
-        db.session.add(savings)
-        db.session.flush()
         template = TransferTemplate(
             user_id=seed_user["user"].id,
             from_account_id=seed_user["account"].id,

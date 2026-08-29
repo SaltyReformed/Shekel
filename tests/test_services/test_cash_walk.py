@@ -42,7 +42,7 @@ from app.services.balance_at._cash_fold import assembled_fold, balances_at
 from app.services import transaction_service
 from app.services.row_valuation import purchases_total, settled_figure
 from app.enums import StatusEnum
-from app.exceptions import UndatedSettleError
+from app.exceptions import UndatedSettleError, ValidationError
 from app.utils.dates import DISPLAY_TIMEZONE, display_today, to_display_date
 from tests._test_helpers import (
     add_txn,
@@ -876,88 +876,93 @@ class TestTheWalkSeesOnlyItsOwnRows:
         assert _running_balance(card, scenario) == Decimal("-375.00")
 
 
-class TestPreOpeningSources:
-    """A settle attributed BEFORE the account's first assertion (finding N-37).
+class TestASourceCannotPredateTheBooks:
+    """A settle dated at or before the account's opening is UNSTORABLE.
 
-    Live on production 2026-07-25: two accounts carry the shape (Fidelity
-    Savings 1 row, the Money Market 4).  The behaviour was pinned here so plan
-    step X-b's ruling had something to flip, exactly as finding N-34 was gated
-    before C2b fixed it.
+    **This class replaced ``TestPreOpeningSources``, which pinned the opposite**
+    (plan step X-f3c-2b, ruling **R-HG**).  That class graded a walk carrying a
+    source dated BEFORE the books opened, and said so deliberately: ruling R-I
+    had put the reader's answer in the fold and left the leaf emitting the row
+    at its own day, "so the leaf does not unilaterally re-key it".
 
-    **RULED 2026-07-25 (R-I), and the ruling did NOT change this leaf.**  The
-    fold back-projects the first assertion over the records it already contains;
-    ``dated_deltas`` keeps emitting a pre-opening row at its own day, because the
-    posted ledger holds the same partial sum there and re-keying it would break
-    the walk-vs-ledger equality plan step X-d rests on.  So both assertions below
-    stand as WALK contracts, and the READER's answer -- the one the ruling is
-    about -- is graded in ``test_cash_fold.py``'s ``TestTheOpeningMovesIntoTheSeed``.
+    What changed is not the leaf's re-keying rule -- it is unchanged -- but
+    whether the state it re-keys can exist.  An opening equity is the CLOSING
+    balance for its own day, so such a row is already inside the level the fold
+    seeds at, and carrying it twice is finding **N-378**.  The fixture below is
+    the one the old class used, and the point is that it no longer builds.
+
+    **The walk is therefore free of a filter, and its absence is the property.**
+    A leaf that screened its own inputs would be a second statement of a rule
+    the database holds, and the two would drift -- which is this arc's own root
+    cause 1.
     """
 
-    def test_it_is_absorbed_into_the_opening_and_the_total_is_right(
+    def test_the_fixture_the_old_contract_rested_on_is_REFUSED(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """At and after the opening the answer is correct, and that is the half
-        the walk owes.
+        """Books opened 2026-02-01; a $500.00 expense settling 2026-01-15 raises.
 
-        Hand-computed: books opened at $1,000.00, a $500.00 expense attributed
-        2026-01-15, an assertion of $1,000.00 on 2026-02-01.
-        ``balance_before`` is $500.00 -- the opening equity carrying that spend
-        -- so the assertion's correction is $500.00 and the total lands on
-        $1,000.00, the asserted balance, with the pre-opening row absorbed
-        exactly as the posted ledger absorbs it.
-
-        *The pair read -$500.00 / $1,500.00 until plan step X-f3c-2a seeded the
-        replay at the stored opening equity instead of at zero.  The TOTAL is
-        unchanged, which is the half this test exists for.*
+        The exact shape ``TestPreOpeningSources`` built, refused at the one
+        settle-day writer with a message naming both days.
         """
-        account, scenario = seed_user["account"], seed_user["scenario"]
+        account = seed_user["account"]
         period = seed_periods[0]
-        opening_at = _instant(2026, 2, 1)
-        _restamp_opening(account, opening_at)
-        create_settled_cash_transaction(
-            seed_user, db.session, period, Decimal("500.00"),
-            settled_on=date(2026, 1, 15), name="pre-opening",
-        )
-        db.session.commit()
+        _restamp_opening(account, _instant(2026, 2, 1))
+        db.session.flush()
+        with pytest.raises(ValidationError) as exc:
+            create_settled_cash_transaction(
+                seed_user, db.session, period, Decimal("500.00"),
+                settled_on=date(2026, 1, 15), name="pre-opening",
+            )
+        assert "2026-01-15" in str(exc.value)
+        db.session.rollback()
 
-        before, delta = _corrections(account, scenario)[opening_at]
-        assert before == Decimal("500.00")
-        assert delta == Decimal("500.00")
-        assert _running_balance(account, scenario) == Decimal("1000.00")
-
-    def test_the_prefix_before_the_opening_is_the_un_absorbed_partial_sum(
+    def test_the_walk_yields_each_source_at_its_OWN_day_and_adds_none(
         self, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument
-        """PINNED as a LEAF contract, and deliberately not a balance.
+        """The whole source list, by day and amount, hand-computed.
 
-        ``dated_deltas`` emits the pre-opening source at its OWN day, so a
-        prefix taken before the opening reads -$500.00: a balance the account
-        never had.  It is faithful to the POSTED ledger, which holds the same
-        partial sum there, so the leaf does not unilaterally re-key it.
+        **This replaces an assertion that could not fail.**  Its first version
+        checked that every source the walk yields is dated after the opening --
+        over rows read from a database the constraint will not let hold a
+        violating one, using the same governing-row rule the constraint uses.
+        It could only have failed if the SQL and Python lookups disagreed,
+        which is graded properly and from both sides by
+        ``test_books_boundary.TestTheTwoGoverningLookupsElectTheSameRow``.  As
+        a control over what the walk EMITS, which is what its name promised, it
+        was a tautology (found by adversarial review, 2026-08-28).
 
-        Ruling R-I (2026-07-25) settled what a READER answers there -- the first
-        assertion back-projected over these records, ``$1,500.00`` on this shape
-        -- and put it in the FOLD, which is why this stayed green through X-b
-        rather than flipping.  The pairing is the point: the leaf's partial sum
-        keeps X-d's walk-vs-ledger equality, and the fold's seed keeps the
-        balance honest.  ``test_cash_fold.py`` asserts the $1,500.00 against this
-        same fixture shape.
+        So this computes instead.  Books open 2026-01-31 (one day before the
+        2026-02-01 opening assertion), a ``$500.00`` expense settles 2026-02-05
+        and a ``$120.00`` one settles 2026-02-20.  Hand-computed: the walk
+        yields exactly two sources, ``-$500.00`` on 02-05 and ``-$120.00`` on
+        02-20, each at its OWN day.  A leaf that filtered its inputs, re-keyed
+        one onto the opening, folded the two together or emitted a third would
+        fail on the exact pair rather than on a predicate that is true of any
+        list.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         period = seed_periods[0]
         _restamp_opening(account, _instant(2026, 2, 1))
         create_settled_cash_transaction(
             seed_user, db.session, period, Decimal("500.00"),
-            settled_on=date(2026, 1, 15), name="pre-opening",
+            settled_on=date(2026, 2, 5), name="after-the-books",
+        )
+        create_settled_cash_transaction(
+            seed_user, db.session, period, Decimal("120.00"),
+            settled_on=date(2026, 2, 20), name="later-still",
         )
         db.session.commit()
 
-        steps = dated_deltas(walk_cash_ledger(account.id, scenario.id))
-        prefix = sum(
-            (delta for day, delta in steps if day <= date(2026, 1, 20)),
-            Decimal("0.00"),
-        )
-        assert prefix == Decimal("-500.00")
+        walk = walk_cash_ledger(account.id, scenario.id)
+        assert walk.opening.opened_on == date(2026, 1, 31)
+        assert sorted(
+            (fact.settled_on, fact.delta) for fact in walk.source_facts
+        ) == [
+            (date(2026, 2, 5), Decimal("-500.00")),
+            (date(2026, 2, 20), Decimal("-120.00")),
+        ]
+
 
 
 class TestTheWalkReadsNoClock:

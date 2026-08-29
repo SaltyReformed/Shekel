@@ -864,7 +864,10 @@ class TestATransferShadowIsMatchedThroughItsService:
         from app.models.account import Account  # local: this class only
         from app.models.transaction import Transaction
         from app.services import account_service, transfer_service
-        from tests._test_helpers import create_transfer
+        from tests._test_helpers import (
+            create_transfer,
+            open_books_before_the_first_assertion,
+        )
 
         destination = account_service.create_account(
             account_service.AccountSpec(
@@ -876,6 +879,13 @@ class TestATransferShadowIsMatchedThroughItsService:
             )
         )
         db.session.flush()
+        # **Its BOOKS open before the bootstrap period** (plan step X-f3c-2b,
+        # ruling **R-HG**).  ``observed_on`` above puts the origination
+        # ASSERTION on the period's first day, which is right -- and it puts
+        # the books there too, while the shadows this class matches settle on
+        # that same day.  An opening equity is its own day's CLOSING balance,
+        # so those settles are inside it.
+        open_books_before_the_first_assertion(db.session, destination)
         transfer = create_transfer(
             seed_user, db.session, seed_user["account"], destination,
             seed_user["bootstrap_period"], amount=Decimal(amount),

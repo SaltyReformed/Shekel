@@ -70,6 +70,7 @@ from alembic.config import Config
 from app import create_app, ref_cache
 from app.audit_infrastructure import apply_audit_infrastructure
 from app.extensions import db
+from app.opening_infrastructure import apply_opening_infrastructure
 from app.posting_infrastructure import (
     apply_ledger_append_only_privileges,
     apply_posting_infrastructure,
@@ -101,9 +102,9 @@ def is_fresh_database():
 
 
 def init_fresh_database(app):
-    """Create the schema, the audit + posting infrastructure, and stamp Alembic.
+    """Create the schema, the integrity infrastructure, and stamp Alembic.
 
-    Five steps in order:
+    Six steps in order:
 
     1. ``db.create_all()`` -- materialise every SQLAlchemy-modeled
        table.  This covers the ``ref``, ``auth``, ``budget``, and
@@ -125,13 +126,20 @@ def init_fresh_database(app):
        Like the audit trigger, these are raw SQL outside the model
        registry, so ``db.create_all`` (which made the
        ``budget.account_postings`` table) does not create them.
-    4. ``apply_ledger_append_only_privileges`` -- revoke UPDATE/DELETE
+    4. ``apply_opening_infrastructure`` -- materialise
+       ``budget.account_books_opened_on`` and the two deferred
+       constraint triggers that make a cash movement dated on or
+       before its account's ``opened_on`` unstorable (plan step
+       X-f3c-2b).  Raw SQL outside the model registry, exactly like
+       the two above, so ``db.create_all`` does not produce it.  There
+       is nothing to legalise on this path: the database is empty.
+    5. ``apply_ledger_append_only_privileges`` -- revoke UPDATE/DELETE
        on the two ledger tables from ``shekel_app`` (review M1/R4).
        Required on this path specifically: ``init_db_role.sql`` ran
        BEFORE the tables existed (its table-guarded REVOKE skipped),
        and the stamp in step 5 marks the revoke migration
        (``e3c23fadb21d``) as applied without running it.
-    5. ``alembic stamp head`` -- mark every migration as applied so
+    6. ``alembic stamp head`` -- mark every migration as applied so
        subsequent ``flask db upgrade`` calls only apply
        newly-authored migrations.
 
@@ -157,6 +165,13 @@ def init_fresh_database(app):
     )
     db.session.commit()
     print("Posting infrastructure ready.")
+
+    print("Materialising books-boundary constraint (opening equity)...")
+    apply_opening_infrastructure(
+        lambda sql: db.session.execute(db.text(sql))
+    )
+    db.session.commit()
+    print("Books-boundary constraint ready.")
 
     # Ledger append-only posture (review M1/R4).  On the fresh-DB path the
     # tables were just created AFTER init_db_role.sql ran (its table-guarded

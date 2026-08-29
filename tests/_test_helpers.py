@@ -1160,6 +1160,25 @@ def create_loan_account(
     )
     db_session.add(account)
     db_session.flush()
+    # **Its books open before the loan ORIGINATES *and* before the owner's
+    # calendar** (plan step X-f3c-2b, ruling **R-HG**).  The comment above
+    # explains why this factory leaves ``observed_on`` at the wall clock: a
+    # loan's BALANCE is ledger-derived from dated ``LoanAnchorEvent`` rows, so
+    # the cash assertion's day decides no figure for it.  Its PAYMENTS are
+    # ordinary settled rows on the cash side, though, and they run from the
+    # origination forward -- which is before the wall clock in every fixture
+    # here.
+    #
+    # Origination alone was measured too tight.  An installment may be settled
+    # EARLY, before the loan closes, and the developer ruled that legitimate:
+    # ``test_balance_at.TestLoanNotYetOriginated`` pays a 2026-05-01 installment
+    # on 2026-03-10 against a loan originating 2026-04-15, which is the ONE
+    # shape in which the origination guard is the guard doing the work.  So the
+    # bound is the earliest of the origination, the assertion and the owner's
+    # calendar, which is what the shared helper already computes.
+    open_books_before_the_first_assertion(
+        db_session, account, also_before=origination_date,
+    )
 
     params = LoanParams(
         account_id=account.id,
@@ -1364,6 +1383,15 @@ def create_savings_account(seed_user, db_session, name, anchor_balance):
     )
     db_session.add(account)
     db_session.flush()
+    # **Its books open the day BEFORE its origination assertion** (plan step
+    # X-f3c-2b, ruling **R-HG**).  ``create_account`` defaults ``observed_on``
+    # to ``display_today()`` and the settle door defaults a settle day to the
+    # SAME ``display_today()``, so a fixture meaning "this account existed,
+    # then money moved on it" lands the movement on the very day the books
+    # open -- and an opening equity is that day's CLOSING balance, so the
+    # movement is inside it and is refused.  Moves no figure: the origination
+    # assertion still clears whatever settled on its own day.
+    open_books_before_the_first_assertion(db_session, account)
     return account
 
 
@@ -1459,6 +1487,13 @@ def create_hysa_account(  # pylint: disable=too-many-arguments,too-many-position
     restamp_opening_assertion(
         db_session, account, settle_instant_on(anchor_period.start_date),
     )
+    # **And then before every day a row could land on** (plan step X-f3c-2b,
+    # ruling **R-HG**).  The restamp above pins the books one day before the
+    # anchor PERIOD the caller named, which is right when that period is the
+    # earliest -- and these factories are routinely handed a LATER period while
+    # the suite records movements in an earlier one.  Backward-only, so it
+    # never undoes the pin above.
+    open_books_before_the_first_assertion(db_session, account)
     db_session.commit()
     return account
 
@@ -1470,47 +1505,36 @@ def create_hysa_account(  # pylint: disable=too-many-arguments,too-many-position
 _LEDGER_SUITE_ANCHOR_BALANCE = Decimal("100.00")
 
 
-def create_account_of_type(
+def create_account_via_service(
     seed_user, db_session, type_name, name, anchor_balance=None,
     observed_on=None,
 ):
-    """Create an account of any built-in type via the canonical factory.
+    """Call ``account_service.create_account`` for *type_name*, and NOTHING else.
 
-    The shared "build an account of type X" helper for the ledger-account
-    (Build-Order Step 2) suites, so the stereotyped ``AccountType`` lookup +
-    ``AccountSpec`` + ``create_account`` block is not copied per file (a
-    duplicate-code finding).  ``create_account`` fires the Step-2
-    ledger-account sync hook, so the returned account already carries its
-    paired ``budget.ledger_accounts`` row.  The opening anchor balance
-    defaults to a fixed sentinel (the ledger-pairing suites assert on
-    pairing, never on balance); the Step-5 account-anchor suites pass an
-    explicit ``anchor_balance`` because the opening correction posts exactly
-    that value.  The anchor period is resolved by the factory from the day the
-    opening is observed on.
+    **The primitive, for the suites whose SUBJECT is what that service
+    records** -- ``tests/test_services/test_account_opening.py`` grades the one
+    ``budget.account_openings`` row the factory writes, so a fixture that
+    appended a second would be grading itself.  Every other caller wants
+    :func:`create_account_of_type`, which is this plus the books an account
+    that has already existed would have.
 
-    **The opening defaults to the day BEFORE today, and that default is the
-    point** (ruling R-DH (a), finding N-133 / F1).  An assertion is the CLOSING
-    balance for its civil day, so a settle dated that same day is INSIDE it --
-    and the ordinary settle idiom in these suites is the seam's own
-    ``settled_on = display_today()``, which under a frozen clock is TODAY.  An account opened
-    "today" therefore swallows every settle the test then records, and the
-    fixture stops exercising the thing it names.  Opening the account
-    yesterday is the production shape (an account exists before money moves in
-    it) and makes "and then things happened" true in the data rather than only
-    in the docstring.  A test that specifically needs a settle on the opening's
-    OWN day passes ``observed_on`` explicitly, which is the honest way to ask
-    for the case rather than inheriting it by accident.
+    Splitting the two is plan step X-f3c-2b's own correction.  The books move
+    was first written as an ``if observed_on is None`` branch inside the shared
+    factory, which bound two unrelated things together: a caller naming the
+    ASSERTION's day got, as a side effect, books that forbade the settles it
+    was about to record.  The twelve callers that pass ``observed_on`` were
+    exactly the ones left broken by it.
 
     Args:
         seed_user: The ``seed_user`` fixture dict.
-        db_session: The test ``db.session``.
-        type_name: The ``ref.account_types`` name (e.g. ``"Checking"``,
-            ``"Mortgage"``, ``"401(k)"``).
+        db_session: The test ``db.session``, used for the ``AccountType``
+            lookup below.
+        type_name: The ``ref.account_types`` name (e.g. ``"Checking"``).
         name: The account name.
         anchor_balance: Optional opening anchor balance (``Decimal``);
             ``None`` uses the ledger-suite sentinel.
         observed_on: Optional civil day the opening balance was TRUE.
-            Defaults to the DAY BEFORE the frozen today -- see below.
+            Defaults to the day before the frozen today.
 
     Returns:
         The created :class:`~app.models.account.Account` (flushed,
@@ -1543,6 +1567,76 @@ def create_account_of_type(
             ),
         ),
     )
+
+
+def create_account_of_type(
+    seed_user, db_session, type_name, name, anchor_balance=None,
+    observed_on=None,
+):
+    """Create an account of any built-in type via the canonical factory.
+
+    The shared "build an account of type X" helper for the ledger-account
+    (Build-Order Step 2) suites, so the stereotyped ``AccountType`` lookup +
+    ``AccountSpec`` + ``create_account`` block is not copied per file (a
+    duplicate-code finding).  ``create_account`` fires the Step-2
+    ledger-account sync hook, so the returned account already carries its
+    paired ``budget.ledger_accounts`` row.  The opening anchor balance
+    defaults to a fixed sentinel (the ledger-pairing suites assert on
+    pairing, never on balance); the Step-5 account-anchor suites pass an
+    explicit ``anchor_balance`` because the opening correction posts exactly
+    that value.  The anchor period is resolved by the factory from the day the
+    opening is observed on.
+
+    **What it returns is an account that has ALREADY EXISTED**, and both halves
+    of that are deliberate.
+
+    * The origination ASSERTION defaults to the day BEFORE today (ruling
+      R-DH (a), finding N-133 / F1).  An assertion is the CLOSING balance for
+      its civil day, so a settle dated that same day is INSIDE it -- and the
+      ordinary settle idiom in these suites is the seam's own ``settled_on =
+      display_today()``, which under a frozen clock is TODAY.  An account
+      asserted "today" therefore swallows every settle the test then records,
+      and the fixture stops exercising the thing it names.
+    * The BOOKS are then opened before anything this fixture could date, always
+      (plan step X-f3c-2b, ruling **R-HG**).  An opening equity is the closing
+      balance for its OWN day, so a movement dated on or before it is not
+      absorbed but REFUSED.  ``observed_on`` does not switch this off: it says
+      where the assertion goes, which is a different question.
+
+    **A suite whose subject is the record ``create_account`` writes wants
+    :func:`create_account_via_service` instead** -- this one appends a second
+    ``budget.account_openings`` row, which is the production shape after
+    migration ``d3b6f1c8a274`` and is not what a test of the factory means.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        db_session: The test ``db.session``.
+        type_name: The ``ref.account_types`` name (e.g. ``"Checking"``,
+            ``"Mortgage"``, ``"401(k)"``).
+        name: The account name.
+        anchor_balance: Optional opening anchor balance (``Decimal``);
+            ``None`` uses the ledger-suite sentinel.
+        observed_on: Optional civil day the opening balance was TRUE.
+            Defaults to the DAY BEFORE the frozen today -- see below.
+
+    Returns:
+        The created :class:`~app.models.account.Account` (flushed,
+        uncommitted).
+    """
+    account = create_account_via_service(
+        seed_user, db_session, type_name, name, anchor_balance, observed_on,
+    )
+    # **Its BOOKS open before anything a fixture can date, ALWAYS** (plan step
+    # X-f3c-2b, ruling **R-HG**).  ``create_account`` puts the opening record
+    # and the origination assertion on ONE day, so a caller settling a row on
+    # or before that day is building a state the app refuses -- and the default
+    # idiom here settles on the frozen today or earlier.  Unconditional, and
+    # not keyed on whether the caller named ``observed_on``: that argument says
+    # where the ASSERTION goes, which is a different question, and binding the
+    # two left every caller that wanted a dated assertion with books it could
+    # not record against.
+    open_books_before_the_first_assertion(db_session, account)
+    return account
 
 
 def ledger_accounts_for_account(db_session, account_id):
@@ -2580,7 +2674,7 @@ def create_settled_transfer(
     from app.enums import SettledDayBasisEnum, StatusEnum
     from app.extensions import db
     from app.services import transfer_service
-    from app.services.settle_day import SettleDay
+    from app.services.settle_day import SettleDay, record_settle_day
 
     transfer = create_transfer(
         seed_user, db_session, from_account, to_account, period,
@@ -3782,27 +3876,222 @@ def _restamp_assertion(db_session, account, at, *, newest):
     # step X-f3c-2a).  ``budget.account_openings`` stores the day the books
     # opened beside the equity, and ``account_service.create_account`` wrote
     # both from the factory's day.  A helper that placed the assertion and left
-    # the opening record behind would build a fixture whose books opened on one
-    # day and whose first assertion is on another -- which is a real state
-    # (finding balance:N-378, eight production rows) but not what any caller of
-    # a *restamp* helper means, and it would silently date the posted
+    # the opening record behind would silently date the posted
     # ``account_opening`` journal entry off the FIXTURE's stale day.
+    #
+    # **It lands the day BEFORE the assertion, not on it** (plan step
+    # X-f3c-2b, ruling **R-HG**).  An opening equity is the CLOSING balance
+    # for its own day, so a movement dated on that day is inside it and is
+    # refused -- and a caller pinning the OPENING assertion is placing the
+    # start of the account's recorded life, not forbidding the first day of
+    # it.  This is the shape production carries after X-f3c-2b's migration:
+    # Checking's books open 2026-03-26 and its first assertion is 2026-03-27.
+    # It moves no figure -- the assertion clears whatever settled on its own
+    # day either way.
     #
     # The table is APPEND-ONLY, so this is a restatement rather than an edit,
     # exactly as a production restatement would be.
     if not newest:
-        _restate_opening_record(db_session, account, observed_day_of(at))
+        restate_account_opening(
+            db_session, account, observed_day_of(at) - _real_timedelta(days=1),
+        )
     db_session.flush()
     return row
 
 
-def _restate_opening_record(db_session, account, opened_on):
+def open_books_before_the_first_assertion(
+    db_session, account, also_before=None,
+):
+    """Open *account*'s books before ANY day a fixture could date a row on.
+
+    **The factory shape plan step X-f3c-2b requires** (ruling **R-HG**).
+    ``account_service.create_account`` writes the opening record and the
+    origination assertion on ONE day, which is right in production -- the owner
+    types one balance and it is both -- and it means no movement may be dated on
+    or before that day, because an opening equity is the CLOSING balance for its
+    own day.  A fixture that then settles a row on or before the account's own
+    creation day is building a state the app refuses, and on the frozen suite
+    clock that is the ordinary case: ``create_account``'s default ``observed_on``
+    and the settle door's default day are the SAME ``display_today()``.
+
+    **It bounds on every day a row could land on and takes the earliest,
+    because "the day before the assertion" was measured too tight.**  Route
+    suites routinely settle a row days BEFORE the account was created -- a
+    correction to money that moved last week -- so an opening one day back
+    still refuses them.  The bounds:
+
+    * the account's earliest ASSERTION, which is where ``create_account`` put
+      the books;
+    * the owner's earliest PAY PERIOD, which is the floor the settle door itself
+      applies (``pay_period_service.earliest_recordable_day``, ruling R-EL), so
+      nothing a door accepts can precede it;
+    * the earliest day the account ALREADY records money moving, so a helper
+      called after the rows exist cannot strand them;
+    * *also_before*, when the caller knows a day of its own -- a loan's
+      ORIGINATION is the one that exists, because its payment schedule runs
+      from there and the owner's calendar may start later.
+
+    One day before the earliest of those is the latest day that leaves every
+    recordable day recordable.  It is still a real production shape -- books
+    that opened before the budget did is exactly what finding **N-368**'s import
+    will create for the developer's own Checking account -- and it moves NO
+    figure in a fixture: the origination assertion still clears whatever settled
+    on its own day, so every correction is what it was.
+
+    **BACKWARD only, and that is a rule rather than an accident.**  The books
+    never move forward here, so calling this twice, or calling it on an account
+    some other helper already opened earlier, cannot strand a row that was
+    legal a moment ago.  ``tests/conftest._drop_seed_user_bootstrap`` learned
+    the same rule the same way one table over.
+
+    A no-op for an account carrying no assertion, and equally for one carrying
+    no opening ROW -- both production-unreachable, both states a raw-model
+    fixture can build.  Each answers ``None`` rather than a day nothing wrote.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` whose books to move.
+        also_before: An extra civil day the books must precede, or ``None``.
+
+    Returns:
+        The civil day the books now open on, or ``None`` when the account
+        carries no assertion to place them before.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep avoidance
+    # as the loan helpers above.
+    from app.extensions import db
+    from app.models.account import Account, AccountAnchorHistory
+    from app.models.pay_period import PayPeriod
+    from app.models.transaction import Transaction
+    from app.models.transaction_entry import TransactionEntry
+    from app.services import account_posting_service
+
+    db_session.flush()
+    earliest_assertion = (
+        db_session.query(db.func.min(AccountAnchorHistory.observed_on))
+        .filter(AccountAnchorHistory.account_id == account.id)
+        .scalar()
+    )
+    if earliest_assertion is None:
+        return None
+    owner_id = db_session.query(Account.user_id).filter(
+        Account.id == account.id,
+    ).scalar()
+    candidates = [earliest_assertion]
+    for value in (
+        also_before,
+        db_session.query(db.func.min(PayPeriod.start_date))
+        .filter(PayPeriod.user_id == owner_id).scalar(),
+        db_session.query(db.func.min(Transaction.settled_on))
+        .filter(Transaction.account_id == account.id).scalar(),
+        db_session.query(db.func.min(TransactionEntry.settled_on))
+        .filter(TransactionEntry.account_id == account.id).scalar(),
+    ):
+        if value is not None:
+            candidates.append(value)
+    # Clamped against the books as they STAND, so this only ever moves them
+    # backward -- see the docstring's rule.  ``_governing_opening_day`` answers
+    # ``date.max`` for an account carrying no opening row, which makes the
+    # clamp a no-op there rather than a special case.
+    standing = _governing_opening_day(db_session, account)
+    if standing == _real_date.max:
+        # No opening ROW at all, so there is nothing to restate and nothing to
+        # return: ``restate_account_opening`` carries the equity forward from
+        # the governing row and has none to read.  Answering the COMPUTED day
+        # here would name a day the books do not open on, which is worse than
+        # answering nothing -- a raw-model fixture can build this state, and
+        # the docstring's contract is the day the books NOW open.
+        return None
+    opened_on = min(min(candidates) - _real_timedelta(days=1), standing)
+    if opened_on == standing:
+        return opened_on
+    restate_account_opening(db_session, account, opened_on)
+    # **The posted ledger follows the books** (plan step X-f3c-2b).
+    # ``create_account`` has already booked the ``account_opening`` journal
+    # entry keyed on the day it asserted, so a restatement afterwards leaves
+    # that entry on a day the books no longer open -- the stale-key-plus-
+    # reversal shape ``tests/conftest.py``'s own factory comment warns about.
+    # The reconcile is idempotent and self-healing, and re-running it is what
+    # PRODUCTION does after the same restatement (the deploy's
+    # ``backfill_all_account_anchor_postings``), so the fixture takes the same
+    # path rather than a shortcut.
+    account_posting_service.sync_account_anchor_postings_all_scenarios(
+        account.id,
+    )
+    return opened_on
+
+
+def governing_opening_row(db_session, account):
+    """Return the ``budget.account_openings`` row that GOVERNS *account*.
+
+    **The one place the test tree spells "which restatement is in force"**
+    (plan step X-f3c-2b).  The table is append-only and the latest RECORDING
+    instant governs (ruling **R-HE**), ``id`` breaking a same-instant tie --
+    the same order :func:`app.services.cash_ledger.account_opening_fact` reads
+    in Python and ``budget.account_books_opened_on`` reads in SQL, and
+    ``TestTheTwoGoverningLookupsElectTheSameRow`` in
+    ``tests/test_services/test_books_boundary.py`` is what holds all three to
+    it.
+
+    It answers with the ROW rather than through
+    :func:`~app.services.cash_ledger.account_opening_fact` because that loader
+    RAISES on an account carrying no opening, and the fixture helpers here have
+    to tolerate one: a raw-model fixture can build an account the canonical
+    factory never touched.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` to read.
+
+    Returns:
+        The governing :class:`~app.models.account_opening.AccountOpening`, or
+        ``None`` when the account carries none.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep avoidance
+    # as the loan helpers above.
+    from app.models.account_opening import AccountOpening
+
+    return (
+        db_session.query(AccountOpening)
+        .filter_by(account_id=account.id)
+        .order_by(AccountOpening.created_at.desc(), AccountOpening.id.desc())
+        .first()
+    )
+
+
+def _governing_opening_day(db_session, account):
+    """Return the civil day *account*'s books currently open on.
+
+    Args:
+        db_session: The test ``db.session``.
+        account: The :class:`~app.models.account.Account` to read.
+
+    Returns:
+        The governing row's ``opened_on``, or ``date.max`` when the account
+        carries none -- a value that makes a ``min()`` against it a no-op,
+        which is what a caller comparing against "the books as they stand"
+        means for an account with no books yet.
+    """
+    governing = governing_opening_row(db_session, account)
+    return _real_date.max if governing is None else governing.opened_on
+
+
+def restate_account_opening(db_session, account, opened_on):
     """Append an opening record restating WHEN the account's books opened.
 
     ``budget.account_openings`` is append-only and the latest recorded row
     governs, so moving the day means inserting a row rather than updating one.
     The EQUITY is carried forward unchanged: a restamp places the opening in
     time and says nothing about how much the books opened with.
+
+    **It writes the row DIRECTLY rather than going through a service, and that
+    is the point** (plan step X-f3c-2b).  ``account_service.create_account``
+    bounds its ``observed_on`` at ``pay_period_service.earliest_recordable_day``
+    -- the calendar's own first day -- so a factory cannot ask it to open books
+    before the calendar starts, which is exactly where a fixture needs them.
+    The floor is a rule about ASSERTIONS (ruling R-ER), not about openings, and
+    production's own restatement is written by migration ``d3b6f1c8a274`` the
+    same unbounded way.
 
     Args:
         db_session: The test ``db.session``.
@@ -3814,12 +4103,7 @@ def _restate_opening_record(db_session, account, opened_on):
     # as the loan helpers above.
     from app.models.account_opening import AccountOpening
 
-    governing = (
-        db_session.query(AccountOpening)
-        .filter_by(account_id=account.id)
-        .order_by(AccountOpening.created_at.desc(), AccountOpening.id.desc())
-        .first()
-    )
+    governing = governing_opening_row(db_session, account)
     if governing is None or governing.opened_on == opened_on:
         return
     db_session.add(AccountOpening(
@@ -4826,6 +5110,13 @@ def make_appreciating_account(seed_user, db_session, anchor_period, balance, rat
     restamp_opening_assertion(
         db_session, account, settle_instant_on(anchor_period.start_date),
     )
+    # **And then before every day a row could land on** (plan step X-f3c-2b,
+    # ruling **R-HG**).  The restamp above pins the books one day before the
+    # anchor PERIOD the caller named, which is right when that period is the
+    # earliest -- and these factories are routinely handed a LATER period while
+    # the suite records movements in an earlier one.  Backward-only, so it
+    # never undoes the pin above.
+    open_books_before_the_first_assertion(db_session, account)
     db_session.commit()
     return account
 
@@ -4904,6 +5195,13 @@ def make_investment_account(
     restamp_opening_assertion(
         db_session, account, settle_instant_on(anchor_period.start_date),
     )
+    # **And then before every day a row could land on** (plan step X-f3c-2b,
+    # ruling **R-HG**).  The restamp above pins the books one day before the
+    # anchor PERIOD the caller named, which is right when that period is the
+    # earliest -- and these factories are routinely handed a LATER period while
+    # the suite records movements in an earlier one.  Backward-only, so it
+    # never undoes the pin above.
+    open_books_before_the_first_assertion(db_session, account)
     db_session.commit()
     return account
 

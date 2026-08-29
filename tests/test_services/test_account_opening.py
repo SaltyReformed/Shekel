@@ -9,6 +9,17 @@ The fold's own arithmetic over that level is graded in ``test_cash_fold.py``
 (:class:`~tests.test_services.test_cash_fold.TestTheOpeningEquityIsTheSeed`) and
 the posted ledger's use of it in ``test_account_posting_service.py``; this file
 is about the RECORD.
+
+**Every account here is built with**
+:func:`tests._test_helpers.create_account_via_service` **rather than the shared**
+``create_account_of_type``, and that is the point rather than a detail (plan
+step X-f3c-2b).  The shared factory returns an account that has ALREADY
+EXISTED: it appends a second ``budget.account_openings`` row so a fixture can
+date movements before the account's own creation day.  That is the right
+default everywhere else and it is exactly wrong here, where the subject IS the
+one row ``account_service.create_account`` writes -- a suite asserting "there
+is one opening row, dated where the assertion is" would otherwise be grading
+the fixture.
 """
 
 from datetime import date, timedelta
@@ -28,7 +39,7 @@ from app.services.balance_at import BalanceContext
 from app.services.cash_ledger import account_opening_fact
 from tests._test_helpers import (
     append_balance_assertion,
-    create_account_of_type,
+    create_account_via_service,
     settle_instant_on,
 )
 
@@ -65,7 +76,7 @@ class TestCreateAccountRecordsWhatTheBooksOpenedWith:
         ``account_opening`` entry is dated where the books opened.
         """
         with app.app_context():
-            account = create_account_of_type(
+            account = create_account_via_service(
                 seed_user, db.session, "Checking", "Opened Checking",
                 anchor_balance=Decimal("1234.56"),
             )
@@ -101,7 +112,7 @@ class TestCreateAccountRecordsWhatTheBooksOpenedWith:
         than a second answer.
         """
         with app.app_context():
-            loan = create_account_of_type(
+            loan = create_account_via_service(
                 seed_user, db.session, "Auto Loan", "Unconfigured Van Loan",
                 anchor_balance=Decimal("0.00"),
             )
@@ -138,7 +149,7 @@ class TestAMissingOpeningRecordIsRefused:
         backfilled every account that predated the table), so this forces it.
         """
         with app.app_context():
-            account = create_account_of_type(
+            account = create_account_via_service(
                 seed_user, db.session, "Checking", "Doomed Checking",
                 anchor_balance=Decimal("500.00"),
             )
@@ -162,7 +173,7 @@ class TestTheRecordIsAppendOnly:
     ):  # pylint: disable=unused-argument
         """Overwriting the level every balance rests on is not a silent act."""
         with app.app_context():
-            account = create_account_of_type(
+            account = create_account_via_service(
                 seed_user, db.session, "Checking", "Immutable Checking",
                 anchor_balance=Decimal("500.00"),
             )
@@ -180,7 +191,7 @@ class TestTheRecordIsAppendOnly:
     ):  # pylint: disable=unused-argument
         """Every account must keep a level for its fold to stand on."""
         with app.app_context():
-            account = create_account_of_type(
+            account = create_account_via_service(
                 seed_user, db.session, "Checking", "Undeletable Checking",
                 anchor_balance=Decimal("500.00"),
             )
@@ -203,7 +214,7 @@ class TestTheRecordIsAppendOnly:
         ordered by an ``observed_on`` any owner may back-date.
         """
         with app.app_context():
-            account = create_account_of_type(
+            account = create_account_via_service(
                 seed_user, db.session, "Checking", "Restated Checking",
                 anchor_balance=Decimal("500.00"),
             )
@@ -254,7 +265,7 @@ class TestABackDatedAssertionNoLongerRedefinesTheOpening:
         the books is supposed to do.
         """
         with app.app_context():
-            account = create_account_of_type(
+            account = create_account_via_service(
                 seed_user, db.session, "Checking", "Back-dated Checking",
                 anchor_balance=Decimal("1000.00"),
             )

@@ -49,6 +49,7 @@ from tests._test_helpers import (
     current_pay_period,
     make_investment_account,
     mark_purchase_settled,
+    open_books_before_the_first_assertion,
 )
 
 
@@ -822,6 +823,13 @@ class TestRetirementProjectionEntryAware:
                 ),
             )
             db.session.flush()
+            # **Its books open before the entries below** (plan step X-f3c-2b,
+            # ruling **R-HG**).  ``create_account`` opens them on the
+            # assertion's own day and those entries settle on that same day, so
+            # they are inside the $50,000.00 that was declared.  Moves no
+            # figure here -- the assertion, which is what every number in the
+            # docstring is computed from, does not move.
+            open_books_before_the_first_assertion(db.session, acct)
 
             db.session.add(InvestmentParams(
                 account_id=acct.id,

@@ -205,6 +205,7 @@ from ._cash_fold import CashDayFacts, CashDaySeries
 from ._cash_flow import (
     CashAnchorHistory,
     CashAnchorRow,
+    CashOpeningRow,
     cash_anchor_history,
     cash_balance_at,
     cash_balance_map,
@@ -296,6 +297,7 @@ __all__ = [
     "BalanceContext",
     "CashAnchorHistory",
     "CashAnchorRow",
+    "CashOpeningRow",
     "CashDayFacts",
     "CashDaySeries",
     "GridBalanceView",

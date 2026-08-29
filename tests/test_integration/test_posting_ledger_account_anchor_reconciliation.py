@@ -110,6 +110,7 @@ from app.utils.dates import display_today
 from tests._test_helpers import (
     an_entered_day,
     create_account_of_type,
+    create_account_via_service,
     create_settled_cash_transaction,
     create_settled_transfer,
     ledger_account_of_kind,
@@ -118,6 +119,7 @@ from tests._test_helpers import (
     load_migration_module,
     observed_day_of,
     restamp_opening_assertion,
+    restate_account_opening,
 )
 from app.services.row_valuation import owned_contribution
 
@@ -1261,7 +1263,13 @@ class TestBackDatedTrueUpReBasesTheLedger:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             opening_day = display_today() - timedelta(days=20)
-            savings = create_account_of_type(
+            # Built through the PRIMITIVE, so the books stay exactly where
+            # ``create_account`` put them (plan step X-f3c-2b): this case
+            # asserts WHICH DAY the ``account_opening`` entry is filed on, and
+            # the shared factory opens the books earlier -- right for a
+            # fixture that records movements, wrong for one whose subject is
+            # the day.
+            savings = create_account_via_service(
                 seed_user, db.session, "Savings", "Pre-opening Savings",
                 anchor_balance=Decimal("1000.00"), observed_on=opening_day,
             )
@@ -1383,6 +1391,14 @@ class TestScenarioAndOwnerIsolation:
             checking = seed_user["account"]
             opened = datetime(2026, 1, 2, 9, tzinfo=timezone.utc)
             restamp_opening_assertion(db.session, checking, opened)
+            # **The BOOKS go back further than the restamp puts them** (plan
+            # step X-f3c-2b, ruling **R-HG**).  The second settle below is
+            # dated 2025-12-01 on purpose -- BEFORE the assertion, which is
+            # what makes the staleness arm fire -- and ``restamp_opening_
+            # assertion`` would open the books one day before the assertion,
+            # which is after it.  Before the ASSERTION and after the BOOKS is
+            # exactly the span this case needs, and is the production shape.
+            restate_account_opening(db.session, checking, date(2025, 11, 30))
             db.session.commit()
 
             whatif = Scenario(
@@ -1433,6 +1449,14 @@ class TestScenarioAndOwnerIsolation:
             checking = seed_user["account"]
             opened = datetime(2026, 1, 2, 9, tzinfo=timezone.utc)
             restamp_opening_assertion(db.session, checking, opened)
+            # **The BOOKS go back further than the restamp puts them** (plan
+            # step X-f3c-2b, ruling **R-HG**).  The second settle below is
+            # dated 2025-12-01 on purpose -- BEFORE the assertion, which is
+            # what makes the staleness arm fire -- and ``restamp_opening_
+            # assertion`` would open the books one day before the assertion,
+            # which is after it.  Before the ASSERTION and after the BOOKS is
+            # exactly the span this case needs, and is the production shape.
+            restate_account_opening(db.session, checking, date(2025, 11, 30))
             db.session.commit()
             scenario_id = seed_user["scenario"].id
 
@@ -1739,6 +1763,14 @@ class TestOracleIsNotVacuous:
             opening_source = ref_cache.posting_source_id(
                 PostingSourceEnum.ACCOUNT_OPENING,
             )
+            # The LATEST opening entry, and named as a choice rather than
+            # taken as the only one.  Since plan step X-f3c-2b the factory
+            # restates an account's books, and a restatement REVERSES the
+            # opening entry and re-posts it -- three opening-sourced entries
+            # where there used to be one, which is production's own shape
+            # after the same act.  Any of them carries a leg on this ledger,
+            # so the injection below is equally unbalanced whichever is
+            # picked; ``.scalar()`` over the set would simply raise.
             entry_id = (
                 _db.session.query(JournalEntry.id)
                 .join(Posting, Posting.journal_entry_id == JournalEntry.id)
@@ -1747,7 +1779,14 @@ class TestOracleIsNotVacuous:
                     JournalEntry.scenario_id == scenario_id,
                     JournalEntry.source_kind_id == opening_source,
                 )
+                .order_by(JournalEntry.id.desc())
+                .limit(1)
                 .scalar()
+            )
+            assert entry_id is not None, (
+                "no opening entry to inject into -- this class's whole name is "
+                "a promise that it is not vacuous, and a None here would "
+                "inject nothing and still pass"
             )
             _db.session.execute(_db.text(
                 "INSERT INTO budget.account_postings "

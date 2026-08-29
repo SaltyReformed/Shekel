@@ -191,6 +191,7 @@ from alembic.config import Config
 from app import create_app
 from app.audit_infrastructure import EXPECTED_TRIGGER_COUNT, apply_audit_infrastructure
 from app.extensions import db
+from app.opening_infrastructure import apply_opening_infrastructure
 from app.posting_infrastructure import (
     apply_ledger_append_only_privileges,
     apply_posting_infrastructure,
@@ -253,15 +254,23 @@ def _populate_template(app) -> None:
        the test-suite caller for the posting infrastructure: the
        per-test ``db`` fixture clones this template, so the trigger
        enforced here is the one every test runs against.
-    5. ``apply_ledger_append_only_privileges``: idempotent
+    5. ``apply_opening_infrastructure``: idempotent re-application of
+       the account-books boundary constraint (plan step X-f3c-2b,
+       created by migration ``d3b6f1c8a274`` in step 2) -- the same
+       latest-definition-wins contract steps 3-4 give the audit and
+       balanced-journal triggers.  This is the test-suite caller: the
+       per-test ``db`` fixture clones this template, so a fixture that
+       dates a movement inside its account's opening equity aborts at
+       COMMIT here exactly as production would.
+    6. ``apply_ledger_append_only_privileges``: idempotent
        re-application of the ledger append-only posture (review
        M1/R4) -- a no-op unless the cluster-scoped ``shekel_app``
        role happens to exist at rebuild time.
-    6. ``seed_reference_data``: populates ``ref.account_types`` (18
+    7. ``seed_reference_data``: populates ``ref.account_types`` (18
        rows) and the other ref tables.  The INSERTs on
        ``ref.account_types`` fire the audit trigger attached in
        step 2/3 and write 18 rows into ``system.audit_log``.
-    7. ``TRUNCATE system.audit_log``: clear those 18 seed-time
+    8. ``TRUNCATE system.audit_log``: clear those 18 seed-time
        audit rows so the template ships with a zeroed log.  Mirrors
        the per-test pattern in ``tests/conftest.py::db`` (line 244)
        and gives the per-session clones a clean slate.
@@ -288,6 +297,17 @@ def _populate_template(app) -> None:
         db.session.commit()
 
         apply_posting_infrastructure(
+            lambda statement: db.session.execute(db.text(statement))
+        )
+        db.session.commit()
+
+        # The account-books boundary (plan step X-f3c-2b): idempotent
+        # re-application, same contract as the two above.  It matters more
+        # here than for the other two, because this constraint is the only one
+        # a FIXTURE can trip: a test that settles a row on or before its
+        # account's opening day is building a state production cannot hold,
+        # and this is what makes the suite say so.
+        apply_opening_infrastructure(
             lambda statement: db.session.execute(db.text(statement))
         )
         db.session.commit()

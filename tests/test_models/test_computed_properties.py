@@ -37,6 +37,7 @@ from app.services.row_valuation import owned_contribution
 from tests._test_helpers import (
     an_entered_day,
     default_settle_day,
+    open_books_before_the_first_assertion,
     settle_day_columns,
     settlement_columns,
 )
@@ -406,6 +407,11 @@ class TestTransferSettleDay:
         )
         db.session.add(savings)
         db.session.flush()
+        # Its BOOKS open before anything this fixture dates (plan step
+        # X-f3c-2b, ruling **R-HG**): ``create_account`` opens them on the day
+        # it asserts -- the owner's today -- and this helper settles the
+        # transfer on a day the caller chooses, which is earlier.
+        open_books_before_the_first_assertion(db.session, savings)
 
         xfer = transfer_service.create_transfer(
             transfer_service.TransferSpec(
