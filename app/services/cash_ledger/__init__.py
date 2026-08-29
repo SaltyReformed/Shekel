@@ -137,6 +137,7 @@ from ._events import (
     account_opening_fact,
     cash_anchor_facts,
     coverage_for,
+    reject_movement_before_books_open,
     settled_cash_facts,
 )
 from ._facts import (
@@ -194,6 +195,7 @@ __all__ = [
     "resolve_transaction_amount",
     "resolve_transfer_amount",
     "recorded_amounts_by_id",
+    "reject_movement_before_books_open",
     "settled_amounts_by_id",
     "settled_cash_facts",
     "settled_cash_leg",

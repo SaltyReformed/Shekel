@@ -694,6 +694,11 @@ class TestTheEntryAccountBackfill:
             db.session.add(entry)
             db.session.flush()
 
+            # **Drain the deferred constraint triggers before the DDL** (plan
+            # step X-f3c-2b).  The rows staged above queue an event for
+            # ``ck_movement_after_books_open``, and PostgreSQL refuses
+            # ``ALTER TABLE`` on a table carrying pending trigger events.
+            db.session.execute(sa.text("SET CONSTRAINTS ALL IMMEDIATE"))
             # NOT NULL is dropped for the length of the probe and restored in
             # the same transaction, which the rollback below also guarantees.
             db.session.execute(sa.text(

@@ -26,12 +26,16 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
+from app import ref_cache
+from app.enums import AccountOpeningSourceEnum
 from app.models.account import Account
 from app.services.account_projection import (
     AccountProjectionKind,
     classify_account,
 )
-from app.utils.dates import days_in_range
+from app.services.cash_ledger import CashOpeningFact
+from app.utils.dates import days_in_range, to_display_date
+from app.utils.money import round_money
 
 from ._context import BalanceContext
 
@@ -515,14 +519,17 @@ class CashAnchorRow:
             working: ``recorded - ledger`` reconciles on the row, and a day's
             corrections telescope to the day's total (``-7.46 + -38.97 +
             -45.86 = -92.29``, the gap the preview names).
-        is_opening: ``True`` for the assertion made on the day the account's
-            books OPENED, read from ``budget.account_openings`` rather than
-            from a position in the assertion series.  A LABEL for the card's
-            "Opening" badge and nothing more: no figure on this row is
-            conditioned on it.  *It was ``CashAnchorFact.is_opening`` until
-            plan step X-f3c-2a, and a back-dated assertion moved the badge onto
-            the earlier row -- captioning a day the owner had merely typed a
-            balance for as the day their books opened.*
+    **It carried an ``is_opening`` flag until plan step X-f3c-2b and no longer
+    does.**  The flag badged whichever assertion fell on the day
+    ``budget.account_openings`` said the books opened -- which was true only
+    while the two shared a day.  Ruling **R-HG** made the opening equity the
+    CLOSING balance for ``opened_on``, so no movement and no assertion of the
+    records' own era can share that day on an account whose books were
+    back-dated to reach its earliest record: the badge went from 9 of 9
+    production accounts to 4, measured.  An opening is not an assertion, and
+    the card renders it as :class:`CashOpeningRow` instead -- the fact itself,
+    with its own provenance, rather than a label borrowed by a neighbouring
+    row.
     """
 
     observed_on: date
@@ -531,7 +538,50 @@ class CashAnchorRow:
     recorded: Decimal
     ledger: "Decimal | None"
     correction: "Decimal | None"
-    is_opening: bool
+
+
+@dataclass(frozen=True)
+class CashOpeningRow:
+    """What an account's books OPENED with, as the history card's foundation row.
+
+    The :class:`~app.models.account_opening.AccountOpening` record in force,
+    rendered as the oldest row of the balance-history card (plan step
+    **X-f3c-2b**).  It is not an assertion and is deliberately not one of
+    :attr:`CashAnchorHistory.rows`: nobody told the account it held this, the
+    books simply opened there, and every balance above it is this figure plus
+    what the records say happened since.
+
+    **Its ledger / correction cells are empty by construction rather than by
+    suppression**, which is the distinction plan step X-f3c-2a drew and this
+    keeps: there is nothing before an opening for a correction to be measured
+    against, where an assertion always has the records that preceded it.
+
+    Attributes:
+        opened_on: The civil day the books opened -- the day this equity was
+            the whole of what the account held, at its CLOSE (ruling
+            **R-HG**).
+        recorded_on: The civil day the record itself was written, from its
+            ``created_at``.  It equals :attr:`opened_on` for an account whose
+            owner declared its opening at creation and differs for one whose
+            books were restated later, which is the same "entered" caption the
+            assertion rows carry and it means the same thing.
+        equity: The capital the books opened with, cent-quantized and
+            LEDGER-NATIVE -- negative for a liability, exactly as an
+            assertion's own figure is.
+        declared: ``True`` when a human stated this figure
+            (:attr:`~app.enums.AccountOpeningSourceEnum.USER_DECLARED`),
+            ``False`` when the app computed it.  The card says which, because
+            a derived opening is the pre-X-f3c-2a inference frozen and may be
+            WRONG -- findings **N-275** and **N-379** measure two of the seven
+            production figures wrong against the owner's own bank -- and a
+            surface that cannot tell them apart presents a guess and a fact
+            identically.
+    """
+
+    opened_on: date
+    recorded_on: date
+    equity: Decimal
+    declared: bool
 
 
 @dataclass(frozen=True)
@@ -544,6 +594,13 @@ class CashAnchorHistory:
             which is the order the card reads in; it is not the order the
             figures were computed in, and it cannot change them (each row's
             ``ledger`` is the running total of the events BEFORE it).
+        opening: The account's :class:`CashOpeningRow` -- the foundation every
+            row above rests on.  **Always present**, and separate from
+            :attr:`rows` because it is a different kind of fact: a balance the
+            owner was told, versus the level the books started at.  Not
+            optional, because the fold cannot answer at all without it
+            (:func:`app.services.cash_ledger.account_opening_fact` raises), so
+            a caller holding a history holds an opening.
         reconcilable: ``True`` when this account's balance is recorded cash
             alone, so the :attr:`CashAnchorRow.ledger` /
             :attr:`~CashAnchorRow.correction` pair means something and the card
@@ -565,7 +622,63 @@ class CashAnchorHistory:
     """
 
     rows: "list[CashAnchorRow]"
+    opening: CashOpeningRow
     reconcilable: bool
+
+
+#: Which opening-equity provenances count as a HUMAN saying so, for the
+#: history card's caption.  A map over the whole enum rather than a positive
+#: test, so a member added later cannot default to "derived" unnoticed -- the
+#: lookup raises instead.  The question the card asks is the one
+#: :class:`~app.enums.AccountOpeningSourceEnum`'s own docstring poses: did a
+#: human state this figure, or did the app compute it?
+_OPENING_WAS_DECLARED: "dict[AccountOpeningSourceEnum, bool]" = {
+    AccountOpeningSourceEnum.USER_DECLARED: True,
+    AccountOpeningSourceEnum.MIGRATION_DERIVED: False,
+}
+
+
+def _opening_row(opening: CashOpeningFact) -> CashOpeningRow:
+    """Return the history card's foundation row for *opening*.
+
+    The one place ``budget.account_openings``' stored provenance becomes the
+    boolean the card renders.  It is a MAP over
+    :class:`~app.enums.AccountOpeningSourceEnum` rather than
+    ``source is USER_DECLARED``, and the difference is what happens when a
+    third member is added: a positive test reads any new source as "not
+    declared" silently, where a ``KeyError`` here forces whoever adds it to
+    say which side of the question it falls on.  The same construction
+    :func:`app.services.settle_day.settle_day_from_columns` uses on the
+    settled-day bases, and for the same reason.
+
+    Args:
+        opening: The account's governing
+            :class:`~app.services.cash_ledger.CashOpeningFact`, off the walk
+            the caller already holds.
+
+    Returns:
+        The :class:`CashOpeningRow` the card renders as its oldest row.
+
+    Raises:
+        KeyError: When the stored ``source_id`` names no
+            :class:`~app.enums.AccountOpeningSourceEnum` member, or names one
+            this map has no answer for.  Unreachable through the foreign key,
+            which admits only the seeded rows.
+    """
+    member = {
+        ref_cache.account_opening_source_id(source): source
+        for source in AccountOpeningSourceEnum
+    }[opening.source_id]
+    return CashOpeningRow(
+        opened_on=opening.opened_on,
+        # The RECORDING day, in the user's timezone -- the same two-clock
+        # split every assertion row carries (``recorded_on`` beside
+        # ``observed_on``), so the card's "entered" caption means one thing
+        # on every row it appears on.
+        recorded_on=to_display_date(opening.recorded_at),
+        equity=round_money(opening.opening_equity),
+        declared=_OPENING_WAS_DECLARED[member],
+    )
 
 
 def cash_anchor_history(
@@ -629,24 +742,17 @@ def cash_anchor_history(
     # shares the one assembly it holds.
     folded = _cash_fold.assembled_fold(account, ctx)
     corrections = folded.corrections
-    # **The badge reads the account's OPENING RECORD, not a position** (plan
-    # step X-f3c-2a).  It was ``CashAnchorFact.is_opening`` -- the earliest
-    # assertion by ``(observed_on, created_at, id)`` -- so recording a balance
-    # for a day before the books opened moved the badge onto that row and told
-    # the owner their books opened at a figure they had merely typed, beside a
-    # ledger/correction pair computed against the real opening.  The badged row
-    # is now the first assertion on the day ``budget.account_openings`` says the
-    # books opened; an account whose assertions all postdate that day carries no
-    # badge, which is honest rather than a gap.
-    opened_on = folded.walk.opening.opened_on
-    badged = next(
-        (
-            correction.anchor.anchor_id
-            for correction in corrections
-            if correction.observed_on == opened_on
-        ),
-        None,
-    )
+    # **The opening is a ROW of its own, not a badge on a neighbour** (plan
+    # step X-f3c-2b).  It was ``CashAnchorFact.is_opening`` -- the earliest
+    # assertion by position -- until X-f3c-2a moved it onto "the assertion
+    # falling on the day ``budget.account_openings`` names".  Ruling **R-HG**
+    # then made the opening equity the CLOSING balance for that day, so an
+    # account whose books were moved back to reach its earliest record has no
+    # assertion on it at all: the badge disappeared from 5 of 9 production
+    # accounts, measured.  Publishing the record itself is what the badge was
+    # trying to say in the first place, and it can carry the one thing a
+    # borrowed label never could -- whether a human stated the figure.
+    opening = _opening_row(folded.walk.opening)
     # ``booked`` rather than ``correction``: the walk's record and the row's
     # field would otherwise share a name inside one expression, and
     # ``correction=correction.delta`` reads as a self-reference.
@@ -667,8 +773,9 @@ def cash_anchor_history(
             # the books held, and what the owner's declaration moved it by.
             ledger=booked.balance_before if reconcilable else None,
             correction=booked.delta if reconcilable else None,
-            is_opening=booked.anchor.anchor_id == badged,
         )
         for booked in reversed(corrections)
     ]
-    return CashAnchorHistory(rows=rows, reconcilable=reconcilable)
+    return CashAnchorHistory(
+        rows=rows, opening=opening, reconcilable=reconcilable,
+    )

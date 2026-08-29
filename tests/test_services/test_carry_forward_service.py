@@ -52,6 +52,7 @@ from app.services.balance_at import BalanceContext
 from app.services.generation_schedule import GenerationSchedule
 from app.services.row_valuation import owned_contribution, settled_figure
 from tests._test_helpers import (
+    create_account_of_type,
     default_settle_day,
     settle_day_columns,
     settled_day_basis_id,
@@ -605,19 +606,20 @@ class TestCarryForwardStatusRecheck:
 
 
 def _create_savings(seed_user):
-    """Create a savings account for transfer tests."""
-    savings_type = db.session.query(AccountType).filter_by(name="Savings").one()
-    acct = account_service.create_account(
-        account_service.AccountSpec(
-            user_id=seed_user["user"].id,
-            account_type_id=savings_type.id,
-            name="CF Savings",
-            anchor_balance=Decimal("0"),
-        ),
+    """Create a savings account for transfer tests.
+
+    Through the shared factory rather than the ``AccountType`` lookup +
+    ``AccountSpec`` block it used to spell by hand, which is the same four
+    lines ``create_account_of_type`` is.  The factory also opens the account's
+    BOOKS before anything a fixture dates (plan step X-f3c-2b, ruling
+    **R-HG**), which is what the transfers below need: they settle in the
+    seeded periods, all of them earlier than the day ``create_account`` would
+    otherwise open the books on.
+    """
+    return create_account_of_type(
+        seed_user, db.session, "Savings", "CF Savings",
+        anchor_balance=Decimal("0"),
     )
-    db.session.add(acct)
-    db.session.flush()
-    return acct
 
 
 def _create_transfer_in_period(seed_user, seed_periods, period_index=0):

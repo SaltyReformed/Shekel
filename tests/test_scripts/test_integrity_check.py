@@ -19,7 +19,12 @@ from tests._test_helpers import (
     settle_day_columns,
     settlement_columns,
 )
-from tests._test_helpers import add_txn, make_every_period_rule, open_calendar_hole
+from tests._test_helpers import (
+    add_txn,
+    make_every_period_rule,
+    open_books_before_the_first_assertion,
+    open_calendar_hole,
+)
 from scripts.integrity_check import (
     CheckResult,
     check_balance_anomalies,
@@ -806,6 +811,15 @@ class TestDataConsistency:
             db.session.execute(db.text(
                 "DELETE FROM budget.transactions WHERE name = 'DC06 True Dup'"
             ))
+            # **Drain the deferred constraint triggers before the DDL** (plan
+            # step X-f3c-2b).  The raw INSERT above queues an event for
+            # ``ck_movement_after_books_open``, and PostgreSQL refuses
+            # ``CREATE INDEX`` on a table that has pending trigger events
+            # ("cannot CREATE INDEX ... because it has pending trigger
+            # events").  Making them immediate runs the check now, inside the
+            # same transaction, which is also the honest thing: the rows this
+            # index is about to validate are the ones the trigger is about.
+            db.session.execute(db.text("SET CONSTRAINTS ALL IMMEDIATE"))
             db.session.execute(db.text("""
                 CREATE UNIQUE INDEX idx_transactions_template_scenario_undated
                 ON budget.transactions (template_id, scenario_id, pay_period_id)
@@ -906,6 +920,15 @@ class TestDataConsistency:
                 "DELETE FROM budget.transactions "
                 "WHERE name = 'DC06 Same Occurrence'"
             ))
+            # **Drain the deferred constraint triggers before the DDL** (plan
+            # step X-f3c-2b), the same two lines the sibling case above needs
+            # and for the same reason.  The raw INSERT queues an event for
+            # ``ck_movement_after_books_open`` whatever that trigger would
+            # DECIDE -- the event is queued at statement time and the function
+            # only runs at COMMIT -- and PostgreSQL refuses ``CREATE INDEX`` on
+            # a table carrying pending trigger events.  Making them immediate
+            # runs the check now, inside this transaction.
+            db.session.execute(db.text("SET CONSTRAINTS ALL IMMEDIATE"))
             db.session.execute(db.text("""
                 CREATE UNIQUE INDEX idx_transactions_template_scenario_occurrence
                 ON budget.transactions (template_id, scenario_id, occurs_on)
@@ -1020,6 +1043,10 @@ class TestDataConsistency:
             ),
         )
         db.session.flush()
+        # Its BOOKS open before anything this fixture dates (plan step
+        # X-f3c-2b, ruling **R-HG**): ``create_account`` opens them on the day it
+        # asserts -- the owner's today -- and this suite settles on or before it.
+        open_books_before_the_first_assertion(db.session, account2)
 
         # Create a salary profile for user 1 with a deduction targeting user 2's account.
         filing = db.session.query(FilingStatus).first()

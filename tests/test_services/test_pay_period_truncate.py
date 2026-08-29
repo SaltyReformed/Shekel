@@ -39,6 +39,7 @@ from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transfer import Transfer
 from app.services import (
+    account_posting_service,
     pay_period_admin,
     pay_period_write,
     posting_service,
@@ -65,6 +66,7 @@ from tests._test_helpers import (
     make_expense_template,
     make_transfer_template,
     populate_in_a_fresh_pass,
+    restate_account_opening,
     seam_cash_balance_at,
 )
 from tests.oracles.recurrence_baseline import EVERY_PERIOD
@@ -123,6 +125,43 @@ def _emit_untethered_entry(db_session, seed_user, savings, period, amount):
 def _count_periods(db_session, user_id):
     """Count the user's pay periods."""
     return db_session.query(PayPeriod).filter_by(user_id=user_id).count()
+
+
+def _opening_entry_period(db_session, account_id):
+    """Return the pay period the account's OPENING correction is filed under.
+
+    The non-vacuity probe for the hard-lock case below: that case is about a
+    correction sitting inside the window being truncated, and since plan step
+    X-f3c-2a the opening entry is dated where the account's BOOKS open rather
+    than where its balance was observed.  A fixture whose books drift out of
+    the window would leave the case asserting a lock that nothing triggers, so
+    the placement is measured instead of assumed.
+
+    Args:
+        db_session: The test ``db.session``.
+        account_id: The account whose opening correction to locate.
+
+    Returns:
+        The ``budget.pay_periods`` id of its ``account_opening`` journal
+        entry, or ``None`` when it books none (a ``$0.00`` opening).
+    """
+    return (
+        db_session.query(JournalEntry.pay_period_id)
+        .filter(
+            JournalEntry.source_kind_id == ref_cache.posting_source_id(
+                PostingSourceEnum.ACCOUNT_OPENING,
+            ),
+            JournalEntry.id.in_(
+                db_session.query(Posting.journal_entry_id).join(
+                    LedgerAccount,
+                    Posting.ledger_account_id == LedgerAccount.id,
+                ).filter(LedgerAccount.account_id == account_id)
+            ),
+        )
+        .order_by(JournalEntry.id.desc())
+        .limit(1)
+        .scalar()
+    )
 
 
 def _txns_in(db_session, period_id):
@@ -417,13 +456,21 @@ class TestTruncateHardLocks:
         deleted.
 
         **The schedule is generated AROUND today deliberately** (plan step
-        X-ai-r).  A correction books in the period CONTAINING the day the
-        balance was observed (ruling R-DH), and the factory defaults that day
-        to today -- so the period that receives the correction is the one
-        holding today, and this fixture puts a to-delete period there.  It
-        used to force ``anchor_period_id`` onto a FUTURE period and rely on
+        X-ai-r).  A correction books in the period CONTAINING the day it is
+        dated (ruling R-DH), and this fixture puts a to-delete period there.
+        It used to force ``anchor_period_id`` onto a FUTURE period and rely on
         the writer copying that stored id, which is the attribution X-ai-r
         removed; the split case moved to the test below.
+
+        **The OPENING correction is dated where the BOOKS open, not where the
+        balance was observed** (plan step X-f3c-2a), and the two stopped being
+        the same day at plan step X-f3c-2b: the factory opens an account's
+        books before anything a fixture could date, which is BEFORE the window
+        this case truncates.  So the books are restated into the anchored
+        period explicitly and the postings reconciled, which is what puts the
+        correction in the to-delete window this case is about.  Legal because
+        the account records no movement -- ruling **R-HG** bounds an opening by
+        the movements on file, and there are none.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -445,10 +492,18 @@ class TestTruncateHardLocks:
                 (p for p in periods if p.start_date < anchored.start_date),
                 key=lambda p: p.start_date,
             )
-            create_savings_account(
+            savings = create_savings_account(
                 seed_user, db.session, "Savings", Decimal("500.00"),
             )
+            restate_account_opening(db.session, savings, anchored.start_date)
+            account_posting_service.sync_account_anchor_postings_all_scenarios(
+                savings.id,
+            )
             db.session.commit()
+            assert _opening_entry_period(db.session, savings.id) == anchored.id, (
+                "the fixture must place the opening correction inside the "
+                "window this case truncates, or it grades nothing"
+            )
             before = _count_periods(db.session, user_id)
 
             with pytest.raises(PayPeriodLocked) as excinfo:

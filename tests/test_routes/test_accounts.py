@@ -34,6 +34,7 @@ from tests._test_helpers import (
     create_loan_account,
     create_transfer,
     current_pay_period,
+    open_books_before_the_first_assertion,
     settle_day_columns,
     settle_instant_on,
     settlement_basis_id,
@@ -3495,6 +3496,12 @@ class TestTheTransferArmThroughItsROUTE:
             ),
         )
         db.session.flush()
+        # **Its BOOKS open before the transfer below** (plan step X-f3c-2b,
+        # ruling **R-HG**).  ``create_account`` opens them on the assertion's
+        # own day, which is today, while this transfer is dated into the PAST
+        # on purpose -- so its far leg would land inside the $100.00 declared,
+        # and the route would answer 400 rather than the tick it is grading.
+        open_books_before_the_first_assertion(db.session, savings)
         transfer = create_transfer(
             seed_user, db.session, seed_user["account"], savings, period,
             amount=Decimal(amount),
@@ -5620,6 +5627,13 @@ def _make_projected_envelope_expense(
     return txn
 
 
+#: The civil day :func:`_add_cleared_debit_entry` buys and settles on.  Named
+#: because an account's BOOKS have to precede it (ruling **R-HG**, plan step
+#: X-f3c-2b) and two literals that must agree are two a caller can split -- it
+#: was spelled twice inside the helper below and nowhere else.
+_CLEARED_PURCHASE_DAY = date(2026, 1, 15)
+
+
 def _add_cleared_debit_entry(db_session, *, txn, user_id, amount):
     """Add a CLEARED, DEBIT :class:`TransactionEntry` to ``txn``.
 
@@ -5636,9 +5650,9 @@ def _add_cleared_debit_entry(db_session, *, txn, user_id, amount):
         user_id=user_id,
         amount=amount,
         description="Cleared purchase",
-        purchased_on=date(2026, 1, 15),
+        purchased_on=_CLEARED_PURCHASE_DAY,
         is_credit=False,
-        **settle_day_columns(date(2026, 1, 15)),
+        **settle_day_columns(_CLEARED_PURCHASE_DAY),
     ))
     db_session.flush()
 
@@ -5841,6 +5855,13 @@ class TestCheckingDetailCanonicalProducer:
                 ),
             )
             db.session.flush()
+            # Its books open before the cleared entries below, which are
+            # dated earlier than the owner's calendar starts -- so the bound
+            # has to be named rather than derived (plan step X-f3c-2b, ruling
+            # **R-HG**).
+            open_books_before_the_first_assertion(
+                db.session, account_b, also_before=_CLEARED_PURCHASE_DAY,
+            )
 
             txn_a = _make_projected_envelope_expense(
                 db.session,
@@ -9391,14 +9412,24 @@ class TestTheBalanceHistoryCard:
                 f"/accounts/{acct_id}/balance-history",
             ).data.decode()
 
-            assert html.count("<tr>") == 1 + 15, (
+            # One header, fifteen assertions, and the OPENING pinned in the
+            # ``<tfoot>`` beneath them (plan step X-f3c-2b): the books opening
+            # is not an assertion, so it is rendered as its own row rather
+            # than badged onto whichever assertion shares its day -- a day
+            # that no longer exists once the books are moved back to reach the
+            # account's earliest record.
+            assert html.count("<tr>") == 1 + 15 + 1, (
                 "every assertion is in the DOM -- the disclosure hides rows, "
                 "it does not drop them"
             )
             assert "Show all 15" in html
             assert "12 of 15 recorded" in html
             # The rows past the cap are behind the collapse rather than gone.
-            hidden = html.split('class="collapse"', 1)[1]
+            # Bounded at the collapsed ``<tbody>``'s own close: the OPENING
+            # row sits in the table's ``<tfoot>``, AFTER it, and is pinned
+            # visible whether the disclosure is open or not (plan step
+            # X-f3c-2b) -- so an unbounded slice would count it as hidden.
+            hidden = html.split('class="collapse"', 1)[1].split("</tbody>", 1)[0]
             assert hidden.count("<tr>") == 3
 
     def test_the_rows_shown_are_the_most_recently_RECORDED(
@@ -9590,23 +9621,31 @@ class TestTheBalanceHistoryCard:
             assert "Ledger" in html
             assert "Correction" in html
 
-    def test_the_opening_row_is_badged_and_publishes_its_pair(
+    def test_the_opening_is_its_own_row_and_the_assertions_publish_their_pair(
         self, app, auth_client, seed_user, seed_periods_today,
     ):
-        """The opening is badged, and its reconciliation cells now MEAN something.
+        """The books are a row of their own; the ASSERTIONS carry the pair.
 
-        The card withheld both cells on this row until plan step X-f3c-2a,
-        because the opening's "ledger" was the records summed from a zero seed
-        and the gap between it and the asserted balance was opening EQUITY
-        rather than a correction -- rendering it would have told the owner
-        their records were off by that equity on the day the account opened,
-        which is false.  Opening equity is a stored
-        ``budget.account_openings`` fact now, so the pair says what the column
-        headers say: what the books held, and what the declaration moved them
-        by.
+        **Two changes, one after the other, and the second is this step's.**
+        The card withheld both reconciliation cells on the opening until plan
+        step X-f3c-2a, because the opening's "ledger" was the records summed
+        from a zero seed and the gap between it and the asserted balance was
+        opening EQUITY rather than a correction -- rendering it would have told
+        the owner their records were off by that equity on the day the account
+        opened, which is false.
 
-        The seeded account's declaration agrees with the books it opened, so
-        the correction renders ``$0.00`` -- a figure, not a dash.
+        Ruling **R-HG** (plan step X-f3c-2b) then separated the two records
+        outright: an opening equity is the CLOSING balance for
+        ``opened_on``, so an account whose books were moved back to reach its
+        earliest record carries NO assertion on that day and there is nothing
+        to hang an "Opening" badge on.  The books are rendered as their own
+        ``<tfoot>`` row, and its Ledger / Correction cells are empty BY
+        CONSTRUCTION -- nothing precedes an opening for a correction to be
+        measured against, which is the opposite of the suppression above.
+
+        So the dashes are EXPECTED here, and exactly two of them; the seeded
+        account's own declaration agrees with the books it opened, so its
+        assertion row publishes a ``$0.00`` correction -- a figure, not a dash.
         """
         with app.app_context():
             acct_id = seed_user["account"].id
@@ -9616,9 +9655,10 @@ class TestTheBalanceHistoryCard:
             ).data.decode()
 
             assert "Opening" in html
-            # No withheld dash anywhere: the lone row publishes both cells.
-            assert html.count(">--<") == 0
-            # And the correction it publishes is the real figure, rendered.
+            # The two empty-by-construction cells, and NO others: an assertion
+            # row that withheld its pair would push this past two.
+            assert html.count(">--<") == 2
+            # And the correction the assertion publishes is a real figure.
             assert "$0.00" in html
 
     def test_a_companion_cannot_reach_the_card(

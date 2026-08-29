@@ -39,6 +39,7 @@ from app.services.savings_dashboard_service._types import AccountProjection
 from tests._test_helpers import (
     all_periods,
     current_pay_period,
+    open_books_before_the_first_assertion,
     settle_day_columns,
 )
 from tests.oracles.recurrence_baseline import MONTHLY
@@ -2772,6 +2773,13 @@ def _make_projected_envelope_expense(
     return txn
 
 
+#: The civil day every purchase :func:`_add_entry` writes is bought and settled
+#: on.  Named because the account's BOOKS must precede it (ruling **R-HG**,
+#: plan step X-f3c-2b) and two literals that have to agree are two a caller can
+#: split -- it was spelled twice inside the helper below and nowhere else.
+_PURCHASE_DAY = date(2026, 1, 15)
+
+
 def _add_entry(
     db_session, *, txn, user_id, amount,
     is_settled=False, is_credit=False, description="Purchase",
@@ -2790,8 +2798,8 @@ def _add_entry(
         user_id=user_id,
         amount=amount,
         description=description,
-        purchased_on=date(2026, 1, 15),
-        **settle_day_columns(date(2026, 1, 15) if is_settled else None),
+        purchased_on=_PURCHASE_DAY,
+        **settle_day_columns(_PURCHASE_DAY if is_settled else None),
         is_credit=is_credit,
     ))
     db_session.flush()
@@ -2950,6 +2958,15 @@ class TestCanonicalProducerRouting:
             )
             db.session.add(hysa)
             db.session.flush()
+            # **Its books open before the entries below** (plan step X-f3c-2b,
+            # ruling **R-HG**).  ``create_account`` opens them on the
+            # assertion's own day, and ``_add_entry`` settles earlier than
+            # that -- money already inside the $614.29 declared.  Moves no
+            # figure: the assertion the arithmetic below is computed from does
+            # not move.
+            open_books_before_the_first_assertion(
+                db.session, hysa, also_before=_PURCHASE_DAY,
+            )
             # HIGH-06 / Commit 24: ``apy`` NOT NULL, no server_default.
             db.session.add(InterestParams(
                 account_id=hysa.id, apy=Decimal("0.04500"),

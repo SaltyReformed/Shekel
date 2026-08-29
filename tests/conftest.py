@@ -656,12 +656,15 @@ from app.services.auth_service import hash_password
 from tests._test_helpers import (
     bind_db_clock_rewriter,
     create_loan_account,
+    governing_opening_row,
     insert_trueup_event,
     make_appreciating_account,
     make_every_period_rule,
     make_investment_account,
+    open_books_before_the_first_assertion,
     posted_loan_balance_at,
     restamp_opening_assertion,
+    restate_account_opening,
     settle_day_columns,
 )
 
@@ -1128,6 +1131,24 @@ def seed_user(app, db):
             observed_on=bootstrap_period.start_date,
         ),
     )
+    # **The BOOKS open the day before that assertion** (plan step X-f3c-2b,
+    # ruling **R-HG**).  The paragraph above moved the ORIGINATION off the wall
+    # clock so it would not share a civil day with the settles; the books
+    # themselves need the same separation for a stronger reason.  An opening
+    # equity is the CLOSING balance for its own day, so a movement dated on it
+    # is inside the figure and is refused outright -- where an assertion merely
+    # absorbs one.  Fixtures settling on ``bootstrap_period.start_date`` are
+    # ordinary here, and the opening is the only one of the two that forbids
+    # them.
+    #
+    # Restated rather than supplied, because ``create_account``'s day bound
+    # (``resolve_observation_day``) floors ``observed_on`` at the calendar's own
+    # first day and would refuse the day before it.  That floor is a rule about
+    # ASSERTIONS (ruling R-ER); an opening is not one, which is why production's
+    # own repair (migration ``d3b6f1c8a274``) writes the row directly too.  It
+    # moves no figure: the origination assertion still clears whatever settled
+    # on its own day, so every correction is what it was.
+    open_books_before_the_first_assertion(db.session, account)
 
     # Create default categories.
     categories = []
@@ -1187,6 +1208,15 @@ def _pin_opening_to(db, account, anchor_period):
             anchor_period.start_date, dt_time.min, tzinfo=DISPLAY_TIMEZONE,
         ).astimezone(timezone.utc),
     )
+    # **The BOOKS then go back further than the assertion** (plan step
+    # X-f3c-2b, ruling **R-HG**).  The restamp above opens them one day before
+    # the anchor period, and these fixtures settle rows in EARLIER periods of
+    # their own calendar -- the off-schedule loan payment lands two periods
+    # back.  An opening equity is its own day's closing balance, so those rows
+    # would be inside it and unstorable.  Backward-only, so the pin above
+    # still decides where the ASSERTION sits, which is what this helper is
+    # for.
+    open_books_before_the_first_assertion(db.session, account)
 
 
 def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
@@ -1272,26 +1302,35 @@ def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
     # bootstrap day.  Leaving it behind builds the very shape this fixture
     # exists to eliminate, one table over: books opening in 2024 against a
     # first assertion in 2026, with the posted ``account_opening`` entry dated
-    # off a period step 2 is about to delete.  It is invisible until something
-    # reads it -- the balance-history card's "Opening" badge asks whether an
-    # assertion falls on the books' opening day, and would badge nothing at all
-    # on the account almost every suite uses.
+    # off a period step 2 is about to delete.
+    #
+    # **It lands the day BEFORE the calendar's first day, not on it** (plan
+    # step X-f3c-2b, ruling **R-HG**).  An opening equity is the CLOSING
+    # balance for its own day, so nothing may be dated on or before it -- and
+    # the first pay period's ``start_date`` is a day the suite settles rows on
+    # constantly.  Opening the books on it would make every such fixture
+    # unstorable, which is the same repair production needs: Checking's own
+    # books moved from 2026-03-27 to 2026-03-26 for exactly this reason.
+    # It moves NO figure: the assertion on ``start_date`` clears whatever
+    # settled that day either way, so the correction is unchanged.
     #
     # The table is APPEND-ONLY, so this restates rather than edits, exactly as
     # a production restatement would.
-    from app.models.account_opening import AccountOpening  # pylint: disable=import-outside-toplevel
-    governing = (
-        db.session.query(AccountOpening)
-        .filter_by(account_id=account.id)
-        .order_by(AccountOpening.created_at.desc(), AccountOpening.id.desc())
-        .first()
-    )
+    governing = governing_opening_row(db.session, account)
     if governing is not None:
-        db.session.add(AccountOpening(
-            account_id=account.id,
-            opened_on=new_anchor_period.start_date,
-            opening_equity=governing.opening_equity,
-            source_id=governing.source_id,
+        # **BACKWARD only, never forward** (plan step X-f3c-2b).  Moving the
+        # books to just before the new calendar reads as the production shape,
+        # and for an account whose whole life is inside that calendar it is --
+        # but ``seed_user`` has already opened these books before the BOOTSTRAP
+        # period, and moving them forward to 2026 strands every fixture that
+        # deliberately records money moving BEFORE the schedule starts.  That
+        # is a real thing to do (ruling **R-EL**: "a bank import would do it in
+        # bulk") and the statement-match suites are built on it.  Ruling R-HG
+        # bounds a MOVEMENT by the books, not by the calendar, so the fixture
+        # must not narrow the books to the calendar either.
+        restate_account_opening(db.session, account, min(
+            governing.opened_on,
+            new_anchor_period.start_date - timedelta(days=1),
         ))
     db.session.flush()
     # Step 2: delete the bootstrap row.
@@ -2298,6 +2337,9 @@ def second_user(app, db):
             observed_on=bootstrap_period.start_date,
         ),
     )
+    # The BOOKS open the day before that assertion -- see ``seed_user`` above
+    # for the argument (plan step X-f3c-2b, ruling **R-HG**).
+    open_books_before_the_first_assertion(db.session, account)
 
     scenario = Scenario(
         user_id=user.id,
@@ -2423,6 +2465,9 @@ def seed_second_user(app, db):
             observed_on=bootstrap_period.start_date,
         ),
     )
+    # The BOOKS open the day before that assertion -- see ``seed_user`` above
+    # for the argument (plan step X-f3c-2b, ruling **R-HG**).
+    open_books_before_the_first_assertion(db.session, account)
 
     categories = []
     for group, item in [
@@ -2580,6 +2625,14 @@ def _build_full_user_data(db, seed_user, periods):
             anchor_balance=Decimal("500.00"),
         ),
     )
+    # **Its books open the day BEFORE its origination assertion** (plan step
+    # X-f3c-2b).  The factory defaults ``observed_on`` to ``display_today()``
+    # and the settle door defaults a settle day to the SAME ``display_today()``
+    # -- so every fixture meaning "this account existed, then money moved on
+    # it" landed the movement on the very day the books open, which ruling
+    # R-HG makes unrecordable (the opening equity IS that day's closing
+    # balance).  The same repair production took, and it moves no figure.
+    open_books_before_the_first_assertion(db.session, savings_account)
 
     transfer_tpl = TransferTemplate(
         user_id=user.id,
@@ -2730,6 +2783,14 @@ def seed_full_second_user_data(app, db, seed_second_user, seed_second_periods):
             anchor_balance=Decimal("300.00"),
         ),
     )
+    # **Its books open the day BEFORE its origination assertion** (plan step
+    # X-f3c-2b).  The factory defaults ``observed_on`` to ``display_today()``
+    # and the settle door defaults a settle day to the SAME ``display_today()``
+    # -- so every fixture meaning "this account existed, then money moved on
+    # it" landed the movement on the very day the books open, which ruling
+    # R-HG makes unrecordable (the opening equity IS that day's closing
+    # balance).  The same repair production took, and it moves no figure.
+    open_books_before_the_first_assertion(db.session, savings_account)
 
     transfer_tpl = TransferTemplate(
         user_id=user.id,

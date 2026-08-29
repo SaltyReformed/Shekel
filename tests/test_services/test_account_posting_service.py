@@ -61,11 +61,12 @@ from app.services import (
 from app.services.anchor_service import AnchorTrueUpOutcome
 from app.services.pay_calendar import PayCalendarError
 from app.services.auth_service import hash_password
-from app.utils.dates import to_display_date
+from app.utils.dates import display_today, to_display_date
 from tests._test_helpers import (
     an_entered_day,
     correction_net_in_period,
     create_account_of_type,
+    create_account_via_service,
     create_envelope_txn,
     create_loan_account,
     create_settled_cash_transaction,
@@ -85,8 +86,37 @@ from app.services.settle_day import record_settle_day
 
 
 def _make_account(seed_user, balance, type_name="Savings", name="Anchor Acct"):
-    """Create an account with a controlled opening anchor; commit; return it."""
+    """Create an account with a controlled opening anchor; commit; return it.
+
+    An account that has ALREADY EXISTED: its books are opened before anything
+    a fixture here could date, so a settle may be recorded before the account's
+    own creation day (ruling **R-HG** forbids one on or before the books).
+    That is what most cases in this file need, and it costs an extra
+    ``budget.account_openings`` row -- which is the production shape after a
+    restatement, and which leaves the original ``account_opening`` entry on
+    file REVERSED rather than deleted.  A case counting opening entries wants
+    :func:`_make_account_as_created` instead.
+    """
     account = create_account_of_type(
+        seed_user, _db.session, type_name, name,
+        anchor_balance=Decimal(balance),
+    )
+    _db.session.commit()
+    return account
+
+
+def _make_account_as_created(
+    seed_user, balance, type_name="Savings", name="Anchor Acct",
+):
+    """Create an account and leave its books where ``create_account`` put them.
+
+    For the cases whose SUBJECT is the posting that factory writes -- one
+    ``account_opening`` entry, dated on the day the books opened.  They record
+    no movement, so they need none of what :func:`_make_account`'s restatement
+    buys, and the reversal it leaves behind is precisely what they would
+    miscount.
+    """
+    account = create_account_via_service(
         seed_user, _db.session, type_name, name,
         anchor_balance=Decimal(balance),
     )
@@ -877,7 +907,7 @@ class TestSyncAccountAnchorPostings:
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
-            account = _make_account(seed_user, "500.00")
+            account = _make_account_as_created(seed_user, "500.00")
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,
             )
@@ -953,7 +983,7 @@ class TestSyncAccountAnchorPostings:
         """A second sync at the same state writes no new entry."""
         with app.app_context():
             scenario_id = seed_user["scenario"].id
-            account = _make_account(seed_user, "500.00")
+            account = _make_account_as_created(seed_user, "500.00")
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,
             )
@@ -1519,7 +1549,7 @@ class TestSyncEntryPoints:
             )
             _db.session.add(what_if)
             _db.session.flush()
-            account = _make_account(seed_user, "500.00")
+            account = _make_account_as_created(seed_user, "500.00")
             origin = _origin_day(account)
             txn = create_settled_cash_transaction(
                 seed_user, _db.session, seed_user["bootstrap_period"],
@@ -1621,7 +1651,7 @@ class TestSyncEntryPoints:
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
-            account = _make_account(seed_user, "750.00")
+            account = _make_account_as_created(seed_user, "750.00")
             assert posting_service.account_posting_total(
                 account.id, scenario_id,
             ) == Decimal("750.00")
@@ -1698,8 +1728,20 @@ class TestSyncEntryPoints:
         with app.app_context():
             scenario_id = seed_user["scenario"].id
             account = _make_account(seed_user, "500.00")
+            # The frozen suite TODAY, as a civil day.  It read
+            # ``_db.func.now()`` until plan step X-f3c-2b, which is a SQL
+            # expression rather than a date: it reached ``settled_on`` without
+            # ever being evaluated in Python, so the column took whatever the
+            # (clock-rewritten) server said and this file's own
+            # ``_settle_expense`` contract -- "a pinned civil DAY", which every
+            # other caller honours -- was the one thing it did not supply.  The
+            # books-boundary read is the first Python consumer of that value
+            # and it surfaced as a ``TypeError`` from comparing a clause.  The
+            # day is the same one the rewritten server clock produced, so the
+            # arithmetic below is unchanged; what is gone is a settle whose day
+            # came from a different clock than the assertion that absorbs it.
             txn = _settle_expense(
-                seed_user, account, "200.00", _db.func.now(),
+                seed_user, account, "200.00", display_today(),
             )
             _db.session.commit()
 
@@ -2076,8 +2118,17 @@ class TestTheSharedFilingDoor:
             )
 
             account = _make_account(seed_user, "500.00")
+            # The ASSERTION is pinned one day AFTER the probe day, because what
+            # files here is the account's BOOKS and not its assertion: the
+            # ``account_opening`` entry is dated on
+            # ``budget.account_openings.opened_on`` (plan step X-f3c-2a), and
+            # ruling **R-HG** puts that a day before the opening assertion so
+            # nothing can be dated inside the equity it declares.  Pinning the
+            # assertion ON the probe day would file the cash half a day EARLIER
+            # than the loan half and this case would stop comparing the two on
+            # one day, which is the whole of what it names.
             _pin_opening(account, datetime(
-                2023, 6, 14, 16, 0, tzinfo=timezone.utc,
+                2023, 6, 15, 16, 0, tzinfo=timezone.utc,
             ))
             _db.session.commit()
             account_posting_service.sync_account_anchor_postings(

@@ -45,6 +45,7 @@ from app.utils.log_events import (
 )
 from tests._test_helpers import (
     an_entered_day,
+    open_books_before_the_first_assertion,
     count_amount_bases,
     settlement_basis_id,
     settlement_if_settling,
@@ -1814,7 +1815,14 @@ class TestTheTransferArm:
 
     @staticmethod
     def _savings(seed_user, name="Savings"):
-        """Create a second cash account for the transfer's other leg."""
+        """Create a second cash account for the transfer's other leg.
+
+        Its BOOKS open before anything this class dates (plan step X-f3c-2b,
+        ruling **R-HG**): ``create_account`` opens them on the assertion's own
+        day, which is today, and every transfer here settles on a statement day
+        earlier than that.  It moves no figure -- the assertion still clears
+        whatever settled on its own day.
+        """
         account = account_service.create_account(
             account_service.AccountSpec(
                 user_id=seed_user["user"].id,
@@ -1824,6 +1832,7 @@ class TestTheTransferArm:
             ),
         )
         db.session.flush()
+        open_books_before_the_first_assertion(db.session, account)
         return account
 
     @classmethod

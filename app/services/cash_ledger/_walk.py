@@ -119,10 +119,12 @@ class CashLedgerWalk:
         source_facts: One :class:`~._events.CashSourceFact` per settled
             balance-contributing row AND per posted purchase recorded against
             one (ruling **R-FM**, plan step X-f3b), ascending by
-            ``(settled_on, transaction_id, entry_id)`` -- including facts dated
-            BEFORE the account's opening assertion, which the opening's
-            correction absorbs (the same treatment the loan walk gives a
-            pre-origination payment).
+            ``(settled_on, transaction_id, entry_id)``.  **None is dated at or
+            before :attr:`opening`'s day** -- an opening equity is that day's
+            CLOSING balance (ruling **R-HG**, plan step X-f3c-2b), so such a
+            row is already inside the level this walk's fold seeds at, and a
+            deferrable constraint trigger makes it unstorable rather than
+            leaving the fold to screen for it.
         anchor_facts: One :class:`~._events.CashAnchorFact` per assertion the
             account carries, ascending by ``(observed_on, created_at, id)`` --
             BUSINESS date first, so the FIRST is the account's OPENING and the
@@ -306,24 +308,22 @@ def dated_deltas(walk: CashLedgerWalk) -> list[tuple[date, Decimal]]:
     for how much" is precisely how the fold and the posted ledger drift apart
     (plan step E1a's finding, on the loan side).
 
-    **Sources attributed BEFORE the account's opening assertion are emitted at
-    their OWN dates, and the prefix they produce is no longer summed from
-    nothing.**  The opening's correction absorbs them (they are inside the
-    asserted balance), so the running total lands exactly on the assertion at
-    its date and every date after; and since plan step **X-f3c-2a** the fold
-    seeds at the account's stored OPENING EQUITY, so a date before the opening
-    reads that level plus the sources dated by then rather than a partial sum
-    from zero.  Finding **N-37** asked what a reader should answer there and was
-    RULED (**R-I**, 2026-07-25) and archived; X-f3c-2a replaced R-I's
-    back-projection with the recorded fact.
-
-    **What the shape still costs is that the recorded level may be the WRONG
-    one, and that is plan step X-f3c-2b.**  Eight production rows are dated
-    before their account's books opened, every one a transfer leg (measured
-    2026-08-27: Fidelity Savings 1, the Money Market 3 in and 1 out, the
-    Mortgage 2, the Van Loan 1) -- so for those accounts the day the owner
-    first recorded a balance is later than the day money first moved, and
-    ``opened_on`` names the former.
+    **This list carries no source dated at or before the account's opening, and
+    since plan step X-f3c-2b that is a property of the DATA rather than a claim
+    about it** (ruling **R-HG**).  An opening equity is the CLOSING balance for
+    ``opened_on``, so such a source is already inside the level this fold seeds
+    at and emitting it here would count the money twice -- finding **N-378**,
+    twelve production rows over five accounts.  The state is now unstorable:
+    :func:`app.services.cash_ledger.reject_movement_before_books_open` refuses
+    it at the one settle-day writer, and a deferrable constraint trigger over
+    both movement tables AND ``budget.account_openings`` refuses it from any
+    client, in both directions.  **So there is no filter here, and its absence
+    is the point**: a fold that screened its own inputs would be a second
+    statement of a rule the database already holds, and the two would drift.
+    The fold seeds at the stored opening (plan step **X-f3c-2a**), so a date
+    before it reads that level flat rather than a partial sum from zero;
+    finding **N-37** asked what a reader should answer there and was RULED
+    (**R-I**, 2026-07-25) and archived.
 
     **The clearing question and this re-key are on ONE granularity, and that is
     ruling R-DH.**  They were not: the replay partitioned on the INSTANT while

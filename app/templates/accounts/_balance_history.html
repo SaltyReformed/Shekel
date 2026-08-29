@@ -24,14 +24,22 @@
    spend; finding N-213).  The producer decides it, so this template asks no
    question about kind and re-derives no figure.
 
-   THE OPENING ROW IS NO LONGER ONE OF THOSE CASES.  Its pair was suppressed
-   while the fold backed the account's opening equity out of that very row --
-   its "ledger" was the records summed from a zero seed, and the gap between
-   them was capital brought on rather than a correction, so publishing it would
-   have said "the records were off by $689.16 the day the account opened".
-   Opening equity is a stored ``budget.account_openings`` fact now, so the
-   opening row's two cells mean exactly what the column headers say, and read
-   $0.00 wherever the owner's first declaration agrees with the books.
+   THE OPENING IS ITS OWN ROW, and it is not an assertion.  Until plan step
+   X-f3c-2b the card badged whichever assertion happened to fall on the day
+   ``budget.account_openings`` names -- which was true only while the two
+   shared a day.  Ruling R-HG made the opening equity the CLOSING balance for
+   that day, so an account whose books were moved back to reach its earliest
+   record has no assertion on it: the badge went from 9 of 9 production
+   accounts to 4, measured.  The record itself is rendered instead, pinned in
+   the ``<tfoot>`` so it is visible whether or not the disclosure is open, and
+   carrying the one thing a borrowed badge never could -- whether a human
+   stated the figure or the X-f3c-2a migration derived it.
+
+   ITS LEDGER AND CORRECTION CELLS ARE EMPTY BY CONSTRUCTION, not suppressed.
+   There is nothing before an opening for a correction to be measured against.
+   That is the opposite of the pre-X-f3c-2a suppression this file used to
+   describe, where the figures existed and were withheld because they meant
+   something other than the column headers said.
 
    Expected context, all under ``history``
    (``accounts.history.balance_history_context``):
@@ -39,7 +47,11 @@
                       most recently RECORDED rows, shown by default.
      earlier       -- the rest, behind the disclosure; empty when everything
                       fits.
-     total         -- how many assertions the account carries in all.
+     opening       -- CashOpeningRow, always present: what the books opened
+                      with, and whether anybody declared it.
+     total         -- how many assertions the account carries in all.  The
+                      opening is NOT counted: the header says "recorded", and
+                      nobody recorded the books opening.
      reconcilable  -- whether the ledger / correction columns are shown.
      panel_id      -- the page region's DOM id, which this partial uses only to
                       name its own disclosure target.
@@ -48,9 +60,6 @@
 <tr>
   <td>
     {{ row.observed_on.strftime('%b %-d, %Y') }}
-    {%- if row.is_opening %}
-    <span class="badge bg-secondary ms-1">Opening</span>
-    {%- endif %}
     {% if row.recorded_on != row.observed_on %}
     {# A BACK-DATED row: the balance was true for the day above and was typed
        on the day below.  Shown only when the two differ, or the caption would
@@ -96,7 +105,6 @@
     {% endif %}
   </div>
 
-  {% if history.recent %}
   <div class="table-responsive">
     <table class="table table-sm mb-0 align-middle">
       <thead>
@@ -121,6 +129,37 @@
         {% for row in history.earlier %}{{ history_row(row, history.reconcilable) }}{% endfor %}
       </tbody>
       {% endif %}
+      {# THE OPENING, in a <tfoot> so it is pinned below every assertion whether
+         or not the disclosure above is open.  It is not one of ``recent`` /
+         ``earlier`` because it is not an assertion: nobody told the account it
+         held this, the books simply opened there, and every row above rests on
+         it.  Its Ledger / Correction cells are empty by CONSTRUCTION -- there
+         is nothing before an opening to measure a correction against. #}
+      <tfoot class="border-top">
+        <tr>
+          <td>
+            {{ history.opening.opened_on.strftime('%b %-d, %Y') }}
+            <span class="badge bg-secondary ms-1">Opening</span>
+            {% if not history.opening.declared %}
+            {# A DERIVED figure is the pre-X-f3c-2a inference frozen and may be
+               wrong (findings N-275, N-379 measure two of them wrong against
+               the owner's own bank).  Saying so is what stops the card
+               presenting a guess and an observation identically. #}
+            <span class="badge text-bg-light ms-1">derived</span>
+            {% endif %}
+            {% if history.opening.recorded_on != history.opening.opened_on %}
+            <div class="fs-xs text-body-secondary">
+              recorded {{ history.opening.recorded_on.strftime('%b %-d, %Y') }}
+            </div>
+            {% endif %}
+          </td>
+          <td class="text-end font-mono">{{ money(history.opening.equity) }}</td>
+          {% if history.reconcilable %}
+          <td class="text-end font-mono"><span class="text-muted">--</span></td>
+          <td class="text-end font-mono"><span class="text-muted">--</span></td>
+          {% endif %}
+        </tr>
+      </tfoot>
     </table>
   </div>
 
@@ -148,11 +187,4 @@
     what you recorded, and when.
     {% endif %}
   </div>
-  {% else %}
-  <div class="card-body">
-    <p class="small text-body-secondary mb-0">
-      No balance has been recorded for this account yet.
-    </p>
-  </div>
-  {% endif %}
 </div>

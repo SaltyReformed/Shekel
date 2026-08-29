@@ -28,6 +28,7 @@ from app.models.transaction import Transaction
 from app.services.amortization_engine import PaymentRecord
 from tests._test_helpers import (
     an_entered_day,
+    open_books_before_the_first_assertion,
     settlement_basis_id,
 )
 from app.services.loan_payment_service import (
@@ -48,8 +49,19 @@ _PAYMENT_DAY = 1
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
+#: The mortgage this file builds closes here.  Named because the books-boundary
+#: bound below reads it as well as ``LoanParams``, and two literals that must
+#: agree are one a caller can split.
+_ORIGINATION = date(2024, 1, 1)
+
+
 def _create_loan_account(seed_user):
     """Create a mortgage account with LoanParams for the test user.
+
+    A LOCAL factory rather than ``tests._test_helpers.create_loan_account``,
+    because this suite needs ``original_principal`` and ``current_principal``
+    to DIFFER (250,000 against 200,000) so a producer reading the wrong one is
+    visible, and the shared factory writes one figure into both.
 
     Returns:
         Account: the mortgage account.
@@ -66,12 +78,21 @@ def _create_loan_account(seed_user):
     db.session.add(account)
     db.session.flush()
 
+    # **Its books open before the loan does** (plan step X-f3c-2b, ruling
+    # **R-HG**): ``create_account`` puts them on the assertion's own day, which
+    # is the frozen today, and every payment this suite records is dated before
+    # that.  The shared ``create_loan_account`` does the same thing for the same
+    # reason; this factory exists only for the differing principals below.
+    open_books_before_the_first_assertion(
+        db.session, account, also_before=_ORIGINATION,
+    )
+
     params = LoanParams(
         account_id=account.id,
         original_principal=Decimal("250000.00"),
         current_principal=Decimal("200000.00"),
         term_months=360,
-        origination_date=date(2024, 1, 1),
+        origination_date=_ORIGINATION,
         payment_day=1,
     )
     db.session.add(params)

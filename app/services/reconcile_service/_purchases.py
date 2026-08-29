@@ -39,6 +39,7 @@ from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import posting_service
+from app.services.cash_ledger import reject_movement_before_books_open
 from app.services.reconcile_service import _rows
 from app.services.reconcile_service._offers import OutstandingPurchase
 from app.utils.balance_predicates import balance_contributing_clause
@@ -324,7 +325,7 @@ def record_settled_days(
     statement: "_rows.Statement",
     entry_ids: "set[int]",
 ) -> int:
-    """Record that *anchor*'s statement showed *entry_ids*.
+    """Record that *statement* showed *entry_ids*.
 
     This arm's writer: the user ticked these purchases off a statement, so each
     one records WHICH statement showed it (``reconciled_by_id``, ruling
@@ -369,11 +370,32 @@ def record_settled_days(
 
     Returns:
         The number of entries actually stamped.
+
+    Raises:
+        ValidationError: When *statement*'s day is on or before the account's
+            opening day (from
+            :func:`app.services.cash_ledger.reject_movement_before_books_open`,
+            plan step X-f3c-2b).  Refused whole rather than per entry: the day
+            being stamped is the STATEMENT's, so either every tick lands inside
+            the opening equity or none does.
     """
     if not entry_ids:
         return 0
     account_id = statement.account_id
     observed_on = statement.observed_on
+    # **The boundary the bulk UPDATE below cannot inherit** (plan step
+    # X-f3c-2b, finding **N-378**).  Every other writer of ``settled_on``
+    # reaches the column through ``settle_day.record_settle_day``, which asks
+    # this same function; this arm writes by ``query.update()`` and has no ORM
+    # instance to hand it, so it asks for itself.  Reachable rather than
+    # theoretical: an assertion's ``observed_on`` is bounded below only by
+    # ``pay_period_service.earliest_recordable_day``, which on the developer's
+    # own data is 2026-03-26 -- the very day Checking's books open -- so a
+    # statement recorded for that day would stamp every ticked purchase inside
+    # the opening equity.  Asked BEFORE the UPDATE so a refused act writes
+    # nothing, and asked ONCE rather than per entry because the day is the
+    # statement's, not the purchase's.
+    reject_movement_before_books_open(account_id, observed_on)
 
     # ``synchronize_session=False``, which CLOSES finding **N-223**, and the
     # reasoning that briefly argued the other way is recorded because it was

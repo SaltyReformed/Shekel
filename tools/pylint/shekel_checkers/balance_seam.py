@@ -495,19 +495,17 @@ _FENCED_MODULE_RULINGS = {
         # walk -- which is what keeps one entries-aware expense rule and one
         # live-override basis across them.  Its per-period ``period_subtotal`` /
         # ``period_subtotals`` siblings carried this same ruling until plan step
-        # X-c2b3 deleted them: ruling R-K changed what a subtotal COUNTS, so the
-        # seam-private ``_cash_periods.period_view_of`` is their successor, and
-        # two rulings went with the two names (the reverse-staleness meta-test
-        # would otherwise flag them).
+        # X-c2b3 deleted them: ruling R-K changed what a subtotal COUNTS, so
+        # ``_cash_periods.period_view_of`` is their successor and two rulings
+        # went with the names (else the reverse-staleness meta-test flags them).
         "sum_projected",
         # ``_events`` (plan step X-a) -- the cash EVENT STREAM, the exact
         # counterpart of the ``loan_ledger`` non-producer rulings below and
         # non-producers for the same reason: each answers "what happened, and
         # when", never "what is held at time T".  ``settled_civil_day`` is the
-        # ONE statement of which civil day a settled source's cash moved on (a
-        # chronology rule returning a ``date``); ``cash_anchor_facts`` and
-        # ``settled_cash_facts`` are LOADERS returning stored assertions and
-        # per-row signed effects.  The stream ORDERING that
+        # ONE statement of which civil day a settled source's cash moved on;
+        # ``cash_anchor_facts`` and ``settled_cash_facts`` are LOADERS of stored
+        # assertions and per-row signed effects.  The stream ORDERING that
         # ``merge_anchor_and_cash_events`` used to return as a third list is
         # gone: both walks now advance their own sources against
         # ``ReconciledThrough.covers``, so the order is applied where the
@@ -522,18 +520,20 @@ _FENCED_MODULE_RULINGS = {
         # it caught exactly this pair.
         #
         # ``settled_civil_day`` REPLACED ``attribution_instant`` at ruling R-DH
-        # (2026-07-31), and ``visible_on`` left this set with it: both facts now
-        # carry their civil day as a FIELD resolved once at construction
-        # (``CashSourceFact.settled_on`` / ``CashAnchorFact.observed_on``)
-        # instead of re-deriving it per read, so there is no public method left
-        # on ``CashSourceFact`` for this set to rule on.  The classification is
-        # unchanged in substance: a day is not a balance.
+        # (2026-07-31) and ``visible_on`` left with it: both facts carry their
+        # civil day as a FIELD resolved once at construction, so no public
+        # method is left for this set to rule on.  A day is not a balance.
         "cash_anchor_facts",
         "settled_cash_facts",
         # ``account_opening_fact`` (X-f3c-2a, R-GX) -- a LOADER of the stored
         # ``account_openings`` row, on its neighbours' ground: returning a
         # recorded balance is not computing one.  The FOLD seeds from it.
         "account_opening_fact",
+        # ``reject_movement_before_books_open`` (X-f3c-2b, N-378) -- a REFUSAL
+        # returning nothing: it compares ONE date against the same stored row
+        # ``account_opening_fact`` returns, and a write door asking "may this
+        # day be recorded" is the opposite direction from "what is held at T".
+        "reject_movement_before_books_open",
         # ``_walk`` (plan step X-a) -- the account's FACT stream and the
         # visible-day re-key of its source events.  Ruled NON-producers on
         # exactly the grounds ``loan_ledger``'s twins below are, and since plan
