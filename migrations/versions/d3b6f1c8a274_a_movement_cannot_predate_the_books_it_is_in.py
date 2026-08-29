@@ -74,9 +74,12 @@ leaves) moves **38 leaves and gains 4**, and all of it is one change:
   moves -- an opening books to equity, never to income.
 
 **That change is the correction this step exists to make.**  Account 10 records
-its earliest movement on 2026-04-06 while its books said 2026-05-01, so a
-balance sheet dated 2026-04-08 showed the account holding nothing 
-after money had already moved in it.  The other four restatements move no
+its earliest movement on 2026-04-06 while its books said 2026-05-01, so its
+opening entry was dated OUTSIDE any earlier statement: the 2026-04-08 balance
+sheet carried the account at ``$500.00`` -- the one transfer by then and no
+opening equity at all -- against the bank's own ``$5,363.56``.  It reads
+``$5,379.26`` after this migration, and both assets and equity gain the
+``$4,879.26`` that was missing from each.  The other four restatements move no
 statement: accounts 3 and 8 are loans, which post ``loan_opening`` and are
 outside this backfill, and accounts 1 and 2 have no statement date inside the
 span their books moved across.
@@ -112,11 +115,12 @@ exactly the gap between Checking's ``$689.16`` opening and its ``$2,746.58``
 first assertion) are inside the opening too.  Twelve rows, five accounts.
 
 Review: not required -- no column is dropped, renamed or retyped and no table is
-altered.  It appends rows to an append-only table and creates three functions
+altered.  It appends rows to an append-only table and creates four functions
 and three triggers.
 
 Revision ID: d3b6f1c8a274
-Revises: a7c41f9d2b60
+Revises: c8e5a2f31b47 (RE-PARENTED from a7c41f9d2b60 when recurrence:R17
+landed; see finding balance:N-385)
 Create Date: 2026-08-28
 """
 
@@ -124,6 +128,8 @@ import sqlalchemy as sa
 from alembic import op
 
 from app.opening_infrastructure import (
+    GOVERNING_ORDER_SQL,
+    SETTLED_MOVEMENTS_SQL,
     apply_opening_infrastructure,
     remove_opening_infrastructure,
 )
@@ -139,40 +145,37 @@ depends_on = None
 #: books must move back to.
 #:
 #: ``governing`` is the opening record in force -- the table is append-only and
-#: the latest RECORDING instant governs (ruling R-HE), the same order
-#: ``cash_ledger.account_opening_fact`` and ``budget.account_books_opened_on``
-#: read.  ``movements`` is the earliest day the account records cash moving,
-#: over BOTH movement tables: a settled transaction and a posted purchase are
-#: one kind of fact to the fold (ruling **R-FM**), so a rule that read only
-#: ``budget.transactions`` would legalise an account its purchases still
-#: violate.
+#: the latest RECORDING instant governs (ruling R-HE).  ``movements`` is the
+#: earliest day the account records cash moving, over BOTH movement tables: a
+#: settled transaction and a posted purchase are one kind of fact to the fold
+#: (ruling **R-FM**), so a rule that read only ``budget.transactions`` would
+#: legalise an account its purchases still violate.
+#:
+#: **BOTH come from :mod:`app.opening_infrastructure` rather than being spelled
+#: again here**, which is what makes "the two must agree" a property instead of
+#: a hope: this revision and the constraint it installs four lines later now
+#: read one statement of each rule.  Hand-spelling them was live duplication no
+#: gate could see -- ``duplicate-code`` does not read SQL inside a string
+#: literal, and a migration is outside ``app/`` besides (adversarial review,
+#: 2026-08-28).
 #:
 #: The predicate is ``<=`` and not ``<``: an opening equity is the closing
 #: balance for its own day, so a movement dated ON it is inside it (R-HG).
 #:
-#: **SOFT-DELETED rows are counted here too**, matching
-#: ``budget.assert_account_books_hold_its_movements`` exactly -- see that
-#: function for why the constraint's row set is deliberately wider than the
-#: fold's.  The two must agree or this migration would move an opening to a
-#: day the constraint installed four lines later immediately refuses.
-_ACCOUNTS_TO_RESTATE = """
+#: **SOFT-DELETED rows are counted here too**, because
+#: :data:`~app.opening_infrastructure.SETTLED_MOVEMENTS_SQL` counts them -- see
+#: ``budget.assert_account_books_hold_its_movements`` for why the constraint's
+#: row set is deliberately wider than the fold's.
+_ACCOUNTS_TO_RESTATE = f"""
     WITH governing AS (
         SELECT DISTINCT ON (account_id)
                account_id, opened_on, opening_equity, source_id
           FROM budget.account_openings
-         ORDER BY account_id, created_at DESC, id DESC
+         ORDER BY account_id, {GOVERNING_ORDER_SQL}
     ),
     movements AS (
         SELECT account_id, MIN(settled_on) AS earliest
-          FROM (
-                SELECT account_id, settled_on
-                  FROM budget.transactions
-                 WHERE settled_on IS NOT NULL
-                UNION ALL
-                SELECT account_id, settled_on
-                  FROM budget.transaction_entries
-                 WHERE settled_on IS NOT NULL
-               ) AS dated
+          FROM ({SETTLED_MOVEMENTS_SQL}) AS dated
          GROUP BY account_id
     )
     SELECT g.account_id,
@@ -252,9 +255,22 @@ def _reject_declared_openings(bind) -> None:
         f"opening figure that was not derived: {offenders}.  Carrying such a "
         "figure forward to an earlier day removes no double count -- the fold "
         "seeds at the equity, not at the day -- so this migration would "
-        "legalise N-378 for them rather than close it.  Decide each figure "
-        "with the owner (plan step X-f3c-2b-2's restatement door) before "
-        "retrying."
+        "legalise N-378 for them rather than close it.\n\n"
+        "This is reachable BEFORE this deploy lands: account_service."
+        "create_account writes a user_declared opening dated on the account's "
+        "own first assertion, so an owner who creates an account and settles a "
+        "row on that same day produces it.  The refusal that makes it "
+        "unstorable ships in this revision, not before it.\n\n"
+        "To decide each figure, read what the account records inside its own "
+        "opening:\n"
+        "  SELECT t.id, t.name, t.settled_on, t.settled_amount\n"
+        "    FROM budget.transactions t\n"
+        "   WHERE t.account_id = <id> AND t.settled_on IS NOT NULL\n"
+        "   ORDER BY t.settled_on;\n"
+        "Then either append a corrected opening (the figure the owner states "
+        "for a day BEFORE the earliest row above), or re-date the rows.  "
+        "Plan step X-f3c-2b-2 builds the door that does this without SQL; "
+        "until it ships the repair is by hand and the figure is the owner's."
     )
 
 
@@ -342,161 +358,110 @@ def upgrade():
     )
 
 
-#: An opening still carrying this migration's SIGNATURE -- the day before the
-#: account's earliest movement, over an older row of identical equity -- on an
-#: account the downgrade did not withdraw.  That is what a hand restatement
-#: made after the upgrade leaves behind, and the set comparison below cannot
-#: see it: the account appears in neither the withdrawn set nor the violating
-#: one, so both stay equal and the row survives in silence.
-_RESTATEMENTS_LEFT_BEHIND = """
+#: Every opening this migration COULD have written, for the downgrade to report.
+#:
+#: **It is a report and never a predicate**, which is the whole of what the
+#: 2026-08-28 ruling changed.  A row is named here when it governs an account,
+#: sits the day before that account's earliest movement, and supersedes an older
+#: row of identical equity and provenance -- the shape the upgrade leaves.  The
+#: shape does NOT identify the writer: a hand restatement made BEFORE the
+#: upgrade satisfies every clause of it, which is why nothing acts on this set.
+_RESTATEMENTS_STANDING = f"""
     WITH ordered AS (
-        SELECT id, account_id, opened_on, opening_equity,
+        SELECT id, account_id, opened_on, opening_equity, source_id,
                ROW_NUMBER() OVER (
                    PARTITION BY account_id
-                   ORDER BY created_at DESC, id DESC
+                   ORDER BY {GOVERNING_ORDER_SQL}
                ) AS recency
           FROM budget.account_openings
     ),
     movements AS (
         SELECT account_id, MIN(settled_on) AS earliest
-          FROM (
-                SELECT account_id, settled_on
-                  FROM budget.transactions
-                 WHERE settled_on IS NOT NULL
-                UNION ALL
-                SELECT account_id, settled_on
-                  FROM budget.transaction_entries
-                 WHERE settled_on IS NOT NULL
-               ) AS dated
+          FROM ({SETTLED_MOVEMENTS_SQL}) AS dated
          GROUP BY account_id
     )
-    SELECT o.account_id, o.opened_on
+    SELECT o.account_id, o.opened_on, o.opening_equity
       FROM ordered o
       JOIN ordered older
         ON older.account_id = o.account_id
        AND older.recency > o.recency
        AND older.opening_equity = o.opening_equity
+       AND older.source_id IS NOT DISTINCT FROM o.source_id
       JOIN movements m ON m.account_id = o.account_id
-     WHERE o.opened_on = (m.earliest - 1)::date
-     GROUP BY o.account_id, o.opened_on
+     WHERE o.recency = 1
+       AND o.opened_on = (m.earliest - 1)::date
+     GROUP BY o.account_id, o.opened_on, o.opening_equity
      ORDER BY o.account_id
 """
 
 
-def _report_restatements_left_behind(bind, withdrawn_ids) -> None:
-    """Print every restatement this downgrade declined to withdraw.
+def _report_restatements_standing(bind) -> None:
+    """Print every opening restatement this downgrade is leaving in place.
 
-    The docstring above promises that a row not matching the upgrade's shape is
-    "left alone and REPORTED", and until this existed only the first half was
-    true: the set comparison that follows compares the withdrawn accounts
-    against the still-violating ones, and a row the ``DELETE`` predicate
-    skipped appears in NEITHER -- so the two stay equal and nothing prints.
-    Found by adversarial review, 2026-08-28.
-
-    Reports rather than raises, which is the same judgement the DELETE makes:
-    a hand restatement made after the upgrade is somebody's decision, and a
-    downgrade may not guess which day to return it to.  Saying so is the whole
-    obligation.
+    The downgrade removes the CONSTRAINT and no data, so this is the whole of
+    what it says about ``budget.account_openings``: which accounts still carry
+    a restatement in this migration's shape, and that they were left alone
+    deliberately.
 
     Args:
         bind: The Alembic connection.
-        withdrawn_ids: The account ids this downgrade did withdraw, which are
-            reported by their own line and are not left behind.
     """
-    left = [
-        row for row in bind.execute(sa.text(_RESTATEMENTS_LEFT_BEHIND))
-        if row.account_id not in withdrawn_ids
-    ]
-    for row in left:
+    for row in bind.execute(sa.text(_RESTATEMENTS_STANDING)):
         print(
-            f"X-f3c-2b downgrade: account {row.account_id} still carries an "
-            f"opening at {row.opened_on} in this migration's shape and was "
-            "NOT withdrawn -- its books were restated by hand after the "
-            "upgrade, so the day to return to is a decision rather than an "
-            "inverse.  Left alone; withdraw by hand if that is wrong."
+            f"X-f3c-2b downgrade: account {row.account_id} keeps its opening "
+            f"at {row.opened_on} (equity {row.opening_equity}); the books "
+            "boundary is no longer enforced but the day is left as it stands"
         )
 
 
 def downgrade():
-    """Remove the constraint, then withdraw the restatements this migration made.
+    """Remove the constraint.  Delete nothing.
 
-    **The inverse is exact rather than heuristic, and it VERIFIES that.**  The
-    upgrade's target set is a pure function of the movement data, which a
-    downgrade does not change, so re-running :data:`_ACCOUNTS_TO_RESTATE`'s
-    ``governing``/``movements`` join against the CURRENT state names precisely
-    the rows the upgrade inserted: for each of them the governing record is
-    the one whose ``opened_on`` is ``earliest movement - 1`` and whose equity
-    and provenance match the row it superseded.  Anything that does not match
-    that shape is left alone and reported, so a hand restatement made after
-    the upgrade is never silently discarded.
+    **THE UPGRADE'S DATA HALF HAS NO INVERSE AND THIS NO LONGER PRETENDS
+    OTHERWISE** (developer ruling 2026-08-28, taken on a reproduction).  An
+    earlier draft re-ran the upgrade's own join against the CURRENT state and
+    deleted whatever matched, on the argument that the target set is a pure
+    function of movement data a downgrade does not change.  Both halves were
+    false, and the first was measured on a production clone:
 
-    Deleting rather than appending is deliberate.  The table is append-only to
-    the APPLICATION -- ``AccountOpening``'s ORM guards refuse an UPDATE or a
-    DELETE so a restatement stays visible -- but a downgrade is the schema
-    reverting, not the app restating, and appending the old day back would
-    leave the history claiming a decision nobody took.  Migration
-    ``a7c41f9d2b60``'s own downgrade drops the whole table for the same reason.
+    * **A SHAPE IS NOT AN IDENTITY.**  The upgrade writes no marker, and
+      ``budget.account_openings`` rows carry no column that could hold one --
+      the whole chain runs in ONE Alembic transaction, so every backfilled and
+      restated row shares one ``now()``.  A hand restatement made BEFORE the
+      upgrade -- exactly what
+      :func:`app.services.cash_ledger.reject_movement_before_books_open`'s own
+      message tells an owner to write -- satisfies every clause.  Planting one
+      for account 10 and running upgrade then downgrade: the upgrade correctly
+      restated FOUR accounts and never touched account 10, and the downgrade
+      then deleted the human's row while printing that it had withdrawn a
+      restatement nobody made.  It left that account holding a movement inside
+      its opening -- finding **N-378**, re-opened -- with the constraint gone.
+      The ``expected != actual`` guard could never catch it: deleting the row
+      is what puts the account back in the violating set, so the two sides
+      agree.
+    * **Movement data DOES change.**  ``transaction_service._delete``,
+      ``entry_service._doors`` and ``pay_period_write`` each hard-delete rows
+      carrying ``settled_on``, so ``MIN(settled_on)`` can move between the
+      upgrade and the downgrade -- and then the join misses a row the upgrade
+      really did write.
 
-    Raises:
-        RuntimeError: When a row it expected to withdraw does not have the
-            shape the upgrade wrote, so the correct inverse is unknown.
+    **What is left instead is a correction, not a residue.**  The upgrade moved
+    a stored DAY to meet a figure that already meant that day, so an opening it
+    restated is closer to the truth than the one it superseded; reverting it
+    would re-introduce a day already known wrong, and ``account_openings`` is
+    append-only precisely so a restatement stays visible.  Removing only the
+    triggers and functions leaves the database legal under the older schema --
+    the fold seeds at the equity, which no restatement changed -- and makes a
+    re-upgrade a clean no-op, because the accounts are already legal and
+    :data:`_ACCOUNTS_TO_RESTATE` selects nothing.
+
+    Every restatement standing is REPORTED, so an operator who does want a day
+    returned knows which accounts to look at and can decide each one.
     """
     remove_opening_infrastructure(op.execute)
-    bind = op.get_bind()
-    withdrawn = bind.execute(sa.text("""
-        WITH ordered AS (
-            SELECT id, account_id, opened_on, opening_equity, source_id,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY account_id
-                       ORDER BY created_at DESC, id DESC
-                   ) AS recency
-              FROM budget.account_openings
-        ),
-        governing AS (SELECT * FROM ordered WHERE recency = 1),
-        superseded AS (SELECT * FROM ordered WHERE recency = 2),
-        movements AS (
-            SELECT account_id, MIN(settled_on) AS earliest
-              FROM (
-                    SELECT account_id, settled_on
-                      FROM budget.transactions
-                     WHERE settled_on IS NOT NULL
-                    UNION ALL
-                    SELECT account_id, settled_on
-                      FROM budget.transaction_entries
-                     WHERE settled_on IS NOT NULL
-                   ) AS dated
-             GROUP BY account_id
-        )
-        DELETE FROM budget.account_openings ao
-         USING governing g, superseded s, movements m
-         WHERE ao.id = g.id
-           AND s.account_id = g.account_id
-           AND m.account_id = g.account_id
-           AND g.opened_on = (m.earliest - 1)::date
-           AND g.opening_equity = s.opening_equity
-           AND g.source_id IS NOT DISTINCT FROM s.source_id
-           AND m.earliest <= s.opened_on
-        RETURNING ao.account_id, ao.opened_on
-    """)).fetchall()
-    for row in withdrawn:
-        print(
-            f"X-f3c-2b downgrade: account {row.account_id} restatement to "
-            f"{row.opened_on} withdrawn"
-        )
-
-    _report_restatements_left_behind(bind, {row.account_id for row in withdrawn})
-
-    still_violating = bind.execute(sa.text(_ACCOUNTS_TO_RESTATE)).fetchall()
-    expected = {row.account_id for row in withdrawn}
-    actual = {row.account_id for row in still_violating}
-    if expected != actual:
-        raise RuntimeError(
-            "X-f3c-2b downgrade: withdrew restatements for accounts "
-            f"{sorted(expected)} but the pre-migration violating set is "
-            f"{sorted(actual)}.  The two must be equal -- the upgrade inserted "
-            "exactly one row per violating account -- so a mismatch means an "
-            "opening was restated by hand after the upgrade and this "
-            "downgrade cannot know which day to return to.  Inspect "
-            "budget.account_openings for the accounts in the symmetric "
-            "difference and withdraw by hand."
-        )
+    print(
+        "X-f3c-2b: books-boundary constraint removed from "
+        "budget.transactions, budget.transaction_entries and "
+        "budget.account_openings"
+    )
+    _report_restatements_standing(op.get_bind())

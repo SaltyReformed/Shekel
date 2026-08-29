@@ -140,6 +140,41 @@ _MOVEMENT_TABLES = ("budget.transactions", "budget.transaction_entries")
 _OPENINGS_TABLE = "budget.account_openings"
 
 
+#: Every dated cash movement, over BOTH movement tables, as ONE SQL expression.
+#:
+#: **PUBLIC because the Alembic revision interpolates it too.**  The rule "a
+#: settled transaction and a posted purchase are one kind of fact to the fold"
+#: (ruling **R-FM**) was hand-spelled four times across this module and
+#: ``d3b6f1c8a274``, held together by a comment saying the copies must agree --
+#: and nothing could grade that: ``duplicate-code`` does not see SQL inside a
+#: string literal, and the migration is outside ``app/`` besides.  A migration
+#: that moved an opening to a day the constraint installed four lines later
+#: refuses is exactly the failure this module's own docstring names as the
+#: arc's root cause, so the statement is named here and interpolated there.
+#:
+#: **Soft-deleted rows are INCLUDED** -- see
+#: :data:`_CREATE_OPENING_PREDICATE_SQL` for why the constraint's row set is
+#: deliberately wider than the fold's.
+SETTLED_MOVEMENTS_SQL = """
+        SELECT account_id, settled_on
+          FROM budget.transactions
+         WHERE settled_on IS NOT NULL
+        UNION ALL
+        SELECT account_id, settled_on
+          FROM budget.transaction_entries
+         WHERE settled_on IS NOT NULL
+"""
+
+#: The RECORDING order that decides which opening record governs (ruling
+#: **R-HE**): the table is append-only and the latest restatement wins, with
+#: ``id`` breaking a same-instant tie.  Public for the same reason as above --
+#: the revision's three window functions must break the tie the same way this
+#: module and ``cash_ledger.account_opening_fact`` do, and the whole migration
+#: chain runs in ONE transaction, so every row it writes shares one ``now()``
+#: and the tie-break carries the entire answer.
+GOVERNING_ORDER_SQL = "created_at DESC, id DESC"
+
+
 _CREATE_OPENED_ON_SQL = f"""
 CREATE OR REPLACE FUNCTION {_OPENED_ON_FUNCTION}(p_account_id INTEGER)
 RETURNS DATE AS $$
@@ -151,7 +186,7 @@ RETURNS DATE AS $$
     SELECT opened_on
       FROM budget.account_openings
      WHERE account_id = p_account_id
-     ORDER BY created_at DESC, id DESC
+     ORDER BY {GOVERNING_ORDER_SQL}
      LIMIT 1;
 $$ LANGUAGE sql STABLE
 """
@@ -248,14 +283,8 @@ BEGIN
     -- illegal one silently.  Stated because two statements of one rule that
     -- differ silently is the failure this arc names as its own root cause.
     SELECT MIN(settled_on) INTO v_earliest FROM (
-        SELECT settled_on
-          FROM budget.transactions
-         WHERE account_id = p_account_id AND settled_on IS NOT NULL
-        UNION ALL
-        SELECT settled_on
-          FROM budget.transaction_entries
-         WHERE account_id = p_account_id AND settled_on IS NOT NULL
-    ) AS movements;
+        {SETTLED_MOVEMENTS_SQL}
+    ) AS movements WHERE account_id = p_account_id;
 
     IF v_earliest IS NOT NULL AND v_earliest <= v_opened_on THEN
         RAISE EXCEPTION

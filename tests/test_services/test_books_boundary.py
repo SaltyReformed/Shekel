@@ -162,7 +162,7 @@ class TestTheBoundaryItself:
                 anchor_balance=Decimal("1000.00"),
             )
             opened_on = _books_open_on(account)
-            with pytest.raises(ValidationError):
+            with pytest.raises(ValidationError, match=r"books open on"):
                 reject_movement_before_books_open(account.id, opened_on)
 
     def test_the_day_after_the_books_open_is_accepted(
@@ -220,7 +220,7 @@ class TestTheOneOrmWriter:
                 settled_on=opened_on + _ONE_DAY, name="dated-probe",
             )
             before = (row.settled_on, row.settled_day_basis_id)
-            with pytest.raises(ValidationError):
+            with pytest.raises(ValidationError, match=r"books open on"):
                 record_settle_day(row, _entered(opened_on))
             assert (row.settled_on, row.settled_day_basis_id) == before
 
@@ -249,7 +249,7 @@ class TestTheOneOrmWriter:
                 purchased_on=_books_open_on(account) - _ONE_DAY,
                 is_credit=False,
             )
-            with pytest.raises(ValidationError):
+            with pytest.raises(ValidationError, match=r"books open on"):
                 record_settle_day(entry, _entered(_books_open_on(account)))
             assert entry.settled_on is None
 
@@ -298,7 +298,7 @@ class TestTheOneOrmWriter:
             db.session.add(row)
             db.session.flush()
             done = ref_cache.status_id(StatusEnum.DONE)
-            with pytest.raises(ValidationError):
+            with pytest.raises(ValidationError, match=r"books open on"):
                 status_seam.apply_status_change(
                     row, done,
                     settle_day=_entered(_books_open_on(account)),
@@ -364,7 +364,7 @@ class TestTheBulkWriterAsksForItself:
                     created_at=governing.asserted_at,
                 ),
             )
-            with pytest.raises(ValidationError):
+            with pytest.raises(ValidationError, match=r"books open on"):
                 record_settled_days(statement, {entry.id})
             db.session.refresh(entry)
             assert entry.settled_on is None
@@ -452,6 +452,15 @@ class TestTheDatabaseSeesWhatTheOrmCannot:
         this: the opening moves forward to the bank's own day while the rows in
         its way move out of it, and an immediate check would refuse the pair by
         statement order alone.
+
+        **THE ORDER OF THE TWO STATEMENTS IS THE WHOLE MEASUREMENT.**  Writing
+        the movement first and the opening second is a case a NON-deferrable
+        trigger also accepts -- each statement is individually legal at the
+        moment it runs -- so it grades nothing.  This writes the OPENING first,
+        which is illegal at that instant and legal at COMMIT, and is the only
+        order the deferral decides.  Measured by stripping
+        ``DEFERRABLE INITIALLY DEFERRED``: the old order still committed, this
+        one is refused (adversarial review, 2026-08-28).
         """
         with app.app_context():
             account = seed_user["account"]
@@ -463,16 +472,19 @@ class TestTheDatabaseSeesWhatTheOrmCannot:
             db.session.commit()
 
             later = opened_on + timedelta(days=10)
-            db.session.query(Transaction).filter_by(id=row.id).update(
-                {Transaction.settled_on: later + _ONE_DAY},
-                synchronize_session=False,
-            )
+            # The books move FORWARD past the movement that is still standing.
             db.session.add(AccountOpening(
                 account_id=account.id,
                 opened_on=later,
                 opening_equity=Decimal("1000.00"),
                 source_id=account_opening_fact(account.id).source_id,
             ))
+            db.session.flush()
+            # ... and only now does the movement leave the opening it is inside.
+            db.session.query(Transaction).filter_by(id=row.id).update(
+                {Transaction.settled_on: later + _ONE_DAY},
+                synchronize_session=False,
+            )
             db.session.commit()
             assert _books_open_on(account) == later
 

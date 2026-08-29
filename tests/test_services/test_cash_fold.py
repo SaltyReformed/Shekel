@@ -447,17 +447,18 @@ class TestTheOpeningEquityIsTheSeed:
         Stream: books declared $1,000.00, opening assertion 2026-02-01 with a
         -$500.00 record dated before it (2026-01-15), a true-up to $2,000.00
         (2026-03-01), and a -$250.00 record after that (2026-04-01).
-        Hand-computed: $1,000.00 on 01-14, $500.00 from 01-15 (the pre-opening
-        double count :meth:`test_a_record_dated_before_the_books_opened_is_REFUSED`
-        pins), $1,000.00 from 02-01, $2,000.00 from 03-01 and $1,750.00 from
-        04-01.  **The three at-and-after figures are unchanged from before this
+        Hand-computed: $1,000.00 on 01-14, $500.00 from 01-15 -- a record
+        BETWEEN the books and the first assertion, which is the state this
+        file's default ``_BOOKS_OPEN_ON`` exists to build and is not a
+        pre-opening row at all -- $1,000.00 from 02-01, $2,000.00 from 03-01
+        and $1,750.00 from 04-01.  **The three at-and-after figures are unchanged from before this
         step**, which is the evidence the assembly moved and the money did not.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         _opened_at(account, _instant(2026, 2, 1), books_open_on=_BOOKS_OPEN_ON)
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("500.00"),
-            settled_on=date(2026, 1, 15), name="pre-opening",
+            settled_on=date(2026, 1, 15), name="between-books-and-assertion",
         )
         append_balance_assertion(
             db.session, account, seed_periods[3], Decimal("2000.00"),
@@ -1064,7 +1065,7 @@ class TestTotality:
         _opened_at(account, _instant(2026, 2, 1), books_open_on=_BOOKS_OPEN_ON)
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("500.00"),
-            settled_on=date(2026, 1, 15), name="pre-opening",
+            settled_on=date(2026, 1, 15), name="between-books-and-assertion",
         )
         db.session.commit()
 

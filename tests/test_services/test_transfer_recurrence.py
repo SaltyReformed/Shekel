@@ -82,36 +82,56 @@ def _assert_shadows_valid(xfer):
     return expense, income
 
 
+def make_template_with_rule(seed_user, cadence, **rule_kwargs):
+    """Create a savings account, a transfer template and its cadence rule.
+
+    **ONE copy of what was three byte-identical methods.**  Four other classes
+    in this file define a `_make_template_with_rule` of their own and keep it:
+    each differs genuinely -- a second endpoint, an explicit bound, a loan
+    destination -- so collapsing those would be a shared helper with a flag per
+    caller, which is the shape being removed rather than a second instance of
+    it.
+
+    Args:
+        seed_user: The `seed_user` fixture's mapping.
+        cadence: The `RecurrenceUnitEnum` the rule fires on.
+        **rule_kwargs: `interval_n`, `day_of_month`, `month_of_year`.
+
+    Returns:
+        The refreshed `TransferTemplate`.
+    """
+    savings = create_account_of_type(
+        seed_user, db.session, "Savings", "Savings",
+        anchor_balance=Decimal("500.00"),
+    )
+
+    template = TransferTemplate(
+        user_id=seed_user["user"].id,
+        from_account_id=seed_user["account"].id,
+        to_account_id=savings.id,
+        name="Test Transfer",
+        default_amount=Decimal("100.00"),
+    )
+    db.session.add(template)
+    db.session.flush()
+    # The definition first, then the cadence onto it (plan step R-F6).
+    make_cadence_rule(
+        template, cadence,
+        interval_n=rule_kwargs.get("interval_n", 1),
+        fires_on_day=rule_kwargs.get("day_of_month"),
+        fires_in_month=rule_kwargs.get("month_of_year"),
+    )
+
+    db.session.refresh(template)
+    return template
+
+
 class TestTransferGeneration:
     """Tests for generate_for_template()."""
 
     def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
-        """Helper: create a savings account + recurrence rule + transfer template."""
-
-        savings = create_account_of_type(
-            seed_user, db.session, "Savings", "Savings",
-            anchor_balance=Decimal("500.00"),
-        )
-
-        template = TransferTemplate(
-            user_id=seed_user["user"].id,
-            from_account_id=seed_user["account"].id,
-            to_account_id=savings.id,
-            name="Test Transfer",
-            default_amount=Decimal("100.00"),
-        )
-        db.session.add(template)
-        db.session.flush()
-        # The definition first, then the cadence onto it (plan step R-F6).
-        rule = make_cadence_rule(
-            template, cadence,
-            interval_n=rule_kwargs.get("interval_n", 1),
-            fires_on_day=rule_kwargs.get("day_of_month"),
-            fires_in_month=rule_kwargs.get("month_of_year"),
-        )
-
-        db.session.refresh(template)
-        return template
+        """Delegate to the module-level helper (see `make_template_with_rule`)."""
+        return make_template_with_rule(seed_user, cadence, **rule_kwargs)
 
     def test_every_period_generates_for_all(self, app, db, seed_user, seed_periods):
         """every_period creates a transfer in every pay period."""
@@ -456,32 +476,8 @@ class TestTransferRegeneration:
     """Tests for regenerate_for_template()."""
 
     def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
-        """Helper: create a savings account + recurrence rule + transfer template."""
-
-        savings = create_account_of_type(
-            seed_user, db.session, "Savings", "Savings",
-            anchor_balance=Decimal("500.00"),
-        )
-
-        template = TransferTemplate(
-            user_id=seed_user["user"].id,
-            from_account_id=seed_user["account"].id,
-            to_account_id=savings.id,
-            name="Test Transfer",
-            default_amount=Decimal("100.00"),
-        )
-        db.session.add(template)
-        db.session.flush()
-        # The definition first, then the cadence onto it (plan step R-F6).
-        rule = make_cadence_rule(
-            template, cadence,
-            interval_n=rule_kwargs.get("interval_n", 1),
-            fires_on_day=rule_kwargs.get("day_of_month"),
-            fires_in_month=rule_kwargs.get("month_of_year"),
-        )
-
-        db.session.refresh(template)
-        return template
+        """Delegate to the module-level helper (see `make_template_with_rule`)."""
+        return make_template_with_rule(seed_user, cadence, **rule_kwargs)
 
     def test_regenerate_maintains_its_rows_in_place(
         self, app, db, seed_user, seed_periods
@@ -728,32 +724,8 @@ class TestTransferResolveConflicts:
     """Tests for resolve_conflicts()."""
 
     def _make_template_with_rule(self, seed_user, cadence, **rule_kwargs):
-        """Helper: create a savings account + recurrence rule + transfer template."""
-
-        savings = create_account_of_type(
-            seed_user, db.session, "Savings", "Savings",
-            anchor_balance=Decimal("500.00"),
-        )
-
-        template = TransferTemplate(
-            user_id=seed_user["user"].id,
-            from_account_id=seed_user["account"].id,
-            to_account_id=savings.id,
-            name="Test Transfer",
-            default_amount=Decimal("100.00"),
-        )
-        db.session.add(template)
-        db.session.flush()
-        # The definition first, then the cadence onto it (plan step R-F6).
-        rule = make_cadence_rule(
-            template, cadence,
-            interval_n=rule_kwargs.get("interval_n", 1),
-            fires_on_day=rule_kwargs.get("day_of_month"),
-            fires_in_month=rule_kwargs.get("month_of_year"),
-        )
-
-        db.session.refresh(template)
-        return template
+        """Delegate to the module-level helper (see `make_template_with_rule`)."""
+        return make_template_with_rule(seed_user, cadence, **rule_kwargs)
 
     def test_resolve_keep_no_changes(self, app, db, seed_user, seed_periods):
         """action='keep' leaves overridden transfer unchanged."""
