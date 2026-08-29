@@ -33,6 +33,8 @@ import pytest
 import sqlalchemy as sa
 
 from app.enums import SettledDayBasisEnum, StatusEnum, TxnTypeEnum
+from sqlalchemy.exc import OperationalError
+
 from app.exceptions import ValidationError
 from app.extensions import db as _db
 from app.models.account_opening import AccountOpening
@@ -522,6 +524,73 @@ class TestTheDatabaseSeesWhatTheOrmCannot:
             })
             db.session.commit()
             assert _books_open_on(account) == opened_on
+
+
+class TestAnUnsettledRowDoesNotRESERVETheTable:
+    """The WHEN clause, graded by the DDL a pending event would forbid.
+
+    **PostgreSQL refuses ``ALTER TABLE`` on a table carrying pending trigger
+    events**, and a deferred constraint trigger queues its event at STATEMENT
+    time whatever the function would later decide.  So the guard "a row with no
+    settle day states nothing" has to live in the trigger's WHEN clause, not in
+    an early ``RETURN`` inside its body -- there it runs at COMMIT, one phase
+    after the queueing it needed to prevent.
+
+    **The only thing that caught this was CI**, twice: ``recurrence:R17``'s
+    index re-key on the merge, then two audit-trigger benchmarks.  Both live in
+    ``tests/test_performance``, which ``pytest.ini`` excludes from the ordinary
+    run, so a green local suite said nothing about either.  These two cases put
+    the interaction where every run sees it.
+    """
+
+    #: The DDL the audit-trigger benchmarks perform between samples, and the
+    #: statement PostgreSQL refuses while an event is pending.
+    _DDL = "ALTER TABLE budget.transactions ENABLE TRIGGER audit_transactions"
+
+    def test_a_PROJECTED_write_leaves_DDL_on_the_table_legal(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """An unsettled row queues no event, so the table stays alterable."""
+        with app.app_context():
+            account = seed_user["account"]
+            db.session.add(Transaction(
+                account_id=account.id,
+                pay_period_id=seed_periods[0].id,
+                scenario_id=seed_user["scenario"].id,
+                status_id=ref_cache.status_id(StatusEnum.PROJECTED),
+                name="projected-probe",
+                transaction_type_id=ref_cache.txn_type_id(
+                    TxnTypeEnum.EXPENSE,
+                ),
+                estimated_amount=Decimal("25.00"),
+            ))
+            db.session.flush()
+            # No exception: the WHEN clause kept the row out of the queue.
+            db.session.execute(sa.text(self._DDL))
+            db.session.rollback()
+
+    def test_a_SETTLED_write_still_reserves_it(
+        self, app, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """The control: the case above passes because of WHEN, not because the
+        DDL is always legal.
+
+        A row that DOES carry a settle day is a row the rule must check, so its
+        event is queued and the same statement is refused.  Without this arm the
+        case above would pass on a database where the trigger had been dropped
+        altogether.
+        """
+        with app.app_context():
+            account = seed_user["account"]
+            create_settled_cash_transaction(
+                seed_user, db.session, seed_periods[0], Decimal("25.00"),
+                settled_on=_books_open_on(account) + _ONE_DAY,
+                name="settled-probe",
+            )
+            db.session.flush()
+            with pytest.raises(OperationalError, match="pending trigger events"):
+                db.session.execute(sa.text(self._DDL))
+            db.session.rollback()
 
 
 class TestTheGoverningRowIsWhatIsGraded:

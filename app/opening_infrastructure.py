@@ -81,15 +81,18 @@ which runs the checks in place rather than deferring them; it is what
 ``tests/test_models/test_clearing_link_schema.py`` do before re-creating an
 index and dropping a NOT NULL.
 
-**Measured rather than predicted: a peer's independent test met this within
-hours of the constraint shipping.**  ``recurrence:R17``'s
-``test_dc06_detects_two_rows_answering_one_occurrence`` drops an index,
-raw-``INSERT``s a movement row and re-creates the index in one transaction, and
-it failed with ``ObjectInUse`` on the merge.  Note WHAT queues the event: the
-row it inserts carries no ``settled_on`` at all, so the trigger function would
-have returned at its first line -- but the event is queued at STATEMENT time
-and the function runs at COMMIT, so "this write cannot violate the rule" does
-not spare it the DDL block.
+**THE COMMON CASE OF THIS IS GONE, and how it was closed is the point.**  The
+movement trigger carries ``WHEN (NEW.settled_on IS NOT NULL)``, which is the
+guard that used to be its function's first line.  An early ``RETURN`` in the
+body cannot stop an event being QUEUED -- the queue happens at statement time
+and the body runs at COMMIT -- so every Projected row this app writes used to
+reserve ``budget.transactions`` against DDL for the rest of its transaction.
+It cost two CI failures before it was found: ``recurrence:R17``'s
+``test_dc06_detects_two_rows_answering_one_occurrence`` on the merge, and two
+audit-trigger benchmarks in ``tests/test_performance`` -- a directory
+``pytest.ini`` excludes from the ordinary run, so no local suite can see it.
+**What remains is a row that really does carry a settle day**, which is the
+only kind the rule was ever going to check.
 
 **The case a reader will NOT think of is a MIGRATION**, and it is the norm here
 rather than the exception: this project puts one-time backfills in the Alembic
@@ -198,15 +201,10 @@ RETURNS TRIGGER AS $$
 DECLARE
     v_opened_on DATE;
 BEGIN
-    -- A row with no settle day states nothing about when money moved: a
-    -- Projected row, a cancelled one, and the revert that CLEARS the pair all
-    -- land here.  Bounding them would break the unlock path ruling R-EG keeps
-    -- open, which is the same carve-out ``settle_day.record_settle_day``
-    -- makes for its own clear arm.
-    IF NEW.settled_on IS NULL THEN
-        RETURN NULL;
-    END IF;
-
+    -- **A row with no settle day never reaches here at all**: the trigger's
+    -- WHEN clause states that, and states it ONCE.  It used to be an early
+    -- RETURN in this body, which is the same rule asked one phase too late --
+    -- see :func:`_create_movement_trigger_sql` for what that cost.
     v_opened_on := {_OPENED_ON_FUNCTION}(NEW.account_id);
 
     -- An account carrying NO opening record is a broken invariant, and it is
@@ -349,6 +347,23 @@ def _create_movement_trigger_sql(table: str) -> str:
     change, amount correction and template regeneration, so a column list is
     the difference between one indexed lookup per SETTLE and one per WRITE.
 
+    **``WHEN (NEW.settled_on IS NOT NULL)`` is the guard that used to be this
+    trigger function's first line, and moving it here is a bug fix rather than
+    a tidy-up.**  A deferred constraint trigger queues its event at STATEMENT
+    time and runs the function at COMMIT, so an early ``RETURN`` inside the
+    body cannot stop the event being queued -- and PostgreSQL refuses
+    ``ALTER TABLE`` on any table carrying pending trigger events.  Every
+    Projected row this app writes therefore made DDL on ``budget.transactions``
+    illegal for the rest of the transaction, which broke two audit-trigger
+    benchmarks in CI (``tests/test_performance``, a directory ``pytest.ini``
+    excludes from the ordinary run) and, on the merge before that,
+    ``recurrence:R17``'s index re-key.  A WHEN clause is evaluated where the
+    queueing decision is made, so a row that cannot violate the rule now
+    queues nothing.  Measured both ways: with the clause an unsettled INSERT
+    leaves ``ALTER TABLE`` legal, and a SETTLED one still queues and still
+    blocks it -- enforcement is unchanged, only the rows that were never going
+    to be checked stop reserving the table.
+
     ``DEFERRABLE INITIALLY DEFERRED`` moves the check to COMMIT, which is what
     lets one transaction re-date a movement and restate its account's opening
     in either order (the account-10 repair, **N-379**).
@@ -368,7 +383,8 @@ def _create_movement_trigger_sql(table: str) -> str:
         f"CREATE CONSTRAINT TRIGGER {_MOVEMENT_TRIGGER} "
         f"AFTER INSERT OR UPDATE OF settled_on, account_id ON {table} "
         "DEFERRABLE INITIALLY DEFERRED "
-        f"FOR EACH ROW EXECUTE FUNCTION {_MOVEMENT_FUNCTION}()"
+        "FOR EACH ROW WHEN (NEW.settled_on IS NOT NULL) "
+        f"EXECUTE FUNCTION {_MOVEMENT_FUNCTION}()"
     )
 
 
