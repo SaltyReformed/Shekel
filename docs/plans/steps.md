@@ -43,13 +43,13 @@ side: both were unblocked and they shared no file.
 pairing two inside one arc, check that neither names a module the other deletes. A row marked
 **MOVES MONEY** takes its own PR either way, so it is never the second lane.
 
-**The rank is a DECISION, not a derivation.** 63 of these steps are legal to start right now, so the
+**The rank is a DECISION, not a derivation.** 64 of these steps are legal to start right now, so the
 dependency graph alone cannot say which comes next; the sequence below follows each arc's own stated
 sequencing -- the balance README's ten blocks, and each plan's section 0.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**181 steps, 133 open.** The dependency graph holds 81 edges over 64 rows.
+**182 steps, 133 open.** The dependency graph holds 81 edges over 64 rows.
 
 ## The order
 
@@ -168,6 +168,8 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | balance | X-bf | -- | Make a stale or FORKED test template self-reporting: record the ordered revision list the builder actually applied and refuse a bootstrap whose repo chain no longer produces it, because `alembic_version` records which revision is head and never which ones ran. Closes **N-385**. | #111 | -- | NOW |
 | balance | X-bg | -- | Tell *this occurrence did not happen* apart from *archive this row*, which the transfer delete door conflates into one `is_deleted` flag read off the template link, so a settled instance the owner removes stays restorable by the recurrence conflict chooser with no control between it and the books. Closes **N-386**. | #112 | -- | NOW |
 | balance | X-be-2 | -- | Let the read-only `url_map` sweep pay for its seeded database ONCE rather than once per case, which needs a database the sweep OWNS because a broader fixture scope cannot hold that state on a worker every module shares. Closes **N-387**. | #113 | -- | NOW |
+| bank_import | X-gi | -- | Delete what the exception queue ORPHANS, which is a census before it is a deletion: the review-screen rebuild replaced the queue's model and nobody has measured what of the old one is now unreachable. Minted by **X-gf** shipping, as its arc document requires. | #114 | -- | NOW |
+| bank_import | X-gf | -- | The DECOMPOSED parent of the review-screen rebuild, split 2026-08-27 into the disposition hole its model left open, the queue-versus-register split and the exception queue proper, whose own third leaf split again. Ticked with the last of its seven leaves; minted **X-gi**. | SHIPPED | `ff744d79` | -- |
 | balance | X-bd | -- | Gave every route in the `url_map` sweep its OWN pytest item so the per-test wall clock stops containing the route table at all, rather than re-cutting arms that only divide it, and enumerated the routes without a database so collection cannot fail. Closed **N-364**; opened **N-387**. | SHIPPED | `39935763` | -- |
 | bank_import | X-gf-3b-2 | -- | Rebuild what remains of the queue as ONE list of unexplained bank lines grouped by the DECISION each poses -- *is this money my books already hold, or is it new?* -- rather than the three cards that partition them by MECHANISM, which is the service's partition and stays load-bearing underneath the screen. | SHIPPED | `ff744d79` | -- |
 | balance | X-f3c-2b-1 | -- | Make a movement dated on or before its account's books opening UNSTORABLE (**R-HG**), refusing it at the one settle-day writer, at the reconcile panel's bulk writer and at three deferrable constraint triggers over all three tables, then legalise the twelve production rows by moving five openings back. **MOVES MONEY**: two balance sheets gain an opening at `$4,879.26`. Closes **N-378**. | SHIPPED | `2cf2ac0a` | -- |
@@ -186,7 +188,6 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | bank_import | X-gf-3b-1 | -- | THE WORKBENCH IS NOT THE QUEUE (**bank_import:R-HC**): the hand-build match form left the review screen for a surface of its own with its own write door, taking the review body from 150,853 bytes to 65,005 and its checkboxes from 112 to 17, and every exception now links to it with its own line already ticked. Closes **N-374**. | SHIPPED | `d2248fe6` | -- |
 | bank_import | X-gf-3b | -- | The DECOMPOSED parent of the exception queue proper's own second leaf, split 2026-08-28 on measurement: the step's sentence carried two rulings, and **R-HC**'s half is 59% of the page while **R-HB**'s is a re-shaping of what is left. Merging the cards first would have rendered the same 27 lines twice on one page. It ticks with the last of its two leaves. | SHIPPED | `ff744d79` | -- |
 | bank_import | X-gf-3a | -- | Make what a standing rule comes to for a line ONE verdict the automatic door and the review screen both read, so a line a rule would have filed and the pass withheld says why on the screen rather than only in the import's transient flash, and a parked line names the register only where a different answer would open the create door. Closes **N-359**, **N-371**. | SHIPPED | `44f1cc7b` | -- |
-| bank_import | X-gf | -- | The DECOMPOSED parent of the review-screen rebuild, split 2026-08-27 into the disposition hole its model leaves open, the queue-versus-register split and the exception queue proper, whose own third leaf then split again. Carries **bank_import:N-359**. | container | -- | ticks with #114 |
 | bank_import | X-gd | -- | Promote a stated merchant answer from a suggestion to a standing RULE (**R-GI**), which the developer decomposed on 2026-08-25 into the merchant's own identity and the store that keys on it. | SHIPPED | `d1910c95` | -- |
 | balance | X-f | -- | The DECOMPOSED parent of the whole "the app records when money moved" cluster, carrying **N-42**. | container | -- | ticks with #7 |
 | balance | X-au | -- | The DECOMPOSED parent of the amount model (**R-FI**): a row's amount is either its OWN or DERIVED, and a derived amount is not stored at all. Supersedes **X-ar**; **X-au-i is WITHDRAWN** because the card arc's locked rulings delete the CC payback it would have cut over (`CC3b`, `CC3c`). Carries **N-40**, **N-224**, **N-228**, **N-238**. | container | -- | ticks with #15 |
