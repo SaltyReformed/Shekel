@@ -3,8 +3,7 @@
 **This is the ONLY live document for the balance arc, and it carries the work that REMAINS.**
 Amendments are edits HERE, a shipped step gets its checkbox ticked with its commit hash HERE, and no
 new planning documents get written for this arc. **The rules are `../../plans/conventions.md`** and
-`tools/plan_gate/` grades this file against them, line cap included -- when the cap binds, rule 5
-says archive a completed span rather than trim a live one.
+`tools/plan_gate/` grades this file against them.
 
 **What is already done is in `archive/`, indexed by `archive/README.md`. None of it governs
 anything, and no live sentence here depends on one** (rule 5) -- an obligation a live step inherits
@@ -161,13 +160,9 @@ says so.** The steps are section 5; their sequence is `../../plans/steps.md`'s.
 
 ## 4. The rulings
 
-**This arc's rulings are in `../../plans/rulings.md`, rows whose `arc` is `balance`.** They moved
-there at `X-ao-1` with `bank_import`'s, and the reason is one this document could not fix for
-itself: a ruling id came from ONE global sequence spelled across five arc documents in THREE
-grammars, and `tools/plan_gate` parsed none of them, so `R-EX` naming two rulings (**N-217**) and
-`R-GW` being minted in both this arc and `bank_import` on 2026-08-27 (**N-367**) were invisible to
-every gate. The key is `(arc, id)`, which makes a shared bare id legal and gradeable rather than
-silent.
+**This arc's rulings are in `../../plans/rulings.md`, rows whose `arc` is `balance`.** The key is
+`(arc, id)` and no arc document states a ruling; cite one as `balance:R-xx` wherever the bare id
+could be another arc's (`../../plans/conventions.md` rules 9 and 10).
 
 **Where a live step needs more than the rule, its Section 5 entry restates it inline** (rule 5).
 That is unchanged, and it is why this section is a pointer rather than a deletion: a specification
@@ -769,82 +764,6 @@ hides.
   collapsed twelve sites in `routes/transactions/forms.py` into four; `url_converters.py`,
   `routes/transfers/_helpers.py` (which counts its own `request.form` site, so it says 35) and
   `steps.md` state the same number and were moved with it.
-* [ ] **X-ao** -- the DECOMPOSED parent. The registries are graded on findings, on steps and on the
-  graph between them; the arc documents' RULINGS tables were parsed by nothing, and the corpus
-  carried a LIVE collision -- two sessions appended a different **R-EX** on one day, both reached
-  `dev`, and X-f2-c2 / X-f2-c3 cited it ambiguously until a reviewer read the table. **N-234, N-254
-  and N-220 closed 2026-08-14** (`d8aed644`); the `steps.md` row went on citing N-220 until this
-  decomposition. **The RULING it waited for is `balance:R-GZ`** (developer, 2026-08-27): rulings
-  take ONE grammar, in one registry keyed `(arc, id)`.
-* [x] **X-ao-1** `b8f1c862` -- `balance`'s 74 rulings and `bank_import`'s 31 lifted into `../../plans/rulings.md`, keyed `(arc, id)`, byte-identical and graded, under ruling **R-GZ**. Rule 4 applies whole: no LINE cap, and `RULINGS_ROW_CAP` is the swap that lets that be true. Repaired `bank_import:R-FW` (four cells in a three-column table since 2026-08-18) and the gate hook's own `files:` pattern, YAML-folded so one document matched nothing. Opened **balance:N-370**, **balance:N-371**; carries the citation arm to `X-ao-3`.
-* [ ] **X-ao-2** -- the DECOMPOSED parent, split 2026-08-27 (**balance:R-HB**) because the step's own
-  sentence carried two nouns and only the first is a lift. Its second, the over-cap overflow, was
-  measured unsatisfiable as rule 4 literally states it before the split rather than after: rule 4
-  sends the overflow to the owning step's SPECIFICATION, and `bank_import` alone owns 36,901 of the
-  43,855 characters against a document with 49 lines of headroom.
-* [x] **X-ao-2a** `91f95f43` -- `recurrence`'s, `pay_calendar`'s and `credit_card`'s rulings lifted
-  into `../../plans/rulings.md` keyed `(arc, id)`: 81 rows, 51 ids MINTED, proven lossless per row
-  in BOTH directions. `ARC_RULING_HEADINGS` DELETED for a predicate on a ruling DECLARATION's shape;
-  `LIFTED_ROWS_OVER_CAP` re-keyed from a COUNT to a SET, which is the direction a count could not
-  see. Closes **N-372**, whose own count it corrected. Rulings **balance:R-HB**, **balance:R-HC**, **balance:R-HD**; opened
-  **N-376**, **N-377**. As-built in the commit and its merge, `7a95e40e`.
-* [ ] **X-ao-2b** `docs(plans): an over-cap ruling's argument goes to its own step` -- closes
-  **balance:N-370**, whose row carries the measurements and **balance:R-HD** the destination: the
-  AS-BUILT record of the step that shipped the ruling, its live specification otherwise.
-  **The OWNER is this step's first task, not its input** -- 17 of the 25 rows name no step of their
-  own arc at all and only TWO name a SHIPPED one -- determined per row from the row's text, from
-  the arc-document entries that cite it, and from the row's own git history. **That third
-  source DECAYS and the refs that stop it decaying are named here rather than left to be found**
-  (the recurrence session, 2026-08-27): `git log -S` keys on the row's TEXT, and both lifts
-  rewrote every row, so a search against today's text lands on the lift rather than on the commit
-  that took the ruling. The pre-lift text is at `b8f1c862~1` for `balance` (74 rows) and
-  `bank_import` (31), and at `91f95f43~1` for `recurrence` (37), `pay_calendar` (33) and
-  `credit_card` (8); `recurrence:R-R38` landed on dev between the two lifts and its pre-lift text
-  is at `107add57`. Searching from those refs still resolves -- `R-R38` lands on `f7b0ce16`, whose
-  SUBJECT names it and whose body names `R7d-c-1` at line 31. Two specimens bound the work at both
-  ends. `bank_import:R-GD`, the widest at 14,087 over, is NOT archive-bound: it is cited inside
-  LIVE entries twice, at `implementation_plan_bank_import.md:78` and :139, so rule 4's literal
-  remedy applies. **A peer census reported it uncited and the reason offered for that miss was
-  also wrong** -- a `**R-xx**`-only matcher finds the plain form at :139 -- so what is established
-  is the disposition, not the diagnosis. And `recurrence:R-R38`'s owner `R7d-c-1` HAD shipped
-  with no as-built record at all, so the recurrence session wrote one:
-  `../../plans/historical/recurrence_r7dc1_as_built_2026-08-27.md`, on dev at `c5334e02`,
-  naming `R-R38` four times while the live `R7d-c-1` entry names it back -- so this step
-  GRADES the move rather than asserting it. Where a record is missing for one of the other
-  rows, writing it is rule 5's own archive path. **And nothing gates that locally**: the
-  `shekel-plan-ledger-gate` hook's `files:` pattern does not match `docs/plans/historical/`
-  (**N-371**) and `.rumdl.toml` EXCLUDES that directory outright, so an archive file gets
-  neither the banner arm nor markdown lint until CI -- measured 2026-08-27, 33 files
-  filtered. That is two configs wide, not one, and on this census 17 rows may need such a
-  file.
-  **The finishing check on a hand-edited row is its CELL COUNT through
-  `_tables.UNESCAPED_PIPE_RX`**: `X-ao-2a` rewrote seven-column `N-370` as six on a bare
-  `|` split, deleting its finding sentence with every arm green -- and a NAIVE count is the
-  opposite trap, reporting the three rows that carry a literal `\|` broken and sending the
-  next reader to UN-escape `bank_import:R-FW`, the row `X-ao-1` repaired for that very
-  defect.
-  **Cutting a row is a REVIEWED EDIT per ruling, never a truncation to fit** (rule 5), and the
-  instrument this step owes is the lift's verifier INVERTED: every sentence removed from a row must
-  resolve to text in the named as-built record, checked BEFORE the row is cut. Without that, "the
-  argument is in the archive" is an assertion about a file nobody re-opens, and `R-GD`'s 14,087
-  characters of overflow is where a silent loss would be least visible. The step ends with
-  `LIFTED_ROWS_OVER_CAP` deleted rather than emptied.
-* [ ] **X-ao-3** `feat(plan-gate): a bare citation of an ambiguous id fails` -- closes **N-217**,
-  **N-367**. What makes `(arc, id)` SAFE rather than merely legal: every `R-xx` cited in `app/` or
-  `docs/` resolves to exactly one ruling, and a bare citation of an id two arcs both define is a
-  failure. Measured 2026-08-27: 1,763 of 1,809 `app/` citations are bare and 654 in live `docs/`,
-  with zero currently ambiguous -- so the arm lands before the harm, which is the ordering two
-  adversarial reviews said this decomposition owed.
-* [ ] **X-bb** `feat(plan-gate): the gate closes the loop on its own corpus` -- closes **N-355**,
-  **N-356**, **N-357**. THREE arms, ONE root: every arm grades the planning documents and nothing grades
-  the GATE against them. **(a)** A control may not derive its specimen from a LIVE row -- `C1`, `C2-f1`
-  and `X-f1` are each held in a size-capped index solely so an arm has something to grade, and `C2-f3e`
-  is the remedy, having built its own and closed **D42**. **(b)** A DERIVED value may not be restated in
-  PROSE beside itself -- four blocker cells carry `(the container ticks at #N)` unparsed, one of them
-  stale on `dev` before anyone touched it. **(c)** An archive reference resolves BOTH ways, needing TWO
-  arms: 30 citations / 1 dangling to a file never added, 20 archived files / 1 unindexed. 2026-08-26.
-  **N-367's THIRD instance, 2026-08-27, is on the RULING side**: `balance` and `bank_import` each minted `R-GW` on unmerged branches, a third session having reserved and dropped it, every minter having taken the next globally-free id off a `docs/` grep -- which cannot see an unmerged branch. Both kept (rule 10), citations arc-qualified.
-  **N-367's fourth instance, 2026-08-27, is this step's sharpest specimen and it is on the FINDING side.** `balance:X-ao-1` and `bank_import:X-gf-2` each minted `N-371` and `N-372` within hours, on two unpushed branches, **while the two sessions were actively corresponding about N-367 and had already reserved RULING ids with each other**. Awareness is not a control: neither branch was fetchable, so neither census could see the other, and the reservation habit covered the ids we had discussed rather than the class. What made it survivable is rule 10's asymmetry -- the gate passes with all four rows present and only a bare citation is lost -- which is exactly the property the ruling side does NOT have. **That REFUTES a class of remedy rather than merely doubting it**, and the arm this step designs must not be in it: the two sessions were the best-informed possible pair on this exact failure, were corresponding about it, and had already exchanged reservations -- so any mechanism whose content is *the minting session checks harder* is measured false, not unproven. What survived needed nobody to remember anything, because it is a property of the SCHEMA. The arm has to be one too.
 * [ ] **X-bd** `test(routes): the url_map sweep's arms are sized, not named` -- closes **N-364**,
   whose row carries the measurements. **Root: the sweep is SPLIT by account KIND, and a kind is not
   a size** -- the account-less arm is 54 routes against ~20 per kind arm and absorbs nearly all the

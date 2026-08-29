@@ -20,27 +20,11 @@ registries are `ledger.md`, `steps.md`, `conventions.md` and `verification.md`.
 
 ## The rulings
 
-**This arc's rulings are in `rulings.md`, rows whose `arc` is `pay_calendar`.** They moved there at
-`balance:X-ao-2a` with `recurrence`'s and `credit_card`'s, finishing what `X-ao-1` began: a ruling
-id came from ONE global sequence spelled across five arc documents in THREE grammars, and
-`tools/plan_gate` parsed none of them. The key is `(arc, id)`, and NO arc document states a ruling
-now. The gate grades that as the SHAPE of a declaration rather than from a list of arcs, and
-reconciles the arc map against `docs/plans/` so a SIXTH plan document nobody added to it fails
-rather than being passed over. **What it still cannot see is a dated block of decisions with no IDS,
-under a heading that does not say `rulings`** -- which is this corpus's own historical shape with
-one word changed. The arm that would close it is "an arc document names no ruling id that has no
-registry row", and **N-376** is why it cannot be built yet.
-
-**Thirty-two of this arc's thirty-three rulings had no id at all**, which is why the lift was its
-own step: only `R-PC1`, the forward-only rule, could be cited, and it is cited from `app/` three
-times. The rest are `R-PC2`-`R-PC33`, minted in the order this table recorded them. Two carried no
-DATE either -- the gapped-batch rule and the table-and-column-names rule -- and 2026-08-08 is
-measured rather than assumed: both landed in `35cdf863`, the commit that created this document,
-alongside the rulings that state that date themselves.
-
-**`R-PC2` also answers the `recurrence` arc's `F-10` fork**, a pay-period HOLE, which that arc's own
-table carried as a second copy of this ruling. Rule 16 admits one copy, so the second did not
-survive the lift and the fork it answered is named in the row that survives.
+**This arc's rulings are in `rulings.md`, rows whose `arc` is `pay_calendar`.** The key is
+`(arc, id)` and no arc document states a ruling; cite one as `pay_calendar:R-PCnn` wherever the bare
+id could be another arc's (`conventions.md` rules 9 and 10).
+**`R-PC2` also answers the `recurrence` arc's `F-10` fork**, a pay-period HOLE, and is recorded once
+(rule 16).
 
 ---
 

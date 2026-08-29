@@ -21,29 +21,9 @@ section 0 states its two options. Section 4 is the steps; the findings, the inde
 
 ## The rulings
 
-**This arc's rulings are in `rulings.md`, rows whose `arc` is `recurrence`.** They moved there at
-`balance:X-ao-2a` with `pay_calendar`'s and `credit_card`'s, finishing what `X-ao-1` began: a ruling
-id came from ONE global sequence spelled across five arc documents in THREE grammars, and
-`tools/plan_gate` parsed none of them. The key is `(arc, id)`, and NO arc document states a ruling
-now. The gate grades that as the SHAPE of a declaration rather than from a list of arcs, and
-reconciles the arc map against `docs/plans/` so a SIXTH plan document nobody added to it fails
-rather than being passed over. **What it still cannot see is a dated block of decisions with no IDS,
-under a heading that does not say `rulings`** -- which is this corpus's own historical shape with
-one word changed. The arm that would close it is "an arc document names no ruling id that has no
-registry row", and **N-376** is why it cannot be built yet.
-
-**What the lift changed here is not only the location.** SEVEN rows carried no id and were minted
-`R-R39`-`R-R45`, and TWO carried no DATE: `R-R7`'s 2026-08-05 is stated by
-`historical/recurrence_evidence_2026-08-11.md` and its row landed in `35622cfb`, and `R-R10`'s
-2026-08-07 is stated by `historical/recurrence_as_built_2026-08-05.md` and its row landed in
-`8e289a1b` -- measured rather than assumed, as `pay_calendar`'s two were. the `R-R28` PARAGRAPH in
-section 4 became a row like any other, having been cited by `steps.md` as `R13`'s ruling while
-sitting outside every table; and `R-R7`, whose row was a POINTER at
-`historical/recurrence_evidence_2026-08-11.md`, is a row under the id it already had, because rule 5
-forbids a live sentence depending on an archived one -- a row that stated no rule of its own and DID
-become one. THREE others stated none and did not: the anchor-day supersession folded into `R-R13`,
-the ruling it is about; the pay-period HOLE is `pay_calendar`'s `R-PC2`, recorded once (rule 16);
-and the archive label is the paragraph below.
+**This arc's rulings are in `rulings.md`, rows whose `arc` is `recurrence`.** The key is `(arc, id)`
+and no arc document states a ruling; cite one as `recurrence:R-Rnn` wherever the bare id could be
+another arc's (`conventions.md` rules 9 and 10).
 
 **Ten decisions were archived on 2026-08-08** to `historical/recurrence_as_built_2026-08-08.md`: the
 `Once` retirement, R2 and R4 sequencing, the wrong stored paycheck, bound semantics, the

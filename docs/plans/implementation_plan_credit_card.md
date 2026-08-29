@@ -40,27 +40,11 @@ real forward model, this is the ONE place that changes").
 
 ## The rulings
 
-**This arc's rulings are in `rulings.md`, rows whose `arc` is `credit_card`.** They moved there at
-`balance:X-ao-2a` with `recurrence`'s and `pay_calendar`'s, finishing what `X-ao-1` began: a ruling
-id came from ONE global sequence spelled across five arc documents in THREE grammars, and
-`tools/plan_gate` parsed none of them. The key is `(arc, id)`, and NO arc document states a ruling
-now. The gate grades that as the SHAPE of a declaration rather than from a list of arcs, and
-reconciles the arc map against `docs/plans/` so a SIXTH plan document nobody added to it fails
-rather than being passed over. **What it still cannot see is a dated block of decisions with no IDS,
-under a heading that does not say `rulings`** -- which is this corpus's own historical shape with
-one word changed. The arm that would close it is "an arc document names no ruling id that has no
-registry row", and **N-376** is why it cannot be built yet.
-
-**This arc had never had an id scheme at all**, which is what made it the sharpest case for the
-lift: the eight locked rulings of 2026-07-19 were a numbered LIST under a heading, cited only as
-"ruling 3" or by their prose names, and the residual-table arm that was supposed to stop a
-half-migration read TABLE headers only -- so this list could have survived the lift whole with every
-arm green. They are `R-CC1`-`R-CC8`, in the order the list numbered them.
-
-**The four `Grid / companion hard requirements` are rulings too**, taken by the developer on the
-same day and in the same commit, and they are `R-CC9`-`R-CC12`. Leaving them here would have left a
-dated developer-decision block in a document whose rulings had moved, which is exactly the state the
-two-way migration arm exists to refuse.
+**This arc's rulings are in `rulings.md`, rows whose `arc` is `credit_card`.** The key is
+`(arc, id)` and no arc document states a ruling; cite one as `credit_card:R-CCnn` wherever the bare
+id could be another arc's (`conventions.md` rules 9 and 10).
+**The eight LOCKED rulings of 2026-07-19 are `R-CC1`-`R-CC8`**, in the order that list numbered
+them, and the four `Grid / companion hard requirements` taken the same day are `R-CC9`-`R-CC12`.
 
 ## Architecture (decided during planning)
 

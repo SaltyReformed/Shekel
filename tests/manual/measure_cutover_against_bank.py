@@ -6,7 +6,7 @@ planning document because ``conventions.md`` rule 6 says a measurement is named
 by its COMMAND: a figure copied into prose goes stale invisibly, and the four
 places that ruling's evidence appears would each have gone stale separately.
 **Cited with its ARC** because `bank_import:R-GW` was minted the same day on
-another branch: a bare id here names two rulings, which is finding **N-367**.
+another branch: a bare id here names two rulings.
 
 **What it answers.**  Two arms, over the days an account's records and a bank
 export both cover:
