@@ -46,6 +46,7 @@ from app import ref_cache
 from app.enums import CalcMethodEnum, EmployerContributionTypeEnum
 from app.services.growth_engine import ContributionRecord
 from app.services.pay_calendar import PayCadence
+from app.services.payroll_basis import gross_per_paycheck
 from app.utils.deduction_cap import cap_period_amount
 from app.utils.money import ZERO, round_money
 
@@ -247,11 +248,19 @@ def _compute_deduction_per_period(deduction, pct_id):
     Shared by calculate_investment_inputs() and build_contribution_timeline()
     to keep the deduction amount logic in one place (DRY).
 
-    **The gross is derived from THIS deduction's own profile**, over the
-    owner's cadence (plan step R-F16 replaced a second stored count here with
-    the derivation; it did not change whose salary the percentage is taken
-    of).  Each active salary profile prices its own deductions, which is what
-    a two-job owner needs and what a single owner-level gross cannot give.
+    **The gross is rounded by the ONE producer the paycheck engine uses**
+    (:func:`~app.services.payroll_basis.gross_per_paycheck`), off THIS
+    deduction's own profile and over the owner's cadence (plan step R-F16
+    replaced a second stored count here with the derivation; it did not change
+    whose salary the percentage is taken of).  Until plan step **balance:X-aw**
+    this module spelled the division itself while the engine distributed a
+    rounding residue over the year, and the two RULES were measured answering
+    differently on 5 of the owner's 63 saved periods.  **The two sides still do
+    not agree on a paycheck**, because the SALARY below is raise-blind where
+    the engine's is not -- that is D45, named in the next paragraph -- so what
+    X-aw closed is the rounding half and not the input half.  Each active
+    salary profile prices its own deductions, which is what a two-job owner
+    needs and what a single owner-level gross cannot give.
     The gross is RAISE-BLIND -- finding **D45** -- which is a real defect with
     a real figure and an owner, not something to decide here.
 
@@ -267,7 +276,7 @@ def _compute_deduction_per_period(deduction, pct_id):
         calculate_investment_inputs for employer params).
     """
     salary = Decimal(str(deduction.annual_salary))
-    gross = round_money(salary / deduction.periods_per_year)
+    gross = gross_per_paycheck(salary, deduction.periods_per_year)
     amt = Decimal(str(deduction.amount))
     if deduction.calc_method_id == pct_id:
         amt = round_money(gross * amt)

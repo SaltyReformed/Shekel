@@ -42,6 +42,7 @@ from app.services.investment_projection import (
     ShadowContributions,
     adapt_deductions,
 )
+from app.services.payroll_basis import gross_per_paycheck
 from app.services.projection_inputs import (
     build_investment_projection_inputs,
     load_active_deductions_for_accounts,
@@ -49,7 +50,6 @@ from app.services.projection_inputs import (
 )
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import DerivedPeriod, PayCadence, PeriodWindow
-from app.utils.money import round_money
 
 
 @dataclass(frozen=True)
@@ -289,8 +289,11 @@ def build_employer_salary_basis(
     if not salary_by_year:
         return None
 
+    # Through the ONE per-paycheck producer (plan step balance:X-aw), not a
+    # second spelling of its arithmetic: this figure is a projected paycheck's
+    # gross, so it must round exactly as the paycheck engine's does.
     gross_by_year = {
-        year: round_money(cadence.annual_to_per_paycheck(salary))
+        year: gross_per_paycheck(salary, cadence.periods_per_year)
         for year, salary in salary_by_year
     }
     min_year = min(gross_by_year)

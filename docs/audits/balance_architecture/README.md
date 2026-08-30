@@ -445,18 +445,32 @@ hides.
   absorption is unsafe and measured so**: a moved-but-not-repriced row would carry a NULL amount, fall
   back INSIDE `idx_transactions_template_period_scenario`, and collide with the target period's
   canonical generated row. Meanings 3 and 4 need representation before the flag can go.
-* [ ] **X-av** `fix(salary): the base annual salary is a dated series` -- closes **N-237**. Rule 1 of
-  R-FI applied to the last scalar input: `apply_raises(base_salary, raises, as_of)` resolves RAISES
-  as-of, but `profile.annual_salary` is the base for all time, so the app cannot tell "I got a raise"
-  from "I typed the wrong salary" and a correction reprices only from today forward -- the same
-  half-effective-dating the template amount had.
-* [ ] **X-aw** `fix(salary): a period's gross does not depend on the horizon` -- closes **N-239**.
-  `paycheck_calculator._gross_biweekly_for_period:543` distributes the annual rounding residue when
-  the row's calendar year holds `pay_periods_per_year` periods IN THE LIST IT WAS HANDED and falls
-  back to `ROUND_HALF_UP` otherwise, so the answer depends on how far the schedule has been
-  generated. Measured: filling 2028 from 14 periods to 26 moves **6 rows by `-$0.06`**; shrinking a
-  full 2027 to 25 moves none. Recurrence **D10**'s class, and the fix is to count a year's paydays
-  from the stored cadence rather than from whichever rows exist.
+* [ ] **X-av** `refactor(salary): the pay rate is a dated per-paycheck gross` -- closes **N-237**
+  and **N-391**. **Re-scoped 2026-08-29 by ruling R-HW(b)**, which changed its UNIT as well as its
+  dating: the stored fact becomes what ONE paycheck pays, effective-dated, and `annual_salary`
+  becomes `gross x periods_per_year` -- derived and shown beside the entry, never a second stored
+  figure. Rule 1 of R-FI still applies to the dating half: `apply_raises(base_salary, raises,
+  as_of)` resolves RAISES as-of while the base is the base for all time, so the app cannot tell "I
+  got a raise" from "I typed the wrong salary". **The unit half is where the bank evidence points**
+  -- the owner's stub states BOTH `$91,675.00` a year and `$3,526.00` a paycheck, and `26 x
+  $3,526.00 = $91,676.00`, so the source contradicts itself and the app resolves it silently. A
+  stored per-paycheck figure can hold the number that actually arrives and SHOW the annualisation,
+  which makes the contradiction visible instead. **It does not presume the gross is the culprit**:
+  N-391 records that a `$0.04` error in any of the twelve hand-entered deductions reproduces the
+  same net, so the step opens with an operator re-reading one stub.
+* [x] **X-aw** `078077db` -- a paycheck's gross is a RATE (**R-HW**), so **N-239** died by construction. Closed its horizon half; opened **N-390** and **N-391**. Record in `archive/four_shipped_steps_2026-08-30.md`.
+* [ ] **X-bh** `refactor(salary): the engine asks the calendar, not a list` -- closes **N-390**.
+  Four judgements still read the period LIST `calculate_paycheck` is handed: third-paycheck
+  detection, the first-paycheck-of-month deduction cadence, the FICA wage-base cumulative and a
+  deduction's annual cap. `X-aw` removed the fifth (the gross), which is why they are now visible as
+  a set. Measured 2026-08-30: the year-to-date wage total for 2026-05-21 reads `$14,103.84` from the
+  63 saved rows against `$35,259.62` from a complete 2026, because the schedule opens 2026-03-26 and
+  the app holds no row for a paycheck before it. `$0.00` on today's data -- this owner reaches
+  neither the SS wage base nor any `annual_cap` -- and the third-paycheck arm cost `$502.45` on one
+  row when the recurrence arc measured it (**D25**). **It OPENS with a ruling** rather than a fix:
+  the engine should take the `PayCalendar`, which can project past the horizon, but the 2026-08-10
+  rule says there is no paycheck BEFORE the first payday, and a year-to-date total that starts
+  mid-year is exactly the case that needs an answer.
 
 ### Phase X -- the posting restructure
 
@@ -835,24 +849,14 @@ hides.
   produces it, which a fork changes and a rebase changes. Two remedies are refused: stamp
   equality, measured GREEN on the broken template, and a `pg_indexes` spot check, which names
   one object where the next instance will be a different one -- the same shape as an allowlist.
-* [x] **X-bd** `39935763` -- every route in the sweep is its OWN pytest item. Closed **N-364**,
-  whose diagnosis it measured FALSE: the account-less arm had not grown at all since `910065a9`,
-  and all 42 new URLs sat in the KIND arms, which one account route grows SEVEN at a time. The
-  root cause was neither axis -- one test issuing every request is O(the route table) under an
-  O(1) budget, so an arm only divides the constant. **A later step may not reintroduce one**, and
-  the routes must stay enumerable without a database. Opened **N-387**, owned by `X-be-2`.
-* [x] **X-be-2** `167aab8d` -- a test SAYS what world it starts in: a named seeded start state,
-  built once per xdist worker and frozen into a snapshot every declaring test still takes its OWN
-  private clone of. Closed **N-387**, whose read-only premise it measured FALSE (`GET /mfa/setup`
-  writes, through `write_transaction()`), which is why the shared database that row pointed at was
-  refused. **The per-test clone STAYS: the clone is the isolation.** Sweep 82.26 s -> 18.73 s
-  serially, no suite-level change. Opened **N-388**, owned by `X-be-3`.
-* [x] **X-be-3** `0aa2cc80` -- the sweep grades EVERY GET route and carries no list of the ones
-  it does not. Closed **N-388**: `_UNREACHED_RULES` and the skip branch that fed it are DELETED, the
+* [x] **X-bd** `39935763` -- every route in the sweep is its OWN pytest item. Closed **N-364**, whose diagnosis it measured FALSE; opened **N-387**. Record in `archive/four_shipped_steps_2026-08-30.md`.
+* [x] **X-be-2** `167aab8d` -- a test SAYS what world it starts in. Closed **N-387**, whose read-only premise it measured FALSE; opened **N-388**. Record in `archive/four_shipped_steps_2026-08-30.md`.
+* [x] **X-be-3** `0aa2cc80` -- the sweep grades EVERY GET route and carries no list of the ones it
+  does not. Closed **N-388**: `_UNREACHED_RULES` and the skip branch that fed it are DELETED, the
   world holds a row of every kind a GET rule takes an id for, and coverage is an equality against
-  `url_map` no list can satisfy. **All 17 unrequested rules answer and NONE 5xx** -- the question
-  that row left open. The fill map is keyed `(blueprint, converter)` with NO bare-name fallback,
-  since FIVE names are bound under two blueprints and two of them name two TABLES.
+  `url_map` no list can satisfy. **All 17 unrequested rules answer and NONE 5xx.** The fill map is
+  keyed `(blueprint, converter)` with NO bare-name fallback. `X-bd`'s and `X-be-2`'s two standing
+  constraints moved into `_SWEEP_CASES`, the one home an archive cannot govern away.
 * [ ] **X-be** `refactor(services): three modules are at the line ceiling, not near it` -- closes
   **N-365**, whose row carries the census and both instances. **Root: in a corpus whose docstrings
   ARE the design record, a per-module LINE cap binds what gets WRITTEN DOWN.** The fork, per module:
@@ -869,15 +873,7 @@ hides.
   ruled here and must be shown FIRING on a planted stale disable. **FIFTEEN live `duplicate-code`
   disables remain in `app/` and not one has been re-measured** (4 in `models/`, 5 in `routes/`, 6 in
   `services/`). The step's first deliverable is the census.
-* [x] **X-am** `7b0ddae8` -- the `Settled` ARCHIVE is DELETED (**R-HA**): it was ABSORBING and
-  REACHABLE, so a row entered it from one dropdown and no door led out, while the DELETE control on
-  the same card still removed it. Closed **N-177**; as-built in `archive/x_am_as_built_2026-08-27.md`.
-  **What it pins is a CONJUNCTION** -- no state both reachable and absorbing -- not *no terminal
-  states*, which would contradict `credit_card` locked ruling 5. **CC3b must obey it**: a terminal
-  `Credit` re-arms the destroy-but-not-correct asymmetry `deletion_refusal` still permits.
-
-### Phase E2 -- the super-package boundary (runs LAST; Phase G runs inside it, ruling **R-DQ**)
-
+* [x] **X-am** `7b0ddae8` -- the `Settled` ARCHIVE is DELETED (**R-HA**, which carries what `CC3b` owes). Closed **N-177**; as-built in `archive/x_am_as_built_2026-08-27.md`, entry in `archive/four_shipped_steps_2026-08-30.md`.
 * [ ] **E2-0** `the membership trace` -- NO code. Answer from the code: which modules are members,
   what the public re-export surface is, whether `account_projection` is in or out, and whether
   `ledger_report_service` is (**N-35**). Re-run the fence scan and check the arrow risk: whether any

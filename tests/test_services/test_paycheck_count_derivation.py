@@ -104,12 +104,12 @@ class TestTheCountIsTheSchedule:
     def test_a_years_paychecks_sum_to_a_years_salary(
         self, app, db, seed_user, cadence_days, count,
     ):
-        """The year's grosses total the annual salary EXACTLY, at every rhythm.
+        """The year's grosses total the annual salary, at every rhythm.
 
         Input: a $91,675 raise-free profile -- the developer's own salary --
         projected over one full year at each authorable cadence.
-        Expected: the grosses sum to $91,675.00 to the cent, whatever the
-        rhythm.
+        Expected: the grosses sum to $91,675.00 within HALF A CENT PER
+        PAYCHECK, whatever the rhythm.
         Why: **this is the money property finding F-16 destroyed**, and it is
         an identity rather than a figure, so it holds at every cadence without
         a per-cadence expected value to get wrong.  Before R-F16 the engine
@@ -117,6 +117,20 @@ class TestTheCountIsTheSchedule:
         the year totalled ``count / 26`` of the salary: 200% at a 7-day
         cadence, 46% at 30 days.  Measured on this exact salary at plan step
         R-F16.
+
+        **The bound replaced an exact equality at plan step balance:X-aw**
+        (ruling **balance:R-HW**), and it is derived rather than chosen.  The
+        gross is ``round_money(salary / count)``, one ROUND_HALF_UP at the
+        cent, so a single paycheck sits at most half a cent from its exact
+        share and ``count`` of them at most ``count / 2`` cents from the
+        salary -- $0.04 at the 7 / 14 / 15 / 30-day cadences here, against a
+        bound of $0.13 at 26, and exactly $0.00 at the 365-day one, whose single
+        yearly paycheck IS the salary and rounds nothing.
+        MED-05 / PA-07 bought the exact equality by giving the earliest
+        paychecks of a year an extra cent, which made a paycheck's value
+        depend on how many pay-period rows existed (finding **N-239**).
+        **The bound is far tighter than the defect this case guards**: F-16
+        was wrong by 100% and 54% of a year's salary, not by cents.
         """
         with app.app_context():
             user_id = seed_user["user"].id
@@ -140,10 +154,16 @@ class TestTheCountIsTheSchedule:
             )
 
             total = sum(b.earnings.gross_biweekly for b in breakdowns)
-            assert total == Decimal("91675.00"), (
+            bound = Decimal(count) * Decimal("0.005")
+            assert abs(total - Decimal("91675.00")) <= bound, (
                 f"a {cadence_days}-day cadence paid {total} of a "
-                f"$91,675.00 salary over {len(breakdowns)} paychecks"
+                f"$91,675.00 salary over {len(breakdowns)} paychecks, "
+                f"outside the {bound} rounding bound"
             )
+            # And every paycheck is the SAME figure -- the rate contract
+            # ruling R-HW states.  Without this the bound above would pass
+            # for an engine that varied the gross period by period.
+            assert len({b.earnings.gross_biweekly for b in breakdowns}) == 1
 
     def test_the_same_profile_prices_differently_at_two_rhythms(
         self, app, db, seed_user,
@@ -186,14 +206,24 @@ class TestTheCountIsTheSchedule:
             ).earnings.gross_biweekly
 
             # Hand-computed, and stated as the cents rather than as a
-            # tolerance band: $91,675 / 52 = $1,762.9808 -> floor $1,762.98
-            # with a residue of 4 cents, so the first period of the group
-            # takes $1,762.99.  $91,675 / 26 = $3,525.9615 -> floor
-            # $3,525.96, residue 10 cents, so the first takes $3,525.97.  A
-            # band would not catch a one-cent residue inversion, which is
-            # exactly what the code around this computes.
-            assert weekly_gross == Decimal("1762.99")
-            assert biweekly_gross == Decimal("3525.97")
+            # tolerance band: $91,675 / 52 = $1,762.9807... -> $1,762.98 and
+            # $91,675 / 26 = $3,525.9615... -> $3,525.96, each one
+            # ROUND_HALF_UP at the cent.  A band would not catch a one-cent
+            # error, which is exactly the size of what the code around this
+            # computes.
+            #
+            # **Re-pinned at plan step balance:X-aw** from $1,762.99 /
+            # $3,525.97, which carried MED-05 / PA-07's residue cent (and
+            # whose comment misstated the biweekly residue as 10 cents; it
+            # was 4 -- $91,675 - $3,525.96 * 26 = $0.04).
+            assert weekly_gross == Decimal("1762.98")
+            assert biweekly_gross == Decimal("3525.96")
+            # The docstring's own claim, now literally true: two weekly
+            # paychecks make one biweekly one, to the cent.  Under the
+            # superseded rule it was FALSE at this salary -- $1,762.99 x 2 =
+            # $3,525.98 against a biweekly $3,525.97 -- because the residue
+            # was distributed independently in each of the two years.
+            assert weekly_gross * 2 == biweekly_gross
 
 
 class TestAnOwnerWithNoCadenceIsSTILLSERVED:

@@ -13,70 +13,88 @@ IDENTITY are read; ``end_date`` / ``period_index`` -- the columns plan step
 **C4** drops -- never were.  See :class:`PeriodInfo` for why that identity is
 never ``None``.
 
-Biweekly rounding residue -- reconciled to the annual aggregate
----------------------------------------------------------------
+The per-paycheck gross -- a RATE, not a share of a year
+-------------------------------------------------------
 
-``gross_biweekly`` is computed by dividing the (post-raise) annual
-salary by the owner's PAYCHECK COUNT and reconciling the per-cycle
-rounding residue back into the annual aggregate so the sum of all
-periods sharing the same effective annual salary in the same calendar
-year equals their share of that annual salary exactly (audit MED-05 /
-PA-07).
+``gross_biweekly`` is the (post-raise) annual salary divided by the owner's
+PAYCHECK COUNT and rounded once, at the cent.  The division lives in ONE place
+for the whole application, :func:`app.services.payroll_basis.gross_per_paycheck`,
+which carries the argument for the rule and the measurements behind it.
 
 The paycheck count is :attr:`PayrollBasis.periods_per_year`, derived from the
 owner's pay cadence and from nothing else since plan step **R-F16**; that class
 carries what the second stored count cost (finding **F-16**).
 
-Algorithm.  Within a reconciliation group -- the set of periods in one
-calendar year that share one post-raise annual salary -- the per-period
-floor is ``(annual / periods_per_year)`` rounded *down* to the
-cent.  The cumulative residue is ``annual * group_size /
-periods_per_year - floor * group_size``, expressed in whole cents.
-The earliest ``residue_cents`` periods of the group (sorted by start
-date) each receive ``floor + $0.01``; the remaining periods receive
-``floor``.  The distribution is deterministic and reproducible across
-invocations, and the per-period values differ from each other by at
-most one cent.
+Two properties follow, and they are the point:
 
-Examples (assuming all 26 periods in one year, one salary):
+* Every paycheck in one salary segment pays the SAME figure.
+* The figure is a function of the salary and the cadence ALONE.  No period and
+  no period LIST reach it, so nothing a schedule extend can do will move it.
 
-- $50,000 / 26 -> floor $1,923.07, residue 18 cents -> 18 periods at
-  $1,923.08 + 8 periods at $1,923.07 = $50,000.00 exact.
-- $75,000 / 26 -> floor $2,884.61, residue 14 cents -> 14 periods at
-  $2,884.62 + 12 periods at $2,884.61 = $75,000.00 exact.
-- $100,000 / 26 -> floor $3,846.15, residue 10 cents -> 10 periods at
-  $3,846.16 + 16 periods at $3,846.15 = $100,000.00 exact.
+**The second property is the whole argument, and the first is NOT evidence for
+this fork** -- an adversarial review of the design corrected a first draft that
+made it one.  A flat per-paycheck figure is what a real stub shows, and the
+owner's does show one; but the superseded rule is ALSO flat whenever the annual
+salary divides evenly, so "real stubs are flat" argues for correcting the
+salary input (plan step **X-av**, finding **N-391**) and not for deleting the
+residue distribution.  What decides THIS fork is that the residue had to be
+apportioned, apportioning it needed an ordinal, and the only ordinal available
+was a count of rows that happen to exist.
 
-Partial-context fallback.  When the supplied ``all_periods`` does not
-cover the full pay-period year for the period's salary group (e.g. a
-single-period call in a route preview, or a test fixture that supplies
-one period at a time), the reconciliation cannot anchor against a
-complete annual figure and the helper falls back to
-``ROUND_HALF_UP`` quantisation -- the historical per-period semantics.
-The fallback prevents a partial sample from being mis-reconciled as
-though it were a full year.
+**This replaced a residue-distribution contract at plan step balance:X-aw**
+(ruling **balance:R-HW**, 2026-08-29), superseding audit MED-05 / PA-07 --
+which had itself superseded F-127's "accepted simplification" -- and closing
+finding **N-239**.  MED-05 spread the annual quantisation residue over the
+periods of a calendar year so the year summed to the annual salary exactly.
+Deciding WHICH paychecks got the extra cent required knowing where a period sat
+among its year's paychecks, and the only thing the engine had to count was the
+``budget.pay_periods`` rows that happened to exist -- so filling 2028 from 16
+rows to 26 moved six already-settled paychecks by a cent each.  N-239 is now
+unrepresentable rather than guarded: there is no group, no ordinal, no
+partial-context fallback and no list.
 
-This reconciliation matches the canonical W-2 box 1 expectation -- the
-sum of pay stubs equals the contract annual salary exactly -- and
-removes the silent ~$0.10/year drift documented in audit prior PA-07.
-The previous fallback contract (each stub is the half-up quantised
-value, with the residue carried into the year-end aggregate) was
-classified in 2026-04-15's audit as F-127 "accepted simplification";
-MED-05 / PA-07 supersedes F-127 with this exact-reconciliation
-contract.
+**What that gives up, stated because it is a real cost**: a calendar year's
+grosses no longer sum to the annual salary exactly.  The bound is half a cent
+per paycheck -- ``0.005 x periods_per_year``, so ``$0.13`` at a biweekly
+cadence and ``$1.83`` at the daily one ``budget.pay_schedule`` legally admits.
+On the owner's own salary, ``26 x $3,525.96 = $91,674.96``, four cents under.
+
+*Two figures that belong to this paragraph are deliberately NOT here, because
+an adversarial review found the first draft conflating them.*  ``-$0.03``
+(2026), ``-$0.05`` (2027) and ``+$0.10`` (2028) are what the owner's schedule
+moves BY, measured 2026-08-30 as this rule's year total minus the superseded
+rule's -- they are not the distance from the annual salary, which for 2026 is
+``+$5,006.84`` because a July raise splits the year and it holds 27 paydays.
+
+Giving the identity up is the honest answer rather than a regression, because
+the identity MED-05 enforced is not one payroll honours.  The employer's flat ``$3,526.00`` sums to
+``$91,676.00`` over 26 paychecks against the ``$91,675.00`` the profile holds
+-- and that stub is dated inside a 27-payday year while reading ``annual / 26``
+rather than ``annual / 27``, so this employer demonstrably does NOT re-divide in
+such a year.  Roughly one calendar year in eleven holds 27 biweekly paydays and
+simply pays 27 of them.  **2026 is one on this owner's payday phase** -- 2026-01-01
+through 2026-12-31 -- and driving MED-05's rule over it at a FLAT
+``$91,675.00`` (no mid-year raise, so the whole year is one reconciliation
+group) pays ``$95,200.96``: a full extra paycheck above the salary its own
+docstring claimed the year would equal.
+
+**The STORED input is still the annual salary, and plan step balance:X-av flips
+it** to a dated per-paycheck gross with the annual derived (ruling R-HW).  The
+contract stated here -- a constant rate per paycheck, independent of the
+schedule -- is what survives that flip unchanged; only the input improves.
 """
 
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
+from decimal import Decimal
 
 from app import ref_cache
 from app.enums import CalcMethodEnum, DeductionTimingEnum
 from app.services import tax_calculator
 from app.services.calibration_service import apply_calibration
 from app.services.pay_calendar import DerivedPeriod
-from app.services.payroll_basis import PayrollBasis
+from app.services.payroll_basis import PayrollBasis, gross_per_paycheck
 from app.services.salary_raises import apply_raises, get_raise_event
 from app.utils.deduction_cap import cap_period_amount
 from app.utils.money import round_money
@@ -84,8 +102,6 @@ from app.utils.money import round_money
 logger = logging.getLogger(__name__)
 
 ZERO = Decimal("0")
-TWO_PLACES = Decimal("0.01")
-ONE_CENT = Decimal("0.01")
 
 
 @dataclass
@@ -191,7 +207,8 @@ class _DeductionContext:
 
     Carries the whole :class:`PayrollBasis` rather than a bare profile: the
     annual-cap cumulative replays prior periods' grosses through
-    :func:`_gross_biweekly_for_period`, which needs the paycheck COUNT too.
+    :func:`~app.services.payroll_basis.gross_per_paycheck`, which needs the
+    paycheck COUNT too.
     """
     basis: "PayrollBasis"
     period: DerivedPeriod
@@ -219,16 +236,14 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod,
                        *, calibration=None):
     """Calculate a single paycheck for a given period.
 
-    The gross biweekly amount is computed by dividing the (post-raise)
-    annual salary by ``basis.periods_per_year``; the per-cycle
-    quantisation residue is reconciled back into the annual aggregate
-    so the sum of the year's grosses for a single salary segment
-    equals that salary exactly (audit MED-05 / PA-07, supersedes
-    F-127).  See the module docstring section "Biweekly rounding
-    residue -- reconciled to the annual aggregate" for the algorithm,
-    including the partial-context fallback for callers that supply
-    fewer than ``basis.periods_per_year`` periods (route previews,
-    isolated test fixtures).
+    The gross is the (post-raise) annual salary divided by
+    ``basis.periods_per_year`` and rounded once, at the cent
+    (:func:`~app.services.payroll_basis.gross_per_paycheck`).  It is a RATE:
+    the same figure for every paycheck in one salary segment, and a function of
+    the salary and the cadence alone -- ``all_periods`` does not reach it.  See
+    the module docstring section "The per-paycheck gross -- a RATE, not a share
+    of a year" for what that replaced (plan step **balance:X-aw**, ruling
+    **balance:R-HW**, superseding audit MED-05 / PA-07).
 
     Args:
         basis:        The :class:`PayrollBasis` -- this owner's salary profile
@@ -239,13 +254,15 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod,
         period:       The ``DerivedPeriod`` this paycheck is for.
         all_periods:  The owner's WHOLE saved schedule (``calendar.saved()``
                       for every direct caller): 3rd-paycheck detection, the
-                      first-paycheck-of-month cadence, the annual rounding
-                      reconciliation, the FICA cumulative and a deduction's
-                      annual cap all read it, and a partial set under-counts
-                      every one -- ``$502.45`` on one stored row when the
-                      recurrence arc measured it (ledger row **D25**).  A
+                      first-paycheck-of-month cadence, the FICA cumulative and
+                      a deduction's annual cap all read it, and a partial set
+                      under-counts every one -- ``$502.45`` on one stored row
+                      when the recurrence arc measured it (ledger row **D25**).
+                      **Those four are all that read it, and each is still
+                      horizon-dependent** -- ledger row **N-390**; the gross
+                      stopped reading it at plan step **balance:X-aw**.  A
                       SEQUENCE, not the window type: :func:`project_salary`
-                      passes a year slice by design (the fallback above).
+                      passes a year slice by design.
         tax_configs:  dict with keys:
                       - bracket_set: TaxBracketSet
                       - state_config: StateTaxConfig
@@ -261,14 +278,10 @@ def calculate_paycheck(basis: PayrollBasis, period: DerivedPeriod,
     profile = basis.profile
     annual_salary = apply_raises(profile.annual_salary, profile.raises, period.start_date)
 
-    # Step 2: Gross biweekly.  Residue from the per-cycle quantisation
-    # is reconciled back into the annual aggregate (MED-05 / PA-07);
-    # see the module docstring "Biweekly rounding residue -- reconciled
-    # to the annual aggregate" for the algorithm and the partial-context
-    # fallback.
-    gross_biweekly = _gross_biweekly_for_period(
-        annual_salary, period, all_periods, basis,
-    )
+    # Step 2: Gross biweekly -- the salary over the owner's paycheck count,
+    # rounded once.  Deliberately NOT a function of ``all_periods``: that is
+    # what plan step balance:X-aw removed (finding N-239).
+    gross_biweekly = gross_per_paycheck(annual_salary, basis.periods_per_year)
 
     # Steps 3-4 & 8: 3rd-paycheck detection plus the pre- and post-tax
     # deduction passes (both share the same per-paycheck context).
@@ -526,129 +539,6 @@ def _bracket_state(taxable_biweekly, pay_periods_per_year, state_config):
     return round_money(state_annual / pay_periods_per_year)
 
 
-def _gross_biweekly_for_period(annual_salary, period, all_periods, basis):
-    """Return the per-period gross with the biweekly residue reconciled.
-
-    Within a "reconciliation group" -- the set of periods in
-    ``all_periods`` that share both ``period``'s calendar year and the
-    same post-raise annual salary -- the helper distributes the
-    quantisation residue so the group's grosses sum to its exact share
-    of the annual salary (audit MED-05 / PA-07).  See the module
-    docstring "Biweekly rounding residue -- reconciled to the annual
-    aggregate" for the algorithm.
-
-    When ``all_periods`` does not cover a full pay-period year for the
-    group (e.g. fewer than ``basis.periods_per_year`` periods total in
-    that year), the helper falls back to ``ROUND_HALF_UP`` so a
-    partial-sample call does not mis-distribute a residue computed
-    against an incomplete denominator.  Single-period callers (route
-    previews, isolated test fixtures) therefore retain the historical
-    per-period semantics.
-
-    Args:
-        annual_salary: The post-raise annual salary for ``period``,
-            as returned by :func:`apply_raises`.  Constructed from a
-            Decimal upstream; the helper does not re-coerce.
-        period: The :class:`~app.services.pay_calendar.DerivedPeriod` whose
-            gross is being computed.
-        all_periods: Every period known to the calling
-            ``calculate_paycheck`` invocation.  Periods outside
-            ``period.start_date.year`` are ignored.
-        basis: The :class:`PayrollBasis`.  Its profile is consulted only for
-            ``apply_raises``, so the group boundary respects mid-year raise
-            events; its cadence supplies the full-year denominator.
-
-    Returns:
-        Decimal -- the period's gross, equal to either ``floor`` or
-        ``floor + $0.01`` where ``floor = (annual / periods_per_year)``
-        rounded down to the cent.  Earlier periods in the group (by
-        ``start_date``) receive the ``+$0.01`` adjustment when the
-        group's residue is positive.
-    """
-    profile = basis.profile
-    pay_periods_dec = basis.periods_per_year
-    period_year = period.start_date.year
-
-    # Restrict to the same calendar year, then to the same effective
-    # annual salary (i.e. the same post-raise segment).  Sort by
-    # start_date so the distribution is deterministic and reproducible
-    # across invocations.
-    same_year = [
-        p for p in all_periods
-        if p.start_date.year == period_year
-    ]
-    group = sorted(
-        (
-            p for p in same_year
-            if apply_raises(profile.annual_salary, profile.raises, p.start_date)
-            == annual_salary
-        ),
-        key=lambda p: p.start_date,
-    )
-
-    # Partial-context fallback: when the supplied year does not cover
-    # the full pay-period year, the residue would be computed against
-    # an incomplete denominator.  Retain the historical per-period
-    # half-up semantics so single-period callers (route previews,
-    # isolated tests) are unaffected by the reconciliation contract.
-    if len(same_year) < pay_periods_dec:
-        return round_money(annual_salary / pay_periods_dec)
-
-    floor_value = (annual_salary / pay_periods_dec).quantize(
-        TWO_PLACES, rounding=ROUND_DOWN
-    )
-    residue_cents = _residue_cents(
-        annual_salary, len(group), pay_periods_dec, floor_value
-    )
-
-    # ``residue_cents`` is non-negative by construction (floor rounded
-    # the share down; quantising the share never decreases it below
-    # ``floor * group_size``).  Distribute to the earliest periods in
-    # group order.
-    if residue_cents <= 0:
-        return floor_value
-
-    # ``period`` is guaranteed to be in ``group``: it shares its own
-    # calendar year and (by construction, since ``annual_salary`` was
-    # computed from it) the group's effective annual salary, so it
-    # survives both filters above.  The earliest ``residue_cents`` periods
-    # in group order receive the +$0.01 adjustment.
-    if group.index(period) < residue_cents:
-        return floor_value + ONE_CENT
-    return floor_value
-
-
-def _residue_cents(annual_salary, group_size, pay_periods_dec, floor_value):
-    """Return the whole-cent residue to distribute across a reconciliation group.
-
-    The group's exact share of the annual salary at full precision is
-    ``annual_salary * group_size / periods_per_year``.  The residue is
-    the cents that must be added on top of ``floor_value * group_size`` to
-    reach that share.  Quantising the share to the cent here is safe:
-    ``floor_value`` is already at cent precision, so any sub-cent fraction
-    in the exact share is below the rounding boundary the residue
-    distribution targets.  The result is non-negative by construction (the
-    floor rounded the share down; quantising the share never decreases it
-    below ``floor * group_size``).
-
-    Args:
-        annual_salary: The post-raise annual salary for the group.
-        group_size: Number of periods sharing the salary in the year.
-        pay_periods_dec: The owner's paycheck count, an integral Decimal.
-        floor_value: The per-period floor (annual / periods, rounded down).
-
-    Returns:
-        int -- the count of cents to distribute (one cent each to the
-        earliest ``residue_cents`` periods in group order).
-    """
-    group_size_dec = Decimal(group_size)
-    exact_share = round_money(
-        annual_salary * group_size_dec / pay_periods_dec
-    )
-    residue = exact_share - floor_value * group_size_dec
-    return int((residue / ONE_CENT).to_integral_value(rounding=ROUND_HALF_UP))
-
-
 def _is_third_paycheck(period, all_periods):
     """Detect if this period is the 3rd paycheck in its calendar month.
 
@@ -794,16 +684,21 @@ def _cumulative_deduction_before(ded, ctx, pct_id):
     Mirrors :func:`_get_cumulative_wages` (the FICA wage-base precedent): walk
     the same-year periods that start before ``ctx.period``, skip the ones where
     the deduction is not taken, and sum each applicable period's raw amount --
-    recomputing that period's gross via :func:`_gross_biweekly_for_period` so a
-    percentage deduction tracks the raise-adjusted gross exactly as the live
-    paycheck does.  Summing the raw (pre-cap) amounts is equivalent to summing
+    recomputing that period's gross through
+    :func:`~app.services.payroll_basis.gross_per_paycheck` so a percentage
+    deduction tracks the raise-adjusted gross exactly as the live paycheck
+    does.  Summing the raw (pre-cap) amounts is equivalent to summing
     the capped ones (see ``cap_period_amount``), so no capped running state has
     to be threaded across the per-period calls.
 
     Like the FICA cap, the cumulative is read from ``ctx.all_periods``; a
     partial-context caller (route preview, isolated fixture) that omits earlier
     periods under-counts it and defers the cap -- the same documented limitation
-    :func:`_get_cumulative_wages` carries.
+    :func:`_get_cumulative_wages` carries, and the same one ledger row
+    **N-390** owns.  It is a genuine horizon dependence and NOT the one plan
+    step **balance:X-aw** removed: the per-period GROSS no longer reads a
+    period set at all, but WHICH prior paychecks exist to sum still comes from
+    this list.
     """
     period_year = ctx.period.start_date.year
     profile = ctx.basis.profile
@@ -820,7 +715,7 @@ def _cumulative_deduction_before(ded, ctx, pct_id):
         salary = apply_raises(
             profile.annual_salary, profile.raises, p.start_date,
         )
-        gross = _gross_biweekly_for_period(salary, p, ctx.all_periods, ctx.basis)
+        gross = gross_per_paycheck(salary, ctx.basis.periods_per_year)
         cumulative += _raw_deduction_amount(ded, gross, p, profile, pct_id)
     return cumulative
 
@@ -849,6 +744,14 @@ def _get_cumulative_wages(basis, period, all_periods):
     condition works correctly regardless of input order (M-02).
 
     Used for FICA SS wage base cap tracking.
+
+    **It reads *all_periods* and is therefore horizon-dependent** -- ledger row
+    **N-390**.  An owner whose schedule opens mid-year has no rows for the
+    paychecks before it, so the year-to-date total under-counts and the SS
+    wage-base cap is reached late: measured 2026-08-29 at ``$14,103.84`` for
+    2026-05-21 against ``$35,259.62`` from a complete 2026.  Plan step
+    **balance:X-aw** removed that dependence from the per-period GROSS, which
+    is a different question; this one is about which paychecks EXIST to sum.
     """
     profile = basis.profile
     period_year = period.start_date.year
@@ -861,13 +764,11 @@ def _get_cumulative_wages(basis, period, all_periods):
             break
 
         salary = apply_raises(profile.annual_salary, profile.raises, p.start_date)
-        # Reuse the same reconciliation contract as ``calculate_paycheck``
-        # so prior-period grosses summed here match the per-period
-        # ``gross_biweekly`` exactly.  Without this, the FICA cap path
-        # would compare a half-up cumulative to reconciled per-period
-        # grosses and shift the cap-crossing period by one cent in edge
-        # cases (MED-05 / PA-07).
-        gross = _gross_biweekly_for_period(salary, p, all_periods, basis)
+        # The SAME producer ``calculate_paycheck`` prices a paycheck with, so
+        # the prior-period grosses summed here match the per-period
+        # ``gross_biweekly`` by construction rather than by two expressions
+        # happening to agree.
+        gross = gross_per_paycheck(salary, basis.periods_per_year)
         cumulative += gross
 
     return cumulative

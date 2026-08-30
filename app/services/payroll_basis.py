@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from app.services.pay_calendar import PayCadence
+from app.utils.money import round_money
 
 
 @dataclass(frozen=True)
@@ -74,4 +75,104 @@ class PayrollBasis:
         return self.cadence.periods_per_year
 
 
-__all__ = ["PayrollBasis"]
+def gross_per_paycheck(
+    annual_salary: Decimal, periods_per_year: Decimal,
+) -> Decimal:
+    """Return what ONE paycheck pays, for a salary paid *periods_per_year* a year.
+
+    **The one place the per-paycheck division is spelled, for FOUR callers**:
+    ``paycheck_calculator.calculate_paycheck`` (and the two cumulatives that
+    replay prior periods for it), ``investment_projection``'s percentage
+    deductions, ``retirement_projection``'s employer-match salary basis and
+    ``retirement_dashboard_service``'s retirement-gap take-home basis.  Stated
+    as MEMBERSHIP rather than a count, for the reason
+    :mod:`app.services.pay_calendar` states it that way: a count of a census
+    goes stale silently, and this one was wrong twice before it was written
+    down.
+
+    **One site is deliberately NOT here and saying so is the point.**
+    ``routes.salary.profiles`` sets a template's ``default_amount`` from
+    :meth:`~app.services.pay_calendar.PayCadence.annual_to_per_paycheck`
+    UNQUANTIZED, letting the ``Numeric(12, 2)`` column round it -- a money
+    boundary outside :func:`~app.utils.money.round_money`.  It agrees with this
+    function on every value today; it is a pre-existing smell this step did not
+    open and does not fix, found by an adversarial review of X-aw.
+
+    The first two callers each spelled the division themselves until plan step
+    **balance:X-aw**, and the two RULES were
+    measured answering differently on 5 of the owner's 63 saved periods
+    (2027-01-14 .. 2027-03-11: ``$3,722.54`` under the engine's residue
+    distribution against ``$3,722.53`` under the projection's plain division,
+    at the same ``$96,785.88``), because only one of them apportioned a
+    residue.  ``docs/audits/pylint-cleanup/deep-quality-hunt.md:721`` had
+    recorded that divergence as an open design fork; this is its answer.
+
+    **It does NOT make the two sides agree on a paycheck, and an adversarial
+    review corrected a first draft that claimed it did.**  They now share the
+    rounding rule and still differ in what they FEED it: the engine passes
+    ``apply_raises(...)`` for the period, while
+    ``investment_projection.adapt_deductions`` stamps the profile's RAW
+    ``annual_salary``.  For an owner with an applicable raise those differ by
+    the raise and not by a cent -- that is finding **D45**, measured at
+    ``$137.51`` a year of understated employer contribution, and it is owned
+    elsewhere.  What this function makes structural is that neither side can
+    round differently from the other.
+
+    **The gross is a RATE, not a share of a year** (ruling **balance:R-HW**).
+    Every paycheck in one salary segment pays the same figure, and the figure is
+    a function of the salary and the cadence ALONE: no period, no period LIST,
+    and therefore nothing a schedule extend can move.  That is finding **N-239**
+    made unrepresentable rather than guarded -- the defect was that the engine
+    decided which paychecks got a
+    residue cent by counting the ``budget.pay_periods`` rows that happened to
+    exist, so filling 2028 from 16 rows to 26 moved six settled paychecks by a
+    cent each.
+
+    **What it gives up, stated because it is a real cost**: a calendar year's
+    grosses no longer sum to the annual salary exactly.  The bound is half a
+    cent per paycheck -- ``0.005 x periods_per_year``, ``$0.13`` at a biweekly
+    cadence and ``$1.83`` at the daily one the schedule legally admits -- and
+    on the owner's own salary ``26 x $3,525.96 = $91,674.96``, four cents
+    under.  That supersedes audit finding MED-05 / PA-07, which added the
+    residue distribution to close exactly that gap.  The module docstring of
+    :mod:`app.services.paycheck_calculator` carries the argument and the
+    per-year figures; both are stated there once rather than in two places.
+
+    **It takes the COUNT rather than a**
+    :class:`~app.services.pay_calendar.PayCadence`, which would let it delegate
+    to :meth:`~app.services.pay_calendar.PayCadence.annual_to_per_paycheck` and
+    leave ONE division in the codebase.  The count is what
+    ``investment_projection.AdaptedDeduction`` carries -- stamped from the one
+    cadence its adapter is handed -- and widening that namedtuple to hold the
+    cadence would reach four services and their fakes to spare one expression.
+    The two divisions answer different questions at different precisions
+    besides: that one converts a rate and is deliberately NOT quantized (its
+    module forbids quantizing at all), where this one is a money boundary.
+
+    **The stored input is the ANNUAL salary, and plan step balance:X-av flips
+    it.** Under ruling R-HW the FACT is what one paycheck pays and the annual
+    figure is the derivation; until that lands, the annual is what the profile
+    holds and this is where it is converted.  So this function is the seam that
+    flip edits, and the contract it states -- a constant rate per paycheck,
+    independent of the schedule -- is the contract that survives it unchanged.
+
+    Args:
+        annual_salary: The salary in effect for the paycheck, post-raise, as
+            :func:`~app.services.salary_raises.apply_raises` returns it -- or,
+            from ``investment_projection``, the profile's raw annual (D45,
+            above).  A ``Decimal`` at full precision, NOT coerced here: a
+            ``float`` is refused by the division below with a ``TypeError``
+            before :func:`~app.utils.money.round_money` is reached at all, and
+            coercing through ``str()`` here would launder exactly the
+            imprecision that refusal exists to keep out.
+        periods_per_year: How many paychecks the owner receives in a year,
+            off :attr:`PayrollBasis.periods_per_year` -- which derives it from
+            ``budget.pay_schedule.cadence_days`` and from nothing else.
+
+    Returns:
+        The gross for one paycheck, quantized to the cent.
+    """
+    return round_money(annual_salary / periods_per_year)
+
+
+__all__ = ["PayrollBasis", "gross_per_paycheck"]
