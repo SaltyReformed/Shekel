@@ -32,7 +32,6 @@ import pytest
 
 from app import ref_cache
 from app.enums import GoalModeEnum, IncomeUnitEnum, StatusEnum, TxnTypeEnum
-from app.models.account import AccountAnchorHistory
 from app.models.ref import AccountType
 from app.models.savings_goal import SavingsGoal
 from app.models.transaction import Transaction
@@ -44,6 +43,7 @@ from app.services import balance_at, savings_dashboard_service
 from app.services.balance_at import BalanceContext
 from app.services.pay_calendar import calendar_for
 from tests._test_helpers import (
+    account_never_asserted,
     add_anchor_history as _add_anchor_history,
     add_entry,
     create_envelope_txn,
@@ -55,7 +55,9 @@ from tests._test_helpers import (
     make_investment_account,
     make_salary_profile,
     period_window,
+    reassert_balance_on,
     set_default_grid_account,
+    settle_instant_on,
     settle_day_columns,
     settlement_columns,
 )
@@ -241,14 +243,16 @@ class TestPulseHero:
     def test_hero_staleness_stale(self, app, seed_user, seed_periods, db):
         """An anchor older than the threshold IS stale.
 
-        Clear the factory origination row first so the 20-days-ago row is
-        the latest.  20 > 14, so is_stale is True.
+        The seeded account asserts on the owner's bootstrap day, years
+        before the 20-days-ago row appended here, so that row is the latest.
+        20 > 14, so is_stale is True.
+
+        *It used to clear the origination row first; the table is append-only
+        since plan step X-f3c-2c and the row is dated years back rather than at
+        NOW, so neither the act nor its reason survives.*
         """
         with app.app_context():
             account = seed_user["account"]
-            db.session.query(AccountAnchorHistory).filter_by(
-                account_id=account.id,
-            ).delete()
             _add_anchor_history(
                 db.session, account, seed_periods[0], "1000.00", days_ago=20,
             )
@@ -278,13 +282,17 @@ class TestPulseHero:
         R-EP deleted that too) was never exercised on this path.
         """
         with app.app_context():
-            db.session.query(AccountAnchorHistory).filter_by(
-                account_id=seed_user["account"].id,
-            ).delete()
+            # **Built rather than emptied** (plan step X-f3c-2c): an assertion
+            # is append-only at the database tier, so an account that has
+            # asserted nothing is one the assertion factory never touched.
+            account = account_never_asserted(
+                seed_user, db.session, name="Silent",
+                opening_equity=Decimal("0.00"),
+            )
             db.session.commit()
 
             last_observed = cash_ledger.reconciled_through(
-                seed_user["account"].id,
+                account.id,
             ).observed_day
             assert last_observed is None
             assert _pulse._anchor_is_stale(
@@ -1575,13 +1583,21 @@ class TestOneClockPerRender:
     ):
         """The hero's ``is_stale`` flag measures from the pass's day.
 
-        The seed account's anchor was asserted on 2026-01-02 and the default
-        threshold is 14 days.  A pass pinned to 2026-01-10 is 8 days out and
+        The account is asserted on 2026-01-02 here.  The seeded one carries
+        only its ORIGINATION assertion, dated on the bootstrap day before the
+        calendar (plan step X-f3c-2c), so the day this case turns on is one
+        the case states rather than one it inherits.  The default threshold is
+        14 days.  A pass pinned to 2026-01-10 is 8 days out and
         NOT stale; the frozen 2026-03-20 is 77 days out and stale.  The
         threshold sits between the two, so the flag has to flip -- which a
         producer reading its own clock could not do.
         """
         with app.app_context():
+            reassert_balance_on(
+                db.session, seed_user["account"],
+                settle_instant_on(date(2026, 1, 2)),
+            )
+            db.session.commit()
             observed = cash_ledger.reconciled_through(
                 seed_user["account"].id,
             ).observed_day

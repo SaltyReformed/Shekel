@@ -37,6 +37,7 @@ from app.models.ref import AccountType
 from app.services import account_service, cash_ledger
 from app.utils.dates import display_today
 from tests._test_helpers import load_migration_module
+from tests.conftest import SEED_USER_BOOTSTRAP_START
 
 _MIGRATION_FILENAME = "c81f0a5b3e27_the_anchor_balance_has_one_home.py"
 
@@ -221,27 +222,19 @@ class TestTheDowngradeResolvesTheOwnersOwnPeriod:
         """
         assert seed_periods_today
         with app.app_context():
-            checking_type = db.session.query(AccountType).filter_by(
-                name="Checking",
-            ).one()
-            stray = account_service.create_account(
-                account_service.AccountSpec(
-                    user_id=seed_user["user"].id,
-                    account_type_id=checking_type.id,
-                    name="Off-Calendar Account",
-                    anchor_balance=Decimal("500.00"),
-                ),
-            )
-            db.session.flush()
-            # Move its ONLY assertion to a day no period of its owner covers.
-            off_calendar = min(
-                period.start_date for period in seed_periods_today
-            ) - timedelta(days=400)
-            assertion = db.session.query(AccountAnchorHistory).filter_by(
-                account_id=stray.id,
-            ).one()
-            assertion.observed_on = off_calendar
-            db.session.flush()
+            # **The stray account is the SEEDED one, and its off-calendar day
+            # is a fact of the fixture rather than one edited in** (plan step
+            # X-f3c-2c).  ``budget.account_anchor_history`` is append-only, so
+            # this case used to build its shape by creating an account and then
+            # moving its only assertion -- an act no door has.  It does not
+            # need to: ``build_seed_user`` opens the Checking account on the
+            # owner's bootstrap day and ``seed_periods_today`` then builds a
+            # calendar around today, so the seeded account already asserts on a
+            # day no period of its owner covers.  ``create_account`` could not
+            # reproduce it anyway: ``resolve_observation_day`` floors an
+            # assertion at the calendar's own first day.
+            stray = db.session.get(Account, seed_user["account"].id)
+            off_calendar = SEED_USER_BOOTSTRAP_START
 
             owner_periods = db.session.query(PayPeriod).filter_by(
                 user_id=seed_user["user"].id,
@@ -254,9 +247,18 @@ class TestTheDowngradeResolvesTheOwnersOwnPeriod:
 
             # ``UNIQUE(user_id, period_index)`` -- the second user already has
             # a bootstrap period at index 0, so the decoy takes the next free
-            # index.  Its INDEX does not matter here: it wins on being the only
+            # index.  Its INDEX does not matter here: it wins on being a
             # CONTAINING period, which the first subquery prefers over any
             # fallback whatever the ordering.
+            #
+            # **It is no longer the ONLY foreign containing period** (plan step
+            # X-f3c-2c).  ``off_calendar`` is the seeded bootstrap day now, and
+            # the second user's own bootstrap period spans it -- so an unscoped
+            # query would pick one of two foreign periods rather than this one.
+            # The control still fires either way: what it grades is that the
+            # OWNER's earliest is chosen over any foreign period at all, and
+            # the owner-has-no-containing-period precondition above is what
+            # makes that the only legal answer.
             next_index = 1 + max(
                 (p.period_index for p in db.session.query(PayPeriod).filter_by(
                     user_id=seed_second_user["user"].id,

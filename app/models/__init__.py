@@ -37,7 +37,11 @@ from app.models.user import MfaConfig, User, UserSettings
 # Budget domain
 from app.models.pay_period import PayPeriod
 from app.models.pay_schedule import PaySchedule
-from app.models.account import Account, AccountAnchorHistory
+from app.models.account import (
+    Account,
+    AccountAnchorHistory,
+    AccountAnchorHistoryImmutableError,
+)
 from app.models.account_opening import (
     AccountOpening,
     AccountOpeningImmutableError,
@@ -129,6 +133,7 @@ __all__ = [
     "PaySchedule",
     "Account",
     "AccountAnchorHistory",
+    "AccountAnchorHistoryImmutableError",
     "AccountOpening",
     "AccountOpeningImmutableError",
     "Category",

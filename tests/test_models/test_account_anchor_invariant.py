@@ -380,6 +380,38 @@ def _enclosing_defs(tree) -> dict[int, str]:
     return owner
 
 
+def _docstring_nodes(tree) -> set[int]:
+    """Return ``id()`` of every string Constant that is a DOCSTRING.
+
+    A module, class or function docstring is the first statement of its body
+    and is an ``ast.Expr`` wrapping a string ``Constant``.  Identified by
+    position rather than by content, so a string that merely LOOKS like prose
+    is still censused and a SQL literal that happens to sit first in a function
+    is still counted as one.
+
+    Args:
+        tree: The parsed module.
+
+    Returns:
+        The set of ``id()`` values of the docstring Constant nodes.
+    """
+    import ast  # pylint: disable=import-outside-toplevel
+
+    holders = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    docstrings: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, holders) or not node.body:
+            continue
+        first = node.body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            docstrings.add(id(first.value))
+    return docstrings
+
+
 def _anchor_history_writers(root: pathlib.Path) -> list[tuple[str, str, int]]:
     """Return every site under *root* that could WRITE an assertion row.
 
@@ -398,6 +430,18 @@ def _anchor_history_writers(root: pathlib.Path) -> list[tuple[str, str, int]]:
 
     A ``SELECT`` literal naming the table is NOT a writer and is not reported
     (``scripts/integrity_check.py`` has two, legitimately).
+
+    **Nor is a DOCSTRING, and that arm had the exact hole this census's first
+    line says it was built to avoid** (plan step X-f3c-2c).  The reason given
+    for walking the AST rather than grepping is that "a grep cannot tell a
+    construction from a docstring naming the class" -- and the raw-SQL arm then
+    read every string constant, docstrings included.  It fired on
+    ``app/append_only_infrastructure.py``, whose module docstring explains why
+    a bulk ``UPDATE`` on ``budget.account_anchor_history`` is refused: prose
+    ABOUT a write, reported as one.  Docstrings are excluded by IDENTITY
+    (``ast.get_docstring`` semantics: the first statement of a module, class or
+    function, when it is a string) rather than by pattern, so a genuine SQL
+    literal that happens to sit first in a function is still counted.
 
     Args:
         root: The directory to census.  Parameterised so the negative control
@@ -422,6 +466,7 @@ def _anchor_history_writers(root: pathlib.Path) -> list[tuple[str, str, int]]:
     for path in sorted(root.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         owner = _enclosing_defs(tree)
+        docstrings = _docstring_nodes(tree)
         names = {_MODEL}
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
@@ -454,7 +499,11 @@ def _anchor_history_writers(root: pathlib.Path) -> list[tuple[str, str, int]]:
                     hit = True
                 elif called in {"insert", "Insert"} and mentions_model(node):
                     hit = True
-            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            elif (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and id(node) not in docstrings
+            ):
                 lowered = node.value.lower()
                 hit = _TABLE in lowered and any(
                     verb in lowered for verb in _SQL_WRITE_VERBS

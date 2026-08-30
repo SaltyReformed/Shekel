@@ -47,7 +47,6 @@ from app.utils.dates import DISPLAY_TIMEZONE
 from app.enums import StatusEnum
 from app.exceptions import ValidationError
 from app.extensions import db
-from app.models.account import AccountAnchorHistory
 from app.models.pay_period import PayPeriod
 from app.services import pay_period_write
 from app.services.balance_at._cash_fold import (
@@ -64,6 +63,8 @@ from app.services.cash_ledger import (
 )
 from app.services.pay_calendar import DerivedPeriod, calendar_for
 from tests._test_helpers import (
+    open_books_before_the_first_assertion,
+    account_never_asserted,
     add_entry,
     add_txn,
     append_balance_assertion,
@@ -76,7 +77,7 @@ from tests._test_helpers import (
     mark_purchase_settled,
     override_anchor,
     period_window,
-    restamp_opening_assertion,
+    reassert_balance_on,
     restate_account_opening,
 )
 
@@ -161,23 +162,50 @@ _BOOKS_OPEN_ON = date(2026, 1, 14)
 
 
 def _opened_at(account, at, books_open_on=None):
-    """Pin the account's OPENING assertion instant (shared builder).
+    """Open the account's books and assert its balance on *at*'s day (builder).
+
+    **TWO acts, and they are spelled as two** (plan step X-f3c-2c).  It used to
+    be one, because ``restamp_opening_assertion`` re-dated the stored
+    origination assertion and restated the opening as a side effect.  An
+    assertion is append-only, so what a fixture has instead is the pair a
+    production owner has: say what the balance was on a day
+    (``reassert_balance_on``), and say when the books opened
+    (``restate_account_opening`` -- the door plan step X-f3c-2b-2 builds).
+
+    **The default moves the books BACKWARD ONLY, and the first draft of this
+    helper did not.**  It restated them to the day before *at* unconditionally,
+    which is right when *at* is the account's earliest assertion and wrong the
+    moment it is not: the seeded account originates on the owner's bootstrap
+    day, so ``_opened_at(account, _instant(2026, 1, 1))`` shoved the books two
+    years FORWARD, past an assertion that already stood.  Nothing in ``app/``
+    can produce that -- ``account_service.create_account`` is the only
+    ``AccountOpening`` writer and it dates books and assertion together, and
+    ``open_books_before_the_first_assertion`` exists to keep the books ahead of
+    everything -- so ~55 fixtures were carrying a state the app forbids, and
+    the first producer to grade "no assertion precedes the books" would have
+    failed all of them at once, about nothing they were testing.  Found by the
+    adversarial review of this step.
 
     Args:
-        account: The account whose opening assertion to pin.
-        at: The aware-UTC instant to stamp it with.
+        account: The account to open.
+        at: The aware-UTC instant of the assertion.  Its display civil day is
+            the day the asserted balance was TRUE.
         books_open_on: The civil day the account's BOOKS open.  ``None``, the
-            default, leaves them where ``restamp_opening_assertion`` puts them
-            -- one day before *at*, which is the shape ``create_account`` and
-            the migration both produce.  Pass a day only when the case needs
-            the SPAN between the books and the first assertion, and pass the
-            day that case names rather than a shared one.
+            default, bounds them before every day a row could land on
+            (``open_books_before_the_first_assertion``), which is backward-only
+            and therefore cannot strand a row that was legal a moment ago.
+            Pass a day only when the case needs the SPAN between the books and
+            an assertion, and pass the day that case names rather than a shared
+            one -- and know that it is NOT bounded: a day later than an
+            existing assertion builds a state no door can.
 
     Returns:
-        The re-stamped assertion row.
+        The appended assertion row.
     """
-    row = restamp_opening_assertion(db.session, account, at)
-    if books_open_on is not None:
+    row = reassert_balance_on(db.session, account, at)
+    if books_open_on is None:
+        open_books_before_the_first_assertion(db.session, account)
+    else:
         restate_account_opening(db.session, account, books_open_on)
     return row
 
@@ -225,7 +253,11 @@ class TestTheOpeningEquityIsTheSeed:
         no later assertion can change it.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        _opened_at(account, _instant(2026, 2, 1))
+        # The books' day is named because this case SAMPLES around it -- one
+        # of the four dates below is the day before them (plan step X-f3c-2c).
+        _opened_at(
+            account, _instant(2026, 2, 1), books_open_on=date(2026, 1, 31),
+        )
         db.session.commit()
 
         folded = _fold(account, scenario, [
@@ -256,11 +288,15 @@ class TestTheOpeningEquityIsTheSeed:
         would be a second statement of a rule the database holds.
         """
         account = seed_user["account"]
-        # ``books_open_on=None`` leaves the books where the restamp puts them,
-        # one day before the assertion.  The default in this file opens them
-        # EARLIER so the streams can carry a record between the books and the
-        # first assertion; here the tight books are the subject.
-        _opened_at(account, _instant(2026, 2, 1), books_open_on=None)
+        # **The books' own day is the SUBJECT here, so the case names it**
+        # (plan step X-f3c-2c).  ``books_open_on=None`` used to mean "one day
+        # before the assertion", which stopped being true when the default
+        # became backward-only -- and it had to, because the unconditional
+        # forward restatement shoved the books past the account's own
+        # origination everywhere else in this file.
+        _opened_at(
+            account, _instant(2026, 2, 1), books_open_on=date(2026, 1, 31),
+        )
         db.session.flush()
         with pytest.raises(ValidationError) as exc:
             create_settled_cash_transaction(
@@ -292,8 +328,10 @@ class TestTheOpeningEquityIsTheSeed:
         pins the boundary rather than only one side of it.
         """
         account = seed_user["account"]
-        # Tight books, for the reason the case above states.
-        _opened_at(account, _instant(2026, 2, 1), books_open_on=None)
+        # Tight books, NAMED, for the reason the case above states.
+        _opened_at(
+            account, _instant(2026, 2, 1), books_open_on=date(2026, 1, 31),
+        )
         db.session.flush()
         with pytest.raises(ValidationError):
             create_settled_cash_transaction(
@@ -301,7 +339,9 @@ class TestTheOpeningEquityIsTheSeed:
                 settled_on=date(2026, 1, 31), name="on-the-opening-day",
             )
         db.session.rollback()
-        _opened_at(account, _instant(2026, 2, 1), books_open_on=None)
+        _opened_at(
+            account, _instant(2026, 2, 1), books_open_on=date(2026, 1, 31),
+        )
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("500.00"),
             settled_on=date(2026, 2, 1), name="the-first-recordable-day",
@@ -556,10 +596,17 @@ class TestSettledMoneyRidesOnTheAssertionItFollowed:
         """
         freeze_today(monkeypatch, date(2026, 4, 5))
         scenario = seed_user["scenario"]
+        # **Opened on 2026-01-02 rather than re-stamped there** (plan step
+        # X-f3c-2c).  The factory defaults the origination assertion to today,
+        # which this case has frozen to 2026-04-05 -- AFTER both the March
+        # assertion and the April transfer -- so an account opened at the
+        # default would have its own origination govern every figure below.
+        # The day is the calendar's first, which is the earliest
+        # ``resolve_observation_day`` accepts.
         money_market = create_savings_account(
             seed_user, db.session, "Money Market", Decimal("1000.00"),
+            observed_on=seed_periods[0].start_date,
         )
-        _opened_at(money_market, _instant(2026, 1, 1))
         append_balance_assertion(
             db.session, money_market, seed_periods[4], Decimal("5644.27"),
             _instant(2026, 3, 1, 12, 20, 20),
@@ -1092,10 +1139,16 @@ class TestTotality:
         that DOES raise is a missing opening record -- see
         ``TestAMissingOpeningRecordIsRefused``.*
         """
-        account, scenario = seed_user["account"], seed_user["scenario"]
-        db.session.query(AccountAnchorHistory).filter_by(
-            account_id=account.id,
-        ).delete()
+        # **Built rather than emptied** (plan step X-f3c-2c): an assertion is
+        # append-only at the database tier, so an account that has asserted
+        # nothing is one the assertion factory never touched.  It carries the
+        # same ``$1,000.00`` opening the seeded account does, which is the
+        # level this case says the fold answers from.
+        scenario = seed_user["scenario"]
+        account = account_never_asserted(
+            seed_user, db.session, name="Silent",
+            opening_equity=Decimal("1000.00"),
+        )
         db.session.commit()
 
         folded = _fold(account, scenario, [

@@ -1152,8 +1152,8 @@ def create_loan_account(
             # ``observed_on`` is left to the factory (today).  A loan's balance
             # is ledger-derived from dated ``LoanAnchorEvent`` rows, not from
             # this cash assertion, so the civil-day partition R-DH governs does
-            # not reach it -- and the suites that DO care restamp the opening
-            # themselves.  Recorded rather than "fixed": a blanket day-before
+            # not reach it -- and the suites that DO care assert their own day.
+            # Recorded rather than "fixed": a blanket day-before
             # default here trips the create-time floor for a fixture whose pay
             # periods start today or later.
         ),
@@ -1340,7 +1340,9 @@ def create_loan_with_trueup(
     return loan
 
 
-def create_savings_account(seed_user, db_session, name, anchor_balance):
+def create_savings_account(
+    seed_user, db_session, name, anchor_balance, observed_on=None,
+):
     """Create a Savings account via the canonical factory (flushed, uncommitted).
 
     The shared liquid-account builder for goal-track / savings tests, so
@@ -1353,6 +1355,13 @@ def create_savings_account(seed_user, db_session, name, anchor_balance):
         db_session: The test ``db.session``.
         name: The account name.
         anchor_balance: The opening anchor balance (Decimal).
+        observed_on: The civil day the opening balance is asserted for, or
+            ``None`` for the factory's default (today).  **A suite whose money
+            moves BEFORE today states this** (plan step X-f3c-2c): the
+            origination assertion is append-only, so an account opened "today"
+            and then handed movements dated in January carries an assertion
+            that governs every one of them.  Re-stamping the row afterwards was
+            how that used to be repaired, and there is no such act.
 
     **It took an ``anchor_period_id`` until plan step X-f1c3c** (ruling R-EH):
     an account no longer references a pay period at all, so callers that pinned
@@ -1374,10 +1383,12 @@ def create_savings_account(seed_user, db_session, name, anchor_balance):
         "account_type_id": savings_type.id,
         "name": name,
         "anchor_balance": anchor_balance,
-        # ``observed_on`` is left to the factory (today).  See
-        # ``create_loan_account`` for why this helper does not take
-        # ``create_account_of_type``'s day-before default.
+        # ``observed_on`` is left to the factory (today) unless the caller
+        # names a day.  See ``create_loan_account`` for why this helper does
+        # not take ``create_account_of_type``'s day-before default.
     }
+    if observed_on is not None:
+        spec_kwargs["observed_on"] = observed_on
     account = account_service.create_account(
         account_service.AccountSpec(**spec_kwargs),
     )
@@ -1412,21 +1423,30 @@ def create_hysa_account(  # pylint: disable=too-many-arguments,too-many-position
     classify INTEREST.  Commits before returning so the account is fully
     resolvable.
 
-    **The opening assertion is stamped at the anchor period's first day**
-    (via :func:`restamp_opening_assertion`).  Since plan step X-c2a, modelled
+    **The opening assertion is DATED at the anchor period's first day, and the
+    factory supplies that day to ``create_account`` rather than moving the row
+    afterwards** (plan step X-f3c-2c).  Since plan step X-c2a, modelled
     interest accrues only forward of an account's latest balance assertion
-    (ruling R-L), and ``account_service.create_account`` writes that row with
-    the WALL CLOCK.  A suite that freezes ``today`` inside its own
-    seeded period range -- ``tests/test_services`` freezes it to 2026-03-20 --
-    would otherwise build an account asserted months AFTER its own last pay
-    period, a state production cannot reach (a true-up files against
-    ``get_current_period``) and one in which the account accrues nothing
-    anywhere.  Pinning the instant to the period's own start makes the fixture
-    deterministic, reachable (an account opened on day 1 of its period), and
+    (ruling R-L), and ``create_account`` defaults ``observed_on`` to today.  A
+    suite that freezes ``today`` inside its own seeded period range --
+    ``tests/test_services`` freezes it to 2026-03-20 -- would otherwise build
+    an account asserted months AFTER its own last pay period, a state
+    production cannot reach (a true-up files against ``get_current_period``)
+    and one in which the account accrues nothing anywhere.  Dating the
+    origination at the period's own start makes the fixture deterministic,
+    reachable (an account opened on day 1 of its period), and
     clock-independent, and it keeps every hand-computed interest figure in the
     suites valid: the accrual window is then the full anchor period, exactly
     what it was before the rule existed.  A test that needs a MID-period
-    assertion (the shape the rule exists for) restamps it itself.
+    assertion (the shape the rule exists for) appends its own.
+
+    **The day now goes through the DOOR, which BOUNDS it** -- an assertion may
+    not be dated in the future (``anchor_service.resolve_observation_day``), so
+    a caller handing this factory a pay period that starts after today is
+    refused, where the old re-stamp wrote that state silently.  That is the
+    point rather than a cost: one route suite was building exactly it (an
+    account anchored two periods AHEAD of today) and grading a shape no owner
+    can produce.
 
     Args:
         seed_user: The ``seed_user`` fixture dict.
@@ -1473,6 +1493,7 @@ def create_hysa_account(  # pylint: disable=too-many-arguments,too-many-position
             account_type_id=hysa_type.id,
             name=name,
             anchor_balance=balance,
+            observed_on=anchor_period.start_date,
         ),
     )
     db_session.add(account)
@@ -1484,15 +1505,12 @@ def create_hysa_account(  # pylint: disable=too-many-arguments,too-many-position
             compounding or CompoundingFrequencyEnum.DAILY,
         ),
     ))
-    restamp_opening_assertion(
-        db_session, account, settle_instant_on(anchor_period.start_date),
-    )
     # **And then before every day a row could land on** (plan step X-f3c-2b,
-    # ruling **R-HG**).  The restamp above pins the books one day before the
-    # anchor PERIOD the caller named, which is right when that period is the
-    # earliest -- and these factories are routinely handed a LATER period while
-    # the suite records movements in an earlier one.  Backward-only, so it
-    # never undoes the pin above.
+    # ruling **R-HG**).  ``create_account`` opens the books on the day it was
+    # handed, which is right when the anchor period is the earliest -- and
+    # these factories are routinely handed a LATER period while the suite
+    # records movements in an earlier one.  Backward-only, so it never undoes
+    # the day stated above.
     open_books_before_the_first_assertion(db_session, account)
     db_session.commit()
     return account
@@ -2349,10 +2367,9 @@ def settle_instant_on(day):
     """Return a deterministic event instant on a given civil date (noon UTC).
 
     A test-side helper for pinning an ASSERTION's recording instant to a
-    specific day without a wall-clock read -- :func:`restamp_opening_assertion`,
-    which :func:`create_hysa_account` uses to pin an account's opening.  Noon
-    UTC is the same civil day in the display zone (Eastern), so a day pinned
-    this way reads back as that day.
+    specific day without a wall-clock read -- :func:`reassert_balance_on` takes
+    one.  Noon UTC is the same civil day in the display zone (Eastern), so a
+    day pinned this way reads back as that day.
 
     **It no longer serves a SETTLE, and that is plan step X-f1** (ruling R-EC).
     A settled transaction stores its civil day in ``transactions.settled_on``,
@@ -3771,132 +3788,257 @@ def override_anchor(db_session, account, period, balance, *, at=None):
     return history
 
 
-def restamp_opening_assertion(db_session, account, at):
-    """Pin the factory-written OPENING assertion's instant to ``at``.
+def reassert_balance_on(db_session, account, at):
+    """Assert *account*'s balance AGAIN, at the instant ``at``.
 
-    ``account_service.create_account`` writes the opening
-    :class:`~app.models.account.AccountAnchorHistory` row with a wall-clock
-    ``created_at``, which would sort AFTER every controlled instant a cash-ledger
-    test uses.  Re-stamping it makes the whole event stream deterministic.
+    **The fixture act that replaced three re-stamping helpers** (plan step
+    X-f3c-2c).  ``restamp_opening_assertion`` / ``restamp_latest_assertion``
+    UPDATEd a stored :class:`~app.models.account.AccountAnchorHistory` row to
+    move its business day and its recording instant onto a day the test had
+    chosen.  ``budget.account_anchor_history`` is append-only, so no such act
+    exists: an assertion records what a bank said on a day and the only way to
+    say something else is to say it again.  This helper is that -- one more
+    assertion, carrying the balance that governs unless the caller names
+    another, dated on ``at``'s civil day.
 
-    The instant-precise counterpart of :func:`add_anchor_history` (which dates
-    relative to now, in whole days): the cash walk partitions settles against an
-    assertion by INSTANT, so its suites need second precision and an absolute
-    moment.  Shared rather than copied per suite -- the walk (plan step X-a) and
-    the fold (X-b) both build their streams this way.
+    **Why the state it builds is production's own and not a fixture's.**  An
+    owner who reconciles twice files two assertions; production's Checking
+    account carries 2-3 on each of three days.  The two rows this leaves --
+    the origination one ``account_service.create_account`` wrote and this one --
+    are exactly what "I opened the account, and later I confirmed the balance
+    again" looks like, and the balance every producer reads on every day at or
+    after ``at`` is the same figure the re-stamp used to produce, because
+    nothing is dated between them.
 
-    Args:
-        db_session: The test ``db.session``.
-        account: The :class:`~app.models.account.Account` whose opening to pin.
-        at: The aware-UTC instant to stamp it with.
-
-    Returns:
-        The re-stamped :class:`AccountAnchorHistory` row (flushed).
-    """
-    return _restamp_assertion(db_session, account, at, newest=False)
-
-
-def restamp_latest_assertion(db_session, account, at):
-    """Pin the account's NEWEST assertion instant to ``at``.
-
-    The twin of :func:`restamp_opening_assertion` for a true-up written through
-    the production path (``anchor_service.stage_anchor_true_up``, which sets the
-    ``current_anchor_*`` cache AND appends the history row): that row also
-    carries a wall-clock ``created_at``, and since plan step X-c2a modelled
-    interest begins at the LATEST assertion's UTC civil day (ruling R-L), so a
-    suite that needs a controlled accrual window has to pin it.
-
-    It FLUSHES first rather than relying on autoflush: the caller has just
-    staged the true-up in the session, and resolving the row without flushing
-    would silently restamp the previous assertion instead -- a test helper
-    quietly pinning the wrong row is worse than one that fails.
+    **What it does NOT do is move the books.**  ``budget.account_openings`` is
+    the account's own opening record and this writes no row there; a caller
+    that needs the books earlier than they stand calls
+    :func:`open_books_before_the_first_assertion`, which is backward-only and
+    says so.  The re-stamp helpers restated the opening as a side effect, which
+    made "place this assertion" and "move the books" one act that no door
+    performs together.
 
     Args:
         db_session: The test ``db.session``.
-        account: The :class:`~app.models.account.Account` whose latest
-            assertion to pin.
-        at: The aware-UTC instant to stamp it with.
+        account: The :class:`~app.models.account.Account` asserting.
+        at: The aware-UTC instant to record the assertion at.  Its display
+            civil day becomes ``observed_on`` -- the day the balance was TRUE
+            -- and the instant itself becomes ``created_at``, which orders two
+            assertions that share a day.
 
     Returns:
-        The re-stamped :class:`AccountAnchorHistory` row (flushed).
-    """
-    return _restamp_assertion(db_session, account, at, newest=True)
+        The appended :class:`AccountAnchorHistory` row (flushed).
 
+    Raises:
+        AssertionError: When *account* carries no assertion to repeat.
+            Reachable -- :func:`account_never_asserted` builds exactly such an
+            account -- and raised rather than defaulted because a fabricated
+            balance is a figure no test author asked for.
 
-def _restamp_assertion(db_session, account, at, *, newest):
-    """Pin the oldest or newest assertion's instant -- the shared core.
-
-    One query with one ordering flag rather than two near-identical copies:
-    both wrappers answer "which stored assertion am I pinning", and the row
-    they resolve must be selected the same way
-    :func:`~app.services.cash_ledger.resolve_anchor` selects the latest
-    (``created_at`` then ``id``), or a same-instant pair would restamp a
-    different row than the producer reads.
-
-    Args:
-        db_session: The test ``db.session``.
-        account: The :class:`~app.models.account.Account` to pin.
-        at: The aware-UTC instant to stamp with.
-        newest: ``True`` for the latest assertion, ``False`` for the opening.
-
-    Returns:
-        The re-stamped :class:`AccountAnchorHistory` row (flushed).
+    **It took a ``balance`` argument until the adversarial review of this
+    step**, so a caller could assert a DIFFERENT figure.  Not one of the 21
+    call sites passed one: every caller means "say the same thing again on
+    another day", which is the whole act.  A test that wants a different figure
+    has :func:`append_balance_assertion`, which takes one and always did.
     """
     # pylint: disable=import-outside-toplevel  -- same circular-dep
     # avoidance as the loan helpers above.
     from app.models.account import AccountAnchorHistory
 
     require_assertion_instant(at)
+    # FLUSHES first rather than relying on autoflush: a caller that has just
+    # staged an assertion in the session would otherwise read the one before
+    # it, and a fixture quietly repeating the wrong balance is worse than one
+    # that fails.
     db_session.flush()
-    order = (AccountAnchorHistory.created_at, AccountAnchorHistory.id)
-    if newest:
-        order = tuple(column.desc() for column in order)
-    row = (
-        db_session.query(AccountAnchorHistory)
+    # ``.first()`` and not ``.scalar()``: an account may already carry several
+    # assertions, and ``Query.scalar`` is ``one()`` underneath -- it raises
+    # ``MultipleResultsFound`` on exactly the accounts this helper exists to
+    # add one more to.
+    governing = (
+        db_session.query(AccountAnchorHistory.anchor_balance)
         .filter_by(account_id=account.id)
-        .order_by(*order)
+        .order_by(
+            AccountAnchorHistory.observed_on.desc(),
+            AccountAnchorHistory.created_at.desc(),
+            AccountAnchorHistory.id.desc(),
+        )
         .first()
     )
-    row.created_at = at
-    # The BUSINESS day moves with the recording instant.  Pinning one and
-    # leaving the other is now a reachable state (``observed_on`` is a stored
-    # column since plan step 2), and it is not what any caller of a *restamp*
-    # helper means: they are placing the whole assertion, not editing its date.
-    row.observed_on = observed_day_of(at)
-    # And so does the ENTERED day (finding **N-299**).  It is a stored column
-    # since 2026-08-25 and its default answered ``display_today()`` when the
-    # row was INSERTed by ``create_account``; a restamp is an UPDATE, which no
-    # column default reaches.  Leaving it behind builds a row asserting a
-    # balance was true on a day it was typed BEFORE -- measured at three days
-    # on the ``seed_periods`` fixture -- which is unreachable in production
-    # (``resolve_observation_day`` refuses a future ``observed_on``) and would
-    # put a spurious "entered" caption on a row that is not back-dated.
-    row.recorded_on = observed_day_of(at)
-    # **The account's OPENING RECORD moves with its opening assertion** (plan
-    # step X-f3c-2a).  ``budget.account_openings`` stores the day the books
-    # opened beside the equity, and ``account_service.create_account`` wrote
-    # both from the factory's day.  A helper that placed the assertion and left
-    # the opening record behind would silently date the posted
-    # ``account_opening`` journal entry off the FIXTURE's stale day.
-    #
-    # **It lands the day BEFORE the assertion, not on it** (plan step
-    # X-f3c-2b, ruling **R-HG**).  An opening equity is the CLOSING balance
-    # for its own day, so a movement dated on that day is inside it and is
-    # refused -- and a caller pinning the OPENING assertion is placing the
-    # start of the account's recorded life, not forbidding the first day of
-    # it.  This is the shape production carries after X-f3c-2b's migration:
-    # Checking's books open 2026-03-26 and its first assertion is 2026-03-27.
-    # It moves no figure -- the assertion clears whatever settled on its own
-    # day either way.
-    #
-    # The table is APPEND-ONLY, so this is a restatement rather than an edit,
-    # exactly as a production restatement would be.
-    if not newest:
-        restate_account_opening(
-            db_session, account, observed_day_of(at) - _real_timedelta(days=1),
-        )
+    assert governing is not None, (
+        f"account {account.id} carries no assertion to repeat; use "
+        "append_balance_assertion to state one"
+    )
+    balance = governing[0]
+    row = AccountAnchorHistory(
+        account_id=account.id,
+        anchor_balance=balance,
+        created_at=at,
+        observed_on=observed_day_of(at),
+        # The entered day is the pinned instant's, never the wall clock
+        # (finding **N-299**): a historical row must say what it means rather
+        # than inherit ``display_today()`` from the column default.
+        recorded_on=observed_day_of(at),
+    )
+    db_session.add(row)
     db_session.flush()
     return row
+
+
+@contextmanager
+def append_only_guard_lifted(db_session, table):
+    """Lift the append-only trigger on *table* for the block's duration.
+
+    **This exists to grade the control UNDERNEATH, and nothing else.**  Since
+    plan step X-f3c-2c, ``budget.refuse_append_only_change`` refuses every
+    UPDATE and every DELETE on the three account-history tables, whoever asks --
+    which is what makes the rule true, and which also means it SHADOWS the
+    controls it sits on top of.  Three of those still matter and would
+    otherwise go ungraded:
+
+    * ``fk_transactions_reconciled_by``'s ``ON DELETE RESTRICT``, which refuses
+      to un-clear a line by removing the statement it names (ruling **R-FL**);
+    * ``ck_books_open_before_movements``' UPDATE and DELETE arms, which exist
+      precisely for "a raw ``UPDATE`` moving the governing row's ``opened_on``
+      forward, and a raw ``DELETE`` of the governing row" (plan step X-f3c-2b);
+    * the posted-only reversal branch of ``account_posting_service``, defensive
+      against a history row that vanished from under its journal entry.
+
+    A control nobody can reach is a control nobody can trust, and deleting
+    those three because a newer guard happens to stand in front of them would
+    trade a measured refusal for an argument.  So a case that grades one lifts
+    the outer guard for exactly its own statement and says so.
+
+    **It is not an escape hatch for building fixtures.**  A fixture that wants
+    an account with no assertion has :func:`account_never_asserted`; one that
+    wants a different asserted day has :func:`reassert_balance_on`.  Neither
+    needs this, and both were written so that neither would.
+
+    Restores the trigger in a ``finally``, so a failing assertion inside the
+    block cannot leave the rest of the test's transaction unguarded.
+
+    Args:
+        db_session: The test ``db.session``.
+        table: The schema-qualified table, e.g.
+            ``"budget.account_anchor_history"``.  Must be one of
+            :data:`app.append_only_infrastructure.APPEND_ONLY_TABLES`; a typo
+            would otherwise lift nothing and the case would grade the outer
+            guard while claiming to grade the inner one.
+
+    Yields:
+        ``None``.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from app.append_only_infrastructure import APPEND_ONLY_TABLES
+    from app.extensions import db
+
+    assert table in APPEND_ONLY_TABLES, (
+        f"{table!r} carries no append-only trigger to lift; "
+        f"expected one of {APPEND_ONLY_TABLES}"
+    )
+    from sqlalchemy import exc as sa_exc
+
+    enable = db.text(f"ALTER TABLE {table} ENABLE TRIGGER ck_append_only")
+    db_session.execute(db.text(
+        f"ALTER TABLE {table} DISABLE TRIGGER ck_append_only"
+    ))
+    try:
+        yield
+    finally:
+        try:
+            db_session.execute(enable)
+        except (sa_exc.InvalidRequestError, sa_exc.DBAPIError):
+            # A case that expects the INNER control to refuse leaves no way to
+            # emit further SQL, in one of two shapes: SQLAlchemy refuses
+            # ('prepared' after a failed COMMIT, pending-rollback after a
+            # failed flush), or PostgreSQL does (``InFailedSqlTransaction``
+            # after a constraint aborted the transaction).  Both are caught by
+            # name rather than broadly.  Rolling back is what such a case does
+            # next anyway; doing it here is what makes the guard come back
+            # whether the block passed or raised, which a bare re-enable would
+            # not.
+            db_session.rollback()
+            db_session.execute(enable)
+
+
+def account_never_asserted(
+    seed_user, db_session, name="Unasserted", type_name="Checking",
+    opening_equity=None,
+):
+    """Build an account the assertion factory never touched.
+
+    **The only honest way to reach "this account has asserted nothing" since
+    plan step X-f3c-2c**, and the reason is that the state is genuinely
+    unreachable through a door.  ``account_service.create_account`` writes an
+    origination assertion and CHECKS that it landed -- it is the E-19 / CRIT-01
+    invariant -- and ``budget.account_anchor_history`` is append-only at the
+    database tier, so nothing may delete that row while the account stands.
+    Every suite that needs the state used to reach it by creating an account
+    and then deleting its assertions; that act does not exist.
+
+    So this builds the row directly and stops there.  What it produces is an
+    account that was never created, which is exactly the premise: the branches
+    it reaches -- ``cash_ledger.resolve_anchor``'s ``RuntimeError``,
+    ``_asset_fold``'s fail-loud window, ``balance_at.cash_anchor_history``'s
+    empty log, ``integrity_check``'s BA-01 -- are the ones that exist because a
+    reader must not fabricate a level for an account whose books it cannot
+    read.  They are defensive arms for an impossible state, and a fixture that
+    could not build one would leave every one of them ungraded.
+
+    **It PAIRS the ledger account**, because that pairing is not part of what
+    the fixture is withholding: a posted-ledger reader asked about an account
+    with no chart row raises for a different reason, and a case meaning "no
+    assertion" would then be graded by the wrong refusal.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict, for the owner.
+        db_session: The test ``db.session``.
+        name: The account name, unique per owner.
+        type_name: The ``ref.account_types`` name.
+        opening_equity: When given, an :class:`AccountOpening` row is written
+            for the day before today carrying this equity -- for a case whose
+            subject is the ASSERTION's absence and which needs the books to be
+            readable.  ``None``, the default, withholds that too, which is what
+            a case about a missing OPENING record wants.
+
+    Returns:
+        The created :class:`~app.models.account.Account`, flushed.
+    """
+    # pylint: disable=import-outside-toplevel  -- same circular-dep
+    # avoidance as the loan helpers above.
+    from datetime import timedelta as _td
+
+    from app import ref_cache
+    from app.enums import AccountOpeningSourceEnum
+    from app.models.account import Account
+    from app.models.account_opening import AccountOpening
+    from app.models.ref import AccountType
+    from app.services import ledger_account_service
+    from app.utils.dates import display_today
+
+    account_type = (
+        db_session.query(AccountType).filter_by(name=type_name).one()
+    )
+    account = Account(
+        user_id=seed_user["user"].id,
+        account_type_id=account_type.id,
+        name=name,
+    )
+    db_session.add(account)
+    db_session.flush()
+    if opening_equity is not None:
+        db_session.add(AccountOpening(
+            account_id=account.id,
+            opened_on=display_today() - _td(days=1),
+            opening_equity=opening_equity,
+            source_id=ref_cache.account_opening_source_id(
+                AccountOpeningSourceEnum.USER_DECLARED,
+            ),
+        ))
+    ledger_account_service.create_ledger_account_for_account(account)
+    db_session.flush()
+    return account
 
 
 def open_books_before_the_first_assertion(
@@ -4081,8 +4223,8 @@ def restate_account_opening(db_session, account, opened_on):
 
     ``budget.account_openings`` is append-only and the latest recorded row
     governs, so moving the day means inserting a row rather than updating one.
-    The EQUITY is carried forward unchanged: a restamp places the opening in
-    time and says nothing about how much the books opened with.
+    The EQUITY is carried forward unchanged: a restatement places the opening
+    in time and says nothing about how much the books opened with.
 
     **It writes the row DIRECTLY rather than going through a service, and that
     is the point** (plan step X-f3c-2b).  ``account_service.create_account``
@@ -4121,11 +4263,17 @@ def append_balance_assertion(
     """Append one balance ASSERTION (a true-up) at a pinned instant.
 
     The instant-precise true-up builder the cash-ledger suites share.  See
-    :func:`restamp_opening_assertion` for why the instant (not the day) is the
+    :func:`reassert_balance_on` for why the instant (not the day) is the
     thing being pinned.
 
-    The row is inserted and then re-stamped, because ``created_at`` carries a
-    server default that the INSERT would otherwise fill with the wall clock.
+    **Every column is stated at INSERT** (plan step X-f3c-2c).  It used to
+    insert and then re-stamp, on the ground that ``created_at`` carries a
+    server default the INSERT would otherwise fill with the wall clock -- which
+    is not so: a value supplied to the constructor appears in the INSERT and no
+    server default is reached, which is what ``override_anchor`` and
+    ``add_anchor_history`` beside it have always relied on.  The table is
+    append-only, so the re-stamp had to go; measuring the reason first is what
+    made it cost no caller anything.
 
     **The row carries TWO clocks and this helper can now separate them**
     (*recorded_at*).  ``observed_on`` is the BUSINESS day the balance was true
@@ -4159,23 +4307,15 @@ def append_balance_assertion(
 
     require_assertion_instant(at)
     require_assertion_instant(at if recorded_at is None else recorded_at)
+    typed_at = at if recorded_at is None else recorded_at
     row = AccountAnchorHistory(
         account_id=account.id,
         anchor_balance=Decimal(str(balance)),
         observed_on=observed_day_of(at),
+        created_at=typed_at,
+        recorded_on=observed_day_of(typed_at),
     )
     db_session.add(row)
-    db_session.flush()
-    typed_at = at if recorded_at is None else recorded_at
-    row.created_at = typed_at
-    # **Both stored halves of the recording clock move together** (finding
-    # **N-299**).  ``recorded_on`` is a stored column since 2026-08-25 whose
-    # default is the wall clock, and this helper inserts first and re-stamps
-    # after -- so the default has already answered ``display_today()`` by the
-    # time the instant is pinned.  Restamping only the instant would build the
-    # row this helper exists to make impossible: one whose ordering says it was
-    # typed in June and whose card caption says today.
-    row.recorded_on = observed_day_of(typed_at)
     db_session.flush()
     return row
 
@@ -5059,15 +5199,15 @@ def make_appreciating_account(seed_user, db_session, anchor_period, balance, rat
     returning so the account is fully resolvable.
 
     **The opening assertion is stamped at the anchor period's first day**
-    (via :func:`restamp_opening_assertion`) -- finding N-77, fixed at plan step
+    (via :func:`reassert_balance_on`) -- finding N-77, fixed at plan step
     X-g2a for the reason :func:`create_hysa_account` was at X-c2a, and read
     there for the full argument.  ``account_service.create_account`` writes that
     row with the WALL CLOCK, and from plan step X-g2b a Property's appreciation
     accrues only forward of its LATEST assertion (ruling R-Y), so an unpinned
     opening is the newest assertion, lands past the suite's seeded horizon, and
     the account then appreciates NOTHING anywhere -- a state production cannot
-    reach.  A test that needs a MID-period or later assertion restamps it
-    itself, exactly as the interest suites do.
+    reach.  A test that needs a MID-period or later assertion appends its own,
+    exactly as the interest suites do.
 
     Args:
         seed_user: The ``seed_user`` fixture dict.
@@ -5100,6 +5240,7 @@ def make_appreciating_account(seed_user, db_session, anchor_period, balance, rat
             account_type_id=property_type.id,
             name="House",
             anchor_balance=balance,
+            observed_on=anchor_period.start_date,
         ),
     )
     db_session.add(account)
@@ -5107,15 +5248,12 @@ def make_appreciating_account(seed_user, db_session, anchor_period, balance, rat
     db_session.add(AssetAppreciationParams(
         account_id=account.id, annual_appreciation_rate=rate,
     ))
-    restamp_opening_assertion(
-        db_session, account, settle_instant_on(anchor_period.start_date),
-    )
     # **And then before every day a row could land on** (plan step X-f3c-2b,
-    # ruling **R-HG**).  The restamp above pins the books one day before the
-    # anchor PERIOD the caller named, which is right when that period is the
-    # earliest -- and these factories are routinely handed a LATER period while
-    # the suite records movements in an earlier one.  Backward-only, so it
-    # never undoes the pin above.
+    # ruling **R-HG**).  ``create_account`` opens the books on the day it was
+    # handed, which is right when the anchor period is the earliest -- and
+    # these factories are routinely handed a LATER period while the suite
+    # records movements in an earlier one.  Backward-only, so it never undoes
+    # the day stated above.
     open_books_before_the_first_assertion(db_session, account)
     db_session.commit()
     return account
@@ -5136,7 +5274,7 @@ def make_investment_account(
     fully resolvable.
 
     **The opening assertion is stamped at the anchor period's first day**
-    (via :func:`restamp_opening_assertion`) -- finding N-77, fixed at plan step
+    (via :func:`reassert_balance_on`) -- finding N-77, fixed at plan step
     X-g2a; see :func:`make_appreciating_account` beside it and
     :func:`create_hysa_account` for the full argument.  From plan step X-g2b an
     investment's growth accrues only forward of its LATEST assertion (ruling
@@ -5179,6 +5317,7 @@ def make_investment_account(
             account_type_id=inv_type.id,
             name=name,
             anchor_balance=balance,
+            observed_on=anchor_period.start_date,
         ),
     )
     db_session.add(account)
@@ -5192,15 +5331,12 @@ def make_investment_account(
         employer_match_percentage=match_pct,
         employer_match_cap_percentage=match_cap_pct,
     ))
-    restamp_opening_assertion(
-        db_session, account, settle_instant_on(anchor_period.start_date),
-    )
     # **And then before every day a row could land on** (plan step X-f3c-2b,
-    # ruling **R-HG**).  The restamp above pins the books one day before the
-    # anchor PERIOD the caller named, which is right when that period is the
-    # earliest -- and these factories are routinely handed a LATER period while
-    # the suite records movements in an earlier one.  Backward-only, so it
-    # never undoes the pin above.
+    # ruling **R-HG**).  ``create_account`` opens the books on the day it was
+    # handed, which is right when the anchor period is the earliest -- and
+    # these factories are routinely handed a LATER period while the suite
+    # records movements in an earlier one.  Backward-only, so it never undoes
+    # the day stated above.
     open_books_before_the_first_assertion(db_session, account)
     db_session.commit()
     return account

@@ -297,10 +297,18 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
         The five dividends take their own `Income: Interest & Dividends` category
         (**R-HL**), and 07-31's `$14.39` is recorded behind a 2026-07-31 assertion at `$3,673.90`
         that moves the accrual window past it (**R-HM**). Closes **N-383**.
-    * [ ] **X-f3c-2c** `feat(accounts): an assertion is append-only` -- give
-      `account_anchor_history` the `before_update` / `before_delete` refusal `LoanAnchorEvent` and
-      `JournalEntry` carry. Its cost is the fixtures: `restamp_opening_assertion` and
-      `append_balance_assertion` INSERT then UPDATE to pin an instant. Closes **N-287**.
+    * [x] **X-f3c-2c** `930f06fc` -- the DECOMPOSED parent of the append-only refusal (**R-HZ**):
+      the fixtures stop editing an assertion and the refusal that makes editing one impossible ship
+      TOGETHER, so no tree has one without the other. Closed **N-287**; opened **N-392**, **N-393**.
+      * [x] **X-f3c-2c-1** `930f06fc` -- a fixture PLACES an assertion and never edits one: three
+        re-stamping helpers become `reassert_balance_on`, `append_balance_assertion` states both
+        clocks at INSERT, the factories take their day at `create_account`, and the seeded
+        origination stays on the bootstrap day. ~40 cases state their own asserted day now.
+      * [x] **X-f3c-2c-2** `930f06fc` -- `budget.refuse_append_only_change` on all three tables
+        (**R-HY**): every UPDATE refused, a DELETE refused while the owning ACCOUNT stands, so
+        `ON DELETE CASCADE` stays the disposal path. `Account.anchor_history` takes
+        `passive_deletes="all"`, which N-287's own evidence missed; `append_only_guard_lifted`
+        keeps the three controls beneath the trigger graded.
     * [ ] **X-f3c-3** `feat(cash): the app says what it cannot explain` -- the account's
       OUTSTANDING DIFFERENCE (`latest asserted - (opening equity + SUM(postings))`, ONE figure per
       account and not a per-assertion correction) derived off the fold and displayed beside whether

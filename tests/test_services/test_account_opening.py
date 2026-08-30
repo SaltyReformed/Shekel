@@ -38,6 +38,7 @@ from app.services import balance_at
 from app.services.balance_at import BalanceContext
 from app.services.cash_ledger import account_opening_fact
 from tests._test_helpers import (
+    account_never_asserted,
     append_balance_assertion,
     create_account_via_service,
     settle_instant_on,
@@ -149,16 +150,17 @@ class TestAMissingOpeningRecordIsRefused:
         backfilled every account that predated the table), so this forces it.
         """
         with app.app_context():
-            account = create_account_via_service(
-                seed_user, db.session, "Checking", "Doomed Checking",
-                anchor_balance=Decimal("500.00"),
+            # **Built rather than emptied** (plan step X-f3c-2c).  This
+            # used to create an account and then bulk-delete its opening row,
+            # with a comment saying the bulk form was chosen because the ORM
+            # guard refuses a session-mediated one -- and that hole is closed:
+            # ``budget.refuse_append_only_change`` refuses every spelling.  The
+            # state remains reachable exactly one way, which is the way this
+            # loader's own error message names: an ``Account`` row constructed
+            # without routing through the canonical factory.
+            account = account_never_asserted(
+                seed_user, db.session, name="Doomed Checking",
             )
-            db.session.commit()
-            # Bulk delete: the ORM guard below refuses a session-mediated one,
-            # which is the point of that guard and why this bypasses it.
-            _db.session.query(AccountOpening).filter_by(
-                account_id=account.id,
-            ).delete(synchronize_session=False)
             _db.session.commit()
 
             with pytest.raises(RuntimeError, match="zero AccountOpening rows"):
