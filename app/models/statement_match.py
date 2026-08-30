@@ -38,8 +38,11 @@ guess.  It is a cross-row aggregate over two tables, so no ``CHECK`` can carry
 it; :func:`app.services.statement_match.accept_match` refuses an unbalanced
 group and its refusal names the difference.  That refusal is not a formality --
 measured on the developer's own statement, 6 of 16 payroll deposits sit
-`$0.05`-`$0.06` below what the app's rows sum to, which is finding **N-239**
-seen from the outside.
+`$0.05`-`$0.06` ABOVE what the app's rows sum to, which is finding **N-391**
+seen from the outside.  *The direction was written the wrong way round until
+plan step balance:X-aw re-measured it -- the BANK pays more, which is why the
+owner has been hand-typing the net since 2026-07-02 -- and the finding was
+**N-239** until that step split the horizon half off from this one.*
 
 **Agreement is DERIVED, never stored, and a stale match is not a corrupt one.**
 Nothing here records the day the match asserted: that is ``max(posted_on)`` over

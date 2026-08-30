@@ -7,6 +7,7 @@ pipeline including deductions, taxes, 3rd-paycheck detection, inflation,
 cumulative wages, and project_salary().
 """
 
+import pathlib
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -31,12 +32,26 @@ from app.services.paycheck_calculator import (
     PeriodInfo,
     TaxLines,
     ZERO,
-    TWO_PLACES,
 )
 from app import ref_cache
-from app.enums import DeductionTimingEnum
-from app.services.pay_calendar import DerivedPeriod
+from app.enums import CalcMethodEnum, DeductionTimingEnum
+from app.services.investment_projection import (
+    AdaptedDeduction,
+    _compute_deduction_per_period,
+)
+from app.services.pay_calendar import DerivedPeriod, PayCadence
+from app.services.payroll_basis import gross_per_paycheck
 from tests._test_helpers import payroll_basis
+
+#: The cent quantum these cases round their hand-computed expectations to.
+#:
+#: Defined HERE rather than imported from the engine since plan step
+#: **balance:X-aw**, which deleted the module constant with the residue
+#: distribution that was its only production reader.  A constant kept alive in
+#: ``app/`` for tests alone is the speculative shape ``CLAUDE.md`` rule 13
+#: forbids, and an expectation spelled independently of the code it grades is
+#: the point of a test.
+TWO_PLACES = Decimal("0.01")
 
 
 def _timing_id(name):
@@ -1645,26 +1660,25 @@ class TestAnnualProjection:
         self, base_profile, biweekly_periods,
         simple_tax_configs
     ):
-        """C27-3: Annual totals across 26 periods for $60k salary; gross reconciles to exact annual.
+        """C27-3: Annual totals across 26 periods for a $60k salary.
 
-        Per-period values after MED-05 / PA-07 residue reconciliation
-        (60000 / 26 floors to 2307.69; the +0.06 residue gives 6 cents
-        to distribute):
-          Periods 1-6  (first 6 of the year): gross=$2307.70,
-            net=$1854.23 (= 2307.70 - 173.08 - 103.85 - 143.08 - 33.46)
-          Periods 7-26 (last 20):              gross=$2307.69,
-            net=$1854.22 (= 2307.69 - 173.08 - 103.85 - 143.08 - 33.46)
+        Every period is identical at this salary, which is the contract ruling
+        **balance:R-HW** states: gross = $60,000 / 26 = $2307.6923... ->
+        $2307.69, and net = 2307.69 - 173.08 - 103.85 - 143.08 - 33.46 =
+        $1854.22 on all 26.
 
-        Federal/state/SS/medicare are byte-identical across all 26
-        periods at this salary because both per-period grosses
-        ($2307.69 and $2307.70) round to the same per-period tax at
-        each step (cumul max $59,999.94..$60,000.06 is under SS cap
-        $168,600 and surtax threshold $200,000).
+        Federal/state/SS/medicare are byte-identical across the year because
+        the gross is: one figure in, one figure out.  No cap moves a later
+        period either -- the largest cumulative-before is 25 x $2,307.69 =
+        $57,692.25, under the SS wage base ($168,600) and the surtax threshold
+        ($200,000).
 
-        Re-pinned under MED-05 / PA-07: was 26 * $2307.69 = $59,999.94
-        (post-fix correct value is $60,000.00 exact, the contract
-        annual salary).  Arithmetic of the residue distribution:
-        floor=$2307.69, residue=$60000-$2307.69*26=$0.06, residue_cents=6.
+        **Re-pinned at plan step balance:X-aw**, which superseded MED-05 /
+        PA-07.  Under that rule the first 6 periods carried $2307.70 and the
+        year summed to $60,000.00 exactly; the year now sums to
+        26 * $2307.69 = $59,999.94, six cents under the contract salary.
+        ``TestTheGrossIsARateAndNotAShareOfAYear`` owns that gap as its own
+        subject; this case owns the ANNUAL TOTALS built on top of it.
         """
         results = project_salary(
             payroll_basis(base_profile), biweekly_periods, simple_tax_configs
@@ -1674,25 +1688,18 @@ class TestAnnualProjection:
             f"expected 26 results, got {len(results)}"
         )
 
-        # MED-05 / PA-07: total_gross is the exact annual salary, not
-        # the prior 26 * $2307.69 = $59,999.94 understatement.
+        # 26 * $2307.69 = $59,999.94 -- six cents under the contract salary,
+        # which is the cost ruling R-HW accepts (plan step balance:X-aw).
         total_gross = sum(r.earnings.gross_biweekly for r in results)
-        assert total_gross == Decimal("60000.00"), (
-            f"total gross: expected 60000.00 (exact annual; "
-            f"MED-05/PA-07 reconciliation), got {total_gross}"
+        assert total_gross == Decimal("59999.94"), (
+            f"total gross: expected 59999.94 (26 * 2307.69), "
+            f"got {total_gross}"
         )
 
-        # Periods 1-6 receive floor+$0.01 = $2307.70; periods 7-26
-        # receive floor = $2307.69.  6 * 2307.70 + 20 * 2307.69
-        #   = 13846.20 + 46153.80 = 60000.00.
-        for i in range(6):
-            assert results[i].earnings.gross_biweekly == Decimal("2307.70"), (
-                f"period {i+1}: expected 2307.70 (residue +cent), "
-                f"got {results[i].earnings.gross_biweekly}"
-            )
-        for i in range(6, 26):
+        # Every period carries the same rate.
+        for i in range(26):
             assert results[i].earnings.gross_biweekly == Decimal("2307.69"), (
-                f"period {i+1}: expected 2307.69 (floor), "
+                f"period {i+1}: expected 2307.69, "
                 f"got {results[i].earnings.gross_biweekly}"
             )
 
@@ -1723,13 +1730,10 @@ class TestAnnualProjection:
             f"total medicare: expected 869.96, got {total_medicare}"
         )
 
-        # Re-pinned: net first 6 = $1854.23, last 20 = $1854.22.
-        # 6 * 1854.23 + 20 * 1854.22 = 11125.38 + 37084.40 = 48209.78.
-        # (Pre-fix value was 26 * $1854.22 = $48209.72.)
+        # 26 * $1854.22 = $48,209.72, one net figure for the whole year.
         total_net = sum(r.earnings.net_pay for r in results)
-        assert total_net == Decimal("48209.78"), (
-            f"total net: expected 48209.78 (MED-05/PA-07 reconciled), "
-            f"got {total_net}"
+        assert total_net == Decimal("48209.72"), (
+            f"total net: expected 48209.72 (26 * 1854.22), got {total_net}"
         )
 
         # Cross-check: net = gross - fed - state - ss - med
@@ -1742,22 +1746,21 @@ class TestAnnualProjection:
         self, base_profile, biweekly_periods,
         simple_tax_configs
     ):
-        """C27-3 corollary: $60k breakdown is residue-distributed across 26 periods.
+        """C27-3 corollary: the $60k breakdown is IDENTICAL across 26 periods.
 
-        $60k cumul max = $60,000.00 exact under MED-05 / PA-07, under
-        SS cap ($168,600) and surtax ($200,000).  After the
-        reconciliation contract the first 6 periods receive a +$0.01
-        residue cent on gross/net; periods 7-26 receive the floor.
-        Federal, state, SS, and medicare per-period values are
-        byte-identical across all 26 periods (the $0.01 gross
-        difference is below the cent-rounding boundary for each tax).
+        Every field of every period matches -- gross, net and all four
+        withholding lines -- because the gross is a rate (ruling
+        **balance:R-HW**) and nothing else in this profile varies by period.
+        The year's cumulative max is $59,999.94, under the SS cap ($168,600)
+        and the surtax threshold ($200,000), so no cap moves a later period.
 
-        Re-pinned under MED-05 / PA-07: the prior "all 26 periods
-        identical" invariant relied on the unreconciled per-period
-        quantisation that this commit fixes.  The new invariant is:
-        within each cent-equivalence group (first 6 vs. last 20)
-        every breakdown field is identical, and the tax fields are
-        identical across all 26.
+        **Re-pinned at plan step balance:X-aw.** Under MED-05 / PA-07 this
+        case asserted TWO cent-equivalence groups -- the first 6 periods at
+        $2307.70 / $1854.23 and the last 20 at $2307.69 / $1854.22 -- which
+        was the residue distribution showing through into net pay.  The
+        "all 26 identical" invariant it replaced is restored, and it is now
+        structural rather than a property of where the residue happened to
+        land: the producer cannot see a period at all.
         """
         results = project_salary(
             payroll_basis(base_profile), biweekly_periods, simple_tax_configs
@@ -1767,48 +1770,22 @@ class TestAnnualProjection:
             f"expected 26 results, got {len(results)}"
         )
 
-        # First 6 periods: gross = floor + $0.01 = $2307.70;
-        # net = $2307.70 - $173.08 - $103.85 - $143.08 - $33.46
-        #     = $1854.23.
-        first_group_gross = results[0].earnings.gross_biweekly
-        first_group_net = results[0].earnings.net_pay
-        assert first_group_gross == Decimal("2307.70")
-        assert first_group_net == Decimal("1854.23")
-        for i in range(1, 6):
-            r = results[i]
-            assert r.earnings.gross_biweekly == first_group_gross, (
-                f"period {i+1}: gross {r.earnings.gross_biweekly} != "
-                f"first-group gross {first_group_gross}"
-            )
-            assert r.earnings.net_pay == first_group_net, (
-                f"period {i+1}: net {r.earnings.net_pay} != "
-                f"first-group net {first_group_net}"
-            )
+        # $60,000 / 26 = $2307.6923... -> $2307.69; net = $2307.69 - $173.08
+        # - $103.85 - $143.08 - $33.46 = $1854.22.
+        assert results[0].earnings.gross_biweekly == Decimal("2307.69")
+        assert results[0].earnings.net_pay == Decimal("1854.22")
 
-        # Last 20 periods: gross = floor = $2307.69; net = $1854.22.
-        last_group_gross = results[6].earnings.gross_biweekly
-        last_group_net = results[6].earnings.net_pay
-        assert last_group_gross == Decimal("2307.69")
-        assert last_group_net == Decimal("1854.22")
-        for i in range(7, 26):
-            r = results[i]
-            assert r.earnings.gross_biweekly == last_group_gross, (
-                f"period {i+1}: gross {r.earnings.gross_biweekly} != "
-                f"last-group gross {last_group_gross}"
-            )
-            assert r.earnings.net_pay == last_group_net, (
-                f"period {i+1}: net {r.earnings.net_pay} != "
-                f"last-group net {last_group_net}"
-            )
-
-        # Group boundary: exactly $0.01 between adjacent groups.
-        assert first_group_gross - last_group_gross == Decimal("0.01")
-        assert first_group_net - last_group_net == Decimal("0.01")
-
-        # Federal/state/FICA per-period: byte-identical across all 26.
         first = results[0]
         for i in range(1, 26):
             r = results[i]
+            assert r.earnings.gross_biweekly == first.earnings.gross_biweekly, (
+                f"period {i+1}: gross {r.earnings.gross_biweekly} != "
+                f"period 1 gross {first.earnings.gross_biweekly}"
+            )
+            assert r.earnings.net_pay == first.earnings.net_pay, (
+                f"period {i+1}: net {r.earnings.net_pay} != "
+                f"period 1 net {first.earnings.net_pay}"
+            )
             assert r.taxes.federal == first.taxes.federal, (
                 f"period {i+1}: federal {r.taxes.federal} != "
                 f"period 1 federal {first.taxes.federal}"
@@ -3443,155 +3420,133 @@ class TestCalibrationIntegration:
             )
 
 
-class TestBiweeklyResidueReconciliation:
-    """MED-05 / PA-07: per-cycle residue reconciles into the annual aggregate.
+class TestTheGrossIsARateAndNotAShareOfAYear:
+    """Plan step **balance:X-aw** / ruling **balance:R-HW**: the per-paycheck
+    gross is the salary over the owner's paycheck count, and nothing else.
 
-    For each canonical example in the module docstring, runs
-    ``project_salary`` with a full 26-period year and asserts the sum
-    of ``gross_biweekly`` values equals the contract annual salary
-    exactly.  Also asserts the distribution is deterministic across
-    repeat invocations (no random ordering, no shared mutable state)
-    and that the partial-context fallback preserves the historical
-    half-up semantics for single-period callers.
+    These replace ``TestBiweeklyResidueReconciliation``, which graded audit
+    MED-05 / PA-07's contract -- the annual quantisation residue distributed
+    across a calendar year so the year summed to the annual salary exactly.
+    That contract is superseded, and the case that mattered most is the one it
+    could not have: :meth:`test_the_gross_does_not_move_with_the_period_list`
+    is finding **N-239**, and it FAILS on the superseded rule by construction,
+    because deciding which paychecks got the residue cent required counting the
+    period rows the caller happened to pass.
     """
 
     @pytest.mark.parametrize(
-        "annual_salary,expected_floor,expected_residue_cents",
+        "annual_salary,expected_gross",
         [
-            # Per-period exact = annual / 26.  Floor is the per-period
-            # value rounded *down* to the cent; residue_cents is the
-            # number of periods that receive floor + $0.01.
-            #
-            # $50,000 / 26 = $1923.0769...; floor=$1923.07,
-            #   exact_share=$50,000.00, 26*1923.07=$49999.82,
-            #   residue=$0.18 = 18 cents.
-            (Decimal("50000"), Decimal("1923.07"), 18),
-            # $75,000 / 26 = $2884.6153...; floor=$2884.61,
-            #   26*2884.61=$74999.86, residue=$0.14 = 14 cents.
-            (Decimal("75000"), Decimal("2884.61"), 14),
-            # $100,000 / 26 = $3846.1538...; floor=$3846.15,
-            #   26*3846.15=$99999.90, residue=$0.10 = 10 cents.
-            (Decimal("100000"), Decimal("3846.15"), 10),
-            # $60,000 / 26 = $2307.6923...; floor=$2307.69,
-            #   26*2307.69=$59999.94, residue=$0.06 = 6 cents.
-            (Decimal("60000"), Decimal("2307.69"), 6),
-            # $78,000 / 26 = $3000.0000 exact; floor=$3000.00,
-            #   residue=0 -> no +cent periods.
-            (Decimal("78000"), Decimal("3000.00"), 0),
+            # Hand-computed: annual / 26, ROUND_HALF_UP at the cent.
+            # $50,000 / 26 = $1923.0769... -> $1923.08
+            (Decimal("50000"), Decimal("1923.08")),
+            # $75,000 / 26 = $2884.6153... -> $2884.62
+            (Decimal("75000"), Decimal("2884.62")),
+            # $100,000 / 26 = $3846.1538... -> $3846.15
+            (Decimal("100000"), Decimal("3846.15")),
+            # $60,000 / 26 = $2307.6923... -> $2307.69
+            (Decimal("60000"), Decimal("2307.69")),
+            # $78,000 / 26 = $3000.00 exact -- no rounding at all.
+            (Decimal("78000"), Decimal("3000.00")),
+            # The owner's own salary, whose stub pays a flat $3,526.00:
+            # $91,675 / 26 = $3525.9615... -> $3525.96.
+            (Decimal("91675"), Decimal("3525.96")),
         ],
     )
-    def test_full_year_sum_equals_annual_exact(
-        self, annual_salary, expected_floor, expected_residue_cents,
-        biweekly_periods, simple_tax_configs,
+    def test_every_paycheck_of_a_salary_segment_pays_the_same_figure(
+        self, annual_salary, expected_gross, biweekly_periods,
+        simple_tax_configs,
     ):
-        """C27-3: sum of 26 biweekly gross values == annual salary exactly.
+        """All 26 paychecks carry ONE figure, which is what a real stub does.
 
-        For each parameter row, runs ``project_salary`` with 26
-        periods and asserts: (a) the sum of grosses equals the annual
-        salary at the cent; (b) the first ``residue_cents`` periods
-        carry the +$0.01 adjustment and the rest carry the floor;
-        (c) the boundary between groups is exactly one cent.
-
-        Hand-derived ``floor`` and ``residue_cents`` are in the
-        parametrize table so each row's arithmetic is reviewable
-        inline.
+        The superseded rule gave the earliest few paychecks of the year an
+        extra cent, so a year held two distinct grosses differing by $0.01.
+        A real employer pays one number: the owner's own nine measured payroll
+        deposits all carry a gross of $3,526.00.
         """
         profile = FakeProfile(
-            annual_salary=annual_salary,
-            created_at=date(2026, 1, 1),
+            annual_salary=annual_salary, created_at=date(2026, 1, 1),
         )
 
         results = project_salary(
             payroll_basis(profile), biweekly_periods, simple_tax_configs
         )
+
         assert len(results) == 26
-
-        total_gross = sum(r.earnings.gross_biweekly for r in results)
-        assert total_gross == annual_salary.quantize(Decimal("0.01")), (
-            f"sum of grosses {total_gross} != annual {annual_salary}"
+        grosses = {r.earnings.gross_biweekly for r in results}
+        assert grosses == {expected_gross}, (
+            f"expected one gross {expected_gross} across the year, "
+            f"got {sorted(grosses)}"
         )
 
-        plus_cent = expected_floor + Decimal("0.01")
-        for i in range(expected_residue_cents):
-            assert results[i].earnings.gross_biweekly == plus_cent, (
-                f"period {i+1}: expected {plus_cent} (residue +cent), "
-                f"got {results[i].earnings.gross_biweekly}"
-            )
-        for i in range(expected_residue_cents, 26):
-            assert results[i].earnings.gross_biweekly == expected_floor, (
-                f"period {i+1}: expected {expected_floor} (floor), "
-                f"got {results[i].earnings.gross_biweekly}"
-            )
-
-    def test_residue_distribution_deterministic_across_runs(
-        self, base_profile, biweekly_periods, simple_tax_configs,
+    def test_the_gross_does_not_move_with_the_period_list(
+        self, simple_tax_configs,
     ):
-        """C27-4: residue distribution is byte-identical across repeat runs.
+        """Finding **N-239**: extending the schedule must not re-price a paycheck.
 
-        ``project_salary`` is invoked twice on the same inputs; the
-        per-period gross sequence must match byte-for-byte.  This
-        guards against any non-deterministic ordering (e.g. dict
-        iteration before insertion-ordering became reliable, set
-        randomisation) inside the reconciliation helper.
+        Prices ONE fixed paycheck -- 2026-01-02, the owner's first payday of
+        the year -- against period lists of five very different sizes, and
+        asserts every caller gets the same answer.  A route preview passes a
+        single period; a year-scoped caller passes that year; the recurrence
+        engine's schedule extend passes only the rows it just created.
+
+        **The SUBJECT has to sit where the superseded rule put its residue, or
+        this case grades nothing.**  An earlier draft used the 14th payday and
+        PASSED on the pre-X-aw code, because MED-05 / PA-07 gave the extra cent
+        to the earliest 6 periods of the year and the 14th was never one of
+        them -- the assertion held under both rules and the test measured
+        nothing.  Period 1 is inside that window, so the old rule answers
+        $2307.70 from a 26- or 27-period list and $2307.69 from a shorter one
+        (which fell to its half-up fallback): two figures for one paycheck.
+
+        $60,000 / 26 = $2307.6923... -> $2307.69, whoever asks and however
+        much of the schedule they hold.
+
+        The real-data form of the same defect: on the owner's own schedule,
+        filling 2028 from its 16 stored rows to its 26 paydays moved six
+        already-settled paychecks by a cent each ($3,930.07 -> $3,930.06).
         """
-        first_run = project_salary(
-            payroll_basis(base_profile), biweekly_periods, simple_tax_configs
+        profile = FakeProfile(annual_salary=60000, created_at=date(2026, 1, 1))
+        # 27 is not a typo: a biweekly calendar year holds 27 paydays about
+        # one year in eleven.  A Jan 2 phase is NOT one of them -- Jan 2 plus
+        # 26 x 14 days lands 2027-01-01, so 2026 holds 26 -- and the 27th
+        # element here therefore falls in the NEXT year.  It still discriminates
+        # (the superseded rule counted 26 same-year periods either way, so both
+        # the 26- and 27-element lists answered $2307.70), and it is the case
+        # that exercises a list running past its own year's end.  The owner's
+        # real phase, Jan 1, is a genuine 27-payday 2026.
+        list_sizes = (1, 3, 16, 26, 27)
+        subject = _period(start_date=date(2026, 1, 2), period_id=1)
+
+        answers = {}
+        for size in list_sizes:
+            all_periods = [subject] + [
+                _period(start_date=date(2026, 1, 2) + timedelta(days=14 * i),
+                        period_id=i + 1)
+                for i in range(1, size)
+            ]
+            assert len(all_periods) == size
+            answers[size] = calculate_paycheck(
+                payroll_basis(profile), subject, all_periods,
+                simple_tax_configs,
+            ).earnings.gross_biweekly
+
+        assert set(answers.values()) == {Decimal("2307.69")}, (
+            "one paycheck must have ONE gross however much of the schedule "
+            f"the caller holds; got {answers}"
         )
-        second_run = project_salary(
-            payroll_basis(base_profile), biweekly_periods, simple_tax_configs
-        )
 
-        first_grosses = [r.earnings.gross_biweekly for r in first_run]
-        second_grosses = [r.earnings.gross_biweekly for r in second_run]
-
-        assert first_grosses == second_grosses, (
-            "residue distribution diverged between runs: "
-            f"first={first_grosses} second={second_grosses}"
-        )
-
-    def test_single_period_call_uses_half_up_fallback(
-        self, base_profile, simple_tax_configs,
-    ):
-        """Partial-context single-period call retains ROUND_HALF_UP semantics.
-
-        Route previews and isolated test fixtures invoke
-        ``calculate_paycheck`` with ``all_periods=[period]``; with
-        fewer than ``basis.periods_per_year`` periods in the year, the
-        reconciliation cannot anchor against a complete annual
-        figure, so the helper falls back to the historical half-up
-        quantisation.  $60k / 26 -> $2307.69 (half-up) regardless of
-        which calendar position the period occupies.
-        """
-        period = _period(start_date=date(2026, 1, 16), period_id=1)
-        result = calculate_paycheck(
-            payroll_basis(base_profile), period, [period], simple_tax_configs,
-        )
-        # Half-up: 2307.6923... -> 2307.69 (same as the legacy contract).
-        assert result.earnings.gross_biweekly == Decimal("2307.69")
-
-    def test_mid_year_raise_reconciles_each_salary_segment(
+    def test_a_mid_year_raise_gives_two_constant_figures(
         self, biweekly_periods, simple_tax_configs,
     ):
-        """A mid-year raise splits the year into two reconciliation groups.
+        """A raise changes the rate ONCE; each side of it is flat.
 
-        A non-recurring 10% raise effective month 7 (July) splits 2026
-        into:
-          - Periods 1-13 (Jan 2 .. Jun 26, dates < Jul): annual=$60,000
-          - Periods 14-26 (Jul 10 .. Dec 18, dates >= Jul): annual=$66,000
-
-        The biweekly_periods fixture spaces periods 14 days apart from
-        Jan 2; the 14th period starts 13*14 = 182 days later = Jul 3
-        2026, so periods 14..26 fall in the post-raise segment.  Each
-        segment reconciles independently against its share of the
-        annual salary:
-          floor(60000/26) = $2307.69; 13 * $2307.69 = $29,999.97;
-            exact share = 60000 * 13/26 = $30,000.00; residue = 3 cents.
-          floor(66000/26) = $2538.46; 13 * $2538.46 = $32,999.98;
-            exact share = 66000 * 13/26 = $33,000.00; residue = 2 cents.
-
-        First 3 of segment 1 get +cent ($2307.70); first 2 of segment 2
-        get +cent ($2538.47).  Sum of all 26 grosses = $30,000 + $33,000
-        = $63,000 exact.
+        A non-recurring 10% raise effective July 2026 splits the year at the
+        14th period (Jan 2 + 13*14 days = Jul 3).  Before it every paycheck is
+        $60,000 / 26 = $2307.69; after it every paycheck is
+        $66,000 / 26 = $2538.4615... -> $2538.46.  The superseded rule gave the
+        first three of the pre-raise run and the first two of the post-raise
+        run an extra cent, so each run held two figures.
         """
         profile = FakeProfile(
             annual_salary=60000,
@@ -3604,112 +3559,271 @@ class TestBiweeklyResidueReconciliation:
                 ),
             ],
         )
+
         results = project_salary(
             payroll_basis(profile), biweekly_periods, simple_tax_configs
         )
+
         assert len(results) == 26
+        pre = {r.earnings.gross_biweekly for r in results[:13]}
+        post = {r.earnings.gross_biweekly for r in results[13:]}
+        assert [r.earnings.annual_salary for r in results[:13]] == (
+            [Decimal("60000.00")] * 13
+        )
+        assert [r.earnings.annual_salary for r in results[13:]] == (
+            [Decimal("66000.00")] * 13
+        )
+        assert pre == {Decimal("2307.69")}, f"pre-raise run: {sorted(pre)}"
+        assert post == {Decimal("2538.46")}, f"post-raise run: {sorted(post)}"
 
-        # Identify segment boundary: pre-raise periods have annual
-        # 60000, post-raise have 66000.  By construction (Jul 3 is
-        # period 14 = index 13), indices 0..12 are pre-raise and
-        # indices 13..25 are post-raise.
-        for i in range(13):
-            assert results[i].earnings.annual_salary == Decimal("60000.00")
-        for i in range(13, 26):
-            assert results[i].earnings.annual_salary == Decimal("66000.00")
-
-        # Pre-raise segment: 13 periods, residue 3 cents.
-        # First 3 (indices 0..2) get $2307.70; rest (3..12) get $2307.69.
-        for i in range(3):
-            assert results[i].earnings.gross_biweekly == Decimal("2307.70"), (
-                f"pre-raise period {i+1}: expected 2307.70, "
-                f"got {results[i].earnings.gross_biweekly}"
-            )
-        for i in range(3, 13):
-            assert results[i].earnings.gross_biweekly == Decimal("2307.69"), (
-                f"pre-raise period {i+1}: expected 2307.69, "
-                f"got {results[i].earnings.gross_biweekly}"
-            )
-
-        # Post-raise segment: 13 periods, residue 2 cents.
-        # First 2 (indices 13..14) get $2538.47; rest (15..25) get $2538.46.
-        for i in range(13, 15):
-            assert results[i].earnings.gross_biweekly == Decimal("2538.47"), (
-                f"post-raise period {i+1}: expected 2538.47, "
-                f"got {results[i].earnings.gross_biweekly}"
-            )
-        for i in range(15, 26):
-            assert results[i].earnings.gross_biweekly == Decimal("2538.46"), (
-                f"post-raise period {i+1}: expected 2538.46, "
-                f"got {results[i].earnings.gross_biweekly}"
-            )
-
-        # Each segment sums to its share of its annual salary exactly.
+        # What ruling R-HW costs in a RAISE year, pinned: the superseded rule
+        # made each segment total its exact pro-rata share ($30,000.00 and
+        # $33,000.00, summing to $63,000.00). Each is now the flat rate times
+        # the segment, three cents and two cents under respectively.
         pre_total = sum(r.earnings.gross_biweekly for r in results[:13])
         post_total = sum(r.earnings.gross_biweekly for r in results[13:])
-        # 60000 * 13/26 = 30000.00; 66000 * 13/26 = 33000.00.
-        assert pre_total == Decimal("30000.00"), (
-            f"pre-raise total: expected 30000.00, got {pre_total}"
+        assert pre_total == Decimal("29999.97"), f"pre-raise total {pre_total}"
+        assert post_total == Decimal("32999.98"), f"post-raise total {post_total}"
+        assert pre_total + post_total == Decimal("62999.95")
+
+    @pytest.mark.parametrize(
+        "annual_salary,expected_year_total,expected_gap",
+        [
+            # 26 * round(annual/26) against the annual salary.  The gap is
+            # what ruling R-HW accepts and MED-05 / PA-07 existed to close;
+            # it is stated per row so the cost is reviewable rather than
+            # asserted as "close enough".
+            # 26 * 2307.69 = 59999.94, $0.06 under $60,000.
+            (Decimal("60000"), Decimal("59999.94"), Decimal("-0.06")),
+            # 26 * 1923.08 = 50000.08, $0.08 OVER $50,000 -- the gap has no
+            # fixed sign, because the per-paycheck figure rounds either way.
+            (Decimal("50000"), Decimal("50000.08"), Decimal("0.08")),
+            # 26 * 3000.00 = 78000.00 exactly: a salary that divides evenly
+            # has no gap at all.
+            (Decimal("78000"), Decimal("78000.00"), Decimal("0.00")),
+            # The owner's: 26 * 3525.96 = 91674.96, $0.04 under $91,675 --
+            # and the employer's own flat $3,526.00 sums to $91,676.00, which
+            # is $1.00 over.  Neither the app nor payroll hits the salary
+            # exactly, which is why the identity was given up (finding N-391).
+            (Decimal("91675"), Decimal("91674.96"), Decimal("-0.04")),
+        ],
+    )
+    def test_the_year_no_longer_sums_to_the_annual_salary_exactly(
+        self, annual_salary, expected_year_total, expected_gap,
+        biweekly_periods, simple_tax_configs,
+    ):
+        """The COST of ruling R-HW, pinned so it cannot drift unnoticed.
+
+        MED-05 / PA-07 added the residue distribution to make this sum exact.
+        Ruling R-HW gives that up deliberately: the identity is not one payroll
+        honours, and buying it cost a per-paycheck figure that no stub shows
+        and a dependence on which pay-period rows exist (finding N-239).
+        """
+        profile = FakeProfile(
+            annual_salary=annual_salary, created_at=date(2026, 1, 1),
         )
-        assert post_total == Decimal("33000.00"), (
-            f"post-raise total: expected 33000.00, got {post_total}"
+
+        results = project_salary(
+            payroll_basis(profile), biweekly_periods, simple_tax_configs
         )
 
-        # Whole-year total = $30000 + $33000 = $63000 exact.
-        assert pre_total + post_total == Decimal("63000.00")
+        total = sum(r.earnings.gross_biweekly for r in results)
+        assert total == expected_year_total
+        assert total - annual_salary.quantize(TWO_PLACES) == expected_gap
+
+    def test_the_investment_projection_prices_the_same_gross(
+        self, simple_tax_configs,
+    ):
+        """ONE producer: a percentage contribution and the paycheck agree.
+
+        ``investment_projection`` prices a percentage deduction against its own
+        derived gross.  Until plan step balance:X-aw it spelled that division
+        itself while the engine distributed a residue, and the two were
+        measured DIFFERENT on 5 of the owner's 63 saved periods -- 2027-01-14
+        through 2027-03-11, where the engine said $3,722.54 and the projection
+        said $3,722.53, so a percentage was taken against a gross a cent below
+        the one the paycheck subtracted it from.  Both now ask
+        ``payroll_basis.gross_per_paycheck``.
+
+        Driven at $96,785.88 -- the owner's own 2027 post-raise salary, and the
+        salary the divergence was measured at.
+
+        **This grades the ROUNDING RULE and deliberately not the wiring**, a
+        distinction an adversarial review of X-aw drew after a first draft of
+        this docstring blurred it.  The profile here is raise-free, which is the
+        one case where the two sides' INPUTS agree: in production
+        ``adapt_deductions`` stamps the profile's raw ``annual_salary`` where
+        the engine passes ``apply_raises(...)`` for the period, so for an owner
+        with an applicable raise the two still differ -- by the raise, not by a
+        cent.  That is finding **D45** and it is owned elsewhere; a case
+        asserting these two equal on a raise-BEARING profile would fail, and
+        should.
+        """
+        annual = Decimal("96785.88")
+        profile = FakeProfile(annual_salary=annual, created_at=date(2026, 1, 1))
+        periods = [
+            _period(start_date=date(2027, 1, 14) + timedelta(days=14 * i),
+                    period_id=i + 1)
+            for i in range(26)
+        ]
+        pct_id = ref_cache.calc_method_id(CalcMethodEnum.PERCENTAGE)
+
+        engine = calculate_paycheck(
+            payroll_basis(profile), periods[0], periods, simple_tax_configs,
+        ).earnings.gross_biweekly
+        _, projection = _compute_deduction_per_period(
+            AdaptedDeduction(
+                amount=Decimal("0.06"),
+                calc_method_id=pct_id,
+                annual_salary=annual,
+                periods_per_year=Decimal("26"),
+                annual_cap=None,
+            ),
+            pct_id,
+        )
+
+        assert engine == projection == Decimal("3722.53"), (
+            f"engine={engine}, investment projection={projection}"
+        )
 
 
-class TestBiweeklyResidueDocstring:
-    """Verify the biweekly residue reconciliation is documented in docstrings.
+class TestGrossPerPaycheck:
+    """The producer's own contract, graded directly rather than through the engine.
 
-    F-127 of the 2026-04-15 security audit had classified the biweekly
-    quantisation residue as an accepted simplification.  MED-05 / PA-07
-    of the financial-calculation audit (2026-05-19) superseded that
-    closure with a code-level fix: the residue is now distributed
-    deterministically across the periods of a salary group so the
-    year's grosses sum to the annual salary exactly.
-
-    These tests pin the *new* docstring content; the old F-127 /
-    ``accepted simplification`` wording must NOT survive a revert,
-    because it would silently signal the old contract still applied.
-
-    Re-pinned under MED-05 / PA-07: was F-127 locks; superseded
-    2026-05-19 (this commit).
+    Plan step **balance:X-aw** added it as a public function with two callers,
+    and an adversarial review noted it had no case of its own -- every other
+    test reaches it through ``calculate_paycheck``, which cannot exercise the
+    boundaries below.
     """
 
-    def test_module_docstring_names_reconciliation_contract(self):
-        """Module docstring names the reconciliation contract and audit IDs.
+    def test_it_rounds_half_up_at_an_exact_half_cent(self):
+        """The rounding MODE, at the one input where the modes disagree.
 
-        Asserts the substantive keywords (``reconciled``,
-        ``annual aggregate``, ``MED-05``, ``PA-07``) and the audit
-        supersession trail (``F-127``, ``supersedes``) so a future
-        reader cannot accidentally drift back to the historical wording.
+        None of the salaries the engine tests land on a half cent, so the mode
+        is inherited from ``round_money`` and graded nowhere in this file.
+        $91,000.13 / 26 = $3,500.005 exactly -- ROUND_HALF_UP gives $3,500.01,
+        Python's default ROUND_HALF_EVEN (banker's) gives $3,500.00. A money
+        figure must never reach the even-rounding default implicitly.
         """
+        assert gross_per_paycheck(
+            Decimal("91000.13"), Decimal("26"),
+        ) == Decimal("3500.01")
+
+    def test_a_float_salary_is_refused_rather_than_rounded(self):
+        """A ``float`` cannot reach the cent quantisation.
+
+        The refusal is the DIVISION's, not ``round_money``'s: Decimal refuses
+        to divide by a float operand, so the value never reaches the money
+        boundary at all. Either way the imprecision a float carries cannot be
+        laundered into a paycheck.
+        """
+        with pytest.raises(TypeError):
+            gross_per_paycheck(91675.00, Decimal("26"))
+
+    @pytest.mark.parametrize("cadence_days,count", [
+        (7, "52"), (14, "26"), (15, "24"), (30, "12"), (365, "1"),
+    ])
+    def test_the_count_is_the_divisor_at_every_cadence(
+        self, cadence_days, count,
+    ):
+        """The owner's rhythm decides the figure, which is finding F-16's rule.
+
+        $78,000 divides evenly by 52, 26, 24, 12 and 1, so each expectation is
+        exact arithmetic with no rounding to reason about -- the case grades
+        the DIVISOR and nothing else.
+        """
+        expected = (Decimal("78000") / Decimal(count)).quantize(TWO_PLACES)
+        assert gross_per_paycheck(
+            Decimal("78000"), PayCadence(cadence_days).periods_per_year,
+        ) == expected
+
+
+class TestTheGrossContractIsDocumented:
+    """The per-paycheck gross contract is stated where a reader will find it.
+
+    Replaces ``TestBiweeklyResidueDocstring``, which pinned MED-05 / PA-07's
+    wording so a revert to F-127's could not pass silently.  Ruling
+    **balance:R-HW** superseded MED-05 / PA-07, so these pin the NEW contract
+    for the same reason: the residue-distribution wording must not creep back
+    in and read as though it still applied.
+    """
+
+    def test_module_docstring_names_the_rate_contract(self):
+        """Module docstring states the rule, what it replaced, and its cost."""
         from app.services import paycheck_calculator  # pylint: disable=import-outside-toplevel
 
         doc = paycheck_calculator.__doc__ or ""
-        # New audit-aligned wording.
-        assert "reconciled" in doc.lower()
-        assert "annual aggregate" in doc.lower()
-        assert "MED-05" in doc
-        assert "PA-07" in doc
-        # Supersession of the prior F-127 wording is explicit.
-        assert "F-127" in doc
-        assert "supersedes" in doc.lower()
+        assert "RATE" in doc
+        assert "X-aw" in doc
+        assert "R-HW" in doc
+        # The supersession trail stays legible in both directions.
+        assert "MED-05" in doc and "PA-07" in doc
+        # Both spellings appear and both are load-bearing: this contract
+        # SUPERSEDED MED-05 / PA-07, which had itself superseded F-127.
+        assert "superseding" in doc and "superseded" in doc
+        assert "N-239" in doc
+        # The cost is stated rather than quietly dropped.
+        assert "no longer sum to the annual salary exactly" in doc
 
-    def test_calculate_paycheck_docstring_references_reconciliation(self):
-        """Function docstring on ``calculate_paycheck`` points at the new contract.
+    def test_calculate_paycheck_docstring_points_at_the_one_producer(self):
+        """The function docstring names the producer and denies the list.
 
-        The function-level docstring must reference the reconciliation
-        contract so a caller reading only the function signature in an
-        IDE tooltip learns that the per-period gross is residue-adjusted
-        (relying solely on the module docstring leaves a discoverability
-        gap).  Asserts the substantive keywords plus the new audit IDs.
+        A caller reading only the signature in an IDE tooltip has to learn
+        that ``all_periods`` does NOT reach the gross -- that is the whole
+        content of finding N-239, and the argument is still in the signature
+        for the four judgements that do read it.
         """
         doc = calculate_paycheck.__doc__ or ""
-        assert "reconciled" in doc.lower()
+        assert "gross_per_paycheck" in doc
+        assert "RATE" in doc
+        assert "``all_periods`` does not reach it" in doc
+
+    def test_the_producer_states_what_it_gave_up(self):
+        """``gross_per_paycheck`` carries the ruling and the measured cost."""
+        from app.services.payroll_basis import (  # pylint: disable=import-outside-toplevel
+            gross_per_paycheck,
+        )
+
+        doc = gross_per_paycheck.__doc__ or ""
+        assert "R-HW" in doc
+        assert "N-239" in doc
         assert "MED-05" in doc
-        assert "PA-07" in doc
+
+    @pytest.mark.parametrize("registry,ident", [
+        ("rulings.md", "| balance | R-HW |"),
+        ("ledger.md", "| balance | N-390 "),
+        ("ledger.md", "| balance | N-391 "),
+    ])
+    def test_the_plan_identifiers_this_step_cites_actually_exist(
+        self, registry, ident,
+    ):
+        """A citation is only worth as much as the row it names.
+
+        The three cases above pin STRINGS in docstrings, which is what they are
+        for -- the superseded wording must not creep back. But a string pin
+        cannot tell a recorded ruling from an invented one, and an adversarial
+        review of this step found exactly that state: `R-HW` cited eighteen
+        times from `app/` and `tests/` while `rulings.md` ended at `R-HO`, and
+        `N-390` / `N-391` cited while `ledger.md` ended at `N-388`. The plan
+        gate could not see it, because **it runs only when a planning document
+        is edited** and the code commit edits none.
+
+        **This is deliberately scoped to the ids THIS step mints, and
+        `tools/plan_gate/_rulings.py:135-141` says why the general arm cannot
+        exist**: "an arc document may name no ruling id that has no
+        `rulings.md` row" would fire on 88 live citations today, because an
+        archived ruling's text stays in its archive. Scoped to three live ids
+        it is decidable, and it is the difference between grading the citation
+        and grading the ruling.
+        """
+        path = (
+            pathlib.Path(__file__).resolve().parents[2] / "docs/plans" / registry
+        )
+        assert ident in path.read_text(encoding="utf-8"), (
+            f"{ident.strip('| ')} is cited from app/ but has no row in "
+            f"docs/plans/{registry}. conventions.md rules 1 and 9"
+        )
+
 
 
 # ── CRIT-03 / F-037 integration: calibration path SS cap ──────────

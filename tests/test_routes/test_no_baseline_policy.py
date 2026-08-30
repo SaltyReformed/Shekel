@@ -35,30 +35,82 @@ than it does is this arc's most expensive recurring lesson:
 * it proves nothing about surfaces that resolve the baseline WITHOUT the
   balance seam.  Fifteen such sites remain in ``app/`` -- forms, template
   generation, posting sync -- and they are finding **N-117**, owned by plan
-  step **X-y**.
+  step **X-y**.  One of them is inside the sweep and answers 400 with a bare
+  text body rather than the policy's card (``carry_forward_preview``); the
+  sweep is green on it because 400 is under 500, which is the limit of what it
+  claims;
+* it grades ONE row of each kind, in the state the world builds it.  Whether
+  the STATE matters was measured rather than assumed (2026-08-30): the four
+  transaction doors, the three transfer doors and the transaction-template
+  door were re-run against a SETTLED transaction, a settled transfer and an
+  envelope transaction carrying an entry, and all twelve answered 200 exactly
+  as the projected rows do.  A door whose answer turns on a row's status is
+  therefore not something this file has evidence of, and a future one would
+  need its own axis the way ``_ACCOUNT_KINDS`` is one;
+* it cannot see a fill that names the WRONG KIND of row, **for eight of the
+  eleven pairs**.  Measured 2026-08-30: eight fill from the first row of their
+  own table, id 1, so handing the ``/transfers`` edit door the transaction
+  template's id emits the byte-identical ``/transfers/1/edit`` -- a valid URL
+  for a real row, 200, indistinguishable from the right one, and two mutations
+  of that shape survived as an unobservable change must.  The three
+  ``period_id`` pairs are the exception and were nearly stated wrong:
+  ``period`` is ``periods[4]``, **id 6**, because ``build_seed_user`` writes a
+  bootstrap period first and ``build_periods_today`` drops it -- so a swap
+  involving one of those WOULD 404 and would be caught.  What stands in the
+  other eight is
+  :data:`_CONVERTER_ROWS` being TOTAL over ``(blueprint, name)`` with no
+  fallback, so the mistake has to be WRITTEN DOWN rather than defaulted into.
+
+**Every GET route is graded, and that is CHECKED** (plan step balance:X-be-3,
+finding **N-388**).  Until it shipped, a rule whose converter the fixture could
+not fill was skipped and pinned in a hand-maintained ``_UNREACHED_RULES``
+allowlist -- seventeen of the app's 97 GET rules, 17.5%, graded by nobody
+since the sweep was written, and the coverage test asserted the list rather
+than closing it.  The world now holds a row of every kind a GET rule takes an
+id for, there is no skip branch, and the coverage claim is an equality against
+``url_map`` that no list can satisfy.
+
+**None of the seventeen 5xx'd, and that is a claim about FIFTEEN of them.**
+Two are the retired ``/salary/<id>/breakdown`` stubs, which redirect into the
+cockpit on both request shapes and so reach no producer to crash in; the other
+fifteen render.  An adversarial review caught the first draft of this sentence
+counting all seventeen (2026-08-30).  Nothing goes ungraded by it -- the arm on
+each case now resolves a redirect one hop through ``url_map`` and refuses one
+landing outside the swept set -- but the answer N-388 asked for is fifteen
+routes wide, not seventeen.
 """
 
+import re
 from datetime import timedelta
 from decimal import Decimal
+from urllib.parse import urlsplit
 
 import pytest
 
 from flask import Flask
 
+from werkzeug.exceptions import HTTPException
+
 import app as shekel_app_package
 from app.models.account import Account
+from app.models.pension_profile import PensionProfile
 from app.models.ref import AccountType
+from app.models.savings_goal import SavingsGoal
 from app.models.scenario import Scenario
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service
 from app.url_converters import register_url_converters
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    add_txn,
+    bare_expense_template,
     cadence_payload,
     create_hysa_account,
     create_loan_account,
+    create_transfer,
     make_appreciating_account,
     make_investment_account,
+    make_salary_profile,
 )
 # The world builders and the registry live in ``tests/conftest.py`` beside the
 # worker-database plumbing they drive.  Importing them from there is safe and
@@ -74,32 +126,6 @@ from tests.conftest import (
     register_seeded_state,
 )
 
-
-#: The GET rules this fixture cannot reach, PINNED so the sweep's coverage
-#: claim cannot rot.  Each takes an id for a row the fixture does not create
-#: (a salary profile, a transaction, a transfer, a goal, a template, a
-#: pension).  None of them reads a balance today; a NEW rule landing here turns
-#: the sweep red rather than silently shrinking its coverage, which is the only
-#: way "every GET route is graded" stays a true sentence.
-_UNREACHED_RULES = [
-    "/retirement/pension/<int:pension_id>/edit",
-    "/salary/<int:profile_id>/anatomy/<int:period_id>",
-    "/salary/<int:profile_id>/breakdown",
-    "/salary/<int:profile_id>/breakdown/<int:period_id>",
-    "/salary/<int:profile_id>/calibrate",
-    "/salary/<int:profile_id>/edit",
-    "/salary/<int:profile_id>/projection",
-    "/savings/goals/<int:goal_id>/edit",
-    "/templates/<int:template_id>/edit",
-    "/transactions/<int:txn_id>/cell",
-    "/transactions/<int:txn_id>/entries",
-    "/transactions/<int:txn_id>/full-edit",
-    "/transactions/<int:txn_id>/quick-edit",
-    "/transfers/<int:template_id>/edit",
-    "/transfers/<int:xfer_id>/full-edit",
-    "/transfers/cell/<int:xfer_id>",
-    "/transfers/quick-edit/<int:xfer_id>",
-]
 
 #: The PAGE endpoints measured to raise before plan step X-v1 shipped its
 #: handler, with the door each reaches the seam through.  Named individually
@@ -141,15 +167,80 @@ _ACCOUNT_KINDS = (
     "checking", "loan", "mortgage", "property", "hysa", "card", "invest",
 )
 
-#: The converters this fixture can fill.  A rule carrying any OTHER converter
-#: is one it cannot reach, and lands in :data:`_UNREACHED_RULES` instead --
-#: **including a rule that carries one of these AND something else**.  Deciding
-#: that on what REMAINS after these are removed is what keeps such a rule out of
-#: the sweep: testing for ``<int:account_id>`` first would emit seven cases
-#: whose URL still held a literal ``<int:line_id>``, and a URL like that 404s,
-#: which is under 500, which passes.  Six `escrow` rules are that shape today
-#: and are POST-only; one GET among them would have been graded by nobody.
-_FILLABLE = ("<int:account_id>", "<int:period_id>")
+#: The converter that fans a rule OUT rather than filling it once: an account
+#: id is one case per kind, never one row.
+_ACCOUNT_CONVERTER = "account_id"
+
+#: One ``<converter:name>``, ``<converter(arg=1):name>`` or ``<name>`` token in
+#: a rule string, capturing the VARIABLE name.  Werkzeug puts the converter
+#: before the colon and the name after it.
+#:
+#: **It does not match every token Werkzeug accepts**, and that is why
+#: ``"<" not in url`` is asserted beside ``unfilled`` in the case below rather
+#: than trusted to be implied by it: ``werkzeug.routing.rules._part_re`` admits
+#: a converter ARGUMENT containing a colon (``<any("a:b"):x>``), which this
+#: refuses to parse.  Such a token is left in the path, and that assertion is
+#: what catches it -- loudly -- instead of a 404 passing a 5xx sweep.
+_CONVERTER_TOKEN = re.compile(r"<(?:[^<>:]+:)?([^<>:]+)>")
+
+#: What fills every converter but the account axis: ``(blueprint, name)`` ->
+#: the key into the world dict holding a row of exactly that kind.  **It is
+#: TOTAL over the GET route table and graded BOTH WAYS against it**, which is
+#: what replaced the ``_UNREACHED_RULES`` allowlist this file carried until
+#: plan step balance:X-be-3 (finding **N-388**).  Seventeen GET rules -- 17.5%
+#: of the app's 97 -- were pinned in that list and graded by NOBODY: a rule
+#: whose converter the fixture could not fill was skipped, and the sweep's own
+#: coverage test asserted the skip list rather than closing it, so the gap was
+#: pinned rather than measured away.
+#:
+#: **There is no skip branch now.**  A rule carrying a pair absent from this
+#: map turns the coverage test red and its own case red, so the only repair
+#: available is to build the row, never to widen a list of exclusions.
+#:
+#: **A URL variable's identity is ``(blueprint, name)``, and this key is that
+#: pair with no fallback to the bare name.**  Flask scopes a variable to its
+#: view and the app uses that scope: censused 2026-08-30 over all 218 rules,
+#: FIVE names are bound under more than one blueprint, and two of the five name
+#: more than one TABLE -- ``template_id`` is a transaction template under
+#: ``templates`` and a transfer template under ``transfers``, and
+#: ``version_id`` is an escrow component version under ``loan`` where it is a
+#: template amount version under the other two.  ``version_id``'s four rules
+#: are POST-only today, so it is invisible here; a bare-name key with a
+#: fallback would have filled the first GET among them from whichever table
+#: was written down first, and eight of the eleven rows this world hands out
+#: carry id 1, so that fill would have produced a VALID URL for the wrong row
+#: and passed.  A total map cannot express that mistake without an author
+#: writing the wrong pair down.
+#:
+#: **What this map cannot check is that a VALUE is right**, for the eight
+#: pairs whose row is the first of its table: with both ids at 1, filling
+#: ``("transfers", "template_id")`` from the transaction template emits the
+#: byte-identical ``/transfers/1/edit``.  The three ``period_id`` pairs are not
+#: in that eight -- ``period`` is id 6 -- so a swap involving one is caught.
+#: The two doors reading two different tables is graded on the doors, in each
+#: blueprint's own ``TestTemplateUpdate::test_edit_template_form`` --
+#: ``tests/test_routes/test_templates.py`` and ``test_transfers.py``.  **The
+#: two are not equally strong and the difference was measured** (2026-08-30):
+#: the transfers one asserts ``b"Monthly Savings"``, which only its own row
+#: supplies, while the templates one asserts ``b"Rent"``, which its fixture
+#: uses for BOTH the template's name and its category -- and the category
+#: ``<option>`` renders that string whatever the template is called.  What the
+#: templates side really pins is that the door resolves a row in
+#: ``transaction_templates`` at all: repointing it at ``transfer_templates``
+#: 404s there, since that test creates none.
+_CONVERTER_ROWS = {
+    ("companion", "period_id"): "period",
+    ("entries", "txn_id"): "transaction",
+    ("retirement", "pension_id"): "pension",
+    ("salary", "period_id"): "period",
+    ("salary", "profile_id"): "salary_profile",
+    ("savings", "goal_id"): "goal",
+    ("templates", "template_id"): "transaction_template",
+    ("transactions", "period_id"): "period",
+    ("transactions", "txn_id"): "transaction",
+    ("transfers", "template_id"): "transfer_template",
+    ("transfers", "xfer_id"): "transfer",
+}
 
 
 def _build_baseline_less_owner(db):
@@ -159,8 +250,8 @@ def _build_baseline_less_owner(db):
     step balance:X-be-2, finding **N-387**); every test that declares this
     world still gets its own private clone of that snapshot, so per-test
     isolation is exactly what it was.  Once per WORKER, not once per run: the
-    236 cases scatter across ``-n 12``, so the world is built up to twelve
-    times a session rather than 236 times a worker.
+    253 cases scatter across ``-n 12``, so the world is built up to twelve
+    times a session rather than 253 times a worker.
 
     As a per-test fixture this cost 302 ms of setup for 22 ms of requests,
     236 times over; the file went 82.26 s -> 18.73 s serially.  The full split,
@@ -226,6 +317,81 @@ def _build_baseline_less_owner(db):
         name="Policy 401k",
     )
 
+    # **One row of every kind a GET rule takes an id for** (plan step
+    # balance:X-be-3, finding **N-388**).  Until these existed, seventeen GET
+    # rules -- every ``<int:profile_id>``, ``<int:txn_id>``, ``<int:xfer_id>``,
+    # ``<int:template_id>``, ``<int:goal_id>`` and ``<int:pension_id>`` route
+    # in the app -- could not be requested at all, so the sweep pinned them in
+    # an allowlist and graded none of them.
+    #
+    # FOUR go through the factory the ordinary fixtures use -- the salary
+    # profile, the transaction template, the transaction and the transfer --
+    # so the world describes the same rows the rest of the suite does rather
+    # than a second definition of them.  THREE do not: `PensionProfile`,
+    # `SavingsGoal` and `TransferTemplate` are constructed here, which is what
+    # every other suite that needs one does (12 files and 7 files
+    # respectively).  `make_transfer_template` exists and is bypassed on
+    # purpose: it fixes the name and attaches an every-period rule, and this
+    # world wants neither.  Extracting the other two into factories is a
+    # suite-wide change and is not this step's.
+    #
+    # Every one is written BEFORE the baseline is taken away, because that is
+    # the order production reaches this state in: rows exist, and then the
+    # scenario stops being the baseline.  Building them after would exercise
+    # the writers under a state no owner has, which is a different subject.
+    salary_profile = make_salary_profile(
+        seed_user, db.session, name="Policy Salary",
+    )
+    db.session.flush()
+    pension = PensionProfile(
+        user_id=user.id,
+        salary_profile_id=salary_profile.id,
+        name="Policy Pension",
+        benefit_multiplier=Decimal("0.01850"),
+        consecutive_high_years=4,
+        hire_date=display_today() - timedelta(days=3650),
+        planned_retirement_date=display_today() + timedelta(days=7300),
+    )
+    db.session.add(pension)
+    goal = SavingsGoal(
+        user_id=user.id,
+        account_id=hysa.id,
+        name="Policy Goal",
+        target_amount=Decimal("10000.00"),
+    )
+    db.session.add(goal)
+    # The two ``<int:template_id>`` rows, which are two different tables: a
+    # TRANSACTION template under ``/templates`` and a TRANSFER template under
+    # ``/transfers``.  Both are here because both doors are graded, and
+    # `_CONVERTER_ROWS` keys them apart by blueprint.
+    txn_template = bare_expense_template(
+        db.session, seed_user, name="Policy Expense Definition",
+    )
+    xfer_template = TransferTemplate(
+        user_id=user.id,
+        from_account_id=seed_user["account"].id,
+        to_account_id=hysa.id,
+        name="Policy Transfer Definition",
+        default_amount=Decimal("200.00"),
+    )
+    db.session.add(xfer_template)
+    # A PROJECTED instance of each movement kind.  Projected rather than
+    # settled deliberately: a settled row carries a settle day, and the edit
+    # doors this reaches (`/transactions/<id>/full-edit`,
+    # `/transfers/<id>/full-edit`) render the correction controls a projection
+    # does not have -- so a settled row would grade a wider surface while
+    # putting the world's cash where no arm here asserts it.  The wider surface
+    # is worth grading and is not this step's subject.
+    transaction = add_txn(
+        db.session, seed_user, anchor, "Policy Transaction", Decimal("75.00"),
+        category_key="Groceries",
+    )
+    transfer = create_transfer(
+        seed_user, db.session, seed_user["account"], hysa, anchor,
+        Decimal("50.00"), name="Policy Transfer",
+    )
+    db.session.flush()
+
     scenario = db.session.get(Scenario, seed_user["scenario"].id)
     scenario.is_baseline = False
     db.session.commit()
@@ -236,6 +402,13 @@ def _build_baseline_less_owner(db):
         "mortgage": mortgage.id, "property": prop.id, "hysa": hysa.id,
         "card": card.id, "invest": invest.id,
         "period": periods[4].id,
+        "salary_profile": salary_profile.id,
+        "pension": pension.id,
+        "goal": goal.id,
+        "transaction_template": txn_template.id,
+        "transfer_template": xfer_template.id,
+        "transaction": transaction.id,
+        "transfer": transfer.id,
         # The transfer-create arm below files against a real category, and a
         # world hands out ids rather than the ORM rows ``seed_user`` returned.
         "rent_category": seed_user["categories"]["Rent"].id,
@@ -260,55 +433,159 @@ def baseline_less_owner(seeded_world):
 
 
 
+def _get_rules(app):
+    """Every GET rule in *app*'s route table, in rule order.
+
+    The sweep's subject, as one expression, so the enumeration below and the
+    coverage claim above it read the SAME definition of "a GET route" rather
+    than each spelling their own.
+
+    Args:
+        app: any application whose ``url_map`` is the one to grade.
+
+    **Flask's own static route is excluded BY ENDPOINT, not by path prefix.**
+    ``startswith("/static")`` also swallows a future ``/statistics`` or
+    ``/static-report``, which would leave a real route ungraded while this file
+    claimed to grade every one -- the same silent-shrink defect N-388 was.
+    Censused 2026-08-30: exactly one rule's path starts with ``/static``, and
+    its endpoint is ``static``, so the two predicates agree today and only the
+    endpoint one keeps agreeing.
+
+    Returns:
+        The :class:`werkzeug.routing.Rule` objects, sorted by rule string.
+    """
+    with app.app_context():
+        rules = sorted(app.url_map.iter_rules(), key=lambda r: r.rule)
+    return [r for r in rules
+            if "GET" in r.methods and r.endpoint != "static"]
+
+
 def _sweep_cases(app):
-    """Every ``(endpoint, kind, rule)`` this sweep grades, and what it skips.
+    """Every ``(endpoint, kind, rule)`` this sweep grades: EVERY GET rule.
 
     A route taking ``<int:account_id>`` becomes one case per account kind,
     because the kind decides which producer runs -- the loan doors are
     unreachable with a checking id, and the property door needs the Property.
+    Every OTHER rule becomes exactly one case, whatever converters it carries.
 
-    **Reachability is decided on what is left after :data:`_FILLABLE` is
-    removed**, before the per-kind fan-out, so a rule carrying an account id AND
-    an id this fixture has no row for is SKIPPED rather than swept with a
-    converter still in it.
+    **There is no skip branch**, which is the whole of plan step
+    balance:X-be-3.  Until it shipped, a rule whose converter the fixture could
+    not fill was dropped here and pinned in an allowlist, and seventeen GET
+    rules -- 17.5% of the app's 97 -- were graded by nobody (finding
+    **N-388**).  A converter the world cannot fill is now caught in
+    :func:`_fill_converters`, as a case that FAILS naming the missing row.
 
     It returns the RULE rather than a finished URL because a case has to exist
     before any fixture does -- see :data:`_SWEEP_CASES`.  The owner's real ids
-    arrive later, through :func:`_case_url`.
+    arrive later.
 
     Args:
         app: any application whose ``url_map`` is the one to grade.
 
     Returns:
-        ``(cases, skipped)`` -- the cases in ``url_map`` order, and the rule
-        strings this fixture cannot reach.
+        The cases, in ``url_map`` order.
     """
-    skipped = []
     cases = []
-    with app.app_context():
-        rules = sorted(app.url_map.iter_rules(), key=lambda r: r.rule)
-    for rule in rules:
-        if "GET" not in rule.methods or rule.rule.startswith("/static"):
-            continue
-        residue = rule.rule
-        for token in _FILLABLE:
-            residue = residue.replace(token, "")
-        if "<" in residue:
-            skipped.append(rule.rule)
-        elif "<int:account_id>" in rule.rule:
+    for rule in _get_rules(app):
+        if _ACCOUNT_CONVERTER in _CONVERTER_TOKEN.findall(rule.rule):
             for kind in _ACCOUNT_KINDS:
                 cases.append((rule.endpoint, kind, rule.rule))
         else:
             cases.append((rule.endpoint, "", rule.rule))
-    return cases, skipped
+    return cases
 
 
-def _case_url(rule_string, kind, ids):
-    """The concrete URL one case requests, with this owner's real ids."""
-    url = rule_string.replace("<int:period_id>", str(ids["period"]))
-    if kind:
-        url = url.replace("<int:account_id>", str(ids[kind]))
-    return url
+def _fill_converters(case, ids):
+    """The concrete URL one case requests, and the converters nothing filled.
+
+    Every ``<...>`` token in the rule is resolved through
+    :data:`_CONVERTER_ROWS` on the pair ``(blueprint, name)`` and on nothing
+    else: there is no fallback to the bare name, because a name alone is not a
+    URL variable's identity in Flask and two of this app's are bound to two
+    tables each.  ``account_id`` is resolved from the case's own kind instead,
+    which is the axis :func:`_sweep_cases` fanned it out on.
+
+    Args:
+        case: One ``(endpoint, kind, rule)`` triple from :func:`_sweep_cases`.
+        ids: The world's dict of row ids.
+
+    Returns:
+        ``(url, unfilled)`` -- the rule with every converter this world can
+        fill replaced by a real id, and the sorted converter names it could
+        not.  A non-empty ``unfilled`` has TWO causes and the coverage test
+        tells them apart: the ``(blueprint, name)`` pair is absent from
+        :data:`_CONVERTER_ROWS`, or its value names a row
+        :func:`_build_baseline_less_owner` does not build.  Neither repair is
+        ever to exclude the route.
+    """
+    endpoint, kind, rule = case
+    # The endpoint PREFIX, which equals ``Blueprint.name`` only while no
+    # blueprint is nested; a nested one would key as ``"parent.child"``.
+    # Censused 2026-08-30: every endpoint in this app carries exactly one dot
+    # except Flask's own ``static``, which `_get_rules` drops.  A nested
+    # blueprint would fail LOUD through the pair arm rather than silently,
+    # because its pairs would not be in the map.
+    blueprint = endpoint.rpartition(".")[0]
+    unfilled = []
+
+    def _one(match):
+        name = match.group(1)
+        if name == _ACCOUNT_CONVERTER:
+            # ``_sweep_cases`` emits a kind for exactly these rules, and the
+            # coverage test pins every kind against a row in the world.
+            return str(ids[kind])
+        key = _CONVERTER_ROWS.get((blueprint, name))
+        if key is None or key not in ids:
+            unfilled.append(name)
+            return match.group(0)
+        return str(ids[key])
+
+    return _CONVERTER_TOKEN.sub(_one, rule), sorted(unfilled)
+
+
+def _is_answered_by_its_own_row(rule):
+    """Whether a 404 for *rule* means the sweep requested nothing real.
+
+    **The claim is "this case reached a producer", not "this row exists".**
+    404 is under 500, so a case naming a row that is not there passes every
+    other arm while measuring nothing -- which is N-388's own defect, one layer
+    down.  A 404 from the URL map and a 404 a handler chose are
+    indistinguishable, so this cannot say WHICH; the failure message offers
+    both branches and the reader picks.
+
+    Proved by mutation 2026-08-30, and it is the only arm that catches either:
+    dropping the transfer from the world reddened its three doors, and adding
+    100000 to the transaction's id reddened its four, both still green with
+    this arm alone removed.  **It does not catch a fill naming the WRONG row**,
+    and for eight of the eleven pairs no arm here could: those rows are each
+    the first of their own table, id 1, so a swap between two of them emits a
+    byte-identical URL.  ``period`` is id 6 and is the exception.  That limit
+    is :data:`_CONVERTER_ROWS`'s to state and it does.
+
+    TWO exclusions, both measured rather than assumed (2026-08-30, over the
+    whole sweep):
+
+    * an ``account_id`` rule, because a 404 is its DESIGN -- the kind axis
+      deliberately requests the loan doors with a checking id, and 67 of the
+      182 account cases answer 404 on one shape or the other.  Deleting this
+      clause reddens all 67, which is the mutation that keeps it from being
+      decorative;
+    * a rule carrying NO converter, because such a route is addressed by its
+      QUERY STRING and this predicate cannot see one.  The three that 404 today
+      are the empty-cell family (``/transactions/empty-cell``, ``/new/full``,
+      ``/new/quick``), whose coordinate is four ``request.args`` ids
+      (``forms._resolve_grid_cell``); with none supplied the 404 is the correct
+      answer, not a missing row.  The 19 rules left are exactly the ones this
+      world addresses by id, and none answers 404 on either shape.
+
+    Args:
+        rule: The rule string, converters and all.
+
+    Returns:
+        True when a 404 would mean the request never reached a producer.
+    """
+    names = set(_CONVERTER_TOKEN.findall(rule))
+    return bool(names) and _ACCOUNT_CONVERTER not in names
 
 
 def _route_table_app():
@@ -404,10 +681,29 @@ def _route_table_app():
 #: no case's CALL reaches a `--durations` report ahead of this file's own
 #: setup entries -- a case's two requests are a 0.020 s median.
 #:
+#: **TWO STANDING CONSTRAINTS ON WHOEVER EDITS THIS FILE NEXT, stated here
+#: because the code is the only home that survives a planning document being
+#: archived.**  Both were `X-bd`'s and `X-be-2`'s, whose README entries were
+#: condensed to pointers on 2026-08-30 under conventions rule 5; an obligation
+#: that outlives the step which discovered it may not live only in a record
+#: that governs nothing.
+#:
+#: * **A later step may not reintroduce ONE test issuing every request**, by
+#:   any name, and the routes must stay enumerable with NO database -- see
+#:   :func:`_route_table_app` for why collection may not touch one.
+#: * **The per-test drop and re-clone STAYS, because the clone is the
+#:   isolation.**  A seeded start state changes what a test starts WITH, never
+#:   whether it gets its own database; the same sentence is in
+#:   ``tests/conftest.py``'s seeded-start-state block, which is where the
+#:   mechanism lives.
+#:
 #: **What it costs, and where that cost actually lives.**  Measured serially
 #: 2026-08-29, 252 items in 81.16 s: per-item SETUP is **87%** of that (236
 #: sweep items, 0.270 s median, 70.49 s) and the requests the sweep exists to
-#: make are **7%** (0.020 s median, 5.39 s).
+#: make are **7%** (0.020 s median, 5.39 s).  **The item count has since moved
+#: to 253** -- `balance:X-be-3` widened the world and the 17 rules it could not
+#: reach became cases -- so the ratios above are the ones to carry forward and
+#: the absolute seconds are not.
 #:
 #: That 0.270 s splits, on matched serial probes of 30 items each the same day:
 #: **0.160 s (59%) is this module's own seven-account fixture** and 0.110 s
@@ -431,15 +727,21 @@ def _route_table_app():
 #: before any fixture runs -- but it costs no DATABASE: see
 #: :func:`_route_table_app`, which registers the blueprints onto a bare Flask
 #: app rather than calling ``create_app``.
-_SWEEP_CASES = _sweep_cases(_route_table_app())[0]
+_SWEEP_CASES = _sweep_cases(_route_table_app())
 
 #: Readable ids, so a CI failure names the route it found rather than an
 #: index.  Keyed on the RULE and not the endpoint: `analytics.retired_tab`
 #: carries three rules and `dashboard.page` two, so an endpoint key left
-#: pytest to disambiguate five of the 236 by position -- which is the index
+#: pytest to disambiguate five of the cases by position -- which is the index
 #: this line exists to avoid, and it re-points when a route is added.
 _SWEEP_IDS = [f"{rule}[{kind}]" if kind else rule
               for _, kind, rule in _SWEEP_CASES]
+
+#: The endpoints this sweep grades, for the arm that follows a REDIRECT one
+#: hop.  Read off the cases rather than off ``url_map`` a third time, because
+#: the claim it serves is "the hop lands somewhere this sweep also grades" and
+#: the cases are what "this sweep" means.
+_SWEPT_ENDPOINTS = frozenset(endpoint for endpoint, _, _ in _SWEEP_CASES)
 
 
 @pytest.mark.seeded_start_state("baseline_less_owner")
@@ -450,32 +752,49 @@ class TestNoRouteCrashesWithoutABaseline:
                                                       baseline_less_owner):
         """The COVERAGE claim, graded apart from the requests.
 
-        Four assertions that are properties of ``url_map`` and the fixture and
-        of nothing else, so they belong in one test rather than being restated
-        in every case -- where they would also be one chance per case to rot
-        into disagreement.
+        Assertions that are properties of ``url_map`` and the world and of
+        nothing else, so they belong in one test rather than being restated in
+        every case -- where they would also be one chance per case to rot into
+        disagreement.
 
-        The skip list is PINNED, not merely described.  The first draft
-        asserted ``all("<" in rule for rule in skipped)`` -- true by
-        construction, since that is the branch that fills the list, so it could
-        never fail and its own docstring's promise ("an uncovered route that
-        grows a balance read would pass this suite") was exactly what it
-        allowed.  A new route this fixture cannot reach turns this RED, which
-        is the only way the sweep's coverage claim stays honest.
+        **The claim is now CHECKED rather than pinned** (plan step
+        balance:X-be-3, finding **N-388**).  Until it shipped this test
+        asserted a hand-maintained list of the routes the sweep did NOT reach:
+        seventeen of them, and the assertion held them there rather than
+        closing them.  The two arms below say the thing the file's title claims
+        instead -- every GET rule in ``url_map`` is a case, and every case
+        resolves to a real URL -- and neither can be satisfied by adding a
+        route to a list.
         """
-        cases, skipped = _sweep_cases(app)
+        cases = _sweep_cases(app)
 
+        # **Every GET rule is a case, and the right-hand side is spelled out
+        # HERE rather than borrowed from `_get_rules`.**  The first draft of
+        # this arm read `{r.rule for r in _get_rules(app)}`, which
+        # `_sweep_cases` also iterates -- so it was an IDENTITY, true by
+        # construction, and it is the exact shape the `_ACCOUNT_KINDS` comment
+        # below refuses: two sides off one constant, shrinking together.
+        # Measured by an adversarial review 2026-08-30 -- adding one filter to
+        # `_get_rules` deleted `/debt-strategy`, which is one of the three
+        # surfaces N-112 caught 500ing, and every arm here stayed GREEN.
+        #
+        # So the predicate is DUPLICATED on purpose, which is the same
+        # argument that makes the axis below a literal: a pin is the one form
+        # that cannot shrink along with what it grades.  A filter added to
+        # `_get_rules` now makes the two disagree and turns this red.
+        with app.app_context():
+            table = {rule.rule for rule in app.url_map.iter_rules()
+                     if "GET" in rule.methods and rule.endpoint != "static"}
+        uncovered = table - {rule for _, _, rule in cases}
+        assert sorted({rule for _, _, rule in cases}) == sorted(table), (
+            "a GET rule in url_map is covered by no case, so some route is "
+            "graded by nobody.\n"
+            f"  uncovered: {sorted(uncovered)}"
+        )
         assert len(cases) > 100, (
             f"the sweep collapsed to {len(cases)} cases -- it is meant to "
             f"cover the whole url_map, so this means the enumeration stopped, "
             f"not that the app shrank"
-        )
-        assert sorted(skipped) == _UNREACHED_RULES, (
-            "the set of routes this sweep cannot reach has changed. Add the "
-            "id this fixture needs and grade the route, or pin it here with "
-            "the reason it cannot be graded.\n"
-            f"  now:      {sorted(skipped)}\n"
-            f"  expected: {_UNREACHED_RULES}"
         )
 
         # **The AXIS control, graded against the FIXTURE and not against
@@ -485,19 +804,25 @@ class TestNoRouteCrashesWithoutABaseline:
         # reached through the loan, mortgage and property kinds.  Comparing the
         # emitted kinds against `_ACCOUNT_KINDS` CANNOT catch that: both sides
         # are built from that tuple, so both shrink together and the assertion
-        # stays green.  Measured 2026-08-29 -- cutting the tuple to two kinds
-        # deletes 130 of 236 cases, 55%, and every assertion in an earlier draft
-        # of this test passed, `len(cases) > 100` clearing 106 by six.
+        # stays green.  Measured 2026-08-29 and recomputed 2026-08-30 --
+        # cutting the tuple to two kinds deletes 130 cases, five per account
+        # rule, and every assertion in an earlier draft of this test passed.
+        # The deletion is 130 whatever the table's size, so the FLOOR is what
+        # decays: it was 130 of 236 (55%) clearing `len(cases) > 100` by six,
+        # and after X-be-3 it is 130 of 253 (51%) clearing it by 23.  A floor
+        # whose margin grows with every route added is the reason the pin
+        # below is a literal and not a threshold.
         #
-        # So the axis is PINNED as a literal, the way `_UNREACHED_RULES` is and
-        # for the same reason -- a pin is the one form that cannot shrink along
-        # with what it grades.  It is NOT keyed on the fixture's dict minus a
-        # stop-list: a set defined by SUBTRACTION claims members nobody
-        # censused, and un-skipping any pinned rule would add a non-kind key
-        # (a goal, a template) and turn this red for an unrelated reason, whose
-        # natural repair grows the stop-list and decays the control back to
-        # blindness. The containment arm below keeps the pin honest against the
-        # fixture without inheriting that shape.
+        # So the axis is PINNED as a literal -- a pin is the one form that
+        # cannot shrink along with what it grades.  It is NOT keyed on the
+        # world's dict minus a stop-list: a set defined by SUBTRACTION claims
+        # members nobody censused, and the world hands out TEN keys that are
+        # not account kinds (`user_id`, `period`, `rent_category` and the seven
+        # rows X-be-3 added), every one of which would have to be named in the
+        # stop-list. An earlier draft of this sentence said seven, which is
+        # what X-be-3 added rather than what the world holds. The containment
+        # arm below keeps the pin honest against the world without inheriting
+        # the subtraction shape.
         assert _ACCOUNT_KINDS == (
             "checking", "loan", "mortgage", "property", "hysa", "card",
             "invest",
@@ -518,6 +843,56 @@ class TestNoRouteCrashesWithoutABaseline:
             f"  axis:    {sorted(_ACCOUNT_KINDS)}"
         )
 
+        # **The fill map is TOTAL over the route table, and graded BOTH WAYS.**
+        # This is what makes deleting the bare-name fallback safe rather than
+        # merely stricter: a rule carrying a pair nobody wrote down fails HERE,
+        # naming the pair, instead of being filled by a same-named key meaning
+        # a different table. A dead key fails too, so the map cannot keep an
+        # entry for a route that no longer exists and quietly stop describing
+        # the app. `account_id` is excluded on both sides -- it is the fan-out
+        # axis, filled from the kind rather than from one row.
+        table_pairs = {
+            (rule.endpoint.rpartition(".")[0], name)
+            for rule in _get_rules(app)
+            for name in _CONVERTER_TOKEN.findall(rule.rule)
+            if name != _ACCOUNT_CONVERTER
+        }
+        assert set(_CONVERTER_ROWS) == table_pairs, (
+            "the fill map and the GET route table disagree about which "
+            "(blueprint, converter) pairs exist. An unmapped pair is a route "
+            "requested with the converter still in its path -- a 404, which "
+            "passes a sweep that only grades 5xx, and is finding N-388.\n"
+            f"  unmapped:    {sorted(table_pairs - set(_CONVERTER_ROWS))}\n"
+            f"  not a route: {sorted(set(_CONVERTER_ROWS) - table_pairs)}"
+        )
+        rows = set(_CONVERTER_ROWS.values())
+        assert rows <= set(baseline_less_owner), (
+            f"the fill map names a row the world does not build: "
+            f"{sorted(rows - set(baseline_less_owner))}"
+        )
+
+        # **And every case resolves to a real URL.**  Graded AFTER the two arms
+        # above, which name the cause; this names the consequence for every
+        # rule at once. A converter the world holds no row for leaves a literal
+        # ``<int:...>`` in the path, that 404s, and 404 is under 500 -- so the
+        # case would PASS while grading nothing, which is the exact shape of
+        # the seventeen routes N-388 measured. Deleting the skip branch alone
+        # would have turned every one of them into a green case requesting a
+        # URL that does not exist.
+        unfilled = {}
+        for case in cases:
+            _url, missing = _fill_converters(case, baseline_less_owner)
+            if missing:
+                unfilled[case[2]] = missing
+        assert not unfilled, (
+            "the world holds no row for a converter these rules take, so each "
+            "would be requested with the converter still in the path -- a "
+            "404, which passes a sweep that only grades 5xx. Build the row in "
+            "_build_baseline_less_owner and name it in _CONVERTER_ROWS.\n"
+            + "\n".join(f"  {rule}: {names}"
+                        for rule, names in sorted(unfilled.items()))
+        )
+
         # The import-time table against the one the requests run on.  The cases
         # are pytest IDS, fixed at collection from an app built before any
         # fixture; if that table and this one ever disagree, some route is
@@ -530,8 +905,8 @@ class TestNoRouteCrashesWithoutABaseline:
         )
 
     @pytest.mark.parametrize("case", _SWEEP_CASES, ids=_SWEEP_IDS)
-    def test_no_get_route_returns_5xx(self, owner_client, baseline_less_owner,
-                                      case):
+    def test_no_get_route_returns_5xx(self, app, owner_client,
+                                      baseline_less_owner, case):
         """ONE GET route answers a baseline-less owner without crashing.
 
         Both request shapes, because the handler branches on them and a sweep
@@ -554,20 +929,29 @@ class TestNoRouteCrashesWithoutABaseline:
         them.
         """
         endpoint, kind, rule = case
-        url = _case_url(rule, kind, baseline_less_owner)
+        url, missing = _fill_converters(case, baseline_less_owner)
         # A URL still holding a converter 404s, and 404 is under 500, so it
-        # would pass while grading nothing.  `_sweep_cases` skips such a rule
-        # rather than emitting it; this refuses one that got through anyway.
-        assert "<" not in url, (
-            f"{rule} reached the sweep with a converter unfilled ({url}); it "
-            f"should have been skipped and pinned in _UNREACHED_RULES"
+        # would pass while grading nothing.  The coverage test refuses the
+        # whole set at once; this refuses THIS case, so a run that skipped the
+        # coverage test still cannot report a green route it never requested.
+        # ``"<" not in url`` is asserted as well as ``missing``: the two agree
+        # only while `_CONVERTER_TOKEN` matches every token Flask accepts, and
+        # a token it failed to match would leave the path unfilled with nothing
+        # to report.
+        assert not missing and "<" not in url, (
+            f"{rule} reached the sweep with a converter unfilled ({url}, "
+            f"{missing}). The baseline-less world holds no row of that kind: "
+            f"build one in _build_baseline_less_owner and name it in "
+            f"_CONVERTER_ROWS. A route this sweep cannot request is a route "
+            f"graded by nobody, which is finding N-388."
         )
 
         seen = []
         for headers in ({}, {"HX-Request": "true"}):
             resp = owner_client.get(url, headers=headers)
             seen.append((bool(headers), resp.status_code,
-                         b"Setup Incomplete" in resp.data))
+                         b"Setup Incomplete" in resp.data,
+                         resp.headers.get("Location")))
 
         crashed = [shape for shape in seen if shape[1] >= 500]
         assert not crashed, (
@@ -575,6 +959,81 @@ class TestNoRouteCrashesWithoutABaseline:
             f"{[s[1] for s in crashed]} for an owner with no baseline "
             f"scenario (htmx={[s[0] for s in crashed]})"
         )
+        # **And the request REACHED a producer.**  404 is under 500, so a case
+        # that names a row the world does not hold passes every arm above
+        # while grading nothing -- and a 404 from the URL map is
+        # indistinguishable from a 404 a handler chose.  For a rule filled
+        # from the world's one row of each kind there is nothing legitimate to
+        # refuse, so a 404 is that failure and no other; see
+        # :func:`_is_answered_by_its_own_row` for why the account kinds are
+        # not.
+        assert not (_is_answered_by_its_own_row(rule)
+                    and [s for s in seen if s[1] == 404]), (
+            f"{url} ({endpoint}) was answered 404, so this case requested a "
+            f"row that does not exist and measured no producer at all. "
+            f"Either _CONVERTER_ROWS fills one of "
+            f"{sorted(set(_CONVERTER_TOKEN.findall(rule)))} with the "
+            f"wrong KIND of row, or the door needs a row "
+            f"_build_baseline_less_owner does not build."
+        )
+        # **A REDIRECT measured no producer either, so the hop is followed
+        # one step -- to a rule, not to a body.**  A route answering 3xx never
+        # ran the code this sweep exists to grade, exactly as a 404 did not.
+        # Refusing a 3xx outright would be wrong, because a redirect stub is a
+        # legitimate answer; a redirect OUT of the graded set would be a hole
+        # with no arm on it, which is N-388's shape again. So the target is
+        # resolved through the app's own `url_map` and must be an endpoint
+        # this sweep also grades.
+        #
+        # It applies to EVERY case's 3xx, not only the rules
+        # `_is_answered_by_its_own_row` selects -- there is no reason to
+        # exempt an account-kind hop, and no predicate is needed to include
+        # it. Measured 2026-08-30, 3xx answers come from two families and
+        # every one lands inside the swept set: the account fragments that
+        # bounce a non-HTMX request to their page, and THREE own-row rules
+        # that redirect on BOTH shapes -- `/companion/period/<id>` to `/grid`
+        # and the two retired `/salary/<id>/breakdown` stubs to `/salary`.
+        # Those three are why the module docstring's "none of the seventeen
+        # 5xx'd" is a claim about fifteen routes that could have and two that
+        # never reach a producer at all.
+        for _htmx, status, _card, location in seen:
+            if not 300 <= status < 400:
+                continue
+            assert location is not None, (
+                f"{url} ({endpoint}) answered {status} with no Location, so "
+                f"the request reached no producer and named no successor"
+            )
+            split = urlsplit(location)
+            assert not split.netloc, (
+                f"{url} ({endpoint}) redirected OFF this application, to "
+                f"{location!r}; the sweep grades no route there"
+            )
+            try:
+                landed, _args = app.url_map.bind("localhost").match(
+                    split.path, method="GET",
+                )
+            except HTTPException as exc:
+                # ``RequestRedirect`` arrives here too, and deliberately: it
+                # means the target needs a trailing-slash normalisation before
+                # it resolves, so the app emitted a Location it would itself
+                # bounce again. A normalising branch was written, MEASURED
+                # DEAD against every redirect the sweep produces (2026-08-30)
+                # and deleted rather than kept as untested handling; the name
+                # is in this message so the next occurrence is diagnosable.
+                raise AssertionError(
+                    f"{url} ({endpoint}) redirected to {location!r}, which "
+                    f"this app's url_map does not resolve to a GET rule "
+                    f"({exc!r}). A RequestRedirect here means the Location "
+                    f"needs a trailing slash; anything else means the case "
+                    f"measured no producer and its successor is graded by "
+                    f"nobody."
+                ) from exc
+            assert landed in _SWEPT_ENDPOINTS, (
+                f"{url} ({endpoint}) redirected to {location!r} -> "
+                f"{landed}, which this sweep does not grade. A route whose "
+                f"only answer is a hop out of the swept set is a route no "
+                f"case measures, which is finding N-388's shape."
+            )
         # A fragment must never receive the full-page card: htmx would swap a
         # setup page into a balance cell.  The sweep used to grade only the
         # 5xx, so THIS regression -- the one the 204 branch exists to prevent

@@ -114,8 +114,12 @@ def amount_basis(user_id, scenario_id) -> AmountBasis:
 
     Calling the derivations per row is finding **N-228**: the paycheck engine
     runs ``paycheck_calculator.project_salary`` over the owner's whole
-    pay-period set, because the biweekly rounding residue only reconciles
-    against the complete annual figure.  One basis per read pass is what makes
+    pay-period set, because four of its judgements read that set -- the
+    third-paycheck test, the first-paycheck-of-month deduction cadence, the
+    FICA wage-base cumulative and a deduction's annual cap (**N-390**).  *The
+    biweekly rounding residue was this sentence's reason until plan step
+    balance:X-aw deleted the residue; the requirement outlived it.*  One basis
+    per read pass is what makes
     the per-row rules cheap; a read pass holds its own through
     :meth:`app.services.balance_at.BalanceContext.amounts`.
 
