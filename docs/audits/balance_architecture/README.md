@@ -847,16 +847,12 @@ hides.
   writes, through `write_transaction()`), which is why the shared database that row pointed at was
   refused. **The per-test clone STAYS: the clone is the isolation.** Sweep 82.26 s -> 18.73 s
   serially, no suite-level change. Opened **N-388**, owned by `X-be-3`.
-* [ ] **X-be-3** `test(routes): the sweep grades every GET route, with no list of exceptions` --
-  closes **N-388**, whose row carries the census. **Root: `_UNREACHED_RULES` is an ALLOWLIST of the
-  routes the sweep does not grade** -- 17 of the app's 97 GET rules, 17.5%, skipped because the
-  fixture creates no salary profile, transaction, transfer, goal, template or pension. It was
-  unaffordable to close while every row added to the world cost 236 rebuilds; after `X-be-2` it
-  costs one per worker, which is the whole reason this is now a step rather than a note.
-  **Widening it will likely surface real 5xx's**, since these are the routes no one has ever run
-  under a baseline-less owner -- each one found is its own diagnosis, and the step may not close by
-  narrowing the sweep. The coverage arm that currently PINS the skip list is what turns red when
-  the list empties, so it is rewritten in the same commit, not deleted.
+* [x] **X-be-3** `0aa2cc80` -- the sweep grades EVERY GET route and carries no list of the ones
+  it does not. Closed **N-388**: `_UNREACHED_RULES` and the skip branch that fed it are DELETED, the
+  world holds a row of every kind a GET rule takes an id for, and coverage is an equality against
+  `url_map` no list can satisfy. **All 17 unrequested rules answer and NONE 5xx** -- the question
+  that row left open. The fill map is keyed `(blueprint, converter)` with NO bare-name fallback,
+  since FIVE names are bound under two blueprints and two of them name two TABLES.
 * [ ] **X-be** `refactor(services): three modules are at the line ceiling, not near it` -- closes
   **N-365**, whose row carries the census and both instances. **Root: in a corpus whose docstrings
   ARE the design record, a per-module LINE cap binds what gets WRITTEN DOWN.** The fork, per module:
