@@ -108,7 +108,7 @@ docker compose -f docker-compose.dev.yml up -d && docker logs -f shekel-dev-app
 # Dev server fallback (host process; owner-role DB, no entrypoint gates)
 flask run
 
-# Tests -- full suite ~65 s at -n 12 (~5,500 tests); see Tests section
+# Tests -- full suite ~4.5-5 min at -n 12 (~11,800 tests); see Tests section
 ./scripts/test.sh                             # full suite (restarts test-db first)
 ./scripts/test.sh tests/path/test_file.py::test_name -v  # single test (fast feedback)
 python scripts/build_test_template.py         # first-time setup; rebuild after migrations
@@ -182,14 +182,17 @@ load the essentials automatically when you touch matching files and point you to
 
 ## Tests
 
-~5,500 tests, ~65 s at `-n 12`. Run via `./scripts/test.sh` (not bare `pytest`) -- it restarts the
-`shekel-dev-test-db` container first and falls through to plain pytest in CI. Single test:
-`./scripts/test.sh tests/path/test_file.py::test_name -v`; `SKIP_DB_RESTART=1` skips the restart on
-chained runs. Rebuild the template after migrations: `python scripts/build_test_template.py`. **The
-wrapper also defaults to `-m "not docker"`, which DESELECTS 28 container-spawning
-`tests/test_deploy` tests -- they vanish from the report entirely rather than appearing as skips, so
-a green `./scripts/test.sh` run is not a claim about them; CI runs bare `pytest` and executes all
-28.** `.claude/rules/testing.md` and `docs/testing-standards.md` carry the full guidance.
+**~11,800 tests, ~4.5-5 min at `-n 12`** (measured 2026-08-30: 11,788 passed in 278-296 s over four
+runs, a run-to-run variance of ~18 s; the previously stated "~5,500 tests, ~65 s" had gone stale by
+more than 2x in count and 4x in time). Run via `./scripts/test.sh` (not bare `pytest`) -- it
+restarts the `shekel-dev-test-db` container first and falls through to plain pytest in CI. Single
+test: `./scripts/test.sh tests/path/test_file.py::test_name -v`; `SKIP_DB_RESTART=1` skips the
+restart on chained runs. Rebuild the template after migrations:
+`python scripts/build_test_template.py`. **The wrapper also defaults to `-m "not docker"`, which
+DESELECTS 28 container-spawning `tests/test_deploy` tests -- they vanish from the report entirely
+rather than appearing as skips, so a green `./scripts/test.sh` run is not a claim about them; CI
+runs bare `pytest` and executes all 28.** `.claude/rules/testing.md` and `docs/testing-standards.md`
+carry the full guidance.
 
 ## Deployment
 

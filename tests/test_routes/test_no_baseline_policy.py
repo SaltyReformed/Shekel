@@ -38,7 +38,7 @@ than it does is this arc's most expensive recurring lesson:
   step **X-y**.
 """
 
-from datetime import date, timedelta
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -52,12 +52,26 @@ from app.models.scenario import Scenario
 from app.models.transfer_template import TransferTemplate
 from app.services import account_service
 from app.url_converters import register_url_converters
+from app.utils.dates import display_today
 from tests._test_helpers import (
     cadence_payload,
     create_hysa_account,
     create_loan_account,
     make_appreciating_account,
     make_investment_account,
+)
+# The world builders and the registry live in ``tests/conftest.py`` beside the
+# worker-database plumbing they drive.  Importing them from there is safe and
+# is the same module object pytest loaded -- ``tests`` is a package, so pytest
+# imports its conftest as ``tests.conftest`` and this resolves out of
+# ``sys.modules`` rather than executing it a second time (verified: a second
+# execution would re-run ``_bootstrap_worker_database`` and create a second
+# database).  Whether the seam should instead be its own module is a placement
+# question raised with the developer, not settled here.
+from tests.conftest import (
+    build_periods_today,
+    build_seed_user,
+    register_seeded_state,
 )
 
 
@@ -138,9 +152,20 @@ _ACCOUNT_KINDS = (
 _FILLABLE = ("<int:account_id>", "<int:period_id>")
 
 
-@pytest.fixture()
-def baseline_less_owner(app, db, seed_user, seed_periods_today):
+def _build_baseline_less_owner(db):
     """An OWNER holding every account kind, with the baseline removed.
+
+    **Built ONCE per xdist worker and frozen into a snapshot database** (plan
+    step balance:X-be-2, finding **N-387**); every test that declares this
+    world still gets its own private clone of that snapshot, so per-test
+    isolation is exactly what it was.  Once per WORKER, not once per run: the
+    236 cases scatter across ``-n 12``, so the world is built up to twelve
+    times a session rather than 236 times a worker.
+
+    As a per-test fixture this cost 302 ms of setup for 22 ms of requests,
+    236 times over; the file went 82.26 s -> 18.73 s serially.  The full split,
+    and what of it this does NOT remove, is stated once in the seeded-start-
+    state block comment in ``tests/conftest.py``.
 
     Every kind is present deliberately: the door that 500'd the property page
     is reachable only through a Property that SECURES a configured loan, and
@@ -150,59 +175,89 @@ def baseline_less_owner(app, db, seed_user, seed_periods_today):
     is ``collateral_account_id``, and the sweep asserts the property page's
     answer rather than only its status.
 
+    It returns IDS and no ORM objects, which the seam requires: the dict is
+    computed once, at build time, and handed to every test that declares the
+    world, so an object in it would be bound to a session that closed with the
+    build.
+
+    Args:
+        db: The Flask-SQLAlchemy extension to write the world through.
+
     Returns:
-        A dict of the account ids each parametrised URL needs.
+        A dict of the row ids each parametrised URL and assertion needs.
     """
-    with app.app_context():
-        user = seed_user["user"]
-        anchor = seed_periods_today[0]
+    seed_user = build_seed_user(db)
+    periods = build_periods_today(db, seed_user)
+    user = seed_user["user"]
+    anchor = periods[0]
 
-        loan = create_loan_account(
-            seed_user, db.session, name="Policy Loan",
-            principal=Decimal("20000.00"), term=60,
-            origination_date=date.today() - timedelta(days=400),
-        )
-        mortgage = create_loan_account(
-            seed_user, db.session, name="Policy Mortgage",
-            principal=Decimal("300000.00"), term=360,
-            origination_date=date.today() - timedelta(days=800),
-        )
-        prop = make_appreciating_account(
-            seed_user, db.session, anchor, Decimal("400000.00"),
-            Decimal("0.03000"),
-        )
-        # ``collateral_account_id`` is the real column; assigning any other
-        # name would leave the loan unsecured and the property door unexercised.
-        db.session.get(Account, mortgage.id).collateral_account_id = prop.id
+    loan = create_loan_account(
+        seed_user, db.session, name="Policy Loan",
+        principal=Decimal("20000.00"), term=60,
+        origination_date=display_today() - timedelta(days=400),
+    )
+    mortgage = create_loan_account(
+        seed_user, db.session, name="Policy Mortgage",
+        principal=Decimal("300000.00"), term=360,
+        origination_date=display_today() - timedelta(days=800),
+    )
+    prop = make_appreciating_account(
+        seed_user, db.session, anchor, Decimal("400000.00"),
+        Decimal("0.03000"),
+    )
+    # ``collateral_account_id`` is the real column; assigning any other
+    # name would leave the loan unsecured and the property door unexercised.
+    db.session.get(Account, mortgage.id).collateral_account_id = prop.id
 
-        hysa = create_hysa_account(
-            seed_user, db.session, anchor, Decimal("5000.00"),
-        )
-        card_type = (
-            db.session.query(AccountType).filter_by(name="Credit Card").one()
-        )
-        card = account_service.create_account(
-            account_service.AccountSpec(
-                user_id=user.id, account_type_id=card_type.id,
-                name="Policy Card", anchor_balance=Decimal("-500.00"),
-            ),
-        )
-        invest = make_investment_account(
-            seed_user, db.session, anchor, Decimal("30000.00"),
-            name="Policy 401k",
-        )
+    hysa = create_hysa_account(
+        seed_user, db.session, anchor, Decimal("5000.00"),
+    )
+    card_type = (
+        db.session.query(AccountType).filter_by(name="Credit Card").one()
+    )
+    card = account_service.create_account(
+        account_service.AccountSpec(
+            user_id=user.id, account_type_id=card_type.id,
+            name="Policy Card", anchor_balance=Decimal("-500.00"),
+        ),
+    )
+    invest = make_investment_account(
+        seed_user, db.session, anchor, Decimal("30000.00"),
+        name="Policy 401k",
+    )
 
-        scenario = db.session.get(Scenario, seed_user["scenario"].id)
-        scenario.is_baseline = False
-        db.session.commit()
+    scenario = db.session.get(Scenario, seed_user["scenario"].id)
+    scenario.is_baseline = False
+    db.session.commit()
 
-        return {
-            "user_id": user.id,
-            "checking": seed_user["account"].id, "loan": loan.id,
-            "mortgage": mortgage.id, "property": prop.id, "hysa": hysa.id,
-            "card": card.id, "invest": invest.id,
-            "period": seed_periods_today[4].id,
-        }
+    return {
+        "user_id": user.id,
+        "checking": seed_user["account"].id, "loan": loan.id,
+        "mortgage": mortgage.id, "property": prop.id, "hysa": hysa.id,
+        "card": card.id, "invest": invest.id,
+        "period": periods[4].id,
+        # The transfer-create arm below files against a real category, and a
+        # world hands out ids rather than the ORM rows ``seed_user`` returned.
+        "rent_category": seed_user["categories"]["Rent"].id,
+    }
+
+
+register_seeded_state("baseline_less_owner", _build_baseline_less_owner)
+
+
+@pytest.fixture()
+def baseline_less_owner(seeded_world):
+    """The ids of the world this file's tests declare.
+
+    A thin alias for :data:`seeded_world` so the tests keep naming the state
+    they are in rather than the mechanism that delivers it.
+
+    Returns:
+        A dict of the row ids each parametrised URL and assertion needs.
+    """
+    return seeded_world
+
+
 
 
 def _sweep_cases(app):
@@ -387,6 +442,7 @@ _SWEEP_IDS = [f"{rule}[{kind}]" if kind else rule
               for _, kind, rule in _SWEEP_CASES]
 
 
+@pytest.mark.seeded_start_state("baseline_less_owner")
 class TestNoRouteCrashesWithoutABaseline:
     """The sweep: no GET route may 5xx for an owner with no baseline."""
 
@@ -474,7 +530,7 @@ class TestNoRouteCrashesWithoutABaseline:
         )
 
     @pytest.mark.parametrize("case", _SWEEP_CASES, ids=_SWEEP_IDS)
-    def test_no_get_route_returns_5xx(self, auth_client, baseline_less_owner,
+    def test_no_get_route_returns_5xx(self, owner_client, baseline_less_owner,
                                       case):
         """ONE GET route answers a baseline-less owner without crashing.
 
@@ -509,7 +565,7 @@ class TestNoRouteCrashesWithoutABaseline:
 
         seen = []
         for headers in ({}, {"HX-Request": "true"}):
-            resp = auth_client.get(url, headers=headers)
+            resp = owner_client.get(url, headers=headers)
             seen.append((bool(headers), resp.status_code,
                          b"Setup Incomplete" in resp.data))
 
@@ -530,7 +586,7 @@ class TestNoRouteCrashesWithoutABaseline:
 
     @pytest.mark.parametrize("label,template", _MEASURED_PAGE_DOORS)
     def test_a_measured_door_answers_with_the_repair(
-        self, app, auth_client, baseline_less_owner, label, template,
+        self, app, owner_client, baseline_less_owner, label, template,
     ):
         """Each PAGE door that used to 500 now renders the repair card.
 
@@ -539,7 +595,7 @@ class TestNoRouteCrashesWithoutABaseline:
         is the only route back out of this state.
         """
         url = template.format(**baseline_less_owner)
-        resp = auth_client.get(url)
+        resp = owner_client.get(url)
 
         assert resp.status_code == 200, f"{label} ({url})"
         body = resp.data.decode()
@@ -551,7 +607,7 @@ class TestNoRouteCrashesWithoutABaseline:
 
     @pytest.mark.parametrize("label,template", _MEASURED_DOORS)
     def test_a_measured_door_answers_an_htmx_request_with_204(
-        self, app, auth_client, baseline_less_owner, label, template,
+        self, app, owner_client, baseline_less_owner, label, template,
     ):
         """An HTMX request gets 204 and an EMPTY body, never the card.
 
@@ -560,7 +616,7 @@ class TestNoRouteCrashesWithoutABaseline:
         balance cell would be worse than the 500 it replaced.
         """
         url = template.format(**baseline_less_owner)
-        resp = auth_client.get(url, headers={"HX-Request": "true"})
+        resp = owner_client.get(url, headers={"HX-Request": "true"})
 
         assert resp.status_code == 204, f"{label} ({url})"
         assert resp.data == b"", (
@@ -569,10 +625,18 @@ class TestNoRouteCrashesWithoutABaseline:
         )
 
 
+@pytest.mark.seeded_start_state("baseline_less_owner")
 class TestTheHandlerItself:
-    """The handler's own contract, exercised directly rather than inferred."""
+    """The handler's own contract, exercised directly rather than inferred.
 
-    def test_it_logs_an_error_event(self, app, auth_client,
+    Every test here needs the baseline-less owner, so the class declares that
+    world.  The handler's NEGATIVE control -- the owner who HAS a baseline --
+    is a different start state and therefore a different class,
+    :class:`TestTheHandlerIsInertForAHealthyOwner` below.  A world is declared
+    per class because a marker cannot be taken back off one test.
+    """
+
+    def test_it_logs_an_error_event(self, app, owner_client,
                                     baseline_less_owner, caplog):
         """The quiet screen is a LOUD log line.
 
@@ -584,7 +648,7 @@ class TestTheHandlerItself:
         """
         url = f"/accounts/{baseline_less_owner['loan']}/loan"
         with caplog.at_level("ERROR"):
-            auth_client.get(url)
+            owner_client.get(url)
 
         events = [r for r in caplog.records
                   if getattr(r, "event", None) == "baseline_missing"]
@@ -596,7 +660,7 @@ class TestTheHandlerItself:
         assert events[0].category == "error"
 
     def test_a_mutating_htmx_request_is_answered_not_silenced(
-        self, app, auth_client, baseline_less_owner,
+        self, app, owner_client, baseline_less_owner,
     ):
         """An HTMX POST gets the card, never 204.
 
@@ -607,7 +671,7 @@ class TestTheHandlerItself:
         least said something.  Found by X-v2's adversarial design review and
         confirmed by executing it.
         """
-        resp = auth_client.post(
+        resp = owner_client.post(
             "/debt-strategy/calculate",
             data={"strategy": "avalanche", "extra_monthly": "0"},
             headers={"HX-Request": "true"},
@@ -622,7 +686,7 @@ class TestTheHandlerItself:
         assert "/create-baseline" in body
 
     def test_the_event_carries_the_user_the_raise_was_resolved_for(
-        self, app, auth_client, baseline_less_owner, caplog,
+        self, app, owner_client, baseline_less_owner, caplog,
     ):
         """The ERROR event logs the CONTEXT's user, not only the requester.
 
@@ -634,7 +698,7 @@ class TestTheHandlerItself:
         """
         url = f"/accounts/{baseline_less_owner['loan']}/loan"
         with caplog.at_level("ERROR"):
-            auth_client.get(url)
+            owner_client.get(url)
 
         events = [r for r in caplog.records
                   if getattr(r, "event", None) == "baseline_missing"]
@@ -642,7 +706,7 @@ class TestTheHandlerItself:
         assert events[0].context_user_id == baseline_less_owner["user_id"]
 
     def test_a_transfer_create_refuses_instead_of_reporting_success(
-        self, app, auth_client, db, seed_user, baseline_less_owner,
+        self, app, owner_client, db, baseline_less_owner,
     ):
         """A CREATE that materialises nothing may not say it created something.
 
@@ -665,14 +729,14 @@ class TestTheHandlerItself:
             "default_amount": "150.00",
             "from_account_id": ids["checking"],
             "to_account_id": ids["hysa"],
-            "category_id": str(seed_user["categories"]["Rent"].id),
+            "category_id": str(ids["rent_category"]),
         }
         one_time = {**base, "name": "F9 One Time",
                     "start_period_id": ids["period"]}
         recurring = {**base, "name": "F9 Recurring", **cadence_payload()}
 
         for payload in (one_time, recurring):
-            resp = auth_client.post(
+            resp = owner_client.post(
                 "/transfers", data=payload, follow_redirects=True,
             )
 
@@ -690,12 +754,22 @@ class TestTheHandlerItself:
                     f"generated nothing"
                 )
 
+
+class TestTheHandlerIsInertForAHealthyOwner:
+    """The negative half of the control, on the state every real user is in.
+
+    Its own class because it is the one test in this file that must NOT start
+    in the baseline-less world -- the owner it needs is the ordinary seeded
+    one, with the baseline intact.  Declaring the world per class is what keeps
+    that difference visible instead of hiding it in a fixture list.
+    """
+
     def test_a_user_with_a_baseline_is_untouched(self, app, auth_client,
                                                  seed_user, seed_periods_today):
         """The handler is inert for the state every real user is in.
 
-        The negative half of the control: a gate that fires for everyone would
-        pass every arm above while breaking the application.
+        A gate that fired for everyone would pass every arm above while
+        breaking the application.
         """
         resp = auth_client.get("/grid")
 

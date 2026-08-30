@@ -841,20 +841,22 @@ hides.
   root cause was neither axis -- one test issuing every request is O(the route table) under an
   O(1) budget, so an arm only divides the constant. **A later step may not reintroduce one**, and
   the routes must stay enumerable without a database. Opened **N-387**, owned by `X-be-2`.
-* [ ] **X-be-2** `test(routes): a read-only sweep owns its database` -- closes **N-387**,
-  whose row carries the split. **Root: the sweep mutates nothing and pays full per-test WRITE
-  isolation 236 times.** The remedy must cut BOTH halves: sharing a database alone recovers the
-  41%, so the shared state has to carry the seven accounts too, which is the 59%.
-  **One remedy is measured REFUSED**: a module- or class-scoped fixture cannot hold that state,
-  because every test on a worker shares ONE database and the next test from any OTHER module
-  re-clones it mid-module -- OBSERVED under `-n 12`, not inferred from the scheduler's docs, with
-  `gw0`, `gw10` and `gw11` each running two modules interleaved. `xdist_group` pins a group to one
-  worker and does not keep other tests off that worker, so it is not the fix either. It owes the
-  OWNERSHIP question first -- which database the sweep reads and who creates it -- and may not
-  answer it by making the sweep one test again. **A database it clones from the template carries
-  `X-f3c-2b`'s two `DEFERRABLE INITIALLY DEFERRED` constraint triggers**: inert for a GET-only
-  sweep, but any SETTLED write followed by DDL on `budget.transactions` needs a
-  `SET CONSTRAINTS ALL IMMEDIATE` drain first, which is what broke CI step 7b on 2026-08-29.
+* [x] **X-be-2** `167aab8d` -- a test SAYS what world it starts in: a named seeded start state,
+  built once per xdist worker and frozen into a snapshot every declaring test still takes its OWN
+  private clone of. Closed **N-387**, whose read-only premise it measured FALSE (`GET /mfa/setup`
+  writes, through `write_transaction()`), which is why the shared database that row pointed at was
+  refused. **The per-test clone STAYS: the clone is the isolation.** Sweep 82.26 s -> 18.73 s
+  serially, no suite-level change. Opened **N-388**, owned by `X-be-3`.
+* [ ] **X-be-3** `test(routes): the sweep grades every GET route, with no list of exceptions` --
+  closes **N-388**, whose row carries the census. **Root: `_UNREACHED_RULES` is an ALLOWLIST of the
+  routes the sweep does not grade** -- 17 of the app's 97 GET rules, 17.5%, skipped because the
+  fixture creates no salary profile, transaction, transfer, goal, template or pension. It was
+  unaffordable to close while every row added to the world cost 236 rebuilds; after `X-be-2` it
+  costs one per worker, which is the whole reason this is now a step rather than a note.
+  **Widening it will likely surface real 5xx's**, since these are the routes no one has ever run
+  under a baseline-less owner -- each one found is its own diagnosis, and the step may not close by
+  narrowing the sweep. The coverage arm that currently PINS the skip list is what turns red when
+  the list empties, so it is rewritten in the same commit, not deleted.
 * [ ] **X-be** `refactor(services): three modules are at the line ceiling, not near it` -- closes
   **N-365**, whose row carries the census and both instances. **Root: in a corpus whose docstrings
   ARE the design record, a per-module LINE cap binds what gets WRITTEN DOWN.** The fork, per module:
