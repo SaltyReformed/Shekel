@@ -82,8 +82,8 @@ routes wide, not seventeen.
 
 import re
 from datetime import timedelta
-from urllib.parse import urlsplit
 from decimal import Decimal
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -680,6 +680,22 @@ def _route_table_app():
 #: 2026-08-29): the largest single arm read 2.16 s split by account kind, and
 #: no case's CALL reaches a `--durations` report ahead of this file's own
 #: setup entries -- a case's two requests are a 0.020 s median.
+#:
+#: **TWO STANDING CONSTRAINTS ON WHOEVER EDITS THIS FILE NEXT, stated here
+#: because the code is the only home that survives a planning document being
+#: archived.**  Both were `X-bd`'s and `X-be-2`'s, whose README entries were
+#: condensed to pointers on 2026-08-30 under conventions rule 5; an obligation
+#: that outlives the step which discovered it may not live only in a record
+#: that governs nothing.
+#:
+#: * **A later step may not reintroduce ONE test issuing every request**, by
+#:   any name, and the routes must stay enumerable with NO database -- see
+#:   :func:`_route_table_app` for why collection may not touch one.
+#: * **The per-test drop and re-clone STAYS, because the clone is the
+#:   isolation.**  A seeded start state changes what a test starts WITH, never
+#:   whether it gets its own database; the same sentence is in
+#:   ``tests/conftest.py``'s seeded-start-state block, which is where the
+#:   mechanism lives.
 #:
 #: **What it costs, and where that cost actually lives.**  Measured serially
 #: 2026-08-29, 252 items in 81.16 s: per-item SETUP is **87%** of that (236
