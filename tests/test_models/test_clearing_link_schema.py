@@ -54,6 +54,7 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.services import entry_service, status_seam
 from tests._test_helpers import (
+    append_only_guard_lifted,
     an_entered_day,
     settle_day_columns,
     settlement_columns,
@@ -663,12 +664,29 @@ class TestAnAssertionAlineNamesCannotBeDeleted:
             db.session.add(txn)
             db.session.flush()
 
-            db.session.delete(opening)
-            with pytest.raises(
-                sqlalchemy.exc.IntegrityError,
-                match="fk_transactions_reconciled_by",
+            # **Two controls now stand here, and this case grades the
+            # INNER one** (plan step X-f3c-2c).  ``budget.account_anchor_history``
+            # is append-only at the database tier, so a DELETE aimed at one
+            # assertion is refused before the foreign key is ever consulted --
+            # which would leave ``ON DELETE RESTRICT`` passing and guarding
+            # nothing.  Lifting the outer guard for this statement is what
+            # keeps the FK measured; the outer guard has its own cases in
+            # ``tests/test_models/test_append_only.py``.
+            with append_only_guard_lifted(
+                db.session, "budget.account_anchor_history",
             ):
-                db.session.flush()
+                # Raw rather than ``db.session.delete``: the object-layer
+                # listener refuses an ORM delete too, and it is not what this
+                # case is about.  Lifting only the database trigger and then
+                # asking the ORM would grade the listener, not the FK.
+                with pytest.raises(
+                    sqlalchemy.exc.IntegrityError,
+                    match="fk_transactions_reconciled_by",
+                ):
+                    db.session.execute(sa.text(
+                        "DELETE FROM budget.account_anchor_history "
+                        "WHERE id = :i"
+                    ), {"i": opening.id})
             db.session.rollback()
 
 

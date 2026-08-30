@@ -123,24 +123,30 @@ Reads: :func:`app.services.cash_ledger.account_opening_fact`.  Writes:
 ``a7c41f9d2b60`` (``migration_derived``).
 """
 
-from sqlalchemy import event
-
 from app.extensions import db
+from app.models.append_only import (
+    AppendOnlyViolation,
+    install_append_only_guards,
+)
 from app.models.mixins import AccountScopedMixin, CreatedAtMixin
 
 
-class AccountOpeningImmutableError(RuntimeError):
+class AccountOpeningImmutableError(AppendOnlyViolation):
     """Raised when ORM code tries to UPDATE or DELETE an AccountOpening.
 
     The table is append-only: a restatement is a NEW row, so the record of
     what the opening used to be survives it.  The twin of
-    :class:`~app.models.loan_anchor_event.LoanAnchorEventImmutableError`, and
-    the same scope -- the guard fires on ORM-mediated writes to catch a
-    programmer error at its call site.  A bulk ``query.update()`` /
-    ``query.delete()`` and a direct SQL statement bypass it, as they bypass the
-    loan twin; the ``ON DELETE CASCADE`` from ``budget.accounts`` also flows
-    through the database FK action without loading rows into the session, so
-    deleting an account is unaffected.
+    :class:`~app.models.loan_anchor_event.LoanAnchorEventImmutableError` and of
+    :class:`~app.models.account.AccountAnchorHistoryImmutableError`, all three
+    installed by :func:`app.models.append_only.install_append_only_guards`.
+
+    **This is the NAMED half of the refusal, not the whole of it** (plan step
+    X-f3c-2c, ruling **R-HY**).  The listener sees only ORM-mediated writes; a
+    bulk ``query.update()``, a raw statement and a psql session are refused by
+    ``budget.refuse_append_only_change``, the trigger
+    :mod:`app.append_only_infrastructure` installs on this table.  The
+    ``ON DELETE CASCADE`` from ``budget.accounts`` is deliberately outside BOTH
+    -- it is the documented disposal path for an account's whole history.
     """
 
 
@@ -220,32 +226,4 @@ class AccountOpening(AccountScopedMixin, CreatedAtMixin, db.Model):
         )
 
 
-@event.listens_for(AccountOpening, "before_update")
-def _block_update(_mapper, _connection, target):
-    """Refuse every ORM-mediated UPDATE on an AccountOpening.
-
-    Fires before SQLAlchemy emits the UPDATE so the offending session rolls
-    back cleanly with a named exception a test can assert against.  A
-    restatement is expressed as a NEW row -- which is what keeps the record of
-    what the opening used to be, and what lets a surface show that it changed.
-    The twin of ``loan_anchor_event._block_update``.
-    """
-    raise AccountOpeningImmutableError(
-        f"AccountOpening is append-only; UPDATE rejected for id={target.id!r}. "
-        "Restate an opening by inserting a new row."
-    )
-
-
-@event.listens_for(AccountOpening, "before_delete")
-def _block_delete(_mapper, _connection, target):
-    """Refuse every ORM-mediated DELETE on an AccountOpening.
-
-    Same rationale as :func:`_block_update`: the table is structurally
-    append-only, and every account must carry at least one row for the balance
-    fold to have a level to stand on.  CASCADE deletes from ``budget.accounts``
-    flow through the database FK action and do NOT load each row into the ORM
-    session, so this guard does not interfere with account deletion.
-    """
-    raise AccountOpeningImmutableError(
-        f"AccountOpening is append-only; DELETE rejected for id={target.id!r}."
-    )
+install_append_only_guards(AccountOpening, AccountOpeningImmutableError)

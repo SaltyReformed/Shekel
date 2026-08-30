@@ -36,7 +36,6 @@ anchored in the past (period 2) or at the current period (period 4).
 from collections import OrderedDict
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
-from types import SimpleNamespace
 
 import pytest
 
@@ -47,7 +46,7 @@ from app.enums import (
     TxnTypeEnum,
 )
 from app.exceptions import ValidationError
-from app.models.account import Account, AccountAnchorHistory
+from app.models.account import Account
 from app.models.interest_params import InterestParams
 from app.models.pay_period import PayPeriod
 from app.models.paycheck_deduction import PaycheckDeduction
@@ -66,7 +65,7 @@ from app.services.account_projection import (
     classify_account,
 )
 from app.services.balance_at import _kernel as net_worth_kernel
-from app.services.pay_calendar import DerivedPeriod, PayCalendarError, calendar_for
+from app.services.pay_calendar import DerivedPeriod, calendar_for
 from app.services.balance_at._asset_contributions import ContributionInputs
 from app.services.balance_at._assertions import assertion_corrections
 from app.services.investment_projection import adapt_deductions
@@ -86,7 +85,9 @@ from app.services.balance_at._resolution import (
     configured_loan,
     resolved_loan,
 )
+from tests.conftest import SEED_USER_BOOTSTRAP_START
 from tests._test_helpers import (
+    account_never_asserted,
     all_periods,
     add_txn,
     append_balance_assertion,
@@ -103,8 +104,7 @@ from tests._test_helpers import (
     make_investment_account,
     make_salary_profile,
     posted_loan_balance_at,
-    restamp_latest_assertion,
-    restamp_opening_assertion,
+    reassert_balance_on,
     settle_instant_on,
 )
 
@@ -337,7 +337,7 @@ class TestInterestBeginsAtTheLatestAssertion:
         account = create_hysa_account(
             seed_user, db.session, anchor_period, balance,
         )
-        restamp_opening_assertion(
+        reassert_balance_on(
             db.session, account, settle_instant_on(day),
         )
         db.session.commit()
@@ -394,19 +394,21 @@ class TestInterestBeginsAtTheLatestAssertion:
             hysa = create_hysa_account(
                 seed_user, db.session, periods[0], Decimal("6000.00"),
             )
+            # **The true-up names its own day at the DOOR** (plan step
+            # X-f3c-2c).  It used to be staged for today and then re-stamped
+            # onto the day this case turns on; the table is append-only, so
+            # the day an assertion is true for is decided when it is written --
+            # and ``stage_anchor_true_up`` already takes it.
+            #
+            # The stager takes a BOUNDED day (plan step X-f1e2): only
+            # ``resolve_observation_day`` mints one, so the fixture asks for it
+            # the same way both production doors do.
             anchor_service.stage_anchor_true_up(
                 account=hysa,
                 new_balance=Decimal("10000.00"),
-                # The stager takes a BOUNDED day (plan step X-f1e2): only
-                # ``resolve_observation_day`` mints one, so the fixture asks
-                # for it the same way both production doors do.
                 observed_on=anchor_service.resolve_observation_day(
-                    user_id, None,
+                    user_id, periods[2].start_date + timedelta(days=7),
                 ),
-            )
-            restamp_latest_assertion(
-                db.session, hysa,
-                settle_instant_on(periods[2].start_date + timedelta(days=7)),
             )
             db.session.commit()
 
@@ -5414,11 +5416,13 @@ class TestCashAnchorHistory:
             assert [row.observed_on for row in history.rows] == [
                 periods[2].end_date,
                 periods[1].end_date,
-                # ``seed_periods_today`` drops the 2024 bootstrap period and
-                # re-homes the opening assertion onto period 0
-                # (``_drop_seed_user_bootstrap``), so the opening is dated
-                # here rather than at the fixture's bootstrap day.
-                periods[0].start_date,
+                # The ORIGINATION assertion, dated on the seeded owner's
+                # bootstrap day (plan step X-f3c-2c).  ``seed_periods_today``
+                # drops that pay PERIOD and used to re-home the assertion with
+                # it; the table is append-only, so the row stays where
+                # ``account_service.create_account`` wrote it and the card
+                # shows the account's real first declaration.
+                SEED_USER_BOOTSTRAP_START,
             ]
             assert [row.recorded for row in history.rows] == [
                 Decimal("400.00"), Decimal("500.00"), Decimal("1000.00"),
@@ -5745,10 +5749,13 @@ class TestCashAnchorHistory:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            account = seed_user["account"]
-            db.session.query(AccountAnchorHistory).filter(
-                AccountAnchorHistory.account_id == account.id,
-            ).delete()
+            # **Built rather than emptied** (plan step X-f3c-2c): an assertion
+            # is append-only at the database tier, so an account that has
+            # asserted nothing is one the assertion factory never touched.
+            account = account_never_asserted(
+                seed_user, db.session, name="Silent",
+                opening_equity=Decimal("0.00"),
+            )
             db.session.commit()
 
             history = balance_at.cash_anchor_history(

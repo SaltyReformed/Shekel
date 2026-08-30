@@ -42,9 +42,11 @@ and the ``__table_args__`` comment below for what the deleted index could not
 express.
 """
 
-from sqlalchemy import event
-
 from app.extensions import db
+from app.models.append_only import (
+    AppendOnlyViolation,
+    install_append_only_guards,
+)
 from app.models.mixins import AccountScopedMixin, CreatedAtMixin
 
 
@@ -174,7 +176,7 @@ class LoanAnchorEvent(AccountScopedMixin, CreatedAtMixin, db.Model):
         )
 
 
-class LoanAnchorEventImmutableError(RuntimeError):
+class LoanAnchorEventImmutableError(AppendOnlyViolation):
     """Raised when ORM code attempts to UPDATE or DELETE a LoanAnchorEvent.
 
     The table is structurally append-only (decision D-A): a
@@ -187,39 +189,17 @@ class LoanAnchorEventImmutableError(RuntimeError):
     Database-level CASCADE deletes from ``budget.accounts`` are NOT
     intercepted -- they happen outside the SQLAlchemy ORM session
     and are the documented disposal path for an entire account's
-    history.  Direct SQL UPDATE/DELETE statements are similarly
-    unaffected by this guard; the in-process guard exists to catch
-    programmer errors at the call site, not to enforce the invariant
-    against malicious database actors (the audit-log trigger
-    captures the row anyway).
+    history.
+
+    **A direct SQL UPDATE or DELETE is no longer unaffected, and this
+    docstring said it was until plan step X-f3c-2c** (ruling **R-HY**).
+    ``budget.refuse_append_only_change`` -- the trigger
+    :mod:`app.append_only_infrastructure` installs on this table and on its two
+    cash siblings -- refuses every actor and every spelling, so what this
+    listener adds is the NAME and the call site rather than the rule.
     """
 
 
-@event.listens_for(LoanAnchorEvent, "before_update")
-def _block_update(_mapper, _connection, target):
-    """Refuse every ORM-mediated UPDATE on a LoanAnchorEvent.
-
-    Fires before SQLAlchemy emits the UPDATE so the offending session
-    rolls back cleanly with a named exception the test suite can
-    assert against.  Any field correction must be expressed as a new
-    row inserted via the trueup flow (Commit 16); this guard is the
-    programmatic enforcement of that contract.
-    """
-    raise LoanAnchorEventImmutableError(
-        f"LoanAnchorEvent is append-only; UPDATE rejected for id={target.id!r}."
-    )
-
-
-@event.listens_for(LoanAnchorEvent, "before_delete")
-def _block_delete(_mapper, _connection, target):
-    """Refuse every ORM-mediated DELETE on a LoanAnchorEvent.
-
-    Same rationale as :func:`_block_update`: the table is
-    structurally append-only.  CASCADE deletes from
-    ``budget.accounts`` flow through the database FK action and do
-    NOT load each event into the ORM session, so this guard does
-    not interfere with the normal account-deletion path.
-    """
-    raise LoanAnchorEventImmutableError(
-        f"LoanAnchorEvent is append-only; DELETE rejected for id={target.id!r}."
-    )
+install_append_only_guards(
+    LoanAnchorEvent, LoanAnchorEventImmutableError,
+)

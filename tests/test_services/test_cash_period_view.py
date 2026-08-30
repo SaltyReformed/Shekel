@@ -64,7 +64,7 @@ from tests._test_helpers import (
     mark_purchase_settled,
     period_window,
     read_pass,
-    restamp_opening_assertion,
+    reassert_balance_on,
     restate_account_opening,
 )
 from tests.test_services.test_cash_fold import _instant
@@ -76,7 +76,8 @@ _ONE_DAY = timedelta(days=1)
 #: a movement on or before the books unstorable, so the record has to sit
 #: BETWEEN the books and the first assertion -- which is the production shape
 #: after that step's migration, and is what leaves the assertion's correction
-#: non-zero.  Every other shape in this file asserts 2026-01-01, whose books
+#: non-zero.  Every other shape in this file inherits the seeded account's own
+#: origination assertion, whose books
 #: already precede its records.
 _BOOKS_OPEN_ON = date(2025, 12, 31)
 # An as-of before every fixture date below, so ruling R-G's clamp is a no-op
@@ -160,7 +161,10 @@ class TestTheSubtotalsCountEveryAttributedRow:
 
         Period 2 (2026-01-30..02-12) carries a ``$500.00`` income settled 02-03,
         a ``$200.00`` expense settled 02-05 and a ``$75.00`` still-projected
-        expense.  Opening assertion ``$1,000.00`` on 2026-01-01.
+        expense.  The account's opening assertion is the seeded owner's own
+        origination, ``$1,000.00`` on the bootstrap day before the calendar
+        (plan step X-f3c-2c), so every figure below is measured from that level
+        and nothing here re-dates it.
 
         Hand-computed, new basis: income ``$500.00``; expenses
         ``200.00 + 75.00 = $275.00``; net ``$225.00``.  Every row settled inside
@@ -177,7 +181,6 @@ class TestTheSubtotalsCountEveryAttributedRow:
         came AFTER the cutover proved the successor (the C3b3 / E1e precedent).
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[2], Decimal("500.00"),
             is_income=True, settled_on=date(2026, 2, 3), name="paycheck",
@@ -244,7 +247,6 @@ class TestTheSubtotalsCountEveryAttributedRow:
         and the balance priced the row through ONE rule.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         txn = create_settled_cash_transaction(
             seed_user, db.session, seed_periods[2], Decimal("200.00"),
             settled_on=date(2026, 2, 5), name="Groceries",
@@ -290,7 +292,6 @@ class TestTheSubtotalsCountEveryAttributedRow:
         ``is_income`` would be carrying an untested claim.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         txn = create_settled_cash_transaction(
             seed_user, db.session, seed_periods[2], Decimal("80.00"),
             settled_amount=Decimal("50.00"),
@@ -335,8 +336,8 @@ class TestTheSubtotalsCountEveryAttributedRow:
         So the expense row reads ``$200.00`` -- what this period actually costs
         -- rather than the ``$80.00`` it read before X-f3b, when a purchase was
         no fact at all and its spend was inside the owner's asserted balance and
-        nowhere in these subtotals.  **The BALANCE does not move**: the opening
-        is restamped to 01-31 (finding N-132 / R8: a purchase gets inside a
+        nowhere in these subtotals.  **The BALANCE does not move**: the balance is
+        asserted for 01-31 (finding N-132 / R8: a purchase gets inside a
         declared balance by the user declaring the balance after it posted), so
         that assertion absorbs the ``$120.00`` and the balance stays
         ``1000 - 80 = $920.00``.  ``period_timing`` stays ``$0.00``: 01-31 is
@@ -354,9 +355,13 @@ class TestTheSubtotalsCountEveryAttributedRow:
         report.*
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        # The opening is the account's ONLY assertion, so it is what absorbs
-        # the purchase's own movement; it is dated 01-31 so it can.
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 31))
+        # The balance is asserted on 01-31, which is what absorbs the
+        # purchase's own movement -- and it is WRITTEN here rather than the
+        # origination re-stamped onto that day (plan step X-f3c-2c).  The
+        # seeded account asserts only its origination, dated on the bootstrap
+        # day before the calendar, so a case turning on which day was last
+        # asserted names it.
+        reassert_balance_on(db.session, account, _instant(2026, 1, 31))
         txn = create_envelope_txn(
             seed_user, db.session, seed_periods[2], "Groceries",
             Decimal("200.00"),
@@ -411,7 +416,6 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         difference as a true-up would have passed the old assertion.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[3], Decimal("300.00"),
             settled_on=date(2026, 3, 20), name="late rent",
@@ -442,7 +446,8 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
     ):  # pylint: disable=unused-argument
         """The user asserts a new balance mid-period; no transaction moved.
 
-        Opening ``$1,000.00`` on 2026-01-01, then a true-up on 2026-03-01
+        Opening ``$1,000.00`` on the seeded bootstrap day, then a true-up on
+        2026-03-01
         (inside period 4, 2026-02-27..03-12) asserting ``$1,500.00`` with no rows
         in between.
 
@@ -459,7 +464,6 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         periods for a problem that is really untracked spend.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         append_balance_assertion(
             db.session, account, seed_periods[4], Decimal("1500.00"),
             _instant(2026, 3, 1),
@@ -510,8 +514,12 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         disappear.*
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 5))
         restate_account_opening(db.session, account, _BOOKS_OPEN_ON)
+        # **The 2026-01-05 assertion is WRITTEN here** (plan step X-f3c-2c).
+        # It used to be the seeded account's origination re-stamped onto that
+        # day; the table is append-only, so the case states the balance it
+        # needs on the day it names, which is what an owner does.
+        reassert_balance_on(db.session, account, _instant(2026, 1, 5))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("400.00"),
             settled_on=date(2026, 1, 3), name="pre-assertion spend",
@@ -558,7 +566,6 @@ class TestTheRemainderHoldsWhatTheSubtotalsCannot:
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         as_of = date(2026, 4, 2)
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         add_txn(
             db.session, seed_user, seed_periods[5], "overdue bill", "50.00",
             due_date=date(2026, 3, 20),
@@ -602,8 +609,12 @@ class TestTheIdentityHoldsOnEveryPeriod:
         """
         account = seed_user["account"]
         as_of = date(2026, 4, 2)
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 5))
         restate_account_opening(db.session, account, _BOOKS_OPEN_ON)
+        # The FIRST assertion of the shape, on 2026-01-05 -- written rather
+        # than re-stamped onto the origination (plan step X-f3c-2c).  Its own
+        # correction is what makes period 0's ``book_vs_bank`` non-zero, which
+        # is half of what this shape exists to exercise.
+        reassert_balance_on(db.session, account, _instant(2026, 1, 5))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("400.00"),
             settled_on=date(2026, 1, 3), name="pre-assertion spend",
@@ -785,7 +796,6 @@ class TestTheIdentityHoldsOnEveryPeriod:
         deleting the sort left the test passing.  It fails now.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("250.00"),
             settled_on=date(2026, 1, 6), name="settled in its own period",
@@ -852,7 +862,6 @@ class TestTheIdentityHoldsOnEveryPeriod:
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         as_of = date(2026, 4, 2)
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[2], Decimal("250.00"),
             settled_on=date(2026, 3, 20), name="cleared after the tail was cut",
@@ -902,7 +911,6 @@ class TestTheIdentityHoldsOnEveryPeriod:
         arc deletes.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         db.session.commit()
 
         figures = _view(account, scenario, seed_periods)
@@ -940,7 +948,6 @@ class TestTheIdentityHoldsOnEveryPeriod:
         the bank disagreed with the app, which is false.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("180.00"),
             settled_on=date(2026, 2, 5), name="budgeted two columns back",
@@ -991,7 +998,8 @@ class TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn:
         ``$250.00`` expense budgeted to period 0 settles 2026-01-18 -- inside the
         corrupted span and outside the real one.
 
-        Hand-computed against a ``$1,000.00`` opening asserted 2026-01-01.
+        Hand-computed against the seeded account's own ``$1,000.00``
+        origination assertion.
         Reading the DERIVED span, period 0 closes 01-15 before the money moved:
         its balance is ``$1,000.00``, it budgets the ``$250.00`` (net
         ``-$250.00``) and nothing moves inside its span, so ``period_timing`` is
@@ -1005,7 +1013,6 @@ class TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn:
         ``$250.00``.  Every figure below distinguishes the two.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("250.00"),
             settled_on=date(2026, 1, 18), name="settled after the real end",
@@ -1044,7 +1051,7 @@ class TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn:
         in a column its budget period is not, reported as ``period_timing``,
         and that is what this test measures gone.
 
-        Hand-computed against a ``$1,000.00`` opening asserted 2026-01-01, with
+        Hand-computed against the seeded ``$1,000.00`` origination, with
         ``as_of`` 2026-01-05 so ruling R-G's floor (01-06) never binds.  Period
         0's stored end is pushed to 2026-01-20 while its paydays keep its
         derived end at 2026-01-15, and a still-projected ``$250.00`` expense
@@ -1068,7 +1075,6 @@ class TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn:
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
         as_of = date(2026, 1, 5)
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         add_txn(
             db.session, seed_user, seed_periods[0], "projected bill", "250.00",
             due_date=date(2026, 1, 18),
@@ -1106,7 +1112,6 @@ class TestTheColumnsReadTheDERIVEDSpanNotTheStoredColumn:
         happen to coincide, which is every schedule production has.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("250.00"),
             settled_on=date(2026, 1, 18), name="settled after the real end",
@@ -1166,7 +1171,6 @@ class TestAStoredScheduleHoleNoLongerBreaksTheIdentity:
         ``$250.00``.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         create_settled_cash_transaction(
             seed_user, db.session, seed_periods[0], Decimal("250.00"),
             settled_on=date(2026, 1, 20), name="settled inside the hole",
@@ -1243,7 +1247,6 @@ class TestTheViewCarriesTheBasisItWasValuedOn:
         )
 
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         profile = _create_profile(seed_user["user"].id, scenario.id)
         template = _make_salary_template(seed_user, profile)
         db.session.commit()
@@ -1272,7 +1275,6 @@ class TestTheViewCarriesTheBasisItWasValuedOn:
         account with nothing planned must still hand back a mapping.
         """
         account, scenario = seed_user["account"], seed_user["scenario"]
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         db.session.commit()
 
         view = period_view_of(

@@ -42,8 +42,8 @@ from decimal import Decimal
 import pytest
 
 from app.extensions import db
-from app.models.account import AccountAnchorHistory
 from app.models.pay_period import PayPeriod
+from app.models.interest_params import InterestParams
 from app.models.paycheck_deduction import PaycheckDeduction
 from app import ref_cache
 from app.enums import (
@@ -69,6 +69,7 @@ from app.services.projection_inputs import (
     load_investment_params_for_accounts,
 )
 from tests._test_helpers import (
+    account_never_asserted,
     append_balance_assertion,
     create_hysa_account,
     create_savings_account,
@@ -78,7 +79,7 @@ from tests._test_helpers import (
     make_investment_account,
     make_salary_profile,
     period_window,
-    restamp_opening_assertion,
+    reassert_balance_on,
     restate_account_opening,
     settle_instant_on,
 )
@@ -174,7 +175,7 @@ def _401k(seed_user, period, balance, *, opened_on, books_open_on=None,
         opened_on: The civil day the opening ASSERTION is dated.
         books_open_on: The civil day the account's BOOKS open, when a case
             records money moving before the assertion.  ``None`` leaves them
-            where ``restamp_opening_assertion`` puts them, one day before
+            where ``reassert_balance_on`` puts them, one day before
             *opened_on* -- which is right until a case needs the span between
             the two (plan step X-f3c-2b, ruling **R-HG**: nothing may be dated
             on or before the books).
@@ -186,7 +187,7 @@ def _401k(seed_user, period, balance, *, opened_on, books_open_on=None,
     account = make_investment_account(
         seed_user, db.session, period, balance, **kwargs,
     )
-    restamp_opening_assertion(
+    reassert_balance_on(
         db.session, account, settle_instant_on(opened_on),
     )
     if books_open_on is not None:
@@ -282,7 +283,7 @@ class TestTheAccrualWindow:
             seed_user, db.session, seed_periods[0], Decimal("10000.00"),
             apy=Decimal("0.05000"),
         )
-        restamp_opening_assertion(
+        reassert_balance_on(
             db.session, account, _instant(2026, 1, 9),
         )
         db.session.commit()
@@ -338,7 +339,7 @@ class TestTheAccrualWindow:
             seed_user, db.session, seed_periods[0], Decimal("100000.00"),
             Decimal("0.03000"),
         )
-        restamp_opening_assertion(
+        reassert_balance_on(
             db.session, account, settle_instant_on(date(2026, 1, 2)),
         )
         db.session.commit()
@@ -346,7 +347,7 @@ class TestTheAccrualWindow:
             seed_periods[0].id
         ].accrual == Decimal("113.44")
 
-        restamp_opening_assertion(
+        reassert_balance_on(
             db.session, account, _instant(2026, 1, 9),
         )
         db.session.commit()
@@ -411,12 +412,22 @@ class TestTheAccrualWindow:
         and the same production-unreachable state -- migration ``cfb15e782f86``
         plus the account factory guarantee every account an opening row.
         """
-        account = create_hysa_account(
-            seed_user, db.session, seed_periods[0], Decimal("10000.00"),
+        # **Built rather than emptied** (plan step X-f3c-2c): an assertion is
+        # append-only at the database tier, so the state is reachable only by
+        # an account the assertion factory never touched.  It carries its
+        # ``InterestParams`` so it still classifies INTEREST, which is what
+        # puts the modelled fold in front of it.
+        account = account_never_asserted(
+            seed_user, db.session, name="Silent HYSA", type_name="HYSA",
+            opening_equity=Decimal("10000.00"),
         )
-        db.session.query(AccountAnchorHistory).filter_by(
+        db.session.add(InterestParams(
             account_id=account.id,
-        ).delete()
+            apy=Decimal("0.05000"),
+            compounding_frequency_id=ref_cache.compounding_frequency_id(
+                CompoundingFrequencyEnum.DAILY,
+            ),
+        ))
         db.session.commit()
 
         with pytest.raises(RuntimeError, match="zero AccountAnchorHistory"):

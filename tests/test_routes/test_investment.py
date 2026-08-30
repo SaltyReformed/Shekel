@@ -41,7 +41,7 @@ from app.services.investment_projection import InvestmentInputs
 from app.utils.money import round_money
 from tests._test_helpers import (
     current_pay_period,
-    restamp_opening_assertion,
+    reassert_balance_on,
     settle_day_columns,
     settle_instant_on,
 )
@@ -3073,7 +3073,7 @@ class TestTheProjectionContinuesTheHistory:
         _create_investment_params(db.session, acct.id)
         # Anchor a full period back, so the history line has grown by the time
         # it reaches the current period's end.
-        restamp_opening_assertion(
+        reassert_balance_on(
             db.session, acct,
             settle_instant_on(seed_periods_today[0].start_date),
         )

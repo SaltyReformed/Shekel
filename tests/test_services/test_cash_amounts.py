@@ -84,12 +84,14 @@ from app.services.cash_ledger._amounts import (
     income_amount,
 )
 from app.extensions import db
-from app.models.account import AccountAnchorHistory
+from app.models.account import Account
 from tests._test_helpers import (
     add_entry,
     add_txn,
     create_envelope_txn,
     planted_basis,
+    reassert_balance_on,
+    settle_instant_on,
 )
 
 
@@ -594,10 +596,17 @@ class TestTheRecordedPostingDay:
                 [("200.00", False, _POSTED_ON)],
             )
 
-            for observed_on in (_STATEMENT_DAY, date(2026, 1, 1)):
-                db.session.query(AccountAnchorHistory).filter_by(
-                    account_id=txn.account_id,
-                ).update({"observed_on": observed_on})
+            # **Each day is ASSERTED, not written over the last one** (plan
+            # step X-f3c-2c).  The table is append-only, and the sweep means
+            # "whatever the account's statement day is": a later assertion
+            # governs, which is exactly how an owner moves that day.  The two
+            # days are given latest-last so each iteration's row is the
+            # governing one.
+            account = db.session.get(Account, txn.account_id)
+            for observed_on in (date(2026, 1, 1), _STATEMENT_DAY):
+                reassert_balance_on(
+                    db.session, account, settle_instant_on(observed_on),
+                )
                 db.session.flush()
 
                 assert _entry_aware_amount(

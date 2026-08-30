@@ -26,7 +26,10 @@ and the refusal are built on, so those run against real rows.
 from __future__ import annotations
 
 import inspect
-from datetime import date, timedelta
+from datetime import date
+from datetime import datetime as _datetime
+from datetime import timezone as _timezone
+from decimal import Decimal
 
 from sqlalchemy import text
 
@@ -87,24 +90,40 @@ class TestTheDowngradeRefusesWhatItCannotRebuild:
         diverging from what ``created_at`` derives -- which is precisely the
         production state a true-up submitted in a civil day's last second
         produces, and precisely what dropping the column would discard.
+
+        **The row is INSERTED carrying its three dates rather than written and
+        then edited** (plan step X-f3c-2c).  ``budget.account_anchor_history``
+        is append-only, so what a row says about its own two clocks is settled
+        when it is written -- and it has to be, because the production shape
+        this case is about is an INSERT whose two clocks land a day apart,
+        never an UPDATE that pulls them apart afterwards.
         """
         with app.app_context():
             account = seed_user["account"]
-            row = (
-                db.session.query(AccountAnchorHistory)
-                .filter_by(account_id=account.id)
-                .order_by(AccountAnchorHistory.id.desc())
-                .first()
+            # 23:40 Eastern on 2026-03-17, which is 03:40 UTC on the 18th: the
+            # last-second submit this column exists for.  PostgreSQL's own
+            # ``AT TIME ZONE`` derivation reads 2026-03-17 from that instant
+            # while the application's clock recorded the 18th, so the stored
+            # entered day is a fact the derivation cannot rebuild.
+            typed_at = _datetime(2026, 3, 18, 3, 40, tzinfo=_timezone.utc)
+            row = AccountAnchorHistory(
+                account_id=account.id,
+                anchor_balance=Decimal("1234.56"),
+                created_at=typed_at,
+                observed_on=date(2026, 3, 16),
+                recorded_on=date(2026, 3, 18),
             )
-            assert row is not None, "seed_user provisions an opening assertion"
+            db.session.add(row)
+            db.session.commit()
+
             derived = db.session.execute(text(
                 "SELECT (created_at AT TIME ZONE 'America/New_York')::date "
                 "FROM budget.account_anchor_history WHERE id = :i"
             ), {"i": row.id}).scalar()
-
-            row.observed_on = derived - timedelta(days=2)
-            row.recorded_on = derived + timedelta(days=1)
-            db.session.commit()
+            assert derived != row.recorded_on, (
+                "the case is vacuous unless the derivation and the stored "
+                "entered day actually disagree"
+            )
 
             refused = _app_dated_rows()
 

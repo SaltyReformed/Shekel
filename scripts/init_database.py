@@ -71,6 +71,9 @@ from app import create_app, ref_cache
 from app.audit_infrastructure import apply_audit_infrastructure
 from app.extensions import db
 from app.opening_infrastructure import apply_opening_infrastructure
+from app.append_only_infrastructure import (
+    apply_append_only_infrastructure,
+)
 from app.posting_infrastructure import (
     apply_ledger_append_only_privileges,
     apply_posting_infrastructure,
@@ -172,6 +175,18 @@ def init_fresh_database(app):
     )
     db.session.commit()
     print("Books-boundary constraint ready.")
+
+    # The append-only refusal on the three account-history tables (plan step
+    # X-f3c-2c, ruling R-HY).  Same fresh-DB reason as every block around it:
+    # the tables were created by ``create_all`` above and the stamp below marks
+    # f4a7c2d9e51b applied without running it, so this call is what installs
+    # the trigger on a fresh database.
+    print("Applying append-only refusal (account history tables)...")
+    apply_append_only_infrastructure(
+        lambda sql: db.session.execute(db.text(sql))
+    )
+    db.session.commit()
+    print("Append-only refusal ready.")
 
     # Ledger append-only posture (review M1/R4).  On the fresh-DB path the
     # tables were just created AFTER init_db_role.sql ran (its table-guarded

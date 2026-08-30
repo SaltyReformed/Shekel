@@ -36,7 +36,6 @@ from decimal import Decimal
 
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
-from app.models.account import AccountAnchorHistory
 from app.models.transaction import Transaction
 from app.utils.dates import add_months, display_today
 from tests._test_helpers import (
@@ -537,14 +536,17 @@ class TestHeroCaptions:
     ):
         """An anchor older than the threshold renders the stale caption.
 
-        The factory writes an origination row at NOW; delete it so the
-        20-days-ago row is the latest.  20 > 14 (default threshold), so the
-        hero's last-updated caption carries the stale class + icon.
+        The seeded account asserts on the owner's bootstrap day, which is
+        years before the 20-days-ago row appended here, so that row is the
+        latest.  20 > 14 (default threshold), so the hero's last-updated
+        caption carries the stale class + icon.
+
+        *It used to DELETE the origination first, on the ground that the
+        factory wrote it "at NOW".  Neither half survives plan step X-f3c-2c:
+        the row is dated on the bootstrap day rather than now, and the table is
+        append-only, so nothing may delete it.*
         """
         with app.app_context():
-            db.session.query(AccountAnchorHistory).filter_by(
-                account_id=seed_user["account"].id,
-            ).delete()
             _add_anchor_history(
                 db.session, seed_user["account"],
                 seed_periods_today[0], "1000.00", days_ago=20,
@@ -571,11 +573,14 @@ class TestHeroCaptions:
             cur = current_pay_period(seed_user["user"].id)
             account = seed_user["account"]
             # The assertion IS the anchor since ruling R-EH; the cache column
-            # this used to set beside it is deleted.  The origination row is
-            # cleared so the one added below is the account's only assertion.
-            db.session.query(AccountAnchorHistory).filter_by(
-                account_id=account.id,
-            ).delete()
+            # this used to set beside it is deleted.  The row added below is
+            # dated yesterday and the seeded origination on the owner's
+            # bootstrap day years earlier, so this one GOVERNS -- which is what
+            # the figure below is computed from.
+            #
+            # *It used to delete the origination first, to make this the
+            # account's only assertion.  The table is append-only since plan
+            # step X-f3c-2c, and superseding is what an owner does anyway.*
             _add_anchor_history(
                 db.session, account, cur, "100.00", days_ago=1,
             )

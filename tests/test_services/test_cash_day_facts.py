@@ -37,14 +37,16 @@ from decimal import Decimal
 from app import ref_cache
 from app.enums import StatusEnum, TxnTypeEnum
 from app.models.account_opening import AccountOpening
+from app.models.ref import AccountType
 from app.models.transaction import Transaction
-from app.services import balance_at, cash_ledger
+from app.services import account_service, balance_at, cash_ledger
 from app.services.balance_at import BalanceContext
 from app.services.balance_at._assertions import assertion_corrections
 from app.services.scenario_resolver import get_baseline_scenario
 from tests._test_helpers import (
     append_balance_assertion,
     default_settle_day,
+    open_books_before_the_first_assertion,
     settle_day_columns,
     settlement_columns,
 )
@@ -53,11 +55,18 @@ from tests.test_services.test_cash_fold import _instant
 _ZERO = Decimal("0.00")
 
 
-def _settled(db, seed_user, period, name, amount, day, *, is_income=False):
-    """Insert one SETTLED row whose cash moved on *day*."""
+def _settled(
+    db, seed_user, period, name, amount, day, *, is_income=False, account=None,
+):
+    """Insert one SETTLED row whose cash moved on *day*.
+
+    Args:
+        account: The account to file it against, or ``None`` for the seeded
+            Checking.  A case that opens its own account states it.
+    """
     status_id = ref_cache.status_id(StatusEnum.DONE)
     txn = Transaction(
-        account_id=seed_user["account"].id,
+        account_id=(seed_user["account"] if account is None else account).id,
         pay_period_id=period.id,
         scenario_id=seed_user["scenario"].id,
         status_id=status_id,
@@ -94,6 +103,39 @@ def _projected(db, seed_user, period, name, amount, due_date):
     db.session.add(txn)
     db.session.flush()
     return txn
+
+
+def _account_opened_on(db, seed_user, day, name="Second Checking"):
+    """Create a plain Checking account whose ORIGINATION asserts on *day*.
+
+    The production act -- ``account_service.create_account`` writes the opening
+    record and the origination assertion from one day the owner supplies -- so
+    a case needing an opening on a day it names gets one without editing a
+    stored assertion (plan step X-f3c-2c).
+
+    Args:
+        db: The SQLAlchemy ``db`` fixture.
+        seed_user: The ``seed_user`` fixture dict.
+        day: The civil day the opening balance is asserted for.
+        name: The account name, unique per owner.
+
+    Returns:
+        The created :class:`~app.models.account.Account`, flushed.
+    """
+    checking_type = (
+        db.session.query(AccountType).filter_by(name="Checking").one()
+    )
+    account = account_service.create_account(
+        account_service.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=checking_type.id,
+            name=name,
+            anchor_balance=Decimal("1000.00"),
+            observed_on=day,
+        ),
+    )
+    db.session.flush()
+    return account
 
 
 def _series(seed_user, first_day, last_day):
@@ -335,35 +377,51 @@ class TestTheThreeTiersSumToTheDaysMovement:
         position would swallow it, and the identity is what notices.
         """
         with app.app_context():
-            walk = cash_ledger.walk_cash_ledger(
-                seed_user["account"].id,
-                get_baseline_scenario(seed_user["user"].id).id,
-            )
-            opening = walk.anchor_facts[0]
+            # **The account is OPENED here rather than inherited** (plan step
+            # X-f3c-2c).  This case reads a day-facts series for the OPENING's
+            # own day, and the seeded account's origination assertion is dated
+            # on the bootstrap day before the calendar -- a day no pay period
+            # covers, so the series answers zeros for it and the case would
+            # grade nothing.  Opening an account on the calendar's first day
+            # puts the opening where a reader can ask about it, which is what
+            # ``account_service.create_account`` does in production.
+            account = _account_opened_on(db, seed_user, seed_periods[0].start_date)
+            opening_day = seed_periods[0].start_date
+            # **Recorded AFTER the origination, and stated rather than
+            # implied.**  ``create_account`` stamps its assertion's
+            # ``created_at`` from the clock -- the suite's frozen 2026-03-20 --
+            # while ``observed_on`` is the day supplied above, so a second
+            # assertion for that day whose instant is the day itself would sort
+            # BEFORE the origination and this case would grade the pair the
+            # wrong way round.  ``recorded_at`` is what separates the two
+            # clocks, and a balance typed today for a day in January is an
+            # ordinary back-dated assertion.
             append_balance_assertion(
-                db.session, seed_user["account"], seed_periods[0],
+                db.session, account, seed_periods[0],
                 Decimal("1750.00"),
-                _instant(opening.observed_on.year, opening.observed_on.month,
-                         opening.observed_on.day, 18),
+                _instant(opening_day.year, opening_day.month,
+                         opening_day.day, 18),
+                recorded_at=_instant(2026, 3, 20, 18),
             )
             db.session.commit()
 
             reread = cash_ledger.walk_cash_ledger(
-                seed_user["account"].id,
+                account.id,
                 get_baseline_scenario(seed_user["user"].id).id,
             )
             second = assertion_corrections(reread)[1]
-            facts = _series(
-                seed_user,
-                opening.observed_on - timedelta(days=1),
-                opening.observed_on,
+            facts = balance_at.cash_daily_facts_series(
+                account,
+                BalanceContext.build(seed_user["user"].id),
+                opening_day - timedelta(days=1),
+                opening_day,
             ).facts
-            fact = facts[opening.observed_on]
+            fact = facts[opening_day]
 
-            assert second.observed_on == opening.observed_on
+            assert second.observed_on == opening_day
             assert fact.asserted == second.delta
             assert fact.balance - facts[
-                opening.observed_on - timedelta(days=1)
+                opening_day - timedelta(days=1)
             ].balance == fact.recorded + fact.asserted + fact.planned
 
 
@@ -424,21 +482,48 @@ class TestWhereTheAccountsRecordsBegin:
         with a settled row, one day before the 03-27 assertion, while his bank
         statement starts 2026-01-02.  Reporting those 83 days as disagreements
         would be reporting finding N-314 as this arc's defect.
+
+        **The account is OPENED inside the owner's calendar, and its early row
+        sits inside it too** (plan step X-f3c-2c).  This used to take the
+        seeded account's opening and settle ten days before it, which was ten
+        days before the 2026 calendar once the origination stopped being
+        re-homed onto it -- a row dated 2023 filed under a 2026 pay period, the
+        two-year split ``status_seam.reject_settle_day_before_the_schedule``
+        refuses in production.  The shape under test needs only that a settled
+        row precede the account's own first assertion, which an account opened
+        in period 1 gets from a row settled in period 0.
         """
         with app.app_context():
-            walk = cash_ledger.walk_cash_ledger(
-                seed_user["account"].id,
-                get_baseline_scenario(seed_user["user"].id).id,
+            opened_on = seed_periods[1].start_date
+            account = _account_opened_on(
+                db, seed_user, opened_on, name="Early Records",
             )
-            opening = walk.anchor_facts[0]
-            earlier = opening.observed_on - timedelta(days=10)
+            earlier = seed_periods[0].start_date + timedelta(days=3)
+            # The books have to hold the row before it can be recorded
+            # (ruling **R-HG**): an opening equity is the closing balance for
+            # its own day, so a movement dated on or before it is refused
+            # outright.  Backward-only, and it moves no figure here -- the
+            # equity is carried forward unchanged.
+            open_books_before_the_first_assertion(
+                db.session, account, also_before=earlier,
+            )
             _settled(
                 db, seed_user, seed_periods[0], "Early", "20.00", earlier,
+                account=account,
             )
             db.session.commit()
 
-            series = _series(seed_user, earlier, opening.observed_on)
+            series = balance_at.cash_daily_facts_series(
+                account,
+                BalanceContext.build(seed_user["user"].id),
+                earlier,
+                opened_on,
+            )
 
+            assert earlier < opened_on, (
+                "the case is vacuous unless the row really precedes the "
+                "account's own first assertion"
+            )
             assert series.first_event_on == earlier
 
     def test_an_INVERTED_range_still_reports_where_records_begin(

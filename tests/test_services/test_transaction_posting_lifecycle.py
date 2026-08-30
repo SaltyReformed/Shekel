@@ -64,6 +64,8 @@ from tests._test_helpers import (
     an_entered_day,
     create_envelope_txn,
     linked_ledger_account,
+    reassert_balance_on,
+    settle_instant_on,
 )
 from app.services import cash_ledger
 
@@ -760,6 +762,17 @@ class TestEnvelopePostingLifecycle:
             entry_id = entry.id
             purchased_on = entry.purchased_on
             txn_id = txn.id
+            # **The balance is asserted for the purchase's own day, and this
+            # case says so rather than inheriting it** (plan step X-f3c-2c).
+            # Its whole premise is that the purchase's leg lands on the
+            # assertion's day and is therefore ABSORBED by that day's
+            # correction; the seeded account asserts only its origination, on
+            # the bootstrap day before the calendar, so the premise has to be
+            # built.
+            reassert_balance_on(
+                db.session, checking, settle_instant_on(purchased_on),
+            )
+            db.session.commit()
 
             updated = entry_service.update_entry(
                 entry_id, user_id, settle_day=an_entered_day(purchased_on),

@@ -40,7 +40,6 @@ from tests._test_helpers import (
     add_txn,
     append_balance_assertion,
     create_settled_cash_transaction,
-    restamp_opening_assertion,
 )
 from tests.test_services.test_cash_fold import _instant
 
@@ -88,9 +87,6 @@ def _clean_shape(db_session, seed_user, seed_periods):
     Returns:
         The ``as_of`` the caller reads at.
     """
-    restamp_opening_assertion(
-        db_session, seed_user["account"], _instant(2026, 1, 2),
-    )
     add_txn(
         db_session, seed_user, seed_periods[3], "paycheck", "1500.00",
         is_income=True, due_date=date(2026, 2, 20),
@@ -214,7 +210,6 @@ class TestEveryFindingIsClosedAtTheSeam:
         """
         account = seed_user["account"]
         as_of = date(2026, 4, 5)
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         append_balance_assertion(
             db.session, account, seed_periods[4], Decimal("5644.27"),
             _instant(2026, 3, 1),
@@ -262,7 +257,6 @@ class TestEveryFindingIsClosedAtTheSeam:
         """
         account = seed_user["account"]
         as_of = date(2026, 3, 27)
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         add_txn(
             db.session, seed_user, seed_periods[6], "big bill", "1200.00",
             due_date=date(2026, 4, 8),
@@ -307,7 +301,6 @@ class TestEveryFindingIsClosedAtTheSeam:
         """
         account = seed_user["account"]
         as_of = date(2026, 4, 5)
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         append_balance_assertion(
             db.session, account, seed_periods[4], Decimal("5644.27"),
             _instant(2026, 3, 1),
@@ -351,7 +344,6 @@ class TestEveryFindingIsClosedAtTheSeam:
         """
         account = seed_user["account"]
         as_of = date(2026, 4, 2)
-        restamp_opening_assertion(db.session, account, _instant(2026, 1, 1))
         add_txn(
             db.session, seed_user, seed_periods[6], "overdue bill", "50.00",
             due_date=date(2026, 3, 29),

@@ -48,7 +48,7 @@ from tests._test_helpers import (
     create_hysa_account,
     make_investment_account,
     period_window,
-    restamp_opening_assertion,
+    reassert_balance_on,
     settle_instant_on,
 )
 
@@ -110,7 +110,7 @@ class TestTheGrainIsARegroupingNotADifferentModel:
         account = make_investment_account(
             seed_user, db.session, seed_periods[0], Decimal("20000.00"),
         )
-        restamp_opening_assertion(
+        reassert_balance_on(
             db.session, account,
             settle_instant_on(seed_periods[0].end_date),
         )
@@ -156,7 +156,7 @@ class TestTheGrainIsARegroupingNotADifferentModel:
         account = make_investment_account(
             seed_user, db.session, seed_periods[0], Decimal("20000.00"),
         )
-        restamp_opening_assertion(
+        reassert_balance_on(
             db.session, account,
             settle_instant_on(seed_periods[0].end_date),
         )

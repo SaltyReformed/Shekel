@@ -30,10 +30,12 @@ from app.services import (
 )
 from app.services.row_valuation import purchases_total, settled_figure
 from app.utils.dates import display_today
-from app.models.account import AccountAnchorHistory
 from tests._test_helpers import (
+    account_never_asserted,
     an_entered_day,
+    reassert_balance_on,
     settle_day_columns,
+    settle_instant_on,
     settlement_if_settling,
 )
 from tests._test_helpers import mark_purchase_settled
@@ -1861,14 +1863,23 @@ class TestTheMarkPurchaseSettledHelperGuardsItsPrecondition:
     ):
         """The N-132 shape itself: settled AFTER the account's latest assertion.
 
-        The seeded account asserts its opening balance for the first period's
-        start day; a purchase settled a week later is not inside it, however
-        the fixture is spelled, so a suite expecting the settled bucket is
-        asking for a state its own account cannot be in.  The message names
-        BOTH days so the fix -- move the assertion, or accept the outstanding
-        bucket -- is visible without reading the helper.
+        The account asserts its balance for the first period's start day; a
+        purchase settled a week later is not inside it, however the fixture is
+        spelled, so a suite expecting the settled bucket is asking for a state
+        its own account cannot be in.  The message names BOTH days so the fix
+        -- assert again, or accept the outstanding bucket -- is visible without
+        reading the helper.
+
+        **The asserted day is stated here rather than inherited** (plan step
+        X-f3c-2c): the seeded account carries only its ORIGINATION assertion,
+        dated on the bootstrap day before the calendar, so a case that turns on
+        which day was last asserted says which day that is.
         """
         with app.app_context():
+            reassert_balance_on(
+                db.session, seed_user["account"],
+                settle_instant_on(seed_periods[0].start_date),
+            )
             txn = seed_entry_template["transaction"]
             entry = _outstanding_debit(txn, seed_user)
             db.session.commit()
@@ -1902,10 +1913,15 @@ class TestTheMarkPurchaseSettledHelperGuardsItsPrecondition:
         with app.app_context():
             txn = seed_entry_template["transaction"]
             entry = _outstanding_debit(txn, seed_user)
-            account = seed_user["account"]
-            db.session.query(AccountAnchorHistory).filter_by(
-                account_id=account.id,
-            ).delete()
+            # **Built rather than emptied** (plan step X-f3c-2c): an assertion
+            # is append-only at the database tier, so an account that has
+            # asserted nothing is one the assertion factory never touched.  The
+            # guard reads the ACCOUNT it is handed, which is what lets this
+            # case grade it against an account other than the purchase's.
+            account = account_never_asserted(
+                seed_user, db.session, name="Silent",
+                opening_equity=Decimal("0.00"),
+            )
             db.session.commit()
 
             with pytest.raises(AssertionError) as excinfo:
@@ -1922,9 +1938,14 @@ class TestTheMarkPurchaseSettledHelperGuardsItsPrecondition:
         refused everything.  A purchase settled on the account's own asserted
         day passes, and ``settled_on`` defaults to the purchase's own
         ``purchased_on`` -- "it posted the day I bought it", the shape a
-        same-day debit has.
+        same-day debit has.  The asserted day is stated here for the reason the
+        case above states it (plan step X-f3c-2c).
         """
         with app.app_context():
+            reassert_balance_on(
+                db.session, seed_user["account"],
+                settle_instant_on(seed_periods[0].start_date),
+            )
             txn = seed_entry_template["transaction"]
             entry = _outstanding_debit(
                 txn, seed_user, purchased_on=seed_periods[0].start_date,
