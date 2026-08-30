@@ -28,6 +28,7 @@ from app.models.ref import (
     RaiseType, TransactionType,
 )
 from app.services.pay_calendar import calendar_for
+from app.services.payroll_basis import PayrollBasis
 from app.services.auth_service import hash_password
 
 import pytest
@@ -38,7 +39,6 @@ from app.services.generation_schedule import GenerationSchedule
 from tests._test_helpers import (
     all_periods,
     make_every_period_rule,
-    payroll_basis,
     create_loan_account,
     freeze_today,
     seed_fica_config,
@@ -3301,16 +3301,16 @@ class TestCalibrationServerDerivedSnapshot:
             profile = db.session.query(SalaryProfile).filter_by(
                 id=cal.salary_profile_id,
             ).one()
-            # The DERIVED calendar, as the engine takes it since pay-calendar
-            # plan step C2-f2d-3.
+            # The DERIVED calendar, which the engine takes WHOLE since plan
+            # step balance:X-bh-1 (pay-calendar plan step C2-f2d-3 made it
+            # derived).
             calendar = calendar_for(user.id)
             current_period = calendar.period_containing(date.today())
-            periods = calendar.saved()
             tax_configs = load_tax_configs_for_year(
                 user.id, profile, current_period.start_date.year,
             )
             breakdown = paycheck_calculator.calculate_paycheck(
-                payroll_basis(profile), current_period, periods, tax_configs,
+                PayrollBasis(profile, calendar), current_period, tax_configs,
                 calibration=profile.calibration,
             )
 

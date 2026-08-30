@@ -301,9 +301,9 @@ def create_profile():
         db.session.flush()
 
         # Generate income transactions via recurrence engine.  The schedule
-        # is the OWNER's whole one, which is also what the paycheck
-        # calculator reads as ``all_periods`` (plan step R4b-1).  ONE
-        # derivation answers both (pay-calendar plan steps C2-f2d-3, C2-f3c).
+        # is the OWNER's whole one, off the same calendar the paycheck engine
+        # prices against (plan step R4b-1).  ONE derivation answers both
+        # (pay-calendar plan steps C2-f2d-3, C2-f3c).
         schedule = GenerationSchedule.for_pass(ctx)
         periods = calendar.saved()
         recurrence_engine.generate_for_template(
@@ -324,8 +324,7 @@ def create_profile():
                 current_user.id, profile, ref_period.start_date.year,
             )
             init_breakdown = paycheck_calculator.calculate_paycheck(
-                PayrollBasis(profile, calendar.cadence),
-                ref_period, periods, tax_configs,
+                PayrollBasis(profile, calendar), ref_period, tax_configs,
             )
             # Through the amount's one write door (plan step X-au-a).  The
             # profile above is already flushed and active, so the door sees a

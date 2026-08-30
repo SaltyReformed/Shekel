@@ -91,7 +91,7 @@ def projection(profile_id):
         current_user.id, profile, periods,
     )
     breakdowns = paycheck_calculator.project_salary(
-        PayrollBasis(profile, calendar.cadence), periods,
+        PayrollBasis(profile, calendar), periods,
         configs_by_year=configs_by_year, calibration=profile.calibration,
     )
 

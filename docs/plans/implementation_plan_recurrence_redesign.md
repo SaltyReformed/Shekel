@@ -683,13 +683,15 @@ makes a historical modelled balance move when a raise lands.
 
 `salary.paycheck_deductions.deductions_per_year` server-defaults to `26` and the salary form offers
 exactly three values -- `26 (every paycheck)`, `24 (skip 3rd paycheck)`, `12 (monthly)`. It is never
-multiplied or divided: `paycheck_calculator._deduction_applies_in_period` compares it against `24`
-and `12` and nothing else, so it is a three-valued MODE wearing a biweekly paycheck count, compared
-in Python and again in `_deductions_section.html` -- which is the "IDs for logic, strings for
-display" rule of `CLAUDE.md` with an integer in the string's place. At a weekly cadence "every
-paycheck" is 52 and "the 3rd paycheck of the month" names nothing; at a monthly one only the third
-option survives. **11 of the developer's 12 live deductions carry `24`**, the mode that generalises
-least, so the migration has real rows to re-express.
+multiplied or divided: `paycheck_calculator._deduction_applies_at` compares it against `24` and `12`
+and nothing else, so it is a three-valued MODE wearing a biweekly paycheck count, compared in Python
+and again in `_deductions_section.html` -- which is the "IDs for logic, strings for display" rule of
+`CLAUDE.md` with an integer in the string's place. **A THIRD reader ignores it altogether**
+(**N-395**): the investment contribution timeline pays every deduction on every payday, so this step
+APPLIES the frequency as well as ruling it. At a weekly cadence "every paycheck" is 52 and "the 3rd
+paycheck of the month" names nothing; at a monthly one only the third option survives.
+**11 of the developer's 12 live deductions carry `24`**, the mode that generalises least, so the
+migration has real rows to re-express.
 
 **Its own ruling first**: whether the mode becomes a `ref` table, whether "skip the 3rd paycheck"
 generalises to "skip the Nth" or is retired, and what the three live values become. No figure

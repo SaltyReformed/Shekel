@@ -15,16 +15,20 @@ delegated to ``paycheck_calculator.project_salary`` -- so the arithmetic
 these tests pin is:
 
 * the period PARTITION (which periods are measured vs modeled), verified by
-  comparing the producer's projected side against an INDEPENDENT
-  ``project_salary`` call over the hand-determined remainder subset.  That
-  oracle deliberately projects the remainder ALONE (its cumulative context
-  restarts at zero), which coincides with the producer's full-context
-  figures for these scenarios because they sit far below the 2026 SS wage
-  base (184,500) and Medicare surtax threshold (200,000) with no
-  deductions -- keeping the oracle independent of the producer's
-  internals.  ``TestFullYearCapContext`` pins the case where the two
-  DIVERGE (a high earner crossing the SS cap mid-year) with absolute
-  hand-computed dollars;
+  comparing the producer's projected side against a ``project_salary`` call
+  over the hand-determined remainder subset.  **What that oracle is
+  independent OF changed at plan step balance:X-bh-1** and this paragraph
+  said the opposite until an adversarial review of that step: it used to
+  project the remainder ALONE, with its cumulative context restarting at
+  zero where the producer carried full-year state, and the two coincided
+  only because these scenarios sit far below the 2026 SS wage base
+  (184,500) and Medicare surtax threshold (200,000) with no deductions.
+  The engine now takes that context off the owner's CALENDAR, which neither
+  side can narrow, so the cumulative restarts nowhere and the two agree by
+  construction.  What the oracle still checks independently is the SUBSET:
+  it is HANDED the periods to sum, where the producer derives its own from
+  the checkpoint.  ``TestFullYearCapContext`` pins the above-cap case with
+  absolute hand-computed dollars and is what grades the context itself;
 * the SPLIT IDENTITY ``total == measured + projected`` (component-wise);
 * the measured side taken VERBATIM from the checkpoint;
 * the gross figure, which is exactly computable (salary 130,000 / 26 =
@@ -53,13 +57,11 @@ from app.services import paycheck_calculator
 from app.services.auth_service import _seed_tax_data_for_user
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.pay_calendar import calendar_for
-from app.services.pay_calendar import PayCadence
-from tests._test_helpers import payroll_basis
+from app.services.payroll_basis import PayrollBasis
 
-#: The seeded owner's rhythm -- 14 days between paydays, 26 a year.
-_CADENCE = PayCadence(cadence_days=14)
 from app.services.tax_withholding_service import (
     CheckpointFigures,
+    year_paydays,
     WithholdingToDate,
     compute_withholding_to_date,
     latest_checkpoint,
@@ -145,6 +147,20 @@ def _derived(user_id, year=2026):
     )
 
 
+def _oracle_basis(seed_user, profile):
+    """The oracle's :class:`PayrollBasis` -- the owner's REAL calendar.
+
+    The producer counts paydays off ``basis.calendar`` for the FICA wage-base
+    cumulative and the deduction cadence since plan step **balance:X-bh-1**, so
+    an oracle built on a narrower schedule would differ from it for a reason
+    that has nothing to do with the partition these cases grade.  What stays
+    independent is the SUBSET each side is asked to price: the oracle is handed
+    an explicit period list and sums all of it, where the producer derives its
+    own from the checkpoint.
+    """
+    return PayrollBasis(profile, calendar_for(seed_user["user"].id))
+
+
 def _add_checkpoint(profile, as_of_date, **figures):
     """Insert a checkpoint directly (independent of ``save_checkpoint``)."""
     defaults = {
@@ -166,14 +182,20 @@ def _add_checkpoint(profile, as_of_date, **figures):
 def _expected_projected(user_id, basis, year, periods):
     """Sum ``project_salary`` over *periods* -- the independent oracle.
 
-    Same configs SSOT and calibration-aware path as the producer, but over
-    ONLY the passed subset: its cumulative context restarts at zero rather
-    than carrying the full-year state the producer uses.  For this file's
-    flat-5,000-gross no-deduction scenarios the two are identical (all
-    figures sit far below the SS wage base and surtax threshold), so this
-    stays a genuinely independent check of the producer's partition and
-    dollar values; the divergent above-cap case is pinned with absolute
-    hand-computed dollars in ``TestFullYearCapContext`` instead.
+    Same configs SSOT and calibration-aware path as the producer, over the
+    subset it is HANDED -- which is the whole of what it checks
+    independently, and is what the producer derives for itself from the
+    checkpoint.
+
+    **Its cumulative context no longer restarts at zero**, and this docstring
+    claimed it did until an adversarial review of plan step
+    **balance:X-bh-1**: the engine reads the year's paydays off
+    ``basis.calendar`` rather than off the list it is passed, so a subset
+    projection carries the same year-to-date state a full-year one does.
+    That removes a divergence rather than hiding one -- the case where the
+    two USED to differ (a high earner crossing the SS cap mid-year) is
+    pinned with absolute hand-computed dollars in ``TestFullYearCapContext``,
+    which is where the context is graded.
     """
     configs = load_tax_configs_for_year(user_id, basis.profile, year)
     breakdowns = paycheck_calculator.project_salary(
@@ -345,10 +367,10 @@ class TestComputeNoCheckpoint:
 
         result = compute_withholding_to_date(
             seed_user["user"].id, profile, 2026,
-            _derived(seed_user["user"].id), _CADENCE,
+            calendar_for(seed_user["user"].id),
         )
         expected = _expected_projected(
-            seed_user["user"].id, payroll_basis(profile), 2026,
+            seed_user["user"].id, _oracle_basis(seed_user, profile), 2026,
             _derived(seed_user["user"].id),
         )
 
@@ -397,10 +419,10 @@ class TestComputeWithCheckpoint:
         remainder = _derived(seed_user["user"].id)[1:]  # P1..P9
         result = compute_withholding_to_date(
             seed_user["user"].id, profile, 2026,
-            _derived(seed_user["user"].id), _CADENCE,
+            calendar_for(seed_user["user"].id),
         )
         expected = _expected_projected(
-            seed_user["user"].id, payroll_basis(profile), 2026, remainder,
+            seed_user["user"].id, _oracle_basis(seed_user, profile), 2026, remainder,
         )
 
         assert result.checkpoint is not None
@@ -439,10 +461,10 @@ class TestComputeWithCheckpoint:
         remainder = _derived(seed_user["user"].id)[2:]  # P2..P9
         result = compute_withholding_to_date(
             seed_user["user"].id, profile, 2026,
-            _derived(seed_user["user"].id), _CADENCE,
+            calendar_for(seed_user["user"].id),
         )
         expected = _expected_projected(
-            seed_user["user"].id, payroll_basis(profile), 2026, remainder,
+            seed_user["user"].id, _oracle_basis(seed_user, profile), 2026, remainder,
         )
 
         assert result.measured_through == date(2026, 1, 16)
@@ -459,10 +481,10 @@ class TestComputeWithCheckpoint:
 
         result = compute_withholding_to_date(
             seed_user["user"].id, profile, 2026,
-            _derived(seed_user["user"].id), _CADENCE,
+            calendar_for(seed_user["user"].id),
         )
         expected = _expected_projected(
-            seed_user["user"].id, payroll_basis(profile), 2026,
+            seed_user["user"].id, _oracle_basis(seed_user, profile), 2026,
             _derived(seed_user["user"].id),
         )
 
@@ -474,10 +496,19 @@ class TestComputeWithCheckpoint:
 
 
 class TestComputeEmptyPeriods:
-    """An empty period list yields an all-zero modeled remainder."""
+    """A year the schedule holds no payday in yields a zero remainder.
 
-    def test_empty_periods_with_checkpoint(self, app, db, seed_user):
-        """No periods -> projected zeros; total == measured (the checkpoint)."""
+    **The empty case is now a YEAR the calendar does not reach, not an empty
+    list a caller passes.**  Plan step **balance:X-bh-1** dropped the
+    ``periods`` argument -- it was ``year_paydays(calendar, year)`` at every
+    call site, a third argument encoding what ``year`` and ``calendar``
+    already said -- so these cases ask about 2099, which the seeded schedule
+    does not reach.  That is the state a real owner reaches; an empty list
+    beside a populated calendar never was one.
+    """
+
+    def test_a_year_with_no_paydays_and_a_checkpoint(self, app, db, seed_user):
+        """No paydays -> projected zeros; total == measured (the checkpoint)."""
         profile = _seed_and_profile(seed_user)
         _add_checkpoint(
             profile, date(2026, 6, 30),
@@ -489,9 +520,25 @@ class TestComputeEmptyPeriods:
         )
         db.session.commit()
 
-        result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026, [], _CADENCE,
+        # The checkpoint is dated in 2026 and the question is asked of 2099,
+        # so ``latest_checkpoint`` would scope it out -- it is re-added on the
+        # year under test so the MEASURED side is non-zero and the assertion
+        # below is about the remainder rather than about an empty profile.
+        _add_checkpoint(
+            profile, date(2099, 6, 30),
+            ytd_gross=Decimal("60000.00"),
+            ytd_federal=Decimal("6000.00"),
+            ytd_state=Decimal("2400.00"),
+            ytd_social_security=Decimal("3720.00"),
+            ytd_medicare=Decimal("870.00"),
         )
+        db.session.commit()
+
+        result = compute_withholding_to_date(
+            seed_user["user"].id, profile, 2099,
+            calendar_for(seed_user["user"].id),
+        )
+        assert year_paydays(calendar_for(seed_user["user"].id), 2099) == ()
         # Remainder is empty -> projected all zero.
         assert result.projected.gross == ZERO
         assert result.projected.federal == ZERO
@@ -503,12 +550,14 @@ class TestComputeEmptyPeriods:
         assert result.total.federal == Decimal("6000.00")
         assert result.total.medicare == Decimal("870.00")
 
-    def test_empty_periods_no_checkpoint(self, app, db, seed_user):
-        """No periods AND no checkpoint -> everything zero."""
+    def test_a_year_with_no_paydays_and_no_checkpoint(self, app, db, seed_user):
+        """No paydays AND no checkpoint -> everything zero."""
         profile = _seed_and_profile(seed_user)
         db.session.commit()
+        assert year_paydays(calendar_for(seed_user["user"].id), 2099) == ()
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026, [], _CADENCE,
+            seed_user["user"].id, profile, 2099,
+            calendar_for(seed_user["user"].id),
         )
         assert result.total.gross == ZERO
         assert result.total.federal == ZERO
@@ -553,9 +602,35 @@ class TestCalibrationExactWithholding:
         db.session.commit()
         db.session.refresh(profile)
 
-        two_periods = _derived(seed_user["user"].id)[:2]
+        # TWO periods are modeled, and a CHECKPOINT is what leaves two --
+        # this case sliced ``_derived(...)[:2]`` until plan step
+        # **balance:X-bh-1** dropped the ``periods`` argument, which is the
+        # right shape for it: in production nothing hands this function a
+        # subset, the checkpoint date decides one.  The seeded year runs
+        # 2026-01-02 every 14 days to 2026-05-08, so a stub dated 2026-04-15
+        # measures through 04-10 and leaves 04-24 and 05-08 modeled.
+        _add_checkpoint(
+            profile, date(2026, 4, 15),
+            ytd_gross=Decimal("40000.00"),
+            ytd_federal=Decimal("4000.00"),
+            ytd_state=Decimal("2000.00"),
+            ytd_social_security=Decimal("2480.00"),
+            ytd_medicare=Decimal("580.00"),
+        )
+        db.session.commit()
+
+        remaining = [
+            p for p in _derived(seed_user["user"].id)
+            if p.start_date > date(2026, 4, 15)
+        ]
+        assert len(remaining) == 2, (
+            "this case is about TWO modeled paychecks; the seeded schedule "
+            f"leaves {len(remaining)} after 2026-04-15"
+        )
+
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026, two_periods, _CADENCE,
+            seed_user["user"].id, profile, 2026,
+            calendar_for(seed_user["user"].id),
         )
 
         assert result.projected.gross == Decimal("10000.00")
@@ -563,8 +638,9 @@ class TestCalibrationExactWithholding:
         assert result.projected.state == Decimal("500.00")
         assert result.projected.medicare == Decimal("145.00")
         assert result.projected.social_security == Decimal("620.00")
-        # No checkpoint: total == projected.
-        assert result.total.federal == Decimal("1000.00")
+        # The split identity: total == measured + projected, component-wise.
+        assert result.total.federal == Decimal("5000.00")
+        assert result.total.gross == Decimal("50000.00")
 
 
 class TestFullYearCapContext:
@@ -639,7 +715,8 @@ class TestFullYearCapContext:
         db.session.commit()
 
         result = compute_withholding_to_date(
-            seed_user["user"].id, profile, 2026, periods, _CADENCE,
+            seed_user["user"].id, profile, 2026,
+            calendar_for(seed_user["user"].id),
         )
 
         assert result.measured_through == date(2026, 6, 30)
