@@ -90,77 +90,76 @@ than a second copy here (rule 16): **N-239** and **N-323**.
         (`credit_card:CC1`); no step for it exists yet, deliberately.
 
 **The X-ga..X-gh leaves are the standing-consent REDESIGN the developer approved 2026-08-24**
-(**R-GH**..**R-GL**); the argument and worked examples are
-`docs/audits/bank_import_redesign/README.md`. The retirement leaf -- deleting what the exception
-queue orphans -- is **X-gi**, minted when `X-gf` shipped.
-**The X-gb..X-ge-1 span is ARCHIVED under rule 5** (condensed 2026-08-26, cut to one line each
-2026-08-27): the as-built records are the four `historical/bank_import_x_*` files, every finding it
-did not close is a live `ledger.md` row, and the constraints it leaves a LATER step are on that
-step's own entry.
+(**R-GH**..**R-GL**; argument: `docs/audits/bank_import_redesign/README.md`).
+**The shipped X-gb..X-gf-3b-2 span is ARCHIVED under rule 5** to the five
+`historical/bank_import_x_*` files: every finding it did not close is a live `ledger.md` row, and
+what it leaves a LATER step is on that step's own entry.
 
 - [x] **X-gb** `ec346c46` -- the delete door (**R-GM**) and the P-6 repair. Closed **N-344**; opened
       **N-348**.
-- [x] **X-gc** `0452eef3` -- three surfaces stopped stating what is false (**R-GN**, **R-GO**,
-      **R-GP**). **N-345** is half open, at `operator`.
+- [x] **X-gc** `0452eef3` -- three surfaces stopped stating what is false (**R-GN**..**R-GP**).
+      **N-345** half open.
 - [x] **X-gd** `d1910c95` -- a merchant answer became a standing RULE: its IDENTITY and its STORE.
 - [x] **X-gd-1** `395b14f7` -- a merchant is a ROW (**R-GR**).
 - [x] **X-gd-2** `154cfcec` -- the rule STORE (**R-GS**, **R-GT**). Closed **N-353**; opened
       **N-358**.
 - [x] **X-ge** `6d3e3ca1` -- the auto-apply door (**R-GH**, **R-GU**), MOVING MONEY with no press.
-      Opens **N-359**.
-- [x] **X-ge-1** `6d3e3ca1` -- each matcher tier publishes the refusals it used to SWALLOW, so a
-      pass reports three verdicts rather than two.
-- [x] **X-gf** `ff744d79` -- the review is an exception queue: ticked with the last of its seven
-      leaves. **What a LATER step must obey**: the queue is one list grouped by the decision, and
-      the two registers of decisions already made are not it -- the split that measurement forced
-      (554,122 bytes rendered, 79% of it those two registers, against 15,842 bytes of actual work)
-      is the shape, not the byte count. Closed nothing itself; its leaves closed **N-359** and
-      **N-371**. Minted **X-gi**.
-- [x] **X-gf-1** `a4db019f` -- an inflow the books hold no row for becomes an uncategorized INCOME
-      row (**R-GW**), **MOVING MONEY**: two correct refusals pointed at each other and left every
-      unmatched DEPOSIT with no act at all -- 8 lines, `$58.87`, on his own data.
-      **The 9 parked Capital One lines still have only a group match**: `$7,412.94` of card payments
-      against `$5,819.99` of unmatched `CC Payback` rows, so `$1,592.95` of card spending the books
-      never recorded can be matched by nothing, which `credit_card:CC3b` dissolves (**N-337**).
-- [x] **X-gf-2** `64cfca05` -- the register is not the queue (**R-GX**, **R-GY**): 29 answered
-      merchants and 221 accepted acts left the review screen for their own surface, taking the
-      review body from 578,523 bytes to 149,103 and `review_set` from 146 SQL statements to 7, a
-      cost the IMPORT path paid too. Closed **N-358** -- three by-id reads of RENDERED user data
-      became composite-FK relationships, so the account travels in the JOIN and `accepted_groups`
-      fell from 139 statements to 7 -- and **N-349**. Opened **bank_import:N-371**, **N-372**.
-- [x] **X-gf-3** `ff744d79` -- **the DECOMPOSED parent**, split 2026-08-27 on the developer's ruling
-      into the rule verdict both readers share and the queue's own shape. Ticked with the last of
-      its two leaves.
-- [x] **X-gf-3a** `44f1cc7b` -- one rule VERDICT and one screen SENTENCE, derived where the decision
-      is and read by ruling **R-GH**'s door and by the review screen. Closed **N-359** and
-      **N-371**. **What a LATER step must obey**: the withholding sentence is composed in
-      `_verdict.ruled` and printed unbranched, because the partition behind it is the service's; and
-      a parked line names the register only where a different answer would open the create door,
-      which was 0 of 9 on the developer's own data.
-- [x] **X-gf-3b** `ff744d79` -- **the DECOMPOSED parent**, split 2026-08-28 on measurement: the
-      step's sentence carried two rulings and they are not the same size. **R-HC**'s half was 59% of
-      the page and closed **N-374**; **R-HB**'s was a re-shaping of what was left. R-HC went FIRST,
-      because merging the three cards while the form was still on the page would have rendered the
-      same 27 lines twice -- the duplication R-HB itself names.
-- [x] **X-gf-3b-1** `d2248fe6` -- **the workbench leaves** (**R-HC**): the hand-build form, its
-      live-totals endpoint and a write door of its own moved to `/accounts/<id>/statements/match`,
-      and every exception links to it carrying its own line, which arrives ticked and PRICED. The
-      review body fell from **150,853 bytes to 65,005**. Closes **N-374**.
-      **What a LATER step must obey**: `apply=hand` is DELETED not moved, and no sentence may name a
-      POSITION -- five did, two of them in the SERVICE, and all five went false in this one commit.
-- [x] **X-gf-3b-2** `ff744d79` -- **the queue is one list grouped by the decision** (**R-HB**), the
-      mechanism load-bearing underneath. 17 / 10 / 0 by evidence on the developer's own data,
-      conserving 27 against `unmatched`. Closes **N-380**; opens **N-381**; rules **R-HD** (a sweep
-      reaches only the group that offers it). **What a LATER step must obey**: the grouping reads
-      BOTH of `_verdict.ruled`'s withholding arms, and a third one must teach `_positive_for` or
-      `TestNoSweptRowCarriesASentence` fails.
+      Opened **N-359**.
+- [x] **X-ge-1** `6d3e3ca1` -- each matcher tier publishes the refusals it used to swallow.
+- [x] **X-gf** `ff744d79` -- the review is an exception queue; minted **X-gi**. As built:
+      `historical/bank_import_x_gf_as_built_2026-08-28.md` (all seven leaves).
+- [x] **X-gf-1** `a4db019f` -- an unmatched inflow becomes uncategorized INCOME
+      (`bank_import:R-GW`).
+- [x] **X-gf-2** `64cfca05` -- the register is not the queue (`R-GX`, `R-GY`). Closed **N-358**,
+      **N-349**.
+- [x] **X-gf-3** `ff744d79` -- decomposed parent of the queue proper, ticked with its two leaves.
+- [x] **X-gf-3a** `44f1cc7b` -- one rule VERDICT, one SENTENCE (`_verdict.ruled`). Closed **N-359**,
+      **N-371**.
+- [x] **X-gf-3b** `ff744d79` -- decomposed parent of the queue's second leaf, ticked with its two.
+- [x] **X-gf-3b-1** `d2248fe6` -- the workbench is not the queue (`R-HC`). Closed **N-374**.
+- [x] **X-gf-3b-2** `ff744d79` -- one list grouped by the decision (`R-HB`, **R-HD**). Closed
+      **N-380**; opened **N-381**.
+- [ ] **X-gj** `feat(import): reconcile is one page on four verbs` -- the DECOMPOSED parent of the
+      Reconcile rebuild the developer LOCKED at Loop A round 4 on 2026-08-29 (rulings
+      `bank_import:R-HP`..`R-HV`; the assessment, the field research, the four rounds and the locked
+      direction are `docs/design/bank_import_audit.md`). Every bank line ends with one of MATCH,
+      ADD, TRANSFER or SKIP (**R-HP**); a line with no act is a holding state (**R-HQ**); the card
+      shows the decision and the disclosure is one click away (**R-HR**); a justified suggestion is
+      pre-filled (**R-HS**); the register and the workbench retire as pages (**R-HU**). It ticks
+      with the last of its four leaves, and `X-gi` follows it.
+  - [ ] **X-gj-1** `feat(import): the Reconcile page` -- the route and templates: the hero (bank,
+        books, off by, to explain), the holding chips, five tabs, the dismissable legend, one card
+        per line with the verb-first sentence and OK, the opened card's four-tab panel, the sticky
+        footer with the per-class sweeps (**R-FZ(c)**, **R-HD**) and Apply, in both themes and both
+        viewports. **It posts only to doors that exist** -- the reviewed pass, release, the rule
+        control -- and moves no money of its own; the old routes stay alive beside it until `X-gi`.
+        Every figure in the hero is the service's (`bank_agreement`'s headline day, the review set's
+        counts). Its route test posts exactly what the card and the footer emit, and its ownership
+        404 is paired with a case asserting the URL routes (the moved-door lesson).
+  - [ ] **X-gj-2** `feat(import): a rule answers an inflow` -- **R-HT(a)**: a deposit signature
+        files as an income category, a merchant credit as a NEGATIVE purchase in that merchant's
+        envelope; it CREATES, so it auto-applies at import under **R-GH** with the receipt and undo
+        `X-ge` built. **MOVES MONEY, OWN PR.** On the developer's data it dissolves nine of the 27
+        queued lines (five dividends, three refunds, one deposit once answered).
+  - [ ] **X-gj-3** `feat(import): a rule names a row set` -- **R-HT(b)**: a payroll signature
+        pre-builds the group match (the period's payroll rows, the residue onto the named row per
+        **R-GD** or its own row per **R-FN**) as a solid suggestion; it MODIFIES rows, so it applies
+        only on the owner's OK. **MOVES MONEY, OWN PR.** Interim for **N-239** until `balance:X-aw`.
+  - [ ] **X-gj-4** `feat(import): skip, and the holding state` -- a SKIPPED line's disposition is
+        recorded and undoable, and the Transfers tab renders **R-GJ**'s parked lines as a holding
+        state. **It opens with a fork the developer decides at the gate**: a nullable disposition
+        column on `bank_statement_lines`, or a `statement_line_dispositions` table (append-only,
+        which is what undo and the audit trail want -- the recommendation), before any migration.
 - [ ] **X-gi** `refactor(import): the queue's replaced model leaves orphans` -- the retirement leaf
-      **X-gf** owed on shipping. **It is a CENSUS before it is a deletion**: the rebuild replaced
-      the exception queue's model, and what of the old one is now unreachable has not been measured.
-      The first deliverable is that census -- routes, templates, services and columns the new queue
-      no longer reaches -- and it may delete nothing it has not first shown to be orphaned, because
-      a route that looks dead to a reading is not the same as one no door reaches (**N-112**'s
-      shape).
+      **X-gf** owed on shipping, and since 2026-08-29 the LAST leaf of the Reconcile rebuild: it
+      waits on `X-gj` and deletes what that page orphans -- the review, register and workbench
+      routes and templates, the evidence-group rendering (`_queue.py`'s `_SAID`, the per-row
+      sentence composers `_notes_for`), and whatever else the census finds unreachable.
+      **It is a CENSUS before it is a deletion**: it may delete nothing it has not first shown to be
+      orphaned, because a route that looks dead to a reading is not the same as one no door reaches
+      (**N-112**'s shape). What the archived X-gf span leaves it: `apply=hand` is already DELETED
+      (never re-add an index over a form), and `TestNoSweptRowCarriesASentence` guards a queue this
+      step removes, so the test goes with the queue, not before it.
 - [ ] **X-gg** `docs(plans): the envelope-semantics design loop` -- **R-GK**'s owed loop, run WITH
       the developer: filling, closure on coverage, carry-forward and the grid's row identity (whose
       same-name double-render the review measured); it mints the build steps rather than building.
