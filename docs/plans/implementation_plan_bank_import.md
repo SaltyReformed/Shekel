@@ -121,11 +121,11 @@ what it leaves a LATER step is on that step's own entry.
         adds no money door. Each leaf ships a WHOLE page: none renders a tab or control a later one
         completes, which **R-HW** forbids. The balance arc's reconcile PANEL keeps its name, so the
         module is `statement_match/_reconcile.py` beside `routes/accounts/reconcile.py`.
-    - [ ] **X-gj-1a** `feat(import): the reconcile view model` -- the service turning a pass into
-          CARDS: one per line with its verb (**R-HP**), what suggested it, the sentence's PARTS,
-          which verbs are OPEN and why a shut one is (**R-HW**), the settled act's card one tense
-          over, the tab counts, the chips (**R-HQ**), and `bank_agreement`'s HEADLINE DAY -- the
-          latest COMPARED day the bank's record can PRICE, not `span.last_day`.
+    - [x] **X-gj-1a** `bc851df9` -- the service turning a pass into CARDS: one per line with its
+          verb (**R-HP**), what suggested it, the sentence's PARTS, which verbs are OPEN and why a
+          shut one is (**R-HW**), the settled act's card one tense over, the tab counts, the chips
+          (**R-HQ**), and `bank_agreement`'s HEADLINE DAY -- the latest COMPARED day the bank's
+          record can PRICE, not `span.last_day`.
     - [ ] **X-gj-1b** `feat(import): the page, and the lines still to explain` -- the whole page
           over that model and the three tabs whose cards are BANK LINES: To explain, Transfers,
           Skipped. The route pair, hero, chips, legend, tab bar, the card, its opened four-tab panel
