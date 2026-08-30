@@ -761,6 +761,7 @@ def release_match(
 
 def acts_of(
     owner_id: int, account_id: int, match_ids: "set[int] | None" = None,
+    *, applied_by_rule: "bool | None" = None,
 ) -> "list[StatementMatch]":
     """Return match acts WHOLE, newest first, in one read.
 
@@ -792,6 +793,13 @@ def acts_of(
             an unbounded read of an account's every act is work a page that
             renders 20 imports never uses.
 
+        applied_by_rule: Which half of the account's acts to load -- ``True``
+            for the acts a standing rule performed (**R-GT**), ``False`` for
+            the acts a person ticked, ``None`` for both.  **A second narrowing
+            beside** *match_ids* **rather than a filter over the result**, for
+            that parameter's own reason: an act the caller will never render
+            is work it never uses.
+
     Returns:
         Its :class:`~app.models.statement_match.StatementMatch` rows, newest
         first, loaded WHOLE (:data:`_WHOLE_ACT`) -- both relations and the row
@@ -810,6 +818,17 @@ def acts_of(
     )
     if match_ids is not None:
         query = query.filter(StatementMatch.id.in_(match_ids))
+    if applied_by_rule is not None:
+        # **Narrowed in SQL, before anything is LOADED** (plan step
+        # ``bank_import:X-gj-1a``).  The Reconcile screen renders the two
+        # halves as two tabs (**R-GT**), and a caller filtering this
+        # function's RESULT would load and price every act on the account to
+        # render one half -- 221 of the developer's own to draw a tab holding
+        # none of them, which is exactly the cost ruling **R-GX** split the
+        # register off the review screen to stop paying.
+        query = query.filter(
+            StatementMatch.applied_by_rule.is_(applied_by_rule),
+        )
     return query.order_by(
         StatementMatch.created_at.desc(), StatementMatch.id.desc(),
     ).all()

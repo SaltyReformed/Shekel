@@ -37,10 +37,8 @@ that it was seen; an owner who states no rules keeps exactly the old workflow.
 ## The rulings
 
 **This arc's rulings are in `rulings.md`, rows whose `arc` is `bank_import`.** They moved there at
-`balance:X-ao-1` with the balance arc's. `R-FW` was REPAIRED by that lift: an unescaped `|` inside a
-backticked string split it into four cells of a three-column table, so Markdown truncated the rule
-at the pipe and a header-anchored reader would have dropped the row -- unreported for nine days (it
-landed at `0d6f8c09`, 2026-08-18) because nothing parsed this table.
+`balance:X-ao-1` with the balance arc's, which also REPAIRED `R-FW` (`0d6f8c09`). How that lift came
+about, and what it caught, is that registry's own header to tell.
 
 **The match predicate is RULED (`R-FS`) and the measurement that forced its shape is worth
 carrying.** A naive exact-amount matcher plateaus: 36 of 227 bank lines at a same-day tolerance, 119
@@ -87,69 +85,77 @@ than a second copy here (rule 16): **N-239** and **N-323**.
         decision is ruled toward host cron through a CLI door, matching the no-scheduler,
         no-exposed-ports deployment posture. A CARD-statement adapter (Capital One -- its exports
         are already measured in R-FP's context) is worth minting once the card ledger exists
-        (`credit_card:CC1`); no step for it exists yet, deliberately.
+        (`credit_card:CC1a`..`CC1c`); no step for it exists yet, deliberately.
 
 **The X-ga..X-gh leaves are the standing-consent REDESIGN the developer approved 2026-08-24**
-(**R-GH**..**R-GL**; argument: `docs/audits/bank_import_redesign/README.md`).
-**The shipped X-gb..X-gf-3b-2 span is ARCHIVED under rule 5** to the five
+(**R-GH**..**R-GL**; argument: `docs/audits/bank_import_redesign/README.md`), and
+**the shipped X-gb..X-gf-3b-2 span is ARCHIVED under rule 5** to the five
 `historical/bank_import_x_*` files: every finding it did not close is a live `ledger.md` row, and
 what it leaves a LATER step is on that step's own entry.
 
-- [x] **X-gb** `ec346c46` -- the delete door (**R-GM**) and the P-6 repair. Closed **N-344**; opened
-      **N-348**.
+- [x] **X-gb** `ec346c46` -- the delete door (**R-GM**), P-6. Closed **N-344**; opened **N-348**.
 - [x] **X-gc** `0452eef3` -- three surfaces stopped stating what is false (**R-GN**..**R-GP**).
-      **N-345** half open.
-- [x] **X-gd** `d1910c95` -- a merchant answer became a standing RULE: its IDENTITY and its STORE.
+- [x] **X-gd** `d1910c95` -- a merchant answer became a standing RULE: its identity and its store.
 - [x] **X-gd-1** `395b14f7` -- a merchant is a ROW (**R-GR**).
-- [x] **X-gd-2** `154cfcec` -- the rule STORE (**R-GS**, **R-GT**). Closed **N-353**; opened
-      **N-358**.
-- [x] **X-ge** `6d3e3ca1` -- the auto-apply door (**R-GH**, **R-GU**), MOVING MONEY with no press.
-      Opened **N-359**.
-- [x] **X-ge-1** `6d3e3ca1` -- each matcher tier publishes the refusals it used to swallow.
-- [x] **X-gf** `ff744d79` -- the review is an exception queue; minted **X-gi**. As built:
-      `historical/bank_import_x_gf_as_built_2026-08-28.md` (all seven leaves).
-- [x] **X-gf-1** `a4db019f` -- an unmatched inflow becomes uncategorized INCOME
-      (`bank_import:R-GW`).
-- [x] **X-gf-2** `64cfca05` -- the register is not the queue (`R-GX`, `R-GY`). Closed **N-358**,
+- [x] **X-gd-2** `154cfcec` -- the rule STORE (**R-GS**, **R-GT**); **N-353** shut, **N-358** open.
+- [x] **X-ge** `6d3e3ca1` -- the auto-apply door (**R-GH**, **R-GU**); MONEY, no press. **N-359**.
+- [x] **X-ge-1** `6d3e3ca1` -- each tier publishes the refusals it used to swallow.
+- [x] **X-gf** `ff744d79` -- the review is an exception queue; minted **X-gi**.
+- [x] **X-gf-1** `a4db019f` -- an unmatched inflow becomes income (`bank_import:R-GW`).
+- [x] **X-gf-2** `64cfca05` -- the register is not the queue (**R-GX**, **R-GY**). Shut **N-358**,
       **N-349**.
-- [x] **X-gf-3** `ff744d79` -- decomposed parent of the queue proper, ticked with its two leaves.
-- [x] **X-gf-3a** `44f1cc7b` -- one rule VERDICT, one SENTENCE (`_verdict.ruled`). Closed **N-359**,
-      **N-371**.
-- [x] **X-gf-3b** `ff744d79` -- decomposed parent of the queue's second leaf, ticked with its two.
-- [x] **X-gf-3b-1** `d2248fe6` -- the workbench is not the queue (`R-HC`). Closed **N-374**.
-- [x] **X-gf-3b-2** `ff744d79` -- one list grouped by the decision (`R-HB`, **R-HD**). Closed
-      **N-380**; opened **N-381**.
+- [x] **X-gf-3** `ff744d79` -- decomposed parent of the queue proper; ticked with its two.
+- [x] **X-gf-3a** `44f1cc7b` -- one rule VERDICT, one SENTENCE. Shut **N-359**, **N-371**.
+- [x] **X-gf-3b** `ff744d79` -- decomposed parent of the queue's second leaf; ticked with two.
+- [x] **X-gf-3b-1** `d2248fe6` -- the workbench is not the queue (**R-HC**). Closed **N-374**.
+- [x] **X-gf-3b-2** `ff744d79` -- one list by the decision (**R-HB**, **R-HD**). **N-380** shut,
+      **N-381** open.
 - [ ] **X-gj** `feat(import): reconcile is one page on four verbs` -- the DECOMPOSED parent of the
-      Reconcile rebuild the developer LOCKED at Loop A round 4 on 2026-08-29 (rulings
-      `bank_import:R-HP`..`R-HV`; the assessment, the field research, the four rounds and the locked
-      direction are `docs/design/bank_import_audit.md`). Every bank line ends with one of MATCH,
-      ADD, TRANSFER or SKIP (**R-HP**); a line with no act is a holding state (**R-HQ**); the card
-      shows the decision and the disclosure is one click away (**R-HR**); a justified suggestion is
-      pre-filled (**R-HS**); the register and the workbench retire as pages (**R-HU**). It ticks
-      with the last of its four leaves, and `X-gi` follows it.
-  - [ ] **X-gj-1** `feat(import): the Reconcile page` -- the route and templates: the hero (bank,
-        books, off by, to explain), the holding chips, five tabs, the dismissable legend, one card
-        per line with the verb-first sentence and OK, the opened card's four-tab panel, the sticky
-        footer with the per-class sweeps (**R-FZ(c)**, **R-HD**) and Apply, in both themes and both
-        viewports. **It posts only to doors that exist** -- the reviewed pass, release, the rule
-        control -- and moves no money of its own; the old routes stay alive beside it until `X-gi`.
-        Every figure in the hero is the service's (`bank_agreement`'s headline day, the review set's
-        counts). Its route test posts exactly what the card and the footer emit, and its ownership
-        404 is paired with a case asserting the URL routes (the moved-door lesson).
+      Reconcile rebuild the developer LOCKED at Loop A round 4 on 2026-08-29, on rulings
+      `bank_import:R-HP`..`R-HX`, stated in `rulings.md`. The assessment, the research, the four
+      rounds and the locked direction are `docs/design/bank_import_audit.md`. `X-gi` follows it.
+  - [ ] **X-gj-1** `feat(import): the Reconcile page` -- the DECOMPOSED parent of the page, split
+        three ways 2026-08-29 on the two boundaries this package draws: the SERVICES boundary, and
+        **R-GX**'s -- a line to explain is `_reads`', an applied act is `_accepted_view`'s.
+        **It posts only to doors that exist** (`apply_reviewed`, `release_match`, `state_rules`) and
+        adds no money door. Each leaf ships a WHOLE page: none renders a tab or control a later one
+        completes, which **R-HW** forbids. The balance arc's reconcile PANEL keeps its name, so the
+        module is `statement_match/_reconcile.py` beside `routes/accounts/reconcile.py`.
+    - [ ] **X-gj-1a** `feat(import): the reconcile view model` -- the service turning a pass into
+          CARDS: one per line with its verb (**R-HP**), what suggested it, the sentence's PARTS,
+          which verbs are OPEN and why a shut one is (**R-HW**), the settled act's card one tense
+          over, the tab counts, the chips (**R-HQ**), and `bank_agreement`'s HEADLINE DAY -- the
+          latest COMPARED day the bank's record can PRICE, not `span.last_day`.
+    - [ ] **X-gj-1b** `feat(import): the page, and the lines still to explain` -- the whole page
+          over that model and the three tabs whose cards are BANK LINES: To explain, Transfers,
+          Skipped. The route pair, hero, chips, legend, tab bar, the card, its opened four-tab panel
+          (**R-HR**, **R-HW**) with Find and Match and an always-for-this-merchant checkbox, and the
+          footer's sweeps and Apply (**R-FZ(c)**, **R-HD**). An unmatched inflow is not pre-filled
+          (**R-HX**), so Choose opens the panel this same leaf builds. Both themes and viewports
+          through the visual loop; its route test posts what the card and footer emit, and its
+          ownership 404 is paired with a case asserting the URL still routes.
+    - [ ] **X-gj-1c** `feat(import): what has already been decided` -- the two tabs whose cards are
+          ACTS: Explained and Filed by rules, newest first with an act that has stopped holding on
+          top, Undo carrying **R-GY**'s confirm where it destroys a row, and the Explained chip's
+          link; it retires the register as a page (**R-HU**), in both themes and viewports through
+          the visual loop, with its own route test and ownership 404 pairing.
   - [ ] **X-gj-2** `feat(import): a rule answers an inflow` -- **R-HT(a)**: a deposit signature
         files as an income category, a merchant credit as a NEGATIVE purchase in that merchant's
-        envelope; it CREATES, so it auto-applies at import under **R-GH** with the receipt and undo
-        `X-ge` built. **MOVES MONEY, OWN PR.** On the developer's data it dissolves nine of the 27
-        queued lines (five dividends, three refunds, one deposit once answered).
+        envelope; it CREATES, so it auto-applies at import under **R-GH** with `X-ge`'s receipt and
+        undo. **MOVES MONEY, OWN PR.** Measured 2026-08-29 by running `review_set` on account 1:
+        nine of its sixteen unmatched deposits dissolve (five dividends, three refunds, one answer).
   - [ ] **X-gj-3** `feat(import): a rule names a row set` -- **R-HT(b)**: a payroll signature
         pre-builds the group match (the period's payroll rows, the residue onto the named row per
-        **R-GD** or its own row per **R-FN**) as a solid suggestion; it MODIFIES rows, so it applies
-        only on the owner's OK. **MOVES MONEY, OWN PR.** Interim for **N-239** until `balance:X-aw`.
+        **R-GD** or its own row per **R-FN**) as a solid suggestion, with the
+        *always, this signature is this period's payroll rows* checkbox the MATCH panel renders; it
+        MODIFIES rows, so it applies only on the owner's OK. **MOVES MONEY, OWN PR.** Interim for
+        **N-239**.
   - [ ] **X-gj-4** `feat(import): skip, and the holding state` -- a SKIPPED line's disposition is
-        recorded and undoable, and the Transfers tab renders **R-GJ**'s parked lines as a holding
-        state. **It opens with a fork the developer decides at the gate**: a nullable disposition
-        column on `bank_statement_lines`, or a `statement_line_dispositions` table (append-only,
-        which is what undo and the audit trail want -- the recommendation), before any migration.
+        recorded and undoable, which LIGHTS the SKIP verb the panel renders shut and fills the
+        Skipped tab `X-gj-1b` draws for lines a standing *never a purchase* answer already disposes
+        of. **It opens with a fork the developer decides at the gate**: a nullable disposition
+        column on `bank_statement_lines` or a `statement_line_dispositions` table (append-only,
+        which is what undo and the audit trail want -- the recommendation).
 - [ ] **X-gi** `refactor(import): the queue's replaced model leaves orphans` -- the retirement leaf
       **X-gf** owed on shipping, and since 2026-08-29 the LAST leaf of the Reconcile rebuild: it
       waits on `X-gj` and deletes what that page orphans -- the review, register and workbench
