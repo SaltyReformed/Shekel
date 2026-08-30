@@ -70,7 +70,8 @@ class GenerationSchedule:
       lands a new period in a covered month (plan ledger row **D22**);
     * the paycheck calculator received the same truncated list as its
       ``all_periods``, so third-paycheck detection, the first-paycheck-of-month
-      deductions, the annual rounding reconciliation and the FICA wage-base
+      deductions, the annual rounding reconciliation (DELETED at plan step
+      balance:X-aw; the other three still read the list) and the FICA wage-base
       cumulative all read 1-3 periods instead of 61.  One salary row was STORED
       $502.45 below its true net pay (plan ledger row **D25**); the read-time
       recompute kept that off every surface, which is measured rather than

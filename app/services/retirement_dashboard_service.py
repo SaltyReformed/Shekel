@@ -32,7 +32,7 @@ from app.services import (
     pension_calculator,
 )
 from app.services.pay_calendar import PayCadence
-from app.services.payroll_basis import PayrollBasis
+from app.services.payroll_basis import PayrollBasis, gross_per_paycheck
 from app.services.tax_config_service import load_tax_configs_for_year
 from app.utils.dates import add_months
 from app.utils.money import round_money
@@ -592,8 +592,9 @@ def compute_gap_net_biweekly(
     # The owner's OWN paycheck count, off the cadence the inputs already
     # carry (plan step R-F16); it was a second stored column on the profile,
     # and the two could disagree with each other by any factor.
-    final_gross_biweekly = round_money(
-        gap.pay_cadence.annual_to_per_paycheck(final_salary)
+    # Through the ONE per-paycheck producer (plan step balance:X-aw).
+    final_gross_biweekly = gross_per_paycheck(
+        final_salary, gap.pay_cadence.periods_per_year,
     )
     return round_money(final_gross_biweekly * effective_take_home_rate)
 
