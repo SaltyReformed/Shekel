@@ -868,9 +868,9 @@ hides.
   right and the HOME was wrong -- the helper is a WIRE transform, `jinja_filters.py` exists for
   exactly that, and moving it there left `_offers.py` at **984**. So a ceiling can find a
   MISPLACEMENT rather than cost a design record, which argues the SPLIT arm; and `_offers.py` is a
-  fourth module in a different tree from the three N-365 names. It could not go in the row: at 2,650
-  characters N-365 is already over rule 4's cap, and the only way to fit it was to trim N-365's own
-  prose -- which is the harm N-365 IS.
+  fourth module in a different tree from the three N-365 names. It could not go in the row: N-365
+  has **145 characters of headroom** against rule 4's 2,000-character cap and this note is ~795, so
+  the only way to fit it was to trim N-365's own prose -- which is the harm N-365 IS.
 * [ ] **X-al** `fix(pylint): a duplicate-code disable that suppresses nothing is a finding` --
   closes **N-154**. `useless-suppression` is enabled precisely so a stale disable is reported, and
   it is BLIND to a `duplicate-code` one -- measured both directions: removing a disable left
