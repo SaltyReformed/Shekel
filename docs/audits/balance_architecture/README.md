@@ -851,20 +851,12 @@ hides.
   one object where the next instance will be a different one -- the same shape as an allowlist.
 * [x] **X-bd** `39935763` -- every route in the sweep is its OWN pytest item. Closed **N-364**, whose diagnosis it measured FALSE; opened **N-387**. Record in `archive/four_shipped_steps_2026-08-30.md`.
 * [x] **X-be-2** `167aab8d` -- a test SAYS what world it starts in. Closed **N-387**, whose read-only premise it measured FALSE; opened **N-388**. Record in `archive/four_shipped_steps_2026-08-30.md`.
-* [ ] **X-be-3** `test(routes): the sweep grades every GET route, with no list of exceptions` --
-  closes **N-388**, whose row carries the census. **Root: `_UNREACHED_RULES` is an ALLOWLIST of the
-  routes the sweep does not grade** -- 17 of the app's 97 GET rules, 17.5%, skipped because the
-  fixture creates no salary profile, transaction, transfer, goal, template or pension. It was
-  unaffordable to close while every row added to the world cost 236 rebuilds; after `X-be-2` it
-  costs one per worker, which is the whole reason this is now a step rather than a note.
-  **Widening it will likely surface real 5xx's**, since these are the routes no one has ever run
-  under a baseline-less owner -- each one found is its own diagnosis, and the step may not close by
-  narrowing the sweep. The coverage arm that currently PINS the skip list is what turns red when
-  the list empties, so it is rewritten in the same commit, not deleted.
-  **Two obligations it inherits, restated here because their entries were archived 2026-08-30**:
-  a later step may not reintroduce ONE test issuing every request (`X-bd`), and the routes must
-  stay enumerable with no database; and the per-test clone STAYS, because the clone is what
-  isolates one test from another (`X-be-2`).
+* [x] **X-be-3** `0aa2cc80` -- the sweep grades EVERY GET route and carries no list of the ones it
+  does not. Closed **N-388**: `_UNREACHED_RULES` and the skip branch that fed it are DELETED, the
+  world holds a row of every kind a GET rule takes an id for, and coverage is an equality against
+  `url_map` no list can satisfy. **All 17 unrequested rules answer and NONE 5xx.** The fill map is
+  keyed `(blueprint, converter)` with NO bare-name fallback. `X-bd`'s and `X-be-2`'s two standing
+  constraints moved into `_SWEEP_CASES`, the one home an archive cannot govern away.
 * [ ] **X-be** `refactor(services): three modules are at the line ceiling, not near it` -- closes
   **N-365**, whose row carries the census and both instances. **Root: in a corpus whose docstrings
   ARE the design record, a per-module LINE cap binds what gets WRITTEN DOWN.** The fork, per module:

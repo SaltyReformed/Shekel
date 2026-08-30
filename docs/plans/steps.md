@@ -43,13 +43,13 @@ side: both were unblocked and they shared no file.
 pairing two inside one arc, check that neither names a module the other deletes. A row marked
 **MOVES MONEY** takes its own PR either way, so it is never the second lane.
 
-**The rank is a DECISION, not a derivation.** 65 of these steps are legal to start right now, so the
+**The rank is a DECISION, not a derivation.** 64 of these steps are legal to start right now, so the
 dependency graph alone cannot say which comes next; the sequence below follows each arc's own stated
 sequencing -- the balance README's ten blocks, and each plan's section 0.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**192 steps, 140 open.** The dependency graph holds 88 edges over 71 rows.
+**192 steps, 139 open.** The dependency graph holds 87 edges over 70 rows.
 
 ## The order
 
@@ -173,7 +173,7 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | balance | X-be | -- | Resolve the THREE `app/` modules sitting at exactly pylint's 1000-line ceiling -- `calendar_service`, `balance_at/_asset_fold` and `anchor_service` -- by deciding per module whether it SPLITS or whether the ceiling is the wrong number, because in this corpus what the cap binds is what gets written down. Closes **N-365**. | #116 | -- | NOW |
 | balance | X-bf | -- | Make a stale or FORKED test template self-reporting: record the ordered revision list the builder actually applied and refuse a bootstrap whose repo chain no longer produces it, because `alembic_version` records which revision is head and never which ones ran. Closes **N-385**. | #117 | -- | NOW |
 | balance | X-bg | -- | Tell *this occurrence did not happen* apart from *archive this row*, which the transfer delete door conflates into one `is_deleted` flag read off the template link, so a settled instance the owner removes stays restorable by the recurrence conflict chooser with no control between it and the books. Closes **N-386**. | #118 | -- | NOW |
-| balance | X-be-3 | -- | Widen the no-baseline sweep's world to the rows its seventeen skipped GET routes need -- a salary profile, a transaction, a transfer, a goal, a template and a pension -- and DELETE the `_UNREACHED_RULES` allowlist, so the sweep's claim to grade every GET route stops carrying a hand-maintained list of the ones it does not. Closes **N-388**. | #119 | -- | NOW / balance:X-be-2 (shipped) |
+| balance | X-be-3 | -- | Widened the world to a salary profile, a transaction, a transfer, a goal, BOTH template kinds and a pension, then deleted `_UNREACHED_RULES` and the skip branch feeding it, so *every GET route is graded* became an equality against `url_map` rather than a list of the ones that were not: all 17 rules it had never requested answer, and **none 5xx**. Closed **N-388**. | SHIPPED | `0aa2cc80` | -- |
 | balance | X-aw | -- | Made a paycheck's gross a RATE rather than a share of a year (**R-HW**): the salary over the owner's paycheck count, one figure per salary segment, so the period LIST that decided which paychecks took a rounding-residue cent is gone and with it the defect that re-priced settled paychecks as the schedule grew. Closed **N-239**'s horizon half and opened **N-390** and **N-391**. | SHIPPED | `078077db` | -- |
 | balance | X-be-2 | -- | Gave the suite a way to say WHAT WORLD a test starts in: a named seeded start state, built ONCE per worker and frozen into a snapshot every declaring test still takes its OWN private clone of, so the `url_map` sweep stopped rebuilding one identical world 236 times without weakening what isolates one test from another. Closed **N-387**, whose premise it measured FALSE; opened **N-388**. | SHIPPED | `167aab8d` | -- |
 | bank_import | X-gf | -- | The DECOMPOSED parent of the review-screen rebuild, split 2026-08-27 into the disposition hole its model left open, the queue-versus-register split and the exception queue proper, whose own third leaf split again. Ticked with the last of its seven leaves; minted **X-gi**. | SHIPPED | `ff744d79` | -- |
