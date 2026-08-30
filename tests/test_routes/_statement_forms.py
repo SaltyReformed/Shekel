@@ -270,3 +270,83 @@ def rule_item(index, merchant_id, *, answer, name="", category_id=""):
         f"rule_name-{index}": name,
         f"rule_category-{index}": str(category_id),
     }
+
+
+class ReconcileFormReader(HTMLParser):
+    """Collect the RECONCILE page's controls, exactly as a browser would.
+
+    Plan step ``bank_import:X-gj-1b``.  **A browser submits every control it
+    renders, at the value it renders**, and that is the fact a hand-written
+    payload cannot check -- it is written by the same person as the template,
+    so the two agree about a mistake as readily as about the truth.  This arc
+    has paid for that twice.
+
+    **It keeps REPEATED names**, unlike :class:`RuleFormReader`: ``ok`` is
+    rendered once per OK'd card and ``rows-<line>`` once per member row, and a
+    group is exactly where a multi-value defect hides.
+
+    **An unticked checkbox and an unchecked radio contribute NOTHING**, which
+    is the whole of what makes ruling **R-HS**'s *an untouched card is not
+    submitted* structural rather than a default: a page rendered with no card
+    OK'd posts no ``ok`` at all, so no act can be built from it.
+
+    **A ``disabled`` control is dropped too**, which the consent box depends
+    on: the MATCH pane renders it ``value=""`` and ``disabled`` in lockstep
+    until the server has a figure, so a browser cannot send an empty consent.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.fields = []
+        self._select = None
+        self._first = None
+        self._chosen = None
+
+    def handle_starttag(self, tag, attrs):
+        """Record every control this page would submit."""
+        attributes = dict(attrs)
+        # **An ``<option>`` carries no name of its own**, so it is read before
+        # any test on one -- a first version guarded on ``name`` up here and
+        # every select therefore submitted its FIRST option, which read as a
+        # template that had stopped pre-filling.  Found by running it.
+        if tag == "option":
+            if self._select is not None:
+                value = attributes.get("value", "")
+                if self._first is None:
+                    self._first = value
+                if "selected" in attributes:
+                    self._chosen = value
+            return
+        name = attributes.get("name", "")
+        if not name or "disabled" in attributes:
+            return
+        if tag == "input":
+            kind = attributes.get("type", "text")
+            if kind in {"checkbox", "radio"} and "checked" not in attributes:
+                return
+            self.fields.append((name, attributes.get("value", "")))
+        elif tag == "select":
+            self._select, self._first, self._chosen = name, None, None
+
+    def handle_endtag(self, tag):
+        """Close a select, defaulting it to its first option if none was set."""
+        if tag == "select" and self._select is not None:
+            chosen = self._chosen
+            self.fields.append(
+                (self._select, self._first or "" if chosen is None else chosen),
+            )
+            self._select = self._first = self._chosen = None
+
+
+def reconcile_form_fields(page):
+    """Return what a browser would submit from the Reconcile page, verbatim.
+
+    Args:
+        page: The rendered page or body, as text.
+
+    Returns:
+        A list of ``(name, value)`` pairs, repeats kept and in document order.
+    """
+    reader = ReconcileFormReader()
+    reader.feed(page)
+    return reader.fields

@@ -105,7 +105,7 @@ _MAX_MATCH_MEMBERS: int = 100
 #: import may carry ``_secu_csv.MAX_LINES`` = 20,000 lines, so an account can
 #: in principle offer more acts than this; the owner is told to apply the pass
 #: in two rather than having half of what they ticked dropped without a word.
-_MAX_BATCH_ITEMS: int = 500
+MAX_BATCH_ITEMS: int = 500
 
 #: The prefix a submitted match item carries.  Its INDEX is the rendered
 #: position of the proposal it came from, so the ids of the item the owner
@@ -507,7 +507,7 @@ class StatementBatchSchema(Schema):
     does not declare, on the one payload that carries every act in a pass.
 
     **The ceiling is on the SUM and is stated ONCE**
-    (:data:`_MAX_BATCH_ITEMS`), because the screen's own offer set is bounded
+    (:data:`MAX_BATCH_ITEMS`), because the screen's own offer set is bounded
     by what an import may carry and a crafted submission is bounded by nothing.
     A per-list ``Length`` beside it was a second statement of one rule and the
     WRONG one: two lists with their own ceilings admit twice the work either
@@ -551,7 +551,7 @@ class StatementBatchSchema(Schema):
 
         Raises:
             ValidationError: When the pass names more than
-                :data:`_MAX_BATCH_ITEMS` acts in total.
+                :data:`MAX_BATCH_ITEMS` acts in total.
         """
         total = (
             len(data.get("matches", ()))
@@ -561,10 +561,10 @@ class StatementBatchSchema(Schema):
             # ceiling would admit half again as much work as the bound says.
             + len(data.get("incomes", ()))
         )
-        if total > _MAX_BATCH_ITEMS:
+        if total > MAX_BATCH_ITEMS:
             raise ValidationError(
                 f"That is {total:,} things to apply at once, and this page "
-                f"applies at most {_MAX_BATCH_ITEMS:,} in one pass.  Untick "
+                f"applies at most {MAX_BATCH_ITEMS:,} in one pass.  Untick "
                 f"some and apply them in two goes -- nothing was changed.",
                 field_name="matches",
             )
@@ -586,13 +586,16 @@ class StatementBatchSchema(Schema):
 #: select beside it.
 _INCOME_PREFIX = "record_income-"
 
-#: What a submitted destination carries, keyed by its BANK LINE's id.  Keyed
+#: What a submitted destination carries, keyed by its BANK LINE's id.  **Read
+#: by TWO surfaces' readers** -- the review queue's here and the Reconcile
+#: page's in :mod:`.statement_reconcile` -- so it is stated once rather than
+#: spelled twice, which is this package's own root cause 1.  Keyed
 #: that way rather than by a rendered position because a destination names one
 #: LINE, and paired arrays would depend on the browser submitting several lists
 #: of equal length -- which a crafted body need not do.
-_DESTINATION_PREFIX = "destination-"
-_ENVELOPE_NAME_PREFIX = "envelope_name-"
-_CATEGORY_PREFIX = "category_id-"
+DESTINATION_PREFIX = "destination-"
+ENVELOPE_NAME_PREFIX = "envelope_name-"
+CATEGORY_PREFIX = "category_id-"
 
 
 def _match_items(form) -> list:
@@ -676,19 +679,19 @@ def _creation_items(form) -> list:
         strings: the schema is what reads them.
     """
     keys = [
-        field[len(_DESTINATION_PREFIX):] for field in form.keys()
-        if field.startswith(_DESTINATION_PREFIX)
+        field[len(DESTINATION_PREFIX):] for field in form.keys()
+        if field.startswith(DESTINATION_PREFIX)
     ]
     items = []
     for key in sorted(keys, key=order_token_key):
-        destination = form[f"{_DESTINATION_PREFIX}{key}"]
+        destination = form[f"{DESTINATION_PREFIX}{key}"]
         if destination == LEAVE_ALONE:
             continue
         items.append({
             "line_id": key,
             "destination": destination,
-            "envelope_name": form.get(f"{_ENVELOPE_NAME_PREFIX}{key}", ""),
-            "category_id": form.get(f"{_CATEGORY_PREFIX}{key}", ""),
+            "envelope_name": form.get(f"{ENVELOPE_NAME_PREFIX}{key}", ""),
+            "category_id": form.get(f"{CATEGORY_PREFIX}{key}", ""),
         })
     return items
 

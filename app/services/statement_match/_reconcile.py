@@ -64,6 +64,7 @@ from ._cards import (
     parked_card,
     to_explain_sections,
 )
+from ._panel import MatchCandidates
 from ._reads import review_set
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
@@ -548,13 +549,25 @@ def reconcile_page(
             f"account's lines beside another's balances."
         )
     review = review_set(scope)
+    # ONE index for the whole page (:class:`~._panel.MatchCandidates`).  A
+    # card's MATCH tab offers its line's own pay period, and 27 cards on the
+    # developer's own account resolve to 11 periods -- so asking the calendar
+    # per card would be the redundant producer call inside one request this
+    # package treats as a DRY violation rather than as a cost.
+    candidates = MatchCandidates.of(scope, review)
     parked = tuple(
-        (_parked_tab(one), parked_card(review, one)) for one in review.parked
+        (_parked_tab(one), parked_card(review, one, candidates))
+        for one in review.parked
     )
-    transfers = tuple(
-        card for where, card in parked if where is Tab.TRANSFERS
-    )
-    skipped = tuple(card for where, card in parked if where is Tab.SKIPPED)
+    # **The two holding tabs, keyed by the tab that owns them.**  A mapping
+    # rather than two tuples threaded side by side, so a third holding state
+    # -- ``X-gj-4``'s recorded disposition is the one already ruled -- adds a
+    # key here and an arm to :func:`_parked_tab`, and no signature grows.
+    holding = {
+        where: tuple(card for tab_, card in parked if tab_ is where)
+        for where in (Tab.TRANSFERS, Tab.SKIPPED)
+    }
+    transfers = holding[Tab.TRANSFERS]
     counts = accepted_counts(scope.owner_id, scope.account_id)
     # **Distinct LINES, not proposals**, which is the spelling
     # :attr:`~._reads.ReviewSet.explained_by_a_proposal` records the reason
@@ -571,7 +584,7 @@ def reconcile_page(
         + len(review.recordable_inflows)
     )
 
-    sections = _tab_sections(scope, review, tab, transfers, skipped)
+    sections = _tab_sections(scope, review, candidates, tab, holding)
     return ReconcilePage(
         account_id=scope.account_id,
         tab=tab,
@@ -582,7 +595,7 @@ def reconcile_page(
             TabCount(tab=Tab.EXPLAINED, count=counts.by_hand),
             TabCount(tab=Tab.FILED_BY_RULES, count=counts.by_rule),
             TabCount(tab=Tab.TRANSFERS, count=len(transfers)),
-            TabCount(tab=Tab.SKIPPED, count=len(skipped)),
+            TabCount(tab=Tab.SKIPPED, count=len(holding[Tab.SKIPPED])),
         ),
         sections=sections,
         # **Only the inbox sweeps.**  A settled act is undone one at a time
@@ -611,9 +624,9 @@ def _holding(cards: "tuple[LineCard, ...]") -> "tuple[CardSection, ...]":
 def _tab_sections(
     scope: "ReviewScope",
     review: "ReviewSet",
+    candidates: "MatchCandidates",
     tab: Tab,
-    transfers: "tuple[LineCard, ...]",
-    skipped: "tuple[LineCard, ...]",
+    holding: "dict[Tab, tuple[LineCard, ...]]",
 ) -> "tuple[CardSection, ...]":
     """Return the cards of the open tab, and of no other.
 
@@ -624,9 +637,10 @@ def _tab_sections(
     Args:
         scope: The pass's scope, for the two reads the settled tabs need.
         review: The pass.
+        candidates: The pass's unexplained rows, indexed by pay period
+            (:class:`~._panel.MatchCandidates`).
         tab: Which tab is open.
-        transfers: The Transfers cards, already built.
-        skipped: The Skipped cards, already built.
+        holding: The cards of each holding tab, keyed by that tab.
 
     Returns:
         The sections, empty where the tab has no cards.
@@ -637,7 +651,7 @@ def _tab_sections(
             defaulted so that adding one is a failure and not a blank screen.
     """
     if tab is Tab.TO_EXPLAIN:
-        return to_explain_sections(review)
+        return to_explain_sections(review, candidates)
     if tab is Tab.EXPLAINED:
         return act_sections(accepted_register(
             scope.owner_id, scope.account_id, applied_by_rule=False,
@@ -652,11 +666,9 @@ def _tab_sections(
         return act_sections(accepted_register(
             scope.owner_id, scope.account_id, applied_by_rule=True,
         ))
-    if tab is Tab.TRANSFERS:
+    if tab in holding:
         # **A holding tab withholds nothing**: it renders every line in its
         # state, because a count of card payments the owner cannot act on is
         # useless if it is also truncated.
-        return _holding(transfers)
-    if tab is Tab.SKIPPED:
-        return _holding(skipped)
+        return _holding(holding[tab])
     raise ValueError(f"No Reconcile tab is built for {tab!r}.")

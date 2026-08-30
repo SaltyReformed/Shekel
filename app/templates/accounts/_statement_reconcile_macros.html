@@ -1,0 +1,318 @@
+{% from "_money_macros.html" import money %}
+
+{# ONE CARD PER BANK LINE, and the panel one click behind it.
+
+   Plan step bank_import:X-gj-1b; rulings R-HP, R-HQ, R-HR, R-HS, R-HW, R-HX.
+   Locked at Loop A round 4 on 2026-08-29: one bordered card per line, amount
+   then sentence then OK, no checkbox and no confidence pill.
+
+   THE CARD SHOWS THE DECISION AND THE PANEL DISCLOSES EVERYTHING ELSE
+   (R-HR).  The card carries the bank's facts, the amount, ONE sentence whose
+   first word is the verb, and OK.  Why a rule withheld, what a tier declined,
+   what accepting writes and every bound the pass applied are in the panel.
+   The two are two VALUES in the service (LineCard and VerbPanel), so this
+   template cannot print a panel fact beside the sentence: it is not there to
+   print.
+
+   IT NEEDS NO JAVASCRIPT, and that is structural rather than a courtesy.
+   The disclosure is a <details>; the four verb tabs are a RADIO GROUP whose
+   checked member is submitted as the verb the card was OK'd with, so CSS
+   alone switches the panes and the act is a submitted fact rather than
+   script state; OK is a checkbox, so an untouched card submits nothing
+   (R-HS's "an untouched card is not submitted"); and Apply is a submit.
+   What JavaScript adds is the per-class sweeps, the new-envelope reveal, the
+   dismissable legend, the keyboard moves and the MATCH tab's live
+   difference -- conveniences over controls that all work without them.
+
+   A VERB WITH NO DOOR RENDERS ITS EXPLANATION AND NO CONTROL (R-HW).  Which
+   verbs are open is the service's fact per line (VerbOffer.waiting_for),
+   never a Jinja condition, so a tab cannot offer a press that can never
+   succeed. #}
+
+{% macro sentence(spans) -%}
+{#- The ONE sentence a card carries, as spans (R-HR).
+
+    THE TEMPLATE BRANCHES ON NOTHING BUT THE INK.  A MATCH sentence and an ADD
+    sentence do not have the same parts, so a fixed-field value would force a
+    branch on the verb to lay them out -- a partition restated in Jinja, which
+    is what spans exist to take out.  The separator between spans is ONE space
+    and nothing else, which is the contract Ink documents: no span opens with
+    a mark that must hug the word before it. -#}
+{%- for span in spans %}{% if not loop.first %} {% endif %}
+{%- if span.money is not none -%}
+<span class="rec-ink-{{ span.ink.value }} font-mono">{{ money(span.money) }}</span>
+{%- else -%}
+<span class="rec-ink-{{ span.ink.value }}">{{ span.text }}</span>
+{%- endif %}{% endfor %}
+{%- endmacro %}
+
+{% macro verb_pane(account, card, categories, offer) %}
+{#- What ONE of the four verb tabs renders for this line.
+
+    A SHUT verb renders its explanation and nothing else, which is R-HW's
+    whole point: the vocabulary is taught by the panel, and a disabled tab
+    carrying its reason is a disclosure rather than a control that cannot
+    succeed. -#}
+<section class="rec-pane" aria-label="{{ offer.verb.word }}">
+  {% if not offer.is_open %}
+  <p class="rec-waits small mb-0">{{ offer.waiting_for }}</p>
+  {% elif offer.verb.value == 'match' %}
+  <p class="small mb-2">
+    Which of your rows is this? Ticked rows take the bank's day
+    <span class="font-mono">{{ card.line.posted_on }}</span>.
+  </p>
+  {% if card.panel.match.proposal %}
+  {# THE ROWS A TIER FOUND, ARRIVING TICKED (R-HS): a suggestion the app can
+     justify is pre-filled, and OK plus Apply are the consent.  They are
+     rendered OUTSIDE the search fragment because the pass withholds every row
+     a proposal claims from the candidate pool, so the two lists are disjoint
+     by construction and a swap of one cannot lose the other. #}
+  <div class="rec-rows rec-rows-proposed">
+    {% for row in card.panel.match.proposal.rows %}
+    <div class="rec-row-pick">
+      <input class="form-check-input" type="checkbox"
+             id="proposed-{{ card.line.line_id }}-{{ row.kind.value }}-{{ row.row_id }}"
+             name="rows-{{ card.line.line_id }}" value="{{ row | reviewed_token }}" checked>
+      <label class="rec-row-label"
+             for="proposed-{{ card.line.line_id }}-{{ row.kind.value }}-{{ row.row_id }}">
+        <span class="rec-row-name">{{ row.label }}</span>
+        <span class="rec-row-day font-mono">
+          {% if row.settled_on %}{{ row.settled_on }}{% else %}not recorded{% endif %}
+        </span>
+      </label>
+      <span class="rec-row-figure font-mono">{{ money(row.cash_amount) }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {# THE ROWS AND THE RUNNING DIFFERENCE LOAD WHEN THIS TAB IS FIRST SHOWN.
+     `intersect once` fires only when the element actually has a box, which a
+     closed <details> and an unselected tab pane both withhold -- so a page of
+     27 cards issues no request until one is opened.  Rendering them all with
+     the page was measured at 143,298 bytes of a 238,645-byte screen for
+     content nobody had looked at, which is finding N-374's shape.
+     `hx-include` carries the whole card, so a proposal's own ticked rows
+     above are priced by the very first load. #}
+  <div class="rec-match rec-match-waiting"
+       hx-post="{{ url_for('accounts.statement_reconcile_match', account_id=account.id, line_id=card.line.line_id) }}"
+       hx-trigger="intersect once"
+       hx-include="closest .rec-card"
+       hx-target="this"
+       hx-swap="outerHTML"
+       hx-disabled-elt="unset">
+    <p class="small text-body-secondary mb-0">
+      <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+      Finding the rows this could be...
+    </p>
+    <noscript>
+      <p class="small mb-0">
+        Picking rows here needs JavaScript, because the difference a group
+        comes to is worked out by the server as you tick. Without it, use
+        <a href="{{ url_for('accounts.statement_workbench', account_id=account.id, line=card.line.line_id) }}">Build
+        a match by hand</a>, which opens with this line already ticked.
+      </p>
+    </noscript>
+  </div>
+  {{ ok_control(card, offer.verb.word) }}
+
+  {% elif offer.verb.value == 'add' and card.panel.add.records_a_purchase %}
+  <p class="small mb-2">
+    Add records this as spending your budget did not have, dated
+    <span class="font-mono">{{ card.line.happened_on }}</span>.
+  </p>
+  <div class="rec-add" data-rec-add>
+    <label class="form-label small mb-1" for="destination-{{ card.line.line_id }}">
+      Where does it go?
+    </label>
+    {# THE ONE CONTROL THAT NAMES THE DESTINATION, and it is read only for a
+       card the owner OK'd -- which is what lets a justified suggestion arrive
+       PRE-FILLED (R-HS) without an untouched card writing a purchase.  On the
+       review queue this select IS the tick, so it has to open on "leave this
+       line alone"; here OK is the tick and this says only WHERE. #}
+    {% set chosen = card.panel.add.placement.select_value if card.panel.add.placement else none %}
+    <select class="form-select form-select-sm" data-destination
+            id="destination-{{ card.line.line_id }}"
+            name="destination-{{ card.line.line_id }}">
+      <option value=""{% if not chosen %} selected{% endif %}>-- choose where this goes --</option>
+      {% for destination in card.panel.add.destinations %}
+      <option value="{{ destination.transaction_id }}"{% if chosen == destination.transaction_id|string %} selected{% endif %}>
+        {{ destination.label }}{% if destination.is_settled %} -- closed{% endif %}
+      </option>
+      {% endfor %}
+      <option value="new"{% if chosen == 'new' %} selected{% endif %}>-- a new envelope --</option>
+    </select>
+    {% if not card.panel.add.destinations %}
+    <p class="small text-body-secondary mt-1 mb-0">
+      No envelope in this pay period can take a purchase -- every one of them
+      closed at a fixed figure, so adding to it would not record this money.
+      "A new envelope" is the only place open to it.
+    </p>
+    {% endif %}
+    <div class="rec-new-envelope mt-2" data-new-envelope-field>
+      {# PREFILLED FROM THE RULE where one names an envelope, else from what
+         the bank called the merchant.  Decided on the SERVER so a swept
+         value and a hand-picked "a new envelope" cannot disagree. #}
+      {% set minted = card.panel.add.placement.new_envelope if card.panel.add.placement and card.panel.add.placement.creates else none %}
+      <input class="form-control form-control-sm mb-2" type="text"
+             name="envelope_name-{{ card.line.line_id }}" maxlength="200"
+             value="{{ minted.name if minted else card.line.merchant_label }}"
+             aria-label="Name for the new envelope">
+      <select class="form-select form-select-sm"
+              name="category_id-{{ card.line.line_id }}"
+              aria-label="Category for the new envelope">
+        {# NO default: the category is what every spending report groups by,
+           so a new envelope filed under whichever category sorts first is a
+           misclassification nobody chose.  The service refuses a new envelope
+           stated by halves. #}
+        <option value=""{% if not minted %} selected{% endif %}>-- choose a category --</option>
+        {% for category in categories %}
+        <option value="{{ category.id }}"{% if minted and minted.category_id == category.id %} selected{% endif %}>{{ category.display_name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    {% if card.line.merchant_id %}
+    {# ALWAYS, FOR THIS MERCHANT (R-GI).  It states no answer of its own: the
+       rule is read back off the destination this same card submits
+       (statement_match.rule_naming), so the rule and the purchase cannot name
+       different budget lines.  It MOVES NO MONEY and is applied only for a
+       card that is also being OK'd. #}
+    <div class="form-check mt-2">
+      <input class="form-check-input" type="checkbox"
+             id="always-{{ card.line.line_id }}"
+             name="always-{{ card.line.line_id }}"
+             value="{{ card.line.merchant_id }}">
+      <label class="form-check-label small" for="always-{{ card.line.line_id }}">
+        Always file <strong>{{ card.line.merchant_label }}</strong> here.
+        Later statements fill this in for you; it records nothing on its own.
+      </label>
+    </div>
+    {% endif %}
+  </div>
+  {{ ok_control(card, offer.verb.word) }}
+
+  {% elif offer.verb.value == 'add' and card.panel.add.records_income %}
+  <p class="small mb-2">
+    Add records this as income your budget did not have, dated
+    <span class="font-mono">{{ card.line.posted_on }}</span>, with
+    <strong>no category</strong> until you give it one.
+  </p>
+  {# ONE FIELD NAMING ONE ARM.  An income row is filed against no container
+     (R-GW), so there is nothing to choose between -- but the arm is STATED
+     rather than left to be inferred from a missing destination, which is the
+     defect plan step X-f6a-3c-2 corrected on the purchase side. #}
+  <input type="hidden" name="destination-{{ card.line.line_id }}" value="income">
+  {% if card.income_already_held %}
+  <div class="alert rec-risk d-flex gap-2 align-items-start py-2 mb-2" role="alert">
+    <i class="bi bi-exclamation-triangle mt-1"></i>
+    <div class="small">This pay period already holds {{ card.income_already_held.rows | length }} income row(s) totalling {{ money(card.income_already_held.total) }} that no line explains{% for held in card.income_already_held.rows %}{% if loop.first %}: {% else %}, {% endif %}{{ held.label }} {{ money(held.cash_amount) }}{% endfor %}. If this deposit is those, match it against them instead of recording it here.</div>
+  </div>
+  {% endif %}
+  {{ ok_control(card, offer.verb.word) }}
+  {% endif %}
+</section>
+{% endmacro %}
+
+{% macro ok_control(card, word) -%}
+{#- The panel's primary control, NAMED BY THE VERB, which is a label for the
+    card's own OK checkbox rather than a second control: one card, one
+    consent, wherever it is pressed.  Pressing it again un-OKs. -#}
+<div class="rec-pane-foot">
+  <span class="small text-body-secondary">
+    Nothing is written until you press Apply.
+  </span>
+  <label class="btn btn-sm btn-primary" for="ok-{{ card.line.line_id }}">{{ word }}</label>
+</div>
+{%- endmacro %}
+
+{% macro line_card(account, card, categories) %}
+{#- ONE bank line, as one card. -#}
+<details class="rec-card"
+         {% if card.sweep_class %}data-sweep-class="{{ card.sweep_class }}"{% endif %}
+         data-rec-card>
+  <summary class="rec-summary">
+    <div class="rec-facts">
+      <div class="rec-merchant">
+        {{ card.line.merchant_label }}
+        <span class="rec-day font-mono">{{ card.line.posted_on }}</span>
+        {% if card.line.transaction_on %}
+        <span class="rec-day font-mono">made {{ card.line.transaction_on }}</span>
+        {% endif %}
+      </div>
+      <div class="rec-raw font-mono">{{ card.line.description }}</div>
+    </div>
+    <div class="rec-amount font-mono{% if card.line.amount < 0 %} rec-out{% endif %}">
+      {{ money(card.line.amount) }}
+    </div>
+    <div class="rec-sentence">
+      {{ sentence(card.sentence) }}
+      {% if card.income_already_held %}
+      <i class="bi bi-exclamation-triangle rec-risk-glyph"
+         title="This pay period already holds income no line explains."></i>
+      {% endif %}
+      {# THE CARET, on every card, showing that it opens.  It is the whole
+         affordance on a card with no suggestion, whose sentence already
+         carries the accent word asking to be pressed -- printing "Choose" in
+         the control slot as well put the same call to action twice on one
+         line, which the visual loop showed on 2026-08-30. #}
+      <i class="bi bi-chevron-down rec-caret" aria-hidden="true"></i>
+    </div>
+    <div class="rec-ok">
+      {% if card.offers_ok %}
+      {# OK IS A CHECKBOX, so an untouched card submits nothing at all and
+         R-HS's "an untouched card is not submitted" is structural rather than
+         a default that has to be got right. #}
+      <input class="btn-check" type="checkbox" autocomplete="off"
+             id="ok-{{ card.line.line_id }}" name="ok" value="{{ card.line.line_id }}"
+             data-rec-ok>
+      <label class="btn btn-sm btn-outline-primary rec-ok-btn"
+             for="ok-{{ card.line.line_id }}">OK</label>
+      {% endif %}
+    </div>
+  </summary>
+
+  <div class="rec-panel">
+    {# THE FOUR VERB TABS ARE A RADIO GROUP (R-HP, R-HW).  The checked member
+       is submitted as `verb-<line>`, so the tab the card is left on IS the
+       verb it is OK'd with -- one fact, on the wire, rather than script state
+       the server has to infer from which parameters happen to be present.
+       The panel opens on the service's own `opens_on`. #}
+    {% for offer in card.panel.offers %}
+    <input class="rec-verb" type="radio" autocomplete="off"
+           id="verb-{{ card.line.line_id }}-{{ offer.verb.value }}"
+           name="verb-{{ card.line.line_id }}" value="{{ offer.verb.value }}"
+           {% if offer.verb == card.opens_on %}checked{% endif %}>
+    {% endfor %}
+    <div class="rec-verb-strip" role="group"
+         aria-label="What is this line?">
+      {% for offer in card.panel.offers %}
+      <label class="rec-verb-tab{% if not offer.is_open %} rec-verb-shut{% endif %}"
+             for="verb-{{ card.line.line_id }}-{{ offer.verb.value }}">
+        {{ offer.verb.word | upper }}
+      </label>
+      {% endfor %}
+    </div>
+    <div class="rec-panes">
+      {% for offer in card.panel.offers %}
+      {{ verb_pane(account, card, categories, offer) }}
+      {% endfor %}
+    </div>
+
+    {% if card.panel.notes %}
+    {# EVERY sentence this pass owes the reader about this line, composed in
+       the service and printed unbranched -- and printed HERE rather than on
+       the card (R-HR), because printing them beside the line is the grain
+       that put two sentences on the review screen sixteen times. #}
+    <div class="rec-notes">
+      {% for note in card.panel.notes %}
+      <p class="small mb-1"><i class="bi bi-info-circle"></i> {{ note }}</p>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if card.panel.answer_door %}
+    <p class="small mb-0">
+      <a href="{{ url_for('accounts.statement_register', account_id=account.id) }}">{{ card.panel.answer_door }}</a>
+    </p>
+    {% endif %}
+  </div>
+</details>
+{% endmacro %}

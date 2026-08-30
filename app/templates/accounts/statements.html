@@ -32,7 +32,16 @@
     <span class="acctd-type-tag">Bank statements</span>
   </div>
   <div class="d-flex align-items-center gap-2">
+    {# THE WAY IN TO THE NEW SCREEN (plan step bank_import:X-gj-1b).  One page
+       on four verbs replaces the review queue, the register and the
+       workbench; the three stay alive and linked beside it until
+       bank_import:X-gi's census deletes them, which is ruling R-HU's own
+       sequencing -- nothing is removed on the way in. #}
     <a class="btn btn-sm btn-primary"
+       href="{{ url_for('accounts.statement_reconcile', account_id=account.id) }}">
+      <i class="bi bi-list-check"></i> Reconcile
+    </a>
+    <a class="btn btn-sm btn-outline-secondary"
        href="{{ url_for('accounts.review_statements', account_id=account.id) }}">
       <i class="bi bi-link-45deg"></i> Review matches
     </a>

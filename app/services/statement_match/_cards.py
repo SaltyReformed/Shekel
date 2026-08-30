@@ -1,20 +1,30 @@
 """One CARD per bank line, and the sections the inbox groups them into.
 
-Plan step ``bank_import:X-gj-1a``; rulings **bank_import:R-HP**, **R-HQ**,
-**R-HR**, **R-HS**, **R-HW** and **R-HX**.  :mod:`._reconcile` assembles the
-PAGE; this is the card it is made of, and the two are separate modules because
-they are separate subjects -- and because one file holding both passed the
-1,000-line ceiling that already split :mod:`._accepted_view` out of
-:mod:`._reads`.
+Plan steps ``bank_import:X-gj-1a`` and ``X-gj-1b``; rulings
+**bank_import:R-HP**, **R-HQ**, **R-HR**, **R-HS**, **R-HW** and **R-HX**.
+:mod:`._reconcile` assembles the PAGE; this is the card it is made of, and the
+two are separate modules because they are separate subjects -- and because one
+file holding both passed the 1,000-line ceiling that already split
+:mod:`._accepted_view` out of :mod:`._reads`.
 
 **The same card renders on all five tabs**, which is the whole design: the
 inbox, the two holding tabs and the two settled tabs are one list seen five
 ways, not five screens.  Two kinds exist because a line the books have not
 settled and an act already applied carry disjoint facts -- a
-:class:`LineCard` has a bank line and four verb offers, an :class:`ActCard`
-has an Undo and what it would destroy -- and one value holding empty versions
-of the other's fields is a control one Jinja condition away from rendering,
-which is what :class:`~._bars.ParkedLine` exists to refuse.
+:class:`LineCard` has a bank line and a :class:`~._panel.VerbPanel`, an
+:class:`ActCard` has an Undo and what it would destroy -- and one value
+holding empty versions of the other's fields is a control one Jinja condition
+away from rendering, which is what :class:`~._bars.ParkedLine` exists to
+refuse.
+
+**What the card SHOWS and what the panel DISCLOSES are two values** (ruling
+**R-HR**, plan step ``X-gj-1b``).  :class:`LineCard` carried twelve attributes
+under a ``too-many-instance-attributes`` disable while it held both, and the
+page needed two more -- which act ADD would perform, and the rows MATCH
+offers.  :mod:`._panel` holds the disclosure now, so the disable is DELETED
+rather than raised: the boundary ruling R-HR draws is stated in the type
+system, and a template cannot print a panel fact beside the sentence because
+it is not there to print.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in,
 frozen dataclasses out, no Flask import, no clock read, no query.
@@ -26,6 +36,7 @@ import enum
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ._panel import AddAct, AddTab, MatchTab, VerbPanel
 from ._sentence import Span, choose, for_accepted, for_parked_never
 from ._sentence import for_parked_transfer, for_placement, for_proposal
 from ._verbs import ADD_SHUT_BY_A_PROPOSAL, Verb, VerbOffer, offers_for
@@ -33,10 +44,9 @@ from ._verbs import ADD_SHUT_BY_A_PROPOSAL, Verb, VerbOffer, offers_for
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from ._accepted_view import AcceptedGroup
     from ._bars import ParkedLine
-    from ._creations import PurchaseDestination
     from ._leftovers import CreatableLine, RecordableInflow
     from ._offers import BankLine, MatchProposal
-    from ._placement import Placement
+    from ._panel import MatchCandidates
     from ._reads import IncomeAlreadyRecorded, ReviewSet
 
 
@@ -78,18 +88,10 @@ _SECTION_HEADINGS: "dict[Section, str]" = {
     Section.NOTHING: "Nothing suggested",
 }
 
-@dataclass(frozen=True)
-class LineCard:  # pylint: disable=too-many-instance-attributes
-    """One bank line the books have not settled, as one card.
 
-    Pylint: ``too-many-instance-attributes`` (12/7) -- **twelve because the
-    card and the panel behind it read twelve disjoint facts about one line**,
-    and the alternative is what :class:`~._bars.ParkedLine` and
-    :class:`~._leftovers.RecordableInflow` both exist to refuse: one value
-    carrying empty versions of another mechanism's fields, one Jinja condition
-    away from rendering a control that cannot succeed.  Splitting it by tab
-    would be worse still, because the five tabs render the SAME card and that
-    sameness is the whole design (**R-HR**).
+@dataclass(frozen=True)
+class LineCard:
+    """One bank line the books have not settled, as one card.
 
     Attributes:
         line: The bank's own record of the movement, which is the top of every
@@ -104,70 +106,28 @@ class LineCard:  # pylint: disable=too-many-instance-attributes
         sentence: The ONE sentence the card carries, as spans
             (:mod:`._sentence`).  **The whole of what the card says**: ruling
             **R-HR** put every reason one click away.
-        offers: All four verbs and whether each has a door
-            (:func:`~._verbs.offers_for`, ruling **R-HW**).  A shut verb
-            renders its explanation and what it waits for, never a control.
-        notes: Every sentence this pass owes the reader about this line -- a
-            rule it withheld, a tier's refusal, a bar -- in reading order.
-            **Rendered in the opened panel and NOT on the card** (**R-HR**):
-            printing them beside the line is the grain that put two sentences
-            on the review screen sixteen times.
         income_already_held: What the books already record as unexplained
             income for this line's own pay period
             (:class:`~._reads.IncomeAlreadyRecorded`), or ``None``.  **The one
             money-at-risk signal this build has**, and the only thing on a card
             that may be drawn in amber: recording a deposit whose period
             already holds income is how a paycheck gets counted twice.
-        sweep_class: Which of :data:`SWEEP_LABELS` a one-click sweep would
-            reach this card under, or ``None`` where no sweep may.
-        destinations: The budget lines this could become a purchase against,
-            for the panel's ADD tab.  Empty is a real answer -- a period whose
-            every envelope has closed at a fixed figure offers none, and a NEW
-            envelope is then the only arm.
-        placement: What a standing rule comes to for this line
-            (:class:`~._placement.Placement`), or ``None``.
-        proposal: The match a tier offers (:class:`~._offers.MatchProposal`),
-            or ``None``.  **At most one of this and** :attr:`placement` **is
-            set**, by construction rather than by care: ``creatable`` is a
-            subset of ``unmatched``, which :func:`~._reads._unexplained` has
-            already taken every proposal's line out of.
-        answer_door: The sentence naming where a standing answer that parks
-            this line is changed, or ``None`` where changing it would change
-            nothing (:attr:`~._bars.ParkedLine.answer_door`).
+        risk_class: Which of :data:`~._reconcile.SWEEP_LABELS` this card's act
+            falls under, or ``None`` where it falls under none.  It is what a
+            sweep would reach IF the card were clean; :attr:`sweep_class` is
+            the guarded answer and is what a control may read.
+        panel: What the opened card discloses (:class:`~._panel.VerbPanel`) --
+            all four verbs, every sentence this pass owes the reader, and what
+            each verb's tab offers.
     """
 
     line: "BankLine"
     section: "Section | None"
     suggested: "Verb | None"
     sentence: "tuple[Span, ...]"
-    offers: "tuple[VerbOffer, ...]"
-    notes: "tuple[str, ...]"
     income_already_held: "IncomeAlreadyRecorded | None"
     risk_class: "str | None"
-    destinations: "tuple[PurchaseDestination, ...]"
-    placement: "Placement | None"
-    proposal: "MatchProposal | None"
-    answer_door: "str | None"
-
-    def offer_for(self, verb: Verb) -> VerbOffer:
-        """Return this line's offer for one verb.
-
-        Args:
-            verb: Which of the four.
-
-        Returns:
-            Its :class:`~._verbs.VerbOffer`.  Total, because
-            :func:`~._verbs.offers_for` emits all four for every line
-            (**R-HW**) -- so this cannot answer ``None`` and no caller needs
-            an absence arm.
-
-        Raises:
-            KeyError: Never in practice, and deliberately not defended
-                against: a card missing a verb would mean
-                :func:`~._verbs.offers_for` had stopped being total, which is
-                a defect to see rather than to absorb.
-        """
-        return next(offer for offer in self.offers if offer.verb is verb)
+    panel: VerbPanel
 
     @property
     def offers_ok(self) -> bool:
@@ -188,7 +148,41 @@ class LineCard:  # pylint: disable=too-many-instance-attributes
         """
         if self.suggested is None:
             return False
-        return self.offer_for(self.suggested).is_open
+        return self.panel.offer_for(self.suggested).is_open
+
+    @property
+    def opens_on(self) -> Verb:
+        """Return which of the four tabs the opened panel opens on.
+
+        **Total, and stated here rather than in Jinja**, because it decides
+        which control a reader sees first on a screen that writes money.  Two
+        arms, each with a reason:
+
+        * the verb the sentence proposes, where one was justified.  The panel
+          opens on the destination a standing rule names, which is ruling
+          **R-HS**'s pre-fill read at the grain of the tab;
+        * otherwise the verb this line's own mechanism can act on -- ADD where
+          it has an act (a purchase for an outflow, an income row for a
+          deposit) -- and failing that the first verb with a door at all.
+          **The mechanism rather than the enum's order**, because ruling
+          **R-HX** leaves 16 of the developer's own 18 inbox cards with no
+          suggestion, and opening every one of them on MATCH would put the
+          only act they have behind a tab.
+
+        Returns:
+            The :class:`~._verbs.Verb` whose tab opens.  A card with NO open
+            verb -- a parked payment on an account with nothing left to pair
+            -- opens on :attr:`suggested` or, failing that, the first verb,
+            whose tab is then its explanation.  That is the holding state
+            ruling **R-HQ** names, and it is a disclosure rather than a
+            control (**R-HW**).
+        """
+        if self.suggested is not None:
+            return self.suggested
+        open_verbs = self.panel.open_verbs
+        if self.panel.add is not None and Verb.ADD in open_verbs:
+            return Verb.ADD
+        return open_verbs[0] if open_verbs else Verb.MATCH
 
     @property
     def sweep_class(self) -> "str | None":
@@ -209,7 +203,7 @@ class LineCard:  # pylint: disable=too-many-instance-attributes
         """
         if not self.offers_ok:
             return None
-        if self.notes or self.income_already_held is not None:
+        if self.panel.notes or self.income_already_held is not None:
             return None
         return self.risk_class
 
@@ -276,6 +270,7 @@ class CardSection:
         """
         return len(self.cards)
 
+
 def _offers(
     review: "ReviewSet", add_waits: "str | None",
     proposal: "MatchProposal | None",
@@ -302,13 +297,17 @@ def _offers(
     )
 
 
-def _proposal_card(review: "ReviewSet", proposal: "MatchProposal") -> LineCard:
+def _proposal_card(
+    review: "ReviewSet", proposal: "MatchProposal",
+    candidates: "MatchCandidates",
+) -> LineCard:
     """Return the card for a match a TIER proposes.
 
     Args:
         review: The pass.
         proposal: The proposal, which names exactly one line -- every tier
             constructs ``lines=(line,)``.
+        candidates: The pass's unexplained rows, indexed by pay period.
 
     Returns:
         The :class:`LineCard`.
@@ -318,22 +317,32 @@ def _proposal_card(review: "ReviewSet", proposal: "MatchProposal") -> LineCard:
         section=Section.PROPOSED,
         suggested=Verb.MATCH,
         sentence=for_proposal(proposal),
-        offers=_offers(review, ADD_SHUT_BY_A_PROPOSAL, proposal),
-        # **A proposal is a CONCLUSION**, so this pass has no unfinished
-        # search to report about its line: the gap sentence answers *why can
-        # the app not say nothing explains this*, which a proposal answers.
-        notes=(),
         income_already_held=None,
         risk_class=proposal.review_class,
-        destinations=(),
-        placement=None,
-        proposal=proposal,
-        answer_door=None,
+        panel=VerbPanel(
+            offers=_offers(review, ADD_SHUT_BY_A_PROPOSAL, proposal),
+            # **A proposal is a CONCLUSION**, so this pass has no unfinished
+            # search to report about its line: the gap sentence answers *why
+            # can the app not say nothing explains this*, which a proposal
+            # answers.
+            notes=(),
+            answer_door=None,
+            # **No ADD act at all.**  The pass derives destinations from
+            # ``unmatched``, which a proposal's line is not in, so no envelope
+            # was worked out for it -- which is exactly what
+            # :data:`~._verbs.ADD_SHUT_BY_A_PROPOSAL` says on the tab.
+            add=None,
+            match=MatchTab(
+                proposal=proposal,
+                candidates=candidates.for_line(proposal.lines[0]),
+            ),
+        ),
     )
 
 
 def _creatable_card(
     review: "ReviewSet", creatable: "CreatableLine",
+    candidates: "MatchCandidates",
 ) -> LineCard:
     """Return the card for an outflow the create door would accept.
 
@@ -346,6 +355,7 @@ def _creatable_card(
     Args:
         review: The pass.
         creatable: The :class:`~._leftovers.CreatableLine`.
+        candidates: The pass's unexplained rows, indexed by pay period.
 
     Returns:
         The :class:`LineCard`.
@@ -359,22 +369,33 @@ def _creatable_card(
         section=Section.BY_RULE if names_a_home else Section.NOTHING,
         suggested=Verb.ADD if names_a_home else None,
         sentence=for_placement(placement) if names_a_home else choose(),
-        offers=_offers(review, creatable.withheld, None),
-        # **The gap is not asked for**: :func:`~._verdict.ruled` has already
-        # folded it into ``warning``, which is the wider sentence -- a rule
-        # this pass withheld, OR a search it did not finish -- so asking again
-        # would print the same words twice.
-        notes=() if creatable.warning is None else (creatable.warning,),
         income_already_held=None,
         risk_class=placement.sweep_class if names_a_home else None,
-        destinations=creatable.destinations,
-        placement=placement,
-        proposal=None,
-        answer_door=None,
+        panel=VerbPanel(
+            offers=_offers(review, creatable.withheld, None),
+            # **The gap is not asked for**: :func:`~._verdict.ruled` has
+            # already folded it into ``warning``, which is the wider sentence
+            # -- a rule this pass withheld, OR a search it did not finish --
+            # so asking again would print the same words twice.
+            notes=() if creatable.warning is None else (creatable.warning,),
+            answer_door=None,
+            add=AddTab(
+                act=AddAct.PURCHASE,
+                destinations=creatable.destinations,
+                placement=placement,
+            ),
+            match=MatchTab(
+                proposal=None,
+                candidates=candidates.for_line(creatable.line),
+            ),
+        ),
     )
 
 
-def _inflow_card(review: "ReviewSet", inflow: "RecordableInflow") -> LineCard:
+def _inflow_card(
+    review: "ReviewSet", inflow: "RecordableInflow",
+    candidates: "MatchCandidates",
+) -> LineCard:
     """Return the card for money coming IN that no row explains.
 
     Ruling **bank_import:R-HX**: nothing is pre-filled.  The only inflow door
@@ -386,6 +407,7 @@ def _inflow_card(review: "ReviewSet", inflow: "RecordableInflow") -> LineCard:
         review: The pass, which owns both the search gap and the
             books-already-hold-income signal.
         inflow: The :class:`~._leftovers.RecordableInflow`.
+        candidates: The pass's unexplained rows, indexed by pay period.
 
     Returns:
         The :class:`LineCard`.
@@ -396,20 +418,31 @@ def _inflow_card(review: "ReviewSet", inflow: "RecordableInflow") -> LineCard:
         section=Section.NOTHING,
         suggested=None,
         sentence=choose(),
-        offers=_offers(review, inflow.withheld, None),
-        notes=tuple(
-            said for said in (inflow.withheld, gap) if said is not None
-        ),
         income_already_held=review.income_already_recorded_in(inflow.line),
         risk_class=None,
-        destinations=(),
-        placement=None,
-        proposal=None,
-        answer_door=None,
+        panel=VerbPanel(
+            offers=_offers(review, inflow.withheld, None),
+            notes=tuple(
+                said for said in (inflow.withheld, gap) if said is not None
+            ),
+            answer_door=None,
+            # **An income row is filed against NO container**, so the tab
+            # offers no destinations and carries no placement: ruling
+            # **R-GW** states that emptiness as the whole difference between
+            # the two ADD doors, and :class:`~._panel.AddAct` is what says
+            # which one this is instead of a template reading the sign.
+            add=AddTab(act=AddAct.INCOME, destinations=(), placement=None),
+            match=MatchTab(
+                proposal=None, candidates=candidates.for_line(inflow.line),
+            ),
+        ),
     )
 
 
-def parked_card(review: "ReviewSet", parked: "ParkedLine") -> LineCard:
+def parked_card(
+    review: "ReviewSet", parked: "ParkedLine",
+    candidates: "MatchCandidates",
+) -> LineCard:
     """Return the holding card for an outflow that may not become spending.
 
     Ruling **bank_import:R-HQ**.  Which TAB it lands on is
@@ -421,6 +454,7 @@ def parked_card(review: "ReviewSet", parked: "ParkedLine") -> LineCard:
     Args:
         review: The pass.
         parked: The :class:`~._bars.ParkedLine`.
+        candidates: The pass's unexplained rows, indexed by pay period.
 
     Returns:
         The :class:`LineCard`.  Its ADD is shut by the bar, its TRANSFER and
@@ -437,20 +471,29 @@ def parked_card(review: "ReviewSet", parked: "ParkedLine") -> LineCard:
             for_parked_transfer(parked) if pays_an_account
             else for_parked_never(parked)
         ),
-        offers=_offers(review, parked.reason, None),
-        notes=tuple(
-            said for said in (parked.reason, gap) if said is not None
-        ),
         income_already_held=None,
         risk_class=None,
-        destinations=(),
-        placement=None,
-        proposal=None,
-        answer_door=parked.answer_door,
+        panel=VerbPanel(
+            offers=_offers(review, parked.reason, None),
+            notes=tuple(
+                said for said in (parked.reason, gap) if said is not None
+            ),
+            answer_door=parked.answer_door,
+            # **NO ADD act, and that is the BAR rather than a shortage of
+            # destinations** (ruling **R-GJ**): no answer lifts it, so there
+            # is nothing for the tab to offer beyond the refusal its own
+            # offer carries.
+            add=None,
+            match=MatchTab(
+                proposal=None, candidates=candidates.for_line(parked.line),
+            ),
+        ),
     )
 
 
-def to_explain_sections(review: "ReviewSet") -> "tuple[CardSection, ...]":
+def to_explain_sections(
+    review: "ReviewSet", candidates: "MatchCandidates",
+) -> "tuple[CardSection, ...]":
     """Return the inbox, grouped by what suggested each card's verb.
 
     Ruling **bank_import:R-HP**.  **The three source lists are DISJOINT and
@@ -465,15 +508,20 @@ def to_explain_sections(review: "ReviewSet") -> "tuple[CardSection, ...]":
 
     Args:
         review: The pass.
+        candidates: The pass's unexplained rows, indexed by pay period
+            (:class:`~._panel.MatchCandidates`).
 
     Returns:
         One :class:`CardSection` per :class:`Section` that has a card, in the
         enum's order.  An empty section is ABSENT rather than rendered empty.
     """
     cards = (
-        [_proposal_card(review, one) for one in review.proposals]
-        + [_creatable_card(review, one) for one in review.creatable]
-        + [_inflow_card(review, one) for one in review.recordable_inflows]
+        [_proposal_card(review, one, candidates) for one in review.proposals]
+        + [_creatable_card(review, one, candidates) for one in review.creatable]
+        + [
+            _inflow_card(review, one, candidates)
+            for one in review.recordable_inflows
+        ]
     )
     sections = []
     for section in Section:

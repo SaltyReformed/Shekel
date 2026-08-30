@@ -75,6 +75,15 @@ Module map:
   does, beside ``statement_matches``.  Its boundary against that one is that a
   queue holds exceptions and this holds the tool three of them send the owner
   to; its two pick lists were 59% of the review page.
+* :mod:`app.routes.accounts.statement_reconcile` -- ONE PAGE ON FOUR VERBS
+  (plan step ``bank_import:X-gj-1b``, rulings **bank_import:R-HP**..**R-HX**):
+  the Reconcile screen that replaces the three above.  Every bank line ends on
+  MATCH, ADD, TRANSFER or SKIP, and the inbox is the lines with none yet.
+  **It MOVES MONEY through doors that already exist** -- it applies through
+  ``apply_reviewed`` like ``statement_matches`` and ``statement_workbench``,
+  and opens none of its own.  The three it replaces stay alive beside it until
+  ``bank_import:X-gi``'s census deletes them, which is ruling **R-HU**'s
+  sequencing: nothing is removed on the way in.
 * :mod:`app.routes.accounts.bank_agreement` -- The two records SIDE BY SIDE
   (plan step ``bank_import:X-f6e-2``, ruling R-GF): a per-day comparison of
   what the app's own rows moved against what the bank's lines did, and of the
@@ -123,6 +132,7 @@ from app.routes.accounts import statements  # noqa: F401, E402
 from app.routes.accounts import statement_matches  # noqa: F401, E402
 from app.routes.accounts import statement_register  # noqa: F401, E402
 from app.routes.accounts import statement_workbench  # noqa: F401, E402
+from app.routes.accounts import statement_reconcile  # noqa: F401, E402
 from app.routes.accounts import bank_agreement  # noqa: F401, E402
 
 
