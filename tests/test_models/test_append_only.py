@@ -32,7 +32,10 @@ from decimal import Decimal
 import pytest
 import sqlalchemy as sa
 
-from app.append_only_infrastructure import APPEND_ONLY_TABLES
+from app.append_only_infrastructure import (
+    APPEND_ONLY_TABLES,
+    APPEND_ONLY_TRIGGERS,
+)
 from app.extensions import db
 from app.models.account import (
     Account,
@@ -181,31 +184,76 @@ class TestTheDatabaseRefusesEverySpelling:
                 db.session.query(AccountAnchorHistory).filter_by(
                     account_id=account.id,
                 ).delete(synchronize_session=False)
+                # The refusal lands at COMMIT, not at the statement: since
+                # X-f3c-2d the delete arm is a DEFERRED constraint trigger,
+                # because "is the owning account gone?" is a question about
+                # the transaction's end state.  A case that asserted only the
+                # statement would now pass while measuring nothing.
+                db.session.commit()
             db.session.rollback()
 
             assert db.session.query(AccountAnchorHistory).filter_by(
                 account_id=account.id,
             ).count() >= 1
 
-    def test_every_named_table_carries_the_trigger(self, app, db, seed_user):
-        """The census: all three, not just the one the finding named.
+    def test_every_named_table_carries_every_arm(self, app, db, seed_user):
+        """The census: three tables x three arms, none assumed.
 
         Asserted against ``pg_trigger`` rather than against the module's own
-        constant, so a table added to
+        constants, so a table added to
         :data:`app.append_only_infrastructure.APPEND_ONLY_TABLES` and never
-        applied fails here rather than reading as covered.
+        applied fails here rather than reading as covered -- and so does an
+        arm added to
+        :data:`app.append_only_infrastructure.APPEND_ONLY_TRIGGERS`.  The
+        second half is what X-f3c-2c's version could not have caught: it
+        counted one name, so a TRUNCATE arm that was never installed would
+        have read as a full census.
         """
         with app.app_context():
             attached = {
-                row[0] for row in db.session.execute(sa.text(
-                    "SELECT n.nspname || '.' || c.relname "
+                (row[0], row[1]) for row in db.session.execute(sa.text(
+                    "SELECT n.nspname || '.' || c.relname, t.tgname "
                     "FROM pg_trigger t "
                     "JOIN pg_class c ON c.oid = t.tgrelid "
                     "JOIN pg_namespace n ON n.oid = c.relnamespace "
-                    "WHERE t.tgname = 'ck_append_only'"
-                )).all()
+                    "WHERE t.tgname = ANY(:names)"
+                ), {"names": list(APPEND_ONLY_TRIGGERS)}).all()
             }
-            assert attached == set(APPEND_ONLY_TABLES)
+            assert attached == {
+                (table, name)
+                for table in APPEND_ONLY_TABLES
+                for name in APPEND_ONLY_TRIGGERS
+            }
+
+    def test_the_delete_arm_is_deferred_and_the_others_are_not(
+        self, app, db, seed_user,
+    ):
+        """The timings differ ON PURPOSE, so the difference is asserted.
+
+        A later hand that "simplified" the three arms back into one
+        ``BEFORE UPDATE OR DELETE`` trigger would reopen both shapes X-f3c-2d
+        closed, and every refusal case would still pass -- the combined
+        trigger refuses all of them, just at the wrong moment.  What it could
+        not do is be DEFERRABLE, which is the property that distinguishes
+        disposal from delete-and-recreate.  ``tgdeferrable`` is therefore the
+        thing graded, not the refusals.
+        """
+        with app.app_context():
+            timings = dict(db.session.execute(sa.text(
+                "SELECT t.tgname, t.tgdeferrable "
+                "FROM pg_trigger t "
+                "JOIN pg_class c ON c.oid = t.tgrelid "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE n.nspname || '.' || c.relname = "
+                "'budget.account_anchor_history' "
+                "AND t.tgname = ANY(:names)"
+            ), {"names": list(APPEND_ONLY_TRIGGERS)}).all())
+
+            assert timings == {
+                "ck_append_only": False,
+                "ck_append_only_delete": True,
+                "ck_append_only_truncate": False,
+            }
 
     def test_the_two_sibling_tables_are_refused_too(self, app, db, seed_user):
         """One rule, three tables, asserted on the other two.
@@ -327,6 +375,201 @@ class TestDisposingOfAnAccountStillWorks:
             assert db.session.query(AccountAnchorHistory).filter_by(
                 account_id=account_id,
             ).count() == 0
+
+
+class TestTheShapesThatBrokeTheFIRSTVersion:
+    """Plan step **balance:X-f3c-2d**: the two defects a refutation found.
+
+    X-f3c-2c's guard was verified by hand on ONE shape -- a single account
+    disposed of by a single ``DELETE`` -- and the suite that shipped with it
+    graded exactly that shape.  A pass briefed to BREAK the carve-out found
+    two ways through, both reproduced on a clone with controls that fired
+    first, and both are asserted here.
+
+    Each case reads its result back from PostgreSQL rather than from the
+    session, and each asserts the rows it means to protect EXIST before trying
+    to destroy them: a refusal with nothing to refuse is the failure mode this
+    file has already paid for once.
+    """
+
+    @pytest.mark.parametrize("table", APPEND_ONLY_TABLES)
+    def test_truncate_is_refused_on_every_named_table(
+        self, app, db, seed_user, table,
+    ):
+        """REFUTATION 1: ``TRUNCATE`` never reaches a row trigger.
+
+        Measured on X-f3c-2c's guard: with every account still standing,
+        ``TRUNCATE budget.account_openings`` took the table to zero and was
+        refused by nothing.  ``system.audit_log`` is written by a row trigger
+        too, so the log was byte-identical across the statement -- which made
+        this the ONE spelling that destroyed history both unrefused and
+        unrecorded.
+
+        ``CASCADE`` is the spelling asserted because it is the destructive
+        one: a plain ``TRUNCATE budget.account_anchor_history`` is stopped
+        earlier by ``fk_transactions_reconciled_by``, so a case using it would
+        pass on somebody else's refusal.
+        """
+        with app.app_context():
+            with pytest.raises(sa.exc.InternalError, match="append-only"):
+                db.session.execute(sa.text(f"TRUNCATE {table} CASCADE"))
+            db.session.rollback()
+
+    def test_the_truncate_arm_is_what_refuses_it(self, app, db, seed_user):
+        """The control for the case above: lift the arms and TRUNCATE lands.
+
+        Without this, ``test_truncate_is_refused_on_every_named_table`` would
+        pass identically if some unrelated constraint were doing the refusing,
+        which is exactly the trap the ``CASCADE`` note describes.
+        """
+        with app.app_context():
+            assert db.session.query(AccountOpening).count() >= 1
+
+            with append_only_guard_lifted(
+                db.session, "budget.account_openings",
+            ):
+                db.session.execute(
+                    sa.text("TRUNCATE budget.account_openings CASCADE"),
+                )
+                assert db.session.query(AccountOpening).count() == 0
+            db.session.rollback()
+
+    def test_deleting_an_account_and_recreating_its_id_is_refused(
+        self, app, db, seed_user,
+    ):
+        """REFUTATION 2: two ordinary statements defeated the predicate.
+
+        ``DELETE FROM budget.accounts WHERE id=N`` then ``INSERT`` of the same
+        id committed clean on X-f3c-2c's guard, leaving the account standing
+        with its assertions destroyed -- because the predicate asked whether
+        the owning account existed at the INSTANT the cascade ran, and at that
+        instant it genuinely did not.  Deferred to COMMIT, the same predicate
+        refuses it.
+        """
+        with app.app_context():
+            account = create_account_of_type(
+                seed_user, db.session, "Savings", "Recreated",
+                anchor_balance=Decimal("321.00"),
+            )
+            db.session.commit()
+            account_id = account.id
+            user_id = account.user_id
+            type_id = account.account_type_id
+            assert db.session.query(AccountAnchorHistory).filter_by(
+                account_id=account_id,
+            ).count() >= 1, "nothing to destroy, so nothing to refuse"
+
+            with pytest.raises(sa.exc.InternalError, match="append-only"):
+                db.session.execute(
+                    sa.text("DELETE FROM budget.accounts WHERE id = :i"),
+                    {"i": account_id},
+                )
+                db.session.execute(sa.text(
+                    "INSERT INTO budget.accounts "
+                    "(id, user_id, account_type_id, name) "
+                    "VALUES (:i, :u, :t, 'Recreated')"
+                ), {"i": account_id, "u": user_id, "t": type_id})
+                db.session.commit()
+            db.session.rollback()
+
+            assert db.session.query(AccountAnchorHistory).filter_by(
+                account_id=account_id,
+            ).count() >= 1, (
+                "the whole transaction must roll back, history included"
+            )
+
+    def test_a_disposal_conserves_every_column_in_the_audit_log(
+        self, app, db, seed_user,
+    ):
+        """Why these tables need no archive of their own.
+
+        The design of X-f3c-2d rests on this: once TRUNCATE is refused, every
+        remaining path that removes a row from these tables writes
+        ``to_jsonb(OLD)`` to ``system.audit_log`` first.  If that stopped being
+        true -- a table dropped from ``AUDITED_TABLES``, an audit trigger not
+        re-applied -- the guard would still refuse everything it refuses today
+        while the claim "history is never destroyed without a record" quietly
+        became false.  So the conservation is graded, not assumed.
+        """
+        with app.app_context():
+            account = create_account_of_type(
+                seed_user, db.session, "Savings", "Disposed With A Record",
+                anchor_balance=Decimal("456.78"),
+            )
+            db.session.commit()
+            account_id = account.id
+            assert db.session.query(AccountAnchorHistory).filter_by(
+                account_id=account_id,
+            ).count() >= 1
+
+            db.session.execute(
+                sa.text("DELETE FROM budget.accounts WHERE id = :i"),
+                {"i": account_id},
+            )
+            db.session.commit()
+
+            conserved = db.session.execute(sa.text(
+                "SELECT old_data FROM system.audit_log "
+                "WHERE table_name = 'account_anchor_history' "
+                "AND operation = 'DELETE' "
+                "AND (old_data ->> 'account_id')::int = :i"
+            ), {"i": account_id}).all()
+
+            assert conserved, (
+                "the disposal destroyed assertions and the audit log kept "
+                "no record of them"
+            )
+            assert any(
+                row[0]["anchor_balance"] == "456.78"
+                or Decimal(str(row[0]["anchor_balance"])) == Decimal("456.78")
+                for row in conserved
+            ), (
+                "the audit row exists but does not carry the balance it "
+                f"destroyed: {[row[0] for row in conserved]}"
+            )
+
+    def test_a_multi_row_account_delete_disposes_of_all_of_them(
+        self, app, db, seed_user,
+    ):
+        """One statement deleting several accounts is still a disposal.
+
+        The referential action issues one child ``DELETE`` per deleted parent,
+        so a live sibling cannot confuse ``OLD.account_id`` -- but that was an
+        argument until this case, and the deferred arm made it worth
+        re-asserting: at COMMIT, several accounts are gone at once and one
+        remains.
+        """
+        with app.app_context():
+            doomed = [
+                create_account_of_type(
+                    seed_user, db.session, "Savings", f"Doomed {n}",
+                    anchor_balance=Decimal("10.00"),
+                )
+                for n in range(2)
+            ]
+            survivor = create_account_of_type(
+                seed_user, db.session, "Savings", "Survivor",
+                anchor_balance=Decimal("99.00"),
+            )
+            db.session.commit()
+            doomed_ids = [a.id for a in doomed]
+            survivor_id = survivor.id
+            assert db.session.query(AccountAnchorHistory).filter(
+                AccountAnchorHistory.account_id.in_(doomed_ids),
+            ).count() >= 2
+
+            db.session.execute(
+                sa.text("DELETE FROM budget.accounts WHERE id = ANY(:ids)"),
+                {"ids": doomed_ids},
+            )
+            db.session.commit()
+
+            assert db.session.query(AccountAnchorHistory).filter(
+                AccountAnchorHistory.account_id.in_(doomed_ids),
+            ).count() == 0
+            assert db.session.query(AccountAnchorHistory).filter_by(
+                account_id=survivor_id,
+            ).count() >= 1, "the survivor's history went with somebody else's"
 
 
 class TestTheGuardCanBeLiftedAndComesBack:
