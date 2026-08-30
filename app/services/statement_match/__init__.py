@@ -174,6 +174,12 @@ from ._offers import (
     corrected_purchase_day,
     merchant_label,
 )
+from ._offered_rules import (
+    OfferedAnswer,
+    RuleDoorAccepts,
+    RuleOffer,
+    rules_worth_offering,
+)
 from ._submission import (
     MatchSubmission,
     ReviewedRow,
@@ -316,6 +322,9 @@ __all__ = [
     "Verb",
     "VerbOffer",
     "RowKind",
+    "OfferedAnswer",
+    "RuleDoorAccepts",
+    "RuleOffer",
     "StatedRules",
     "WithheldLine",
     "accept_match",
@@ -324,10 +333,11 @@ __all__ = [
     "answered_merchants",
     "apply_reviewed",
     "as_reviewed",
-    "spell_figure",
     "awaiting_review_count",
     "candidates_for",
     "corrected_purchase_day",
+    "rules_worth_offering",
+    "spell_figure",
     "create_purchase_from_line",
     "record_income_from_line",
     "destinations_for",

@@ -174,23 +174,15 @@
         {% endfor %}
       </select>
     </div>
-    {% if card.line.merchant_id %}
-    {# ALWAYS, FOR THIS MERCHANT (R-GI).  It states no answer of its own: the
-       rule is read back off the destination this same card submits
-       (statement_match.rule_naming), so the rule and the purchase cannot name
-       different budget lines.  It MOVES NO MONEY and is applied only for a
-       card that is also being OK'd. #}
-    <div class="form-check mt-2">
-      <input class="form-check-input" type="checkbox"
-             id="always-{{ card.line.line_id }}"
-             name="always-{{ card.line.line_id }}"
-             value="{{ card.line.merchant_id }}">
-      <label class="form-check-label small" for="always-{{ card.line.line_id }}">
-        Always file <strong>{{ card.line.merchant_label }}</strong> here.
-        Later statements fill this in for you; it records nothing on its own.
-      </label>
-    </div>
-    {% endif %}
+    {# NO "always, for this merchant" HERE, and its absence is ruling
+       bank_import:R-IB
+       (developer, 2026-08-30).  A standing rule is ONE fact per merchant and
+       this card is one LINE, so rendering the control here asked one question
+       86 times on the developer's own pass -- Amazon 26 times, Walmart 13,
+       Food Lion 12.  Worse, a tick had to be read BEFORE the money door ran,
+       so a per-item refusal rolled back in its savepoint while the rule was
+       written anyway.  The offer is on the RECEIPT now, once per merchant,
+       about what the door actually applied. #}
   </div>
   {{ ok_control(card, offer.verb.word) }}
 

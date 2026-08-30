@@ -1,24 +1,33 @@
 """
-Shekel Budget App -- The RECONCILE page, and the two doors it posts to
+Shekel Budget App -- The RECONCILE page, and the three doors it posts to
 
 "What is each of these bank lines?" -- one page on four verbs, replacing the
 review queue, the register and the hand-build workbench.  Plan step
 ``bank_import:X-gj-1b``; the direction was locked at Loop A round 4 on
 2026-08-29 and is ``docs/design/bank_import_audit.md``.  Its rulings are
-**bank_import:R-HP** through **R-HX** in ``docs/plans/rulings.md``.
+**bank_import:R-HP** through **R-HX** in ``docs/plans/rulings.md``, plus
+**bank_import:R-IA** (the accept door exempts no shape) and
+**bank_import:R-IB** (a standing rule is offered once per merchant, on the
+receipt).  **Both ids were minted in the ``balance`` arc the same day**, so
+every citation of them here names its arc.
 
 **IT MOVES MONEY, through doors that already exist.**  Apply posts the OK'd
 cards through :func:`~app.services.statement_match.apply_reviewed` -- the same
 door the review queue and the workbench use, with the same savepoint-per-item
-policy (**R-FZ(a)**) and the same receipt -- and the ADD tab's
-*always, for this merchant* control posts through
-:func:`~app.services.statement_match.state_rules`, which moves none.  **This
+policy (**R-FZ(a)**) and the same receipt -- and the RECEIPT's
+per-merchant standing-rule offer posts through
+:func:`~._statement_rules.record_submitted_rules`, which moves none.  **This
 module opens no door of its own**, which is what lets a whole screen ship
 without a migration and without a new money path.
 
-**Three routes, and the third is a READ.**  The page and Apply are the pair;
-the third re-renders one card's MATCH tab -- its candidate rows and what the
-ticked ones come to -- and writes nothing.  It is a POST for the reason
+**Four routes, and only ONE of them re-renders without writing.**  The page and
+Apply are the pair; the standing-rule offer's own door writes
+``budget.merchant_rules`` and commits (ruling **bank_import:R-IB**); and the
+MATCH pane re-renders one card's candidate rows and what the ticked ones come
+to, writing nothing.  *(This paragraph said "three routes, and the third is a
+READ" until R-IB added the rule door, at which point the third route in file
+order was the one that WRITES -- a reader counting routes would have mapped
+the sentence onto the wrong one.)*  It is a POST for the reason
 :func:`~.statement_workbench.statement_match_totals` is: it carries a list of
 ids and a CSRF token, not because it changes anything.  **The alternative was
 measured and refused**: rendering every card's candidate rows with the page is
@@ -58,11 +67,10 @@ from app.routes.accounts._statement_doors import (
     submitted_item_count,
     submitted_match,
 )
+from app.routes.accounts._statement_rules import record_submitted_rules
 from app.schemas.validation.statement_reconcile import (
-    ReconcileRuleBatchSchema,
     reconcile_match_payload,
     reconcile_payload,
-    reconcile_rules_payload,
 )
 from app.schemas.validation.statements import (
     StatementBatchSchema,
@@ -72,17 +80,14 @@ from app.services import balance_at, bank_agreement
 from app.services.category_service import list_active_categories
 from app.services.statement_match import (
     MatchCandidates,
-    NewEnvelope,
-    NEW_ENVELOPE,
     ReviewScope,
+    RuleDoorAccepts,
     Tab,
     apply_reviewed,
     preview_hand_build,
     reconcile_page,
     review_set,
-    rule_creating,
-    rule_naming,
-    state_rules,
+    rules_worth_offering,
 )
 from app.utils.auth_helpers import require_owner
 from app.utils.error_fragments import designed_error
@@ -96,7 +101,6 @@ _logger = logging.getLogger(__name__)
 #: pass are graded by one set of rules.
 _batch_schema = StatementBatchSchema()
 _match_schema = StatementMatchSchema()
-_rules_schema = ReconcileRuleBatchSchema()
 
 #: The partial the page, the Apply door and every refusal arm render.  ONE
 #: template, so what htmx swaps in after a POST cannot drift from what a
@@ -207,29 +211,31 @@ def _chip_href(account_id: int, chip) -> "str | None":
 
 @dataclass(frozen=True)
 class ReconcilePass:
-    """What one press of Apply did, on both of the acts it can carry.
+    """What one press of Apply did, and what it earns the right to ask.
 
-    **Two results because it is two ACTS**, and the developer's ruling of
-    2026-08-19 is why they stay distinct: applying a card MOVES MONEY, and
-    stating *always, for this merchant* moves none.  Folding them into one
-    receipt would put "3 recorded" beside "2 merchants answered for" under one
-    heading that could only be true of one of them.
-
-    **One REQUEST and one transaction, though.**
-    :func:`~app.services.statement_match.state_rules` does not commit, so both
-    land or neither does -- which is what makes a rule stated about a
-    destination the pass then refused impossible.
+    **ONE act now, and that is ruling bank_import:R-IB.**  This carried two --
+    the money pass and the standing rules the card's *always, for this
+    merchant* box asked for -- until the developer's ruling of 2026-08-30
+    moved the rule offer onto the RECEIPT.  The two were run in one
+    transaction so a rule could not survive a rolled-back pass; what the
+    ruling saw is that the rule was derived from what was OK'd rather than
+    from what LANDED, so a per-item refusal rolling back in its own savepoint
+    left the rule standing anyway.  There is no second write here to sequence.
 
     Attributes:
         batch: The :class:`~app.services.statement_match.BatchOutcome` the
             money door applied.
-        rules: What the rule door recorded
-            (:class:`~app.services.statement_match.StatedRules`), or ``None``
-            where the pass asked for none.
+        offers: One :class:`~app.services.statement_match.RuleOffer` per
+            merchant whose purchases this pass RECORDED, in the order it
+            applied them -- what the receipt may ask the owner to make
+            standing.  **Derived from the outcome and never from the
+            submission**, which is what makes a rule for a refused creation
+            unconstructible rather than merely avoided.  Empty for a pass that
+            filed no spending.
     """
 
     batch: object
-    rules: object
+    offers: tuple
 
 
 @dataclass(frozen=True)
@@ -249,11 +255,19 @@ class _Answer:
             submission never reached the door.
         unacted: The sentence naming the cards the owner OK'd that named no
             act, or ``None``.
+        rules: What the RULE door recorded
+            (:class:`~app.services.statement_match.StatedRules`), or ``None``
+            on every render but the one answering a press of the receipt's own
+            offer.  **A separate field from ``outcome`` because it is a
+            separate ACT** -- stating where a merchant goes moves no money --
+            and the two never travel together: a money pass earns the offer,
+            and pressing the offer is the next request.
     """
 
     outcome: "ReconcilePass | None" = None
     error: "str | None" = None
     unacted: "str | None" = None
+    rules: object = None
 
 
 def _reconcile_context(account, scope, tab, answer: _Answer) -> dict:
@@ -306,7 +320,8 @@ def _reconcile_context(account, scope, tab, answer: _Answer) -> dict:
         # the app already shares.
         "categories": list_active_categories(scope.owner_id),
         "outcome": None if answer.outcome is None else answer.outcome.batch,
-        "rules": None if answer.outcome is None else answer.outcome.rules,
+        "offers": () if answer.outcome is None else answer.outcome.offers,
+        "rules": answer.rules,
         "error": answer.error,
         "unacted": answer.unacted,
     }
@@ -341,13 +356,17 @@ def _answering(account, tab, unacted):
     Returns:
         ``(scope, *, outcome=None, error=None) -> response``.
     """
-    def render(scope, *, outcome=None, error=None):
+    def render(scope, *, outcome=None, error=None, rules=None):
         """Render this door's surface from *scope*.
 
         Args:
             scope: The pass to render from.
             outcome: The :class:`ReconcilePass` to report, or ``None``.
             error: A sentence explaining why nothing was applied, or ``None``.
+            rules: What the RULE door recorded, or ``None``.  Set only by
+                :func:`state_reconcile_merchant_rules`, which answers with
+                this same surface because pressing the receipt's offer leaves
+                the owner looking at the page they were already on.
 
         Returns:
             The rendered body at 200, or the designed-fragment
@@ -357,7 +376,10 @@ def _answering(account, tab, unacted):
             _BODY,
             **_reconcile_context(
                 account, scope, tab,
-                _Answer(outcome=outcome, error=error, unacted=unacted),
+                _Answer(
+                    outcome=outcome, error=error, unacted=unacted,
+                    rules=rules,
+                ),
             ),
         )
         return body if error is None else designed_error(body, 400)
@@ -390,69 +412,6 @@ def statement_reconcile(account_id):
     )
 
 
-def _rules_asked_for(submitted, asked, scope):
-    """Return the standing rules this pass states, for the cards it applies.
-
-    Ruling **bank_import:R-GI**, plan step ``bank_import:X-gj-1b``.  The ADD
-    tab's *always, for this merchant* box says *and make this standing*, so
-    the rule is read back off the DESTINATION the same card submitted
-    (:func:`~app.services.statement_match.rule_naming`) rather than from a
-    second wire value -- which is what makes it impossible for the rule and
-    the purchase to name different budget lines.
-
-    **Only a card that is being APPLIED states one.**  A tick on a card the
-    owner did not OK is a rule about a destination they did not confirm, and
-    the two halves are held together here because this is the only place that
-    holds both.
-
-    **An INCOME card states none** (ruling **bank_import:R-GW**): a merchant
-    answer says where SPENDING goes, and a deposit is not spending, so no
-    inflow reaches this loop at all -- ``submitted["incomes"]`` is not read.
-
-    Args:
-        submitted: What
-            :class:`~app.schemas.validation.statements.StatementBatchSchema`
-            loaded for this pass.
-        asked: ``{line_id: merchant_id}``, what
-            :class:`~app.schemas.validation.statement_reconcile
-            .ReconcileRuleBatchSchema` loaded.
-        scope: The pass, whose ``destinations`` are the offer set a chosen
-            id is resolved against.  **Resolved against the SCOPE's own set
-            rather than queried for**: it is already derived, and a second
-            read could answer differently from the one the screen was drawn
-            from.
-
-    Returns:
-        One :class:`~app.services.statement_match.RuleSubmission` per applied
-        card the owner ticked, in the order the pass carries them.  A chosen
-        destination the scope does not offer states nothing here and is
-        refused by the money door on the same submission, which is the one
-        place that refusal belongs.
-    """
-    offered = {
-        destination.transaction_id: destination
-        for destination in scope.destinations
-    }
-    statements = []
-    for item in submitted["creations"]:
-        merchant_id = asked.get(item["line_id"])
-        if merchant_id is None:
-            continue
-        if item["destination"] == NEW_ENVELOPE:
-            statements.append(rule_creating(
-                merchant_id,
-                NewEnvelope(
-                    name=item["envelope_name"],
-                    category_id=item["category_id"],
-                ),
-            ))
-            continue
-        destination = offered.get(item["destination"])
-        if destination is not None:
-            statements.append(rule_naming(merchant_id, destination))
-    return tuple(statements)
-
-
 @accounts_bp.route(
     "/accounts/<int:account_id>/statements/reconcile", methods=["POST"],
 )
@@ -467,12 +426,17 @@ def apply_statement_reconcile(account_id):
     nothing at all, which is what makes "nothing was changed" true rather than
     reassuring.
 
-    **It carries TWO acts and one transaction.**  The money pass and the
-    standing rules the ADD tab's *always* box asked for both run inside the
-    one unit of work, because
-    :func:`~app.services.statement_match.state_rules` does not commit either
-    -- so a rule can never survive a pass that was rolled back, and a
-    destination the door refused cannot be left standing as a rule.
+    **It carries ONE act, and it used to carry two.**  The ADD tab had an
+    *always, for this merchant* checkbox whose rules were written in this same
+    transaction, so that a rule could not survive a rolled-back pass.  Ruling
+    **bank_import:R-IB** (2026-08-30) moved that offer onto the RECEIPT, where
+    it is asked once per merchant about what the door actually APPLIED: the
+    rule was derived from what was OK'd and computed BEFORE this door ran, so
+    a per-item refusal rolling back inside its own savepoint left the rule
+    standing for a purchase that had not happened.  What this route now does
+    with the outcome is EARN the offer (:func:`~app.services.statement_match
+    .rules_worth_offering`); pressing it is the next request, through
+    :func:`state_reconcile_merchant_rules`.
 
     Args:
         account_id: The account being reconciled.
@@ -488,7 +452,7 @@ def apply_statement_reconcile(account_id):
     # ONE derivation, built HERE.  Only a route builds a read pass -- the same
     # rule ``BalanceContext`` is held to -- and this one serves three
     # purposes: the door applies against it, either failure arm renders from
-    # it, and the rules read their destinations off it.
+    # it, and the receipt's offer reads its destinations off it.
     scope = ReviewScope.build(current_user.id, account_id)
 
     payload, silent = reconcile_payload(request.form)
@@ -498,34 +462,65 @@ def apply_statement_reconcile(account_id):
             count=len(silent), lines=", ".join(silent),
         ),
     )
+    # **The grader runs before the door**, so a malformed body has written
+    # nothing at all.  A malformed body is a pass-level refusal on purpose --
+    # it is a fact about the SUBMISSION rather than about an act the owner
+    # reviewed, and no browser of ours produces one.
     errors = _batch_schema.validate(payload)
-    rule_payload = reconcile_rules_payload(request.form)
-    # **Both graders before either door**, so a malformed rule tick cannot
-    # leave a money pass half-applied: a refusal here has written nothing at
-    # all.  A malformed body is a pass-level refusal on purpose -- it is a
-    # fact about the SUBMISSION rather than about an act the owner reviewed,
-    # and no browser of ours produces one.
-    errors = errors or _rules_schema.validate(rule_payload)
     if errors:
         return render(scope, error=refusal_sentence(errors))
     submitted = _batch_schema.load(payload)
-    asked = {
-        item["line_id"]: item["merchant_id"]
-        for item in _rules_schema.load(rule_payload)["rules"]
-    }
+    # **Only a pass that FILES SPENDING can earn a standing-rule offer**, so a
+    # matches-only or income-only press does not pay this: ``review_set`` is
+    # measured at 0.136 s and ``rules_worth_offering`` would read nothing from
+    # it (ruling **bank_import:R-GW** -- a merchant answer says where SPENDING
+    # goes, so no inflow reaches that loop).
+    review = review_set(scope) if submitted["creations"] else None
 
     def _apply():
-        """Run both acts against *scope*, inside the caller's transaction.
+        """Apply the pass against *scope*, inside the caller's transaction.
 
         Returns:
-            The :class:`ReconcilePass`.
+            The :class:`ReconcilePass` -- what landed, and what that earns the
+            right to ask about.
         """
-        statements = _rules_asked_for(submitted, asked, scope)
+        outcome = apply_reviewed(submitted_batch(submitted), scope)
         return ReconcilePass(
-            batch=apply_reviewed(submitted_batch(submitted), scope),
-            rules=(
-                None if not statements
-                else state_rules(statements, current_user.id, account_id)
+            batch=outcome,
+            # **From what the door APPLIED, which is the whole of
+            # ``bank_import:R-IB``'s first half.**  ``AppliedItem.line_ids``
+            # is documented as a
+            # correlation key for exactly this: saying WHICH submitted item an
+            # outcome belongs to.  Reading the submission instead is what
+            # offered a standing rule for a creation the door had refused.
+            offers=() if review is None else rules_worth_offering(
+                submitted["creations"],
+                frozenset(
+                    line_id
+                    for item in outcome.applied for line_id in item.line_ids
+                ),
+                review,
+                scope,
+                # **What the RULE door would take, which is not what this pass
+                # can file into.**  Read here because the service answers no
+                # query, and read from the two producers the door itself
+                # validates against, so the offer cannot render a press that
+                # can never succeed.
+                RuleDoorAccepts(
+                    # **The pass already holds the template set**, because the
+                    # review queue's own merchant control renders it -- so
+                    # this is ``offerable_templates``' answer without a second
+                    # call to it, which is the DRY rule this package applies
+                    # to producer calls inside one request.
+                    template_ids=frozenset(
+                        template_id
+                        for template_id, _ in review.merchants.templates
+                    ),
+                    category_ids=frozenset(
+                        category.id
+                        for category in list_active_categories(scope.owner_id)
+                    ),
+                ),
             ),
         )
 
@@ -551,6 +546,66 @@ def apply_statement_reconcile(account_id):
         _apply,
         _record,
     )
+
+
+@accounts_bp.route(
+    "/accounts/<int:account_id>/statements/reconcile/merchants",
+    methods=["POST"],
+)
+@login_required
+@require_owner
+def state_reconcile_merchant_rules(account_id):
+    """Record the standing answers the receipt's offer asked for.
+
+    Plan step ``bank_import:X-gj-1b``, ruling **bank_import:R-IB**.  **It MOVES
+    NO MONEY and can move none**, which is why it is its own door and its own
+    request: a rule is read to SUGGEST a destination, and the only thing that
+    records a purchase is an explicit destination on one specific line.
+
+    **It opens NO door of its own.**  The act is
+    :func:`~._statement_rules.record_submitted_rules`, which the review queue
+    and the register already post to, reading the same
+    :class:`~app.schemas.validation.merchant_rules.MerchantRuleBatchSchema` off
+    the same field names.  Three surfaces, one grader, one writer -- so a rule
+    stated from the Reconcile receipt cannot be validated differently from the
+    identical rule stated from the register, which is what a second door here
+    would have made possible.  What differs is only the SURFACE each answers
+    with, which is exactly the split that module exists for.
+
+    **The offer this answers was earned by a money pass** and named only
+    merchants that pass actually filed spending for
+    (:func:`~app.services.statement_match.rules_worth_offering`).  Nothing
+    holds the two requests together, and nothing needs to: a merchant answer is
+    a preference about the FUTURE, so stating one for a purchase recorded a
+    minute ago is the same act as stating it a week later from the register.
+
+    Args:
+        account_id: The account being reconciled.
+
+    Returns:
+        The re-rendered body carrying what was recorded, at 200; or the same
+        body carrying one refusal sentence at 400, marked as a designed
+        fragment so htmx swaps it.
+    """
+    account = load_cash_account_or_404(account_id)
+    tab = _requested_tab()
+
+    # ONE derivation, built BEFORE the write and still valid after it, for the
+    # reason :func:`~.statement_matches.state_merchant_rules` states at its
+    # own: this door writes exactly one table, ``budget.merchant_rules``,
+    # through the ORM and calls no service -- so nothing it can do touches the
+    # calendar, the candidates or their prices, and ``review_set`` re-reads the
+    # rules themselves.  That is a closed argument over one table rather than
+    # an enumeration over an open set of writers.
+    scope = ReviewScope.build(current_user.id, account_id)
+    render = _answering(account, tab, None)
+
+    outcome = record_submitted_rules(
+        request.form, current_user.id, account_id, _logger,
+    )
+    if outcome.refusal is not None:
+        return render(scope, error=outcome.refusal)
+    return render(scope, rules=outcome.recorded)
 
 
 @accounts_bp.route(

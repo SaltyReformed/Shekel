@@ -28,19 +28,12 @@ schemas' to refuse -- one grader, in one place, with one error structure the
 route already knows how to render.
 """
 
-from marshmallow import RAISE, Schema, fields, validate
-
-from app.schemas.validation._helpers import (
-    BaseSchema,
-    RowId,
-    order_token_key,
-)
+from app.schemas.validation._helpers import order_token_key
 from app.schemas.validation.statements import (
     CATEGORY_PREFIX,
     DESTINATION_PREFIX,
     ENVELOPE_NAME_PREFIX,
     LEAVE_ALONE,
-    MAX_BATCH_ITEMS,
 )
 from app.services.statement_match import RECORD_AS_INCOME, Verb
 
@@ -199,96 +192,22 @@ def reconcile_payload(form) -> "tuple[dict, tuple[str, ...]]":
     )
 
 
-#: What a Reconcile card's *always, for this merchant* checkbox is named with,
-#: keyed by its BANK LINE, its value being the merchant the card is about.
-#: Plan step ``bank_import:X-gj-1b``, ruling **bank_import:R-GI**.
-#:
-#: **The merchant is an ID and never the bank's own string** (plan step
-#: ``bank_import:X-gd-1``): the rule form used to post the description back,
-#: so the door's whole defence against a crafted merchant was a comparison in
-#: Python.  It posts the merchant ROW now, which
-#: ``fk_merchant_rules_merchant_account`` holds to this account and
-#: :func:`~app.services.statement_match.state_rules` checks against this
-#: account's own set.
-_ALWAYS_PREFIX = "always-"
-
-
-class ReconcileRuleSchema(BaseSchema):
-    """Validate ONE *always, for this merchant* tick.
-
-    **Two ids and nothing else.**  What the rule SAYS is not on the wire: it
-    is the destination the same card submitted, read back through
-    :func:`~app.services.statement_match.rule_naming`, so the rule and the
-    purchase can never describe different budget lines.  A wire value naming
-    the answer would be a second statement of one choice, free to disagree
-    with the select beside it.
-
-    **Both are :class:`~app.schemas.validation._helpers.RowId`, not
-    ``fields.Integer``** (plan step X-ae, finding **N-141**): they name ROWS,
-    and ``Integer`` reads ``'١٢'``, ``' 12 '``, ``'+12'``, ``'1_0'``,
-    ``'007'``, ``'-5'`` and ``'0'`` as ids -- two of which name no row at all.
-    """
-
-    line_id = RowId(
-        required=True,
-        error_messages={"required": "Which line is that rule about?"},
-    )
-    merchant_id = RowId(
-        required=True,
-        error_messages={"required": "Which merchant is that rule about?"},
-    )
-
-
-class ReconcileRuleBatchSchema(Schema):
-    """Validate every *always* tick one Reconcile pass carried.
-
-    **A SECOND grader beside :class:`StatementBatchSchema`, and that is the
-    shipped separation rather than a new one**: stating where a merchant's
-    spending goes moves no money, and the developer's ruling of 2026-08-19
-    gave it its own door for exactly that reason.  One schema carrying both
-    would have to refuse a whole money pass over a preference.
-    """
-
-    class Meta:
-        """Refuse anything the form did not declare."""
-
-        unknown = RAISE
-
-    rules = fields.List(
-        fields.Nested(ReconcileRuleSchema),
-        required=False, load_default=list,
-        validate=validate.Length(max=MAX_BATCH_ITEMS),
-    )
-
-
-def reconcile_rules_payload(form) -> dict:
-    """Return every *always* tick as :class:`ReconcileRuleBatchSchema` loads it.
-
-    **Presence IS the tick**: a browser submits a checkbox only when it is
-    ticked, so an item exists here exactly when the owner asked for a standing
-    rule, and there is no do-nothing value to drop.
-
-    **It reads every tick, not only the OK'd ones**, and the narrowing to what
-    was actually recorded happens where the creations are known -- because a
-    rule about a line the owner did not OK is a rule about a destination they
-    did not confirm, and the caller is what holds both halves.
-
-    Args:
-        form: The request's ``MultiDict``.
-
-    Returns:
-        ``{"rules": [{"line_id": ..., "merchant_id": ...}]}``, ascending by
-        bank line through the same
-        :func:`~app.schemas.validation._helpers.order_token_key` every other
-        reader here uses.  Raw strings: the schema is what reads them.
-    """
-    keys = [
-        field[len(_ALWAYS_PREFIX):] for field in form.keys()
-        if field.startswith(_ALWAYS_PREFIX)
-    ]
-    return {
-        "rules": [
-            {"line_id": key, "merchant_id": form[f"{_ALWAYS_PREFIX}{key}"]}
-            for key in sorted(keys, key=order_token_key)
-        ],
-    }
+# **NOTHING HERE READS AN "always, for this merchant" TICK**, and the absence
+# is ruling **bank_import:R-IB** (developer, 2026-08-30).  This module carried
+# ``_ALWAYS_PREFIX``, ``ReconcileRuleSchema``, ``ReconcileRuleBatchSchema`` and
+# ``reconcile_rules_payload`` until then: a per-LINE checkbox posting a
+# ``merchant_id``, graded by a second schema beside the money one.
+#
+# All four are gone rather than fixed, because the grain was the defect.  A
+# standing rule is ONE fact per merchant and the card is one line, so the page
+# asked one question 86 times on the developer's own pass; the tick had to be
+# read BEFORE the money door ran, so a per-item refusal rolled back in its
+# savepoint while the rule was written anyway; and the wire carried a
+# ``merchant_id`` the server can derive from the line, which nothing checked
+# the line agreed with.
+#
+# The offer is on the RECEIPT now, once per merchant, about what the door
+# APPLIED -- and it posts to the door the review queue and the register
+# already use, at the field names
+# :func:`~app.schemas.validation.merchant_rules.rule_payload` reads.  So there
+# is no reconcile-specific rule schema to write: three surfaces, one grader.

@@ -27,9 +27,10 @@
 
    Context: account, page (ReconcilePage), tabs (the TabCounts this build
    serves), chips ((HoldingChip, href) pairs), categories, outcome
-   (BatchOutcome or None), rules (StatedRules or None -- a SEPARATE receipt
-   because stating where a merchant goes moves no money), error (a sentence or
-   None), unacted (a sentence or None). #}
+   (BatchOutcome or None), offers (the RuleOffers a pass earned -- one per
+   merchant it filed spending for), rules (StatedRules or None -- a SEPARATE
+   receipt because stating where a merchant goes moves no money), error (a
+   sentence or None), unacted (a sentence or None). #}
 
 <div id="statement-reconcile-body">
 
@@ -41,6 +42,123 @@
     <i class="bi bi-exclamation-triangle mt-1"></i>
     <div>{{ unacted }}</div>
   </div>
+  {% endif %}
+
+  {# ── The offer a pass EARNS: one standing answer per merchant ─────── #}
+  {# Ruling bank_import:R-IB (developer, 2026-08-30).  It is asked HERE, once
+     per merchant, about what the door actually APPLIED -- not on the card,
+     where it was one question per LINE (86 controls for 21 answers on the
+     developer's own pass) and was read from what was OK'd rather than from
+     what landed, so a refused purchase still wrote a standing rule.
+
+     IT POSTS TO THE DOOR THE REVIEW QUEUE AND THE REGISTER ALREADY USE, at
+     the field names merchant_rules.rule_payload reads, so three surfaces
+     share one grader and one writer.  KEYED BY MERCHANT and never by a
+     rendered position (R-HC): the key is what pairs an answer with the
+     merchant it is about, and making it the merchant id is what leaves a
+     contradiction no form to take.
+
+     EVERY GROUP OPENS ON "Not now".  Nothing here is pre-selected, because
+     the owner has not said it yet -- the destination they picked is on the
+     card and this is a different question about the FUTURE. #}
+  {% if offers %}
+  <form class="card mb-3" method="post"
+        action="{{ url_for('accounts.state_reconcile_merchant_rules', account_id=account.id) }}"
+        hx-post="{{ url_for('accounts.state_reconcile_merchant_rules', account_id=account.id) }}"
+        hx-target="#statement-reconcile-body"
+        hx-swap="outerHTML show:top"
+        hx-disabled-elt="find button[type=submit]">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <input type="hidden" name="tab" value="{{ page.tab.value }}">
+    <div class="card-header">
+      <i class="bi bi-signpost-split"></i> Should any of these stand?
+    </div>
+    <div class="card-body">
+      {% for offer in offers %}
+      <div{% if not loop.first %} class="mt-3"{% endif %}>
+        <input type="hidden" name="rule_merchant-{{ offer.merchant_id }}"
+               value="{{ offer.merchant_id }}">
+        <p class="small mb-2">
+          {% if offer.is_split %}
+          You filed {{ offer.filed_count }} <strong>{{ offer.merchant }}</strong>
+          purchase(s) in more than one place. Which should be the standing
+          answer?
+          {% else %}
+          You filed {{ offer.filed_count }} <strong>{{ offer.merchant }}</strong>
+          purchase(s) into <strong>{{ offer.answers[0].label }}</strong>.
+          {% endif %}
+        </p>
+        {% if offer.offerable %}
+        <div class="form-check">
+          <input class="form-check-input" type="radio" checked
+                 id="rule-{{ offer.merchant_id }}-none"
+                 name="rule-{{ offer.merchant_id }}" value="unset">
+          <label class="form-check-label small"
+                 for="rule-{{ offer.merchant_id }}-none">Not now</label>
+        </div>
+        {% endif %}
+        {% for answer in offer.offerable %}
+        <div class="form-check">
+          <input class="form-check-input" type="radio"
+                 id="rule-{{ offer.merchant_id }}-{{ loop.index0 }}"
+                 name="rule-{{ offer.merchant_id }}"
+                 value="{% if answer.statement.template_id %}t:{{ answer.statement.template_id }}{% else %}new{% endif %}">
+          <label class="form-check-label small"
+                 for="rule-{{ offer.merchant_id }}-{{ loop.index0 }}">
+            Always file {{ offer.merchant }} in
+            <strong>{{ answer.label }}</strong>{% if offer.is_split %}
+            ({{ answer.count }} this time){% endif %}
+          </label>
+        </div>
+        {% if not answer.statement.template_id %}
+        {# The name and category a NEW-envelope answer needs, paired with the
+           merchant because that is the key the form reads them by.  Read only
+           for the `new` arm, so they ride along harmlessly when a template
+           option is the one chosen -- and `offerable` admits at most ONE
+           new-envelope answer, so exactly one pair is ever emitted. #}
+        <input type="hidden" name="rule_name-{{ offer.merchant_id }}"
+               value="{{ answer.statement.envelope_name }}">
+        {# `transactions.category_id` is NULLABLE with ON DELETE SET NULL, so
+           this can be None -- which Jinja renders as the literal "None" and
+           MerchantRuleBatchSchema then refuses for EVERY item in the body,
+           400-ing the whole offer including a pure "Not now" press.  No app
+           writer reaches a NULL category on a purchase-tracking row today,
+           but that safety is an enumeration of writers and this project has
+           been burned by one; the guard costs a condition. #}
+        {% if answer.statement.category_id is not none %}
+        <input type="hidden" name="rule_category-{{ offer.merchant_id }}"
+               value="{{ answer.statement.category_id }}">
+        {% endif %}
+        {% endif %}
+        {% endfor %}
+        {% for answer in offer.unofferable %}
+        {# WHAT CANNOT BE MADE STANDING, and WHY -- two different reasons and
+           they get two different sentences.  `blocked` is the rule door's own
+           refusal, so the offer never renders a press that cannot succeed;
+           its absence here means the answer is fine and it is the WIRE that
+           cannot carry a second new-envelope name (`rule_name-<key>` is keyed
+           by merchant).  Naming them rather than dropping them is what keeps
+           the receipt's counts equal to what the pass filed. #}
+        <p class="small text-body-secondary mb-0">
+          {{ answer.count }} went into <strong>{{ answer.label }}</strong>, and
+          {% if answer.blocked %}
+          that cannot be a standing answer: {{ answer.blocked }}.
+          {% else %}
+          only one new envelope can be made standing from one press, so this
+          one cannot be offered here.
+          {% endif %}
+        </p>
+        {% endfor %}
+      </div>
+      {% endfor %}
+      <button type="submit" class="btn btn-sm btn-outline-primary mt-3">
+        Save these answers
+      </button>
+      <p class="small text-body-secondary mt-2 mb-0">
+        This changes no money. It fills these in for you on later statements.
+      </p>
+    </div>
+  </form>
   {% endif %}
 
   {% if rules %}
@@ -59,9 +177,19 @@
         <li class="mb-1">{{ said }}</li>
         {% endfor %}
       </ul>
-      {% else %}
+      {% elif rules.unchanged_count %}
       <p class="mb-0 text-body-secondary">
         Nothing changed -- every answer was already what you had said.
+      </p>
+      {% else %}
+      {# NOT "already what you had said", which is what this arm claimed until
+         ruling bank_import:R-IB made an empty press the DEFAULT one: the
+         offer opens every group on "Not now", those are dropped before the
+         door sees them, and the door then reports nothing stated, nothing
+         refused and nothing unchanged.  Saying the owner had already answered
+         would be a receipt claiming standing answers the app does not hold. #}
+      <p class="mb-0 text-body-secondary">
+        Nothing was recorded -- every merchant was left on <em>Not now</em>.
       </p>
       {% endif %}
       <p class="mt-2 mb-0 small text-body-secondary">This changed no money.</p>

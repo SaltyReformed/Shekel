@@ -489,6 +489,64 @@ def reconcile_form_fields(page):
     return reader.fields
 
 
+class _OneFormReader(ReconcileFormReader):
+    """Collect only the controls inside the FORM whose action matches.
+
+    Plan step ``bank_import:X-gj-1b``.  The Reconcile page carries two forms --
+    the cards and the standing-rule offer -- and
+    :func:`reconcile_form_fields` scrapes the whole document, which a browser
+    never submits.  A case posting the union to one door passes for the right
+    reason only by accident: it would keep passing if the offer form dropped
+    its own ``csrf_token`` or ``tab``, because the cards form carries both.
+    """
+
+    def __init__(self, action):
+        super().__init__()
+        self._action = action
+        self._depth = None
+
+    def handle_starttag(self, tag, attrs):
+        """Collect only while inside the form named by *action*."""
+        if tag == "form":
+            if self._action in dict(attrs).get("action", ""):
+                self._depth = 0
+            return
+        if self._depth is None:
+            return
+        super().handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag):
+        """Leave the form, and let the base class close its selects."""
+        if tag == "form":
+            self._depth = None
+            return
+        if self._depth is not None:
+            super().handle_endtag(tag)
+
+
+def form_fields(page, action):
+    """Return what a browser would submit from ONE form on *page*.
+
+    Args:
+        page: The rendered page or body, as text.
+        action: A substring of the form's ``action``, naming which form.
+
+    Returns:
+        Its ``(name, value)`` pairs, repeats kept, in document order.
+
+    Raises:
+        AssertionError: When no form on the page has that action, which would
+            make every assertion over the result vacuous.
+    """
+    assert f'action="' in page and action in page, (
+        f"no form on this page has an action containing {action!r}, so a "
+        f"payload scraped from it would be empty"
+    )
+    reader = _OneFormReader(action)
+    reader.feed(page)
+    return reader.fields
+
+
 def reconcile_offerable(page):
     """Return every control the Reconcile page rendered, pressed or not.
 

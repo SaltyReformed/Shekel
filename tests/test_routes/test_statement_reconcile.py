@@ -18,6 +18,7 @@ in a response, so moving or renaming a route leaves its IDOR control passing
 and guarding nothing -- measured once on a door that DESTROYS budget rows.
 """
 
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -25,6 +26,7 @@ from werkzeug.datastructures import MultiDict
 
 from app.enums import StatusEnum
 from app.models.account import Account
+from app.models.category import Category
 from app.models.merchant_rule import MerchantRule
 from app.models.statement_match import StatementMatch
 from app.models.transaction import Transaction
@@ -33,6 +35,7 @@ from app.models.user import User, UserSettings
 from app.services import auth_service
 from tests.test_routes._statement_forms import (
     controls_inside_the_trigger,
+    form_fields,
     reconcile_form_fields,
     reconcile_offerable,
 )
@@ -54,6 +57,11 @@ def _url(account_id, tab=None):
     """Return the Reconcile page's URL for *account_id*."""
     suffix = "" if tab is None else f"?tab={tab}"
     return f"/accounts/{account_id}/statements/reconcile{suffix}"
+
+
+def _merchants_url(account_id):
+    """Return the standing-rule offer's door for *account_id*."""
+    return f"/accounts/{account_id}/statements/reconcile/merchants"
 
 
 def _match_url(account_id, line_id):
@@ -245,6 +253,29 @@ class TestTheOwnershipRefusalIsPairedWithTheURLStillRouting:
 
         assert auth_client.post(
             _match_url(seed_user["account"].id, line.id),
+            data={"csrf_token": "x"},
+        ).status_code == 200
+
+    def test_the_rules_door_is_404_for_an_account_that_is_not_yours(
+        self, auth_client, db, seed_user, _someone_elses_account,
+    ):
+        """The standing-rule door is gated exactly as the money doors are.
+
+        Added with the door itself (ruling **bank_import:R-IB**), because this
+        class's own reason for existing is that a 404 from the URL MAP and a
+        404 from the gate look identical -- so a door landing without its pair
+        is a door whose ownership control nothing holds in place.
+        """
+        assert auth_client.post(
+            _merchants_url(_someone_elses_account), data={"csrf_token": "x"},
+        ).status_code == 404
+
+    def test_the_rules_door_URL_still_routes_for_the_owner(
+        self, auth_client, db, seed_user,
+    ):
+        """The pairing: the same URL answers 200 for the account's owner."""
+        assert auth_client.post(
+            _merchants_url(seed_user["account"].id),
             data={"csrf_token": "x"},
         ).status_code == 200
 
@@ -547,34 +578,61 @@ def _row_tokens(pane, line_id):
     )
 
 
-class TestTheAlwaysControlStatesTheRuleTheCardChose:
-    """The ADD tab's *always, for this merchant* box (ruling **R-GI**).
+class TestTheReceiptOffersOneStandingRulePerMerchant:
+    """Ruling **bank_import:R-IB** (developer, 2026-08-30).
 
-    It states no answer of its own: the rule is read back off the destination
-    the same card submits, so the rule and the purchase can never name
-    different budget lines.
+    The card carried an *always, for this merchant* checkbox until that
+    ruling. A standing rule is ONE fact per merchant and a card is one LINE,
+    so on the developer's own pass the page asked one question **86 times** --
+    Amazon 26, Walmart 13, Food Lion 12. The offer is on the RECEIPT now,
+    once per merchant, about what the door actually APPLIED.
     """
 
-    def test_ticking_it_records_a_rule_naming_the_chosen_envelope(
+    @staticmethod
+    def _ok_a_swipe(auth_client, seed_user, line, envelope):
+        """OK one card into *envelope* and return the answering body."""
+        page = _page(auth_client, seed_user)
+        chosen = _choosing(
+            reconcile_form_fields(page),
+            f"destination-{line.id}", str(envelope.id),
+        )
+        response = _post(
+            auth_client, seed_user, chosen + [("ok", str(line.id))], page,
+        )
+        assert response.status_code == 200
+        return response.get_data(as_text=True)
+
+    def test_the_receipt_offers_the_rule_the_pass_actually_filed(
         self, auth_client, db, seed_user,
     ):
-        """One gesture, two acts, one transaction."""
-        envelope = an_envelope(seed_user, name="Home Improvement")
-        line = an_unexplained_outflow(
-            seed_user, merchant="Lowe's", amount="-35.72",
-        )
-        db.session.commit()
-        merchant_id = the_merchant_id(seed_user, "Lowe's")
-        page = _page(auth_client, seed_user)
-        fields = reconcile_form_fields(page)
+        """The offer names the merchant, the count and where it went."""
+        envelope, line = _a_swipe_a_rule_files(seed_user, db)
 
+        body = self._ok_a_swipe(auth_client, seed_user, line, envelope)
+
+        assert "Should any of these stand?" in body
+        assert "Always file Lowe&#39;s in" in body
+        assert f'name="rule_merchant-{the_merchant_id(seed_user, "Lowe\'s")}"' in body
+
+    def test_pressing_it_records_the_rule(
+        self, auth_client, db, seed_user,
+    ):
+        """The offer's own bytes go back to the shipped rule door."""
+        envelope, line = _a_swipe_a_rule_files(seed_user, db)
+        merchant_id = the_merchant_id(seed_user, "Lowe's")
+        body = self._ok_a_swipe(auth_client, seed_user, line, envelope)
+        db.session.query(MerchantRule).delete()
+        db.session.commit()
+
+        offered = form_fields(body, "/reconcile/merchants")
         chosen = _choosing(
-            fields, f"destination-{line.id}", str(envelope.id),
+            offered, f"rule-{merchant_id}", f"t:{envelope.template_id}",
         )
-        response = _post(auth_client, seed_user, chosen + [
-            ("ok", str(line.id)),
-            (f"always-{line.id}", str(merchant_id)),
-        ], page)
+        response = auth_client.post(
+            f"/accounts/{seed_user['account'].id}"
+            f"/statements/reconcile/merchants",
+            data=MultiDict([("csrf_token", "x")] + chosen),
+        )
 
         assert response.status_code == 200
         rule = db.session.query(MerchantRule).filter_by(
@@ -582,28 +640,146 @@ class TestTheAlwaysControlStatesTheRuleTheCardChose:
         ).one()
         assert rule.template_id == envelope.template_id
 
-    def test_a_card_that_was_NOT_OK_D_states_no_rule(
+    def test_the_offer_OPENS_on_not_now_and_writes_nothing_unpressed(
         self, auth_client, db, seed_user,
     ):
-        """A tick on a card nobody confirmed is a rule about nothing."""
-        envelope = an_envelope(seed_user, name="Home Improvement")
-        line = an_unexplained_outflow(
-            seed_user, merchant="Lowe's", amount="-35.72",
-        )
-        db.session.commit()
-        merchant_id = the_merchant_id(seed_user, "Lowe's")
-        page = _page(auth_client, seed_user)
-        fields = reconcile_form_fields(page)
+        """Nothing is pre-selected: the owner has not said it yet.
 
-        chosen = _choosing(
-            fields, f"destination-{line.id}", str(envelope.id),
+        The destination they picked is a fact about THIS purchase; whether it
+        should stand is a different question about the future, and a radio
+        group arriving on the answer would make Save record something nobody
+        chose.
+        """
+        envelope, line = _a_swipe_a_rule_files(seed_user, db)
+        merchant_id = the_merchant_id(seed_user, "Lowe's")
+        body = self._ok_a_swipe(auth_client, seed_user, line, envelope)
+        db.session.query(MerchantRule).delete()
+        db.session.commit()
+
+        offered = form_fields(body, "/reconcile/merchants")
+        assert (f"rule-{merchant_id}", "unset") in offered, (
+            "the offer arrived pre-selected, so Save would record an answer "
+            "the owner never gave"
         )
-        response = _post(auth_client, seed_user, chosen + [
-            (f"always-{line.id}", str(merchant_id)),
-        ], page)
+
+        response = auth_client.post(
+            f"/accounts/{seed_user['account'].id}"
+            f"/statements/reconcile/merchants",
+            data=MultiDict([("csrf_token", "x")] + offered),
+        )
 
         assert response.status_code == 200
         assert db.session.query(MerchantRule).count() == 0
+
+    def test_ONE_offer_however_many_lines_that_merchant_has(
+        self, auth_client, db, seed_user,
+    ):
+        """The grain the ruling corrects, at the smallest size that shows it.
+
+        Two Lowe's swipes filed into the same envelope are ONE answer, not
+        two: a rule keys on ``template_id``, so every pay period's copy of an
+        envelope is the same rule. On the developer's own data this is why the
+        contradiction rate is zero across 10 repeated merchants.
+        """
+        envelope, first = _a_swipe_a_rule_files(seed_user, db)
+        second = an_unexplained_outflow(
+            seed_user, merchant="Lowe's", amount="-12.10",
+        )
+        db.session.commit()
+        merchant_id = the_merchant_id(seed_user, "Lowe's")
+
+        page = _page(auth_client, seed_user)
+        fields = reconcile_form_fields(page)
+        for line in (first, second):
+            fields = _choosing(
+                fields, f"destination-{line.id}", str(envelope.id),
+            )
+        response = _post(auth_client, seed_user, fields + [
+            ("ok", str(first.id)), ("ok", str(second.id)),
+        ], page)
+
+        body = response.get_data(as_text=True)
+        assert body.count(f'name="rule_merchant-{merchant_id}"') == 1, (
+            "one merchant was asked about more than once"
+        )
+        assert "You filed 2 <strong>Lowe&#39;s</strong>" in body
+
+
+class TestTheROUTEHandsTheOfferWhatTheDoorAPPLIED:
+    """The SEAM, graded where the two derivations differ.
+
+    ``rules_worth_offering`` takes ``applied_line_ids`` as a PARAMETER, so a
+    service test can only grade what a caller passes -- and an adversarial
+    review proved the gap by hand: replacing the route's
+
+        frozenset(l for item in outcome.applied for l in item.line_ids)
+
+    with the pre-ruling ``frozenset(item["line_id"] for item in creations)``
+    left **11,969 tests green**, shipping the exact regression ruling
+    **bank_import:R-IB** exists to make unconstructible.
+
+    **Choosing the refusal is the whole difficulty**, because
+    ``rules_worth_offering`` has three ways to drop a line and only one of
+    them is the seam. A destination the pass does not offer is dropped by its
+    own arm; a line that is not ``creatable`` (a deposit) is dropped by
+    another; an answer the rule door would refuse is dropped by a third. The
+    refusal used here trips none of them: a line past the saved pay calendar
+    IS creatable, is filed to a NEW envelope under an ACTIVE category -- an
+    answer the rule door takes -- and the create door refuses it by name at
+    ``scope.period_holding``. So the only thing that can keep it out of the
+    offer is the narrowing this class is about.
+    """
+
+    def test_a_line_the_door_REFUSED_is_not_in_the_receipts_offer(
+        self, auth_client, db, seed_user,
+    ):
+        """One merchant lands, one is refused; only the lander is offered."""
+        envelope, lands = _a_swipe_a_rule_files(seed_user, db)
+        db.session.query(MerchantRule).delete()
+        far = a_bank_line(
+            seed_user, an_import(seed_user), amount="-40.00",
+            posted_on=date(2031, 3, 4), merchant="Faraway Co",
+        )
+        db.session.commit()
+        category = db.session.query(Category).filter(
+            Category.user_id == seed_user["user"].id,
+            Category.is_active.is_(True),
+        ).first()
+
+        # **Posted directly and not through ``_post``**, and deliberately: the
+        # far line's ADD tab is SHUT (its ``withheld`` names the missing pay
+        # period), so no card renders a destination for it and no browser
+        # could send this. A stale page is how it arises -- the calendar is
+        # extended, the page is drawn, the schedule is rolled back -- and the
+        # per-item SAVEPOINT is what this is about either way.
+        response = auth_client.post(
+            _url(seed_user["account"].id),
+            data=MultiDict([
+                ("csrf_token", "x"),
+                ("ok", str(lands.id)),
+                (f"verb-{lands.id}", "add"),
+                (f"destination-{lands.id}", str(envelope.id)),
+                ("ok", str(far.id)),
+                (f"verb-{far.id}", "add"),
+                (f"destination-{far.id}", "new"),
+                (f"envelope_name-{far.id}", "Faraway"),
+                (f"category_id-{far.id}", str(category.id)),
+            ]),
+        )
+
+        assert response.status_code == 200
+        body = response.get_data(as_text=True)
+        assert "No pay period covers 2031-03-04" in body, (
+            "the door did not refuse the far line, so this grades nothing"
+        )
+        assert f'name="rule_merchant-{the_merchant_id(seed_user, "Lowe\'s")}"' \
+            in body, "the merchant that LANDED earned no offer"
+        assert 'name="rule_merchant-' + str(
+            the_merchant_id(seed_user, "Faraway Co"),
+        ) + '"' not in body, (
+            "a purchase the door REFUSED earned a standing-rule offer -- the "
+            "next import would auto-file that merchant with no press"
+        )
 
 
 class TestAProposedCardAppliesFromThisPageAndItsPaneLoads:

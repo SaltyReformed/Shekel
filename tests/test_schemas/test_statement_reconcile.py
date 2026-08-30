@@ -17,10 +17,8 @@ import pytest
 from werkzeug.datastructures import MultiDict
 
 from app.schemas.validation.statement_reconcile import (
-    ReconcileRuleBatchSchema,
     reconcile_match_payload,
     reconcile_payload,
-    reconcile_rules_payload,
 )
 from app.schemas.validation.statements import StatementBatchSchema
 
@@ -219,40 +217,3 @@ class TestTheMatchReaderIsSharedByThePassAndThePanel:
         assert reconcile_payload(body)[0]["matches"] == [
             reconcile_match_payload(body, "7"),
         ]
-
-
-class TestTheAlwaysTicksAreTheirOwnSubmission:
-    """A second grader beside the money one, which is the shipped separation.
-
-    Stating where a merchant's spending goes moves no money, so one schema
-    carrying both would have to refuse a whole money pass over a preference.
-    """
-
-    def test_presence_is_the_tick_and_the_value_is_the_merchant(self):
-        """The merchant is an ID and never the bank's own string."""
-        assert reconcile_rules_payload(_form([
-            ("always-7", "3"), ("always-2", "9"),
-        ])) == {"rules": [
-            {"line_id": "2", "merchant_id": "9"},
-            {"line_id": "7", "merchant_id": "3"},
-        ]}
-
-    def test_an_untouched_page_asks_for_no_rule(self):
-        """A checkbox nobody ticked is not in the body at all."""
-        assert reconcile_rules_payload(_form([
-            ("ok", "7"), ("verb-7", "add"), ("destination-7", "42"),
-        ])) == {"rules": []}
-
-    def test_a_forged_merchant_id_is_refused_by_the_schema(self):
-        """Both ids are ``RowId``, so a respelling names no row."""
-        payload = reconcile_rules_payload(_form([("always-7", "007")]))
-
-        assert ReconcileRuleBatchSchema().validate(payload)
-
-    def test_a_well_formed_tick_loads(self):
-        """The ordinary body."""
-        loaded = ReconcileRuleBatchSchema().load(
-            reconcile_rules_payload(_form([("always-7", "3")])),
-        )
-
-        assert loaded["rules"] == [{"line_id": 7, "merchant_id": 3}]
