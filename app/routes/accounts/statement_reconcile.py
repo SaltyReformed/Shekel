@@ -600,18 +600,25 @@ def statement_reconcile_match(account_id, line_id):
     # It is a membership test rather than a second ownership check, for the
     # reason :func:`~.statement_workbench._preselected` gives: a check written
     # here would be a second statement of the one ``review_set`` applies.
-    line = next(
-        (one for one in review.unmatched if one.line_id == line_id), None,
-    )
-    if line is None:
+    #
+    # **Asked of ``card_subject`` and never of ``unmatched``**, which is what
+    # this read once asked and what made every PROPOSED card's pane a
+    # permanent spinner: ``_unexplained`` takes a proposal's line out of
+    # ``unmatched`` before that list exists, so 137 of the developer's 137
+    # proposal cards answered 404 here.  The set a card is drawn from is the
+    # pass's own fact and lives beside the two lists it unions.
+    subject = review.card_subject(line_id)
+    if subject is None:
         abort(404)
+    line = subject.line
 
     payload = reconcile_match_payload(request.form, str(line_id))
     errors = _match_schema.validate(payload)
     if errors:
         return designed_error(
             render_template(
-                _MATCH_PANE, account=account, line=line, rows=(),
+                _MATCH_PANE, account=account, line=line,
+                proposal=subject.proposal, rows=(),
                 ticked=frozenset(), query="",
                 totals=None, refusal=refusal_sentence(errors),
             ),
@@ -627,6 +634,12 @@ def statement_reconcile_match(account_id, line_id):
         _MATCH_PANE,
         account=account,
         line=line,
+        # **The tier's own rows travel with the pane**, so unticking one
+        # re-prices like any other: they were rendered by the CARD until plan
+        # step ``bank_import:X-gj-1b`` -- a sibling of this fragment, outside
+        # the element whose change fires it -- so an untick reached no trigger
+        # and the panel went on stating a difference that was no longer true.
+        proposal=subject.proposal,
         rows=(
             candidates.matching(query) if query.strip()
             else candidates.for_line(line)

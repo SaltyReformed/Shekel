@@ -19,11 +19,16 @@
    this fragment carries only the re-price triggers, because an element that
    reloaded itself on arriving in view would never stop.
 
-   WHAT A PROPOSAL FOUND IS NOT IN HERE.  A tier's own rows arrive TICKED
-   (R-HS) and are rendered by the card macro outside this fragment, so they
-   need no JavaScript at all and a swap of this element cannot lose them.
-   They are disjoint from these candidates by construction: the pass withholds
-   every row a proposal claims from `unmatched_rows`.
+   WHAT A PROPOSAL FOUND IS IN HERE, as of plan step bank_import:X-gj-1b.
+   A tier's own rows arrive TICKED (R-HS) and are disjoint from the candidates
+   by construction -- the pass withholds every row a proposal claims from
+   `unmatched_rows`.  They were rendered by the CARD MACRO until that step, a
+   sibling of this element, which put them OUTSIDE the wrapper whose change
+   event re-prices: unticking one changed the submission and re-priced
+   nothing, so the panel went on stating a difference that was no longer true
+   and the door refused the press with "reload the page".  The card carries
+   them as HIDDEN inputs until this fragment replaces it, so the form holds
+   exactly one copy at every moment.
 
    THE ROWS ARE THE LINE'S OWN PAY PERIOD, and the search reaches every
    unexplained row on the account (MatchCandidates, developer 2026-08-30).
@@ -41,27 +46,83 @@
    which leaves the door refusing an unbalanced group and naming both sums --
    the same degradation the workbench's own panel documents.
 
-   Context: account (the owned account), line (BankLine), rows (the candidates),
-   ticked (a set of (kind, row_id) the request named), query (what was typed),
-   totals (HandTotals or None -- None on first paint, when nothing is ticked),
-   refusal (a sentence or None). #}
+   Context: account (the owned account), line (BankLine), proposal
+   (MatchProposal or None -- what a tier offered for this line), rows (the
+   candidates), ticked (a set of (kind, row_id) the request named), query
+   (what was typed), totals (HandTotals or None), refusal (a sentence or
+   None). #}
 
-<div class="rec-match" id="rec-match-{{ line.line_id }}"
-     hx-post="{{ url_for('accounts.statement_reconcile_match', account_id=account.id, line_id=line.line_id) }}"
-     hx-trigger="change, keyup changed delay:400ms"
-     hx-include="closest .rec-card"
-     hx-target="this"
-     hx-swap="outerHTML"
-     hx-disabled-elt="unset">
+<div class="rec-match" id="rec-match-{{ line.line_id }}">
 
-  <label class="form-label small text-body-secondary mb-1"
-         for="q-{{ line.line_id }}">
-    Search your rows for this account
-  </label>
-  <input class="form-control form-control-sm mb-2" type="search"
-         id="q-{{ line.line_id }}" name="q-{{ line.line_id }}"
-         value="{{ query }}" autocomplete="off"
-         placeholder="name or figure -- searches every unexplained row">
+  {# THE TRIGGER IS ON THIS WRAPPER AND NOT ON THE FRAGMENT, and that is a fix
+     rather than a layout choice.  It sat on the outer element with
+     hx-target="this" until plan step bank_import:X-gj-1b: the consent box is
+     inside that element, so TICKING IT fired a re-render and the swap replaced
+     it with a fresh unticked one.  The owner could never keep it ticked and
+     Apply carried no figure at all -- with every server test green, because a
+     test posts the field a browser could never hold.
+
+     THIS IS THE SECOND INSTANCE OF THAT DEFECT.  `_statement_hand_totals.html`
+     documents the first, found on the workbench by browser probe, and the
+     remedy is the same one taken there: the attributes live on the wrapper
+     around the tick lists, which the consent box is NOT inside.  What differs
+     is only which element the swap replaces -- the workbench targets an inner
+     totals panel, this replaces the whole pane, because here the ROWS
+     re-render too when the search changes.
+
+     A change from the search box or any row checkbox bubbles to this element
+     and fires; a change from the consent box below bubbles to .rec-match,
+     which listens for nothing.  So ticking a row RESETS the consent (the
+     figure it agreed to no longer exists) and ticking the consent leaves it
+     alone -- which is what those two acts mean. #}
+  <div class="rec-match-picks"
+       hx-post="{{ url_for('accounts.statement_reconcile_match', account_id=account.id, line_id=line.line_id) }}"
+       hx-trigger="change, keyup changed delay:400ms"
+       hx-include="closest .rec-card"
+       hx-target="closest .rec-match"
+       hx-swap="outerHTML"
+       hx-disabled-elt="unset">
+
+    {% if proposal %}
+    {# WHAT A TIER PROPOSED, TICKED (R-HS).  Rendered INSIDE the trigger
+       wrapper, which is the whole reason these rows live in this fragment
+       rather than on the card: unticking one has to re-price the difference
+       below, and a change event bubbles to ancestors only.  On the card they
+       were a SIBLING of this element and reached no trigger at all.
+
+       ALWAYS RENDERED, including mid-search.  The pass withholds every row a
+       proposal claims from `unmatched_rows`, so these are disjoint from the
+       candidates below AND unreachable by the search -- and a fragment that
+       dropped them while the owner typed would silently take them out of the
+       form, changing the act without saying so. #}
+    <div class="rec-rows rec-rows-proposed">
+      {% for row in proposal.rows %}
+      <div class="rec-row-pick">
+        <input class="form-check-input" type="checkbox"
+               id="proposed-{{ line.line_id }}-{{ row.kind.value }}-{{ row.row_id }}"
+               name="rows-{{ line.line_id }}" value="{{ row | reviewed_token }}"
+               {% if (row.kind, row.row_id) in ticked %}checked{% endif %}>
+        <label class="rec-row-label"
+               for="proposed-{{ line.line_id }}-{{ row.kind.value }}-{{ row.row_id }}">
+          <span class="rec-row-name">{{ row.label }}</span>
+          <span class="rec-row-day font-mono">
+            {% if row.settled_on %}{{ row.settled_on }}{% else %}not recorded{% endif %}
+          </span>
+        </label>
+        <span class="rec-row-figure font-mono">{{ money(row.cash_amount) }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <label class="form-label small text-body-secondary mb-1"
+           for="q-{{ line.line_id }}">
+      Search your rows for this account
+    </label>
+    <input class="form-control form-control-sm mb-2" type="search"
+           id="q-{{ line.line_id }}" name="q-{{ line.line_id }}"
+           value="{{ query }}" autocomplete="off"
+           placeholder="name or figure -- searches every unexplained row">
 
   {% if rows %}
   <div class="rec-rows">
@@ -99,6 +160,7 @@
     above to reach every unexplained row on the account.
   </p>
   {% endif %}
+  </div>
 
   {% if refusal %}
   {# The DOOR's own sentence, before the press rather than after it. #}
@@ -127,36 +189,68 @@
   {% endif %}
   {% endif %}
 
+  {# THE FIGURE ALWAYS TRAVELS; ONLY THE CONTROL DIFFERS.  The accept door
+     exempts no shape since plan step bank_import:X-gj-1b, so a match states
+     the difference it was reviewed against and the door refuses when its own
+     arithmetic disagrees.  `needs_consent` is what decides which of the three
+     controls says so; the workbench's own panel carries the same three arms
+     and the argument for them.
+
+     IT IS OUTSIDE .rec-match-picks, which is the whole of the C2 fix at the
+     top of this file: the consent box's own change event must not replace it.
+
+     `totals` IS None on a REFUSED render, where the route builds this pane
+     without pricing anything -- so the arms test it rather than assuming the
+     value, which is what a route arm passing None makes necessary. #}
+  {% if totals and totals.needs_consent %}
   <div class="form-check mt-2 mb-0">
-    {# The value is the SERVER's own string.  The door re-derives the
-       difference and refuses the act if the two disagree, so this box is a
-       PRECONDITION rather than a payload -- the same distinction
-       MatchSubmission draws for every figure it carries. #}
     <input class="form-check-input" type="checkbox"
            id="residual-{{ line.line_id }}" name="residual-{{ line.line_id }}"
-           value="{{ totals.consent if totals and totals.consent else '' }}"
-           {% if not (totals and totals.consent) %}disabled{% endif %}>
+           value="{{ totals.consent }}">
     <label class="form-check-label small" for="residual-{{ line.line_id }}">
-      {% if totals and totals.remedy == 'records' %}
+      {% if totals.remedy == 'records' %}
       Record the {{ money(totals.difference) }} difference as a row with no
       category that you can categorise later.
-      {% elif totals and totals.remedy == 'corrects' %}
+      {% elif totals.remedy == 'corrects' %}
       Write your bank's {{ money(totals.bank) }} to the row you ticked, in
       place of the {{ money(totals.app) }} your records hold.
-      {% elif totals and totals.remedy == 'agrees' %}
-      These add up. Nothing is left over.
-      {% elif totals and totals.remedy == 'refused' %}
-      There is nothing to accept while the sentence above stands.
-      {% else %}
-      {# Also the JAVASCRIPT-OFF wording, because this is what the server
-         renders into the page and nothing ever replaces it there.  It says
-         what the door does, which is the only thing true in that world. #}
-      Tick the rows this line paid for. One line against one row may
-      <strong>disagree</strong>: your bank's figure is written to that row.
-      Several rows must come to the <strong>same total</strong>, and if they
-      do not, nothing is changed and the difference is named at the top of
-      this page.
       {% endif %}
     </label>
   </div>
+  {% elif totals and totals.consent is not none %}
+  {# NOTHING TO PERMIT, so no box -- but the figure still travels, so that "a
+     match states the difference it was reviewed against" holds with no
+     exception and the absence of this field means exactly one thing.  At zero
+     it is INERT, said plainly rather than dressed up as a guard: the door
+     returns early on a zero difference whether it is told 0.00 or told
+     nothing, and a row that moved under this pane is refused earlier and by
+     name (`_resolve._reject_moved_since_review`).  What it buys is one rule
+     instead of two. #}
+  <input type="hidden" name="residual-{{ line.line_id }}"
+         value="{{ totals.consent }}">
+  <p class="small text-body-secondary mt-2 mb-0">
+    These add up. Nothing is left over.
+  </p>
+  {% else %}
+  <div class="form-check mt-2 mb-0">
+    <input class="form-check-input" type="checkbox"
+           id="residual-{{ line.line_id }}" name="residual-{{ line.line_id }}"
+           value="" disabled>
+    <label class="form-check-label small" for="residual-{{ line.line_id }}">
+      {% if totals and totals.remedy == 'refused' %}
+      There is nothing to accept while the sentence above stands.
+      {% else %}
+      {# NOT the javascript-off wording, unlike its twin on the workbench:
+         this pane is rendered by htmx and nothing renders it otherwise, so
+         with scripting off it never appears at all and the placeholder's own
+         <noscript> sends the owner to the hand-build form instead.  What this
+         arm is read in is the one state left: rows not yet ticked. #}
+      Tick the rows this line paid for. If they come to the
+      <strong>same total</strong> as the bank, OK records the match. If they
+      <strong>disagree</strong>, the difference appears here and you agree to
+      it before anything is written.
+      {% endif %}
+    </label>
+  </div>
+  {% endif %}
 </div>

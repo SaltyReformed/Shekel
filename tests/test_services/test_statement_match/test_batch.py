@@ -91,7 +91,7 @@ def _batch(seed_user, matches=(), creations=(), incomes=()):
     )
 
 
-def _match(seed_user, lines=(), transactions=(), entries=()):
+def _match(seed_user, lines=(), transactions=(), entries=(), residual=None):
     """Return one match item naming exactly these subjects.
 
     **The reviewed state comes off a freshly derived pass**, exactly as the
@@ -104,6 +104,7 @@ def _match(seed_user, lines=(), transactions=(), entries=()):
     return a_submission(
         a_scope(seed_user),
         lines=lines, transactions=transactions, entries=entries,
+        residual=residual,
     )
 
 
@@ -781,8 +782,14 @@ class TestTheReceiptSaysWhatHappened:
                 status=StatusEnum.DONE, settled_on=day,
             )
 
+            # -180.04 bank against a -180.00 row is -0.04, and every match
+            # carries the difference it was reviewed against since plan step
+            # bank_import:X-gj-1b.
             outcome = _batch(seed_user, matches=[
-                _match(seed_user, lines=[line], transactions=[row]),
+                _match(
+                    seed_user, lines=[line], transactions=[row],
+                    residual="-0.04",
+                ),
             ])
 
             assert outcome.applied_count == 1

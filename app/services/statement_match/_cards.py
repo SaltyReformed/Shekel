@@ -151,6 +151,47 @@ class LineCard:
         return self.panel.offer_for(self.suggested).is_open
 
     @property
+    def takes_ok(self) -> bool:
+        """Return whether this card can be consented to at all.
+
+        Plan step ``bank_import:X-gj-1b``.  **The question the CHECKBOX asks,
+        and it is not the one :attr:`offers_ok` asks.**  ``offers_ok`` says
+        whether the SUMMARY shows a one-click OK button -- a verb was
+        justified and its door exists.  This says whether the card has any act
+        to consent to at all, which is what decides whether the ``ok``
+        checkbox is in the document.
+
+        **They were one question until an adversarial review measured what
+        that cost.**  The panel renders its primary button as a
+        ``<label for="ok-N">`` inside every open verb pane, and the checkbox
+        it points at was rendered only where ``offers_ok`` -- so a card with no
+        suggestion rendered a button pointing at an element that was not in the
+        document.  Measured 2026-08-30 on a restored production clone: **31 of
+        248 cards**, and on those the primary act was dead in a browser -- an
+        inflow could never be recorded, an unruled swipe could never become a
+        purchase, a parked payment could never be group-matched -- with the
+        whole suite green, because every acting test hand-appended an ``ok``
+        value a browser could not have produced.
+
+        Returns:
+            Whether any verb's door would accept this line
+            (:attr:`~._panel.VerbPanel.open_verbs`).  **That is exactly the
+            set whose panes render a submitting control**: TRANSFER and SKIP
+            have no door in this build so they are never open, an open MATCH
+            always offers the row list, and an open ADD always carries an
+            :class:`~._panel.AddTab` -- a card whose ADD has no act states its
+            refusal through ``add_waits`` instead, which shuts the verb.
+            Measured on the same 248 cards: this predicate and *a pane renders
+            a control* agree on every one, with no disagreement.
+
+            ``False`` is reachable and is the holding state ruling **R-HQ**
+            names: a parked card payment on an account whose every row is
+            already explained has no act, so it takes no OK and its panel is a
+            disclosure.
+        """
+        return bool(self.panel.open_verbs)
+
+    @property
     def opens_on(self) -> Verb:
         """Return which of the four tabs the opened panel opens on.
 

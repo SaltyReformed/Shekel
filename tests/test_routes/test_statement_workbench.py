@@ -226,12 +226,24 @@ class _ConsentReader(HTMLParser):
     server computed and the door will compare, so scraping it is the only way
     a test can post what the screen actually offered rather than a figure of
     its own.
+
+    **It records the input's TYPE, and that is not decoration** (plan step
+    ``bank_import:X-gj-1b``).  ``residual`` is rendered by three different
+    controls now -- an enabled checkbox where there is a difference to permit,
+    a HIDDEN input carrying ``"0.00"`` where the two sides agree, and a
+    disabled checkbox where nothing is ticked -- so "is it disabled" stopped
+    being the same question as "did the panel offer the owner a consent".  A
+    hidden input is not disabled, so every caller asserting
+    ``disabled is False`` to prove the panel offered something would pass on
+    the agrees arm, where it offered nothing to press.  Found by adversarial
+    review 2026-08-30.
     """
 
     def __init__(self):
         super().__init__()
         self.value = None
         self.disabled = None
+        self.kind = None
 
     def handle_starttag(self, tag, attrs):
         """Record the consent control the panel rendered."""
@@ -239,6 +251,7 @@ class _ConsentReader(HTMLParser):
         if tag == "input" and attributes.get("name") == "residual":
             self.value = attributes.get("value", "")
             self.disabled = "disabled" in attributes
+            self.kind = attributes.get("type")
 
 
 def _rendered_consent(page):
@@ -253,6 +266,38 @@ def _rendered_consent(page):
     reader = _ConsentReader()
     reader.feed(page)
     return reader.value, reader.disabled
+
+
+def _offered_consent(page):
+    """Return the figure the panel asked the owner to AGREE to.
+
+    The question ``_rendered_consent`` used to be asked for, separated from it
+    because the two diverged at plan step ``bank_import:X-gj-1b``: a panel can
+    now carry a ``residual`` the owner cannot press (the hidden ``"0.00"`` of
+    an agreeing group), and a case that means *the panel offered a consent*
+    must say so rather than infer it from the field not being disabled.
+
+    Args:
+        page: The rendered workbench body, or the panel fragment alone.
+
+    Returns:
+        The tick box's value.
+
+    Raises:
+        AssertionError: When the panel rendered no consent CHECKBOX, or
+            rendered one a browser would not submit -- either of which means
+            the case that called this graded nothing.
+    """
+    reader = _ConsentReader()
+    reader.feed(page)
+    assert reader.kind == "checkbox", (
+        f"the panel offered no consent checkbox (rendered {reader.kind!r}), "
+        f"so this graded nothing"
+    )
+    assert reader.disabled is False, (
+        "the panel's consent box was disabled, so this graded nothing"
+    )
+    return reader.value
 
 
 class TestTheHandBuildForm:
@@ -653,10 +698,7 @@ class TestTheHandBuildForm:
         panel = auth_client.post(
             _totals_url(seed_user), data=ticked,
         ).get_data(as_text=True)
-        offered, disabled = _rendered_consent(panel)
-        assert disabled is False, (
-            "the panel offered no consent, so this graded nothing"
-        )
+        offered = _offered_consent(panel)
 
         response = auth_client.post(
             _workbench_url(seed_user["account"].id),
@@ -849,6 +891,16 @@ class TestTheHandBuildForm:
             + [(name, value) for name, value in hand if name == "rows"]
             + [("line_ids", str(line.id))]
         )
+
+        # **The panel is priced first, exactly as a browser does it**, and the
+        # figure it offers is what the press carries.  Ticking a row fires the
+        # totals fragment, and since plan step ``bank_import:X-gj-1b`` the door
+        # exempts no shape -- so this -5.00 gap needs the owner's agreement
+        # like any other, and a payload assembled without it would be grading
+        # the consent gate rather than this form's row token.
+        payload.add("residual", _offered_consent(auth_client.post(
+            _totals_url(seed_user), data=payload,
+        ).get_data(as_text=True)))
 
         response = auth_client.post(
             _workbench_url(seed_user["account"].id), data=payload,

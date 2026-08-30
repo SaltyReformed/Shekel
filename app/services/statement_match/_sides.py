@@ -43,20 +43,24 @@ class MatchSides:
     places is expressible (:data:`~._submission._FIGURE` allows six) and a
     residual of ``0.001`` is not a row anyone can hold.
 
+    **It carried a ``line_count`` until plan step ``bank_import:X-gj-1b``**,
+    for one reader: the consent gate's exempt shape, *a single line against a
+    single row*.  The developer deleted that exemption on 2026-08-30 -- it was
+    load-bearing for two proposals worth `-$0.15` and `-$0.04` and permitted a
+    `$2,572.36` write with nothing asked -- and with it went the only question
+    anything asked about this match's SHAPE.  The field went too rather than
+    staying as a fact nobody reads: what remains is the two sums and the
+    subtraction between them, which is the whole of what this value is for.
+
     Attributes:
         bank: What the statement lines come to, signed, positive INTO the
             account -- the convention ``bank_statement_lines.amount`` uses.
         app: What the owner's own rows come to, on the same convention
             (:attr:`~._offers.CandidateRow.cash_amount`).
-        line_count: How many bank lines the bank side is summed over.  Carried
-            because the refusals ask it and re-deriving it from a list they do
-            not otherwise need would hand them a second answer to "what shape
-            is this match" (plan step ``bank_import:X-f6d-4``).
     """
 
     bank: Decimal
     app: Decimal
-    line_count: int
 
     @classmethod
     def of(cls, lines, rows) -> "MatchSides":
@@ -72,7 +76,6 @@ class MatchSides:
         Returns:
             Its :class:`MatchSides`.
         """
-        lines = list(lines)
         return cls(
             bank=round_money(
                 sum((line.amount for line in lines), Decimal("0.00")),
@@ -80,7 +83,6 @@ class MatchSides:
             app=round_money(
                 sum((row.cash_amount for row in rows), Decimal("0.00")),
             ),
-            line_count=len(lines),
         )
 
     @property

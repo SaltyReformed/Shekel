@@ -325,10 +325,20 @@ class StatementMatchSchema(BaseSchema):
         ReviewedRowField(), required=False, load_default=list,
         validate=validate.Length(max=_MAX_MATCH_MEMBERS),
     )
-    #: The DIFFERENCE the SERVER showed for a hand-built group, which the
-    #: owner agreed to record (plan step ``bank_import:X-f6d-4``, ruling
-    #: **R-FN**).  Absent on every proposal the app itself offers, so
-    #: ``load_default=None``.
+    #: The DIFFERENCE this match states it was REVIEWED against (plan step
+    #: ``bank_import:X-f6d-4``, ruling **R-FN**).
+    #:
+    #: **It used to be absent on every proposal the app itself offers**, and
+    #: plan step ``bank_import:X-gj-1b`` inverted that: the accept door
+    #: exempts no shape now, so a proposal card renders this as a HIDDEN input
+    #: carrying :func:`app.jinja_filters.stated_difference` and every ticked
+    #: item submits one.  ``load_default=None`` remains, because absence is
+    #: still a real thing a body can say and the DOOR is where it is answered
+    #: -- refused where a difference would be written, permitted where none
+    #: would be
+    #: (``app.services.statement_match._variance._reject_unaccepted_difference``).
+    #: A ``required=True`` here would turn a scriptless owner's balanced
+    #: hand-built group into a 400 over the whole pass.
     #:
     #: **Read through the service's own strict reader, exactly as
     #: :class:`ReviewedRowField` beside it is.**  A first version declared it
@@ -635,11 +645,18 @@ def _match_items(form) -> list:
 
         **An EMPTY consent is untouched, not malformed**, which is this
         module's own founding principle: a browser submits every control it
-        renders, so an untouched one must be recognisable as untouched.  The
-        panel renders the box with ``value=""`` and ``disabled`` in lockstep,
-        so a browser cannot send one -- but a body that does would otherwise
-        400 the WHOLE pass over a field nobody filled in.  Found by
-        adversarial security review 2026-08-23.
+        renders, so an untouched one must be recognisable as untouched.  A
+        body carrying one would otherwise 400 the WHOLE pass over a field
+        nobody filled in.  Found by adversarial security review 2026-08-23.
+
+        **The surfaces no longer render this field one way.**  Until plan step
+        ``bank_import:X-gj-1b`` every one of them rendered the box ``value=""``
+        and ``disabled`` in lockstep, so a browser could not send an empty
+        one.  That is now true only of the arm where nothing is ticked: a
+        proposal card carries the figure as a HIDDEN input, and a panel whose
+        sides agree carries ``"0.00"`` the same way.  The emptiness rule holds
+        for the same reason it always did -- it is about what a body may say,
+        not about which control said it.
     """
     getlist = form.getlist
     items = []
@@ -769,10 +786,13 @@ def hand_match_payload(form) -> dict:
         consent box carried one.  **Omitted rather than sent as ``None``** when
         it did not, so the schema's own ``load_default`` is the one statement
         of what absence means -- and an EMPTY consent is untouched rather than
-        malformed, which is :func:`_match_items`' own founding principle: the
-        panel renders that box ``value=""`` and ``disabled`` in lockstep, so a
-        browser cannot send one, but a body that does must not 400 the act over
-        a field nobody filled in.
+        malformed, which is :func:`_match_items`' own founding principle: a
+        body carrying an empty one must not 400 the act over a field nobody
+        filled in.  This surface still renders the box ``value=""`` and
+        ``disabled`` in lockstep when there is nothing ticked; since plan step
+        ``bank_import:X-gj-1b`` it renders a HIDDEN ``"0.00"`` where the two
+        sides agree, because the door checks the figure a match says it was
+        reviewed against whether or not there is anything to permit.
     """
     item = {
         "line_ids": form.getlist("line_ids"),

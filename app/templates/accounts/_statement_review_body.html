@@ -323,6 +323,27 @@
                 {% for row in proposal.rows %}
                 <input type="hidden" name="match-{{ item }}-rows" value="{{ row | reviewed_token }}">
                 {% endfor %}
+                {# THE DIFFERENCE THIS PROPOSAL STATES, since plan step
+                   bank_import:X-gj-1b (developer, 2026-08-30).  The accept
+                   door exempts no shape now, so a match says which figure it
+                   was reviewed against and the door refuses when its own
+                   arithmetic disagrees -- the sum-level half of the rule
+                   `match-<i>-rows` already keeps per row (R-FP, N-336).
+
+                   IT IS HIDDEN HERE AND A TICK BOX ON THE WORKBENCH, and that
+                   is the same fact disclosed two ways: this card worked the
+                   correction out and SAYS it in the cell beside this one
+                   ("from -178.32 to -178.29"), so the Apply tick is the
+                   agreement to exactly that; a group the owner assembles from
+                   checkbox lists has no such sentence until the server
+                   computes one, so there it is a box.
+
+                   THE STRING IS THE SERVICE'S (`stated_difference`), never
+                   `{{ proposal.difference }}`: a Decimal rendered through
+                   Jinja lets the template's own repr decide what is
+                   submitted, which is what HandTotals.consent is a string to
+                   prevent. #}
+                <input type="hidden" name="match-{{ item }}-residual" value="{{ proposal | stated_difference }}">
               </td>
               <td>
                 {% for line in proposal.lines %}

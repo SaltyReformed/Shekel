@@ -23,9 +23,18 @@ module.
 from html.parser import HTMLParser
 
 from app.services.statement_match import RowKind
+from app.services.statement_match._sides import MatchSides
+from app.services.statement_match._submission import ReviewedRow, spell_figure
 from tests.test_services.test_statement_match._builders import (
     a_reviewed_token,
 )
+
+#: What :func:`match_item` uses when a caller says nothing about the consent:
+#: derive the figure the proposal card renders.  **A sentinel and not
+#: ``None``**, because ``None`` is a real thing a body can say -- the field
+#: absent altogether -- and a case modelling a crafted or stale submission has
+#: to be able to say it.  Plan step ``bank_import:X-gj-1b``.
+DERIVE_THE_STATED_FIGURE = object()
 
 
 class RuleFormReader(HTMLParser):
@@ -89,8 +98,8 @@ def rule_form_controls(page):
 
 
 def match_item(
-    index=0, lines=(), transactions=(), entries=(), residual=None,
-    scope=None,
+    index=0, lines=(), transactions=(), entries=(),
+    residual=DERIVE_THE_STATED_FIGURE, scope=None,
 ):
     """Return the form fields a TICKED match item submits.
 
@@ -115,10 +124,22 @@ def match_item(
         lines: Bank line rows it explains.
         transactions: Transaction rows that explain them.
         entries: Purchase rows that explain them.
-        residual: What the consent box carries when the owner ticked it -- the
-            difference the screen showed (plan step ``bank_import:X-f6d-4``).
-            ``None`` leaves the field off entirely, which is what an unticked
-            checkbox submits.
+        residual: What this item states as the difference it was reviewed
+            against (plan step ``bank_import:X-f6d-4``).  **Left alone it is
+            DERIVED**, exactly as the template derives it: since plan step
+            ``bank_import:X-gj-1b`` a proposal card renders
+            ``match-<i>-residual`` as a HIDDEN input carrying
+            the ``stated_difference`` filter, so a browser submits it on
+            every ticked item and there is no state in which that field is
+            absent from this surface.  A default of ``None`` modelled the form
+            as it stood BEFORE that step, and would make every caller here
+            post a body no page emits -- which is the defect this module
+            exists to prevent.
+
+            Pass a value to model a STALE or crafted body (a screen that
+            summed wrong, or one whose rows moved after it was drawn), and
+            pass ``None`` to model the field absent outright, which the door
+            refuses whenever there is a difference to write.
         scope: The pass whose render this item is standing in for, or ``None``
             for one derived per row.  **A page renders ONE scope and emits
             every item off it**, so a case building several items for a single
@@ -141,6 +162,18 @@ def match_item(
                for entry in entries]
         ),
     }
+    if residual is DERIVE_THE_STATED_FIGURE:
+        # **Through the service, over the very tokens this item submits.**
+        # The template computes the same subtraction from the same priced
+        # rows (the ``stated_difference`` filter), so the two cannot
+        # disagree about what the card disclosed -- which is the reason this
+        # helper builds its row values through ``as_reviewed`` rather than
+        # spelling them.
+        residual = spell_figure(MatchSides.of(
+            lines,
+            [ReviewedRow.from_token(one)
+             for one in fields[f"match-{index}-rows"]],
+        ).difference)
     if residual is not None:
         fields[f"match-{index}-residual"] = [str(residual)]
     return fields
@@ -293,11 +326,29 @@ class ReconcileFormReader(HTMLParser):
     **A ``disabled`` control is dropped too**, which the consent box depends
     on: the MATCH pane renders it ``value=""`` and ``disabled`` in lockstep
     until the server has a figure, so a browser cannot send an empty consent.
+
+    **It also records what a browser COULD submit, not only what it would.**
+    :attr:`offerable` holds every control the page rendered -- an unticked
+    checkbox and an unchecked radio included -- as the ``(name, value)`` pair
+    that control would send if the owner pressed it, or as ``(name, None)``
+    for a field whose value the owner supplies.  That set is what
+    :func:`~tests.test_routes.test_statement_reconcile._post` refuses a
+    payload against, and it exists because of a defect a green suite hid:
+    every acting case appended ``("ok", str(line.id))`` by hand, and the
+    ``ok-<line>`` checkbox is rendered only for a card that suggests a working
+    verb -- so 31 of the developer's 248 cards had a panel button pointing at
+    an element not in the document, and no test could see it because the
+    tests posted a value no browser could produce.
+
+    **The pair and not the name**: ``ok`` is ONE name shared by every card,
+    keyed by its VALUE, so a check that only asked whether the page renders
+    ``ok`` anywhere would pass the very payload that hid the defect.
     """
 
     def __init__(self):
         super().__init__()
         self.fields = []
+        self.offerable = set()
         self._select = None
         self._first = None
         self._chosen = None
@@ -322,10 +373,20 @@ class ReconcileFormReader(HTMLParser):
             return
         if tag == "input":
             kind = attributes.get("type", "text")
+            value = attributes.get("value", "")
+            # **What this control COULD send.**  A checkbox or radio sends its
+            # own value or nothing, so the pair is what a browser can produce;
+            # any other field carries whatever the owner types, so only the
+            # name is fixed.
+            self.offerable.add(
+                (name, value) if kind in {"checkbox", "radio"}
+                else (name, None)
+            )
             if kind in {"checkbox", "radio"} and "checked" not in attributes:
                 return
-            self.fields.append((name, attributes.get("value", "")))
+            self.fields.append((name, value))
         elif tag == "select":
+            self.offerable.add((name, None))
             self._select, self._first, self._chosen = name, None, None
 
     def handle_endtag(self, tag):
@@ -336,6 +397,82 @@ class ReconcileFormReader(HTMLParser):
                 (self._select, self._first or "" if chosen is None else chosen),
             )
             self._select = self._first = self._chosen = None
+
+
+class _TriggerSubtreeReader(HTMLParser):
+    """Collect the control names inside the element that carries ``hx-trigger``.
+
+    Plan step ``bank_import:X-gj-1b``.  **Containment is a DEPTH question and
+    string indices cannot answer it.**  A first version of the case that uses
+    this sliced from the tag carrying ``hx-trigger`` to the next ``</div>``,
+    which closes whichever nested element came first -- so the slice stopped
+    long before the consent control and the assertion passed whatever the
+    markup said.  Measured by mutation on 2026-08-30: moving the consent box
+    back inside the trigger left the case GREEN.
+
+    This tracks the open-element depth instead, so what it reports is the
+    element's real subtree.
+    """
+
+    #: Tags that never carry an end tag, so a depth counter must not count
+    #: them.  **Without this the counter only ever goes up**: ``<input>`` is
+    #: the most common tag in these fragments and every one of them left the
+    #: subtree looking one level deeper than it was, so the trigger element
+    #: never appeared to close and everything after it read as inside.
+    #: Measured by mutation 2026-08-30 -- the case using this passed with the
+    #: consent box on either side of the boundary.
+    _VOID = frozenset({
+        "area", "base", "br", "col", "embed", "hr", "img", "input",
+        "link", "meta", "param", "source", "track", "wbr",
+    })
+
+    def __init__(self):
+        super().__init__()
+        self.inside = set()
+        self._depth = None
+
+    def handle_starttag(self, tag, attrs):
+        """Open a tag, arming on the one that carries ``hx-trigger``."""
+        attributes = dict(attrs)
+        if self._depth is not None:
+            name = attributes.get("name")
+            if name:
+                self.inside.add(name)
+            if tag not in self._VOID:
+                self._depth += 1
+        elif "hx-trigger" in attributes and tag not in self._VOID:
+            self._depth = 0
+
+    def handle_endtag(self, tag):
+        """Close a tag, disarming when the trigger's own element closes."""
+        if self._depth is None:
+            return
+        if self._depth == 0:
+            self._depth = None
+        else:
+            self._depth -= 1
+
+
+def controls_inside_the_trigger(fragment):
+    """Return the control names inside the element carrying ``hx-trigger``.
+
+    Args:
+        fragment: The rendered fragment, as text.
+
+    Returns:
+        The set of ``name`` attributes in that element's subtree.
+
+    Raises:
+        AssertionError: When the fragment carries no ``hx-trigger`` at all,
+            which would make every containment claim over it vacuous.
+    """
+    assert "hx-trigger" in fragment, (
+        "this fragment carries no hx-trigger, so nothing about what its "
+        "subtree contains can be graded"
+    )
+    reader = _TriggerSubtreeReader()
+    reader.feed(fragment)
+    return reader.inside
 
 
 def reconcile_form_fields(page):
@@ -350,3 +487,22 @@ def reconcile_form_fields(page):
     reader = ReconcileFormReader()
     reader.feed(page)
     return reader.fields
+
+
+def reconcile_offerable(page):
+    """Return every control the Reconcile page rendered, pressed or not.
+
+    The universe a browser's submission is drawn from, as
+    :attr:`ReconcileFormReader.offerable` builds it: ``(name, value)`` for a
+    checkbox or radio, which can only ever send its own value, and
+    ``(name, None)`` for a field whose value the owner supplies.
+
+    Args:
+        page: The rendered page or body, as text.
+
+    Returns:
+        The set.
+    """
+    reader = ReconcileFormReader()
+    reader.feed(page)
+    return reader.offerable

@@ -179,6 +179,7 @@ from ._submission import (
     ReviewedRow,
     as_reviewed,
     parse_figure,
+    spell_figure,
 )
 from ._near import NEAR_MISS_BOUND
 from ._pairing import DAY_WINDOW
@@ -323,6 +324,7 @@ __all__ = [
     "answered_merchants",
     "apply_reviewed",
     "as_reviewed",
+    "spell_figure",
     "awaiting_review_count",
     "candidates_for",
     "corrected_purchase_day",

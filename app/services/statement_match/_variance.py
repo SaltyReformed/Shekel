@@ -270,61 +270,121 @@ def _reject_uncorrectable_row(
 
 
 def _reject_unaccepted_difference(
-    sides: MatchSides, rows: int, accepted: "Decimal | None", exempt: bool,
+    sides: MatchSides, rows: int, accepted: "Decimal | None",
 ) -> None:
     """Refuse a difference the owner did not agree to, or did not see.
 
-    Plan step ``bank_import:X-f6d-4``, rulings **R-GD(a)** and **R-FN**.  What
-    the two remedies have in common is that both WRITE the gap somewhere the
-    owner did not type it -- onto the single row a match names, or into a new
-    uncategorized row -- so both are gated on the same consent, and this is
-    the gate that makes "accepts" true rather than decorative.
+    Plan step ``bank_import:X-f6d-4``, rulings **R-GD(a)** and **R-FN**; the
+    shape rule below is the developer's ruling of 2026-08-30 (plan step
+    ``bank_import:X-gj-1b``).  What the two remedies have in common is that
+    both WRITE the gap somewhere the owner did not type it -- onto the single
+    row a match names, or into a new uncategorized row -- so both are gated on
+    the same consent, and this is the gate that makes "accepts" true rather
+    than decorative.
 
-    **Three refusals, and they are one rule read three ways:**
+    **ONE rule: a difference this door would WRITE must have been reviewed,
+    and the figure reviewed must be the figure derived.**  It reads three ways
+    and they are the same sentence:
 
-    * the sides differ and nothing was accepted.  The shipped behaviour, with
-      its own sentence naming both sums and the gap, now saying what to do
-      about it rather than sending the owner away to edit a row;
-    * something was accepted and it is not the figure this door derives.  The
-      per-row guard (``_resolve._reject_moved_since_review``) cannot see this:
-      it reconciles each ROW against the state the screen described, and the
-      SUM is a second derivation over those rows.  A screen that states one
-      total over a door that writes another is finding **N-336** one tier up;
-    * something was accepted where the sides AGREE.  ``0.00`` is a figure like
-      any other, so this arm is stated rather than left to the comparison
-      above -- a first version claimed the equality caught it and was measured
-      FALSE by two independent reviews on the same day, because
-      ``Decimal("0.00") == Decimal("0.00")``.
+    * there is a difference and the submission states none.  The shipped
+      behaviour, naming both sums and the gap and saying what to do about it;
+    * there is a difference and the submission states a different one.  The
+      per-row guard (:func:`~._resolve._reject_moved_since_review`) cannot see
+      this: it reconciles each ROW against the state the screen described, and
+      the difference is a subtraction OVER those rows.  A screen that states
+      one total over a door that writes another is finding **N-336** one tier
+      up, and so is a screen whose total was true when it was drawn;
+    * there is NO difference and the submission states one anyway.  It earns
+      its own sentence, because the comparison below would report a figure
+      that "now comes to +0.00" when what happened is that the rows stopped
+      disagreeing.
 
-    **A SINGLE-LINE match against ONE row is exempt, and only that shape.**
-    The near tier offers exactly it -- one line, one row, a figure the proposal
-    card states -- and its tick carries no difference field, so requiring one
-    would kill the tier that plan step ``X-f6d-1`` shipped.  Every other shape
-    is the owner's own assertion built on a checkbox list, including the
-    MULTI-LINE match against one row that ``bank_cash_for`` now corrects: two
-    reviews independently found that, unexempted, an owner could tick five
-    unrelated lines against one row and rewrite its amount to their sum with no
-    figure gate at all.
+      **It is NOT reachable by a screen whose rows moved**, which an earlier
+      draft of this said: :func:`~._resolve._reject_moved_since_review` runs
+      inside ``resolve_rows``, which is evaluated as an ARGUMENT to
+      :func:`~._accept.record_match` and so strictly before this gate -- a row
+      whose figure or revision drifted is refused there, by name, with its own
+      reload sentence.  What reaches here is a body that states a figure over
+      rows that add up: a crafted one, or the race in which the owner ticks
+      the consent and then ticks a row and presses Apply before the re-price
+      returns.  The arm is kept because this function is total over its
+      inputs, not because a stale page produces it.
+
+    **The gate turns on THIS DOOR's derivation and never on the submission's
+    shape**, which is the whole of the 2026-08-30 ruling.  It exempted *a
+    single line against a single row* until then, on the premise that the near
+    tier offers exactly that shape and its card states the figure -- so a
+    SHAPE was read as a proxy for *the screen already disclosed this*.  A proxy
+    for a fact the wire could carry is a guess, and the Reconcile page's
+    tickable proposal rows manufacture the shape: untick one row of a proposed
+    group and what arrives is one line against one row, indistinguishable from
+    the tier's own offer.  Measured 2026-08-30 on a clone of the developer's
+    production data, over the 137 proposals his account offers:
+
+    * the exemption was load-bearing for **2** -- line 338 writing `-$0.15`
+      and line 218 writing `-$0.04`, both onto ``Groceries: Walmart``;
+    * **3** carried more than one row, and unticking down to one wrote, with
+      nothing asked, `$25.51` or `$59.77` on line 253, up to `$437.76` on line
+      257, and up to **`$2,572.36`** on line 358 -- the bank's `$2,611.90`
+      payroll deposit written onto a `$39.54` ``Phone Allowance`` row.
+
+    An allowlist that existed for four cents permitted twenty-five hundred
+    dollars.  The two near-tier proposals state their figures on the wire now
+    (:func:`app.jinja_filters.stated_difference`), and no shape is exempt
+    from anything.  **Every one of the 137 proposals now emits that
+    field**, not only the two that carry a figure: it is what a match
+    says it was reviewed against, and a card that emitted it only when
+    it was non-zero would make its absence mean two things.
+
+    **A ZERO difference requires no figure, and the reason is the WRITE PATH
+    rather than who derived the predicate.**  Both tests are the door's own
+    arithmetic over a submission its sender shaped, so *sender-controlled
+    versus door-derived* does not separate them -- an earlier draft of this
+    paragraph said it did, and an adversarial review measured that false.  What
+    separates them is what each predicate is ABOUT.  The old one predicted
+    *what the screen had disclosed*, which this door cannot know and so had to
+    proxy.  This one predicts *what this door is about to write*, which it can
+    check: at a zero difference :func:`corrected_figure` answers ``None`` for a
+    row already at the bank's figure, :func:`bank_cash_for` answers ``None``
+    for a group, and :func:`~._accept.accept_match` resolves no residual period
+    -- so the two writers a difference has are both provably idle and there is
+    no act to consent to.  **The rule is therefore "no figure is required
+    exactly where no figure would be written", and it is not a shape.**
+
+    Requiring one anyway would also have refused every exact match built with
+    scripting off, where the panel never re-renders and so can state no figure
+    -- a real capability, removed to gate a write that does not happen.
+
+    **What this DID remove, stated because the paragraph above would otherwise
+    read as though nothing was lost**: a one-line one-row NEAR MISS can no
+    longer be corrected with scripting off.  That is the ruling working rather
+    than a casualty of it -- with no script the panel never states the figure,
+    so the owner cannot have seen what would be written to their row -- but it
+    is a capability the exemption was silently providing, and the two surfaces
+    that used to promise it in their JavaScript-off wording no longer do.
 
     Args:
         sides: What the two halves come to.
         rows: How many app rows the match names, for the sentence.
-        accepted: The signed difference the owner agreed to, or ``None``.
-        exempt: Whether this shape may proceed without one -- the near tier's
-            single line against a single row.  **It exempts the REQUIREMENT
-            and never the reconciliation**: a figure that arrives anyway is
-            still checked, because a screen that offered to record a
-            difference here described an act this door will not perform, and
-            silently doing the other thing is finding **N-336**'s class.  A
-            first version returned early on this shape and swallowed it.
+        accepted: The difference the submission states it was reviewed
+            against, or ``None`` where it states none.  **A PRECONDITION and
+            never a payload**: what the door writes is
+            :attr:`MatchSides.difference`, derived here from the rows the ids
+            name, and this is only ever compared against it.
 
     Raises:
         ValidationError: Naming both sums and the difference.
     """
     difference = sides.difference
+    if not difference:
+        if accepted is not None and accepted != difference:
+            raise ValidationError(
+                f"This match was reviewed against a difference of "
+                f"{accepted:+,.2f} and now adds up exactly.  Reload the page "
+                f"to review it against what your records hold now." + _NOTHING
+            )
+        return
     if accepted is None:
-        if not difference or exempt:
-            return
         remedy = (
             "correct the one you know is wrong, or tick the box to record "
             "the difference as a row with no category that you can "
@@ -340,11 +400,6 @@ def _reject_unaccepted_difference(
             f"These do not add up.  Your bank shows {sides.bank:+,.2f} and "
             f"{subject} {sides.app:+,.2f}, a difference of "
             f"{difference:+,.2f}.  Either {remedy}." + _NOTHING
-        )
-    if not difference:
-        raise ValidationError(
-            f"These add up, so there is no difference of {accepted:+,.2f} to "
-            f"record.  Reload the page and review it again." + _NOTHING
         )
     if accepted != difference:
         raise ValidationError(
@@ -391,13 +446,12 @@ def reject_unrecordable(
     if sides.difference:
         for row in rows:
             _reject_uncorrectable_row(row, sides)
-    _reject_unaccepted_difference(
-        sides, len(rows), accepted,
-        # The near tier's own shape, and the only one whose tick may carry no
-        # figure: one line, one row, and the proposal card states the
-        # correction it would write.
-        exempt=len(rows) == 1 and sides.line_count == 1,
-    )
+    # **Asked of every match, in every shape.**  The one shape this used to
+    # pass unasked -- a single line against a single row -- was a proxy for
+    # *the screen already disclosed this figure*, and the Reconcile page's
+    # tickable proposal rows manufacture it; see that function for what the
+    # proxy was measured to be worth.
+    _reject_unaccepted_difference(sides, len(rows), accepted)
 
 
 def bank_cash_for(
@@ -422,9 +476,11 @@ def bank_cash_for(
     **What the widening needed, and two reviews independently found missing, is
     the CONSENT.**  Nothing bounds which lines an owner may tick, so without a
     figure gate a mis-tick could rewrite a `$45.00` fee to `$1,950.00` in one
-    press with no undo.  :func:`_reject_unaccepted_difference` now requires the
-    accepted figure for every shape except the single-line one-row match the
-    near tier proposes.  A first version of this step justified the widening by
+    press with no undo.  :func:`_reject_unaccepted_difference` requires the
+    reviewed figure for EVERY shape as of plan step ``bank_import:X-gj-1b``;
+    it exempted the single-line one-row match until then, and that exemption
+    is what the Reconcile page's tickable proposal rows learned to
+    manufacture.  A first version of this step justified the widening by
     *"0 such pairings exist on the developer's own data"*, which is vacuous:
     no tier emits a multi-line proposal at all, so the population that reaches
     this code is whatever the owner ticks.

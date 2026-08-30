@@ -31,7 +31,11 @@ from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
 from app.models.user import User, UserSettings
 from app.services import auth_service
-from tests.test_routes._statement_forms import reconcile_form_fields
+from tests.test_routes._statement_forms import (
+    controls_inside_the_trigger,
+    reconcile_form_fields,
+    reconcile_offerable,
+)
 from tests.test_services.test_statement_match._builders import (
     a_bank_line,
     a_rule,
@@ -88,8 +92,52 @@ def _choosing(fields, name, value):
     return replaced + [(name, value)]
 
 
-def _post(auth_client, seed_user, fields):
-    """Post *fields* to Apply, as a browser would."""
+def _post(auth_client, seed_user, fields, page):
+    """Post *fields* to Apply, refusing anything *page* could not have sent.
+
+    **The refusal is the point, and it is structural rather than a rule to
+    remember.**  Every acting case here appended ``("ok", str(line.id))`` to
+    what it had scraped, and that value is one a browser could not produce for
+    most cards: the ``ok-<line>`` checkbox is rendered only where a card
+    suggests a verb whose door exists, so 31 of the developer's 248 cards
+    carried a panel button pointing at an element that was not in the
+    document -- a primary control, dead in a browser, with every server test
+    green.  A helper that accepts whatever a caller appends turns a faithful
+    scrape back into a hand-picked payload, and the next author in a hurry
+    re-abuses it; this one cannot be.
+
+    **It is asked as a PAIR for a checkbox or radio.**  ``ok`` is one name
+    shared by every card and keyed by its value, so a check that only asked
+    whether the page renders ``ok`` anywhere would pass exactly the payload
+    that hid the defect.
+
+    A case that genuinely needs to post an unrendered control -- a crafted
+    body, a stale page -- posts through ``auth_client`` directly and says so,
+    which is the moment the question gets asked out loud.
+
+    Args:
+        auth_client: The logged-in client.
+        seed_user: The seeded user bundle.
+        fields: The ``(name, value)`` pairs to submit, scraped and then
+            pressed.
+        page: The rendered page they were scraped from.
+
+    Returns:
+        The response.
+
+    Raises:
+        AssertionError: When a field names a control *page* did not render, or
+            gives a checkbox or radio a value it could not have sent.
+    """
+    offerable = reconcile_offerable(page)
+    for name, value in fields:
+        if name == "csrf_token":
+            continue
+        assert (name, value) in offerable or (name, None) in offerable, (
+            f"({name!r}, {value!r}) is not something this page rendered, so a "
+            f"browser could never submit it -- post it through auth_client "
+            f"directly if the case is about a crafted or stale body"
+        )
     return auth_client.post(
         _url(seed_user["account"].id),
         data=MultiDict([("csrf_token", "x")] + list(fields)),
@@ -289,12 +337,13 @@ class TestAnUntouchedPageWritesNothing:
         """Every control the page renders, at the value it renders."""
         _a_swipe_a_rule_files(seed_user, db)
         before = db.session.query(Transaction).count()
-        fields = reconcile_form_fields(_page(auth_client, seed_user))
+        page = _page(auth_client, seed_user)
+        fields = reconcile_form_fields(page)
 
         assert not any(name == "ok" for name, _ in fields), (
             "a card arrived OK'd, so this case cannot grade the default"
         )
-        response = _post(auth_client, seed_user, fields)
+        response = _post(auth_client, seed_user, fields, page)
 
         assert response.status_code == 200
         assert db.session.query(StatementMatch).count() == 0
@@ -314,13 +363,14 @@ class TestOKThenApplyIsWhatMovesMoney:
     ):
         """The one-click case ruling **R-HS** exists for."""
         envelope, line = _a_swipe_a_rule_files(seed_user, db)
-        fields = reconcile_form_fields(_page(auth_client, seed_user))
+        page = _page(auth_client, seed_user)
+        fields = reconcile_form_fields(page)
 
         assert any(
             name == f"destination-{line.id}" for name, _ in fields
         ), "the page rendered no destination for this line"
         response = _post(
-            auth_client, seed_user, fields + [("ok", str(line.id))],
+            auth_client, seed_user, fields + [("ok", str(line.id))], page,
         )
 
         assert response.status_code == 200
@@ -348,13 +398,14 @@ class TestOKThenApplyIsWhatMovesMoney:
         )
         db.session.commit()
         before = db.session.query(Transaction).count()
-        fields = reconcile_form_fields(_page(auth_client, seed_user))
+        page = _page(auth_client, seed_user)
+        fields = reconcile_form_fields(page)
 
         assert (f"destination-{line.id}", "income") in fields, (
             "the deposit's ADD tab named no arm, so this grades nothing"
         )
         response = _post(
-            auth_client, seed_user, fields + [("ok", str(line.id))],
+            auth_client, seed_user, fields + [("ok", str(line.id))], page,
         )
 
         assert response.status_code == 200
@@ -375,10 +426,11 @@ class TestOKThenApplyIsWhatMovesMoney:
             seed_user, merchant="Public Library", amount="-5.99",
         )
         db.session.commit()
-        fields = reconcile_form_fields(_page(auth_client, seed_user))
+        page = _page(auth_client, seed_user)
+        fields = reconcile_form_fields(page)
 
         response = _post(
-            auth_client, seed_user, fields + [("ok", str(line.id))],
+            auth_client, seed_user, fields + [("ok", str(line.id))], page,
         )
         body = response.get_data(as_text=True)
 
@@ -513,7 +565,8 @@ class TestTheAlwaysControlStatesTheRuleTheCardChose:
         )
         db.session.commit()
         merchant_id = the_merchant_id(seed_user, "Lowe's")
-        fields = reconcile_form_fields(_page(auth_client, seed_user))
+        page = _page(auth_client, seed_user)
+        fields = reconcile_form_fields(page)
 
         chosen = _choosing(
             fields, f"destination-{line.id}", str(envelope.id),
@@ -521,7 +574,7 @@ class TestTheAlwaysControlStatesTheRuleTheCardChose:
         response = _post(auth_client, seed_user, chosen + [
             ("ok", str(line.id)),
             (f"always-{line.id}", str(merchant_id)),
-        ])
+        ], page)
 
         assert response.status_code == 200
         rule = db.session.query(MerchantRule).filter_by(
@@ -539,17 +592,156 @@ class TestTheAlwaysControlStatesTheRuleTheCardChose:
         )
         db.session.commit()
         merchant_id = the_merchant_id(seed_user, "Lowe's")
-        fields = reconcile_form_fields(_page(auth_client, seed_user))
+        page = _page(auth_client, seed_user)
+        fields = reconcile_form_fields(page)
 
         chosen = _choosing(
             fields, f"destination-{line.id}", str(envelope.id),
         )
         response = _post(auth_client, seed_user, chosen + [
             (f"always-{line.id}", str(merchant_id)),
-        ])
+        ], page)
 
         assert response.status_code == 200
         assert db.session.query(MerchantRule).count() == 0
+
+
+class TestAProposedCardAppliesFromThisPageAndItsPaneLoads:
+    """The near tier's own act, walked end to end on the Reconcile page.
+
+    **Both halves were ungraded and an adversarial review measured it**: with
+    the page's hidden ``residual-<line>`` deleted the whole tracked suite
+    stayed green at 4,516 passed, while the same mutation on the review
+    queue's own input fails a case by name.  One of the two emission sites
+    was checked and the other was not, and it is the newer one that a browser
+    now depends on: the accept door exempts no shape since plan step
+    ``bank_import:X-gj-1b``, so a proposal that states no figure REFUSES.
+    """
+
+    @staticmethod
+    def _near_miss(seed_user, db):
+        """Stage the developer's own Geico case: a bill settled 3 cents off.
+
+        Returns:
+            ``(line, txn)`` -- the bank line and the row a tier will pair it
+            with, three cents apart, which is what makes the proposal a NEAR
+            MISS rather than an exact match.
+        """
+        an_envelope(seed_user)
+        line = an_unexplained_outflow(
+            seed_user, merchant="Geico", amount="-178.29",
+        )
+        txn = a_transaction(
+            seed_user, name="Geico", amount="178.32",
+            status=StatusEnum.DONE, settled_on=line.posted_on,
+        )
+        db.session.commit()
+        return line, txn
+
+    def test_the_page_emits_the_figure_the_proposal_states(
+        self, auth_client, db, seed_user,
+    ):
+        """The control the mutation deleted, asserted by name and value.
+
+        It is a HIDDEN input, so it is not something a case can discover by
+        pressing: nothing else in this file would notice it going away.
+        """
+        line, _ = self._near_miss(seed_user, db)
+
+        fields = reconcile_form_fields(_page(auth_client, seed_user))
+
+        assert (f"residual-{line.id}", "0.03") in fields, (
+            "the card stated no difference, so the door would refuse the "
+            "very act this tier exists to offer"
+        )
+
+    def test_OK_on_a_proposed_card_REPRICES_the_row(
+        self, auth_client, db, seed_user,
+    ):
+        """Scrape the page, press OK, and check the money moved.
+
+        The loop the file's own header asks for: the page's bytes go back to
+        the door, so the figure the owner agreed to and the figure the door
+        wrote are the same derivation rather than two that agree by reading.
+        """
+        line, txn = self._near_miss(seed_user, db)
+        page = _page(auth_client, seed_user)
+        fields = reconcile_form_fields(page)
+
+        assert (f"verb-{line.id}", "match") in fields, (
+            "the card did not open on MATCH, so this grades the wrong verb"
+        )
+        response = _post(
+            auth_client, seed_user, fields + [("ok", str(line.id))], page,
+        )
+
+        assert response.status_code == 200
+        db.session.expire_all()
+        assert db.session.query(StatementMatch).count() == 1
+        assert txn.settled_amount == Decimal("178.29"), (
+            "the row must book what the BANK took"
+        )
+
+    def test_the_MATCH_pane_LOADS_for_a_proposed_card(
+        self, auth_client, db, seed_user,
+    ):
+        """The pane a proposal card asks for on its first open.
+
+        **It answered 404 for every proposal until plan step
+        ``bank_import:X-gj-1b``**, because the route resolved the line in
+        ``review.unmatched`` and ``_unexplained`` takes a proposal's line out
+        of that list before it exists -- 137 of the developer's 137 proposal
+        cards, each a spinner that never resolved.  htmx does not swap a 4xx,
+        so the owner saw *Finding the rows this could be...* for ever.
+        """
+        line, _ = self._near_miss(seed_user, db)
+
+        response = auth_client.post(
+            _match_url(seed_user["account"].id, line.id),
+            data={"csrf_token": "x"},
+        )
+
+        assert response.status_code == 200, (
+            "a proposed card's MATCH pane must load like any other"
+        )
+        assert f'name="rows-{line.id}"' in response.get_data(as_text=True), (
+            "the pane rendered none of the proposal's own rows"
+        )
+
+    def test_the_TRIGGER_does_not_contain_the_control_it_replaces(
+        self, auth_client, db, seed_user,
+    ):
+        """The consent box may not sit inside the element that re-renders it.
+
+        **The workbench carries this control and this pane shipped without
+        it**, which is how the same defect arrived twice: ticking the consent
+        fired the re-render, and the swap replaced it with a fresh unticked
+        one, so the owner could never keep it ticked and Apply carried no
+        figure -- with every server test green.  Asserted over the MARKUP,
+        because the defect is a containment relation and nothing else in the
+        tree can see one.
+
+        The rows must be INSIDE, which is the other half and is what makes
+        unticking a proposed row re-price at all: a change event bubbles to
+        ancestors only.
+        """
+        line, _ = self._near_miss(seed_user, db)
+        pane = auth_client.post(
+            _match_url(seed_user["account"].id, line.id),
+            data={"csrf_token": "x"},
+        ).get_data(as_text=True)
+
+        inside = controls_inside_the_trigger(pane)
+
+        assert f"rows-{line.id}" in inside, (
+            "the row checkboxes are outside the element whose change "
+            "re-prices them, so unticking one changes the submission and "
+            "re-prices nothing"
+        )
+        assert f"residual-{line.id}" not in inside, (
+            "the consent control is inside the element that replaces it, so "
+            "ticking it discards the tick"
+        )
 
 
 class TestAVerbWithNoDoorRendersNoControl:
@@ -580,14 +772,24 @@ class TestAVerbWithNoDoorRendersNoControl:
         assert "pair a bank line with another of your own accounts" in page
         assert "Skipping is not recorded yet" in page
 
-    def test_a_parked_card_offers_no_OK_at_all(
+    def test_a_parked_card_offers_no_ONE_CLICK_OK(
         self, auth_client, db, seed_user,
     ):
         """Ruling **R-HQ**: a holding state is not inbox work.
 
         Its sentence opens on TRANSFER, a verb with no door, so a control
-        keyed on the SENTENCE would have put a working-looking OK on every
-        parked card payment.
+        keyed on the SENTENCE would have put a working-looking OK button on
+        every parked card payment.
+
+        **It is the BUTTON this is about, not the consent**, and the two were
+        one control until plan step ``bank_import:X-gj-1b``.  A parked line's
+        ADD is shut by ruling **R-GJ**'s bar and its TRANSFER and SKIP have no
+        door, but its MATCH tab is open like any other card's -- the pass's
+        unexplained rows are a fact about the PASS -- so the owner may still
+        group-match a card payment against the paybacks it covers, and that
+        act needs the ``ok`` checkbox in the document.  Gating the checkbox on
+        the summary button is what made that act dead in a browser
+        (:attr:`LineCard.takes_ok`).
         """
         an_envelope(seed_user)
         line = an_unexplained_outflow(
@@ -599,4 +801,11 @@ class TestAVerbWithNoDoorRendersNoControl:
         page = _page(auth_client, seed_user, "transfers")
 
         assert "Capital One Credit Card" in page
-        assert f'name="ok" value="{line.id}"' not in page
+        assert f'for="ok-{line.id}">OK<' not in page, (
+            "a parked card must not offer the one-click OK its sentence "
+            "would otherwise justify"
+        )
+        # ...and the consent it CAN give, through the tab that has a door.
+        assert f'name="ok" value="{line.id}"' in page, (
+            "a parked payment must still be group-matchable"
+        )

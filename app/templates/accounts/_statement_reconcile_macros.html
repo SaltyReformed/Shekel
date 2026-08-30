@@ -61,30 +61,6 @@
     Which of your rows is this? Ticked rows take the bank's day
     <span class="font-mono">{{ card.line.posted_on }}</span>.
   </p>
-  {% if card.panel.match.proposal %}
-  {# THE ROWS A TIER FOUND, ARRIVING TICKED (R-HS): a suggestion the app can
-     justify is pre-filled, and OK plus Apply are the consent.  They are
-     rendered OUTSIDE the search fragment because the pass withholds every row
-     a proposal claims from the candidate pool, so the two lists are disjoint
-     by construction and a swap of one cannot lose the other. #}
-  <div class="rec-rows rec-rows-proposed">
-    {% for row in card.panel.match.proposal.rows %}
-    <div class="rec-row-pick">
-      <input class="form-check-input" type="checkbox"
-             id="proposed-{{ card.line.line_id }}-{{ row.kind.value }}-{{ row.row_id }}"
-             name="rows-{{ card.line.line_id }}" value="{{ row | reviewed_token }}" checked>
-      <label class="rec-row-label"
-             for="proposed-{{ card.line.line_id }}-{{ row.kind.value }}-{{ row.row_id }}">
-        <span class="rec-row-name">{{ row.label }}</span>
-        <span class="rec-row-day font-mono">
-          {% if row.settled_on %}{{ row.settled_on }}{% else %}not recorded{% endif %}
-        </span>
-      </label>
-      <span class="rec-row-figure font-mono">{{ money(row.cash_amount) }}</span>
-    </div>
-    {% endfor %}
-  </div>
-  {% endif %}
   {# THE ROWS AND THE RUNNING DIFFERENCE LOAD WHEN THIS TAB IS FIRST SHOWN.
      `intersect once` fires only when the element actually has a box, which a
      closed <details> and an unselected tab pane both withhold -- so a page of
@@ -100,6 +76,34 @@
        hx-target="this"
        hx-swap="outerHTML"
        hx-disabled-elt="unset">
+    {% if card.panel.match.proposal %}
+    {# WHAT A TIER PROPOSED, CARRIED UNTIL THE PANE ARRIVES AND RENDERS IT.
+       Its rows arrive TICKED (R-HS) -- a suggestion the app can justify is
+       pre-filled, and OK plus Apply are the consent -- and the difference it
+       states travels with them, because the accept door exempts no shape
+       (plan step X-gj-1b, developer 2026-08-30) and a card can be OK'd from
+       the summary without this tab ever being opened.
+
+       THEY ARE HIDDEN HERE AND VISIBLE IN THE PANE, and that is one rendering
+       each rather than two of one thing: the fragment replaces this element
+       whole (hx-target="this", outerHTML), so exactly one `rows-<line>` per
+       row and exactly one `residual-<line>` are in the form at every moment
+       -- these until the rows are looked at, the pane's own controls
+       afterwards.  They cannot coexist.
+
+       THE ROWS MOVED IN HERE at that step and the reason is the re-price.
+       They used to render as VISIBLE tickboxes on this card, a sibling of the
+       .rec-match element whose change event fires the re-pricing request --
+       and a change bubbles to ancestors only, so unticking one reached no
+       trigger at all: the panel went on stating a difference that was no
+       longer true, and the door then refused the press. #}
+    {% for row in card.panel.match.proposal.rows %}
+    <input type="hidden" name="rows-{{ card.line.line_id }}"
+           value="{{ row | reviewed_token }}">
+    {% endfor %}
+    <input type="hidden" name="residual-{{ card.line.line_id }}"
+           value="{{ card.panel.match.proposal | stated_difference }}">
+    {% endif %}
     <p class="small text-body-secondary mb-0">
       <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
       Finding the rows this could be...
@@ -257,15 +261,30 @@
       <i class="bi bi-chevron-down rec-caret" aria-hidden="true"></i>
     </div>
     <div class="rec-ok">
-      {% if card.offers_ok %}
+      {% if card.takes_ok %}
       {# OK IS A CHECKBOX, so an untouched card submits nothing at all and
          R-HS's "an untouched card is not submitted" is structural rather than
-         a default that has to be got right. #}
+         a default that has to be got right.
+
+         IT RENDERS WHENEVER THE CARD HAS AN ACT, not only where the summary
+         shows a button, and the two are different questions asked of the
+         service.  The panel's own primary button is a <label for="ok-N">, so
+         gating the INPUT on `offers_ok` left that label pointing at nothing on
+         31 of the developer's 248 cards -- every deposit, every unruled swipe,
+         every parked payment -- with the act dead in a browser and the suite
+         green.  `btn-check` hides the input itself, so a card with no
+         suggestion carries the consent without showing a second call to
+         action beside its caret. #}
       <input class="btn-check" type="checkbox" autocomplete="off"
              id="ok-{{ card.line.line_id }}" name="ok" value="{{ card.line.line_id }}"
              data-rec-ok>
+      {% if card.offers_ok %}
+      {# The ONE-CLICK OK, on the summary, and only where a verb was justified
+         AND its door exists (R-HS, R-HX).  A card with neither shows its
+         caret and the panel's own button instead, so the two are exclusive. #}
       <label class="btn btn-sm btn-outline-primary rec-ok-btn"
              for="ok-{{ card.line.line_id }}">OK</label>
+      {% endif %}
       {% endif %}
     </div>
   </summary>
