@@ -340,6 +340,45 @@ class BankAgreement:
         return sum(1 for day in self.days if day.bank_balance is None)
 
     @property
+    def headline(self) -> "AgreementDay | None":
+        """Return the latest compared day the bank's own record can PRICE.
+
+        **The Reconcile screen's hero day** (plan step ``bank_import:X-gj-1a``,
+        the direction locked in ``docs/design/bank_import_audit.md``): the
+        three figures that answer *am I done* -- what the bank says the account
+        held, what the books say, and the difference -- have to be about ONE
+        day, and it must be a day both records can speak for.
+
+        **It is not** :attr:`standing_gap`\'s **day, and the difference is not
+        cosmetic.**  That property answers *how far apart are the two running
+        totals at the END of the span*, so it reads
+        :attr:`ComparedSpan.last_day` whether or not an anchor reaches it and
+        returns ``None`` when it does not.  A hero built on it would print a
+        dash for an account whose statements simply stop before the span does
+        -- which is :attr:`unpriced_days`, a state this report already
+        measures and already expects.  This walks BACK to the last day that
+        carries a figure, so the hero states a real comparison or says there is
+        none at all.
+
+        **Over** :attr:`compared` **rather than** :attr:`days`, because a day
+        the app has no records for has no books side to compare: its
+        :attr:`AgreementDay.recorded` of zero means *nothing recorded*, and
+        pricing a difference against it would report finding **N-314** as this
+        arc\'s defect.
+
+        Returns:
+            The :class:`AgreementDay`, whose :attr:`~AgreementDay.bank_balance`
+            is guaranteed non-``None`` and whose :attr:`~AgreementDay.gap` is
+            therefore a figure rather than an absence; or ``None`` when no
+            compared day is priced at all -- an account with no anchor, or one
+            whose recorded lines never reach a day its records cover.
+        """
+        for day in reversed(self.compared):
+            if day.bank_balance is not None:
+                return day
+        return None
+
+    @property
     def standing_gap(self) -> "Decimal | None":
         """Return how far the two running balances stand apart at the END.
 

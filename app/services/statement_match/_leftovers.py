@@ -63,7 +63,7 @@ from ._creations import PurchaseDestination, envelope_answer_key
 from ._offers import BankLine
 from ._placement import Placement, placements_for
 from ._rules import RuleView
-from ._scope import ReviewScope
+from ._scope import ReviewScope, no_period_refusal
 from ._section import MerchantSection, merchant_section
 
 if TYPE_CHECKING:  # pragma: no cover -- the edge back would be a cycle
@@ -117,6 +117,14 @@ class CreatableLine:
             :attr:`~._placement.Placement.joins_new` is set by
             :func:`_marked_joining` -- the facts it rests on belong to the PASS
             and are not known when this value is built.
+        withheld: Why the create door would REFUSE this line, or ``None``
+            when it would not.  **Symmetric with**
+            :attr:`RecordableInflow.withheld` **and asked of the same
+            predicate**: no saved pay period covers the day the purchase was
+            made, so there is no budget for it to belong to.  It is a
+            different fact from :attr:`warning`, which explains why the line
+            is still here; this says the ADD control may not be rendered at
+            all.
         warning: The whole sentence the screen prints beside this line, or
             ``None``.  **Composed in the service and printed unbranched**
             (finding **N-359**, plan step ``bank_import:X-gf-3a``): it is the
@@ -135,6 +143,7 @@ class CreatableLine:
     placement: Placement | None = None
     verdict: "RuleVerdict | None" = None
     warning: "str | None" = None
+    withheld: "str | None" = None
 
 
 @dataclass(frozen=True)
@@ -334,11 +343,7 @@ def _one_inflow(
             f"there is nothing to record until then."
         )
     elif pay_period_id is None:
-        withheld = (
-            f"No pay period covers {line.posted_on}, so there is no budget "
-            f"for this to belong to.  Extend your pay schedule past that day "
-            f"first."
-        )
+        withheld = no_period_refusal(line.posted_on, "this income row")
     else:
         withheld = None
     return RecordableInflow(
@@ -413,11 +418,15 @@ def _one_creatable(
         view: What the owner has said and what it can resolve against.
 
     Returns:
-        Its :class:`CreatableLine`.  A line no saved period covers gets NO
-        placement, because a rule resolves into a destination and there is no
-        period here for one to be in -- the create door refuses such a line by
-        name (``_create._period_holding``), so suggesting anything for it would
-        be the chooser-that-cannot-succeed shape again.
+        Its :class:`CreatableLine`.  A line no saved period covers gets no
+        placement AND a :attr:`~CreatableLine.withheld` refusal, because a rule
+        resolves into a destination and there is no period here for one to be
+        in.  **Withholding the placement alone was not enough** (adversarial
+        review 2026-08-29): the line stayed in ``creatable``, so a reader
+        taking membership of that list as the door's answer offered a control
+        ``ReviewScope.period_holding`` then refused by name -- the
+        chooser-that-cannot-succeed shape, on any swipe made just before the
+        first payday or posted past the last saved period.
     """
     offered = by_period.get(period_id, [])
     return CreatableLine(
@@ -427,6 +436,13 @@ def _one_creatable(
         placement=(
             None if period_id is None
             else placements_for(line.merchant_id, view, offered)
+        ),
+        # **The MADE day**, which is the day this purchase would be placed by
+        # and the day ``period_id`` was resolved from -- one derivation, so
+        # the screen cannot offer a control the door refuses.
+        withheld=(
+            None if period_id is not None
+            else no_period_refusal(line.happened_on, "this purchase")
         ),
     )
 

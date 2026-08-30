@@ -49,7 +49,16 @@ CAPS = {
     "recurrence": 850,
     "pay_calendar": 500,
     "credit_card": 400,
-    "bank_import": 200,
+    # **RAISED 200 -> 260 by the developer, 2026-08-30**, on rule 4's own
+    # terms: the cap BOUND, and rule 5's escape was spent first.  The shipped
+    # X-gb..X-gf-3b-2 span had already been condensed to one line per step,
+    # every other shipped entry in the file was already one line, and the
+    # document sat at exactly 180 -- the headroom floor -- with `X-gj-1b`,
+    # `X-gj-1c`, `X-gj-3` and `X-gj-4` all still owing specifications.
+    # This arc carries the largest open leaf set of the five against the
+    # second-lowest cap; 260 restores about the room that family needs and
+    # leaves the forcing function well below the balance README's.
+    "bank_import": 260,
 }
 
 #: The signpost's cap, per document.  The balance README's reached 1,019 lines

@@ -15,13 +15,13 @@ standing merchant rules) and on the five screens rendered live through the devel
 
 **Do not scrap the feature. Scrap the five screens.** The layers underneath the screens -- the
 import record, the matchers, the standing-rule store, the auto-apply door, the receipt and the
-undo -- are measured good and are what the balance cutover (`steps.md` ranks #7 to #11, behind the
-rebuild this audit ranked #1 to #4) consumes. The layers on top of them were rebuilt over five days
-as disclosure documents rather than as a work queue, and the queue itself holds sixteen lines that
-no screen can resolve because their remedy lives in other arcs. The developer's expectation --
-import, most lines match themselves, a few exceptions by hand, done -- is exactly the design every
-peer product converges on, and it is reachable here: the engine for it shipped last week and has
-never run on a real import.
+undo -- are measured good and are what the balance cutover (the cutover steps `steps.md` ranks
+behind this rebuild) consumes. The layers on top of them were rebuilt over five days as disclosure
+documents rather than as a work queue, and the queue itself holds sixteen lines that no screen can
+resolve because their remedy lives in other arcs. The developer's expectation -- import, most lines
+match themselves, a few exceptions by hand, done -- is exactly the design every peer product
+converges on, and it is reachable here: the engine for it shipped last week and has never run on a
+real import.
 
 ## Method and scope
 
@@ -50,8 +50,8 @@ act on, and the reasons partition cleanly:
 
 | what | lines | money | why it is stuck | what the screen offers |
 | --- | --- | --- | --- | --- |
-| Capital One card payments | 9 | -$7,412.94 | Ruling R-GJ correctly bars a card payment from becoming a purchase. The books hold the money as 22 `CC Payback` rows ($6,286.46) that never sum to a payment, because a payment covers a card statement and the paybacks cover purchases. The real home is a card ACCOUNT (`credit_card:CC1`) and a TRANSFER (`CC3b`, rank #75). | Two amber paragraphs per line, repeated nine times, and a link to build a match by hand against rows that do not add up. |
-| Payroll deposits | 7 | $18,132.63 | One deposit is 2-3 income rows (Data Manager, Health Insurance Allowance, sometimes Phone Allowance) whose sum is 4-6 cents UNDER the bank's figure. That is finding N-239: `paycheck_calculator` spreads the annual rounding residue over however many periods happen to exist today (owner `balance:X-aw`, rank #85). A group match must sum exactly (R-GD forbids scoring a group). Since 2026-07-02 the developer types the actual net by hand and those four deposits matched. | Two amber paragraphs per line, a "Record as income" tick that would DOUBLE the paycheck, and the workbench link: five clicks each, minting a $0.04 uncategorized row every time. |
+| Capital One card payments | 9 | -$7,412.94 | Ruling R-GJ correctly bars a card payment from becoming a purchase. The books hold the money as 22 `CC Payback` rows ($6,286.46) that never sum to a payment, because a payment covers a card statement and the paybacks cover purchases. The real home is the card LEDGER (`credit_card:CC1a`..`CC1c`) and a TRANSFER (`CC3b`). | Two amber paragraphs per line, repeated nine times, and a link to build a match by hand against rows that do not add up. |
+| Payroll deposits | 7 | $18,132.63 | One deposit is 2-3 income rows (Data Manager, Health Insurance Allowance, sometimes Phone Allowance) whose sum is 4-6 cents UNDER the bank's figure. That is finding N-239: `paycheck_calculator` spreads the annual rounding residue over however many periods happen to exist today (owner `balance:X-aw`). A group match must sum exactly (R-GD forbids scoring a group). Since 2026-07-02 the developer types the actual net by hand and those four deposits matched. | Two amber paragraphs per line, a "Record as income" tick that would DOUBLE the paycheck, and the workbench link: five clicks each, minting a $0.04 uncategorized row every time. |
 | Real purchases already ruled | 2 | -$41.71 | Lowe's and Public Library, imported 2026-08-24, two days BEFORE the auto-apply door shipped (`X-ge`, 2026-08-26). The next import files such lines itself. | A select opening on "leave this line alone" (ruling R-FZ(b)) with the rule printed beside it. |
 | Dividends | 5 | $0.79 | No rule shape covers an inflow. | Five separate "Record $0.15 as income" ticks, every import, forever. |
 | Refunds (Amazon, Walmart x2) | 3 | $58.08 | Same. A refund is a negative purchase in the envelope that took the charge; both merchants already carry a rule. | "Record as income", which is the wrong act. |
@@ -72,7 +72,7 @@ Two more facts frame the rest:
   period; 0 open). Ruling R-GU(a) lets a rule file into a closed envelope, raising what it recorded.
   For an envelope the developer ALSO fills by hand, that is a double count of every swipe he already
   transcribed. Auto-apply is therefore only honest for envelopes he stops hand-filling -- the
-  process change ruling R-GK names, whose design loop (`X-gg`) sits at rank #78 behind the card arc.
+  process change ruling R-GK names, whose design loop (`X-gg`) sits behind the card arc.
 
 ## The screens today
 
@@ -157,9 +157,9 @@ not have, it is a TRANSFER between my own accounts, or I SKIP it.
 
 | root cause | finding / ruling | owner and rank | what it does to the inbox until fixed |
 | --- | --- | --- | --- |
-| Payroll net is 4-6 cents short | N-239 | `balance:X-aw`, rank #5 since this audit re-ranked it (it was #85), starts NOW | one permanent resident per pay period, unless the developer hand-types the net |
-| A card payment has no home | N-337, R-GJ | `credit_card:CC1` then `CC3b`, rank #75, after the cutover | one permanent resident per card payment |
-| Envelopes close before the bank sees the swipes | R-GK | `bank_import:X-gg`, rank #78, after `credit_card:CC3c` | every rule-filed swipe reopens a figure the developer considered final, and double counts it if he also hand-entered it |
+| Payroll net is 4-6 cents short | N-239 | `balance:X-aw`, pulled forward by this audit, starts NOW | one permanent resident per pay period, unless the developer hand-types the net |
+| A card payment has no home | N-337, R-GJ | `credit_card:CC1a`..`CC1c` then `CC3b`, after the cutover | one permanent resident per card payment |
+| Envelopes close before the bank sees the swipes | R-GK | `bank_import:X-gg`, after `credit_card:CC3c` | every rule-filed swipe reopens a figure the developer considered final, and double counts it if he also hand-entered it |
 
 Nothing in a skin changes those three counts. The design below gives the first two a holding shape
 so they stop rendering as work, and gives the third an interim that asks the developer for one
@@ -309,8 +309,12 @@ thought by naming what IS visible.
 
 One page per statement-covered account, replacing review, register and workbench.
 
-**Header, the hero.** `Bank $2,459.60 as of 2026-08-21 · Books $2,417.89 · Off by $41.71`, and
-beside it `27 to explain`. Those two figures answer "am I done": off by
+**Header, the hero.** `Bank $2,459.60 as of 2026-08-21 · Books $2,501.31 · Off by $41.71`, and
+beside it `18 to explain`. *(Both figures were wrong when this was written and are corrected here
+from the producers themselves, measured 2026-08-29: the books stand $41.71 ABOVE the bank, not
+below, since `AgreementDay.gap` is books less bank; and the inbox is 18 rather than 27 because
+**R-HQ** moves the nine parked card payments to Transfers.)* Those two figures answer "am I done":
+off by
 $0.00 and 0 to explain is done. Holding counts sit under them as quiet chips: `9 card payments · $7,412.94
 · waiting for the card account`, `130 lines older than your pay calendar`. The import button and the
 last import's receipt are here too, so a routine session is: import, read the receipt, work the
@@ -423,10 +427,10 @@ the argument each ruling points back to.
 6. **Register and workbench retire as pages**: the Explained tab and the row's inline Find & Match
    replace them. R-GX and R-HC's argument (they are not the queue) stands; the answer becomes a tab
    and an expansion rather than a page.
-7. **Sequencing.** `balance:X-aw` (N-239, starts NOW; it was rank #85) is pulled forward to sit
-   beside the rebuild, because the payroll group rule is the interim and the calculator is the root
-   cause. `X-gg` stays behind `CC3c`. The rebuild is minted as a `bank_import` step with the Loop A
-   as its first leaf; `X-gi`'s census becomes its last.
+7. **Sequencing.** `balance:X-aw` (N-239, starts NOW) is pulled forward to sit beside the rebuild,
+   because the payroll group rule is the interim and the calculator is the root cause. `X-gg` stays
+   behind `CC3c`. The rebuild is minted as a `bank_import` step with the Loop A as its first leaf;
+   `X-gi`'s census becomes its last.
 
 ## Loop A record (2026-08-29, four rounds, locked at round 4)
 
@@ -558,20 +562,25 @@ The hero drops to two columns. Both themes through the tokens; the mockup was sh
 
 ## Loop B plan
 
-The build is `bank_import:X-gj` in `steps.md`, decomposed there; the leaves in brief, so this
-document and the registry agree on what each is:
+The build is `bank_import:X-gj`, decomposed in `steps.md`, which is where its leaves, their ORDER
+and what blocks what are stated. What belongs here is only what each leaf IS, so that the locked
+direction and the registry cannot describe different work:
 
-1. **The screen** (`X-gj-1`): the Reconcile route and templates, the tabs, the legend, the card, the
-   panel, the footer, mobile and both themes, posting to the existing doors (reviewed pass, release,
-   rules). No new money door. Fable for templates and CSS.
-2. **The inflow rule** (`X-gj-2`, moves money, own PR): an income destination and the refund
-   inversion as rule answers; auto-applies at import under R-GH because it CREATES.
-3. **The group rule** (`X-gj-3`, moves money, own PR): a signature that pre-builds the group match
-   with its residue's destination; applied only on the owner's OK, because it MODIFIES rows.
-4. **Skip and the holding state** (`X-gj-4`): a recorded disposition for a skipped line and the
-   Transfers holding state; the storage shape is a fork stated in the step, decided at the gate.
-5. **Retirement** (`X-gi`, existing): the census, then the deletion of review, register, workbench,
-   the evidence-group rendering and the per-row sentence composers.
+- **The page** (`X-gj-1`) is itself decomposed three ways, on the two boundaries the package already
+  draws: `X-gj-1a` is the view model in the service; `X-gj-1b` is the page and the three tabs whose
+  cards are BANK LINES, card and opened panel together; `X-gj-1c` is the two tabs whose cards are
+  ACTS already applied. Each ships a WHOLE page and none renders a control a later one completes.
+  All of it posts to doors that already exist, and none of it moves money of its own.
+- **The inflow rule** (`X-gj-2`, moves money, own PR): an income destination and the refund
+  inversion as rule answers; auto-applies at import under R-GH because it CREATES.
+- **The group rule** (`X-gj-3`, moves money, own PR): a signature that pre-builds the group match
+  with its residue's destination and the checkbox that states the rule; applied only on the owner's
+  OK, because it MODIFIES rows.
+- **Skip** (`X-gj-4`): a recorded disposition for a skipped line, which is what lights the SKIP verb
+  the panel renders shut; the storage shape is a fork stated in the step, decided at the gate.
+  *(It no longer owes the Transfers tab: that tab needs no store and the page draws it.)*
+- **Retirement** (`X-gi`): the census, then the deletion of review, register, workbench, the
+  evidence-group rendering and the per-row sentence composers.
 
 `balance:X-aw` (N-239) is ranked beside the rebuild; until it ships the group rule is what makes the
 4-6 cent residue land on the net row.
