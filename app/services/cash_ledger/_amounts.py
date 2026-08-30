@@ -380,9 +380,10 @@ def contributed_amount(txn, resolved: Decimal) -> Decimal:
     pure in-memory read with four arms, the last of which was "the stored
     ``estimated_amount``" -- and under the amount model a derived row stores
     none, so it could not answer at all (ruling **R-FI**).  It could not be
-    taught to: resolving a paycheck needs the owner's whole pay-period set,
-    because the biweekly rounding residue only reconciles against the complete
-    annual figure, so no per-row property can hold the derivation.
+    taught to: resolving a paycheck needs the owner's whole pay-period set --
+    four of the engine's judgements read it (**N-390**), the biweekly rounding
+    residue that was this sentence's reason having been deleted at plan step
+    balance:X-aw -- so no per-row property can hold the derivation.
 
     Taking the figure as an ARGUMENT is what a caller cannot forget.  A property
     is free to read and answers whatever it can; this signature does not exist

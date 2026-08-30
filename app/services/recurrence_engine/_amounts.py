@@ -197,19 +197,25 @@ def _get_transaction_amount(template, salary_profile, period, calendar):
     complete payday set, and its cadence -- the paycheck count the engine
     divides by -- comes off the same derivation as its periods, so the two
     cannot be sourced from different reads.  ``calculate_paycheck`` reads the
-    period set for FIVE separate judgements, every one of which needs periods
-    the pass itself is not writing into: the annual rounding reconciliation
-    (``_gross_biweekly_for_period``), THIRD-PAYCHECK detection
+    period set for FOUR separate judgements, every one of which needs periods
+    the pass itself is not writing into: THIRD-PAYCHECK detection
     (``_is_third_paycheck``), the first-paycheck-of-month deductions
     (``_is_first_paycheck_of_month``), the FICA wage-base cumulative
     (``_get_cumulative_wages``), and a deduction's ANNUAL CAP
     (``_cumulative_deduction_before``, whose own docstring names the identical
     hazard -- a partial context under-counts the cumulative and defers the cap,
     so the deduction keeps being charged after it should have stopped).  The
-    fifth was missing from an earlier draft of this paragraph and an
+    LAST of them was missing from an earlier draft of this paragraph and an
     adversarial review added it.  ``period_population`` hands the engines only
-    the NEWLY created periods, so a schedule extend used to answer all four
+    the NEWLY created periods, so a schedule extend used to answer all of them
     from a 1-3 period sample.
+
+    **A FIFTH judgement read the period set until plan step balance:X-aw and no
+    longer does**: the per-period GROSS, which distributed a rounding residue
+    across whichever rows existed (finding **N-239**).  It is now the salary
+    over the cadence and nothing else
+    (:func:`~app.services.payroll_basis.gross_per_paycheck`).  The four above
+    are still horizon-dependent and are ledger row **N-390**.
 
     Measured 2026-08-08 on a streamed clone of production: transaction 2756,
     pay period 2028-06-29 -- the THIRD paycheck of June 2028 -- was generated

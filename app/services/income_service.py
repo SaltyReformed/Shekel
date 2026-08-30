@@ -74,8 +74,8 @@ def get_current_gross_biweekly(
     :func:`paycheck_calculator.calculate_paycheck` so any applicable
     :class:`~app.models.salary_raise.SalaryRaise` row is folded into
     the post-raise annual salary -- which the engine then divides by the
-    owner's paycheck count (``PayrollBasis.periods_per_year``) and reconciles per
-    :func:`paycheck_calculator._gross_biweekly_for_period`.
+    owner's paycheck count (``PayrollBasis.periods_per_year``) through
+    :func:`app.services.payroll_basis.gross_per_paycheck`.
 
     Returning a single Decimal (rather than the full
     :class:`~app.services.paycheck_calculator.PaycheckBreakdown`)
@@ -171,8 +171,9 @@ class SalaryPricing:
     lookup at plan step X-au-c2b.**  Everything expensive behind a paycheck's
     live figure -- the owner's whole pay-period set, each profile's tax configs
     resolved per period YEAR, and ``paycheck_calculator.project_salary`` run over
-    the complete set so the biweekly rounding residue reconciles against the
-    annual figure -- depends on ``(user_id, scenario_id)`` and on NOTHING about
+    the complete set because FOUR of the engine's judgements read it (see
+    :meth:`SalaryPricing._net_by_period`) -- depends on ``(user_id,
+    scenario_id)`` and on NOTHING about
     which rows a caller happens to have loaded.  Keying it that way is what lets
     one read pass resolve it ONCE however many row sets ask
     (:class:`~app.services.cash_ledger.AmountBasis`).
@@ -282,9 +283,16 @@ class SalaryPricing:
 
         The EXPENSIVE stage, memoized per profile.  Runs
         :func:`paycheck_calculator.project_salary` over the owner's full
-        pay-period set -- required, not an optimisation: the biweekly residue
-        reconciliation anchors against the complete annual figure, exactly as
-        the salary projection page does.  Tax configs resolve PER period year
+        pay-period set -- required, not an optimisation, exactly as the salary
+        projection page does.  **The reason CHANGED at plan step balance:X-aw
+        and the requirement did not**: it was the biweekly residue
+        reconciliation anchoring against the complete annual figure, which that
+        step DELETED, and it is now the four judgements that still read the
+        list -- third-paycheck detection, the first-paycheck-of-month deduction
+        cadence, the FICA wage-base cumulative and a deduction's annual cap
+        (ledger row **N-390**).  Narrowing this to a window on the strength of
+        the residue being gone would reintroduce **D25**, one salary row stored
+        ``$502.45`` low.  Tax configs resolve PER period year
         (DH-#30), the same per-year resolution the recurrence engine uses to
         GENERATE the stored amount, so the live figure and the generated one
         cannot disagree for want of a bracket set.

@@ -13,7 +13,10 @@ disagreement between his rows and the bank's lines, and 11 of them read as
 EXACT agreement in the balance difference** because a same-day balance
 assertion cancels the error to the cent.  Among the eleven are the ``$943.41``
 of card paybacks finding **N-337** names, ``$2,090.47`` on 2026-07-31, and both
-``$0.05`` payroll residues finding **N-239** measures.  So each day carries
+``$0.05`` payroll residues finding **N-391** measures -- **N-239**'s until
+plan step balance:X-aw split that row, the residue being a standing per-paycheck
+disagreement between the app's figures and the employer's rather than the
+horizon defect X-aw closed.  So each day carries
 three facts side by side rather than one:
 
 * what the BANK's lines moved that day -- an observation;
