@@ -108,6 +108,7 @@ from app.services.anchor_service import AnchorTrueUpOutcome
 from app.utils.balance_predicates import settled_status_ids
 from app.utils.dates import display_today
 from tests._test_helpers import (
+    append_only_guard_lifted,
     an_entered_day,
     create_account_of_type,
     create_account_via_service,
@@ -118,7 +119,7 @@ from tests._test_helpers import (
     linked_ledger_account,
     load_migration_module,
     observed_day_of,
-    restamp_opening_assertion,
+    reassert_balance_on,
     restate_account_opening,
 )
 from app.services.row_valuation import owned_contribution
@@ -1390,7 +1391,7 @@ class TestScenarioAndOwnerIsolation:
         with app.app_context():
             checking = seed_user["account"]
             opened = datetime(2026, 1, 2, 9, tzinfo=timezone.utc)
-            restamp_opening_assertion(db.session, checking, opened)
+            reassert_balance_on(db.session, checking, opened)
             # **The BOOKS go back further than the restamp puts them** (plan
             # step X-f3c-2b, ruling **R-HG**).  The second settle below is
             # dated 2025-12-01 on purpose -- BEFORE the assertion, which is
@@ -1448,7 +1449,7 @@ class TestScenarioAndOwnerIsolation:
         with app.app_context():
             checking = seed_user["account"]
             opened = datetime(2026, 1, 2, 9, tzinfo=timezone.utc)
-            restamp_opening_assertion(db.session, checking, opened)
+            reassert_balance_on(db.session, checking, opened)
             # **The BOOKS go back further than the restamp puts them** (plan
             # step X-f3c-2b, ruling **R-HG**).  The second settle below is
             # dated 2025-12-01 on purpose -- BEFORE the assertion, which is
@@ -1709,8 +1710,16 @@ class TestOracleIsNotVacuous:
             # Reconciled before tampering.
             _assert_account_anchors_reconcile(scenario_id)
 
-            # Tamper the latest anchor balance (history carries no balance
-            # trigger, so this commits); the posted ledger is unchanged.
+            # Tamper the latest anchor balance; the posted ledger is
+            # unchanged.
+            #
+            # **The append-only refusal is lifted for that one statement**
+            # (plan step X-f3c-2c).  This comment used to read "history carries
+            # no balance trigger, so this commits", which stopped being true:
+            # ``budget.refuse_append_only_change`` refuses every UPDATE on the
+            # table.  Tampering is the point here -- the case exists to prove
+            # the sweep CAN fail -- and the only way to corrupt an append-only
+            # row is to reach past the guard that makes it one.
             row_id = (
                 _db.session.query(AccountAnchorHistory.id)
                 .filter_by(account_id=savings.id)
@@ -1720,11 +1729,14 @@ class TestOracleIsNotVacuous:
                 )
                 .scalar()
             )
-            db.session.execute(_db.text(
-                "UPDATE budget.account_anchor_history "
-                "SET anchor_balance = 999 WHERE id = :i"
-            ), {"i": row_id})
-            db.session.commit()
+            with append_only_guard_lifted(
+                db.session, "budget.account_anchor_history",
+            ):
+                db.session.execute(_db.text(
+                    "UPDATE budget.account_anchor_history "
+                    "SET anchor_balance = 999 WHERE id = :i"
+                ), {"i": row_id})
+                db.session.commit()
 
             # Ledger unchanged (500), but the anchor truth drifted (999) -- the
             # absolute invariant no longer holds, so the real sweep raises.

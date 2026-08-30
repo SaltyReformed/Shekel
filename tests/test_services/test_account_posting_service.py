@@ -40,6 +40,8 @@ from app.enums import (
     PostingSourceEnum,
 )
 from app.exceptions import UndatedSettleError
+from sqlalchemy import text as sa_text
+
 from app.extensions import db as _db
 from app.models.account import AccountAnchorHistory
 from app.models.journal_entry import JournalEntry, Posting
@@ -63,6 +65,7 @@ from app.services.pay_calendar import PayCalendarError
 from app.services.auth_service import hash_password
 from app.utils.dates import display_today, to_display_date
 from tests._test_helpers import (
+    append_only_guard_lifted,
     an_entered_day,
     correction_net_in_period,
     create_account_of_type,
@@ -73,7 +76,7 @@ from tests._test_helpers import (
     create_settled_transfer,
     ledger_net,
     observed_day_of,
-    restamp_opening_assertion,
+    restate_account_opening,
     settle_day_columns,
     settle_instant_on,
 )
@@ -85,7 +88,10 @@ from app.services.settle_day import record_settle_day
 # ---------------------------------------------------------------------------
 
 
-def _make_account(seed_user, balance, type_name="Savings", name="Anchor Acct"):
+def _make_account(
+    seed_user, balance, type_name="Savings", name="Anchor Acct",
+    observed_on=None,
+):
     """Create an account with a controlled opening anchor; commit; return it.
 
     An account that has ALREADY EXISTED: its books are opened before anything
@@ -96,10 +102,22 @@ def _make_account(seed_user, balance, type_name="Savings", name="Anchor Acct"):
     restatement, and which leaves the original ``account_opening`` entry on
     file REVERSED rather than deleted.  A case counting opening entries wants
     :func:`_make_account_as_created` instead.
+
+    Args:
+        seed_user: The ``seed_user`` fixture dict.
+        balance: The opening anchor balance, as a string.
+        type_name: The ``ref.account_types`` name.
+        name: The account name.
+        observed_on: The civil day the origination assertion is true for, or
+            ``None`` for ``create_account_of_type``'s day-before-today default.
+            A case whose subject is WHICH day the opening is about states it
+            here rather than re-stamping the row afterwards, because the table
+            is append-only (plan step X-f3c-2c).
     """
     account = create_account_of_type(
         seed_user, _db.session, type_name, name,
         anchor_balance=Decimal(balance),
+        observed_on=observed_on,
     )
     _db.session.commit()
     return account
@@ -134,17 +152,6 @@ def _make_account_as_created(
 _PINNED_OPENING_AT = datetime(2026, 3, 17, 16, 0, tzinfo=timezone.utc)
 _PINNED_OPENING_DAY = date(2026, 3, 17)
 _ONE_HOUR = timedelta(hours=1)
-
-
-def _pin_opening(account, at=_PINNED_OPENING_AT):
-    """Re-stamp the factory opening assertion to a controlled instant; return it.
-
-    The shared builder ``tests/_test_helpers.restamp_opening_assertion``, which
-    the cash-walk suite uses for the same reason: an event stream whose anchor
-    is the wall clock is not a deterministic fixture.
-    """
-    restamp_opening_assertion(_db.session, account, at)
-    return at
 
 
 def _origin_day(account):
@@ -438,8 +445,13 @@ class TestWalkAccountLedger:
         smaller offset.
         """
         with app.app_context():
-            account = _make_account(seed_user, "500.00")
-            pinned = _pin_opening(account)
+            # Opened ON the pinned day, so the origination assertion IS the
+            # one this case is about -- appending a second would give the walk
+            # a correction the case did not write (plan step X-f3c-2c).
+            account = _make_account(
+                seed_user, "500.00", observed_on=_PINNED_OPENING_DAY,
+            )
+            pinned = _PINNED_OPENING_AT
             settle = _settle_expense(
                 seed_user, account, "200.00", _PINNED_OPENING_DAY,
             )
@@ -809,26 +821,43 @@ class TestWalkAccountLedger:
         the code no longer has.
         """
         with app.app_context():
-            account = _make_account(seed_user, "500.00")
-            pinned = _pin_opening(account)
-            settle = _settle_expense(
-                seed_user, account, "75.00", _PINNED_OPENING_DAY,
-            )
-            _add_assertion(account, "425.00", pinned + 3 * _ONE_HOUR)
+            # **The shared civil day is TODAY's, and the account is OPENED on
+            # it** (plan step X-f3c-2c).  Two things forced that.
+            #
+            # The account must be opened on the day rather than re-asserted
+            # onto it: an assertion is append-only, so appending would leave
+            # the ORIGINATION standing on ``create_account_of_type``'s
+            # day-before-today -- a fourth correction nobody wrote, of
+            # ``+$75.00``, past every event this case names, while the three
+            # preconditions below (which do not look at the origination) went
+            # on passing.  Found by the adversarial review of this step.
+            #
+            # And the day must be the FROZEN today, because RECORDING order is
+            # what this case grades.  ``create_account`` stamps the
+            # origination's ``created_at`` from the clock, which no fixture
+            # moves per account; on any earlier day the true-up would be
+            # recorded first and the pair would apply in the wrong order.
+            day = display_today()
+            account = _make_account(seed_user, "500.00", observed_on=day)
+            settle = _settle_expense(seed_user, account, "75.00", day)
+            trueup_at = settle_instant_on(day) + 3 * _ONE_HOUR
+            _add_assertion(account, "425.00", trueup_at)
             _db.session.commit()
 
             # ONE civil day for all three events -- the precondition that makes
             # the two figures below a statement about the RULE rather than
-            # about their dates.
-            assert to_display_date(pinned) == _PINNED_OPENING_DAY
-            assert settle.settled_on == _PINNED_OPENING_DAY
-            assert to_display_date(
-                pinned + 3 * _ONE_HOUR,
-            ) == _PINNED_OPENING_DAY
+            # about their dates.  The ORIGINATION is included now: leaving it
+            # out is what let the premise go false unnoticed.
+            assert _origin_day(account) == day
+            assert settle.settled_on == day
+            assert to_display_date(trueup_at) == day
 
             corrections = account_posting_service.walk_account_ledger(
                 account.id, seed_user["scenario"].id,
             )
+            # THREE, not "at least three": a fourth would be an event no line
+            # above wrote, and every index below would still read as it does.
+            assert len(corrections) == 3
             assert corrections[0].opens_the_books is True
             assert corrections[0].ledger_before == Decimal("0.00")
             # The two assertions, in recording order.  The first absorbs the
@@ -1209,8 +1238,24 @@ class TestSyncAccountAnchorPostings:
                 account.user_id, trueup_row.observed_on,
             )
 
-            _db.session.delete(trueup_row)
-            _db.session.flush()
+            # **The append-only refusal is lifted for this statement**
+            # (plan step X-f3c-2c).  This case's whole subject is a posted
+            # correction whose history row has vanished -- the docstring above
+            # calls it unreachable through production lifecycles, and it is now
+            # unreachable through any lifecycle at all.  The defensive branch
+            # it grades is still live code, so the case reaches past the outer
+            # guard rather than the branch going ungraded.
+            with append_only_guard_lifted(
+                _db.session, "budget.account_anchor_history",
+            ):
+                # Raw rather than ``session.delete``: the object-layer listener
+                # refuses an ORM delete as well, and this case is about what
+                # the RECONCILE does once the row is gone rather than about
+                # either guard.
+                _db.session.execute(sa_text(
+                    "DELETE FROM budget.account_anchor_history WHERE id = :i"
+                ), {"i": trueup_row.id})
+                _db.session.expire_all()
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,
             )
@@ -1375,8 +1420,13 @@ class TestCorrectionPeriodAttribution:
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
-            account = _make_account(seed_user, "500.00")
-            _pin_opening(account)
+            # Opened ON the pinned day, so the origination IS the assertion
+            # this case reasons from: appending a second would leave the
+            # factory's own row standing on a LATER day, as a correction the
+            # case did not write (plan step X-f3c-2c).
+            account = _make_account(
+                seed_user, "500.00", observed_on=_PINNED_OPENING_DAY,
+            )
             containing = self._period_containing_the_day(seed_user)
             following = self._period_after_the_day(seed_user)
             at = settle_instant_on(self._ASSERTION_DAY)
@@ -1422,8 +1472,11 @@ class TestCorrectionPeriodAttribution:
         it -- the state a user reaches by asserting a balance past the end of
         their generated schedule.  ``600 - 500 = +100.00``.
         """
-        account = _make_account(seed_user, "500.00")
-        _pin_opening(account)
+        # Opened ON the pinned day, for the reason the sibling cases state
+        # (plan step X-f3c-2c).
+        account = _make_account(
+            seed_user, "500.00", observed_on=_PINNED_OPENING_DAY,
+        )
         _add_assertion(
             account, "600.00", settle_instant_on(self._ASSERTION_DAY),
         )
@@ -1875,8 +1928,13 @@ class TestLedgerAgreesWithTheGridOnAssertionPeriods:
         """
         with app.app_context():
             scenario_id = seed_user["scenario"].id
-            account = _make_account(seed_user, "500.00")
-            _pin_opening(account)
+            # Opened ON the pinned day, so the origination IS the assertion
+            # this case reasons from: appending a second would leave the
+            # factory's own row standing on a LATER day, as a correction the
+            # case did not write (plan step X-f3c-2c).
+            account = _make_account(
+                seed_user, "500.00", observed_on=_PINNED_OPENING_DAY,
+            )
             first = PayPeriod(
                 user_id=seed_user["user"].id,
                 start_date=date(2026, 3, 21), end_date=date(2026, 4, 3),
@@ -2118,18 +2176,21 @@ class TestTheSharedFilingDoor:
             )
 
             account = _make_account(seed_user, "500.00")
-            # The ASSERTION is pinned one day AFTER the probe day, because what
-            # files here is the account's BOOKS and not its assertion: the
-            # ``account_opening`` entry is dated on
-            # ``budget.account_openings.opened_on`` (plan step X-f3c-2a), and
-            # ruling **R-HG** puts that a day before the opening assertion so
-            # nothing can be dated inside the equity it declares.  Pinning the
-            # assertion ON the probe day would file the cash half a day EARLIER
-            # than the loan half and this case would stop comparing the two on
-            # one day, which is the whole of what it names.
-            _pin_opening(account, datetime(
-                2023, 6, 15, 16, 0, tzinfo=timezone.utc,
-            ))
+            # **The BOOKS are restated onto the probe day, and the assertion is
+            # left where it is** (plan step X-f3c-2c).  What files here is the
+            # account's BOOKS and not its assertion: the ``account_opening``
+            # entry is dated on ``budget.account_openings.opened_on`` (plan step
+            # X-f3c-2a).  This case used to move the ASSERTION one day after the
+            # probe day and let ruling **R-HG**'s day-before rule carry the
+            # books there -- two acts spelled as one, and the assertion half is
+            # now impossible twice over: the table is append-only, and
+            # ``resolve_observation_day`` floors an assertion at the calendar's
+            # own first day, which is 2026-01-02 here.  Restating the opening is
+            # the act that was always meant, and it is a production door
+            # (plan step X-f3c-2b-2).
+            restate_account_opening(
+                _db.session, account, self._PRE_SCHEDULE_DAY,
+            )
             _db.session.commit()
             account_posting_service.sync_account_anchor_postings(
                 account.id, scenario_id,

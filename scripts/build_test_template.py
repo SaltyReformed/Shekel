@@ -189,6 +189,7 @@ from alembic import command
 from alembic.config import Config
 
 from app import create_app
+from app.append_only_infrastructure import apply_append_only_infrastructure
 from app.audit_infrastructure import EXPECTED_TRIGGER_COUNT, apply_audit_infrastructure
 from app.extensions import db
 from app.opening_infrastructure import apply_opening_infrastructure
@@ -308,6 +309,17 @@ def _populate_template(app) -> None:
         # account's opening day is building a state production cannot hold,
         # and this is what makes the suite say so.
         apply_opening_infrastructure(
+            lambda statement: db.session.execute(db.text(statement))
+        )
+        db.session.commit()
+
+        # The append-only refusal on the three account-history tables (plan
+        # step X-f3c-2c): idempotent re-application, same
+        # latest-definition-wins contract as the blocks above.  It matters
+        # here for the reason the books boundary does -- this is a constraint
+        # a FIXTURE can trip, and a suite that could not trip it would be
+        # asserting against a database the app does not have.
+        apply_append_only_infrastructure(
             lambda statement: db.session.execute(db.text(statement))
         )
         db.session.commit()

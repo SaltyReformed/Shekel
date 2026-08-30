@@ -56,7 +56,7 @@ from contextlib import contextmanager
 # one instrument this project has for diagnosing test performance was dead for
 # three weeks and nothing reported it (``tests/`` is outside the pylint scope
 # that would have flagged the reimport).
-from datetime import date, datetime, time as dt_time, timedelta, timezone
+from datetime import date, datetime, time as dt_time, timedelta
 from decimal import Decimal
 from urllib.parse import urlparse, urlunparse
 
@@ -719,7 +719,6 @@ from app.models.category import Category
 from app.models.pay_period import PayPeriod
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
-from app.models.recurrence_rule import RecurrenceRule
 from app.models.salary_profile import SalaryProfile
 from app.models.savings_goal import SavingsGoal
 from app.models.transfer_template import TransferTemplate
@@ -738,7 +737,6 @@ from tests._test_helpers import (
     make_investment_account,
     open_books_before_the_first_assertion,
     posted_loan_balance_at,
-    restamp_opening_assertion,
     restate_account_opening,
     settle_day_columns,
 )
@@ -1654,6 +1652,19 @@ def bare_periods(app, db, bare_user):
 SEED_USER_EMAIL = "test@shekel.local"
 SEED_USER_PASSWORD = "testpass"
 
+#: The day the seeded owner's BOOTSTRAP pay period starts, which is also the
+#: day their Checking account's origination assertion is dated for and one day
+#: after the day its books open.
+#:
+#: **Named because it is now a fixture CONTRACT rather than an implementation
+#: detail** (plan step X-f3c-2c).  ``budget.account_anchor_history`` is
+#: append-only, so ``_drop_seed_user_bootstrap`` can no longer re-home that
+#: assertion onto whatever calendar a periods fixture builds: the seeded
+#: account asserts here and only here until a test says otherwise.  A case that
+#: turns on which day was last asserted therefore either states its own (see
+#: ``_test_helpers.reassert_balance_on``) or names this one.
+SEED_USER_BOOTSTRAP_START = date(2024, 1, 5)
+
 
 def log_in_seed_user(client):
     """Log *client* in as the seeded owner through the real login form.
@@ -1716,8 +1727,8 @@ def build_seed_user(db):
     # create additional accounts inline can anchor them to it.
     bootstrap_period = PayPeriod(
         user_id=user.id,
-        start_date=date(2024, 1, 5),
-        end_date=date(2024, 1, 18),
+        start_date=SEED_USER_BOOTSTRAP_START,
+        end_date=SEED_USER_BOOTSTRAP_START + timedelta(days=13),
         period_index=0,
     )
     db.session.add(bootstrap_period)
@@ -1832,45 +1843,6 @@ def seed_user(app, db):  # pylint: disable=unused-argument
     return build_seed_user(db)
 
 
-def _pin_opening_to(db, account, anchor_period):
-    """Pin ``account``'s OPENING assertion to *anchor_period*'s first day.
-
-    The cross-page fixtures keep the ``seed_user`` bootstrap period and then
-    append their own anchor override, so unlike the ``seed_periods*`` fixtures
-    they never reach :func:`_drop_seed_user_bootstrap`'s re-stamp.  Without
-    this the opening keeps ``create_account``'s WALL-CLOCK instant, which falls
-    INSIDE the fixture's anchor month and therefore AFTER the override the
-    fixture writes at that month's start -- so the cash walk replays the
-    $1,000.00 origination LAST and it silently supersedes the balance the
-    fixture just asserted.  (The shipping producers never saw it: they read the
-    newest row and ignored its date.)
-
-    Args:
-        db: The SQLAlchemy ``db`` fixture.
-        account: The account whose opening to pin.
-        anchor_period: The period the fixture is about to anchor against.
-    """
-    # Day one of the anchor period IN THE USER'S ZONE -- the same meaning, and
-    # the same reason, as ``override_anchor``'s default (ruling R-DH (b)).  The
-    # two must agree: pinning one to Eastern midnight and leaving the other on
-    # UTC midnight puts the opening and the override in DIFFERENT periods.
-    restamp_opening_assertion(
-        db.session, account,
-        datetime.combine(
-            anchor_period.start_date, dt_time.min, tzinfo=DISPLAY_TIMEZONE,
-        ).astimezone(timezone.utc),
-    )
-    # **The BOOKS then go back further than the assertion** (plan step
-    # X-f3c-2b, ruling **R-HG**).  The restamp above opens them one day before
-    # the anchor period, and these fixtures settle rows in EARLIER periods of
-    # their own calendar -- the off-schedule loan payment lands two periods
-    # back.  An opening equity is its own day's closing balance, so those rows
-    # would be inside it and unstorable.  Backward-only, so the pin above
-    # still decides where the ASSERTION sits, which is what this helper is
-    # for.
-    open_books_before_the_first_assertion(db.session, account)
-
-
 def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
     """Replace ``seed_user``'s bootstrap pay period with the supplied new
     anchor and renumber the user's remaining periods to start at 0.
@@ -1909,45 +1881,40 @@ def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
     # Re-fetch by id -- the cached object might be stale across the
     # nested commits below.
     bootstrap_id = bootstrap.id
-    # Step 1: repoint the account anchor.
-    # Restamp any assertion the factory wrote against the bootstrap period.
-    # It no longer has to SURVIVE anything -- ruling R-EO deleted
-    # ``AccountAnchorHistory.pay_period_id`` and its CASCADE FK, so a period
-    # delete cannot take an assertion with it -- but its INSTANT and its
-    # business DAY still have to move onto the new anchor period, for the
-    # reason below.
-    from app.models.account import AccountAnchorHistory  # pylint: disable=import-outside-toplevel
-    # The row's INSTANT moves with its period, not just its FK.  The account
-    # factory stamps the opening with the WALL CLOCK, while the suites freeze
-    # today inside their own seeded range -- so an unrestamped opening sorts
-    # AFTER every controlled assertion a test writes, which silently inverts
-    # which row the cash fold treats as the opening (ruling R-I books the
-    # FIRST assertion into its seed and keeps every later one as a reset).
-    # Pinning it to the new anchor period's first day is the production shape:
-    # an account opened on day one of the period it is anchored to.
-    db.session.query(AccountAnchorHistory).filter_by(
-        account_id=account.id,
-    ).update({
-        # The BUSINESS day moves with the period and the instant.  Leaving it
-        # behind is the "two clocks on one row" shape ``seed_user`` states it
-        # is eliminating, recreated one layer down: the row would assert a
-        # 2026 period from a 2024 day, and its posted correction would carry a
-        # 2024 ``purchased_on`` inside a 2026 ``pay_period_id``.
-        "observed_on": new_anchor_period.start_date,
-        # Eastern midnight, converted for storage -- NOT midnight UTC, which
-        # is the previous EVENING in the display zone and would file the
-        # opening one day before its own period (finding N-132).
-        "created_at": datetime.combine(
-            new_anchor_period.start_date, dt_time.min, tzinfo=DISPLAY_TIMEZONE,
-        ).astimezone(timezone.utc),
-        # The ENTERED day moves with the instant, for the same reason
-        # ``observed_on`` does (finding **N-299**).  A bulk UPDATE bypasses the
-        # column default that derives this on INSERT, so it is spelled here:
-        # leaving it behind would build the row this fixture exists to avoid --
-        # an opening asserted and typed on its period's first day, claiming on
-        # the balance-history card to have been entered months later.
-        "recorded_on": new_anchor_period.start_date,
-    })
+    # **Step 1 USED TO RE-POINT THE ORIGINATION ASSERTION AND NO LONGER DOES**
+    # (plan step X-f3c-2c).  It moved the row's ``observed_on`` / ``created_at``
+    # / ``recorded_on`` onto *new_anchor_period*'s first day with a bulk
+    # ``query.update()``, and both halves of that were wrong once the table
+    # became append-only:
+    #
+    # * an assertion is a permanent record of what a bank said on a day, so a
+    #   fixture PLACES one and never edits one.  The append-only guard is an
+    #   ORM listener plus a database trigger, and a bulk ``UPDATE`` was
+    #   invisible to the first and is refused outright by the second;
+    # * its stated reason had already expired.  It says "the account factory
+    #   stamps the opening with the WALL CLOCK", and ``build_seed_user`` has
+    #   passed ``observed_on=bootstrap_period.start_date`` to the factory since
+    #   the day that comment was written -- so the row it was correcting was
+    #   never on the wall clock in the first place.  The second reason, that
+    #   the row "would assert a 2026 period from a 2024 day", names a column
+    #   ruling **R-EO** deleted: an assertion carries no ``pay_period_id``.
+    #
+    # **What the seeded account carries instead is its ORIGINATION assertion
+    # and nothing else**: ``$1,000.00`` on the 2024 bootstrap day, with its
+    # books open the day before.  Deleting the bootstrap PERIOD below leaves
+    # that assertion exactly where it is, and it moves no figure any test
+    # computes, because nothing this fixture writes is dated between the
+    # bootstrap day and the new calendar's first.
+    #
+    # **Asserting again on the new calendar's first day was the other
+    # candidate and it was MEASURED worse, not judged worse.**  It preserves
+    # more of the old shape -- the governing assertion lands in period 0 --
+    # but a test that then places its own early assertion is silently
+    # overridden by this one: ~15 fold and walk cases assert an opening on
+    # 2026-01-01, one day BEFORE the calendar's first, so a fixture row nobody
+    # wrote would govern instead of the row the test author placed.  A fixture
+    # that quietly wins over its caller is worse than one that starts earlier
+    # than the calendar.
     # **The account's OPENING RECORD moves with its assertion** (plan step
     # X-f3c-2a).  ``budget.account_openings`` stores the day the books opened
     # beside the equity, and ``create_account`` wrote both from the factory's
@@ -1998,8 +1965,11 @@ def _drop_seed_user_bootstrap(db, seed_user, account, new_anchor_period):
     # (Build-Order Step 5).  The seeded Checking's $1000 opening entry was
     # attributed to the bootstrap period (journal_entries.pay_period_id is
     # ON DELETE CASCADE), so step 2 took it with the period; the history
-    # rows survived via the step-1 repoint, so the per-user resync
-    # re-derives the openings onto the new anchor period -- the same
+    # rows survive because ruling **R-EO** deleted
+    # ``AccountAnchorHistory.pay_period_id`` and its CASCADE FK, so a period
+    # delete cannot take an assertion with it -- this said "via the step-1
+    # repoint" until plan step X-f3c-2c deleted that repoint.  So the per-user
+    # resync re-derives the openings onto the new anchor period, the same
     # re-derivation the production pay-period reset performs.
     from app.services import account_posting_service  # pylint: disable=import-outside-toplevel
     account_posting_service.resync_user_account_anchor_postings(
@@ -2277,10 +2247,10 @@ def _neutralize_seed_checking(db, seed_user, anchor_period):
     the AGGREGATE surfaces (year-end net worth, the savings net-worth
     trend) reflect ONLY that account.  ``seed_user`` always provisions one
     Checking account at a $1,000 anchor, so this neutralises it: it appends
-    a $0 ``AccountAnchorHistory`` row at *anchor_period* (latest-wins by
-    ``created_at``, so ``resolve_anchor`` returns $0) and re-points the
-    account's anchor cache to the same period and balance.  A $0 asset
-    anchored at the current period contributes 0 to every net-worth sum
+    a $0 ``AccountAnchorHistory`` row dated on *anchor_period*'s first day, and
+    that day is later than the origination assertion's, so ``resolve_anchor``
+    -- which orders on ``(observed_on, created_at, id)`` -- returns $0.  A $0
+    asset anchored at the current period contributes 0 to every net-worth sum
     from the current period forward and gates the trend at the current
     period, so the per-kind account's value stands alone.
 
@@ -2304,7 +2274,7 @@ def _neutralize_seed_checking(db, seed_user, anchor_period):
     from tests._test_helpers import override_anchor
 
     account = db.session.get(Account, seed_user["account"].id)
-    _pin_opening_to(db, account, anchor_period)
+    open_books_before_the_first_assertion(db.session, account)
     override_anchor(
         db.session, account, anchor_period, Decimal("0.00"),
     )
@@ -2420,7 +2390,7 @@ def seed_cross_page_account(app, db, seed_user):
         # instance whose attribute assignments are guaranteed to
         # mark the row dirty for the next flush.
         account = db.session.get(Account, seed_user["account"].id)
-        _pin_opening_to(db, account, anchor_period)
+        open_books_before_the_first_assertion(db.session, account)
         override_anchor(
             db.session, account, anchor_period, anchor_balance,
         )
@@ -2982,8 +2952,8 @@ def second_user(app, db):
     # the rationale.
     bootstrap_period = PayPeriod(
         user_id=user.id,
-        start_date=date(2024, 1, 5),
-        end_date=date(2024, 1, 18),
+        start_date=SEED_USER_BOOTSTRAP_START,
+        end_date=SEED_USER_BOOTSTRAP_START + timedelta(days=13),
         period_index=0,
     )
     db.session.add(bootstrap_period)
@@ -3098,8 +3068,8 @@ def seed_second_user(app, db):
     # the rationale.
     bootstrap_period = PayPeriod(
         user_id=user.id,
-        start_date=date(2024, 1, 5),
-        end_date=date(2024, 1, 18),
+        start_date=SEED_USER_BOOTSTRAP_START,
+        end_date=SEED_USER_BOOTSTRAP_START + timedelta(days=13),
         period_index=0,
     )
     db.session.add(bootstrap_period)

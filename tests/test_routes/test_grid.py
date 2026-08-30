@@ -16,6 +16,7 @@ from app.extensions import db
 from app.routes._render_helpers import fragment_amounts
 from app.models.account import Account
 from app.models.category import Category
+from app.models.investment_params import InvestmentParams
 from app.models.scenario import Scenario
 from app.models.user import User, UserSettings
 from app.models.transaction import Transaction
@@ -47,6 +48,8 @@ from tests._test_helpers import (
     current_pay_period,
     field_is_disabled,
     freeze_today,
+    make_investment_account,
+    make_salary_profile,
     mark_purchase_settled,
     net_posted_by_day,
     posted_loan_balance_at,
@@ -8624,17 +8627,42 @@ class TestTheTwoRemainderRows:
         same card, and with the redundant per-cell guard now gone (the flag
         alone decides) it would render ``None`` as money.
 
-        Driven from data through the Interest bar, which is the one
-        conditional figure a producer can vary at this step: an HYSA anchored
-        two periods AHEAD of today accrues nothing in the current column, so
-        the default window has accruing columns (the desktop row renders)
-        whose leftmost period has none (the mobile bar must not).  The shape
-        is asserted at the seam first, so the test cannot pass vacuously by
-        failing to construct it.
+        Driven from data through the employer-CONTRIBUTION bar.  A 401(k)
+        whose balance is asserted on the current period's own payday receives
+        nothing in that period and a contribution on every payday after it
+        (ruling **R-Z**: a payday at or before the assertion contributes
+        nothing), so the default window has contributing columns -- the desktop
+        row renders -- whose leftmost period has none, and the mobile bar must
+        not.  The shape is asserted at the seam first, so the test cannot pass
+        vacuously by failing to construct it.
+
+        **It was the Interest bar until plan step X-f3c-2c, on an HYSA anchored
+        two periods AHEAD of today, and that shape is unreachable.**  An
+        assertion is a statement about a day that has already happened --
+        ``anchor_service.resolve_observation_day`` refuses a future one -- and
+        the fixture only built it because it re-stamped the origination row
+        after the factory had written it, which an append-only table has no act
+        for.  Accrual cannot serve here at all: a modelled account accrues from
+        its latest assertion forward, and that assertion can never be later
+        than today, so the column CONTAINING today always accrues something.
+        The contribution tier can, because what it keys on is a payday's
+        position relative to the assertion rather than the clock's.
         """
-        hysa = create_hysa_account(
-            seed_user, db.session, seed_periods_today[5], Decimal("100000.00"),
+        salary = make_salary_profile(
+            seed_user, db.session, annual_salary=Decimal("94425.24"),
         )
+        salary.is_active = True
+        db.session.flush()
+        retirement = make_investment_account(
+            seed_user, db.session, seed_periods_today[4],
+            Decimal("100000.00"), employer_type="flat_percentage",
+        )
+        params = (
+            db.session.query(InvestmentParams)
+            .filter_by(account_id=retirement.id).one()
+        )
+        params.employer_flat_percentage = Decimal("0.0500")
+        db.session.commit()
         with app.app_context():
             user_id = seed_user["user"].id
             bctx = BalanceContext.build(user_id)
@@ -8647,26 +8675,27 @@ class TestTheTwoRemainderRows:
             current = calendar.period_containing(bctx.as_of)
             window = calendar.window(current.period_index, 6)
             card_window = [window[0]]
-            view = balance_at.grid_balance_view(hysa, bctx)
-            # The shape this test needs: the window accrues, its first
+            view = balance_at.grid_balance_view(retirement, bctx)
+            # The shape this test needs: the window contributes, its first
             # column does not.
-            assert view.row_flags(window).accrual is True
-            assert view.row_flags(card_window).accrual is False
+            assert view.row_flags(window).contribution is True
+            assert view.row_flags(card_window).contribution is False
 
-        resp = auth_client.get(f"/grid?account_id={hysa.id}&periods=6")
+        resp = auth_client.get(f"/grid?account_id={retirement.id}&periods=6")
         assert resp.status_code == 200
         html = resp.data.decode()
 
-        # The desktop footer row renders: the window DOES contain accrual.
+        # The desktop footer row renders: the window DOES contain a
+        # contribution.
         footer = html[html.index('id="grid-summary"'):html.index("</tfoot>")]
-        assert "modelled-accrual-row" in footer
+        assert "modelled-contribution-row" in footer
 
         # The mobile card renders the leftmost period, which has none.  It is
         # the last block of the This Period pane, so the Plan pane bounds it.
         card_start = html.index('id="mobile-tp-summary-')
         card = html[card_start:html.index('id="mobile-plan"', card_start)]
         assert "Net Cash Flow" in card, "the card must actually have rendered"
-        assert "modelled-accrual-row" not in card
+        assert "modelled-contribution-row" not in card
 
     def test_the_shipped_grid_shows_no_remainder_row_on_a_clean_account(
         self, app, auth_client, seed_user, seed_periods_today,

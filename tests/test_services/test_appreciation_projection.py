@@ -20,8 +20,6 @@ from app.services.balance_at._asset_contributions import (
 from tests._test_helpers import (
     current_pay_period,
     period_window,
-    restamp_opening_assertion,
-    settle_instant_on,
 )
 from app.services.account_projection import (
     AccountProjectionKind,
@@ -32,18 +30,20 @@ from app.services.account_projection import (
 def _make_property(db, seed_user, periods, anchor_period, balance, rate=None):
     """Create a Property account, optionally with an appreciation rate.
 
-    **The opening assertion is stamped at the anchor period's first day**, the
+    **The opening assertion is DATED at the anchor period's first day**, the
     N-77 / N-65 pin the shared ``make_appreciating_account`` helper already
-    carries.  ``account_service.create_account`` stamps
-    ``AccountAnchorHistory.created_at`` with ``db.func.now()`` -- the DATABASE
-    clock, which the suite's frozen today does not reach -- while these fixtures
-    seed their pay periods relative to that frozen today.  The opening therefore
-    lands MONTHS after the whole seeded horizon, and since plan step X-g2b a
-    modelled asset accrues only forward of its LATEST assertion (ruling R-Y),
-    an unpinned Property would earn nothing at any period and this file's
-    appreciation assertions would all read the flat market value.  That is a
-    state production cannot reach: a real opening is stamped when the account is
-    created, inside its own anchor period.
+    carries.  ``account_service.create_account`` defaults ``observed_on`` to
+    today, and these fixtures seed their pay periods around that frozen today
+    -- so an account left on the default asserts its value in the middle of the
+    horizon, and since plan step X-g2b a modelled asset accrues only forward of
+    its LATEST assertion (ruling R-Y), the periods before it would earn nothing
+    and this file's appreciation figures would read the flat market value.
+
+    **The day is supplied to the FACTORY, not re-stamped afterwards** (plan
+    step X-f3c-2c).  ``budget.account_anchor_history`` is append-only, so
+    appending a second assertion on an EARLIER day would leave the origination
+    governing and change nothing; the day an assertion is true for is decided
+    when it is written, which is exactly what the production door takes.
     """
     property_type = (
         db.session.query(AccountType).filter_by(name="Property").one()
@@ -54,6 +54,7 @@ def _make_property(db, seed_user, periods, anchor_period, balance, rate=None):
             account_type_id=property_type.id,
             name="House",
             anchor_balance=balance,
+            observed_on=anchor_period.start_date,
         ),
     )
     db.session.add(acct)
@@ -62,9 +63,6 @@ def _make_property(db, seed_user, periods, anchor_period, balance, rate=None):
         db.session.add(AssetAppreciationParams(
             account_id=acct.id, annual_appreciation_rate=rate,
         ))
-    restamp_opening_assertion(
-        db.session, acct, settle_instant_on(anchor_period.start_date),
-    )
     db.session.commit()
     return acct
 

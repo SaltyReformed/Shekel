@@ -52,6 +52,8 @@ from app.services.pay_calendar import calendar_for
 from app.services.reconcile_service import Statement, record_settled_days
 from app.services.settle_day import SettleDay, record_settle_day
 from tests._test_helpers import (
+    account_never_asserted,
+    append_only_guard_lifted,
     create_account_of_type,
     create_settled_cash_transaction,
     restate_account_opening,
@@ -190,13 +192,15 @@ class TestTheBoundaryItself:
         side, arriving through the write side instead.
         """
         with app.app_context():
-            account = create_account_of_type(
-                seed_user, db.session, "Checking", "Bounded",
-                anchor_balance=Decimal("1000.00"),
+            # **Built rather than emptied** (plan step X-f3c-2c).
+            # ``budget.account_openings`` is append-only at the database tier,
+            # so nothing may remove an account's opening record; the only route
+            # to an account that has none is one the factory never touched --
+            # which is what ``account_opening_fact``'s own message tells a
+            # reader to go looking for.
+            account = account_never_asserted(
+                seed_user, db.session, name="Bounded",
             )
-            db.session.query(AccountOpening).filter_by(
-                account_id=account.id,
-            ).delete(synchronize_session=False)
             db.session.flush()
             with pytest.raises(RuntimeError, match="zero"):
                 reject_movement_before_books_open(account.id, date(2030, 1, 1))
@@ -633,13 +637,22 @@ class TestTheGoverningRowIsWhatIsGraded:
             )
             db.session.commit()
 
-            db.session.execute(
-                sa.text(_REMOVE_ONE_OPENING), {"i": restatement_id},
-            )
-            with pytest.raises(
-                sa.exc.InternalError, match="cannot open its books",
+            # **The append-only refusal is lifted for this statement, and
+            # only for it** (plan step X-f3c-2c).  It stands in front of
+            # the arm under test here and would answer first, which would
+            # leave that arm graded by nothing -- see
+            # ``append_only_guard_lifted`` for why the answer is to reach
+            # past it rather than to delete a measured control.
+            with append_only_guard_lifted(
+                db.session, "budget.account_openings",
             ):
-                db.session.commit()
+                db.session.execute(
+                    sa.text(_REMOVE_ONE_OPENING), {"i": restatement_id},
+                )
+                with pytest.raises(
+                    sa.exc.InternalError, match="cannot open its books",
+                ):
+                    db.session.commit()
             db.session.rollback()
 
     def test_removing_one_that_does_NOT_govern_is_allowed(
@@ -662,10 +675,19 @@ class TestTheGoverningRowIsWhatIsGraded:
             governing = account_opening_fact(account.id)
             assert governing.opening_id != superseded_id
 
-            db.session.execute(
-                sa.text(_REMOVE_ONE_OPENING), {"i": superseded_id},
-            )
-            db.session.commit()
+            # **The append-only refusal is lifted for this statement, and
+            # only for it** (plan step X-f3c-2c).  It stands in front of
+            # the arm under test here and would answer first, which would
+            # leave that arm graded by nothing -- see
+            # ``append_only_guard_lifted`` for why the answer is to reach
+            # past it rather than to delete a measured control.
+            with append_only_guard_lifted(
+                db.session, "budget.account_openings",
+            ):
+                db.session.execute(
+                    sa.text(_REMOVE_ONE_OPENING), {"i": superseded_id},
+                )
+                db.session.commit()
             assert account_opening_fact(account.id).opening_id == (
                 governing.opening_id
             )
@@ -779,17 +801,26 @@ class TestTheGoverningRowIsWhatIsGraded:
             # Hand that restatement to the OTHER account.  The recipient is
             # unaffected -- it records nothing that early -- so any refusal
             # must come from grading the account the row LEFT.
-            db.session.execute(
-                sa.text(
-                    "UPDATE budget.account_openings SET account_id = :b "
-                    "WHERE id = :i"
-                ),
-                {"b": recipient.id, "i": moved_id},
-            )
-            with pytest.raises(
-                sa.exc.InternalError, match="cannot open its books",
-            ) as refusal:
-                db.session.commit()
+            # **The append-only refusal is lifted for this statement, and
+            # only for it** (plan step X-f3c-2c).  It stands in front of
+            # the arm under test here and would answer first, which would
+            # leave that arm graded by nothing -- see
+            # ``append_only_guard_lifted`` for why the answer is to reach
+            # past it rather than to delete a measured control.
+            with append_only_guard_lifted(
+                db.session, "budget.account_openings",
+            ):
+                db.session.execute(
+                    sa.text(
+                        "UPDATE budget.account_openings SET account_id = :b "
+                        "WHERE id = :i"
+                    ),
+                    {"b": recipient.id, "i": moved_id},
+                )
+                with pytest.raises(
+                    sa.exc.InternalError, match="cannot open its books",
+                ) as refusal:
+                    db.session.commit()
             assert f"account {donor.id} " in str(refusal.value), (
                 "the refusal must name the DONOR, which is the account a "
                 "NEW-reading predicate would never have graded"

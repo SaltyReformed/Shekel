@@ -6,6 +6,10 @@ for the true-up workflow.
 """
 
 from app.extensions import db
+from app.models.append_only import (
+    AppendOnlyViolation,
+    install_append_only_guards,
+)
 from app.models.mixins import (
     AccountScopedMixin,
     CreatedAtMixin,
@@ -127,10 +131,38 @@ class Account(
     # :func:`app.services.cash_ledger.resolve_anchor` (its exact reverse), both
     # ``(observed_on, created_at, id)``; ask them.  The loan twin went the same
     # way in the same step (``models/loan_anchor_event.py``).
+    #
+    # **It carries ``passive_deletes`` and NO ``delete-orphan``, and that is
+    # what lets an account be deleted at all** (plan step X-f3c-2c).  An
+    # assertion is append-only, so the ORM may not delete one -- and this
+    # collection's ``cascade="all, delete-orphan"`` made
+    # ``routes/accounts/crud.hard_delete_account`` do exactly that: it loaded
+    # every assertion and emitted a DELETE per row on the way to deleting the
+    # account, which
+    # :func:`app.models.append_only.install_append_only_guards` refuses.
+    # Measured: with the guard and this line unchanged, four cases fail,
+    # ``test_clearing_link_schema.TestWhatDeletingOneCosts`` among them.
+    #
+    # ``passive_deletes=True`` leaves the disposal to
+    # :class:`~app.models.mixins.AccountScopedMixin`'s ``ON DELETE CASCADE``,
+    # which PostgreSQL executes without loading a row into the session -- the
+    # same path ``AccountOpening`` and ``LoanAnchorEvent`` already take, and
+    # they take it by having no relationship here at all.  ``delete-orphan``
+    # goes with it because it cannot be honoured: an assertion cannot be
+    # orphaned (``account_id`` is NOT NULL) and deleting one is the act the
+    # guard exists to refuse.
+    #
+    # **``"all"`` and not ``True``, and the difference is measured.**  ``True``
+    # only stops SQLAlchemy LOADING the collection; for children already in the
+    # session it still nulls their foreign key on the parent's delete, which is
+    # an UPDATE -- and the guard refuses that as loudly as it refuses a DELETE.
+    # ``tests/test_models/test_append_only.py`` loads the collection first for
+    # exactly this reason: an unloaded one passes either way, so a case that
+    # did not load it would grade nothing.
     anchor_history = db.relationship(
         "AccountAnchorHistory",
         back_populates="account",
-        cascade="all, delete-orphan",
+        passive_deletes="all",
     )
     # Self-referential collateral link.  ``remote_side`` marks the
     # referenced (asset) side; ``foreign_keys`` disambiguates from the
@@ -315,11 +347,13 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
     # were three test fixtures -- test-shaped logic living in a production
     # model, which is rule 13.
     #
-    # The three fixtures state the value themselves now
+    # The fixtures state the value themselves now
     # (``_test_helpers.add_anchor_history`` / ``override_anchor`` /
-    # ``_restamp_assertion``), so the rule sits where the fixture author reads
-    # it.  A bulk ``UPDATE`` reaches no column default at all, which is why
-    # ``tests/conftest.py``'s re-anchoring step writes both columns.
+    # ``reassert_balance_on``), so the rule sits where the fixture author reads
+    # it.  It used to add "a bulk ``UPDATE`` reaches no column default at all,
+    # which is why ``tests/conftest.py``'s re-anchoring step writes both
+    # columns"; plan step X-f3c-2c deleted that step and the bulk UPDATE with
+    # it, because this table refuses one.
     recorded_on = db.Column(
         db.Date, nullable=False, default=display_today,
     )
@@ -329,3 +363,30 @@ class AccountAnchorHistory(AccountScopedMixin, CreatedAtMixin, db.Model):
 
     def __repr__(self):
         return f"<AnchorHistory account={self.account_id} balance={self.anchor_balance}>"
+
+
+class AccountAnchorHistoryImmutableError(AppendOnlyViolation):
+    """Raised when ORM code tries to UPDATE or DELETE a balance assertion.
+
+    **The table was append-only by CONVENTION until plan step X-f3c-2c**, where
+    its two siblings were append-only structurally -- finding **N-287**.  An
+    assertion is the record of what a bank showed on a day, and that day is
+    what every clearing link was recorded against (ruling **R-FL**), so a door
+    that edited one would silently re-point cleared purchases at a statement
+    that did not show them.
+
+    **This is the NAMED half of the refusal, not the whole of it** (ruling
+    **R-HY**).  The listener sees only ORM-mediated writes;
+    ``budget.refuse_append_only_change`` -- the trigger
+    :mod:`app.append_only_infrastructure` installs -- refuses every actor and
+    every spelling, including the bulk ``query.update()`` the finding's own harm
+    sentence names.  The ``ON DELETE CASCADE`` from ``budget.accounts`` is
+    deliberately outside both: history goes with its account, and
+    :attr:`Account.anchor_history` declares ``passive_deletes`` so the ORM
+    leaves that disposal to the database.
+    """
+
+
+install_append_only_guards(
+    AccountAnchorHistory, AccountAnchorHistoryImmutableError,
+)

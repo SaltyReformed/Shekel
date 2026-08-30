@@ -13,7 +13,8 @@ producers read the LATEST anchor row and ignored its date; the fold made the
 instant load-bearing.
 
 The per-fixture mitigations (``override_anchor``'s period-start default,
-``conftest._pin_opening_to``, an explicit settle day) stay and are unaffected
+``conftest._drop_seed_user_bootstrap``'s books restatement, an explicit settle
+day) stay and are unaffected
 -- this pins the STRUCTURAL half that stops a fourth instance:
 ``_test_helpers._freeze_db_clock``.  Read its docstring for the design and its
 one stated boundary.

@@ -9495,6 +9495,13 @@ class TestTheBalanceHistoryCard:
         the observed day the application's, so a same-day true-up left them
         equal only where the two clocks agreed.  Under the calendar sweep they
         do not, and this control was red on every matrix date from 2026-08-10.
+
+        **Scoped to the row under test, for the reason its sibling above gives**
+        (plan step X-f3c-2c).  The account's ORIGINATION row is genuinely
+        back-dated now -- ``build_seed_user`` asserts the opening balance for
+        the owner's 2024 bootstrap day and the write records today -- so a bare
+        ``"entered" not in html`` would fail on a caption that is telling the
+        truth about a different row.
         """
         with app.app_context():
             acct_id = seed_user["account"].id
@@ -9507,7 +9514,8 @@ class TestTheBalanceHistoryCard:
             ).data.decode()
 
             assert "$1,500.00" in html
-            assert "entered" not in html
+            row = html.split("$1,500.00", 1)[0].rsplit("<tr>", 1)[1]
+            assert "entered" not in row
 
     def test_the_entered_day_is_stored_not_read_back_off_created_at(
         self, app, auth_client, db, seed_user, seed_periods_today,
@@ -9520,35 +9528,50 @@ class TestTheBalanceHistoryCard:
         where the Python and PostgreSQL clocks disagree, which is exactly the
         position the sweep runs at and the ordinary suite never reaches.
 
-        This reaches it directly instead.  A same-day true-up is recorded
-        through the real door, and then the row's ``created_at`` alone is moved
-        three days -- the state the midnight race produces in production, where
-        ``display_today()`` answers one civil day and PostgreSQL's ``now()``
-        the next.  The caption must stay ABSENT: the day the card compares is
-        stored, not read back off the instant.  A revert to the derived
-        property fails here with an ``entered`` caption naming the moved day.
+        This reaches it directly instead.  A row is WRITTEN whose two clocks
+        already disagree -- one civil day under both stored names, and a
+        recording instant three days later -- which is the state the midnight
+        race produces in production, where ``display_today()`` answers one
+        civil day and PostgreSQL's ``now()`` the next.  The caption must stay
+        ABSENT: the day the card compares is stored, not read back off the
+        instant.  A revert to the derived property fails here with an
+        ``entered`` caption naming the instant's day.
 
-        ``created_at`` keeps its own job either way, and this test does not
-        touch it: it orders assertions that share an ``observed_on``.
+        **The divergence is INSERTED rather than edited in** (plan step
+        X-f3c-2c).  It used to record a same-day true-up through the real door
+        and then move that row's ``created_at`` three days;
+        ``budget.account_anchor_history`` is append-only, and the production
+        state this case is about is an INSERT whose two clocks land apart,
+        never an UPDATE that pulls them apart afterwards.  The door is still
+        exercised, one line up, for the claim that it records the
+        APPLICATION's day.
+
+        ``created_at`` keeps its own job either way: it orders assertions that
+        share an ``observed_on``.
         """
         with app.app_context():
             acct_id = seed_user["account"].id
             today = display_today()
             self._assert_balance(
-                auth_client, acct_id, "1500.00", observed_on=today,
+                auth_client, acct_id, "1400.00", observed_on=today,
             )
-
-            row = (
+            written = (
                 db.session.query(AccountAnchorHistory)
                 .filter_by(account_id=acct_id)
                 .order_by(AccountAnchorHistory.id.desc())
                 .first()
             )
-            assert row.recorded_on == today, (
+            assert written.recorded_on == today, (
                 "the write door must record the APPLICATION's civil day"
             )
-            # Move ONLY the recording instant, leaving the stored entered day.
-            row.created_at = row.created_at + timedelta(days=3)
+
+            db.session.add(AccountAnchorHistory(
+                account_id=acct_id,
+                anchor_balance=Decimal("1500.00"),
+                observed_on=today,
+                recorded_on=today,
+                created_at=written.created_at + timedelta(days=3),
+            ))
             db.session.commit()
 
             html = auth_client.get(
@@ -9556,7 +9579,8 @@ class TestTheBalanceHistoryCard:
             ).data.decode()
 
             assert "$1,500.00" in html
-            assert "entered" not in html, (
+            row = html.split("$1,500.00", 1)[0].rsplit("<tr>", 1)[1]
+            assert "entered" not in row, (
                 "the entered day is a stored fact; deriving it from "
                 "created_at is what made the caption compare two clocks"
             )

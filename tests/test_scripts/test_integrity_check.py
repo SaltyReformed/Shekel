@@ -16,6 +16,7 @@ from app.enums import StatusEnum
 from app.services.auth_service import hash_password
 from app.services import account_service
 from tests._test_helpers import (
+    account_never_asserted,
     settle_day_columns,
     settlement_columns,
 )
@@ -330,14 +331,21 @@ class TestBalanceAnomalies:
         survived as raw-SQL defence only.  What it asks now is the invariant
         those columns existed to serve: every account carries at least one
         ``account_anchor_history`` row (E-19 / Commit 3), because an account
-        the resolver cannot answer for breaks every producer downstream.  That
-        state IS reachable -- deleting the assertion is one statement -- so the
-        check has a firing control again.
+        the resolver cannot answer for breaks every producer downstream.
+
+        **The firing control BUILDS such an account rather than emptying one**
+        (plan step X-f3c-2c).  It used to delete the seeded account's
+        assertions with one raw statement; ``budget.account_anchor_history`` is
+        append-only at the database tier now, so no statement does that.  What
+        remains reachable -- and what this check exists for -- is an ``Account``
+        row that never went through the factory, which is exactly the shape a
+        restore, a hand-written script or a future writer would leave behind.
         """
-        account_id = seed_user["account"].id
-        db.session.execute(db.text(
-            "DELETE FROM budget.account_anchor_history WHERE account_id = :a"
-        ), {"a": account_id})
+        account = account_never_asserted(
+            seed_user, db.session, name="Unanswerable",
+            opening_equity=Decimal("0.00"),
+        )
+        account_id = account.id
         db.session.flush()
 
         results = check_balance_anomalies(db.session)
