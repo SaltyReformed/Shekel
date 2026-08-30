@@ -84,6 +84,14 @@ The public surface, and what each piece is for:
   outside the package imports**: ``AppliedItem``, ``RefusedItem``,
   ``MatchedSubjects`` and ``unmatched_rows`` were exported for symmetry and had
   no importer at all, which is a surface nobody asked for.
+* :func:`reconcile_page` and :class:`Tab` -- everything the RECONCILE screen
+  displays, for one of its five tabs (plan step ``bank_import:X-gj-1a``,
+  rulings **R-HP** and **R-HW**): one card per bank line carrying the verb it
+  ends on, which of the four verbs have a door, the sentence as spans, the
+  hero, the holding chips and the tab counts.  **Only these two are exported**,
+  because only the route imports anything: the card values are what the
+  template reads off the page it is handed, and a surface nobody imports is
+  one nobody asked for.
 * :func:`preview_hand_build` -- what the hand-build form's two sides come to
   RIGHT NOW, so ruling **R-FN**'s *a difference is a transaction the user
   accepts* has a figure to accept.  It runs the accept door's own reads and
@@ -223,6 +231,7 @@ from ._register import (
     register_set,
 )
 from ._scope import ReviewScope
+from ._reconcile import Tab, reconcile_page
 from ._filing import (
     RECEIPT_LIMIT,
     RuleFiling,
@@ -291,6 +300,7 @@ __all__ = [
     "ReviewedBatch",
     "ReviewedRow",
     "StatementRegister",
+    "Tab",
     "RowKind",
     "StatedRules",
     "WithheldLine",
@@ -313,6 +323,7 @@ __all__ = [
     "merchant_label",
     "preview_hand_build",
     "propose",
+    "reconcile_page",
     "release_match",
     "removals_by_match",
     "register_set",

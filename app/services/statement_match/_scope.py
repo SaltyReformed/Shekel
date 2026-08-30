@@ -60,6 +60,43 @@ from ._creations import PurchaseDestination
 from ._offers import Candidates
 
 
+def no_period_refusal(day: "date", subject: str) -> str:
+    """Return why no budget can hold something placed on *day*.
+
+    **ONE spelling, because it is read in two places and raised in a third**
+    (plan step ``bank_import:X-gj-1a``).  :meth:`ReviewScope.period_holding`
+    raises it when a write is attempted; :func:`~._leftovers._one_inflow` and
+    :func:`~._leftovers._one_creatable` read it to withhold the control
+    BEFORE the owner presses anything, which is what keeps a chooser off a
+    line the door would refuse.  It was spelled twice before this step, once
+    here and once for inflows only, so the screen and the door said different
+    things about one rule -- and the OUTFLOW direction said nothing at all
+    and rendered a working-looking control (found by adversarial review
+    2026-08-29, reproduced on a swipe made the day before the calendar
+    opens).
+
+    Args:
+        day: The civil day the money is placed by.  **Which day differs by
+            subject** and the caller decides: a purchase is placed by the day
+            it was MADE, a residual and an income row by the day the money
+            POSTED.
+        subject: What is being placed, named as the owner would name it --
+            "this purchase", "the difference on this match".  A refusal has to
+            name the act.
+
+    Returns:
+        The sentence.  It carries no *nothing was changed* clause: that is
+        true of a refused WRITE and false of a control withheld before one,
+        and a reader that printed it beside an offer would be reporting a
+        press that never happened.
+    """
+    return (
+        f"No pay period covers {day.isoformat()}, so there is no budget for "
+        f"{subject} to belong to.  Extend your pay schedule to cover that "
+        f"day first."
+    )
+
+
 @dataclass(frozen=True)
 class ReviewScope:
     """Everything one review pass over one account may act on.
@@ -187,9 +224,7 @@ class ReviewScope:
         period = self.calendar.period_containing(day)
         if period is None:
             raise ValidationError(
-                f"No pay period covers {day.isoformat()}, so there is no "
-                f"budget for {subject} to belong to.  Extend your pay "
-                f"schedule to cover that day first.  Nothing was changed."
+                f"{no_period_refusal(day, subject)}  Nothing was changed."
             )
         return period.period_id
 

@@ -34,7 +34,9 @@ from datetime import date
 from decimal import Decimal
 
 from app.exceptions import AmountUnresolvable
+from app.extensions import db
 from app.models.statement_import import BankStatementLine
+from app.models.statement_match import StatementMatch
 from app.models.transaction import Transaction
 from app.services import cash_ledger
 from app.utils.balance_predicates import is_balance_contributing
@@ -80,9 +82,12 @@ class AcceptedRow:
 class AcceptedGroup:  # pylint: disable=too-many-instance-attributes
     """One accepted match, as the screen lists it.
 
-    Pylint: ``too-many-instance-attributes`` (8/7) -- **eight because the two
-    surfaces that render an act read eight disjoint facts about it**, not
-    because the value wants splitting.  The eighth is
+    Pylint: ``too-many-instance-attributes`` (9/7) -- **nine because the two
+    surfaces that render an act read nine disjoint facts about it**, not
+    because the value wants splitting.  The ninth is
+    :attr:`created_every_row`, which the Reconcile screen's card reads to say
+    ADD or MATCH and which nothing else can answer: the act's members and its
+    creations are both loaded here and nowhere downstream.  The eighth is
     :attr:`applied_by_rule`, which arrived with plan step ``bank_import:X-ge``
     and is the whole reason ruling **R-GT** stores a column at all: WHICH rule
     fired is derivable from the matched line, and THAT one fired is not, so a
@@ -131,6 +136,24 @@ class AcceptedGroup:  # pylint: disable=too-many-instance-attributes
             claims the first by omission.  It defaulted to ``False`` until an
             adversarial security review named it, 2026-08-26: the DISPLAY half
             of a consent fact may no more assume consent than the writing half.
+        created_every_row: Whether EVERY row this act names is one it made,
+            which is the difference between ADD and MATCH in the Reconcile
+            screen's vocabulary (ruling **bank_import:R-HP**, plan step
+            ``bank_import:X-gj-1a``).  A MATCH says *this line IS a row the
+            books already hold*, so an act naming even one row it did not
+            create is one.
+            **It is NOT "did this act create anything"**, and that reading is
+            wrong on the case this whole arc exists for: an unbalanced group
+            mints ruling **R-FN**'s residual row and records it as a creation
+            (:func:`~._accept.accept_match`), so a payroll MATCH -- seven
+            deposits and `$18,132.63` on the developer's own account -- creates
+            something while matching rows that already existed, and would have
+            been captioned *Added*.  Reproduced by adversarial review
+            2026-08-29 against ``test_residual``'s own fixture.
+            **Nor is it "did it create a PURCHASE"**: ruling **R-GW**'s income
+            door creates an uncategorized TRANSACTION and is an ADD, which a
+            kind test would call a match.  What separates them is whether
+            anything PRE-EXISTED, and that is what this asks.
         agrees: Whether the match still HOLDS -- which is three questions, not
             one, and a first draft asked only the first.  Every row still
             carries ``posts_on``; the act still names at least one row; and the
@@ -148,6 +171,7 @@ class AcceptedGroup:  # pylint: disable=too-many-instance-attributes
     amount: Decimal
     descriptions: "tuple[str, ...]"
     rows: "tuple[AcceptedRow, ...]"
+    created_every_row: bool
     agrees: bool
     removes: PlannedRemovals
     applied_by_rule: bool
@@ -155,12 +179,18 @@ class AcceptedGroup:  # pylint: disable=too-many-instance-attributes
 
 def accepted_groups(
     owner_id: int, account_id: int, match_ids: "set[int] | None" = None,
+    *, applied_by_rule: "bool | None" = None,
 ) -> "list[AcceptedGroup]":
     """Return this account's accepted matches, newest first.
 
     Args:
         owner_id: The user whose matches to list.
         account_id: The account.
+        applied_by_rule: Which half of the accepted set to describe --
+            ``True`` for the acts a standing rule performed (**R-GT**),
+            ``False`` for the acts a person ticked, ``None`` for both.
+            Threaded into :func:`~._release.acts_of`'s own query, so a caller
+            asking for one half never loads or prices the other.
         match_ids: The acts to describe, or ``None`` for all of this
             account's.  **It is :func:`~._release.acts_of`'s own parameter,
             surfaced rather than reimplemented** (plan step
@@ -197,7 +227,10 @@ def accepted_groups(
     # callers; and a discipline about holding a variable is one a reader can
     # drop without anything saying so.  Both are now properties of how the act
     # is loaded.
-    matches = acts_of(owner_id, account_id, match_ids)
+    matches = acts_of(
+        owner_id, account_id, match_ids,
+        applied_by_rule=applied_by_rule,
+    )
     if not matches:
         return []
 
@@ -250,6 +283,20 @@ def accepted_groups(
             if member.transaction_id is not None
             or member.transaction_entry_id is not None
         ]
+        # **Asked where both relations are loaded**, which is only here: what
+        # an act NAMES and what it MADE are two tables
+        # (:class:`~app.models.statement_match.StatementMatchCreation`), and
+        # every reader downstream has the labels rather than the ids.
+        created_keys = {
+            (creation.transaction_id, creation.transaction_entry_id)
+            for creation in match.creations
+        }
+        member_keys = {
+            (member.transaction_id, member.transaction_entry_id)
+            for member in match.members
+            if member.transaction_id is not None
+            or member.transaction_entry_id is not None
+        }
         groups.append(AcceptedGroup(
             match_id=match.id,
             posts_on=posts_on,
@@ -259,6 +306,11 @@ def accepted_groups(
             ),
             descriptions=tuple(line.description for line in match_lines),
             rows=tuple(rows),
+            # **An act naming NO row created nothing it names**, so the empty
+            # case is a MATCH rather than vacuously an ADD -- which is what a
+            # bare subset test would answer for a group every one of whose
+            # rows a cascade has removed.
+            created_every_row=bool(member_keys) and member_keys <= created_keys,
             agrees=_still_holds(rows, match_lines, posts_on),
             removes=planned_removals(match),
             applied_by_rule=match.applied_by_rule,
@@ -280,6 +332,71 @@ def accepted_groups(
 #: 0 of them out of agreement -- so this cuts the register's own card to about
 #: a quarter of that, and cuts nothing an owner is looking for.
 REGISTER_LIMIT = 50
+
+
+@dataclass(frozen=True)
+class AcceptedCounts:
+    """How many acts this account has ACCEPTED, and how many a rule performed.
+
+    Plan step ``bank_import:X-gj-1a``.  The Reconcile screen shows a count on
+    every tab whichever tab is open, so it needs these two numbers on every
+    render -- and :func:`accepted_register` is the wrong way to get them:
+    it VALUES up to :data:`REGISTER_LIMIT` acts to produce them, re-pricing
+    every member row through :func:`~._release.planned_removals` and
+    :func:`_still_holds`.  Measured on the developer's own account
+    2026-08-29: 221 accepted acts, of which 0 by rule.
+
+    **Two counts and not one**, because they partition the same set: the
+    Filed-by-rules tab holds exactly the acts nobody pressed (**R-GT**), and
+    Explained holds the rest.  A screen deriving one from the other by
+    subtraction in Jinja would be computing in a template.
+
+    Attributes:
+        total: Every accepted act on this account.
+        by_rule: Those a standing rule performed (**R-GT**).
+    """
+
+    total: int
+    by_rule: int
+
+    @property
+    def by_hand(self) -> int:
+        """Return how many acts a person ticked.
+
+        Returns:
+            The remainder, which is the Explained tab's own count.
+        """
+        return self.total - self.by_rule
+
+
+def accepted_counts(owner_id: int, account_id: int) -> AcceptedCounts:
+    """Return how many acts this account has accepted, and how many by rule.
+
+    **ONE read of two aggregates**, rather than two queries or one list
+    valued for its length.
+
+    **It filters on the OWNER as well as the account**, which is the narrowing
+    :func:`~._release.acts_of` already applies for the reason recorded there:
+    the account implies the owner, and a reader feeding a screen narrows by
+    the same columns the write door does.
+
+    Args:
+        owner_id: The user the route proved owns the account.
+        account_id: The account to count for.
+
+    Returns:
+        The :class:`AcceptedCounts`.
+    """
+    total, by_rule = db.session.query(
+        db.func.count(StatementMatch.id),
+        db.func.count(StatementMatch.id).filter(
+            StatementMatch.applied_by_rule.is_(True),
+        ),
+    ).filter(
+        StatementMatch.account_id == account_id,
+        StatementMatch.user_id == owner_id,
+    ).one()
+    return AcceptedCounts(total=total, by_rule=by_rule)
 
 
 @dataclass(frozen=True)
@@ -307,8 +424,9 @@ class AcceptedRegister:
 
 def accepted_register(
     owner_id: int, account_id: int, limit: "int | None" = REGISTER_LIMIT,
+    *, applied_by_rule: "bool | None" = None,
 ) -> AcceptedRegister:
-    """Return this account's accepted acts as the register renders them.
+    """Return this account's accepted acts as a register renders them.
 
     Args:
         owner_id: The user whose acts to list.
@@ -316,11 +434,33 @@ def accepted_register(
         limit: How many SETTLED acts to render, or ``None`` for all of them --
             which is what the *show everything* link asks for.  An act that no
             longer holds is never subject to it.
+        applied_by_rule: Which half of the accepted set to return -- ``True``
+            for the acts a standing rule performed, ``False`` for the acts a
+            person ticked, ``None`` for both, which is the register page's own
+            question and this parameter's default.
+
+            **It narrows in SQL, before the bound and before anything is
+            priced** (plan step ``bank_import:X-gj-1a``).  Both halves of that
+            matter: a caller filtering this function's RESULT would take the
+            newest :data:`REGISTER_LIMIT` of BOTH and then drop the other half
+            from them, AND would have loaded and valued every act on the
+            account to do it.  The Reconcile screen shows the two
+            halves as two tabs (**R-GT**), and a caller slicing this function's
+            result would take the newest :data:`REGISTER_LIMIT` of BOTH and
+            then drop the other half from them: with 60 hand acts and 10 rule
+            acts the Explained tab would render about 43 rows under a tab
+            captioned *60*, which is a caption promising a number the tab does
+            not deliver -- the defect :func:`~._queue._sweeps_for` exists to
+            refuse, one surface over.
 
     Returns:
-        The :class:`AcceptedRegister`.
+        The :class:`AcceptedRegister`.  Its :attr:`~AcceptedRegister
+        .withheld_count` is over the narrowed set, so a tab that states it
+        states its own truncation and not the whole account's.
     """
-    groups = accepted_groups(owner_id, account_id)
+    groups = accepted_groups(
+        owner_id, account_id, applied_by_rule=applied_by_rule,
+    )
     # **Stable, so the second key is the order** :func:`~._release.acts_of`
     # **already returned** (newest first) rather than a second sort restating
     # it -- and so an act that stops agreeing moves to the top without
