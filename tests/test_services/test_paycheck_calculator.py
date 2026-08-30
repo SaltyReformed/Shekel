@@ -7,6 +7,7 @@ pipeline including deductions, taxes, 3rd-paycheck detection, inflation,
 cumulative wages, and project_salary().
 """
 
+import pathlib
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -3787,6 +3788,41 @@ class TestTheGrossContractIsDocumented:
         assert "R-HW" in doc
         assert "N-239" in doc
         assert "MED-05" in doc
+
+    @pytest.mark.parametrize("registry,ident", [
+        ("rulings.md", "| balance | R-HW |"),
+        ("ledger.md", "| balance | N-390 "),
+        ("ledger.md", "| balance | N-391 "),
+    ])
+    def test_the_plan_identifiers_this_step_cites_actually_exist(
+        self, registry, ident,
+    ):
+        """A citation is only worth as much as the row it names.
+
+        The three cases above pin STRINGS in docstrings, which is what they are
+        for -- the superseded wording must not creep back. But a string pin
+        cannot tell a recorded ruling from an invented one, and an adversarial
+        review of this step found exactly that state: `R-HW` cited eighteen
+        times from `app/` and `tests/` while `rulings.md` ended at `R-HO`, and
+        `N-390` / `N-391` cited while `ledger.md` ended at `N-388`. The plan
+        gate could not see it, because **it runs only when a planning document
+        is edited** and the code commit edits none.
+
+        **This is deliberately scoped to the ids THIS step mints, and
+        `tools/plan_gate/_rulings.py:135-141` says why the general arm cannot
+        exist**: "an arc document may name no ruling id that has no
+        `rulings.md` row" would fire on 88 live citations today, because an
+        archived ruling's text stays in its archive. Scoped to three live ids
+        it is decidable, and it is the difference between grading the citation
+        and grading the ruling.
+        """
+        path = (
+            pathlib.Path(__file__).resolve().parents[2] / "docs/plans" / registry
+        )
+        assert ident in path.read_text(encoding="utf-8"), (
+            f"{ident.strip('| ')} is cited from app/ but has no row in "
+            f"docs/plans/{registry}. conventions.md rules 1 and 9"
+        )
 
 
 
