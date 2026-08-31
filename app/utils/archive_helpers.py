@@ -208,8 +208,10 @@ def category_has_usage(category_id: int, user_id: int) -> bool:
 
     Performs a three-part check, short-circuiting in the order it runs them:
     (1) any TransactionTemplate with matching category_id and user_id, (2) any
-    standing merchant rule whose *new envelope* answer files under it, and (3)
-    any Transaction with matching category_id joined to PayPeriod filtered by
+    standing merchant rule that names it -- as the category a *new envelope*
+    answer creates under, OR as the income category a deposit from that
+    merchant is filed under (plan step ``bank_import:X-gj-2a``) -- and (3) any
+    Transaction with matching category_id joined to PayPeriod filtered by
     user_id.  The join is last because it is the only one of the three that
     needs one; none of the three has an index on ``category_id``, so all three
     are sequential scans over small tables and the ordering buys the JOIN
@@ -276,9 +278,24 @@ def category_has_usage(category_id: int, user_id: int) -> bool:
     # term either, and that one IS load-bearing: a category is owner-scoped
     # while a rule is account-scoped, so two accounts' rules may file under one
     # category and both are usage.
+    #
+    # **BOTH answer columns, since plan step ``bank_import:X-gj-2a``.**  A rule
+    # names a category in two different ways now -- ``category_id`` is the
+    # category a *new envelope* answer creates its envelope under, and
+    # ``income_category_id`` is what a DEPOSIT from that merchant is -- and
+    # ``fk_merchant_rules_income_category_owner`` cascades exactly as its twin
+    # does.  Asking about only the first would have re-created, on the new
+    # column, the precise defect this clause was added for: a category no
+    # template and no transaction used but that one income rule filed under
+    # would be reported UNUSED, permanently deleted, and take the rule with it
+    # under a flash saying nothing about it.  A rule is never un-stated by the
+    # owner (ruling **R-GS**), so that cascade is the only way one can vanish.
     has_rules = db.session.query(
-        db.session.query(MerchantRule).filter_by(
-            category_id=category_id,
+        db.session.query(MerchantRule).filter(
+            db.or_(
+                MerchantRule.category_id == category_id,
+                MerchantRule.income_category_id == category_id,
+            ),
         ).exists()
     ).scalar()
 

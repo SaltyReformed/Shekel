@@ -343,13 +343,14 @@ class CreatedPurchase:  # pylint: disable=too-many-instance-attributes
 class IncomeCreation:
     """What the owner submitted to record one bank line as an income row.
 
-    Ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``.  **One id and nothing
-    else**, and the emptiness is the design rather than a stub: a purchase
-    needs a container to be filed against and asks the owner which
+    Ruling **bank_import:R-GW**, plan step ``bank_import:X-gf-1``.  **One id
+    and, since plan step ``bank_import:X-gj-2a``, one optional CLASSIFICATION**
+    -- and the near-emptiness is still the design rather than a stub: a
+    purchase needs a container to be filed against and asks the owner which
     (:class:`PurchaseCreation`), while a deposit reserves nothing, so there is
-    no arm to choose between and no name or category to state.  The figure and
-    the day come from the recorded LINE inside the same transaction, so a stale
-    page cannot commit a number the bank did not state.
+    no arm to choose between.  The figure and the day come from the recorded
+    LINE inside the same transaction, so a stale page cannot commit a number
+    the bank did not state.
 
     **It is a value rather than a bare id, for the reason its sibling is one**:
     the batch carries two lists of acts, and a list of ints beside a list of
@@ -359,9 +360,28 @@ class IncomeCreation:
 
     Attributes:
         line_id: The bank line to record.
+        category_id: What the money IS, where a standing rule says so
+            (**R-HT(a)**); ``None`` for a deposit no rule answers, which is the
+            uncategorized row this door has always written.
+
+            **It is a CLASSIFICATION and not a destination**, which is why it
+            does not make this the container-naming value its sibling is: an
+            income row is still filed against nothing, still reserves nothing,
+            and the category only decides which ledger account the counter leg
+            books to instead of the per-owner Uncategorized fallback.
+
+            **It never arrives from the WIRE** (developer ruling 2026-08-31).
+            The Reconcile card renders no category picker: the rule is the
+            answer, so the door re-derives this from the stored rule inside the
+            same transaction and the form still posts one id.  A picker was
+            considered and refused because a category typed at the card is a
+            fact the app does not remember -- next month's deposit from the
+            same signature would ask again, which is the ask-the-same-question-
+            many-times shape ruling **R-GA** exists to remove.
     """
 
     line_id: int
+    category_id: "int | None" = None
 
 
 @dataclass(frozen=True)

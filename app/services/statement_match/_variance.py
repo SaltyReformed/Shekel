@@ -88,7 +88,7 @@ from app.utils.money import MONEY_COLUMN_MAX, round_money
 from ._offers import CandidateRow, MatchDays, RowKind, merchant_label
 from ._sides import MatchSides
 from ._scope import ReviewScope
-from ._uncategorized import mint_uncategorized
+from ._uncategorized import MovementToRecord, mint_uncategorized
 
 _logger = logging.getLogger(__name__)
 
@@ -590,7 +590,13 @@ def mint(
             created, which is the shared writer's contract.
     """
     candidate = mint_uncategorized(
-        _named_for(lines), difference, pay_period_id, days.posts_on, scope,
+        MovementToRecord(
+            name=_named_for(lines),
+            signed_amount=difference,
+            pay_period_id=pay_period_id,
+            posts_on=days.posts_on,
+        ),
+        scope,
     )
     log_event(
         _logger, logging.INFO, EVT_STATEMENT_RESIDUAL_RECORDED, BUSINESS,

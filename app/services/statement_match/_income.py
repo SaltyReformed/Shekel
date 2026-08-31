@@ -26,8 +26,16 @@ the money instead of the opinion.
 one payment against a container that reserves for it, and a deposit reserves
 nothing -- ``ck_transaction_entries_positive_amount`` says so in the schema.
 So this door asks the owner for no destination at all: there is nothing to pick
-between, which is why its control is a tick rather than a select and why no
-merchant rule reaches it (a rule says where SPENDING goes; ruling **R-GI**).
+between, which is why its control is a tick rather than a select.
+
+**A standing rule DOES reach it now** (ruling **R-HT(a)**, plan step
+``bank_import:X-gj-2a``), and this paragraph said the opposite until then: *no
+merchant rule reaches it -- a rule says where SPENDING goes*.  Ruling **R-GI**
+made that true and **R-HT(a)** amended R-GI, giving the answer set a fifth
+member that says what a DEPOSIT from a signature IS.  What the rule supplies is
+a CLASSIFICATION and not a destination -- the row is still filed against
+nothing -- so the tick-not-a-select argument above survives the amendment
+whole.
 
 **The ROW is the one :func:`~._variance.mint` already writes**, through the
 shared :func:`~._uncategorized.mint_uncategorized`: uncategorized, so the
@@ -70,7 +78,7 @@ from ._creations import CreatedSubject, IncomeCreation, RecordedIncome
 from ._offers import merchant_label
 from ._resolve import load_lines
 from ._scope import ReviewScope
-from ._uncategorized import mint_uncategorized
+from ._uncategorized import MovementToRecord, mint_uncategorized
 
 _logger = logging.getLogger(__name__)
 
@@ -158,7 +166,10 @@ def _observed(line: BankStatementLine) -> SettleDay:
 
 
 def record_income_from_line(
-    creation: IncomeCreation, scope: ReviewScope,
+    creation: IncomeCreation,
+    scope: ReviewScope,
+    *,
+    applied_by_rule: bool = False,
 ) -> RecordedIncome:
     """Record one bank line as an income row, and match the line to it.
 
@@ -191,6 +202,15 @@ def record_income_from_line(
         scope: The pass's derived offer set (:class:`~._scope.ReviewScope`).
             **Required rather than defaulted**, for the reason
             :func:`~._accept.accept_match`'s is.
+        applied_by_rule: Whether a STANDING RULE performed this rather than a
+            person ticking it (**R-GT**, **R-HT(a)**).  Keyword-only and
+            defaulted FALSE, which is the shape :func:`~._accept.record_match`
+            already has and for its reason: the two values are *the owner
+            agreed to this* and *the app did it on their behalf*, and the
+            default has to be the one that claims less.  It was a hardcoded
+            literal ``False`` here until plan step ``bank_import:X-gj-2a`` --
+            correct while ruling **bank_import:R-GW** said a rule could never
+            answer a deposit, and R-HT(a) is what moved that.
 
     Returns:
         The :class:`~._creations.RecordedIncome`.
@@ -226,16 +246,28 @@ def record_income_from_line(
     # theoretical.
     pay_period_id = scope.period_holding(line.posted_on, "this deposit")
     candidate = mint_uncategorized(
-        # What the BANK NAMES the merchant, not the whole line, for the reason
-        # a recorded purchase takes the same label: the app's own rows are
-        # called "Dividend Earned", and a row named
-        # ``POINT OF SALE CREDIT L340 DATE 04-15 AMAZON MKTPLA...`` would be
-        # the only one on the grid nobody can read.  The bank's full wording is
-        # not lost -- it stays on the statement line, which the match this door
-        # records ties to this row.  ``merchant_label`` is TOTAL: it falls back
-        # to the description for a source that names no merchant.
-        merchant_label(line.merchant_name, line.description),
-        amount, pay_period_id, line.posted_on, scope,
+        MovementToRecord(
+            # What the BANK NAMES the merchant, not the whole line, for the
+            # reason a recorded purchase takes the same label: the app's own
+            # rows are called "Dividend Earned", and a row named ``POINT OF
+            # SALE CREDIT L340 DATE 04-15 AMAZON MKTPLA...`` would be the only
+            # one on the grid nobody can read.  The bank's full wording is not
+            # lost -- it stays on the statement line, which the match this door
+            # records ties to this row.  ``merchant_label`` is TOTAL: it falls
+            # back to the description for a source that names no merchant.
+            name=merchant_label(line.merchant_name, line.description),
+            signed_amount=amount,
+            pay_period_id=pay_period_id,
+            posts_on=line.posted_on,
+            # **What the owner said this money IS, or nothing** (**R-HT(a)**).
+            # It is not read from the wire: the Reconcile card renders no
+            # category picker, so this arrives on the creation from the stored
+            # rule the caller resolved -- one derivation for the automatic door
+            # and the owner's own OK, which is what stops the two answering
+            # *what is this deposit* differently.
+            category_id=creation.category_id,
+        ),
+        scope,
     )
     accepted = record_match(
         scope,
@@ -248,11 +280,14 @@ def record_income_from_line(
             created=(CreatedSubject.of(candidate),),
         ),
         matched,
-        # **Never a rule** (ruling **bank_import:R-GW**).  A merchant answer says where
-        # SPENDING goes, and a deposit is not spending, so nothing but a person
-        # ticking this line can reach this door -- and a literal ``False`` here
-        # is that fact rather than a default nobody chose.
-        applied_by_rule=False,
+        # **A rule CAN reach this door since plan step
+        # ``bank_import:X-gj-2a``** (ruling **R-HT(a)**), where it was a
+        # literal ``False`` on ruling **bank_import:R-GW**'s ground that a
+        # merchant answer only ever said where SPENDING goes.  R-HT(a) gave the
+        # answer set a fifth member that says what a DEPOSIT is, so the flag is
+        # now the caller's to state and this door records what it is told
+        # rather than asserting what it assumed.
+        applied_by_rule=applied_by_rule,
     )
     recorded = RecordedIncome(
         transaction_id=candidate.row_id,
