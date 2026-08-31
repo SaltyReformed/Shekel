@@ -611,9 +611,11 @@ def reconcile_page(
         # **One row read, and one COUNT where that row exists.**  The
         # provenance line the locked direction prints beside the four figures
         # is a fact about the last import rather than about the comparison, so
-        # it is read here and carried whole.  Measured on the clone with
-        # EXPLAIN ANALYZE: 0.039 ms and 0.054 ms, against ``review_set``'s own
-        # 0.136 s on the same account.
+        # it is read here and carried whole.  ``EXPLAIN ANALYZE`` on a
+        # restored production clone 2026-08-30: 0.034 ms and 0.071 ms of
+        # execution, against ``review_set``'s own 0.136 s on the same
+        # account -- so the provenance costs about a two-thousandth of what
+        # the page already pays to exist.
         last_import=last_import(scope.owner_id, scope.account_id),
         chips=_chips(review, transfers, counts.total),
         counts=(

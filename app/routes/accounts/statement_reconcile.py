@@ -25,9 +25,9 @@ Apply are the pair; the standing-rule offer's own door writes
 ``budget.merchant_rules`` and commits (ruling **bank_import:R-IB**); and the
 MATCH pane re-renders one card's candidate rows and what the ticked ones come
 to, writing nothing.  *(This paragraph said "three routes, and the third is a
-READ" until R-IB added the rule door, at which point the third route in file
-order was the one that WRITES -- a reader counting routes would have mapped
-the sentence onto the wrong one.)*  It is a POST for the reason
+READ" until **bank_import:R-IB** added the rule door, at which point the third
+route in file order was the one that WRITES -- a reader counting routes would
+have mapped the sentence onto the wrong one.)*  It is a POST for the reason
 :func:`~.statement_workbench.statement_match_totals` is: it carries a list of
 ids and a CSRF token, not because it changes anything.  **The alternative was
 measured and refused**: rendering every card's candidate rows with the page is
