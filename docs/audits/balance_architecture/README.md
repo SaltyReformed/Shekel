@@ -251,12 +251,9 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     * [ ] **X-f3c-2b** the DECOMPOSED parent of the books boundary (**R-HG**), split 2026-08-28 and
       re-cut the same day (**R-HJ**): the invariant is one commit, and the DOOR -- with the
       account-10 repair it is the only honest route for -- is the other. Carries **N-379**.
-      * [x] **X-f3c-2b-1** `2cf2ac0a` -- an opening equity is the CLOSING balance for its own day
-        (**R-HG**), so no movement may be dated on or before `opened_on`: refused at
-        `settle_day.record_settle_day` and at `reconcile_service.record_settled_days`, and made
-        UNSTORABLE both ways by three deferrable constraint triggers. 12 rows over five accounts
-        legalised; **account 10 now opens 2026-04-05**, which is what `X-f3c-2b-2` restates FROM.
-        Two balance sheets moved. Closes **N-378**.
+      * [x] **X-f3c-2b-1** `2cf2ac0a` -- no movement may be dated on or before its account's
+        `opened_on` (**R-HG**); **account 10 now opens 2026-04-05**, which `X-f3c-2b-2` restates
+        FROM. Closed **N-378**. Record in `archive/two_shipped_steps_2026-08-30.md`.
       * [ ] **X-f3c-2b-2** `feat(accounts): an owner can say when the books opened` -- the DOOR
         **N-275**, **N-379** and **N-382** each name, NOT bounded by `earliest_recordable_day` (that
         floor is a rule about assertions, **R-ER**, and it would make the books unopenable before
@@ -297,18 +294,12 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
         The five dividends take their own `Income: Interest & Dividends` category
         (**R-HL**), and 07-31's `$14.39` is recorded behind a 2026-07-31 assertion at `$3,673.90`
         that moves the accrual window past it (**R-HM**). Closes **N-383**.
-    * [x] **X-f3c-2c** `930f06fc` -- the DECOMPOSED parent of the append-only refusal (**R-HZ**):
-      the fixtures stop editing an assertion and the refusal that makes editing one impossible ship
-      TOGETHER, so no tree has one without the other. Closed **N-287**; opened **N-392**, **N-393**.
-      * [x] **X-f3c-2c-1** `930f06fc` -- a fixture PLACES an assertion and never edits one: three
-        re-stamping helpers become `reassert_balance_on`, `append_balance_assertion` states both
-        clocks at INSERT, the factories take their day at `create_account`, and the seeded
-        origination stays on the bootstrap day. ~40 cases state their own asserted day now.
-      * [x] **X-f3c-2c-2** `930f06fc` -- `budget.refuse_append_only_change` on all three tables
-        (**R-HY**): every UPDATE refused, a DELETE refused while the owning ACCOUNT stands, so
-        `ON DELETE CASCADE` stays the disposal path. `Account.anchor_history` takes
-        `passive_deletes="all"`, which N-287's own evidence missed; `append_only_guard_lifted`
-        keeps the three controls beneath the trigger graded.
+    * [x] **X-f3c-2c** `930f06fc` -- an assertion is append-only at the DATABASE tier (**R-HY**, **R-HZ**); closed **N-287**, opened **N-392** and **N-393**. Both leaves and what a later step must obey: `archive/x_f3c_2c_as_built_2026-08-30.md`.
+      * [x] **X-f3c-2c-1** `930f06fc` -- a fixture PLACES an assertion and never edits one. Record in `archive/x_f3c_2c_as_built_2026-08-30.md`.
+      * [x] **X-f3c-2c-2** `930f06fc` -- `budget.refuse_append_only_change` on all three tables, `passive_deletes="all"` beside it. Record in `archive/x_f3c_2c_as_built_2026-08-30.md`.
+    * [x] **X-f3c-2d** `249f66a7` -- the append-only refusal gets the THREE arms its questions
+      need (**R-IC**): a TRUNCATE that emptied a table unrefused and UNRECORDED, and a recreate of a
+      deleted account's id, are refused. Record in `archive/two_shipped_steps_2026-08-30.md`.
     * [ ] **X-f3c-3** `feat(cash): the app says what it cannot explain` -- the account's
       OUTSTANDING DIFFERENCE (`latest asserted - (opening equity + SUM(postings))`, ONE figure per
       account and not a per-assertion correction) derived off the fold and displayed beside whether
@@ -871,6 +862,15 @@ hides.
   SPLIT, or a ceiling with a stated reason for its number -- raising one to fit is what
   `conventions.md` rule 4 refuses about plan caps, and that argument does not change for code. A
   split is a design decision, so the deliverable is three proposals rather than an edit.
+  **A FOURTH firing, 2026-08-30, and it is COUNTER-evidence to N-365's framing** (measured by the
+  `bank_import:X-gj-1b` session): a wire-format helper added as a property on `MatchProposal` took
+  `services/statement_match/_offers.py` to **1,014** lines and **no prose was cut**. The ceiling was
+  right and the HOME was wrong -- the helper is a WIRE transform, `jinja_filters.py` exists for
+  exactly that, and moving it there left `_offers.py` at **984**. So a ceiling can find a
+  MISPLACEMENT rather than cost a design record, which argues the SPLIT arm; and `_offers.py` is a
+  fourth module in a different tree from the three N-365 names. It belongs in this specification and
+  not in N-365's row because rule 4 makes a ledger row an INDEX entry, and the row could only have
+  absorbed it by trimming its own prose -- which is the harm N-365 IS.
 * [ ] **X-al** `fix(pylint): a duplicate-code disable that suppresses nothing is a finding` --
   closes **N-154**. `useless-suppression` is enabled precisely so a stale disable is reported, and
   it is BLIND to a `duplicate-code` one -- measured both directions: removing a disable left

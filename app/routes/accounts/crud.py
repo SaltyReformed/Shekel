@@ -732,8 +732,12 @@ def hard_delete_account(account_id):
     db.session.query(RateHistory).filter_by(account_id=account_id).delete()
     db.session.query(SavingsGoal).filter_by(account_id=account_id).delete()
 
-    # Step 4: delete the account.  AccountAnchorHistory is handled by
-    # the ORM relationship cascade="all, delete-orphan" on Account.
+    # Step 4: delete the account.  AccountAnchorHistory, AccountOpening and
+    # LoanAnchorEvent are append-only (plan step X-f3c-2c), so the ORM must
+    # NOT touch them: ``Account.anchor_history`` carries
+    # ``passive_deletes="all"`` and no cascade, and PostgreSQL's own
+    # ON DELETE CASCADE disposes of all three.  Their audit triggers conserve
+    # every destroyed row in ``system.audit_log`` first.
     # The DELETE narrows by version_id thanks to the optimistic-lock
     # contract; a concurrent UPDATE that bumped the version since
     # this request loaded the row raises StaleDataError, which the
