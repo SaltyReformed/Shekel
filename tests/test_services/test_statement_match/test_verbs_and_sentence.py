@@ -23,6 +23,7 @@ import pytest
 # the package's public surface for the tests alone, which is the
 # "surface nobody asked for" its ``__init__`` refuses in as many words.
 # pylint: disable=shekel-private-module-import
+from app.services.pay_calendar import DerivedPeriod
 from app.services.statement_match._cards import (
     LineCard,
     Section,
@@ -112,8 +113,14 @@ def _a_destination(name="Lowe's", is_settled=False):
     """
     return PurchaseDestination(
         transaction_id=11, name=name, category_id=3,
-        period_start=date(2026, 8, 13), period_end=date(2026, 8, 26),
-        pay_period_id=5, is_settled=is_settled,
+        # The whole paycheck, as ``destinations_for`` reads it off the owner's
+        # calendar (pay-calendar plan step C4-a-4).
+        period=DerivedPeriod(
+            period_id=5, period_index=2,
+            start_date=date(2026, 8, 13), end_date=date(2026, 8, 26),
+            end_is_projected=False,
+        ),
+        is_settled=is_settled,
     )
 
 
@@ -178,6 +185,29 @@ class TestTheSentenceOpensOnTheVerb:
         ))
         assert spans[0].text == Verb.ADD.word
 
+    def test_the_period_span_is_BRACKETED_and_carries_the_paycheck(self):
+        """The whole span, asserted rather than left to the hugging-mark rule.
+
+        This module composes the period text ITSELF rather than emitting
+        :attr:`~app.services.statement_match.PurchaseDestination.label`, and
+        that is a second spelling of one string -- deliberate, because the name
+        must be emphasised and the period must not, and stated at the site.
+        What made it a risk is that nothing asserted the RESULT: dropping the
+        brackets left every case here green, because the hugging-mark contract
+        only refuses a leading comma or full stop and ``2026`` is neither.
+        Named by adversarial test-quality review 2026-08-31.
+
+        Both ends and both brackets, because a span that lost one end would
+        name a paycheck the owner does not have.
+        """
+        spans = for_placement(Placement(
+            merchant="Lowe's", kind=PlacementKind.RECORD_IN,
+            destination=_a_destination(),
+        ))
+
+        assert spans[-1].text == "(2026-08-13 - 2026-08-26)"
+        assert spans[-1].ink is Ink.PLAIN
+
     def test_a_line_with_no_suggestion_opens_on_choose_in_the_accent(self):
         """Ruling **R-HX**: the app asks rather than proposing a guess."""
         spans = choose()
@@ -221,11 +251,11 @@ class TestASpanCarriesWordsOrAFigureAndNeverBoth:
         )),
         for_placement(Placement(
             merchant="Lowe's", kind=PlacementKind.RECORD_IN,
-            destination=PurchaseDestination(
-                transaction_id=11, name="Lowe's", category_id=3,
-                period_start=date(2026, 8, 13), period_end=date(2026, 8, 26),
-                pay_period_id=5, is_settled=False,
-            ),
+            # The SAME construction :func:`_a_destination` returns, called
+            # rather than spelled a second time: this case's whole subject is
+            # the leading character of a period span, and two spellings of one
+            # value is how a case and its helper come to describe two rows.
+            destination=_a_destination(),
         )),
     ])
     def test_no_span_opens_with_a_mark_that_must_hug_the_word_before(

@@ -617,6 +617,49 @@ def a_later_period(seed_user):
     return period
 
 
+def a_payday_on(seed_user, start_date):
+    """Stage and return one pay period of the owner's, OPENING on *start_date*.
+
+    :func:`a_later_period`'s general form, and it exists for the shape that
+    helper cannot build: it opens the next period the day after the bootstrap's
+    stored ``end_date``, where the derived end (the day before the NEXT payday)
+    and the stored one COINCIDE -- so a case asserting on a derived span and
+    built on it would pass against the stored column it is meant to catch.
+
+    Its own stored ``end_date`` is a fortnight, which is what keeps the owner's
+    cadence at 14 while this row is the last one: no seeded owner has a
+    ``budget.pay_schedule`` row, so
+    ``pay_schedule_service.resolve_schedule`` infers the cadence from the last
+    period's stored LENGTH.
+
+    ``period_index`` is the next free one rather than a position, because the
+    derivation renumbers by payday order anyway and the column only has to
+    satisfy ``uq_pay_periods_user_index`` -- which is what lets a caller stage
+    paydays whose id order and date order disagree.
+
+    Args:
+        seed_user: The seeded user bundle.
+        start_date: The payday this period opens on.
+
+    Returns:
+        The staged :class:`~app.models.pay_period.PayPeriod`.
+    """
+    highest = (
+        db.session.query(db.func.max(PayPeriod.period_index))
+        .filter(PayPeriod.user_id == seed_user["user"].id)
+        .scalar()
+    )
+    period = PayPeriod(
+        user_id=seed_user["user"].id,
+        start_date=start_date,
+        end_date=start_date + timedelta(days=13),
+        period_index=(highest or 0) + 1,
+    )
+    db.session.add(period)
+    db.session.flush()
+    return period
+
+
 def a_scope(seed_user, account=None):
     """Return the derived pass these doors act inside.
 

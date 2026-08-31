@@ -240,7 +240,8 @@ def for_placement(placement: Placement) -> "tuple[Span, ...]":
             Span.words("to", Ink.PLAIN),
             Span.words(destination.name, Ink.STRONG),
             Span.words(
-                f"({destination.period_start} - {destination.period_end})",
+                f"({destination.period.start_date} - "
+                f"{destination.period.end_date})",
                 Ink.PLAIN,
             ),
         )

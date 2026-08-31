@@ -267,7 +267,7 @@ def _existing_envelope(
         for destination in unmatched_destinations(
             scope.destinations, matched,
         )
-        if destination.pay_period_id == pay_period_id
+        if destination.period.period_id == pay_period_id
     }
     if creation.transaction_id not in offered:
         raise ValidationError(
