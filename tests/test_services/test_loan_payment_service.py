@@ -13,10 +13,13 @@ biweekly month overlaps before passing payments to the amortization
 engine.
 """
 
+from contextlib import contextmanager
 from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 
 from app import ref_cache
 from app.enums import SettlementBasisEnum, StatusEnum, TxnTypeEnum
@@ -32,6 +35,7 @@ from tests._test_helpers import (
     settlement_basis_id,
 )
 from app.services.loan_payment_service import (
+    _resolve_loan_basis,
     compute_contractual_pi,
     get_payment_history,
     prepare_payments_for_engine,
@@ -1038,3 +1042,116 @@ class TestPreparePaymentsForEngine:
         assert result[0].due_date == date(2027, 1, 1)
         assert result[1].payment_date == date(2026, 12, 19)
         assert result[1].due_date == date(2027, 2, 1)
+
+
+@contextmanager
+def _statements_issued():
+    """Record every SQL statement the engine executes inside the block.
+
+    The same probe ``tests/test_arch`` uses, at the Engine level rather than a
+    session's, so it sees what the PROCESS issued whichever session issued it.
+    It cannot see ``BEGIN`` / ``COMMIT`` / ``ROLLBACK`` -- psycopg2 issues those
+    through the connection rather than a cursor -- which is why the assertion
+    below names a TABLE rather than counting a total.
+
+    Yields:
+        The list of normalised SQL strings, appended to as the block runs.
+    """
+    seen = []
+
+    def _record(conn, cursor, statement, params, context, executemany):  # noqa: ARG001
+        seen.append(" ".join(statement.split()))
+
+    event.listen(Engine, "before_cursor_execute", _record)
+    try:
+        yield seen
+    finally:
+        event.remove(Engine, "before_cursor_execute", _record)
+
+
+class TestALoansPriceDoesNotReadItsOwnPayments:
+    """A loan's monthly P&I is its TERMS, so the payment feed cannot move it.
+
+    The cycle these tests exist to keep deleted: ``_resolve_loan_basis`` used to
+    run :func:`load_loan_context` -- and therefore
+    :func:`get_payment_history` -- purely to read
+    ``resolve_loan(...).monthly_payment`` back out, which put the loan's own
+    payment rows on the path that PRICES those rows.
+
+    **Two tests and not one, because they fail on different reintroductions.**
+    The value test catches a producer that reads the feed and lets it change the
+    answer; the statement test catches one that reads the feed and happens to
+    agree today, which is the shape that returns silently.  The second is the
+    one that would have caught the original coupling, since that producer also
+    answered the right number.
+
+    Measured on a production clone 2026-08-31 by
+    ``tests/manual/verify_loan_pricing_ignores_payment_feed.py``: both live
+    loans answer one figure (``1293.96`` and ``531.94``) across a FULL 29-record
+    feed, an EMPTY one, the confirmed 5 alone, and a DOUBLED 58.
+    """
+
+    def test_the_price_is_unchanged_when_every_payment_row_is_deleted(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """Deleting the whole payment feed does not move the monthly P&I.
+
+        The feed is emptied by DELETE rather than by soft-deleting or
+        cancelling: those two are read as statements about whether a row counts,
+        and a producer could honour them while still reading the rows.  Removing
+        the rows leaves nothing for a coupled producer to read at all.
+        """
+        with app.app_context():
+            loan = _create_loan_account(seed_user)
+            for period in seed_periods[:3]:
+                _create_transfer_to_loan(
+                    seed_user, loan, period, Decimal("1500.00"),
+                )
+            db.session.commit()
+
+            before = _resolve_loan_basis(loan.id, date(2026, 6, 1))
+            assert before is not None
+            assert get_payment_history(
+                loan.id, seed_user["scenario"].id, _PAYMENT_DAY,
+            ), "the feed must be non-empty for emptying it to mean anything"
+
+            db.session.query(Transaction).filter(
+                Transaction.account_id == loan.id,
+            ).delete(synchronize_session=False)
+            db.session.commit()
+
+            after = _resolve_loan_basis(loan.id, date(2026, 6, 1))
+            assert after is not None
+            assert after.monthly_pi == before.monthly_pi
+            assert after.payment_day == before.payment_day
+
+    def test_pricing_a_loan_issues_no_statement_against_the_payment_rows(
+        self, app, db, seed_user, seed_periods,
+    ):
+        """The pricing path does not query ``budget.transactions`` at all.
+
+        The direction that matters: a producer reading the feed and agreeing
+        with it is indistinguishable from one that never read it, by value
+        alone.  Naming the TABLE rather than counting statements is what makes
+        this survive an eager load, which folds into a parent query and moves no
+        count.
+        """
+        with app.app_context():
+            loan = _create_loan_account(seed_user)
+            for period in seed_periods[:3]:
+                _create_transfer_to_loan(
+                    seed_user, loan, period, Decimal("1500.00"),
+                )
+            db.session.commit()
+            db.session.expire_all()
+
+            with _statements_issued() as seen:
+                basis = _resolve_loan_basis(loan.id, date(2026, 6, 1))
+
+            assert basis is not None
+            assert seen, "the probe recorded nothing, so it graded nothing"
+            touching = [sql for sql in seen if "budget.transactions" in sql]
+            assert not touching, (
+                "pricing a loan read its own payment rows: "
+                f"{touching}"
+            )

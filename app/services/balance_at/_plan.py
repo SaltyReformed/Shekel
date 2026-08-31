@@ -286,15 +286,63 @@ def _planned_from_shadows(
     standing extra, or an operator-overridden one, exactly as the checking side
     reads it).
 
-    **The fallback is ``owned_contribution`` rather than the amount resolver, and
-    that is a fact about the loan rather than a shortcut** (plan step X-au-c2).
-    A loan-side income shadow's amount resolves THROUGH the loan
-    (``loan_payment_service.LoanPricing``), and the loan resolves
-    through ``load_loan_context`` -> ``get_payment_history``, which reads the
-    amount of every shadow income row on the account -- so asking the resolver
-    here would ask the loan to price the rows its own price is derived from.
-    The accessor asserts what is true today instead, and REFUSES rather than
-    guessing on the day a cutover declares such a row derived.
+    **The fallback is ``owned_contribution`` rather than the amount resolver,
+    and the reason this docstring used to give for that is FALSE.**  It read:
+    asking the resolver here would ask the loan to price the rows its own price
+    is derived from, because pricing routed ``resolve_transaction_amount`` ->
+    ``LoanPricing.derive_cash`` -> ``_resolve_loan_basis`` ->
+    ``load_loan_context`` -> ``get_payment_history``.  That cycle is DELETED:
+    ``_resolve_loan_basis`` reads the loan's TERMS and nothing else
+    (:func:`~app.services.loan_resolver.compute_monthly_payment_baseline`), so
+    it loads no payment history at all.
+
+    **Finding N-266 (a) is MISDIAGNOSED rather than retired, and the difference
+    is the size of the remedy.**  Its conclusion still holds -- a loan-side
+    INCOME shadow cannot be declared derived today -- but not because anything
+    is circular.  ``get_payment_history`` prices each row with
+    :func:`~app.services.row_valuation.owned_contribution`, which REFUSES a row
+    whose plan is derived, so emptying that column breaks it.  That is one
+    unrouted reader, not an irreducible cycle: routing it through the resolver
+    is now possible where before no ordering existed that worked, and it is the
+    first move of plan step **X-au-g** rather than an architecture change.
+
+    **The real reason is the CUTOVER, and it is a fact about the DATA rather
+    than about the loan.**  ``ck_transactions_amount_ownership`` is a
+    biconditional -- ``(amount_source_id IS NULL) = (estimated_amount IS NOT
+    NULL)`` -- so a row states EITHER what prices it or its own figure, never
+    both.  Every loan-payment shadow is still on the second side of it:
+    measured on a production clone 2026-08-31, all 58 shadows and all 58 parent
+    transfers carry ``amount_source_id IS NULL``, so the resolver classifies
+    them ``AmountRule.OWN`` and would answer from the very column this fallback
+    already reads.  Routing here would change nothing until plan step
+    **X-au-f** stamps that column, and X-au-f is what replaces this fallback
+    with :func:`~app.services.cash_ledger.display_amounts_by_id`.
+
+    **Until then a projected row's figure is a stored copy of its definition's
+    price and nothing keeps the two equal.**  (The finding id ``balance:N-401``
+    is RESERVED for this and its row is not yet written; the registries were
+    held behind two branches when this shipped.  Named as reserved rather than
+    cited, because a citation to a row that does not exist is the invented
+    reference this project has been bitten by.)  They are equal today -- all 48
+    projected loan shadows match their definition to the cent on the same clone
+    -- but an edit to a generator-written row moves the derived payoff with no
+    signal: halving the Van Loan's 24 future rows while the definition sat at
+    ``$531.94`` moved it ``2029-02-22`` -> ``2030-04-22``.
+
+    **Reading the DEFINITION here instead is not the remedy, and it is a money
+    defect in its own right.**  It was built and reverted: an ad-hoc
+    ``$2,100.00`` payment into a loan whose contractual installment is
+    ``$2,035.15`` was repriced to ``$2,035.15``, discarding ``$64.85`` of
+    principal the owner is actually paying
+    (``test_loan_plan_assembly.test_a_projected_record_makes_its_slot_planned_not_estimated``
+    is what caught it), and the underpayment direction is worse -- a ``$500.00``
+    payment would project as ``$2,035.15`` and claim a payoff the owner never
+    reaches.  BOTH directions of this column are wrong, which is the whole
+    argument for the cutover: ``estimated_amount`` carries two facts, the plan's
+    price and what the OWNER said, and no reading rule can tell them apart.
+    ``amount_source_id`` is what distinguishes them, and stamping it also
+    FORCES this call site to move -- ``owned_contribution`` raises on a NULL
+    column, so the fallback removes itself rather than being maintained.
 
     **It resolves NO rate and NO escrow since plan step R16-a**: those belong to
     the period, not to the payment, and :func:`_charges_for` resolves them on the

@@ -463,14 +463,23 @@ def owned_contribution(txn) -> Decimal:
     LOUDLY here instead of publishing a wrong number, which is what makes the
     per-kind cutovers (X-au-d..X-au-i) safe to ship one at a time.
 
-    **One reader takes it for a different reason, and that reason is a CYCLE**:
-    ``loan_payment_service.get_payment_history`` is NOT settled-only -- its
-    query admits Projected shadows -- but the rule that would price one routes
-    back through it (rule 4 -> ``LoanPricing.derive_cash`` ->
-    ``_resolve_loan_basis`` -> ``load_loan_context`` -> that function).  So the
-    loan-side INCOME leg must keep owning its figure and only the checking-side
-    EXPENSE leg can be declared derived, which is a bound plan step X-au-g
-    inherits and which this refusal is what enforces.
+    **One reader takes it for a different reason, and the CYCLE this paragraph
+    used to name is gone**: ``loan_payment_service.get_payment_history`` is NOT
+    settled-only -- its query admits Projected shadows -- and the rule that
+    would price one used to route back through it (rule 4 ->
+    ``LoanPricing.derive_cash`` -> ``_resolve_loan_basis`` ->
+    ``load_loan_context`` -> that function).  ``_resolve_loan_basis`` reads the
+    loan's terms alone now and loads no payment history, so that path does not
+    exist.
+
+    **What survives is the CONCLUSION, not the cause**: ``get_payment_history``
+    prices its rows through this very accessor, so a derived loan-side income
+    shadow still breaks it and the rule-4 controls still declare only the
+    checking-side EXPENSE leg.  Finding **N-266** (a) is therefore
+    MISDIAGNOSED rather than closed -- one unrouted reader where it recorded an
+    irreducible cycle -- and routing this one call site is the first move of
+    plan step **X-au-g**.  The argument is written once, at
+    :func:`app.services.balance_at._plan._planned_from_shadows`.
 
     Args:
         txn: The row being valued, whose ``estimated_amount`` is its own.
