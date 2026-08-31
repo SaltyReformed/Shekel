@@ -428,8 +428,9 @@ class TestTheNewEnvelopeArm:
 
         A swipe made on one period's last day and posted on the next period's
         first belongs to the budget it was made under -- and filing it by the
-        posting day would raise ``check_purchase_date_in_period``'s
-        out-of-period warning on a row this door had just built.
+        posting day would raise the entry list's out-of-period warning
+        (``entry_service.entry_list_view``, which asks
+        ``DerivedPeriod.covers``) on a row this door had just built.
         """
         with app.app_context():
             period = seed_user["bootstrap_period"]

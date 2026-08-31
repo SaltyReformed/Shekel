@@ -1,9 +1,17 @@
 """What a SET of purchases adds up to, and the contexts a screen renders.
 
 ``entry_service``'s derivation half: the pure per-set reductions (the debit /
-credit split, the remaining budget, the settled actual, the percent complete),
-the in-period check, and the three builders that assemble the whole context an
-envelope's cell or entry list renders from.
+credit split, the remaining budget, the settled actual, the percent complete)
+and the three builders that assemble the whole context an envelope's cell or
+entry list renders from.
+
+**The in-period CHECK is no longer here**, and it left at pay-calendar plan
+step C4-a-3 (ruling **R-PC31**).  It was ``check_purchase_date_in_period``,
+which reached through ``transaction.pay_period`` to compare a purchase against
+the STORED ``end_date`` plan step **C4-c** drops; the rule is now
+:meth:`app.services.pay_calendar.DerivedPeriod.covers`, on the value that
+DERIVES the span, so the containment test this module ran and the one every
+period search runs are one spelling rather than two that agreed by hand.
 
 **Nothing here writes**, which is why it is the leaf: the write doors
 (:mod:`._doors`) read the reductions from here and nothing here reads them, so
@@ -20,11 +28,10 @@ Architecture:
   - All monetary arithmetic uses Decimal.
 """
 
-from datetime import date
 from decimal import Decimal
 
-from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
+from app.services.pay_calendar import DerivedPeriod
 from app.utils.entry_partition import partition_entries
 from app.utils.money import percent_complete
 
@@ -118,6 +125,7 @@ def build_entry_sums_dict(
 def build_entry_lists_dict(
     transactions: list,
     budgets: dict[int, Decimal],
+    periods: "dict[int, DerivedPeriod]",
 ) -> dict[int, dict]:
     """Build a {txn_id: entry_list_data} mapping for envelope transactions.
 
@@ -146,12 +154,32 @@ def build_entry_lists_dict(
     been recorded -- so the read is gone with the question, and a grid render
     issues no query here at all.
 
+    **The PAYCHECK SPANS arrive as an argument** (pay-calendar plan step
+    C4-a-3, ruling **R-PC34**), for the reason *budgets* does in
+    :func:`build_entry_sums_dict`.  The
+    out-of-period warning read ``txn.pay_period.end_date`` through the ORM
+    relationship -- a stored column plan step **C4-c** drops, and a lazy load
+    per distinct paycheck issued from inside a render.  Each caller already
+    holds the spans it needs and holds them by a different route: ``/grid``
+    from the DERIVED window its own query scoped ``pay_period_id IN (...)``
+    to, the companion page from the ONE period its query filtered on, and the
+    two single-row fragments from the calendar they derive for their row.
+    Deriving a second answer here would be the redundant read this arc exists
+    to remove -- the argument
+    :func:`~app.services.grid_view_service.due_captions_by_id` makes for the
+    same shape one step earlier.
+
     Args:
         transactions: List of Transaction objects with ``entries`` and
             ``template`` accessible.
         budgets: ``{transaction_id: Decimal}`` covering every row in
             *transactions* (see :func:`build_entry_sums_dict`), forwarded to
             :func:`entry_list_view`.
+        periods: ``{budget.pay_periods.id: DerivedPeriod}`` covering every
+            paycheck the *transactions* are filed in.  Indexed with ``[]`` for
+            *budgets*' reason: a row whose paycheck is missing means the caller
+            built this map from a different row set than it is rendering, and a
+            silent skip would drop an out-of-period warning the screen owes.
 
     Returns:
         dict mapping envelope transaction ID to one
@@ -160,16 +188,31 @@ def build_entry_lists_dict(
 
         Empty dict when no transaction in the input has an envelope
         template.
+
+    Raises:
+        KeyError: A row is filed in a paycheck *periods* does not cover, or
+            priced by a *budgets* that does not hold it.  **The two subscripts
+            are written on separate lines below so a traceback says WHICH**:
+            they key on different id spaces -- ``txn.id`` against
+            ``txn.pay_period_id`` -- and a ``KeyError`` carrying a bare int
+            from one physical line cannot be attributed to either map, let
+            alone to a table.  Named by adversarial review, 2026-08-31.
     """
     return {
-        txn.id: entry_list_view(txn, list(txn.entries), budgets[txn.id])
+        txn.id: entry_list_view(
+            list(txn.entries),
+            budgets[txn.id],
+            periods[txn.pay_period_id],
+        )
         for txn in transactions
         if txn.tracks_purchases
     }
 
 
 def entry_list_view(
-    txn: Transaction, entries: list[TransactionEntry], budget: Decimal,
+    entries: list[TransactionEntry],
+    budget: Decimal,
+    period: "DerivedPeriod",
 ) -> dict:
     """Return the WHOLE derived context one envelope's entry list renders from.
 
@@ -200,20 +243,43 @@ def entry_list_view(
     because one fact is behind both.  It also drops a ``coverage_for`` read per
     rendered ACCOUNT from every grid render.
 
+    **It no longer takes the TRANSACTION at all** (pay-calendar plan step
+    C4-a-3).  The row was read for exactly one thing -- ``txn.pay_period``, to
+    bound the out-of-period warning against the STORED ``end_date`` plan step
+    **C4-c** drops -- and every other input was already an argument, so once
+    the span became one too the parameter had nothing left to answer.
+
+    **That is a third argument a caller must pair correctly, and the honest
+    statement is where the pairing is MADE rather than that it cannot go
+    wrong.**  It went the other way for one value: the period used to be
+    derived from *txn* here, so a period belonging to another row was not
+    expressible, and now it is -- the same exposure *entries* and *budget*
+    already carried.  What holds it is that ``app/`` has exactly TWO callers
+    and each derives the period from the ROW's own ``pay_period_id``:
+    :func:`build_entry_lists_dict` indexes its map with it, and
+    ``routes.entries._render_entry_list`` resolves it through
+    :meth:`~app.services.pay_calendar.PayCalendar.require_period`.  A guard
+    here would be a fence over a shape neither caller can produce, which is
+    what the arc is removing rather than adding.
+
     Args:
-        txn: The envelope transaction being rendered.  Its pay period bounds
-            the out-of-period warning.
+        entries: The transaction's entries, already loaded and ordered by
+            ``purchased_on``.  Taken as an argument because the callers load
+            them differently -- the route through the owner-scoped
+            :func:`get_entries_for_transaction`, the grid off an eager-loaded
+            relationship -- and neither may lose its scoping to share this
+            derivation.
         budget: What the row's amount RESOLVES to -- the E-21 declared base the
             remaining figure is computed against
             (:func:`~app.services.cash_ledger.amounts_by_id`).  An argument
             rather than a read of ``txn.estimated_amount`` since plan step
             X-au-c2b: a derived row stores no figure in that column.
-        entries: The transaction's entries, already loaded and ordered by
-            ``purchased_on``.  Taken as an argument rather than read off *txn*
-            because the two callers load them differently -- the route through
-            the owner-scoped :func:`get_entries_for_transaction`, the grid off
-            an eager-loaded relationship -- and neither may lose its scoping to
-            share this derivation.
+        period: The paycheck the entries' row is FILED in, as the owner's pay
+            calendar DERIVES it.  It bounds the out-of-period warning below,
+            and it is a :class:`~app.services.pay_calendar.DerivedPeriod`
+            rather than an ORM ``PayPeriod`` because a period's span is the
+            derivation over the owner's paydays, not the column the table
+            stores beside them.
 
     Returns:
         The four keys the template consumes:
@@ -222,8 +288,14 @@ def entry_list_view(
           - ``remaining`` (Decimal): the row's resolved budget minus the sum
             of all entries (debit + credit), via :func:`compute_remaining`.
           - ``out_of_period_ids`` (set[int]): entry IDs whose ``purchased_on``
-            falls outside the parent pay period, surfacing the OP-4
-            date-awareness warning.
+            falls outside *period*, surfacing the OP-4 date-awareness warning.
+            Informational: nothing refuses such a purchase, because a
+            late-posting one legitimately falls outside its row's paycheck.
+            It asks ``purchased_on`` and never ``settled_on``, which is the
+            distinction the column split exists for -- "is this purchase
+            budgeted to the right pay period" is a BUDGET-clock question, and
+            when the money reached the bank is a cash-clock fact belonging to
+            the balance fold.
           - ``posted_ids`` (set[int]): entry IDs whose bank posting day is
             recorded, so their money has left the account and their envelope is
             no longer holding their budget back.  It is the SAME fact the
@@ -235,8 +307,7 @@ def entry_list_view(
         "entries": entries,
         "remaining": compute_remaining(budget, entries),
         "out_of_period_ids": {
-            e.id for e in entries
-            if not check_purchase_date_in_period(e.purchased_on, txn)
+            e.id for e in entries if not period.covers(e.purchased_on)
         },
         "posted_ids": {
             e.id for e in entries if e.settled_on is not None
@@ -315,31 +386,3 @@ def pct_complete(total: Decimal, target: Decimal) -> Decimal:
         guard does not fire; ``Decimal("0")`` when ``target <= 0``.
     """
     return percent_complete(total, target)
-
-
-def check_purchase_date_in_period(
-    purchased_on: date,
-    transaction: Transaction,
-) -> bool:
-    """Check whether a purchase's date falls within the pay period range.
-
-    Informational utility for UI warnings (OP-4).  Does NOT block
-    entry creation or updates -- late-posting purchases may
-    legitimately fall outside the period range.
-
-    It reads ``purchased_on`` and not ``settled_on``, and that is the
-    distinction the split exists for: this warning asks "is this purchase
-    budgeted to the right pay period", which is a BUDGET-clock question.  When
-    the money reached the bank is a cash-clock fact and belongs to the balance
-    fold, not to a budgeting warning.
-
-    Args:
-        purchased_on: The day the purchase was made.
-        transaction: The parent Transaction (with pay_period loaded).
-
-    Returns:
-        True if *purchased_on* is within [start_date, end_date], False
-        otherwise.
-    """
-    period = transaction.pay_period
-    return period.start_date <= purchased_on <= period.end_date

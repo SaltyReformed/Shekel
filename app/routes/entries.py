@@ -25,6 +25,7 @@ from app.routes._render_helpers import (
 )
 from app.schemas.validation import EntryCreateSchema, EntryUpdateSchema
 from app.services import entry_service
+from app.services.pay_calendar import calendar_for
 from app.services.settle_day import (
     recorded_settle_day,
     submitted_settle_day,
@@ -152,7 +153,47 @@ def _render_entry_list(
     # purchases as outstanding while the projection had released them.  A
     # caller that cannot name the keys cannot forget one.
     budgets = fragment_amounts(txn).budgets
-    view = entry_service.entry_list_view(txn, entries, budgets[txn.id])
+    # The paycheck this row is FILED in, DERIVED (pay-calendar plan step
+    # C4-a-3).  The producer read ``txn.pay_period`` for its span until then,
+    # which is the stored ``end_date`` plan step C4-c drops.
+    #
+    # The calendar belongs to the row's OWNER, spelled ``txn.pay_period.user_id``
+    # rather than ``current_user.id``, because this fragment also serves the
+    # COMPANION -- ``get_entries_for_transaction`` above validated the caller
+    # against exactly that owner, so the two agree by construction and a
+    # companion is not handed their own (empty) schedule.
+    #
+    # ``require_period`` and not ``period_by_id``: the id comes off a stored
+    # row whose foreign key is NOT NULL and ``ON DELETE CASCADE``, so "this
+    # owner's calendar does not hold it" is not a state a purchase list may
+    # render past.
+    #
+    # **What that costs is balance finding N-358, and the honest statement
+    # names the door rather than arguing the state away.**  A first draft of
+    # this comment said the calendar is read AFTER the row so no concurrent
+    # write can remove the period it needs -- which argues only about
+    # APPENDS, and appends are not the reachable case (adversarial review,
+    # 2026-08-31).  A concurrent ``POST /pay-periods/{reset,regenerate,
+    # truncate}`` DELETES paydays, and under ``READ COMMITTED`` it can commit
+    # between the row read and the payday read: the identity-mapped
+    # ``txn.pay_period`` still answers while this calendar no longer holds
+    # the id, and ``require_period`` raises.  Four routes reach here and
+    # THREE of them render after committing their own write, which is
+    # N-358's own shape.
+    #
+    # It is documented rather than coped with, for the reason
+    # ``require_period``'s docstring gives: the three quieter answers each
+    # cope with an inconsistent picture instead of preventing one.  The
+    # remedy that PREVENTS it is `balance:X-i5`, which makes a request one
+    # snapshot until it declares a write; the remedy `C4-a-2` used -- scope
+    # the query by the calendar's own period ids -- is not available here,
+    # because the row arrives from ``get_accessible_transaction``, the
+    # canonical route-boundary door, and reordering that door is not this
+    # leaf's to do.
+    period = calendar_for(txn.pay_period.user_id).require_period(
+        txn.pay_period_id, txn.id,
+    )
+    view = entry_service.entry_list_view(entries, budgets[txn.id], period)
     return render_template(
         "grid/_transaction_entries.html",
         txn=txn,

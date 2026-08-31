@@ -24,6 +24,7 @@ from app.models.transaction_entry import TransactionEntry
 from app.models.ref import Status, TransactionType
 from app.routes._render_helpers import fragment_amounts
 from app.services.entry_service import build_entry_lists_dict, build_entry_sums_dict
+from app.services.pay_calendar import calendar_for
 from app.services import transaction_service
 
 from tests._test_helpers import (
@@ -59,6 +60,24 @@ def _sums(rows):
 def _lists(rows):
     """``build_entry_lists_dict`` with the same budget map (see :func:`_sums`).
 
+    **The paycheck SPANS come from the owner's own pay calendar** since
+    pay-calendar plan step C4-a-3, resolved through ``require_period`` rather
+    than assembled from a literal here, so a span read off the stored
+    ``end_date`` column does not have to move again when plan step C4-c drops
+    it.
+
+    **It is the same construction TWO of the four call sites use, not four**,
+    and saying which is the correction an adversarial review of this step
+    made: ``_render_entry_list`` and ``_render_mobile_card`` resolve a period
+    exactly this way, so for those the map here IS the app's.  ``/grid``
+    builds a third construction (``{p.period_id: p for p in ctx.all_periods}``,
+    inside ``grid.page._build_entry_maps``) and the companion page a fourth
+    (``{view.period.period_id: view.period}``); this helper exercises neither.
+    They answer equal ``DerivedPeriod`` values today -- checked -- so it
+    cannot HIDE a defect in them, but it does not measure them either.  The
+    route-level control for ``/grid``'s own map is
+    :meth:`TestGridPageEntrySums.test_grid_page_shows_progress`.
+
     Args:
         rows: The rows to build entry-list contexts for.
 
@@ -66,9 +85,14 @@ def _lists(rows):
         The ``{txn_id: entry_list_view}`` mapping.
     """
     budgets = {}
+    periods = {}
     for row in rows:
         budgets.update(fragment_amounts(row).budgets)
-    return build_entry_lists_dict(rows, budgets)
+        period = calendar_for(row.pay_period.user_id).require_period(
+            row.pay_period_id, row.id,
+        )
+        periods[period.period_id] = period
+    return build_entry_lists_dict(rows, budgets, periods)
 
 def _create_tracked_txn(seed_user, seed_periods_today, period_index=0,
                          estimated=Decimal("500.00")):
@@ -131,14 +155,34 @@ def _create_plain_txn(seed_user, seed_periods_today, period_index=0,
 
 
 def _add_entry(txn, seed_user, amount, is_credit=False,
-               description="Purchase"):
-    """Add a purchase entry to a transaction."""
+               description="Purchase", purchased_on=None):
+    """Add a purchase entry to a transaction.
+
+    Args:
+        txn: The parent transaction.
+        seed_user: The seed_user fixture dict.
+        amount: The purchase amount.
+        is_credit: Whether the purchase was made on a credit card.
+        description: The store name / note.
+        purchased_on: The day the purchase was made.  **Pass one wherever the
+            test asserts anything about the OUT-OF-PERIOD warning**, and pass
+            it relative to the row's own payday rather than as a literal: the
+            default below is a fixed 2026-04-12 while ``seed_periods_today``
+            builds its periods around the CLOCK, so whether that date falls
+            inside the row's paycheck is a property of the day the suite runs
+            (the weekly clock sweep moves it, ``docs/test-suite-clocks.md``).
+            A test that leaves it defaulted may assert the sums but must not
+            assert the warning.
+
+    Returns:
+        The flushed :class:`TransactionEntry`.
+    """
     entry = TransactionEntry(
         transaction_id=txn.id, account_id=txn.account_id,
         user_id=seed_user["user"].id,
         amount=amount,
         description=description,
-        purchased_on=date(2026, 4, 12),
+        purchased_on=purchased_on or date(2026, 4, 12),
         is_credit=is_credit,
     )
     db.session.add(entry)
@@ -316,8 +360,9 @@ class TestBuildEntryListsDict:
         """
         with app.app_context():
             txn, _ = _create_tracked_txn(seed_user, seed_periods_today)
-            _add_entry(txn, seed_user, Decimal("150.00"))
-            _add_entry(txn, seed_user, Decimal("80.00"))
+            payday = seed_periods_today[0].start_date
+            _add_entry(txn, seed_user, Decimal("150.00"), purchased_on=payday)
+            _add_entry(txn, seed_user, Decimal("80.00"), purchased_on=payday)
             db.session.commit()
 
             result = _lists([txn])
@@ -327,11 +372,87 @@ class TestBuildEntryListsDict:
             assert len(data["entries"]) == 2
             assert data["remaining"] == Decimal("270.00")
             assert isinstance(data["remaining"], Decimal)
-            # The seeded entries are dated 2026-04-12; whether they
-            # fall inside the seed_periods_today range depends on the
-            # period dates -- assert the set is well-formed without
-            # over-constraining the membership.
-            assert isinstance(data["out_of_period_ids"], set)
+            # **EXACT, and both purchases are dated on the PAYDAY itself**, so
+            # the answer is known by construction rather than by where in the
+            # calendar the suite happens to run.  This read
+            # ``assert isinstance(data["out_of_period_ids"], set)`` under a
+            # comment saying membership "depends on the period dates" -- and
+            # an adversarial review of plan step C4-a-3 measured that comment
+            # false and the assertion free: the entries were dated 2026-04-12
+            # against periods built around today, so BOTH were unconditionally
+            # out of period and a shape check read as coverage.
+            assert data["out_of_period_ids"] == set()
+
+    def test_out_of_period_purchases_are_named_EXACTLY(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """One purchase inside the paycheck, one outside; only the outside one.
+
+        **The control that tells the warning's two failure directions apart**
+        (adversarial review of plan step C4-a-3).  Before it, the whole app had
+        ONE assertion about this set -- ``test_entries.py``'s "Date outside pay
+        period range" presence check -- and both mutations of the predicate
+        killed that same test, because its fixture held a single purchase and
+        that purchase was the out-of-period one.  Identical singleton fail sets
+        are not two controls; a set that is merely NON-EMPTY, or merely a
+        ``set``, is not a measurement of which entries are in it.
+
+        Here the fail sets are distinct and neither is empty:
+
+        * a predicate that never fires answers ``set()``;
+        * a predicate INVERTED -- ``covers`` without the ``not``, which is how
+          a careless restore leaves it -- answers ``{the in-period one}``;
+        * only the correct rule answers ``{the out-of-period one}``.
+
+        The two days are taken from the row's own PAYDAY rather than written
+        as literals, so this holds on any day the suite runs: a period covers
+        its payday by definition, and the day before a payday belongs to the
+        paycheck before it.  ``start_date`` is also the one column plan step
+        **C4-c** keeps, so this fixture does not have to move again.
+        """
+        with app.app_context():
+            txn, _ = _create_tracked_txn(seed_user, seed_periods_today)
+            payday = seed_periods_today[0].start_date
+            inside = _add_entry(
+                txn, seed_user, Decimal("10.00"),
+                description="On the payday", purchased_on=payday,
+            )
+            outside = _add_entry(
+                txn, seed_user, Decimal("20.00"), description="The day before",
+                purchased_on=payday - timedelta(days=1),
+            )
+            db.session.commit()
+
+            data = _lists([txn])[txn.id]
+
+            assert data["out_of_period_ids"] == {outside.id}
+            assert inside.id not in data["out_of_period_ids"]
+
+    def test_a_row_whose_paycheck_the_map_omits_RAISES(
+        self, app, seed_user, seed_periods_today,
+    ):
+        """An uncovered paycheck is a KeyError, never a silently absent warning.
+
+        ``build_entry_lists_dict`` documents this refusal and nothing measured
+        it (adversarial review of plan step C4-a-3).  It is load-bearing prose
+        rather than decoration: ``grid/page._build_entry_maps`` argues that its
+        span map and its row set are cut from ONE window *because* passing the
+        narrower visible slice would raise here, and an untested refusal makes
+        that argument unfalsifiable.
+
+        A row missing from the map means the caller built it from a different
+        row set than it is rendering.  Answering an empty warning set instead
+        would drop a warning the screen owes, on a row the app cannot place --
+        the same disposition ``budgets`` takes for a row it did not price.
+        """
+        with app.app_context():
+            txn, _ = _create_tracked_txn(seed_user, seed_periods_today)
+            _add_entry(txn, seed_user, Decimal("10.00"))
+            db.session.commit()
+            budgets = fragment_amounts(txn).budgets
+
+            with pytest.raises(KeyError):
+                build_entry_lists_dict([txn], budgets, {})
 
     def test_envelope_without_entries_still_included(
         self, app, seed_user, seed_periods_today,
@@ -724,8 +845,12 @@ class TestGridPageEntrySums:
             txn, _ = _create_tracked_txn(
                 seed_user, seed_periods_today, period_index=period_idx,
             )
-            _add_entry(txn, seed_user, Decimal("180.00"))
-            _add_entry(txn, seed_user, Decimal("70.00"))
+            payday = seed_periods_today[period_idx].start_date
+            _add_entry(txn, seed_user, Decimal("180.00"), purchased_on=payday)
+            _add_entry(
+                txn, seed_user, Decimal("70.00"),
+                purchased_on=payday - timedelta(days=1),
+            )
             db.session.commit()
 
             resp = auth_client.get("/grid")
@@ -734,6 +859,16 @@ class TestGridPageEntrySums:
             # The desktop grid cell should show progress format.
             # 180 + 70 = 250 spent on 500 budget.
             assert b"250 / 500" in resp.data
+            # **And the out-of-period badge, which puts /grid's OWN span map
+            # under measurement for the first time** (adversarial review of
+            # plan step C4-a-3).  The two purchases are dated on the payday and
+            # the day before it, so exactly ONE is out of period -- and the
+            # route resolves its spans by a different construction from the
+            # unit tests above (``_build_entry_maps`` over
+            # ``ctx.all_periods``), which nothing else exercises.  Before this,
+            # the whole route-level evidence for the warning was one assertion
+            # on the entries FRAGMENT.
+            assert resp.data.count(b"Date outside pay period range") == 1
 
 
 class TestTheEntryListContextHasOneProducer:

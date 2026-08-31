@@ -30,6 +30,15 @@ The public surface, and what each piece is for:
   screen's own derivation, so rendering the queue valued all 221 of the
   developer's accepted acts and re-asked 29 answers he was not looking at --
   442,109 bytes of a 578,523-byte page.
+* :func:`merchant_directory` -- every merchant this account has ever seen and
+  what the owner said about each, which is the DURABLE home for that answer
+  (plan step ``bank_import:X-gk``, ruling **bank_import:R-IC**).  The three
+  surfaces above it are each PARTIAL -- the queue asks only where a line is
+  waiting AND nobody has answered, the register shows only the answered, and
+  the receipt offers only what a pass just filed -- and measured on a clone of
+  the developer's own database 2026-08-31 that left **32 of his 62 merchants on
+  no surface at all**.  It needs no :class:`ReviewScope`, for the reason
+  :func:`register_set` needs none.
 * :func:`apply_reviewed` -- the batch door, and the one the screen posts to.
   **It MOVES MONEY.**  It applies every act the owner ticked, each in its own
   SAVEPOINT so a refused item leaves nothing behind and the rest still land,
@@ -240,6 +249,13 @@ from ._register import (
     merchant_register,
     register_set,
 )
+from ._directory import (
+    DIRECTORY_LIMIT,
+    DirectoryAsk,
+    MerchantDirectory,
+    MerchantWanted,
+    merchant_directory,
+)
 from ._scope import ReviewScope
 from ._panel import AddAct, AddTab, MatchCandidates, VerbPanel
 from ._verbs import Verb, VerbOffer
@@ -256,6 +272,7 @@ __all__ = [
     "NEW_ENVELOPE",
     "RECEIPT_LIMIT",
     "RECORD_AS_INCOME",
+    "DIRECTORY_LIMIT",
     "REGISTER_LIMIT",
     "AcceptedGroup",
     "AcceptedRegister",
@@ -314,6 +331,9 @@ __all__ = [
     "ReviewedBatch",
     "ReviewedRow",
     "StatementRegister",
+    "DirectoryAsk",
+    "MerchantDirectory",
+    "MerchantWanted",
     "Tab",
     "AddAct",
     "AddTab",
@@ -343,6 +363,7 @@ __all__ = [
     "destinations_for",
     "file_new_swipes",
     "matched_subjects",
+    "merchant_directory",
     "merchant_register",
     "parse_figure",
     "merchant_label",

@@ -49,6 +49,14 @@ def containing_index(
     paydays), so the latest period STARTING on or before *day* is the only
     candidate that can contain it and one bisect answers.
 
+    **The end test is the PERIOD's own** since plan step C4-a-3
+    (:meth:`~._derive.DerivedPeriod.covers`, ruling **R-PC31**), where it was
+    ``day <= periods[index].end_date`` written here.  The bisect has already
+    established the lower bound, so that method re-asks half of what this
+    function knows -- and it is asked whole anyway, because a containment rule
+    spelled one way in the search and another way at the three sites that place
+    a single period is how row **P6**'s six copies came to disagree.
+
     **The POSITION is what plan step C2-f2c needed**, and it is here rather
     than expressed as arithmetic on :attr:`~._derive.DerivedPeriod.period_index`
     at the caller.  ``investment_dashboard_service._chart`` plots one point per
@@ -74,7 +82,7 @@ def containing_index(
     index = bisect_right(periods, day, key=_BY_START_DATE) - 1
     if index < 0:
         return None
-    return index if day <= periods[index].end_date else None
+    return index if periods[index].covers(day) else None
 
 
 def containing_period(
@@ -259,6 +267,19 @@ def period_by_id(
     number is recorded so the next caller pattern is weighed against a figure
     rather than against this paragraph -- and a per-row caller on a set an
     order of magnitude larger would decide the other way.
+
+    **"Still not built" is a claim about THIS FUNCTION, and plan step C4-a-3
+    is what made the distinction worth stating** (adversarial review,
+    2026-08-31, which read the paragraph above as refusing the shape).
+    ``routes.grid.page._build_entry_maps`` builds a
+    ``{period_id: DerivedPeriod}`` index once per render and indexes it once
+    per envelope row -- which is not the shape refused here, it is the
+    **0.019 ms** one this measurement found TEN TIMES faster than the scan.
+    What is refused is the naive index INSIDE this function, rebuilt per call
+    at 0.692 ms, which is worse than scanning.  A caller that holds the whole
+    period set already, and needs it many times, is exactly the pattern the
+    last sentence above says would decide the other way; it decided that way
+    at ruling **R-PC34**.
 
     Args:
         periods: The owner's periods, in any order.  Identity is not a search

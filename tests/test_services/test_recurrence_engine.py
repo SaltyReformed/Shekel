@@ -36,7 +36,11 @@ from app.services import (
     recurrence_engine,
     status_seam,
 )
-from app.services.pay_calendar import PayCalendar, calendar_for
+from app.services.pay_calendar import (
+    DerivedPeriod,
+    PayCalendar,
+    calendar_for,
+)
 from app.services.recurrence import (
     RecurrenceResolutionError,
     fires_on_day_of_month,
@@ -4694,8 +4698,18 @@ class TestDueDateGeneration:
     def test_compute_due_date_is_pure_function(self, app, db):
         """compute_due_date does not touch the database -- it's a pure function.
 
-        Constructs a FakeRule and FakePeriod to verify that compute_due_date
-        can produce correct results without any DB interaction.
+        Constructs a rule and a REAL :class:`DerivedPeriod` to verify that
+        compute_due_date can produce correct results without any DB
+        interaction.
+
+        **The period is the real value and not ``FakePeriod``** since
+        pay-calendar plan step C4-a-3, which measured the double out of
+        contract: this function's documented parameter is a ``DerivedPeriod``,
+        it now asks that value's own ``covers``, and the duck-typed stand-in
+        answered ``AttributeError``.  A ``DerivedPeriod`` is a frozen
+        dataclass over five plain fields, so building one costs the purity
+        claim nothing -- the fake was never buying anything the real type
+        does not give.
         """
         with app.app_context():
             from app import ref_cache
@@ -4703,11 +4717,12 @@ class TestDueDateGeneration:
             rule_monthly = build_rule(
                 cadence=MONTHLY, starts_on=date(2026, 1, 20),
             )
-            period = FakePeriod(
-                id=1,
+            period = DerivedPeriod(
+                period_id=1,
+                period_index=5,
                 start_date=date(2026, 3, 13),
                 end_date=date(2026, 3, 26),
-                period_index=5,
+                end_is_projected=False,
             )
             result = recurrence_engine.compute_due_date(
                 rule_monthly, period,
@@ -4743,11 +4758,12 @@ class TestDueDateGeneration:
         ``occurs_on`` -- is what deletes both the predicate and this case.
         """
         with app.app_context():
-            period = FakePeriod(
-                id=1,
+            period = DerivedPeriod(
+                period_id=1,
+                period_index=5,
                 start_date=date(2026, 3, 13),
                 end_date=date(2026, 3, 26),
-                period_index=5,
+                end_is_projected=False,
             )
             starts_on = date(2026, 1, 20)
 
