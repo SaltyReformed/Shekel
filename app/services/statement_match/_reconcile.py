@@ -64,7 +64,6 @@ from ._cards import (
     parked_card,
     to_explain_sections,
 )
-from ._panel import MatchCandidates
 from ._reads import review_set
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
@@ -549,14 +548,16 @@ def reconcile_page(
             f"account's lines beside another's balances."
         )
     review = review_set(scope)
-    # ONE index for the whole page (:class:`~._panel.MatchCandidates`).  A
-    # card's MATCH tab offers its line's own pay period, and 27 cards on the
-    # developer's own account resolve to 11 periods -- so asking the calendar
-    # per card would be the redundant producer call inside one request this
-    # package treats as a DRY violation rather than as a cost.
-    candidates = MatchCandidates.of(scope, review)
+    # **THE PAGE DERIVES NO CANDIDATE ROWS**, and it did until plan step
+    # ``bank_import:X-gj-1b``.  It built one
+    # :class:`~._panel.MatchCandidates` index and handed every card its own
+    # line's pay period; the cards then rendered none of it, because the
+    # panel's row list is lazy-loaded and the fragment asks for itself.  So
+    # the index was derived over 248 cards and 11 periods for a value nobody
+    # read.  ``accounts.statement_reconcile_match`` builds it now, once per
+    # opened tab, which is where it is looked at.
     parked = tuple(
-        (_parked_tab(one), parked_card(review, one, candidates))
+        (_parked_tab(one), parked_card(review, one))
         for one in review.parked
     )
     # **The two holding tabs, keyed by the tab that owns them.**  A mapping
@@ -584,7 +585,7 @@ def reconcile_page(
         + len(review.recordable_inflows)
     )
 
-    sections = _tab_sections(scope, review, candidates, tab, holding)
+    sections = _tab_sections(scope, review, tab, holding)
     return ReconcilePage(
         account_id=scope.account_id,
         tab=tab,
@@ -624,7 +625,6 @@ def _holding(cards: "tuple[LineCard, ...]") -> "tuple[CardSection, ...]":
 def _tab_sections(
     scope: "ReviewScope",
     review: "ReviewSet",
-    candidates: "MatchCandidates",
     tab: Tab,
     holding: "dict[Tab, tuple[LineCard, ...]]",
 ) -> "tuple[CardSection, ...]":
@@ -637,8 +637,6 @@ def _tab_sections(
     Args:
         scope: The pass's scope, for the two reads the settled tabs need.
         review: The pass.
-        candidates: The pass's unexplained rows, indexed by pay period
-            (:class:`~._panel.MatchCandidates`).
         tab: Which tab is open.
         holding: The cards of each holding tab, keyed by that tab.
 
@@ -651,7 +649,7 @@ def _tab_sections(
             defaulted so that adding one is a failure and not a blank screen.
     """
     if tab is Tab.TO_EXPLAIN:
-        return to_explain_sections(review, candidates)
+        return to_explain_sections(review)
     if tab is Tab.EXPLAINED:
         return act_sections(accepted_register(
             scope.owner_id, scope.account_id, applied_by_rule=False,

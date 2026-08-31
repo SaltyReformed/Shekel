@@ -56,7 +56,7 @@
 <section class="rec-pane" aria-label="{{ offer.verb.word }}">
   {% if not offer.is_open %}
   <p class="rec-waits small mb-0">{{ offer.waiting_for }}</p>
-  {% elif offer.verb.value == 'match' %}
+  {% elif offer.is_match %}
   <p class="small mb-2">
     Which of your rows is this? Ticked rows take the bank's day
     <span class="font-mono">{{ card.line.posted_on }}</span>.
@@ -76,7 +76,7 @@
        hx-target="this"
        hx-swap="outerHTML"
        hx-disabled-elt="unset">
-    {% if card.panel.match.proposal %}
+    {% if card.panel.proposal %}
     {# WHAT A TIER PROPOSED, CARRIED UNTIL THE PANE ARRIVES AND RENDERS IT.
        Its rows arrive TICKED (R-HS) -- a suggestion the app can justify is
        pre-filled, and OK plus Apply are the consent -- and the difference it
@@ -97,12 +97,12 @@
        and a change bubbles to ancestors only, so unticking one reached no
        trigger at all: the panel went on stating a difference that was no
        longer true, and the door then refused the press. #}
-    {% for row in card.panel.match.proposal.rows %}
+    {% for row in card.panel.proposal.rows %}
     <input type="hidden" name="rows-{{ card.line.line_id }}"
            value="{{ row | reviewed_token }}">
     {% endfor %}
     <input type="hidden" name="residual-{{ card.line.line_id }}"
-           value="{{ card.panel.match.proposal | stated_difference }}">
+           value="{{ card.panel.proposal | stated_difference }}">
     {% endif %}
     <p class="small text-body-secondary mb-0">
       <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
@@ -119,7 +119,7 @@
   </div>
   {{ ok_control(card, offer.verb.word) }}
 
-  {% elif offer.verb.value == 'add' and card.panel.add.records_a_purchase %}
+  {% elif offer.is_add and card.panel.add.records_a_purchase %}
   <p class="small mb-2">
     Add records this as spending your budget did not have, dated
     <span class="font-mono">{{ card.line.happened_on }}</span>.
@@ -143,7 +143,9 @@
         {{ destination.label }}{% if destination.is_settled %} -- closed{% endif %}
       </option>
       {% endfor %}
-      <option value="new"{% if chosen == 'new' %} selected{% endif %}>-- a new envelope --</option>
+      {# ASKED OF THE PLACEMENT, not by comparing NEW_ENVELOPE's own string: the
+         same value that decides the minted name below decides this. #}
+      <option value="new"{% if card.panel.add.placement and card.panel.add.placement.creates %} selected{% endif %}>-- a new envelope --</option>
     </select>
     {% if not card.panel.add.destinations %}
     <p class="small text-body-secondary mt-1 mb-0">
@@ -186,7 +188,7 @@
   </div>
   {{ ok_control(card, offer.verb.word) }}
 
-  {% elif offer.verb.value == 'add' and card.panel.add.records_income %}
+  {% elif offer.is_add and card.panel.add.records_income %}
   <p class="small mb-2">
     Add records this as income your budget did not have, dated
     <span class="font-mono">{{ card.line.posted_on }}</span>, with

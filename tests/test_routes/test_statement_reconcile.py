@@ -480,7 +480,12 @@ class TestTheMatchPanePricesWhatIsTicked:
     """
 
     def _a_payroll_deposit_and_its_two_rows(self, seed_user, db):
-        """Stage finding **N-239**'s own case."""
+        """Stage finding **balance:N-391**'s own case.
+
+        N-239 until `balance:X-aw` retired that row on 2026-08-30 and split
+        its bank half off as N-391; `grep -c '| N-239 ' docs/plans/ledger.md`
+        returns 0.
+        """
         statement = an_import(seed_user)
         line = a_bank_line(
             seed_user, statement, amount="2573.42",
@@ -941,12 +946,23 @@ class TestAVerbWithNoDoorRendersNoControl:
     def test_the_shut_verbs_say_what_they_wait_for(
         self, auth_client, db, seed_user,
     ):
-        """A disabled tab carrying its reason is a disclosure."""
+        """A disabled tab carrying its reason is a disclosure.
+
+        **And it must TEACH THE WORD, not only report the wait** (**R-HW**:
+        the panel is where the vocabulary is taught). SKIP said only that
+        skipping is not recorded yet, which tells a first-time reader nothing
+        about what SKIP would MEAN -- so both halves are asserted.
+        """
         _a_swipe_a_rule_files(seed_user, db)
         page = _page(auth_client, seed_user)
 
         assert "pair a bank line with another of your own accounts" in page
-        assert "Skipping is not recorded yet" in page
+        assert "explains nothing you budget for" in page, (
+            "the SKIP tab does not say what skipping MEANS"
+        )
+        assert "not recorded yet" in page, (
+            "the SKIP tab does not say why it cannot be pressed"
+        )
 
     def test_a_parked_card_offers_no_ONE_CLICK_OK(
         self, auth_client, db, seed_user,

@@ -241,7 +241,7 @@ from ._register import (
     register_set,
 )
 from ._scope import ReviewScope
-from ._panel import AddAct, AddTab, MatchCandidates, MatchTab, VerbPanel
+from ._panel import AddAct, AddTab, MatchCandidates, VerbPanel
 from ._verbs import Verb, VerbOffer
 from ._reconcile import Tab, reconcile_page
 from ._filing import (
@@ -317,7 +317,6 @@ __all__ = [
     "AddAct",
     "AddTab",
     "MatchCandidates",
-    "MatchTab",
     "VerbPanel",
     "Verb",
     "VerbOffer",

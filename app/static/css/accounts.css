@@ -914,7 +914,14 @@ a.rec-chip:hover { border-color: var(--shekel-accent); }
 
 .rec-summary {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1.4fr) auto;
+  /* THE AMOUNT COLUMN IS A FIXED TRACK, so figures line up down the list --
+     the locked direction's own words ("right-aligned so amounts line up
+     across cards").  It was `auto`, which sizes to each card's OWN content,
+     so every amount sat at a different x and the column could not be scanned:
+     a reader looking for the big number had to read each one.  Fixed at
+     7.5rem, which holds -$999,999.99 in the mono face; the merchant column
+     takes the loss because it is prose and is already truncated. */
+  grid-template-columns: minmax(0, 1fr) 7.5rem minmax(0, 1.4fr) auto;
   align-items: center;
   gap: 0.75rem;
   padding: 0.6rem 0.75rem;
@@ -960,11 +967,23 @@ a.rec-chip:hover { border-color: var(--shekel-accent); }
 .rec-ink-plain { color: var(--shekel-text-secondary); }
 .rec-ink-muted { color: var(--shekel-text-muted); }
 
-/* AMBER ONLY WHERE MONEY IS AT RISK (the design language's D11).  On this
-   screen that is one signal and one only: a deposit whose own pay period
-   already holds income no line explains, which is how a paycheck gets counted
-   twice.  A withheld rule, a declined tier and a parked payment are never
-   amber. */
+/* AMBER ONLY WHERE MONEY IS AT RISK (the design language's D11).  A withheld
+   rule, a declined tier and a parked payment are never amber.
+
+   THREE THINGS ON THIS SCREEN ARE, and this comment claimed ONE until plan
+   step bank_import:X-gj-1b -- a count nobody could check against the markup
+   beside it, which is the class this arc has now measured wrong several
+   times:
+     1. a deposit whose own pay period already holds income no line explains,
+        which is how a paycheck gets counted twice.  It renders TWICE for one
+        signal -- `.rec-risk-glyph` on the card and `.rec-risk` in the panel --
+        which is one fact disclosed at two grains, not two signals;
+     2. the hero's OFF BY when it is non-zero (`.rec-off`), which is the whole
+        screen's own question and is money by definition;
+     3. a door's refusal, in Bootstrap's own `alert-warning` rather than in
+        these tokens -- the match pane's and the offer's.  Named here because
+        a reader auditing "what is amber" reads THIS comment, and a signal
+        that borrows another stylesheet's amber is still amber to them. */
 .rec-risk-glyph { color: var(--shekel-warning); }
 
 .rec-risk {
@@ -1143,6 +1162,11 @@ a.rec-chip:hover { border-color: var(--shekel-accent); }
 
 @media (max-width: 900px) {
   .rec-summary {
+    /* `auto` here and a fixed track on the wide layout, deliberately: the
+       direction's "amounts line up across cards" is about the scannable list,
+       and 7.5rem of a phone's ~20rem would take 37% of the row from the
+       merchant name.  The cards stack rather than tabulate at this width, so
+       there is no column to scan down. */
     grid-template-columns: minmax(0, 1fr) auto;
     row-gap: 0.4rem;
   }

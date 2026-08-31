@@ -35,7 +35,8 @@ load-bearing:
   renders across all 27 cards -- and every payroll deposit finds its own
   components there, ``2026-03-26``'s `$2,573.42` against
   ``Health Insurance Allowance`` `$100.00` + ``Data Manager`` `$2,473.38`, a
-  difference of `$0.04` (finding **N-239**);
+  difference of `$0.04` (finding **balance:N-391**, which is the bank half
+  of the retired **N-239**);
 * the SEARCH is over every unexplained row on the account, because a bound
   that cannot be widened is the cap finding **N-374** refused -- *the row that
   explains a line may be number 51*.  Measured on the same data: all 9 of the
@@ -154,30 +155,6 @@ class AddTab:
 
 
 @dataclass(frozen=True)
-class MatchTab:
-    """What the panel's MATCH tab offers for one line.
-
-    Attributes:
-        proposal: The match a tier offers (:class:`~._offers.MatchProposal`),
-            or ``None``.  Its rows arrive TICKED, which is ruling **R-HS**'s
-            justified pre-fill.
-        candidates: The unexplained rows of the account the bank posted this
-            line into the pay period of -- the list the tab renders with the
-            page.  The search widens past it; see this module's header for the
-            measurement behind both halves.
-
-    **The proposal's own rows are not necessarily in** :attr:`candidates`, and
-    that is by construction rather than by oversight:
-    :func:`~._reads._rows_the_bank_never_showed` withholds every row a proposal
-    claims from ``unmatched_rows``, so a proposed card renders its proposal's
-    rows and the period's unclaimed ones as two groups.
-    """
-
-    proposal: "MatchProposal | None"
-    candidates: "tuple[CandidateRow, ...]"
-
-
-@dataclass(frozen=True)
 class VerbPanel:
     """The opened card: all four verbs, and what each of them offers.
 
@@ -199,18 +176,26 @@ class VerbPanel:
             nothing (:attr:`~._bars.ParkedLine.answer_door`).
         add: What ADD offers (:class:`AddTab`), or ``None`` where this line's
             mechanism offers no ADD act at all.
-        match: What MATCH offers (:class:`MatchTab`).  **Never ``None``**: the
-            pool of unexplained rows is a fact about the PASS rather than
-            about the line, so every card has a MATCH tab and an empty
-            :attr:`~MatchTab.candidates` is what an account with nothing left
-            to pair looks like.
+        proposal: The match a tier offers for this line
+            (:class:`~._offers.MatchProposal`), or ``None``.  Its rows arrive
+            TICKED, which is ruling **R-HS**'s justified pre-fill.
+
+            **It carried a ``MatchTab`` holding this plus the card's candidate
+            ROWS until plan step ``bank_import:X-gj-1b``.**  Those rows were
+            derived for all 248 of the developer's cards and rendered on none:
+            the panel's row list is lazy-loaded, so the fragment asks
+            :class:`MatchCandidates` for itself and the card never needed
+            them.  Deleting the field left the tab a one-field wrapper, so the
+            wrapper went too -- what MATCH offers that is a fact about the
+            LINE is exactly this one thing, and the rest is a fact about the
+            PASS that the pane reads directly.
     """
 
     offers: "tuple[VerbOffer, ...]"
     notes: "tuple[str, ...]"
     answer_door: "str | None"
     add: "AddTab | None"
-    match: MatchTab
+    proposal: "MatchProposal | None"
 
     def offer_for(self, verb: Verb) -> VerbOffer:
         """Return this line's offer for one verb.

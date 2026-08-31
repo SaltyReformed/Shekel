@@ -30,7 +30,6 @@ from app.services.statement_match._cards import (
 from app.services.statement_match._panel import (
     AddAct,
     AddTab,
-    MatchTab,
     VerbPanel,
 )
 from app.services.statement_match._creations import (
@@ -346,7 +345,7 @@ class TestTheOKControlFollowsTheDOORAndNotTheSentence:
             sentence=choose(), income_already_held=None, risk_class=None,
             panel=VerbPanel(
                 offers=offers, notes=(), answer_door=None, add=None,
-                match=MatchTab(proposal=None, candidates=()),
+                proposal=None,
             ),
         )
 
@@ -407,7 +406,7 @@ class TestNoSweptCardCarriesASentenceOrMoneyAtRisk:
                     act=AddAct.PURCHASE,
                     destinations=(_a_destination(),), placement=None,
                 ),
-                match=MatchTab(proposal=None, candidates=()),
+                proposal=None,
             ),
         )
 
@@ -436,7 +435,7 @@ class TestNoSweptCardCarriesASentenceOrMoneyAtRisk:
                     add_waits="barred", has_rows_to_match=True,
                 ),
                 notes=(), answer_door=None, add=None,
-                match=MatchTab(proposal=None, candidates=()),
+                proposal=None,
             ),
         )
         assert card.sweep_class is None

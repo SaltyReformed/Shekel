@@ -296,7 +296,14 @@
     <button class="rec-legend-toggle" type="button" data-rec-legend-toggle
             aria-label="What the four words mean">?</button>
   </nav>
-  <p class="rec-legend" data-rec-legend hidden>
+  {# RENDERED VISIBLE, and the dismissal is JavaScript's (R-HP).  It shipped
+     `hidden` with the server, so with scripting off the ONE piece of
+     explanatory prose the locked direction gives this page -- what the four
+     words mean -- never appeared at all.  The direction calls it "the only
+     explanatory prose on the page", so its default has to be the state that
+     is right when nothing runs; `statement_reconcile.js` hides it on load for
+     a browser that remembers dismissing it. #}
+  <p class="rec-legend" data-rec-legend>
     <strong>Match</strong> a row you already hold &middot;
     <strong>Add</strong> new spending or income &middot;
     <strong>Transfer</strong> between your own accounts &middot;
@@ -374,8 +381,15 @@
           <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
           Applying...
         </span>
+        {# THE COUNT IS JAVASCRIPT'S AND THE LABEL MUST BE TRUE WITHOUT IT.
+           This read "Apply 0 OK'd" when the server rendered it, which is
+           false the moment a card is ticked and scripting is off -- the same
+           class as a caption promising a number a template computed.  The
+           span opens EMPTY and `countOk` fills it, so the sentence reads
+           "Apply the cards you OK'd" until something can keep a number
+           honest. #}
         <button type="submit" class="btn btn-primary">
-          Apply <span data-rec-ok-count>0</span> OK'd
+          Apply <span data-rec-ok-count></span> the cards you OK'd
         </button>
       </div>
     </div>

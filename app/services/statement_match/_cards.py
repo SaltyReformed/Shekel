@@ -36,7 +36,7 @@ import enum
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ._panel import AddAct, AddTab, MatchTab, VerbPanel
+from ._panel import AddAct, AddTab, VerbPanel
 from ._sentence import Span, choose, for_accepted, for_parked_never
 from ._sentence import for_parked_transfer, for_placement, for_proposal
 from ._verbs import ADD_SHUT_BY_A_PROPOSAL, Verb, VerbOffer, offers_for
@@ -46,7 +46,6 @@ if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from ._bars import ParkedLine
     from ._leftovers import CreatableLine, RecordableInflow
     from ._offers import BankLine, MatchProposal
-    from ._panel import MatchCandidates
     from ._reads import IncomeAlreadyRecorded, ReviewSet
 
 
@@ -340,7 +339,6 @@ def _offers(
 
 def _proposal_card(
     review: "ReviewSet", proposal: "MatchProposal",
-    candidates: "MatchCandidates",
 ) -> LineCard:
     """Return the card for a match a TIER proposes.
 
@@ -348,7 +346,6 @@ def _proposal_card(
         review: The pass.
         proposal: The proposal, which names exactly one line -- every tier
             constructs ``lines=(line,)``.
-        candidates: The pass's unexplained rows, indexed by pay period.
 
     Returns:
         The :class:`LineCard`.
@@ -373,17 +370,13 @@ def _proposal_card(
             # was worked out for it -- which is exactly what
             # :data:`~._verbs.ADD_SHUT_BY_A_PROPOSAL` says on the tab.
             add=None,
-            match=MatchTab(
-                proposal=proposal,
-                candidates=candidates.for_line(proposal.lines[0]),
-            ),
+            proposal=proposal,
         ),
     )
 
 
 def _creatable_card(
     review: "ReviewSet", creatable: "CreatableLine",
-    candidates: "MatchCandidates",
 ) -> LineCard:
     """Return the card for an outflow the create door would accept.
 
@@ -396,7 +389,6 @@ def _creatable_card(
     Args:
         review: The pass.
         creatable: The :class:`~._leftovers.CreatableLine`.
-        candidates: The pass's unexplained rows, indexed by pay period.
 
     Returns:
         The :class:`LineCard`.
@@ -425,17 +417,13 @@ def _creatable_card(
                 destinations=creatable.destinations,
                 placement=placement,
             ),
-            match=MatchTab(
-                proposal=None,
-                candidates=candidates.for_line(creatable.line),
-            ),
+            proposal=None,
         ),
     )
 
 
 def _inflow_card(
     review: "ReviewSet", inflow: "RecordableInflow",
-    candidates: "MatchCandidates",
 ) -> LineCard:
     """Return the card for money coming IN that no row explains.
 
@@ -448,7 +436,6 @@ def _inflow_card(
         review: The pass, which owns both the search gap and the
             books-already-hold-income signal.
         inflow: The :class:`~._leftovers.RecordableInflow`.
-        candidates: The pass's unexplained rows, indexed by pay period.
 
     Returns:
         The :class:`LineCard`.
@@ -473,16 +460,13 @@ def _inflow_card(
             # the two ADD doors, and :class:`~._panel.AddAct` is what says
             # which one this is instead of a template reading the sign.
             add=AddTab(act=AddAct.INCOME, destinations=(), placement=None),
-            match=MatchTab(
-                proposal=None, candidates=candidates.for_line(inflow.line),
-            ),
+            proposal=None,
         ),
     )
 
 
 def parked_card(
     review: "ReviewSet", parked: "ParkedLine",
-    candidates: "MatchCandidates",
 ) -> LineCard:
     """Return the holding card for an outflow that may not become spending.
 
@@ -495,7 +479,6 @@ def parked_card(
     Args:
         review: The pass.
         parked: The :class:`~._bars.ParkedLine`.
-        candidates: The pass's unexplained rows, indexed by pay period.
 
     Returns:
         The :class:`LineCard`.  Its ADD is shut by the bar, its TRANSFER and
@@ -525,15 +508,13 @@ def parked_card(
             # is nothing for the tab to offer beyond the refusal its own
             # offer carries.
             add=None,
-            match=MatchTab(
-                proposal=None, candidates=candidates.for_line(parked.line),
-            ),
+            proposal=None,
         ),
     )
 
 
 def to_explain_sections(
-    review: "ReviewSet", candidates: "MatchCandidates",
+    review: "ReviewSet",
 ) -> "tuple[CardSection, ...]":
     """Return the inbox, grouped by what suggested each card's verb.
 
@@ -549,29 +530,58 @@ def to_explain_sections(
 
     Args:
         review: The pass.
-        candidates: The pass's unexplained rows, indexed by pay period
-            (:class:`~._panel.MatchCandidates`).
 
     Returns:
         One :class:`CardSection` per :class:`Section` that has a card, in the
         enum's order.  An empty section is ABSENT rather than rendered empty.
     """
     cards = (
-        [_proposal_card(review, one, candidates) for one in review.proposals]
-        + [_creatable_card(review, one, candidates) for one in review.creatable]
+        [_proposal_card(review, one) for one in review.proposals]
+        + [_creatable_card(review, one) for one in review.creatable]
         + [
-            _inflow_card(review, one, candidates)
+            _inflow_card(review, one)
             for one in review.recordable_inflows
         ]
     )
     sections = []
     for section in Section:
-        mine = tuple(card for card in cards if card.section is section)
+        mine = _newest_first(
+            card for card in cards if card.section is section
+        )
         if mine:
             sections.append(
                 CardSection(section=section, cards=mine, withheld=0),
             )
     return tuple(sections)
+
+
+def _newest_first(cards) -> "tuple[LineCard, ...]":
+    """Return *cards* with the most recent bank day first.
+
+    The locked direction's own rule for a section (``docs/design
+    /bank_import_audit.md``, *Within a section, newest first*), and it was not
+    kept until plan step ``bank_import:X-gj-1b``: the pass hands its lines
+    over ASCENDING by day (:attr:`~._reads.ReviewSet.unmatched`), so every
+    section rendered oldest first -- the owner's most recent swipes, which are
+    the ones they can still remember, at the bottom of a 27-card list.
+
+    **Sorted HERE rather than in Jinja**, because the order a screen presents
+    work in is a decision and a template restating it is a second place for it
+    to be wrong -- the rule this package keeps for every count and every
+    partition.
+
+    Args:
+        cards: The section's cards, in the pass's own order.
+
+    Returns:
+        Them, descending by the bank's POSTED day.  **A STABLE sort**, so two
+        lines the bank posted on one day keep the pass's own order rather than
+        an arbitrary one that could differ between two renders of the same
+        page -- which is what a reader comparing a screenshot would see.
+    """
+    return tuple(
+        sorted(cards, key=lambda card: card.line.posted_on, reverse=True)
+    )
 
 
 def act_sections(register) -> "tuple[CardSection, ...]":

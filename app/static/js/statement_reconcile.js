@@ -84,9 +84,12 @@
     if (!slot) {
       return;
     }
-    slot.textContent = String(
-      form.querySelectorAll("[data-rec-ok]:checked").length,
-    );
+    // The server renders this EMPTY so the button reads "Apply the cards you
+    // OK'd" when nothing runs; a count is only printed once something can
+    // keep it true.  Zero prints nothing rather than "0", so the label never
+    // contradicts a page with no ticks.
+    const ticked = form.querySelectorAll("[data-rec-ok]:checked").length;
+    slot.textContent = ticked ? String(ticked) + " of" : "";
   }
 
   // ── The legend ─────────────────────────────────────────────────────────

@@ -21,7 +21,8 @@ door -- which is the mechanism that shrinks the bucket.  It is emphatically NOT
 a plug to ``anchor_equity``: that is what R-FN replaced, and plan step
 ``balance:X-f4`` deletes the machinery it would have used.
 
-**The measured population is finding N-239, seen from the bank's side.**  On a
+**The measured population is finding balance:N-391, the bank-side half of the
+retired N-239.**  On a
 production clone carrying the developer's own 376 recorded lines, SEVEN payroll
 deposits are 2-3 app rows summing ``$0.04``-``$0.06`` under what the employer
 actually paid -- ``+$0.35`` across the span -- and before this step every one

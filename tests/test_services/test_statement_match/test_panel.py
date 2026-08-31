@@ -11,6 +11,8 @@ and which of the account's rows a line may be paired against.
 
 from decimal import Decimal
 
+from datetime import timedelta
+
 import pytest
 
 # Pylint: ``shekel-private-module-import`` -- a test of a service's
@@ -64,11 +66,43 @@ def _cards(seed_user):
     scope = a_scope(seed_user)
     review = review_set(scope)
     candidates = MatchCandidates.of(scope, review)
-    sections = to_explain_sections(review, candidates)
+    sections = to_explain_sections(review)
     return (
         [card for section in sections for card in section.cards],
         candidates,
     )
+
+
+class TestASectionRendersNewestFirst:
+    """The locked direction's own rule, and it was not kept.
+
+    ``docs/design/bank_import_audit.md``: *Within a section, newest first*.
+    The pass hands its lines over ASCENDING by day, so every section rendered
+    oldest first -- the owner's most recent swipes, the ones they can still
+    remember, at the bottom of a 27-card list on their own data.
+    """
+
+    def test_the_most_recent_bank_day_is_the_first_card(
+        self, app, db, seed_user,
+    ):
+        """Three swipes on three days, newest at the top."""
+        an_envelope(seed_user)
+        statement = an_import(seed_user)
+        day = seed_user["bootstrap_period"].start_date
+        for offset, merchant in ((0, "Oldest Co"), (2, "Middle Co"),
+                                 (5, "Newest Co")):
+            a_bank_line(
+                seed_user, statement, amount="-10.00",
+                posted_on=day + timedelta(days=offset), merchant=merchant,
+            )
+        db.session.commit()
+
+        cards, _ = _cards(seed_user)
+        merchants = [card.line.merchant_label for card in cards]
+
+        assert merchants[:3] == ["Newest Co", "Middle Co", "Oldest Co"], (
+            f"the section is not newest first: {merchants[:3]}"
+        )
 
 
 class TestTheADDVerbSaysWHICHActItPerforms:
@@ -145,7 +179,7 @@ class TestTheADDVerbSaysWHICHActItPerforms:
         candidates = MatchCandidates.of(scope, review)
         # pylint: disable-next=shekel-private-module-import
         from app.services.statement_match._cards import parked_card
-        card = parked_card(review, review.parked[0], candidates)
+        card = parked_card(review, review.parked[0])
 
         assert card.panel.add is None
         assert not card.panel.offer_for(Verb.ADD).is_open
@@ -253,9 +287,7 @@ class TestEveryOpenVerbHasSomethingToOfferAndEveryCardOpensOnOne:
         review = review_set(scope)
         # pylint: disable-next=shekel-private-module-import
         from app.services.statement_match._cards import parked_card
-        card = parked_card(
-            review, review.parked[0], MatchCandidates.of(scope, review),
-        )
+        card = parked_card(review, review.parked[0])
 
         assert card.opens_on is Verb.TRANSFER
         assert not card.panel.offer_for(Verb.TRANSFER).is_open
@@ -293,19 +325,30 @@ class TestTheMatchTabOffersThePeriodAndTheSearchReachesFurther:
     def test_the_lines_own_period_holds_the_rows_that_explain_it(
         self, app, db, seed_user,
     ):
-        """Finding **N-239**'s own case, reachable in one click.
+        """Finding **balance:N-391**'s own case, reachable in one click.
 
         Measured 2026-08-30 on the developer's own account: the 2026-03-26
         deposit of `$2,573.42` finds ``Health Insurance Allowance`` `$100.00`
         and ``Data Manager`` `$2,473.38` in its own period, a difference of
-        `$0.04`.
-        """
-        self._a_deposit_and_two_rows(seed_user, db)
+        `$0.04`.  *(Cited **N-239** until `balance:X-aw` retired that row and
+        split its bank half off as **N-391**.)*
 
-        cards, _ = _cards(seed_user)
+        **Asserted against the INDEX rather than against a card.**  The card
+        carried its line's rows until plan step ``bank_import:X-gj-1b`` and
+        rendered none of them -- the panel's list is lazy-loaded, so the
+        fragment asks :class:`MatchCandidates` for itself -- so the field went
+        and this asks the producer that still answers the question.
+        """
+        line = self._a_deposit_and_two_rows(seed_user, db)
+
+        cards, candidates = _cards(seed_user)
         labels = {
-            row.label for row in cards[0].panel.match.candidates
+            row.label for row in candidates.for_line(cards[0].line)
         }
+        assert cards[0].line.line_id == line.id, (
+            "the deposit is not the first card, so this asks about the wrong "
+            "line"
+        )
 
         assert "Data Manager" in labels
         assert "Health Insurance Allowance" in labels
@@ -352,7 +395,7 @@ class TestTheMatchTabOffersThePeriodAndTheSearchReachesFurther:
             card for card in cards if card.line.amount > 0
         )
         on_the_card = {
-            row.label for row in deposit.panel.match.candidates
+            row.label for row in candidates.for_line(deposit.line)
         }
         found = {row.label for row in candidates.matching("Rogue")}
 
@@ -380,14 +423,23 @@ class TestTheMatchTabOffersThePeriodAndTheSearchReachesFurther:
         assert candidates.matching("") == ()
         assert candidates.matching("   ") == ()
 
-    def test_every_card_carries_the_index_s_own_answer_for_its_line(
+    def test_the_index_answers_for_EVERY_line_the_page_cards(
         self, app, db, seed_user,
     ):
-        """No builder may forget the narrowing.
+        """No card may be one the pane cannot price.
 
-        Five builders make a card and each states its own MATCH tab; a sixth
-        that forgot would render an empty list rather than fail, so the
-        agreement is pinned here.
+        **This asked a different question until plan step
+        ``bank_import:X-gj-1b``**: whether each card's own copy of the row
+        list matched the index it came from. That copy is gone -- the builders
+        stated it and the templates rendered none of it -- and comparing a
+        value to the producer it was assigned from could only ever fail if a
+        BUILDER forgot to pass it, which the type system now settles because
+        there is nothing to pass.
+
+        What is worth pinning is the fact the pane depends on: every line the
+        page renders a card for resolves in the index, so no card can open on
+        a tab that cannot answer. That is the same property
+        ``ReviewSet.card_subject`` keeps on the route side.
         """
         an_envelope(seed_user)
         an_unexplained_outflow(seed_user, merchant="Lowe's", amount="-35.72")
@@ -397,9 +449,7 @@ class TestTheMatchTabOffersThePeriodAndTheSearchReachesFurther:
 
         assert cards
         for card in cards:
-            assert card.panel.match.candidates == candidates.for_line(
-                card.line,
-            )
+            assert candidates.for_line(card.line) is not None
 
 
 class TestARuleNamesTheDestinationTheCardChose:
