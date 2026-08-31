@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% from "_acct_macros.html" import acct_glyph %}
+{% from "_nav_macros.html" import back_link %}
+{% block title %}{{ account.name }} -- Where your merchants go -- Shekel{% endblock title %}
+
+{# WHERE YOUR MERCHANTS GO -- plan step bank_import:X-gk, ruling
+   bank_import:R-IC.  One row per merchant this account has ever seen, carrying
+   its standing answer or "You have not said", edited one merchant at a time.
+
+   THIS PAGE MOVES NO MONEY and can move none (the developer's ruling of
+   2026-08-19): a rule is read to SUGGEST where a merchant's spending goes, and
+   the only thing that records a purchase is an explicit destination submitted
+   for one specific line on the Reconcile page.  So there is no confirm here
+   and no undo -- what changes is where the NEXT swipe goes.
+
+   THE PAGE IS THE HEADER; the whole surface is
+   _statement_merchants_body.html, which the answer POST re-renders on its own
+   so its answer IS the screen carrying its receipt.  The split is the one all
+   four sibling statement surfaces keep, and for the same reason: a per-item
+   receipt overflows the 4 KB a browser stores for the signed session cookie a
+   flash rides in.
+
+   Context (accounts.statement_merchants): account, directory, asked,
+   categories, filters, rows, close_url, search_action, save_action,
+   unbounded_url, rules/error (both None on a plain render). #}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center gap-2 mb-3 flex-wrap">
+  <div class="d-flex align-items-center gap-2">
+    <h4 class="mb-0"><i class="bi {{ acct_glyph(account) }}"></i> {{ account.name }}</h4>
+    <span class="acctd-type-tag">Merchants</span>
+  </div>
+  <div class="d-flex align-items-center gap-2 flex-wrap">
+    <a class="btn btn-sm btn-outline-secondary"
+       href="{{ url_for('accounts.statement_reconcile', account_id=account.id) }}">
+      <i class="bi bi-list-check"></i> Reconcile
+    </a>
+    <a class="btn btn-sm btn-outline-secondary"
+       href="{{ url_for('accounts.statements', account_id=account.id) }}">
+      <i class="bi bi-upload"></i> Import a statement
+    </a>
+    {{ back_link(url_for('accounts.cash_detail', account_id=account.id), 'Account') }}
+  </div>
+</div>
+
+{% include "accounts/_statement_merchants_body.html" %}
+{% endblock content %}
+
+{% block scripts %}
+{# The new-envelope name and category fields are revealed by the answer select,
+   which is the same control and the same script the register and the review
+   queue use.
+
+   WHAT THIS DOES AND DOES NOT SURVIVE WITH SCRIPTING OFF.  Three of the four
+   answers do: a recurring envelope, "never a purchase" and "ask me every time"
+   are the select's own value and land with no script at all.  "A new envelope"
+   does NOT -- on a merchant with no rule the macro renders both of its fields
+   `d-none` and the category select opens on the empty option, so the answer
+   reaches the door missing its category and is refused every time.
+
+   That is the behaviour of the SHARED control and it predates this page; what
+   was new here was a sentence claiming the opposite, which an adversarial
+   review measured false on 2026-08-31.  Correcting the sentence is this step's
+   scope; revealing the fields would change a money-adjacent control the review
+   queue and the register also render, which is a decision for the step that
+   owns them. #}
+<script src="{{ url_for('static', filename='js/statement_rules.js') }}"></script>
+{% endblock scripts %}

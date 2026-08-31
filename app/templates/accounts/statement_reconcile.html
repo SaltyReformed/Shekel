@@ -33,8 +33,14 @@
        href="{{ url_for('accounts.statements', account_id=account.id) }}">
       <i class="bi bi-upload"></i> Import a statement
     </a>
+    {# WHERE YOUR MERCHANTS GO (plan step bank_import:X-gk, ruling
+       bank_import:R-IC).  It pointed at the REGISTER until that step, and the
+       register shows only the merchants already ANSWERED for -- so a button
+       labelled "Merchant rules" led to a page that could not show 32 of this
+       account's 62 merchants, and could not be used to answer for any of
+       them. #}
     <a class="btn btn-sm btn-outline-secondary"
-       href="{{ url_for('accounts.statement_register', account_id=account.id) }}">
+       href="{{ url_for('accounts.statement_merchants', account_id=account.id) }}">
       <i class="bi bi-signpost-split"></i> Merchant rules
     </a>
     <a class="btn btn-sm btn-outline-secondary"

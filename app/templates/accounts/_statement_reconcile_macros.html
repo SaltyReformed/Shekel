@@ -328,7 +328,14 @@
     {% endif %}
     {% if card.panel.answer_door %}
     <p class="small mb-0">
-      <a href="{{ url_for('accounts.statement_register', account_id=account.id) }}">{{ card.panel.answer_door }}</a>
+      {# THE ANSWER DOOR IS THE MERCHANTS PAGE (plan step bank_import:X-gk).
+         It was the register, which renders only ANSWERED merchants -- true of
+         every line this link appears beside, because `answer_door` is None
+         unless the bar is the owner's own "never a purchase" answer -- but it
+         is true by coincidence rather than by construction, and the register
+         is retired at X-gj-1c.  The merchants page holds every merchant this
+         account has seen, so the link is correct whatever bars the line. #}
+      <a href="{{ url_for('accounts.statement_merchants', account_id=account.id) }}">{{ card.panel.answer_door }}</a>
     </p>
     {% endif %}
 

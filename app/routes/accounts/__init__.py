@@ -76,6 +76,15 @@ Module map:
   exists for -- a QUEUE holds what is still being decided and a REGISTER holds
   what is not, and the two were one 578,523-byte page of which 76% was the
   register half.
+* :mod:`app.routes.accounts.statement_merchants` -- WHERE YOUR MERCHANTS GO
+  (plan step ``bank_import:X-gk``, ruling **bank_import:R-IC**): one row per
+  merchant this account has ever seen, carrying its standing answer or *You
+  have not said*, edited ONE merchant at a time.  Its boundary against
+  ``statement_register`` is the one R-IC draws: that page shows only the
+  merchants already ANSWERED for, and measured on a clone of the developer's
+  own database 2026-08-31 that left 32 of his 62 merchants on no surface at
+  all.  **It MOVES NO MONEY** and posts to the rule door three other surfaces
+  already use.
 * :mod:`app.routes.accounts.statement_workbench` -- The TOOL, not the queue
   (plan step ``bank_import:X-gf-3b``, ruling **bank_import:R-HC**): the
   hand-build match form, where the owner asserts a correspondence the matcher
@@ -143,6 +152,7 @@ from app.routes.accounts import statement_matches  # noqa: F401, E402
 from app.routes.accounts import statement_register  # noqa: F401, E402
 from app.routes.accounts import statement_workbench  # noqa: F401, E402
 from app.routes.accounts import statement_reconcile  # noqa: F401, E402
+from app.routes.accounts import statement_merchants  # noqa: F401, E402
 from app.routes.accounts import bank_agreement  # noqa: F401, E402
 
 

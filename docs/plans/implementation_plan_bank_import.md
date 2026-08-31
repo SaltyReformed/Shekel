@@ -154,15 +154,12 @@ what it leaves a LATER step is on that step's own entry.
         of. **It opens with a fork the developer decides at the gate**: a nullable disposition
         column on `bank_statement_lines` or a `statement_line_dispositions` table (append-only,
         which is what undo and the audit trail want -- the recommendation).
-- [ ] **X-gk** `feat(import): where your merchants go` -- the MERCHANTS surface the audit's fix
-      column (line 103) names, half of which was ever built (`bank_import:R-IC`): one row per
-      merchant this account has seen, carrying its standing answer or *I have not said*, on click
-      through `record_submitted_rules` -- the door the receipt's offer and the register already post
-      to, so three surfaces keep one grader and one writer. Measured on a restored production clone:
-      **62 merchants on the developer's account, 29 answered and 33 not**, spread over three partial
-      surfaces -- the review queue's section, the register, the receipt's offer -- with no surface
-      showing all 62. **It ships BEFORE `X-gj-1c`**, which retires the register as a page and would
-      otherwise delete the answered merchants' only home.
+- [x] **X-gk** `8569e5ec` -- the MERCHANTS surface (**R-IC**): every merchant an account has seen,
+      its standing answer or *You have not said*, edited ONE at a time through
+      `record_submitted_rules`, so four surfaces keep one grader and one writer. On a 2026-08-31
+      clone **32 of 62 were on NO surface**. Opened **N-402** (the statements route family is absent
+      from the auth sweep) and **N-403** (the new-envelope answer needs scripting, on all three
+      controls) -- `X-gi` and `X-gj-1c` own them, and the register's retirement is now unblocked.
 - [ ] **X-gi** `refactor(import): the queue's replaced model leaves orphans` -- the retirement leaf
       **X-gf** owed on shipping, and since 2026-08-29 the LAST leaf of the Reconcile rebuild: it
       waits on `X-gj` and deletes what that page orphans -- the review, register and workbench
