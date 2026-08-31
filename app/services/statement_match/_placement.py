@@ -489,10 +489,18 @@ class InflowPlacement:
             The :class:`~._creations.IncomeCreation`, or ``None`` for an
             unresolved placement -- a rule that does not reach this line names
             no category, so there is no act to perform.
+
+            **The act carries the LINE and not the category**, and this method
+            is what DECIDES there is an act rather than what says what it
+            files under: :func:`~._income.record_income_from_line` re-derives
+            the classification from the same stored rule, so the automatic
+            door and the owner's own OK cannot answer *what is this deposit*
+            differently (adversarial code review 2026-08-31, which measured
+            them doing exactly that).
         """
         if self.category_id is None:
             return None
-        return IncomeCreation(line_id=line_id, category_id=self.category_id)
+        return IncomeCreation(line_id=line_id)
 
 
 def inflow_placement_for(

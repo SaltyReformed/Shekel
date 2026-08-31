@@ -244,6 +244,14 @@ class TestWhatARowSays:
         when another was added, which is the one failure this class exists to
         catch.
 
+        **It is a NECESSARY and not a sufficient control, and 2026-08-31
+        measured the difference.**  Adding a member to the literal set below
+        satisfies it whether or not the case beside it is written, so this
+        guard says *somebody looked*, never *the arm is graded*.  Ruling
+        **R-HT(a)**'s member was added here and its case was not, and a
+        mutation making every income row read *-- archived* survived.  Both
+        cases exist now; the guard is what makes their ABSENCE loud next time.
+
         **It fired on 2026-08-31** for ruling **R-HT(a)**'s
         ``INCOME_CATEGORY``, and what it caught was real: ``says_of`` ended on
         a bare ``return "Ask me every time"``, so the merchants page would have
@@ -366,6 +374,65 @@ class TestWhatARowSays:
             # the state this arm is for.
             assert _says(_directory(seed_user), "Speedway") == (
                 f'a new envelope called "Fuel", under {name} -- archived'
+            )
+
+    def test_an_INCOME_answer_says_what_a_DEPOSIT_from_here_is(
+        self, app, db, seed_user,
+    ):
+        """Ruling **R-HT(a)**'s answer, on the page whose subject is answers.
+
+        **The case this class's own guard demanded and did not get** (mutation
+        review 2026-08-31).  The guard's failure message reads *"``says_of``
+        needs an arm for it AND this class needs a case"*; plan step
+        ``bank_import:X-gj-2a`` added ``INCOME_CATEGORY`` to the expected set
+        and stopped there, so the gate was satisfied by editing the value it
+        compares against.  A row saying *Deposits are income under X* was
+        graded nowhere.
+
+        **The DIRECTION is what the phrase has to carry.**  Every other answer
+        here says where this merchant's SPENDING goes; a phrase that read like
+        those would tell the owner the opposite of what they decided.
+        """
+        with app.app_context():
+            category = seed_user["categories"]["Groceries"]
+            a_rule(
+                seed_user, "Dividend Earned",
+                income_category_id=category.id,
+            )
+            db.session.commit()
+
+            assert _says(
+                _directory(
+                    seed_user,
+                    categories={category.id: category.display_name},
+                ),
+                "Dividend Earned",
+            ) == f"Deposits are income under {category.display_name}"
+
+    def test_an_INCOME_answer_under_an_ARCHIVED_category_says_so(
+        self, app, db, seed_user,
+    ):
+        """The mark, on the arm that files money automatically.
+
+        Its new-envelope twin exists because an unmarked row reads as a working
+        answer.  This one matters more: a rule with this answer files at IMPORT
+        with no press, so an owner reading a working-looking row would expect
+        deposits to be filing and they are not
+        (``_placement._income_placement`` reports instead).
+        """
+        with app.app_context():
+            name = seed_user["categories"]["Groceries"].display_name
+            category_id = seed_user["categories"]["Groceries"].id
+            a_rule(
+                seed_user, "Dividend Earned", income_category_id=category_id,
+            )
+            # Re-fetched inside this context before archiving, for the reason
+            # the new-envelope twin above states at length.
+            db.session.get(Category, category_id).is_active = False
+            db.session.commit()
+
+            assert _says(_directory(seed_user), "Dividend Earned") == (
+                f"Deposits are income under {name} -- archived"
             )
 
     def test_a_NEVER_answer_says_never_a_purchase(self, app, db, seed_user):

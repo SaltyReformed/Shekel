@@ -80,6 +80,7 @@ from app.extensions import db
 
 from ._accept import accept_match
 from ._bars import CreationBars
+from ._rules import RuleView
 from ._create import MintedEnvelopes, create_purchase_from_line
 from ._creations import IncomeCreation, PurchaseCreation
 from ._income import record_income_from_line
@@ -673,7 +674,17 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
     # a pass carrying no creations at all: two indexed reads, measured at
     # 0.14 ms over the developer's 378 lines, against a value whose only
     # cheaper form would be one that means *nothing is barred*.
-    bars = CreationBars.build(scope.owner_id, scope.account_id)
+    #
+    # **The RULE VIEW is read here too, and the two SHARE that read** (plan
+    # step ``bank_import:X-gj-2a``).  ``CreationBars.build`` already accepts
+    # the rules rather than re-reading them, which is how ``_leftovers``
+    # builds both from one read; doing the same here means this door still
+    # asks ``merchant_rules`` exactly ONCE, as the paragraph above claims,
+    # while the income arm below gains the answer it needs.
+    view = RuleView.build(scope.owner_id, scope.account_id)
+    bars = CreationBars.build(
+        scope.owner_id, scope.account_id, rules=view.rules,
+    )
 
     for submission in batch.matches:
         line_ids = tuple(sorted(submission.line_ids))
@@ -737,7 +748,7 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
         deposited = _run(
             tally, line_ids,
             lambda i=income: record_income_from_line(
-                i, scope,
+                i, scope, view,
                 # **The PASS's consent, not the item's** (ruling **R-GT**),
                 # which is the same threading the creation arm above does: the
                 # act records whether a RULE performed it, and only the batch

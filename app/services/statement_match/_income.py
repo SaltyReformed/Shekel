@@ -38,11 +38,14 @@ nothing -- so the tick-not-a-select argument above survives the amendment
 whole.
 
 **The ROW is the one :func:`~._variance.mint` already writes**, through the
-shared :func:`~._uncategorized.mint_uncategorized`: uncategorized, so the
-ledger books it to the per-owner Uncategorized fallback and the owner can
-categorise it whenever they know what it was.  The app does not know what a
-`$0.15` dividend belongs under, and inventing an answer is the misfiling that
-ruling **R-FN** already refused one door over.
+shared :func:`~._uncategorized.mint_uncategorized`.  **Uncategorized unless a
+standing rule says otherwise** (**R-HT(a)**, plan step
+``bank_import:X-gj-2a``): with no rule the ledger books it to the per-owner
+Uncategorized fallback and the owner categorises it whenever they know what it
+was, because the app does not know what a `$0.15` dividend belongs under and
+inventing an answer is the misfiling ruling **R-FN** refused one door over.
+Where the owner HAS said, that is not an invention -- it is their answer, and
+writing the row uncategorized would discard it.
 
 **What it deliberately does NOT do.**  It does not touch the PARKED lines
 (ruling **R-GJ**): those are outflows whose money the budget already holds in
@@ -76,6 +79,8 @@ from ._accept import MatchContent, record_match
 from ._candidates import MatchedSubjects, matched_subjects
 from ._creations import CreatedSubject, IncomeCreation, RecordedIncome
 from ._offers import merchant_label
+from ._placement import inflow_placement_for
+from ._rules import RuleView
 from ._resolve import load_lines
 from ._scope import ReviewScope
 from ._uncategorized import MovementToRecord, mint_uncategorized
@@ -168,6 +173,7 @@ def _observed(line: BankStatementLine) -> SettleDay:
 def record_income_from_line(
     creation: IncomeCreation,
     scope: ReviewScope,
+    view: RuleView,
     *,
     applied_by_rule: bool = False,
 ) -> RecordedIncome:
@@ -202,6 +208,25 @@ def record_income_from_line(
         scope: The pass's derived offer set (:class:`~._scope.ReviewScope`).
             **Required rather than defaulted**, for the reason
             :func:`~._accept.accept_match`'s is.
+        view: What the owner has SAID (:class:`~._rules.RuleView`), from which
+            this door derives what the deposit is filed under.
+
+            **The DOOR derives it, and that is the whole of ruling R-HT(a)'s
+            consent story** (plan step ``bank_import:X-gj-2a``, corrected by
+            adversarial code review 2026-08-31).  A first version carried the
+            category on the :class:`~._creations.IncomeCreation` instead, set
+            only by :meth:`~._placement.InflowPlacement.creation_for` -- which
+            is reachable from the import-time rule pass and from nowhere else.
+            So the Reconcile card said *Add as Interest income*, the owner
+            pressed OK, and the row was written UNCATEGORIZED: the automatic
+            door and the press were two answers to *what is this deposit*, on
+            the door that moves money.  Deriving here makes them one answer
+            because it is one derivation, which is what that field's own
+            docstring had claimed and nothing performed.
+
+            **Read once per BATCH and threaded**, exactly as
+            :class:`~._bars.CreationBars` is: a per-act read would ask
+            ``merchant_rules`` once per deposit.
         applied_by_rule: Whether a STANDING RULE performed this rather than a
             person ticking it (**R-GT**, **R-HT(a)**).  Keyword-only and
             defaulted FALSE, which is the shape :func:`~._accept.record_match`
@@ -241,6 +266,14 @@ def record_income_from_line(
     # and :func:`~app.services.status_seam.day_is_in_the_future` is the same
     # predicate the screen asks so it renders no tick for such a line.
     reject_future_settle_day(_observed(line))
+    placement = inflow_placement_for(line.merchant_id, view)
+    # **ONE reading of what the owner said, used by the WRITE and by the LOG.**
+    # Two expressions of the same rule are two things that can come to
+    # disagree, and here they would disagree about what a money row records.
+    filed_under = (
+        placement.category_id
+        if placement is not None and placement.records else None
+    )
     # A line posted past the last SAVED pay period is not split off by the
     # review screen's own bounds, so this refusal is live rather than
     # theoretical.
@@ -265,7 +298,15 @@ def record_income_from_line(
             # rule the caller resolved -- one derivation for the automatic door
             # and the owner's own OK, which is what stops the two answering
             # *what is this deposit* differently.
-            category_id=creation.category_id,
+            # **What the owner SAID this money is, or nothing** (**R-HT(a)**).
+            # Resolved from the stored rule HERE, so the automatic door and
+            # the owner's own OK reach one answer rather than two.  A
+            # placement that does not RECORD -- no rule, *ask me every time*,
+            # a spending answer whose refund arm is
+            # ``bank_import:X-gj-2b``'s, or an ARCHIVED category -- names no
+            # category, and the row is the uncategorized one this door has
+            # always written.
+            category_id=filed_under,
         ),
         scope,
     )
@@ -304,13 +345,17 @@ def record_income_from_line(
     )
     log_event(
         _logger, logging.INFO, EVT_STATEMENT_INCOME_RECORDED, BUSINESS,
-        "A bank statement line was recorded as an uncategorized income row.",
+        "A bank statement line was recorded as an income row.",
         user_id=scope.owner_id,
         account_id=scope.account_id,
         line_id=line.id,
         transaction_id=recorded.transaction_id,
         match_id=recorded.match_id,
         amount=str(recorded.amount),
+        # **WHICH category, or none**, so the log tells the two cases apart --
+        # a rule-filed deposit and a hand-ticked one write different rows and
+        # an event that named neither could not say which had happened.
+        category_id=filed_under,
         posts_on=recorded.posts_on.isoformat(),
         pay_period_id=pay_period_id,
     )

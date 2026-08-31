@@ -1456,6 +1456,91 @@ class TestARuleWithholdsADepositTheBooksMayAlreadyHold:
                 "filed": 1, "withheld": [], "refused": [],
             }
 
+    def test_the_bound_is_the_SMALLEST_row_and_not_the_largest(
+        self, app, db, seed_user,
+    ):
+        """The `min` this class's docstring rests on, graded at last.
+
+        **Both cases above stage a period holding exactly ONE unexplained
+        income row, where ``min`` and ``max`` are the same number** -- so the
+        PROOF the guard rests on (*a deposit smaller than the smallest of them
+        cannot be any subset of them, every one being positive*) was asserted
+        by neither.  A mutation review flipped that ``min`` to ``max`` and this
+        class stayed green; a pre-existing case elsewhere caught it, which is
+        not the same as this class grading its own claim.
+
+        Two rows and a deposit BETWEEN them is the discriminating shape, and it
+        is the developer's own: his `$200.00` member deposit sits in a period
+        holding `$2,473.38` and `$100.00`.
+        """
+        with app.app_context():
+            a_rule(
+                seed_user, "Dividend Earned",
+                income_category_id=seed_user["categories"]["Salary"].id,
+            )
+            day = seed_user["bootstrap_period"].start_date + timedelta(days=3)
+            a_transaction(
+                seed_user, name="Big", amount="2473.38", income=True,
+            )
+            a_transaction(
+                seed_user, name="Small", amount="100.00", income=True,
+            )
+            statement = an_import(seed_user)
+            a_bank_line(
+                seed_user, statement, amount="200.00",
+                merchant="Dividend Earned",
+                description="DIVIDEND EARNED (Dividend Earned)",
+                posted_on=day,
+            )
+            db.session.flush()
+
+            filing = _file(seed_user, statement)
+            db.session.flush()
+
+            # Under `max` the deposit is BELOW 2473.38 and would be filed;
+            # under `min` it is at or above 100.00 and is withheld.
+            story = _story(filing)
+            assert story["filed"] == 0, story
+            assert "count the same money twice" in story["withheld"][0]
+
+    def test_the_DOORS_own_refusal_is_reported_as_a_withholding(
+        self, app, db, seed_user,
+    ):
+        """A day the door refuses is a SENTENCE, not a refusal on the receipt.
+
+        The branch that asks ``inflow.withheld`` before the rule's own
+        narrowings was reachable by no case (mutation review 2026-08-31):
+        deleting it left the deposit to reach the door and be REFUSED there
+        instead, which files nothing either way but reports it as a failure
+        rather than as something left for the owner.  The receipt's two
+        registers mean different things and this is the one written for a
+        person.
+        """
+        with app.app_context():
+            a_rule(
+                seed_user, "Dividend Earned",
+                income_category_id=seed_user["categories"]["Salary"].id,
+            )
+            statement = an_import(seed_user)
+            a_bank_line(
+                seed_user, statement, amount="0.15",
+                merchant="Dividend Earned",
+                description="DIVIDEND EARNED (Dividend Earned)",
+                posted_on=date(2029, 1, 3),
+            )
+            db.session.flush()
+
+            filing = _file(seed_user, statement)
+            db.session.flush()
+
+            story = _story(filing)
+            assert story["filed"] == 0
+            assert story["refused"] == [], (
+                "a day the pass can see is not a door refusal"
+            )
+            assert len(story["withheld"]) == 1
+            assert "has not happened yet" in story["withheld"][0]
+
     def test_an_ARCHIVED_income_category_is_REPORTED_and_files_nothing(
         self, app, db, seed_user,
     ):
@@ -1499,3 +1584,147 @@ class TestARuleWithholdsADepositTheBooksMayAlreadyHold:
             assert story["filed"] == 0
             assert len(story["withheld"]) == 1
             assert "archived" in story["withheld"][0]
+
+
+class TestARuleWithholdsADepositThePassDidNotFinishLookingAt:
+    """Ruling **R-GH**'s FIRST narrowing, in the inflow direction.
+
+    **This class exists because the narrowing was missing and the omission
+    moved money** (adversarial code review 2026-08-31).  ``_inflow_filings``
+    asked only whether the deposit's own pay period already held unexplained
+    income, and its docstring claimed that was *the only way this door can
+    count money twice*.  It is not: ``_verdict.ruled`` withholds an outflow
+    whenever the pass did not finish LOOKING, and a deposit has the same
+    hazard.
+
+    **The two guards have DISJOINT fail sets, which is why one cannot stand in
+    for the other.**  ``income_already_recorded_in`` tests the ROW's own span
+    (``expected_on .. expected_through``), so it sees only rows in the
+    deposit's pay period; the near tier reaches ACROSS periods by
+    ``DAY_WINDOW``.  A candidate row one period over is invisible to the first
+    and visible to the second -- which is the state this case stages.
+    """
+
+    def test_a_deposit_a_tier_DECLINED_to_conclude_about_is_not_filed(
+        self, app, db, seed_user,
+    ):
+        """The money property: no row is written where the pass hedged.
+
+        Two of the owner's own income rows sit either side of the deposit's
+        figure, so the near tier CONTESTS it and declines rather than picking
+        one -- the developer's own measured *Apple Music* shape, in the inflow
+        direction.  The rows are in the period BEFORE the deposit, so the
+        double-count guard is silent about them and only the search gap sees
+        the collision.
+        """
+        with app.app_context():
+            a_rule(
+                seed_user, "Dividend Earned",
+                income_category_id=seed_user["categories"]["Salary"].id,
+            )
+            # Two candidate rows in the BOOTSTRAP period, either side of the
+            # figure, so no tier can choose between them.
+            a_transaction(
+                seed_user, name="Maybe this one", amount="1496.00",
+                income=True,
+            )
+            a_transaction(
+                seed_user, name="Or this one", amount="1504.00", income=True,
+            )
+            later = a_later_period(seed_user)
+            statement = an_import(seed_user)
+            a_bank_line(
+                seed_user, statement, amount="1500.00",
+                merchant="Dividend Earned",
+                description="DIVIDEND EARNED (Dividend Earned)",
+                posted_on=later.start_date,
+            )
+            db.session.flush()
+            before = _balance_on(seed_user, later.start_date)
+
+            filing = _file(seed_user, statement)
+            db.session.flush()
+
+            story = _story(filing)
+            assert story["filed"] == 0, story
+            assert len(story["withheld"]) == 1
+            assert "did not finish looking" in story["withheld"][0]
+            # THE MONEY: nothing was written, so nothing can be counted twice.
+            assert _balance_on(seed_user, later.start_date) == before
+
+
+class TestAMerchantCreditIsReportedWhicheverSpendingAnswerItHas:
+    """Ruling **R-HT(a)**: a credit is the merchant rule's INVERSE.
+
+    **Both container answers, because only one of them was graded** (mutation
+    review 2026-08-31).  ``inflow_placement_for`` reports a refund for
+    ``rule.answer in (TEMPLATE, NEW_ENVELOPE)``, and every case staged a
+    TEMPLATE -- so a mutation giving NEW_ENVELOPE an income arm survived 959
+    tests and auto-filed a credit as income, which is exactly the misfiling
+    ruling **R-HX** refused.
+
+    **The untested arm was the developer's own biggest case.**  Measured on a
+    clone 2026-08-31: his `Amazon` rule is a NEW ENVELOPE answer and his
+    `Walmart` rule is a TEMPLATE one, so of the three merchant credits in his
+    inbox the largest -- `$28.29`, and `$86.67` across the whole span -- takes
+    the arm nothing exercised.
+    """
+
+    def _credit(self, seed_user, statement, merchant):
+        """Stage one recorded CREDIT from *merchant*."""
+        return a_bank_line(
+            seed_user, statement, amount="42.00", merchant=merchant,
+            description=f"POINT OF SALE CREDIT L340 ({merchant})",
+            posted_on=(
+                seed_user["bootstrap_period"].start_date + timedelta(days=3)
+            ),
+        )
+
+    def test_a_NEW_ENVELOPE_answer_reports_the_refund_and_files_NOTHING(
+        self, app, db, seed_user,
+    ):
+        """The arm the developer's Amazon rule takes."""
+        with app.app_context():
+            a_rule(
+                seed_user, "Amazon", envelope_name="Amazon",
+                category_id=seed_user["categories"]["Groceries"].id,
+            )
+            statement = an_import(seed_user)
+            self._credit(seed_user, statement, "Amazon")
+            db.session.flush()
+            day = seed_user["bootstrap_period"].start_date + timedelta(days=5)
+            before = _balance_on(seed_user, day)
+
+            filing = _file(seed_user, statement)
+            db.session.flush()
+
+            story = _story(filing)
+            assert story["filed"] == 0, story
+            assert len(story["withheld"]) == 1
+            assert "refund" in story["withheld"][0]
+            # THE MONEY: no income row, so the credit is not counted as
+            # earnings -- which is the misfiling R-HX measured and refused.
+            assert _balance_on(seed_user, day) == before
+
+    def test_a_TEMPLATE_answer_reports_it_the_same_way(
+        self, app, db, seed_user,
+    ):
+        """The arm his Walmart rule takes, so the pair covers both containers.
+
+        Stated as its own case rather than a parametrize, because the two
+        answers are stored in DIFFERENT columns and a shared fixture that got
+        the column wrong would stage one shape twice.
+        """
+        with app.app_context():
+            envelope = _groceries(seed_user)
+            a_rule(seed_user, "Walmart", template_id=envelope.template_id)
+            statement = an_import(seed_user)
+            self._credit(seed_user, statement, "Walmart")
+            db.session.flush()
+
+            filing = _file(seed_user, statement)
+            db.session.flush()
+
+            story = _story(filing)
+            assert story["filed"] == 0, story
+            assert "refund" in story["withheld"][0]

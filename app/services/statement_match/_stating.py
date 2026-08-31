@@ -312,6 +312,17 @@ def _reject_spending_answer(
     (:meth:`~._bars.CreationBars.bar_for`) -- so a stored *template* or *new
     envelope* answer for one would be an answer nothing could ever apply.
 
+    **It refuses ruling R-HT(a)'s INCOME answer too, and that is the bar
+    reading as being about the MERCHANT rather than about spending** (plan step
+    ``bank_import:X-gj-2a``).  The function's name says *spending* and its
+    refusal is wider than that on purpose: such a merchant's money is already
+    in the books in another shape, so a CREDIT from it is a transfer rather
+    than earnings, and recording one as income is the `$7,412.94` double count
+    R-GJ closed pointed the other way.  The refusal came for free -- every
+    answer but *never a purchase* is refused -- but it was reachable from a
+    control that offered the option, which is the state the template's own
+    optgroup condition now prevents.
+
     **Refused rather than left inert**, and an adversarial review 2026-08-24 is
     why: while any answer LIFTED the bar, ``a new envelope`` was the answer the
     developer had actually saved for ``Capital One Credit Card`` and the one
@@ -779,7 +790,7 @@ def state_rules(
         said.append(sentence)
         log_event(
             _logger, logging.INFO, EVT_MERCHANT_RULE_STATED, BUSINESS,
-            "An owner stated where a merchant's spending goes.",
+            "An owner stated where a merchant's money goes.",
             user_id=owner_id, account_id=account_id,
             merchant_id=statement.merchant_id,
             answer=statement.answer.value,
@@ -792,7 +803,9 @@ def state_rules(
             **{
                 column: value
                 for column, value in _columns_of(statement).items()
-                if column in ("template_id", "category_id")
+                if column in (
+            "template_id", "category_id", "income_category_id",
+        )
             },
         )
     return StatedRules(

@@ -431,23 +431,35 @@ def _inflow_filings(
     """Split the DEPOSITS a rule answers into what it files and what it holds.
 
     Ruling **R-HT(a)**, plan step ``bank_import:X-gj-2a``.
-    :func:`_rule_filings`' twin for the other direction, and the three
-    narrowings are the same three ruling **R-GH** states -- restated here
-    against the facts an inflow has rather than shared, because the outflow
-    half reads a :class:`~._placement.Placement` and this reads a
+    :func:`_rule_filings`' twin for the other direction, restated here against
+    the facts an inflow has rather than shared, because the outflow half reads
+    a :class:`~._placement.Placement` and this reads a
     :class:`~._placement.InflowPlacement` and they are different types for a
     reason (one names a container, the other a classification).
 
-    **The DOUBLE-COUNT withholding is this door's whole safety, and it is not
-    the outflow half's rule.**  ``creatable`` is a set defined by subtraction
-    and R-GH withholds where the pass did not finish LOOKING; a deposit's
-    hazard is different and sharper: recording one the books ALREADY HOLD is
-    the only way this door can count money twice.
-    :meth:`~._reads.ReviewSet.income_already_recorded_in` answers exactly that
-    -- does this deposit's own pay period hold unexplained income that could
-    contain it -- and under a human tick the card renders that warning and the
-    person decides.  **There is no person here**, so a rule withholds wherever
-    the card would have warned.
+    **TWO withholdings, and a first version of this function had only the
+    second** (adversarial code review 2026-08-31, which measured a deposit
+    filed with no press that the pass had declined to conclude about).
+
+    * **The pass did not finish LOOKING**, which is ruling **R-GH**'s own
+      narrowing and the one :func:`~._verdict.ruled` asks FIRST on the outflow
+      side.  It applies unchanged here: a line nothing finished searching for
+      has not been shown to collide with anything.
+    * **The books may ALREADY HOLD this deposit**, which is the hazard the
+      outflow side does not have.
+      :meth:`~._reads.ReviewSet.income_already_recorded_in` answers it -- does
+      this deposit's own pay period hold unexplained income that could contain
+      it -- and under a human tick the card renders that warning and the person
+      decides.  **There is no person here**, so a rule withholds wherever the
+      card would have warned.
+
+    **Neither can stand in for the other, and assuming one could is what made
+    the omission a MONEY defect.**  The double-count guard tests
+    ``row.expected_on <= day <= row.expected_through``, so it sees only rows in
+    the deposit's own pay period; the near tier reaches ACROSS periods by
+    ``DAY_WINDOW``.  A candidate row one period over is invisible to the first
+    and visible to the second.  Their fail sets are not nested, so a door
+    holding one of them holds neither's whole property.
 
     Measured on the developer's own account 2026-08-31, over the 16 recordable
     inflows: it is quiet for all five dividends (`$0.12`-`$0.22`) and all three
@@ -489,6 +501,32 @@ def _inflow_filings(
         if inflow.withheld is not None:
             withheld.append(WithheldLine(
                 line=inflow.line, reason=inflow.withheld,
+            ))
+            continue
+        # **THE PASS DID NOT FINISH LOOKING**, which is ruling **R-GH**'s own
+        # narrowing and the one this function was missing (adversarial code
+        # review 2026-08-31).  ``_verdict.ruled`` asks it FIRST on the outflow
+        # side -- *a line the pass never finished looking at has not been shown
+        # to collide with anything* -- and the same is true of a deposit.
+        #
+        # **The double-count guard below cannot stand in for it**, which is
+        # what made the omission a money defect rather than a tidiness one:
+        # :meth:`~._reads.ReviewSet.income_already_recorded_in` tests
+        # ``row.expected_on <= day <= row.expected_through``, so it sees only
+        # rows in the deposit's OWN pay period, while the near tier reaches
+        # across periods by ``DAY_WINDOW``.  A candidate row one period over is
+        # therefore invisible to the guard and visible to the gap -- so a
+        # deposit the pass explicitly declined to conclude about was being
+        # filed with no press.
+        gap = review.search_gap_for(inflow.line)
+        if gap is not None:
+            withheld.append(WithheldLine(
+                line=inflow.line,
+                reason=(
+                    f"Your rule says this is income, and this pass did not "
+                    f"finish looking for a row you already hold that could be "
+                    f"the same money: {gap}.  It is left for you to check."
+                ),
             ))
             continue
         held = review.income_already_recorded_in(inflow.line)

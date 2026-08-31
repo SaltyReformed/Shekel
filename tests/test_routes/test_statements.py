@@ -341,7 +341,7 @@ class TestTheImportPost:
         assert response.status_code == 200
         toasts = _flash_toasts(response.get_data(as_text=True))
         assert any(
-            "filed 1 of them as purchases worth -25.00" in message
+            "filed 1 as purchases, -25.00 in total" in message
             for _, message in toasts
         ), toasts
         assert db.session.query(TransactionEntry).filter(
