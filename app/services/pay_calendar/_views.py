@@ -65,6 +65,7 @@ from ._window import PeriodWindow
 
 def projected_paychecks(
     periods: "tuple[DerivedPeriod, ...]", cadence_days: "int | None",
+    from_day: "date | None" = None,
 ) -> "Iterator[DerivedPeriod]":
     """Yield the paychecks that follow the SAVED schedule, at the owner's cadence.
 
@@ -92,23 +93,52 @@ def projected_paychecks(
     comment names this projection as the ``OverflowError`` it was introduced
     for.
 
+    **A caller that wants a LATER part of the sequence says so rather than
+    walking to it**, which is *from_day*, and an adversarial review of plan
+    step **balance:X-bh-1** measured what its absence cost (2026-08-30).  That step asks
+    this sequence a MONTH-sized question -- how many paydays does this month
+    hold -- and answered it by stepping from the horizon, so the cost grew with
+    the distance to the month rather than with the size of the answer:
+    ``/analytics/calendar/2100?view=year`` took **32 ms** of pure stepping at a
+    fourteen-day cadence and **442 ms** at the one-day cadence
+    ``budget.pay_schedule`` admits, for twelve month cards holding 26 and 365
+    paydays.  :func:`~._derive.project_period_after` already computes any
+    period ARITHMETICALLY, so the jump costs one division and the walk that
+    follows is as long as the answer: **0.1 ms and 0.6 ms** for the same two
+    renders, and 2029 now costs what 2100 costs, where before the two differed
+    by the seventy years between them.
+
     Args:
         periods: The owner's SAVED periods, ``start_date`` ascending.  Only the
             last one is read; an EMPTY tuple yields nothing, which is also the
             only state in which *cadence_days* may be ``None``
             (:func:`~._derive.derive_periods` enforces that pairing).
         cadence_days: Days between paydays.
+        from_day: Skip to the paycheck COVERING this day before yielding, when
+            it falls past the schedule's horizon.  ``None`` (the default)
+            starts at the first projected paycheck, which is what a caller
+            walking the whole continuation wants.  The paycheck covering
+            *from_day* is yielded even when it OPENED before it, so a caller
+            wanting only paydays at or after *from_day* filters -- the same
+            offset :meth:`~._calendar.PayCalendar.current_and_future` admits,
+            and the reason this cannot silently drop a period a span search
+            needs.
 
     Yields:
         :class:`~._derive.DerivedPeriod` values, ``start_date`` ascending,
-        beginning with the paycheck after the last saved one.  Each carries
-        ``period_id = None`` and a ``period_index`` continuing the saved
-        sequence, so the two halves tile and a phase test spans the seam.
+        beginning with the paycheck after the last saved one (or the one
+        covering *from_day*).  Each carries ``period_id = None`` and a
+        ``period_index`` continuing the saved sequence, so the two halves tile
+        and a phase test spans the seam.
     """
     horizon = final_covered_day(periods)
     if horizon is None:
         return
     opens_at = horizon + timedelta(days=1)
+    if from_day is not None and from_day > opens_at:
+        opens_at = project_period_after(
+            periods, cadence_days, from_day,
+        ).start_date
     while opens_at <= CALENDAR_DATE_MAX:
         period = project_period_after(periods, cadence_days, opens_at)
         yield period

@@ -1,4 +1,4 @@
-"""The paycheck engine's owner-level input: a salary profile and its cadence.
+"""The paycheck engine's owner-level input: a salary profile and its calendar.
 
 Plan step **R-F16** (``docs/plans/implementation_plan_recurrence_redesign.md``,
 "Carried steps").  Its own module rather than a type inside
@@ -16,13 +16,31 @@ loosely on purpose (see the class).
 from dataclasses import dataclass
 from decimal import Decimal
 
-from app.services.pay_calendar import PayCadence
+from app.services.pay_calendar import PayCalendar
 from app.utils.money import round_money
 
 
 @dataclass(frozen=True)
 class PayrollBasis:
-    """One owner's salary contract bound to the rhythm their paychecks arrive on.
+    """One owner's salary contract bound to the calendar their paychecks arrive on.
+
+    **It carries the whole :class:`~app.services.pay_calendar.PayCalendar`
+    since plan step balance:X-bh-1, and that is the same fix applied a second
+    time.**  It held a bare
+    :class:`~app.services.pay_calendar.PayCadence` until then, while the engine
+    took the owner's period SET as a separate argument -- so the paycheck count
+    and the paydays it counted arrived by two routes with nothing holding them
+    to one owner or one read.  Four of the engine's judgements read that
+    argument (third-paycheck detection, the first-paycheck-of-month deduction
+    cadence, the FICA wage-base cumulative and a deduction's annual cap), its
+    type was ``Sequence[DerivedPeriod]``, and every window, year slice and
+    one-period sample satisfied that type: passing one cost a stored salary row
+    **$502.45** (ledger row **D25**).  A calendar is constructible only from a
+    COMPLETE payday set, so the narrow context is now unrepresentable rather
+    than forbidden by a docstring, and the cadence comes off the same
+    derivation as the paydays.  That is finding **N-390**'s first half; the
+    second is what the calendar can answer BELOW its opening payday, which is
+    plan step **balance:X-bh-2**.
 
     **The pair, as one value, is plan step R-F16's fix for finding F-16.**  The
     engine needs two facts to price a paycheck -- what the job pays a year, and
@@ -53,26 +71,56 @@ class PayrollBasis:
             because this module must not import a model (the engine below it is
             pure).  The test suite prices duck-typed profiles through the same
             door for that reason.
-        cadence: How often this owner is paid
-            (:class:`~app.services.pay_calendar.PayCadence`), derived from
-            ``budget.pay_schedule.cadence_days``.
+        calendar: The owner's whole
+            :class:`~app.services.pay_calendar.PayCalendar` -- the payday set
+            every calendar question the engine asks is answered from, and the
+            cadence :attr:`periods_per_year` divides by.  ONE value because
+            they are one fact: the cadence is a field of the calendar, so a
+            paycheck cannot be priced at one rhythm and placed in a month
+            counted at another.
     """
 
     profile: object
-    cadence: PayCadence
+    calendar: PayCalendar
 
     @property
     def periods_per_year(self) -> Decimal:
         """Return how many paychecks this owner receives in a year.
 
         Forwarded rather than re-derived so the engine's arithmetic reads as
-        one name instead of a two-hop attribute chain, and so there is a single
-        place to look when asking where its denominator comes from.
+        one name instead of a three-hop attribute chain, and so there is a
+        single place to look when asking where its denominator comes from.
+
+        **Resolved on READ rather than at construction**, which is what lets an
+        owner with no pay cadence reach a producer that never prices a
+        paycheck.  :attr:`~app.services.pay_calendar.PayCalendar.cadence`
+        REFUSES such an owner -- there is no honest default for how often
+        somebody is paid -- and before plan step **balance:X-bh-1**
+        ``tax_report_service.compute_tax_report`` resolved the cadence
+        conditionally so the Taxes tab would not 500 for an owner whose report
+        is all zeros anyway.  A calendar can always be built, so that guard is
+        unnecessary rather than remembered.
+
+        **ONE such guard went and TWO stay, which an adversarial review of this
+        step corrected**: ``balance_at/_inputs.py`` and
+        ``investment_dashboard_service/_context.py`` keep their
+        ``cadence_days is not None`` tests because what they feed is
+        ``investment_projection.adapt_deductions``, which takes a raw
+        :class:`~app.services.pay_calendar.PayCadence` and not a basis -- so
+        nothing there is resolved lazily, and the refusal would reach the grid,
+        ``/savings`` and ``/investments`` on the seam for the one production
+        owner ``_inputs.py`` records it firing for.
 
         Returns:
             The paycheck count as an integral ``Decimal``.
+
+        Raises:
+            PayCalendarError: This owner has no resolvable pay cadence, which
+                :attr:`~app.services.pay_calendar.PayCalendar.cadence_days`
+                documents as possible ONLY for a calendar holding no payday --
+                an owner with no paycheck to price.
         """
-        return self.cadence.periods_per_year
+        return self.calendar.cadence.periods_per_year
 
 
 def gross_per_paycheck(

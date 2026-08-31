@@ -305,7 +305,7 @@ def cockpit():
     focused_period = _select_period(calendar, current_period)
     configs_by_year = load_tax_configs_for_periods(current_user.id, profile, periods)
     breakdowns = paycheck_calculator.project_salary(
-        PayrollBasis(profile, calendar.cadence), periods,
+        PayrollBasis(profile, calendar), periods,
         configs_by_year=configs_by_year, calibration=profile.calibration,
     )
     pairs = list(zip(periods, breakdowns))
@@ -359,7 +359,7 @@ def anatomy(profile_id, period_id):
         current_user.id, profile, period.start_date.year,
     )
     breakdown = paycheck_calculator.calculate_paycheck(
-        PayrollBasis(profile, calendar.cadence), period, periods, tax_configs,
+        PayrollBasis(profile, calendar), period, tax_configs,
         calibration=profile.calibration,
     )
     context = _anatomy_context(
