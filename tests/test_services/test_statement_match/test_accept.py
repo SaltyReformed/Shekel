@@ -491,7 +491,13 @@ class TestARowThatMOVEDSinceTheReviewIsRefused:
             status=StatusEnum.DONE, settled_on=line.posted_on,
         )
 
-        accepted = _submit(seed_user, lines=[line], transactions=[txn])
+        # Stating 0.03 is what -178.29 bank against a -178.32 row comes to, and every
+        # match carries the difference it was reviewed against since
+        # plan step bank_import:X-gj-1b -- the near tier's own card
+        # renders it as a hidden field (the stated_difference filter).
+        accepted = _submit(
+            seed_user, lines=[line], transactions=[txn], residual="0.03",
+        )
 
         assert accepted.repriced_count == 1
         assert txn.settled_amount == Decimal("178.29")
@@ -2016,7 +2022,13 @@ class TestAOneToOneMatchTakesTheBanksFigure:
             seed_user, statement, bank_day, bank_day + timedelta(days=4),
         )
 
-        accepted = _submit(seed_user, lines=[line], transactions=[txn])
+        # Stating 0.03 is what -178.29 bank against a -178.32 row comes to, and every
+        # match carries the difference it was reviewed against since
+        # plan step bank_import:X-gj-1b -- the near tier's own card
+        # renders it as a hidden field (the stated_difference filter).
+        accepted = _submit(
+            seed_user, lines=[line], transactions=[txn], residual="0.03",
+        )
 
         assert accepted.match_id is not None, "the match must be RECORDED"
         assert txn.settled_amount == Decimal("178.29"), (
@@ -2037,7 +2049,13 @@ class TestAOneToOneMatchTakesTheBanksFigure:
             seed_user, statement, bank_day, bank_day + timedelta(days=4),
         )
 
-        _submit(seed_user, lines=[line], transactions=[txn])
+        # Stating 0.03 is what -178.29 bank against a -178.32 row comes to, and every
+        # match carries the difference it was reviewed against since
+        # plan step bank_import:X-gj-1b -- the near tier's own card
+        # renders it as a hidden field (the stated_difference filter).
+        _submit(
+            seed_user, lines=[line], transactions=[txn], residual="0.03",
+        )
 
         assert txn.settled_basis_id == ref_cache.settlement_basis_id(
             SettlementBasisEnum.CORRECTED,
@@ -2089,7 +2107,13 @@ class TestAOneToOneMatchTakesTheBanksFigure:
         txn, line = self._geico(
             seed_user, statement, bank_day, bank_day + timedelta(days=4),
         )
-        _submit(seed_user, lines=[line], transactions=[txn])
+        # Stating 0.03 is what -178.29 bank against a -178.32 row comes to, and every
+        # match carries the difference it was reviewed against since
+        # plan step bank_import:X-gj-1b -- the near tier's own card
+        # renders it as a hidden field (the stated_difference filter).
+        _submit(
+            seed_user, lines=[line], transactions=[txn], residual="0.03",
+        )
         db.session.flush()
 
         posted = _posted_cash_by_day(db, txn, seed_user["account"])
@@ -2126,7 +2150,13 @@ class TestAOneToOneMatchTakesTheBanksFigure:
             seed_user, statement, amount="-149.00", posted_on=bank_day,
         )
 
-        _submit(seed_user, lines=[line], transactions=[txn])
+        # Stating 1.00 is what -149.00 bank against a -150.00 cash leg comes to, and every
+        # match carries the difference it was reviewed against since
+        # plan step bank_import:X-gj-1b -- the near tier's own card
+        # renders it as a hidden field (the stated_difference filter).
+        _submit(
+            seed_user, lines=[line], transactions=[txn], residual="1.00",
+        )
 
         assert txn.settled_amount == Decimal("179.00"), (
             "the GROSS moves by the difference; the card purchase is still "
@@ -2259,7 +2289,13 @@ class TestASettledPurchaseTakesTheBanksFigure:
             seed_user, statement, amount="-121.16", posted_on=day,
         )
 
-        _submit(seed_user, lines=[line], entries=[purchase])
+        # Stating -0.04 is what -121.16 bank against a -121.12 purchase comes to, and every
+        # match carries the difference it was reviewed against since
+        # plan step bank_import:X-gj-1b -- the near tier's own card
+        # renders it as a hidden field (the stated_difference filter).
+        _submit(
+            seed_user, lines=[line], entries=[purchase], residual="-0.04",
+        )
 
         assert purchase.amount == Decimal("121.16"), (
             "the purchase must take the figure the BANK showed"

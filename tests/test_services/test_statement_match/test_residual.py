@@ -749,16 +749,18 @@ class TestTheFigureTheOwnerAcceptedIsReconciled:
         assert "reviewed against a difference of +0.05" in str(caught.value)
         assert not _minted(seed_user)
 
-    def test_a_difference_accepted_where_there_is_NONE_is_refused(
+    def test_a_difference_stated_where_there_is_NONE_is_refused(
         self, app, db, seed_user,
     ):
-        """The sides agree, so a screen offering to record one described an
-        act this door will not perform.
+        """A screen that said `+0.05` over rows that now add up exactly.
 
         **Its own arm, because equality does NOT catch it**: the door's
-        difference is ``0.00``, and a submitted ``0.00`` is equal to it.  Two
-        independent reviews measured a first version's docstring claiming
-        otherwise on the same day.
+        difference is ``0.00``, so the comparison below would read a submitted
+        ``0.05`` as merely unequal and send the owner a sentence about a figure
+        that "now comes to +0.00", which is not what happened.  What happened
+        is that the rows moved under a page stating a correction, so *reload*
+        is the remedy.  Two independent reviews measured a first version's
+        docstring claiming the equality caught this at all.
         """
         line, salary, allowance = _payroll(seed_user, bank="2573.38")
 
@@ -768,30 +770,61 @@ class TestTheFigureTheOwnerAcceptedIsReconciled:
                 residual="0.05",
             )
 
-        assert "no difference of +0.05 to record" in str(caught.value)
+        assert "reviewed against a difference of +0.05" in str(caught.value)
+        assert "now adds up exactly" in str(caught.value)
         assert not _minted(seed_user)
         assert salary.settled_on is None
 
-    def test_a_ZERO_difference_accepted_on_an_agreeing_group_is_refused(
+    def test_a_ZERO_difference_stated_on_an_agreeing_group_is_RECORDED(
         self, app, db, seed_user,
     ):
-        """The case the equality arm reads as agreement.
+        """``0.00`` is an ordinary value of the field, not a contradiction.
 
-        Nothing would be minted either way (the mint is gated on a non-zero
-        difference), so the mutation that deletes this arm is invisible to
-        every test that submits a non-zero figure -- which is how a sweep found
-        it surviving.
+        **This case INVERTED at plan step ``bank_import:X-gj-1b``** (developer,
+        2026-08-30).  It was refused until then, on the reading that consenting
+        to a difference where there is none describes an act the door will not
+        perform.  Deleting the consent gate's exempt shape made the field the
+        thing that says *this is the figure I was shown*, and a match whose
+        sides agree was shown a difference of nothing -- so an agreeing group
+        states ``0.00`` and this door records it.  Every exact match the
+        Reconcile page and the review queue submit is this shape.
         """
         line, salary, allowance = _payroll(seed_user, bank="2573.38")
 
-        with pytest.raises(ValidationError) as caught:
-            _submit(
-                seed_user, lines=[line], transactions=[salary, allowance],
-                residual="0.00",
-            )
+        accepted = _submit(
+            seed_user, lines=[line], transactions=[salary, allowance],
+            residual="0.00",
+        )
 
-        assert "no difference of +0.00 to record" in str(caught.value)
-        assert salary.settled_on is None
+        assert accepted.residual is None
+        assert accepted.settled_count == 2
+        # Nothing is written FROM a difference of nothing, which is why the
+        # gate has nothing to ask about here.
+        assert not _minted(seed_user)
+        assert accepted.repriced_count == 0
+
+    def test_an_agreeing_group_that_states_NOTHING_is_still_recorded(
+        self, app, db, seed_user,
+    ):
+        """Scripting off: the panel never re-renders, so it states no figure.
+
+        The gate turns on what THIS DOOR derives, not on what the submission
+        looks like, and a zero difference writes nothing at all -- so
+        requiring a figure here would have refused every exact match built with
+        scripting off, removing a real capability to gate a write that does not
+        happen.  The companion of the case above, and the reason the rule is
+        *a difference this door would WRITE must have been reviewed* rather
+        than *every match must carry a figure*.
+        """
+        line, salary, allowance = _payroll(seed_user, bank="2573.38")
+
+        accepted = _submit(
+            seed_user, lines=[line], transactions=[salary, allowance],
+        )
+
+        assert accepted.residual is None
+        assert accepted.settled_count == 2
+        assert not _minted(seed_user)
 
     def test_ONE_row_takes_the_banks_figure_and_mints_NOTHING(
         self, app, db, seed_user,
@@ -833,6 +866,65 @@ class TestTheFigureTheOwnerAcceptedIsReconciled:
 
         assert "+0.05" in str(caught.value)
         assert not _minted(seed_user)
+
+
+class TestUntickingAProposedRowCannotRepriceTheSurvivor:
+    """The defect the developer's 2026-08-30 ruling deletes the shape for.
+
+    A tier proposes one deposit against two of the owner's rows and the
+    Reconcile card renders them ticked.  Untick one and what reaches this door
+    is ONE line against ONE row -- byte-identical to the near tier's own
+    offer -- so the exempt shape was manufacturable by a checkbox, and the
+    survivor took the whole deposit with nothing asked.
+
+    **Reproduced on a clone of the developer's production data before it was
+    fixed** (2026-08-30, 137 proposals on his checking account): three carried
+    more than one row, and the worst wrote `$2,572.36` -- his bank's
+    `$2,611.90` payroll deposit onto a `$39.54` ``Phone Allowance`` row.  The
+    exemption it travelled through existed for two proposals worth `-$0.15`
+    and `-$0.04`.
+    """
+
+    def test_the_survivor_is_NOT_repriced_when_a_row_is_unticked(
+        self, app, db, seed_user,
+    ):
+        """The money case.  Submitting one row of a proposed two is refused.
+
+        Both halves are asserted: the refusal, and that the survivor's figure
+        did not move.  A refusal alone would pass against a door that raised
+        AFTER repricing, which is the ordering
+        ``_accept.record_match`` states its whole gate sequence to keep.
+        """
+        line, salary, allowance = _payroll(seed_user, bank="2573.43")
+
+        with pytest.raises(ValidationError) as caught:
+            _submit(seed_user, lines=[line], transactions=[salary])
+
+        # The gap the survivor would have absorbed: 2573.43 - 2473.38.
+        assert "+100.05" in str(caught.value)
+        assert salary.settled_amount is None
+        assert salary.settled_on is None
+        assert allowance.settled_on is None
+        assert not _minted(seed_user)
+
+    def test_it_IS_recorded_once_the_owner_states_the_new_figure(
+        self, app, db, seed_user,
+    ):
+        """Deliberately taking one row of a proposal is still allowed.
+
+        The ruling removes a shape from the ALLOWLIST, not an act from the
+        owner: the Reconcile panel re-prices as rows are unticked and offers
+        the new difference to agree to.  What is gone is doing it silently.
+        """
+        line, salary, allowance = _payroll(seed_user, bank="2573.43")
+
+        accepted = _submit(
+            seed_user, lines=[line], transactions=[salary], residual="100.05",
+        )
+
+        assert accepted.repriced_count == 1
+        assert salary.settled_amount == Decimal("2573.43")
+        assert allowance.settled_on is None
 
 
 class TestOneRowIsDeterminateHoweverManyLinesExplainIt:
@@ -895,13 +987,19 @@ class TestOneRowIsDeterminateHoweverManyLinesExplainIt:
         assert "-0.06" in str(caught.value)
         assert txn.settled_amount is None
 
-    def test_ONE_line_against_ONE_row_needs_no_accepted_figure(
+    def test_ONE_line_against_ONE_row_needs_THE_FIGURE_TOO(
         self, app, db, seed_user,
     ):
-        """The near tier's own shape: its tick carries no difference field.
+        """The shape that was exempt until 2026-08-30, and no longer is.
 
-        Requiring one here would kill the tier `X-f6d-1` shipped, so the
-        exemption is real -- and it is the ONLY one.
+        **This case INVERTED at plan step ``bank_import:X-gj-1b``.**  The
+        exemption existed because the near tier's tick carried no difference
+        field and its card stated the correction, so the SHAPE was read as a
+        proxy for *the screen already disclosed this*.  The proxy is what the
+        Reconcile page's tickable proposal rows learned to manufacture --
+        untick one row of a proposed group and this is exactly what arrives --
+        so the tier states its figure on the wire now
+        (the ``stated_difference`` filter) and no shape is exempt.
         """
         statement = an_import(seed_user)
         line = a_bank_line(
@@ -910,7 +1008,30 @@ class TestOneRowIsDeterminateHoweverManyLinesExplainIt:
         )
         txn = a_transaction(seed_user, amount="178.32")
 
-        accepted = _submit(seed_user, lines=[line], transactions=[txn])
+        with pytest.raises(ValidationError) as caught:
+            _submit(seed_user, lines=[line], transactions=[txn])
+
+        assert "+0.03" in str(caught.value)
+        assert txn.settled_amount is None
+
+    def test_ONE_line_against_ONE_row_records_when_it_STATES_the_figure(
+        self, app, db, seed_user,
+    ):
+        """The near tier's own act, still one press once the figure travels.
+
+        The half that proves the inversion above cost the tier nothing: what
+        changed is that the correction is on the wire, not that it is refused.
+        """
+        statement = an_import(seed_user)
+        line = a_bank_line(
+            seed_user, statement, amount="-178.29",
+            posted_on=seed_user["bootstrap_period"].start_date,
+        )
+        txn = a_transaction(seed_user, amount="178.32")
+
+        accepted = _submit(
+            seed_user, lines=[line], transactions=[txn], residual="0.03",
+        )
 
         assert accepted.repriced_count == 1
         assert txn.settled_amount == Decimal("178.29")

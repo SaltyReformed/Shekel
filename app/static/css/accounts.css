@@ -756,3 +756,466 @@ a.acct-cell__link:focus-visible {
   z-index: 1;
   background: var(--bs-body-bg);
 }
+
+/* ── The Reconcile page (bank_import:X-gj-1b) ───────────────────────────
+   One page on four verbs, locked at Loop A round 4 on 2026-08-29.  Every
+   colour here is a token, so both themes are one set of variable values and
+   nothing is hardcoded; amber appears only where money is at risk (the design
+   language's D11), which on this screen is exactly one signal -- a deposit
+   whose pay period already holds income no line explains.
+
+   THE FOUR VERB TABS ARE A RADIO GROUP, and the rules below are what make
+   them tabs.  That is not a styling preference: the checked member is
+   submitted as the verb the card was OK'd with, so the panel switches with no
+   JavaScript and the act is a fact on the wire rather than script state. */
+
+.rec-hero {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2rem;
+  padding: 0.75rem 0 0.25rem;
+}
+
+.rec-figure-wide { flex: 1 1 100%; }
+
+/* The provenance line, right of the four figures (the locked direction).
+   `margin-left: auto` is what pushes it to the far end of the hero row.  It
+   keeps working after the row wraps -- a lone item on its own flex line is
+   still pushed to that line's right end, which is why the narrow-viewport
+   rule below has to take the margin back rather than rely on the wrap. */
+.rec-provenance {
+  margin-left: auto;
+  align-self: flex-end;
+  margin-bottom: 0;
+  text-align: right;
+  color: var(--shekel-text-secondary);
+}
+
+.rec-caption {
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--shekel-text-muted);
+}
+
+.rec-number {
+  font-size: 1.5rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--shekel-number-ink);
+  line-height: 1.2;
+}
+
+.rec-number-absent {
+  font-size: 1.125rem;
+  color: var(--shekel-text-secondary);
+}
+
+.rec-off { color: var(--shekel-warning); }
+.rec-agreed { color: var(--shekel-done); }
+.rec-accent { color: var(--shekel-accent); }
+
+.rec-done {
+  color: var(--shekel-text-secondary);
+  margin-bottom: 0.75rem;
+}
+
+.rec-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.rec-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  padding: 0.15rem 0.6rem;
+  border: 1px solid var(--shekel-border-subtle);
+  border-radius: 999px;
+  font-size: 0.8125rem;
+  color: var(--shekel-text-secondary);
+  text-decoration: none;
+}
+
+a.rec-chip:hover { border-color: var(--shekel-accent); }
+.rec-chip-flat { cursor: default; }
+.rec-chip-count { color: var(--shekel-number-ink); font-weight: 500; }
+
+.rec-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--shekel-border-subtle);
+  margin-bottom: 0.75rem;
+}
+
+.rec-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.75rem;
+  border-bottom: 2px solid transparent;
+  color: var(--shekel-text-secondary);
+  text-decoration: none;
+  font-size: 0.875rem;
+}
+
+.rec-tab:hover { color: var(--shekel-text-primary); }
+
+.rec-tab-open {
+  color: var(--shekel-text-primary);
+  border-bottom-color: var(--shekel-accent);
+}
+
+.rec-tab-count {
+  font-size: 0.75rem;
+  color: var(--shekel-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.rec-legend-toggle,
+.rec-legend-close {
+  background: none;
+  border: none;
+  color: var(--shekel-text-muted);
+  padding: 0 0.4rem;
+}
+
+.rec-legend {
+  font-size: 0.8125rem;
+  color: var(--shekel-text-secondary);
+  margin-bottom: 0.75rem;
+}
+
+.rec-section-rule {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 1.25rem 0 0.5rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--shekel-border-subtle);
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--shekel-text-muted);
+}
+
+.rec-section-count { font-variant-numeric: tabular-nums; }
+
+/* ── One card per bank line ─────────────────────────────────────────── */
+
+.rec-card {
+  border: 1px solid var(--shekel-border-subtle);
+  border-radius: 6px;
+  margin-bottom: 8px;
+  background: var(--shekel-surface);
+}
+
+.rec-card:hover { border-color: var(--shekel-border-strong); }
+.rec-card.rec-current { border-color: var(--shekel-accent); }
+
+/* OK'd tints the card and takes the accent border.  `:has()` is what lets the
+   state live on the checkbox the door reads rather than on a class some
+   script has to keep in step with it. */
+.rec-card:has([data-rec-ok]:checked) {
+  border-color: var(--shekel-accent);
+  background: color-mix(in srgb, var(--shekel-accent) 5%, var(--shekel-surface));
+}
+
+.rec-summary {
+  display: grid;
+  /* THE AMOUNT COLUMN IS A FIXED TRACK, so figures line up down the list --
+     the locked direction's own words ("right-aligned so amounts line up
+     across cards").  It was `auto`, which sizes to each card's OWN content,
+     so every amount sat at a different x and the column could not be scanned:
+     a reader looking for the big number had to read each one.  Fixed at
+     7.5rem, which holds -$999,999.99 in the mono face; the merchant column
+     takes the loss because it is prose and is already truncated. */
+  grid-template-columns: minmax(0, 1fr) 7.5rem minmax(0, 1.4fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.rec-summary::-webkit-details-marker { display: none; }
+
+.rec-merchant {
+  color: var(--shekel-text-primary);
+  font-weight: 500;
+}
+
+.rec-day {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--shekel-text-muted);
+  margin-left: 0.35rem;
+}
+
+.rec-raw {
+  font-size: 0.75rem;
+  color: var(--shekel-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rec-amount {
+  text-align: right;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--shekel-number-ink);
+}
+
+.rec-out { color: var(--shekel-danger); }
+
+.rec-sentence { color: var(--shekel-text-secondary); }
+.rec-ink-verb { font-weight: 600; color: var(--shekel-text-primary); }
+.rec-ink-choose { font-weight: 600; color: var(--shekel-accent); }
+.rec-ink-strong { font-weight: 500; color: var(--shekel-text-primary); }
+.rec-ink-plain { color: var(--shekel-text-secondary); }
+.rec-ink-muted { color: var(--shekel-text-muted); }
+
+/* AMBER ONLY WHERE MONEY IS AT RISK (the design language's D11).  A withheld
+   rule, a declined tier and a parked payment are never amber.
+
+   THREE THINGS ON THIS SCREEN ARE, and this comment claimed ONE until plan
+   step bank_import:X-gj-1b -- a count nobody could check against the markup
+   beside it, which is the class this arc has now measured wrong several
+   times:
+     1. a deposit whose own pay period already holds income no line explains,
+        which is how a paycheck gets counted twice.  It renders TWICE for one
+        signal -- `.rec-risk-glyph` on the card and `.rec-risk` in the panel --
+        which is one fact disclosed at two grains, not two signals;
+     2. the hero's OFF BY when it is non-zero (`.rec-off`), which is the whole
+        screen's own question and is money by definition;
+     3. a door's refusal, in Bootstrap's own `alert-warning` rather than in
+        these tokens -- the match pane's and the offer's.  Named here because
+        a reader auditing "what is amber" reads THIS comment, and a signal
+        that borrows another stylesheet's amber is still amber to them. */
+.rec-risk-glyph { color: var(--shekel-warning); }
+
+.rec-risk {
+  border-color: var(--shekel-warning);
+  color: var(--shekel-warning);
+  background: color-mix(in srgb, var(--shekel-warning) 12%, transparent);
+}
+
+.rec-caret {
+  color: var(--shekel-text-muted);
+  font-size: 0.75rem;
+}
+
+.rec-card[open] .rec-caret { transform: rotate(180deg); display: inline-block; }
+
+/* The pressed OK is money green, because it consents to a money act. */
+.rec-ok-btn { white-space: nowrap; }
+
+.btn-check:checked + .rec-ok-btn {
+  color: var(--shekel-done);
+  border-color: var(--shekel-done);
+  background: color-mix(in srgb, var(--shekel-done) 12%, transparent);
+}
+
+.btn-check:checked + .rec-ok-btn::before { content: "\2713\00a0"; }
+
+/* ── The opened card ────────────────────────────────────────────────── */
+
+.rec-panel {
+  border-top: 1px solid var(--shekel-border-subtle);
+  background: var(--shekel-surface-raised);
+  padding: 0.75rem;
+  border-radius: 0 0 5px 5px;
+}
+
+.rec-verb {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+}
+
+.rec-verb-strip {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--shekel-border-subtle);
+  margin-bottom: 0.75rem;
+}
+
+.rec-verb-tab {
+  padding: 0.3rem 0.7rem;
+  border-bottom: 2px solid transparent;
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  color: var(--shekel-text-muted);
+  cursor: pointer;
+}
+
+.rec-verb-shut { color: var(--shekel-text-muted); opacity: 0.65; }
+
+.rec-pane { display: none; }
+
+/* The four pairs.  Written out rather than generated, because a verb whose
+   pane nothing shows is a blank panel and there is no fifth. */
+.rec-verb:nth-of-type(1):checked ~ .rec-panes .rec-pane:nth-child(1),
+.rec-verb:nth-of-type(2):checked ~ .rec-panes .rec-pane:nth-child(2),
+.rec-verb:nth-of-type(3):checked ~ .rec-panes .rec-pane:nth-child(3),
+.rec-verb:nth-of-type(4):checked ~ .rec-panes .rec-pane:nth-child(4) {
+  display: block;
+}
+
+.rec-verb:nth-of-type(1):checked ~ .rec-verb-strip .rec-verb-tab:nth-child(1),
+.rec-verb:nth-of-type(2):checked ~ .rec-verb-strip .rec-verb-tab:nth-child(2),
+.rec-verb:nth-of-type(3):checked ~ .rec-verb-strip .rec-verb-tab:nth-child(3),
+.rec-verb:nth-of-type(4):checked ~ .rec-verb-strip .rec-verb-tab:nth-child(4) {
+  color: var(--shekel-text-primary);
+  border-bottom-color: var(--shekel-accent);
+  opacity: 1;
+}
+
+.rec-verb:focus-visible ~ .rec-verb-strip .rec-verb-tab {
+  outline: 2px solid var(--shekel-accent);
+  outline-offset: 2px;
+}
+
+.rec-waits { color: var(--shekel-text-secondary); }
+
+.rec-rows {
+  max-height: 15rem;
+  overflow-y: auto;
+  border: 1px solid var(--shekel-border-subtle);
+  border-radius: 4px;
+}
+
+.rec-rows-proposed { margin-bottom: 0.5rem; }
+
+.rec-row-pick {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.8125rem;
+}
+
+.rec-row-pick + .rec-row-pick { border-top: 1px solid var(--shekel-border-subtle); }
+.rec-row-pick:hover { background: var(--shekel-row-hover); }
+.rec-row-label { margin: 0; cursor: pointer; }
+.rec-row-name { color: var(--shekel-text-primary); }
+.rec-row-day { color: var(--shekel-text-muted); margin-left: 0.35rem; font-size: 0.75rem; }
+
+.rec-row-figure {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--shekel-number-ink);
+}
+
+.rec-sums {
+  margin-top: 0.5rem;
+  color: var(--shekel-text-secondary);
+}
+
+
+.rec-notes {
+  margin-top: 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--shekel-border-subtle);
+  color: var(--shekel-text-secondary);
+}
+
+/* The PANEL's own footer: what this writes, Close, and one button named by
+   the verb.  ONE band per opened card, replacing the one-per-open-pane band
+   that emitted the same control twice on 102 of the developer's 239 cards.
+   Where the whole band is scripted-only -- a card with no act at all -- the
+   server renders it `hidden`, and Bootstrap's `[hidden]{display:none!important}`
+   outranks this rule, so the display here cannot un-hide it. */
+.rec-panel-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--shekel-border-subtle);
+}
+
+.rec-panel-acts {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+/* THE PRIMARY BUTTON FOLLOWS THE CHECKED TAB, keyed by the verb's own value
+   and not by position.  The panes above pair by `nth-child` because all four
+   are always rendered; only OPEN verbs get a button here, so their positions
+   depend on the line and a positional pairing would reveal the wrong one.
+   Written out rather than generated, for the reason the pane switcher gives:
+   there is no fifth verb. */
+.rec-cta { display: none; }
+
+.rec-verb[value="match"]:checked ~ .rec-panel-foot .rec-cta[data-verb="match"],
+.rec-verb[value="add"]:checked ~ .rec-panel-foot .rec-cta[data-verb="add"],
+.rec-verb[value="transfer"]:checked ~ .rec-panel-foot .rec-cta[data-verb="transfer"],
+.rec-verb[value="skip"]:checked ~ .rec-panel-foot .rec-cta[data-verb="skip"] {
+  display: inline-flex;
+}
+
+.rec-empty {
+  text-align: center;
+  padding: 2.5rem 1rem;
+  color: var(--shekel-text-muted);
+}
+
+/* ── The sticky footer band ─────────────────────────────────────────── */
+
+.rec-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  padding: 0.6rem 0.75rem;
+  border-top: 1px solid var(--shekel-border-strong);
+  background: var(--shekel-summary-bg);
+}
+
+.rec-sweeps { display: flex; flex-wrap: wrap; gap: 1rem; }
+
+.rec-footer-end {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-left: auto;
+}
+
+.rec-keys { font-size: 0.75rem; color: var(--shekel-text-muted); }
+
+/* ── Under 900px the card drops to two rows ─────────────────────────── */
+
+@media (max-width: 900px) {
+  .rec-summary {
+    /* `auto` here and a fixed track on the wide layout, deliberately: the
+       direction's "amounts line up across cards" is about the scannable list,
+       and 7.5rem of a phone's ~20rem would take 37% of the row from the
+       merchant name.  The cards stack rather than tabulate at this width, so
+       there is no column to scan down. */
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 0.4rem;
+  }
+
+  .rec-sentence { grid-column: 1 / -1; }
+  .rec-ok { grid-column: 1 / -1; justify-self: end; }
+  .rec-hero { gap: 1.25rem; }
+  .rec-provenance { margin-left: 0; text-align: left; }
+  .rec-number { font-size: 1.25rem; }
+  .rec-panel { padding: 0.6rem 0.5rem; }
+}

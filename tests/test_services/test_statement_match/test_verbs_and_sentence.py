@@ -27,6 +27,11 @@ from app.services.statement_match._cards import (
     LineCard,
     Section,
 )
+from app.services.statement_match._panel import (
+    AddAct,
+    AddTab,
+    VerbPanel,
+)
 from app.services.statement_match._creations import (
     NewEnvelope,
     PurchaseDestination,
@@ -337,9 +342,11 @@ class TestTheOKControlFollowsTheDOORAndNotTheSentence:
         """
         return LineCard(
             line=_a_line(), section=Section.NOTHING, suggested=suggested,
-            sentence=choose(), offers=offers, notes=(),
-            income_already_held=None, risk_class=None, destinations=(),
-            placement=None, proposal=None, answer_door=None,
+            sentence=choose(), income_already_held=None, risk_class=None,
+            panel=VerbPanel(
+                offers=offers, notes=(), answer_door=None, add=None,
+                proposal=None,
+            ),
         )
 
     def test_a_card_whose_verb_has_NO_door_offers_no_OK(self):
@@ -390,11 +397,17 @@ class TestNoSweptCardCarriesASentenceOrMoneyAtRisk:
         """
         return LineCard(
             line=_a_line(), section=Section.BY_RULE, suggested=Verb.ADD,
-            sentence=choose(),
-            offers=offers_for(add_waits=None, has_rows_to_match=True),
-            notes=notes, income_already_held=income_already_held,
-            risk_class=risk, destinations=(_a_destination(),),
-            placement=None, proposal=None, answer_door=None,
+            sentence=choose(), income_already_held=income_already_held,
+            risk_class=risk,
+            panel=VerbPanel(
+                offers=offers_for(add_waits=None, has_rows_to_match=True),
+                notes=notes, answer_door=None,
+                add=AddTab(
+                    act=AddAct.PURCHASE,
+                    destinations=(_a_destination(),), placement=None,
+                ),
+                proposal=None,
+            ),
         )
 
     def test_a_clean_card_is_swept_by_its_own_risk_class(self):
@@ -415,9 +428,14 @@ class TestNoSweptCardCarriesASentenceOrMoneyAtRisk:
         """Nothing can be swept into a door that does not exist."""
         card = LineCard(
             line=_a_line(), section=None, suggested=Verb.TRANSFER,
-            sentence=choose(),
-            offers=offers_for(add_waits="barred", has_rows_to_match=True),
-            notes=(), income_already_held=None, risk_class="into_open",
-            destinations=(), placement=None, proposal=None, answer_door=None,
+            sentence=choose(), income_already_held=None,
+            risk_class="into_open",
+            panel=VerbPanel(
+                offers=offers_for(
+                    add_waits="barred", has_rows_to_match=True,
+                ),
+                notes=(), answer_door=None, add=None,
+                proposal=None,
+            ),
         )
         assert card.sweep_class is None

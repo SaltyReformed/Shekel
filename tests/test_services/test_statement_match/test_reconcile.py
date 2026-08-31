@@ -152,8 +152,8 @@ class TestALineWithNoAvailableActNeverEntersTheInbox:
 
         card = _cards(_page(seed_user, Tab.TRANSFERS))[0]
 
-        assert card.notes
-        assert any("Capital One" in note for note in card.notes)
+        assert card.panel.notes
+        assert any("Capital One" in note for note in card.panel.notes)
 
 
 class TestAStandingNeverAnswerIsAlreadyASkip:
@@ -254,7 +254,7 @@ class TestAnUnmatchedInflowIsNeverPreFilled:
 
         card = _cards(_page(seed_user, Tab.TO_EXPLAIN))[0]
 
-        assert card.offer_for(Verb.ADD).is_open
+        assert card.panel.offer_for(Verb.ADD).is_open
 
 
 class TestTheTabsPartitionWhatTheAccountHolds:
@@ -525,7 +525,7 @@ class TestADoorThatWouldRefuseIsNeverOFFERED:
         cards = _cards(_page(seed_user, Tab.TO_EXPLAIN))
 
         assert len(cards) == 1
-        offer = cards[0].offer_for(Verb.ADD)
+        offer = cards[0].panel.offer_for(Verb.ADD)
         assert offer.is_open is False
         assert "No pay period covers" in offer.waiting_for
 
@@ -540,7 +540,7 @@ class TestADoorThatWouldRefuseIsNeverOFFERED:
         self._a_swipe_made_before_the_calendar_opens(seed_user, db)
         card = _cards(_page(seed_user, Tab.TO_EXPLAIN))[0]
 
-        withheld = card.offer_for(Verb.ADD).waiting_for
+        withheld = card.panel.offer_for(Verb.ADD).waiting_for
         door = no_period_refusal(card.line.happened_on, "this purchase")
 
         assert withheld == door
@@ -612,11 +612,11 @@ class TestOnlyTheInboxSweeps:
         page = _page(seed_user, Tab.TO_EXPLAIN)
         cards = _cards(page)
         swept = [card for card in cards if card.sweep_class is not None]
-        withheld = [card for card in cards if card.notes]
+        withheld = [card for card in cards if card.panel.notes]
 
         assert swept, "a swept card must exist or this grades nothing"
         assert withheld, "a withheld card must exist or this grades nothing"
-        assert [card for card in swept if card.notes] == []
+        assert [card for card in swept if card.panel.notes] == []
 
     def test_the_sweep_COUNT_is_what_the_control_would_reach(
         self, app, db, seed_user,

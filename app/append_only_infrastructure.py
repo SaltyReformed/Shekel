@@ -47,7 +47,9 @@ RIGHT behaviour: rewriting a stored assertion is precisely the act ruling
 the app's own DOORS and never by a migration writing money rows").
 
 **THREE ARMS, THREE TIMINGS, because they answer three different questions**
-(plan step X-f3c-2d, ruling **R-IC**).  X-f3c-2c shipped one ``BEFORE UPDATE OR
+(plan step X-f3c-2d, ruling **balance:R-IC**; the arc is named because
+``bank_import:R-IC`` was minted the same day and a bare id now resolves to
+two rules).  X-f3c-2c shipped one ``BEFORE UPDATE OR
 DELETE`` row trigger and justified it with a single sentence about the UPDATE
 arm; a refutation pass then broke the DELETE arm twice.  What the arms actually
 ask:

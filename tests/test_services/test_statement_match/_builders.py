@@ -32,6 +32,8 @@ from app.services import statement_match
 from app.services.statement_match import (
     CreationBars,
     MatchSubmission,
+    MintedEnvelopes,
+    PurchaseCreation,
     RuleSubmission,
     ReviewScope,
     ReviewedRow,
@@ -224,12 +226,29 @@ def an_assertion(
     return row
 
 
-def an_import(seed_user, account=None):
+def an_import(
+    seed_user, account=None, *, line_count=1, recorded_count=1, created_at=None,
+):
     """Stage and return one statement import for an account.
 
     Args:
         seed_user: The seeded user bundle.
         account: The account; the seeded checking one by default.
+        line_count: How many lines the FILE held.
+        recorded_count: How many of them this import WROTE.  Defaults equal to
+            *line_count*'s default, which is the whole-file case; a re-import
+            of an overlapping span states a smaller number here, and
+            ``ck_statement_imports_recorded_within_file`` refuses a larger one.
+            **The builder does not derive it from the lines a test then
+            attaches**: the column is what the import DECLARED, and a fixture
+            that recomputed it could not stage the disagreement a re-import
+            produces.
+        created_at: The instant the import ran, or ``None`` to take the
+            column's own ``now()`` default.  Stated only by a case whose
+            subject is WHICH import is newest or WHICH day one displays on --
+            and it has to be stated for the first of those, because ``now()``
+            is the TRANSACTION's start time in PostgreSQL, so two imports
+            written in one test carry the identical instant.
 
     Returns:
         The staged :class:`~app.models.statement_import.StatementImport`.
@@ -244,9 +263,11 @@ def an_import(seed_user, account=None):
         file_digest="c" * 64,
         period_start=date(2026, 1, 1),
         period_end=date(2026, 12, 31),
-        line_count=1,
-        recorded_count=1,
+        line_count=line_count,
+        recorded_count=recorded_count,
     )
+    if created_at is not None:
+        statement.created_at = created_at
     db.session.add(statement)
     db.session.flush()
     return statement
@@ -533,6 +554,41 @@ def an_unexplained_outflow(
         description=f"POINT OF SALE DEBIT L340 THING ({merchant})",
         merchant=merchant, sequence_in_group=sequence,
         source_category=source_category,
+    )
+
+
+def filed_by(seed_user, line, envelope, *, by_rule):
+    """Record one bank *line* as a purchase in *envelope*, and say WHO did it.
+
+    **The one fact under test in several places is ``by_rule``** (ruling
+    **bank_import:R-GT**): it decides which settled tab holds the act, and it
+    is what the hero's *N filed by rules* counts.  Staged through the real
+    create door rather than by writing the two rows, so a case cannot pass
+    against a shape the door would never produce.
+
+    **It takes the LINE rather than making one**, because every caller of this
+    cares WHICH import recorded it -- :func:`an_unexplained_outflow` stages a
+    fresh import per line, which is the opposite of what a case about one
+    import's own lines needs.
+
+    Args:
+        seed_user: The seeded user bundle.
+        line: The recorded :class:`~app.models.statement_import
+            .BankStatementLine` to file.  Must already be COMMITTED, because
+            the scope is derived from the database.
+        envelope: The budget line to file it into.
+        by_rule: Whether a STANDING RULE performed the act rather than a
+            person ticking it.
+
+    Returns:
+        The created purchase.
+    """
+    return statement_match.create_purchase_from_line(
+        PurchaseCreation(line_id=line.id, transaction_id=envelope.id),
+        a_scope(seed_user),
+        MintedEnvelopes.none_yet(),
+        a_bars(seed_user),
+        applied_by_rule=by_rule,
     )
 
 

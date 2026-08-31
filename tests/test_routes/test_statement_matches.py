@@ -629,7 +629,17 @@ class TestTheAcceptPost:
     def test_a_refusal_leaves_nothing_behind(
         self, auth_client, db, seed_user,
     ):
-        """The unit of work is the request, so "nothing was changed" is true."""
+        """The unit of work is the request, so "nothing was changed" is true.
+
+        **The refusal it uses is the STALE SCREEN**, and that changed at plan
+        step ``bank_import:X-gj-1b``.  This posted the payroll gap with no
+        consent at all until then; the card renders that figure as a hidden
+        field now, so a browser always submits one and "the owner ticked
+        nothing" is no longer a state this surface can be in.  What IS
+        reachable is a page that stated a difference and rows that have moved
+        under it -- the same N-336 shape, one press later -- so that is what
+        this refuses on.
+        """
         statement = an_import(seed_user)
         line = a_bank_line(seed_user, statement, amount="2573.43")
         salary = a_transaction(
@@ -642,10 +652,13 @@ class TestTheAcceptPost:
 
         response = auth_client.post(
             _review_url(seed_user["account"].id),
-            data=match_item(lines=[line], transactions=[salary, allowance]),
+            data=match_item(
+                lines=[line], transactions=[salary, allowance],
+                residual="1006.00",
+            ),
         )
 
-        assert b"do not add up" in response.data
+        assert b"reviewed against a difference of +1,006.00" in response.data
         db.session.expire_all()
         assert salary.settled_on is None
         assert allowance.settled_on is None
@@ -896,8 +909,17 @@ class TestOneRequestWorksTheWholeStatement:
         ]
         db.session.commit()
 
+        # **A STALE figure since plan step ``bank_import:X-gj-1b``.**  The
+        # card states its difference as a hidden field now, so the refusal
+        # this pass needs is a page whose rows moved under it rather than an
+        # owner who ticked nothing -- the same N-239 group, refused one press
+        # later.  The point of the case is unchanged: one item refuses and the
+        # other still lands.
         data = one_pass(
-            match_item(index=0, lines=[bad_line], transactions=bad_rows),
+            match_item(
+                index=0, lines=[bad_line], transactions=bad_rows,
+                residual="1006.00",
+            ),
             match_item(index=1, lines=[pairs[0][0]], transactions=[pairs[0][1]]),
         )
 
@@ -907,7 +929,7 @@ class TestOneRequestWorksTheWholeStatement:
 
         assert response.status_code == 200
         assert b"1 applied, 1 refused" in response.data
-        assert b"do not add up" in response.data
+        assert b"reviewed against a difference of" in response.data
         assert b"0.05" in response.data, "the refusal lost its own figures"
         db.session.expire_all()
         assert db.session.query(StatementMatch).count() == 1

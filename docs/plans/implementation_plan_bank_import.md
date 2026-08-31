@@ -126,14 +126,12 @@ what it leaves a LATER step is on that step's own entry.
           shut one is (**R-HW**), the settled act's card one tense over, the tab counts, the chips
           (**R-HQ**), and `bank_agreement`'s HEADLINE DAY -- the latest COMPARED day the bank's
           record can PRICE, not `span.last_day`.
-    - [ ] **X-gj-1b** `feat(import): the page, and the lines still to explain` -- the whole page
-          over that model and the three tabs whose cards are BANK LINES: To explain, Transfers,
-          Skipped. The route pair, hero, chips, legend, tab bar, the card, its opened four-tab panel
-          (**R-HR**, **R-HW**) with Find and Match and an always-for-this-merchant checkbox, and the
-          footer's sweeps and Apply (**R-FZ(c)**, **R-HD**). An unmatched inflow is not pre-filled
-          (**R-HX**), so Choose opens the panel this same leaf builds. Both themes and viewports
-          through the visual loop; its route test posts what the card and footer emit, and its
-          ownership 404 is paired with a case asserting the URL still routes.
+    - [x] **X-gj-1b** `cfcfcac9` -- the page over that model and the three BANK-LINE tabs: the route
+          pair, the hero with the last import's provenance, chips, legend, tab bar, the card and its
+          opened four-tab panel on ONE footer (**R-HR**, **R-HW**), Find and Match, and the sweeps
+          and Apply (**R-FZ(c)**, **R-HD**). The card's always-for-this-merchant checkbox is DELETED
+          (`bank_import:R-IB`) and the accept door exempts no shape (`bank_import:R-IA`). Minted
+          **X-gk** (`bank_import:R-IC`).
     - [ ] **X-gj-1c** `feat(import): what has already been decided` -- the two tabs whose cards are
           ACTS: Explained and Filed by rules, newest first with an act that has stopped holding on
           top, Undo carrying **R-GY**'s confirm where it destroys a row, and the Explained chip's
@@ -156,6 +154,15 @@ what it leaves a LATER step is on that step's own entry.
         of. **It opens with a fork the developer decides at the gate**: a nullable disposition
         column on `bank_statement_lines` or a `statement_line_dispositions` table (append-only,
         which is what undo and the audit trail want -- the recommendation).
+- [ ] **X-gk** `feat(import): where your merchants go` -- the MERCHANTS surface the audit's fix
+      column (line 103) names, half of which was ever built (`bank_import:R-IC`): one row per
+      merchant this account has seen, carrying its standing answer or *I have not said*, on click
+      through `record_submitted_rules` -- the door the receipt's offer and the register already post
+      to, so three surfaces keep one grader and one writer. Measured on a restored production clone:
+      **62 merchants on the developer's account, 29 answered and 33 not**, spread over three partial
+      surfaces -- the review queue's section, the register, the receipt's offer -- with no surface
+      showing all 62. **It ships BEFORE `X-gj-1c`**, which retires the register as a page and would
+      otherwise delete the answered merchants' only home.
 - [ ] **X-gi** `refactor(import): the queue's replaced model leaves orphans` -- the retirement leaf
       **X-gf** owed on shipping, and since 2026-08-29 the LAST leaf of the Reconcile rebuild: it
       waits on `X-gj` and deletes what that page orphans -- the review, register and workbench

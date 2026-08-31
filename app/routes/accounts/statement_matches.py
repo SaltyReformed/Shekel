@@ -84,36 +84,26 @@ from flask_login import current_user, login_required
 from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts._statement_doors import (
     fragment_door,
-    outcome_counts,
+    log_pass_applied,
     refusal_sentence,
     run_statement_fragment_door,
+    submitted_batch,
+    submitted_item_count,
 )
 from app.routes.accounts._cash_page import load_cash_account_or_404
 from app.routes.accounts._statement_rules import record_submitted_rules
 from app.schemas.validation.statements import (
-    NEW_ENVELOPE,
     StatementBatchSchema,
     batch_payload,
 )
 from app.services.category_service import list_active_categories
 from app.services.statement_match import (
-    Consent,
-    IncomeCreation,
-    MatchSubmission,
-    NewEnvelope,
-    PurchaseCreation,
-    ReviewedBatch,
     ReviewScope,
     apply_reviewed,
     review_set,
 )
 from app.utils.auth_helpers import require_owner
 from app.utils.error_fragments import designed_error
-from app.utils.log_events import (
-    BUSINESS,
-    EVT_STATEMENT_BATCH_APPLIED,
-    log_event,
-)
 
 _logger = logging.getLogger(__name__)
 
@@ -255,67 +245,6 @@ def review_statements(account_id):
     )
 
 
-def _submitted_batch(submitted) -> ReviewedBatch:
-    """Return the loaded payload as the batch the service applies.
-
-    **The DESTINATION is one field naming one of two arms**, so nothing here
-    infers an arm from an absence -- which is the defect that made the
-    existing-envelope arm unreachable from a browser at plan step X-f6a-3b: the
-    name box is always rendered and always prefilled, so keying on "no
-    ``transaction_id``" named BOTH destinations on every submission.
-
-    **Nothing here names an owner or an account.**  Whose pass this is, is the
-    scope's -- one statement, made where the route proved it -- so no item can
-    be priced against one account and written against another.
-
-    Args:
-        submitted: What :class:`~app.schemas.validation.statements
-            .StatementBatchSchema` loaded.
-
-    Returns:
-        The :class:`~app.services.statement_match.ReviewedBatch`.
-    """
-    return ReviewedBatch(
-        # **A person read this screen and pressed Apply** (ruling **R-GH**).
-        # Stated as a literal because it is a fact about the DOOR rather than
-        # about the payload: no wire value reaches it, and the only other
-        # consent belongs to an import filing under a standing rule.
-        consent=Consent.TICKED,
-        matches=tuple(
-            MatchSubmission(
-                line_ids=frozenset(item["line_ids"]),
-                rows=frozenset(item["rows"]),
-                accepted_difference=item["residual"],
-            )
-            for item in submitted["matches"]
-        ),
-        creations=tuple(
-            PurchaseCreation(
-                line_id=item["line_id"],
-                transaction_id=(
-                    None if item["destination"] == NEW_ENVELOPE
-                    else item["destination"]
-                ),
-                new_envelope=(
-                    NewEnvelope(
-                        name=item["envelope_name"],
-                        category_id=item["category_id"],
-                    )
-                    if item["destination"] == NEW_ENVELOPE else None
-                ),
-            )
-            for item in submitted["creations"]
-        ),
-        # **The lines of money COMING IN the owner ticked** (ruling **bank_import:R-GW**).
-        # One id each and nothing to unpack: an income row is filed against no
-        # container, so there is no arm to read out of the submission.
-        incomes=tuple(
-            IncomeCreation(line_id=item["line_id"])
-            for item in submitted["incomes"]
-        ),
-    )
-
-
 @accounts_bp.route(
     "/accounts/<int:account_id>/statements/review", methods=["POST"],
 )
@@ -367,28 +296,11 @@ def apply_statement_review(account_id):
             outcome: The :class:`~app.services.statement_match.BatchOutcome`
                 the door applied.
         """
-        log_event(
-            _logger, logging.INFO, EVT_STATEMENT_BATCH_APPLIED, BUSINESS,
-            "A reviewed statement pass was applied.",
-            user_id=current_user.id,
+        log_pass_applied(
+            _logger, "A reviewed statement pass was applied.",
             account_id=account_id,
-            item_count=(
-                len(submitted["matches"])
-                + len(submitted["creations"])
-                # **Every kind of act this pass carried** (ruling
-                # **bank_import:R-GW**).  A count that named two of three kinds
-                # would make the audit trail disagree with ``applied_count``
-                # for any pass holding a deposit.
-                + len(submitted["incomes"])
-            ),
-            # **The eleven money effects, stated ONCE for both doors that
-            # apply a BatchOutcome** (:func:`~._statement_doors
-            # .outcome_counts`).  They were spelled out here until plan step
-            # ``bank_import:X-gf-3b`` gave the hand-built match a door of its
-            # own, at which point the list existed twice -- and it is a list
-            # this event has already been caught missing two entries from,
-            # both of them effects that move MONEY rather than dates.
-            **outcome_counts(outcome),
+            item_count=submitted_item_count(submitted),
+            outcome=outcome,
         )
 
     # ONE failure story AND one answer for every fragment-shaped statement door
@@ -400,7 +312,7 @@ def apply_statement_review(account_id):
     # **Nothing inside the act raises a ``ValidationError`` today, and the arm
     # in that helper stands anyway.**  Every per-item refusal is caught by
     # ``_batch._run`` and reported on the outcome, which is the whole point of
-    # the savepoints; ``_submitted_batch`` builds frozen values and cannot
+    # the savepoints; :func:`~._statement_doors.submitted_batch` builds frozen values and cannot
     # refuse; and the commit raises ``SQLAlchemyError``.  Two earlier versions
     # of this comment each named a path that does not exist, which is worse
     # than naming none.  What justifies keeping it is the SURFACE, and it has a
@@ -412,7 +324,7 @@ def apply_statement_review(account_id):
             account_id=account_id, act="apply a statement review",
             db_error_message=_DB_ERROR_MESSAGE,
         ),
-        lambda: apply_reviewed(_submitted_batch(submitted), scope),
+        lambda: apply_reviewed(submitted_batch(submitted), scope),
         _record,
     )
 

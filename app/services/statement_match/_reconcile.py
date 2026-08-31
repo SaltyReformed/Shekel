@@ -64,6 +64,7 @@ from ._cards import (
     parked_card,
     to_explain_sections,
 )
+from ._last_import import last_import
 from ._reads import review_set
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
@@ -72,6 +73,7 @@ if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from app.services.bank_agreement import BankAgreement
 
     from ._bars import ParkedLine
+    from ._last_import import LastImport
     from ._reads import ReviewSet
     from ._scope import ReviewScope
 
@@ -263,16 +265,33 @@ class ReconcilePage:  # pylint: disable=too-many-instance-attributes
     """Everything the Reconcile page renders, for ONE of its five tabs.
 
     Pylint: ``too-many-instance-attributes`` (8/7) -- **eight because the page
-    renders eight distinct things**: the account it is about, which tab is
-    open, the hero, the holding chips, the tab bar, the cards, the sweeps and
-    the footer's disclosure.  Folding any pair would be the speculative
-    nesting ``CLAUDE.md`` rule 13 forbids, and
-    :class:`~._reads.ReviewSet` carries the same disable for the same reason.
+    renders eight distinct things**: which tab is open, the hero, what the
+    last import did, the holding chips, the tab bar, the cards, the sweeps and
+    the footer's disclosure.  Every one of them is read by
+    ``_statement_reconcile_body.html``, so the count is re-derivable rather
+    than asserted; folding any pair would be the speculative nesting
+    ``CLAUDE.md`` rule 13 forbids, and :class:`~._reads.ReviewSet` carries the
+    same disable for the same reason.
+
+    **It carried an ``account_id`` until plan step ``bank_import:X-gj-1b``,
+    and NOTHING read it** -- not a template, not the route, not a test.  Every
+    URL on the page is built from the ``account`` object the route passes
+    beside this one, and the account this page is ABOUT is already
+    :attr:`~._scope.ReviewScope.account_id`, which
+    :func:`reconcile_page` checks the agreement against.  A field written on
+    every render and read on none is the shape this package keeps deleting;
+    it went rather than being re-documented.  Found by adversarial design
+    review 2026-08-30.
 
     Attributes:
-        account_id: The account this page is about.
         tab: Which tab's cards :attr:`sections` holds (:class:`Tab`).
         hero: The four figures that answer *am I done* (:class:`Hero`).
+        last_import: What the newest import on this account did
+            (:class:`~._last_import.LastImport`), or ``None`` for an account
+            nobody has imported into.  **Provenance rather than a hero
+            figure**: the locked direction prints it right of the four
+            numbers, and it answers *is what I am looking at current* rather
+            than *am I done*.
         chips: The holding counts (:class:`HoldingChip`), non-zero only.
         counts: Every tab and its size (:class:`TabCount`), in tab order, so
             the bar is drawn whichever tab is open.
@@ -283,9 +302,9 @@ class ReconcilePage:  # pylint: disable=too-many-instance-attributes
             footer's disclosure.  Empty when it examined everything.
     """
 
-    account_id: int
     tab: Tab
     hero: Hero
+    last_import: "LastImport | None"
     chips: "tuple[HoldingChip, ...]"
     counts: "tuple[TabCount, ...]"
     sections: "tuple[CardSection, ...]"
@@ -548,13 +567,27 @@ def reconcile_page(
             f"account's lines beside another's balances."
         )
     review = review_set(scope)
+    # **THE PAGE DERIVES NO CANDIDATE ROWS**, and it did until plan step
+    # ``bank_import:X-gj-1b``.  It built one
+    # :class:`~._panel.MatchCandidates` index and handed every card its own
+    # line's pay period; the cards then rendered none of it, because the
+    # panel's row list is lazy-loaded and the fragment asks for itself.  So
+    # the index was derived over 248 cards and 11 periods for a value nobody
+    # read.  ``accounts.statement_reconcile_match`` builds it now, once per
+    # opened tab, which is where it is looked at.
     parked = tuple(
-        (_parked_tab(one), parked_card(review, one)) for one in review.parked
+        (_parked_tab(one), parked_card(review, one))
+        for one in review.parked
     )
-    transfers = tuple(
-        card for where, card in parked if where is Tab.TRANSFERS
-    )
-    skipped = tuple(card for where, card in parked if where is Tab.SKIPPED)
+    # **The two holding tabs, keyed by the tab that owns them.**  A mapping
+    # rather than two tuples threaded side by side, so a third holding state
+    # -- ``X-gj-4``'s recorded disposition is the one already ruled -- adds a
+    # key here and an arm to :func:`_parked_tab`, and no signature grows.
+    holding = {
+        where: tuple(card for tab_, card in parked if tab_ is where)
+        for where in (Tab.TRANSFERS, Tab.SKIPPED)
+    }
+    transfers = holding[Tab.TRANSFERS]
     counts = accepted_counts(scope.owner_id, scope.account_id)
     # **Distinct LINES, not proposals**, which is the spelling
     # :attr:`~._reads.ReviewSet.explained_by_a_proposal` records the reason
@@ -571,18 +604,26 @@ def reconcile_page(
         + len(review.recordable_inflows)
     )
 
-    sections = _tab_sections(scope, review, tab, transfers, skipped)
+    sections = _tab_sections(scope, review, tab, holding)
     return ReconcilePage(
-        account_id=scope.account_id,
         tab=tab,
         hero=_hero(agreement, to_explain),
+        # **One row read, and one COUNT where that row exists.**  The
+        # provenance line the locked direction prints beside the four figures
+        # is a fact about the last import rather than about the comparison, so
+        # it is read here and carried whole.  ``EXPLAIN ANALYZE`` on a
+        # restored production clone 2026-08-30: 0.034 ms and 0.071 ms of
+        # execution, against ``review_set``'s own 0.136 s on the same
+        # account -- so the provenance costs about a two-thousandth of what
+        # the page already pays to exist.
+        last_import=last_import(scope.owner_id, scope.account_id),
         chips=_chips(review, transfers, counts.total),
         counts=(
             TabCount(tab=Tab.TO_EXPLAIN, count=to_explain),
             TabCount(tab=Tab.EXPLAINED, count=counts.by_hand),
             TabCount(tab=Tab.FILED_BY_RULES, count=counts.by_rule),
             TabCount(tab=Tab.TRANSFERS, count=len(transfers)),
-            TabCount(tab=Tab.SKIPPED, count=len(skipped)),
+            TabCount(tab=Tab.SKIPPED, count=len(holding[Tab.SKIPPED])),
         ),
         sections=sections,
         # **Only the inbox sweeps.**  A settled act is undone one at a time
@@ -612,8 +653,7 @@ def _tab_sections(
     scope: "ReviewScope",
     review: "ReviewSet",
     tab: Tab,
-    transfers: "tuple[LineCard, ...]",
-    skipped: "tuple[LineCard, ...]",
+    holding: "dict[Tab, tuple[LineCard, ...]]",
 ) -> "tuple[CardSection, ...]":
     """Return the cards of the open tab, and of no other.
 
@@ -625,8 +665,7 @@ def _tab_sections(
         scope: The pass's scope, for the two reads the settled tabs need.
         review: The pass.
         tab: Which tab is open.
-        transfers: The Transfers cards, already built.
-        skipped: The Skipped cards, already built.
+        holding: The cards of each holding tab, keyed by that tab.
 
     Returns:
         The sections, empty where the tab has no cards.
@@ -652,11 +691,9 @@ def _tab_sections(
         return act_sections(accepted_register(
             scope.owner_id, scope.account_id, applied_by_rule=True,
         ))
-    if tab is Tab.TRANSFERS:
+    if tab in holding:
         # **A holding tab withholds nothing**: it renders every line in its
         # state, because a count of card payments the owner cannot act on is
         # useless if it is also truncated.
-        return _holding(transfers)
-    if tab is Tab.SKIPPED:
-        return _holding(skipped)
+        return _holding(holding[tab])
     raise ValueError(f"No Reconcile tab is built for {tab!r}.")
