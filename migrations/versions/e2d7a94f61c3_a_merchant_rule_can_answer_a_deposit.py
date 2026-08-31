@@ -40,7 +40,13 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = "e2d7a94f61c3"
-down_revision = "c9f4b1e78d02"
+# RE-PARENTED at the ``origin/dev`` merge rather than at authoring time, which
+# is the same correction ``c9f4b1e78d02`` records one revision back.  This was
+# written against ``c9f4b1e78d02`` while ``balance:X-f3c-2b-2b`` held
+# ``d1f6a83c9e47`` on that same parent, unmerged -- so both were children of one
+# revision and the merged tree had TWO heads, which ``flask db upgrade`` refuses.
+# That branch merged as PR #173, so this points at its head now.
+down_revision = "d1f6a83c9e47"
 branch_labels = None
 depends_on = None
 
