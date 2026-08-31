@@ -1016,11 +1016,36 @@ class TestSharedNginxRuntimeHeaders:
         return headers
 
     @pytest.fixture(scope="class")
-    def headers_502(self, running_stack) -> dict[str, str]:
+    def headers_502(self, running_stack, headers_200) -> dict[str, str]:
         """Kill the upstream stub's HTTP listener in place, then
         capture the 5xx response headers.  This is the real-world
         failure mode the ``always`` flag exists for (a gunicorn
         process dies while its container stays up).
+
+        **``headers_200`` is depended on for its ORDERING, not its
+        value, and removing it reintroduces a CI flake.**  This
+        fixture kills the stub's listener permanently for the
+        class's stack, so the 200 capture is only possible BEFORE
+        it runs.  Both fixtures are class-scoped, and pytest
+        instantiates a class-scoped fixture when the first test
+        requesting it executes -- which under ``-n 12`` is whatever
+        order the xdist scheduler hands this worker its share of
+        the ten cases, not the order they appear in this file.  A
+        worker given a ``_502`` case before a ``_200`` case built
+        ``headers_502`` first, and ``headers_200`` then curled a
+        stack whose upstream this fixture had already killed,
+        failing at SETUP with ``expected 200 with stub upstream
+        up; got: 'HTTP/2 502 '``.
+
+        Observed twice, byte-identical, on unrelated branches: runs
+        ``33197999790`` (2026-08-28) and ``33376022611`` attempt 1
+        (2026-08-31), each **one** error -- ``12065 passed ... 1
+        error`` -- on ``test_server_header_does_not_leak_version_
+        on_200``, with the other nine cases passing.  Naming this
+        dependency puts the real constraint in the fixture graph,
+        where pytest enforces it, instead of leaving it to the
+        scheduler.  ``running_stack``'s readiness poll cannot help:
+        the stack IS ready, and the upstream is dead on purpose.
         """
         host_port, stub_name = running_stack
         # Kill only the recorded server PID; the container (PID 1 is
