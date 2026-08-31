@@ -12,7 +12,8 @@ section 3 named were two stale and two moved, and five more were named by no ste
 **P70**'s query-position census structurally could not see. The leaves ARE that census: five take
 the readers off the columns one PACKAGE at a time, one makes an owner's recorded cadence a foreign
 key, and the last drops the columns.
-**`C4-a-1`, `C4-a-2` and `C4-a-3` have SHIPPED; `C4-a-4` is next.**
+
+**`C4-a-1` through `C4-a-4` have SHIPPED; `C4-a-5` is next.**
 
 **`C10`-`C12` came OUT of `C2-f3`** on 2026-08-19 for gating C4 on work it does not depend on: the
 salary package's clock (**P49**, which `C2-f3a` wrongly closed), the layer predicate (**P56**) and
@@ -274,14 +275,18 @@ untouched; each survivor is an `AttributeError` or a `ProgrammingError` the day 
 `PayPeriod.end_date` in query position and `<row>.pay_period.end_date`, but not a read through a
 LOCAL bound from `.pay_period`, which is how two of the survivors are written. Widened, `app/` held
 FOUR Python reads and one Jinja read, each already named by the leaf that owns it below -- so this
-is a correction to those line numbers, not a second list. `_candidates` is `:941` and the conflict
-chooser `:196`; `resolve_cadence` reads `last.end_date` off a ROW rather than in query position,
-which is why `_block_headings` was the last query-position read of that column.
-**`C4-a-3` took one of the four**, the purchase-date warning, leaving THREE Python reads and the one
-Jinja read: `_candidates` (`C4-a-4`), the conflict chooser and the popover (`C4-a-5`), and
-`resolve_cadence` (`C4-b`). The count is restated rather than left to be recounted, because a number
-written in prose is what two branches can each decrement to the same string with nothing reconciling
-them.
+is a correction to those line numbers, not a second list. `_candidates` WAS `:941`, taken at
+`C4-a-4`, and the conflict chooser is `:196`; `resolve_cadence` reads `last.end_date` off a ROW
+rather than in query position, which is why `_block_headings` was the last query-position read of
+that column. **`C4-a-3` and `C4-a-4` have each taken one** -- the purchase-date warning and the
+merchant-destination picker -- and what is LEFT is NAMED rather than counted, which is
+`period_by_id`'s own lesson applied to this paragraph: the recurrence conflict chooser
+(`routes/_recurrence_conflict_chooser.py`, Python) and the grid's full-edit popover
+(`grid/_transaction_full_edit.html`, Jinja) at `C4-a-5`. `pay_schedule_service.resolve_schedule` is
+`C4-b`'s. **The PREDICATE cannot go stale where a count can**, and it is what re-finds them: a read
+of `end_date` or `period_index` reached through a `budget.pay_periods` ROW -- in query position,
+through `.pay_period`, or through a local bound from it -- which includes `PayPeriod.label`, the
+accessor `C4-a-5` deletes with the column it reads.
 
 - [x] **C4-a-1 -- the balance seam's attribution clamp.** `8962e073` + `2895f693`. Closed **P38**.
       *Its specification here described a build `balance:X-i4` had already made impossible -- five
@@ -299,10 +304,12 @@ them.
       LIVE PRODUCTION 2026-08-31, control fired. **What a later leaf must obey**: the five-argument
       fork was answered by DELETION (**R-PC35**), so `_build_grid_row_data` builds no entry map and
       `_build_entry_maps` is the one place that does.
-- [ ] **C4-a-4 -- the merchant-destination picker.** `statement_match/_candidates.destinations_for`
-      (`:923-924`) is the one relationship read left in that package, and `_scope` is its only
-      caller. `transaction_candidate` in the same module already resolves through
-      `calendar.period_by_id`, so this leaf makes one module answer one way.
+- [x] **C4-a-4 -- the merchant-destination picker.** `f18a58af`. `destinations_for` takes the
+      CALENDAR and no `owner_id`, scopes its scan by `PayCalendar.saved_by_id()`'s own keys and
+      indexes that SAME mapping for each span, so a miss is unconstructible (**R-PC36**).
+      `PurchaseDestination` carries the `DerivedPeriod` where it held three copies of its facts,
+      DELETING a pylint disable (**R-PC37**), and orders by PAYDAY. `_calendar.py` met the
+      1,000-line cap, so the identity section's arguments moved to `_searches.py` (**R-PC38**).
 - [ ] **C4-a-5 -- the two LABEL readers, and the model accessor goes.**
       `routes/_recurrence_conflict_chooser` (`:193`) renders `period.label` off the ORM row and
       `grid/_transaction_full_edit.html` (`:42`) renders `txn.pay_period.label`. Both move onto
