@@ -49,7 +49,7 @@ sequencing -- the balance README's ten blocks, and each plan's section 0.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**195 steps, 138 open.** The dependency graph holds 88 edges over 71 rows.
+**196 steps, 138 open.** The dependency graph holds 88 edges over 71 rows.
 
 ## The order
 
@@ -182,6 +182,7 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | balance | X-f3c-2c-1 | -- | Stop every test fixture EDITING a stored balance assertion: the three re-stamping helpers become one that APPENDS, the three account factories take their day at `create_account`, and the seeded owner's origination assertion stays on the bootstrap day the account was opened on. Carries **N-392** and **N-393**. | SHIPPED | `930f06fc` | -- |
 | balance | X-f3c-2c-2 | -- | Give `budget.account_anchor_history`, `budget.account_openings` and `budget.loan_anchor_events` ONE shared append-only refusal -- a database trigger refusing every actor and every spelling, plus the named object-layer exception (**R-HY**) -- with `Account.anchor_history` taking `passive_deletes` so an account can still be disposed of. Closes **N-287**. | SHIPPED | `930f06fc` | -- |
 | balance | X-f3c-2c | -- | The DECOMPOSED parent of the append-only refusal, split 2026-08-30 (**R-HZ**): the fixtures stop editing an assertion in one commit, and the refusal that makes editing one impossible is the next, on one branch so `dev` never carries the gap between them. Carried **N-287**. | SHIPPED | `930f06fc` | -- |
+| balance | X-f3c-2d | -- | Give the append-only refusal the three arms its three questions need -- `BEFORE UPDATE` per row, a DEFERRED constraint trigger `AFTER DELETE` because "is the owning account gone" is about the transaction's END state, and `BEFORE TRUNCATE` per statement (**R-IC**) -- closing the TRUNCATE that emptied a table unrefused and UNRECORDED and the recreate that destroyed an account's assertions. | SHIPPED | `249f66a7` | -- |
 | balance | X-f3c-2b-1 | -- | Make a movement dated on or before its account's books opening UNSTORABLE (**R-HG**), refusing it at the one settle-day writer, at the reconcile panel's bulk writer and at three deferrable constraint triggers over all three tables, then legalise the twelve production rows by moving five openings back. **MOVES MONEY**: two balance sheets gain an opening at `$4,879.26`. Closes **N-378**. | SHIPPED | `2cf2ac0a` | -- |
 | balance | X-f3c-2a | -- | Make opening equity the account's OWN stored fact (**R-GX**, shaped by **R-HE**): an append-only `budget.account_openings` read by BOTH the balance fold and the posted ledger, so the quantity has ONE definition and `is_opening` decides no figure. Seeded at the derived value. Carries **N-379**. | SHIPPED | `2aa2296d` | -- |
 | balance | X-f3c-1 | -- | The assertion RESET left the kind-blind walk for the fold that owns the running total: `walk_cash_ledger` yields FACTS, `balance_at._assertions` states what an assertion does to a balance, and each fold applies the policy its own kind needs -- which is what makes the flip a deletion rather than a rewrite of a leaf **R-FO** keeps the reset for. Byte-identical. | SHIPPED | `2dad8512` | -- |

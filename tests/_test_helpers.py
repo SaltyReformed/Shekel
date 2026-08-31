@@ -3887,11 +3887,12 @@ def reassert_balance_on(db_session, account, at):
 
 @contextmanager
 def append_only_guard_lifted(db_session, table):
-    """Lift the append-only trigger on *table* for the block's duration.
+    """Lift every append-only arm on *table* for the block's duration.
 
     **This exists to grade the control UNDERNEATH, and nothing else.**  Since
     plan step X-f3c-2c, ``budget.refuse_append_only_change`` refuses every
-    UPDATE and every DELETE on the three account-history tables, whoever asks --
+    UPDATE, every DELETE and (since X-f3c-2d) every TRUNCATE on the three
+    account-history tables, whoever asks --
     which is what makes the rule true, and which also means it SHADOWS the
     controls it sits on top of.  Three of those still matter and would
     otherwise go ungraded:
@@ -3930,7 +3931,10 @@ def append_only_guard_lifted(db_session, table):
     """
     # pylint: disable=import-outside-toplevel  -- same circular-dep
     # avoidance as the loan helpers above.
-    from app.append_only_infrastructure import APPEND_ONLY_TABLES
+    from app.append_only_infrastructure import (
+        APPEND_ONLY_TABLES,
+        APPEND_ONLY_TRIGGERS,
+    )
     from app.extensions import db
 
     assert table in APPEND_ONLY_TABLES, (
@@ -3939,15 +3943,27 @@ def append_only_guard_lifted(db_session, table):
     )
     from sqlalchemy import exc as sa_exc
 
-    enable = db.text(f"ALTER TABLE {table} ENABLE TRIGGER ck_append_only")
-    db_session.execute(db.text(
-        f"ALTER TABLE {table} DISABLE TRIGGER ck_append_only"
-    ))
+    # EVERY arm, not just the update one: since X-f3c-2d the guard is three
+    # triggers with three timings, and lifting one would leave a case that
+    # means to reach the control underneath still refused by another arm.
+    enable = [
+        db.text(f"ALTER TABLE {table} ENABLE TRIGGER {name}")
+        for name in APPEND_ONLY_TRIGGERS
+    ]
+    # Disabling FIRST is load-bearing rather than tidy: the delete arm is a
+    # deferred constraint trigger, so a transaction that has already deleted
+    # from this table holds pending trigger events and PostgreSQL then refuses
+    # ``ALTER TABLE`` on it outright.
+    for name in APPEND_ONLY_TRIGGERS:
+        db_session.execute(db.text(
+            f"ALTER TABLE {table} DISABLE TRIGGER {name}"
+        ))
     try:
         yield
     finally:
         try:
-            db_session.execute(enable)
+            for statement in enable:
+                db_session.execute(statement)
         except (sa_exc.InvalidRequestError, sa_exc.DBAPIError):
             # A case that expects the INNER control to refuse leaves no way to
             # emit further SQL, in one of two shapes: SQLAlchemy refuses
@@ -3959,7 +3975,8 @@ def append_only_guard_lifted(db_session, table):
             # whether the block passed or raised, which a bare re-enable would
             # not.
             db_session.rollback()
-            db_session.execute(enable)
+            for statement in enable:
+                db_session.execute(statement)
 
 
 def account_never_asserted(

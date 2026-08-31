@@ -251,12 +251,9 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     * [ ] **X-f3c-2b** the DECOMPOSED parent of the books boundary (**R-HG**), split 2026-08-28 and
       re-cut the same day (**R-HJ**): the invariant is one commit, and the DOOR -- with the
       account-10 repair it is the only honest route for -- is the other. Carries **N-379**.
-      * [x] **X-f3c-2b-1** `2cf2ac0a` -- an opening equity is the CLOSING balance for its own day
-        (**R-HG**), so no movement may be dated on or before `opened_on`: refused at
-        `settle_day.record_settle_day` and at `reconcile_service.record_settled_days`, and made
-        UNSTORABLE both ways by three deferrable constraint triggers. 12 rows over five accounts
-        legalised; **account 10 now opens 2026-04-05**, which is what `X-f3c-2b-2` restates FROM.
-        Two balance sheets moved. Closes **N-378**.
+      * [x] **X-f3c-2b-1** `2cf2ac0a` -- no movement may be dated on or before its account's
+        `opened_on` (**R-HG**); **account 10 now opens 2026-04-05**, which `X-f3c-2b-2` restates
+        FROM. Closed **N-378**. Record in `archive/two_shipped_steps_2026-08-30.md`.
       * [ ] **X-f3c-2b-2** `feat(accounts): an owner can say when the books opened` -- the DOOR
         **N-275**, **N-379** and **N-382** each name, NOT bounded by `earliest_recordable_day` (that
         floor is a rule about assertions, **R-ER**, and it would make the books unopenable before
@@ -300,6 +297,9 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     * [x] **X-f3c-2c** `930f06fc` -- an assertion is append-only at the DATABASE tier (**R-HY**, **R-HZ**); closed **N-287**, opened **N-392** and **N-393**. Both leaves and what a later step must obey: `archive/x_f3c_2c_as_built_2026-08-30.md`.
       * [x] **X-f3c-2c-1** `930f06fc` -- a fixture PLACES an assertion and never edits one. Record in `archive/x_f3c_2c_as_built_2026-08-30.md`.
       * [x] **X-f3c-2c-2** `930f06fc` -- `budget.refuse_append_only_change` on all three tables, `passive_deletes="all"` beside it. Record in `archive/x_f3c_2c_as_built_2026-08-30.md`.
+    * [x] **X-f3c-2d** `249f66a7` -- the append-only refusal gets the THREE arms its questions
+      need (**R-IC**): a TRUNCATE that emptied a table unrefused and UNRECORDED, and a recreate of a
+      deleted account's id, are refused. Record in `archive/two_shipped_steps_2026-08-30.md`.
     * [ ] **X-f3c-3** `feat(cash): the app says what it cannot explain` -- the account's
       OUTSTANDING DIFFERENCE (`latest asserted - (opening equity + SUM(postings))`, ONE figure per
       account and not a per-assertion correction) derived off the fold and displayed beside whether
