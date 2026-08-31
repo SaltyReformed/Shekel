@@ -43,13 +43,12 @@ from tests.test_routes._statement_forms import (
 )
 from tests.test_services.test_statement_match._builders import (
     a_bank_line,
-    a_bars,
-    a_scope,
     a_rule,
     a_transaction,
     an_envelope,
     an_import,
     an_unexplained_outflow,
+    filed_acts,
     filed_by,
     the_merchant_id,
 )
@@ -1750,25 +1749,7 @@ class TestTheSettledBoundIsWiredToThePage:
         shipped constant instead of the parameter -- with 796 tests green,
         which is a permanently dead *show the rest* link on that tab.
         """
-        envelope = an_envelope(seed_user)
-        lines = [
-            an_unexplained_outflow(
-                seed_user, merchant=f"Shop {ordinal}", amount="-10.00",
-                sequence=ordinal,
-            )
-            for ordinal in range(REGISTER_LIMIT + 1)
-        ]
-        db.session.commit()
-        # ONE derivation for all 51.  The register's own bound case records
-        # what the per-row shape cost: the pass ran 53 times, which made it the
-        # slowest test in the suite and timed it out in CI at the 30 s budget.
-        scope, bars = a_scope(seed_user), a_bars(seed_user)
-        for line in lines:
-            filed_by(
-                seed_user, line, envelope,
-                by_rule=by_rule, scope=scope, bars=bars,
-            )
-        db.session.commit()
+        filed_acts(seed_user, REGISTER_LIMIT + 1, by_rule=by_rule)
 
         bounded = _page(auth_client, seed_user, tab)
         # **FOLLOWED, not reconstructed.**  A case that builds the unbounded

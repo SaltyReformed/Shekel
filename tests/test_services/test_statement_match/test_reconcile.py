@@ -42,6 +42,7 @@ from .test_reads_lineless import _planted_lineless
 
 from ._builders import (
     a_bank_line,
+    filed_acts,
     filed_by,
     a_purchase,
     a_bars,
@@ -989,33 +990,6 @@ class TestTheSettledBoundIsLIFTABLE:
     the PAGE threads the parameter to the settled tabs and to no others.
     """
 
-    def _acts(self, seed_user, db, how_many):
-        """Record *how_many* bank lines as purchases, by hand.
-
-        Args:
-            seed_user: The seeded user bundle.
-            db: The session fixture.
-            how_many: How many acts to stage.
-        """
-        envelope = an_envelope(seed_user)
-        lines = [
-            an_unexplained_outflow(
-                seed_user, merchant=f"Shop {ordinal}", amount="-10.00",
-                sequence=ordinal,
-            )
-            for ordinal in range(how_many)
-        ]
-        db.session.commit()
-        # ONE derivation for all 51, which is what the app does and what keeps
-        # this case affordable -- see :func:`filed_by`.
-        scope, bars = a_scope(seed_user), a_bars(seed_user)
-        for line in lines:
-            filed_by(
-                seed_user, line, envelope,
-                by_rule=False, scope=scope, bars=bars,
-            )
-        db.session.commit()
-
     def test_the_bound_cuts_and_says_so_and_None_lifts_it(
         self, app, db, seed_user,
     ):
@@ -1024,7 +998,7 @@ class TestTheSettledBoundIsLIFTABLE:
         The bounded render must WITHHOLD -- an equal pair of counts would be
         satisfied by an account that never reached the bound at all.
         """
-        self._acts(seed_user, db, REGISTER_LIMIT + 1)
+        filed_acts(seed_user, REGISTER_LIMIT + 1, by_rule=False)
 
         bounded = _page(seed_user, Tab.EXPLAINED)
         everything = _page(seed_user, Tab.EXPLAINED, limit=None)
@@ -1046,7 +1020,7 @@ class TestTheSettledBoundIsLIFTABLE:
         :class:`TestACaptionCountsOnlyWhatItsTabCanDraw` grades from the other
         side.
         """
-        self._acts(seed_user, db, REGISTER_LIMIT + 1)
+        filed_acts(seed_user, REGISTER_LIMIT + 1, by_rule=False)
 
         for page in (
             _page(seed_user, Tab.EXPLAINED),
