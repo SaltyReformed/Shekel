@@ -157,6 +157,48 @@ def earliest_started_period(
     return periods[index]
 
 
+def paydays_between(
+    periods: "tuple[DerivedPeriod, ...]", first_day: date, last_day: date,
+) -> "tuple[date, ...]":
+    """Return the paydays of *periods* OPENING within ``[first_day, last_day]``.
+
+    **The single span search**, and it is here rather than beside its one
+    consumer because an adversarial review of plan step **balance:X-bh-1**
+    named the alternative for what it was: :mod:`._rhythm` had written the
+    bisect pair itself and reached across for this module's private
+    :data:`_BY_START_DATE` to do it, which is the tell that the search belongs
+    in the module whose whole argument is that a second bisect written outside
+    it is the duplication it exists to remove.
+
+    It counts paydays that OPEN in the span, where
+    :func:`~._views.overlapping_window` returns the periods that COVER it --
+    two different questions over one ordering, which is why this returns bare
+    ``date`` values.  A payday is a day; a period is a span.
+
+    **An empty span is an empty answer**, where
+    :func:`~._views.overlapping_window` refuses a crossed range.  The
+    dispositions are right for their own callers rather than inconsistent: a
+    window whose bounds are the wrong way round is a caller defect, while a
+    crossed span arises here from an ordinary question -- "which paydays fell
+    this year BEFORE its first day" names ``[Jan 1, Dec 31 of last year]``, and
+    the honest answer is none.
+
+    Args:
+        periods: Periods in ``start_date`` ascending order.
+        first_day: Inclusive lower bound.
+        last_day: Inclusive upper bound.
+
+    Returns:
+        The paydays, ascending.  Empty for a crossed span, for an empty
+        *periods*, and for a span the schedule opens no period in.
+    """
+    if last_day < first_day:
+        return ()
+    lower = bisect_left(periods, first_day, key=_BY_START_DATE)
+    upper = bisect_right(periods, last_day, key=_BY_START_DATE)
+    return tuple(period.start_date for period in periods[lower:upper])
+
+
 def opening_payday(periods: "tuple[DerivedPeriod, ...]") -> "date | None":
     """Return the first payday of *periods*, or ``None`` when there are none.
 

@@ -150,7 +150,7 @@ class TestTheCountIsTheSchedule:
             configs = load_tax_configs_for_year(user_id, profile, 2026)
 
             breakdowns = paycheck_calculator.project_salary(
-                PayrollBasis(profile, calendar.cadence), periods, configs,
+                PayrollBasis(profile, calendar), periods, configs,
             )
 
             total = sum(b.earnings.gross_biweekly for b in breakdowns)
@@ -197,12 +197,10 @@ class TestTheCountIsTheSchedule:
             biweekly = _calendar(14, 26, user_id=user_id)
 
             weekly_gross = paycheck_calculator.calculate_paycheck(
-                PayrollBasis(profile, weekly.cadence),
-                weekly.periods[0], list(weekly.saved()), configs,
+                PayrollBasis(profile, weekly), weekly.periods[0], configs,
             ).earnings.gross_biweekly
             biweekly_gross = paycheck_calculator.calculate_paycheck(
-                PayrollBasis(profile, biweekly.cadence),
-                biweekly.periods[0], list(biweekly.saved()), configs,
+                PayrollBasis(profile, biweekly), biweekly.periods[0], configs,
             ).earnings.gross_biweekly
 
             # Hand-computed, and stated as the cents rather than as a

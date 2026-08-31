@@ -406,8 +406,10 @@ def _compute_current_pay(
     # BOTH answers come off the pass's ONE memoized calendar (pay-calendar
     # plan step C2-f2d-3), where two SQL readers could disagree with each other
     # and with the derived calendar every other producer on this page reads.
+    # The engine reads that same value for its month and year context since
+    # plan step balance:X-bh-1, so the ``calendar.saved()`` window this used to
+    # hand it is gone rather than moved.
     calendar = balance_ctx.calendar()
-    all_periods = calendar.saved()
     current_period = calendar.period_containing(balance_ctx.as_of)
     net_biweekly = Decimal("0")
     current_breakdown = None
@@ -424,8 +426,7 @@ def _compute_current_pay(
             user_id, profile, current_period.start_date.year,
         )
         current_breakdown = paycheck_calculator.calculate_paycheck(
-            PayrollBasis(profile, calendar.cadence),
-            current_period, all_periods, tax_configs,
+            PayrollBasis(profile, calendar), current_period, tax_configs,
         )
         net_biweekly = current_breakdown.earnings.net_pay
     return _CurrentPay(net_biweekly, current_breakdown)

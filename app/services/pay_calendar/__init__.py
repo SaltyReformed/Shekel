@@ -49,16 +49,21 @@ made one of them impure and a claim about "the package" would then be false of
 part of it:
 
 * :mod:`._derive`, :mod:`._searches`, :mod:`._window`, :mod:`._views`,
-  :mod:`._calendar` and :mod:`._cadence` -- no Flask symbol, no database
+  :mod:`._calendar`, :mod:`._walks`, :mod:`._rhythm` and :mod:`._cadence` --
+  no Flask symbol, no database
   session, no clock.  Every answer is a pure function of values a caller
   supplies, and that is load-bearing rather than tidy: it is what lets C1's
   harness drive the derivation over production's real 61 paydays and over a
   generated sweep with no database, so the two runs exercise the same code.
   The pure half is a one-way chain -- ``_derive`` -> ``_searches`` ->
-  ``_window`` -> ``_views`` -> ``_calendar`` -- split at plan step C2-c and
+  ``_window`` -> ``_views`` -> ``_calendar`` -> (``_walks``, ``_rhythm``) --
+  split at plan step C2-c and
   again at C2-f3b, each time when the calendar module reached pylint's
   1,000-line ceiling, so a search, a producer of a view, a view over a calendar and the
-  calendar itself cannot answer one question differently.
+  calendar itself cannot answer one question differently.  The last two take a
+  whole calendar rather than a period tuple, which is what puts them after it:
+  see :mod:`._walks` for the argument, and ledger row **P77** for the ceiling
+  that keeps both of them out of the class itself.
 * :mod:`._loader` -- holds the session, and ONLY the session.  It reads an
   owner's paydays and cadence and hands them to the pure half; it computes
   nothing.  One module is the whole impure surface, which is what makes the
@@ -89,6 +94,11 @@ from ._derive import (
     derive_periods,
 )
 from ._loader import cadence_for, calendar_at_cadence, calendar_for
+from ._rhythm import (
+    paydays_in_month_through,
+    paydays_in_year_before,
+    saved_paydays_in_month_through,
+)
 from ._searches import (
     containing_period,
     earliest_start_in_month,
@@ -121,5 +131,8 @@ __all__ = [
     "latest_started_period",
     "opening_payday",
     "paychecks_from",
+    "paydays_in_month_through",
+    "paydays_in_year_before",
     "period_by_id",
+    "saved_paydays_in_month_through",
 ]

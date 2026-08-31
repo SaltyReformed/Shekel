@@ -141,15 +141,16 @@ def get_current_gross_biweekly(
 
     as_of_date = as_of or date.today()
     # Both questions the engine needs -- which paycheck covers ``as_of``, and
-    # the owner's whole schedule for the cumulative and reconciliation context
-    # -- come off the CALLER's calendar (pay-calendar plan step C2-f2d-3), so a
-    # render that already derived one pays nothing here.  The two SQL readers
-    # this replaced could answer from two different reads.
+    # the owner's whole schedule for the month and year context -- come off the
+    # CALLER's calendar (pay-calendar plan step C2-f2d-3), so a render that
+    # already derived one pays nothing here.  The two SQL readers this replaced
+    # could answer from two different reads.  Since plan step balance:X-bh-1
+    # the engine takes that calendar on its basis rather than a period list
+    # beside it, so the two answers cannot come from two calendars either.
     current_period = calendar.period_containing(as_of_date)
     if current_period is None:
         return ZERO
 
-    all_periods = calendar.saved()
     # Resolved for the RESOLVED PERIOD's own tax year rather than the clock's,
     # which is the key ``live_projected_net`` below already uses for every
     # period it prices -- so a caller reading one period and a caller reading
@@ -158,8 +159,7 @@ def get_current_gross_biweekly(
         user_id, profile, current_period.start_date.year,
     )
     breakdown = paycheck_calculator.calculate_paycheck(
-        PayrollBasis(profile, calendar.cadence),
-        current_period, all_periods, tax_configs,
+        PayrollBasis(profile, calendar), current_period, tax_configs,
     )
     return breakdown.earnings.gross_biweekly
 
@@ -283,19 +283,19 @@ class SalaryPricing:
 
         The EXPENSIVE stage, memoized per profile.  Runs
         :func:`paycheck_calculator.project_salary` over the owner's full
-        pay-period set -- required, not an optimisation, exactly as the salary
-        projection page does.  **The reason CHANGED at plan step balance:X-aw
-        and the requirement did not**: it was the biweekly residue
-        reconciliation anchoring against the complete annual figure, which that
-        step DELETED, and it is now the four judgements that still read the
-        list -- third-paycheck detection, the first-paycheck-of-month deduction
-        cadence, the FICA wage-base cumulative and a deduction's annual cap
-        (ledger row **N-390**).  Narrowing this to a window on the strength of
-        the residue being gone would reintroduce **D25**, one salary row stored
-        ``$502.45`` low.  Tax configs resolve PER period year
-        (DH-#30), the same per-year resolution the recurrence engine uses to
-        GENERATE the stored amount, so the live figure and the generated one
-        cannot disagree for want of a bracket set.
+        pay-period set, which is what this map PROMISES -- a net figure for
+        every period a caller can ask about -- and, since plan step
+        **balance:X-bh-1**, no longer also what the engine's month and year
+        context depends on.  **Two earlier reasons for the full set are both
+        retired**: the biweekly residue reconciliation that anchored against
+        the complete annual figure, deleted at plan step **balance:X-aw**
+        (finding N-239), and the four judgements that read the passed list,
+        moved onto the owner's calendar here (ledger row **N-390**) -- where
+        narrowing the list used to reintroduce **D25**, one salary row stored
+        ``$502.45`` low, it now narrows only the map.  Tax configs resolve PER
+        period year (DH-#30), the same per-year resolution the recurrence
+        engine uses to GENERATE the stored amount, so the live figure and the
+        generated one cannot disagree for want of a bracket set.
 
         Args:
             profile: The active :class:`SalaryProfile` to project.
@@ -323,7 +323,7 @@ class SalaryPricing:
                 self._user_id, profile, periods,
             )
             breakdowns = paycheck_calculator.project_salary(
-                PayrollBasis(profile, self._calendar.cadence), periods,
+                PayrollBasis(profile, self._calendar), periods,
                 configs_by_year=configs_by_year,
                 calibration=profile.calibration,
             )
