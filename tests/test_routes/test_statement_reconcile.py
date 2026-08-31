@@ -1156,6 +1156,95 @@ class TestTheHeroSaysWhatTheLastImportDid:
         )
 
 
+class TestTheCardCarriesTheBanksOwnWords:
+    """Both of them, in ONE element: the raw description and the bank's category.
+
+    The locked direction's card puts them together under the merchant, in mono
+    muted small.  They are PROVENANCE -- nothing on this page decides on
+    either, and the one decision this package makes on a bank's category is
+    ``_vocabulary``'s, asked in SQL against that adapter's own vocabulary.
+
+    **This was recorded as impossible and was not.**  The handoff for this step
+    said ``BankLine`` carried no such field "so it needs a model change";
+    ``bank_statement_lines.source_category`` has existed since the importer
+    shipped, and it was the SERVICE value that dropped it -- one field and one
+    construction site.
+
+    **The assertions are on the ELEMENT and not on the page**, because "the
+    card puts them together" is a containment claim: two ``in page`` checks
+    pass just as happily with the two facts in different corners of the screen.
+    """
+
+    def _raw_line(self, page):
+        """Return the text of the card's raw-facts element.
+
+        Args:
+            page: The rendered page.
+
+        Returns:
+            The inner text of the one ``rec-raw`` div, or ``None``.
+
+        Raises:
+            AssertionError: When the page renders more than one, which would
+                make "the" element a fiction and every assertion below
+                ambiguous.
+        """
+        found = re.findall(
+            r'<div class="rec-raw font-mono">(.*?)</div>', page, re.S,
+        )
+        assert len(found) <= 1, (
+            f"{len(found)} cards rendered; this case reads THE raw line and "
+            f"needs exactly one"
+        )
+        return found[0].strip() if found else None
+
+    def test_the_two_facts_are_in_ONE_element_in_the_direction_s_order(
+        self, auth_client, db, seed_user,
+    ):
+        """Description first, then what the bank filed it under."""
+        an_envelope(seed_user)
+        an_unexplained_outflow(
+            seed_user, merchant="Lowe's", amount="-35.72",
+            source_category="Merchandise/Home Improvement",
+        )
+        db.session.commit()
+
+        raw = self._raw_line(_page(auth_client, seed_user))
+
+        assert raw is not None, "no card rendered its raw facts at all"
+        assert raw.endswith("Merchandise/Home Improvement"), (
+            f"the bank's category is not on the card's raw line: {raw!r}"
+        )
+        assert raw.startswith("POINT OF SALE DEBIT"), (
+            f"the raw description went with it; the two are one line: {raw!r}"
+        )
+
+    def test_a_source_that_files_NOTHING_leaves_the_line_at_the_description(
+        self, auth_client, db, seed_user,
+    ):
+        """An absent fact renders as nothing, not as a separator or a gap.
+
+        ``bank_statement_lines.source_category`` is NULLABLE and the arm is
+        for an adapter that states none.  It is not today's data: the one
+        adapter registered (SECU) states a category on every line it parses --
+        **378 of 378 recorded lines on the developer's own account**, measured
+        2026-08-30 on a restored production clone.  So this case stages the
+        state rather than sampling it.
+        """
+        an_envelope(seed_user)
+        an_unexplained_outflow(seed_user, merchant="Lowe's", amount="-35.72")
+        db.session.commit()
+
+        raw = self._raw_line(_page(auth_client, seed_user))
+
+        assert raw is not None
+        assert raw.startswith("POINT OF SALE DEBIT")
+        assert raw.endswith(")"), (
+            f"the raw line ends past its own description, so something was "
+            f"rendered for a category the line does not have: {raw!r}"
+        )
+
+
 class TestThePanelHasONEFooterAndItCloses:
     """The panel's footer: what this writes, Close, and one verb-named button.
 

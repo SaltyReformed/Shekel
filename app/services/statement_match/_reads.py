@@ -785,6 +785,7 @@ def _as_bank_line(row: BankStatementLine) -> BankLine:
         transaction_on=row.transaction_on,
         merchant_id=row.merchant_id,
         merchant=row.merchant_name,
+        source_category=row.source_category,
     )
 
 

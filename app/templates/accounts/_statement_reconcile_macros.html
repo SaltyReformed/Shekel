@@ -221,7 +221,27 @@
         <span class="rec-day font-mono">made {{ card.line.transaction_on }}</span>
         {% endif %}
       </div>
-      <div class="rec-raw font-mono">{{ card.line.description }}</div>
+      {# THE BANK'S OWN WORDS, both of them, on ONE line ellipsised by CSS.
+         The locked direction's card: "under it, in mono muted small, the
+         bank's raw description and its category".  One element and no second
+         class, because the direction asks for one line in one ink -- a class
+         setting `.rec-raw`'s own colour again would be a rule that renders
+         nothing and a comment claiming it renders something.
+
+         THE CATEGORY IS PROVENANCE AND NOTHING HERE DECIDES ON IT.  The one
+         decision this package makes on a bank's category is
+         `statement_match/_vocabulary.py`'s, asked in SQL against that
+         adapter's own vocabulary (bank_import:R-GJ) -- NOT `_bars.py`, which
+         consumes the merchant ids that read returns and never sees the
+         string.
+
+         ABSENT renders as nothing at all rather than an empty element.  How
+         often that happens is a fact about the SOURCE: the one adapter
+         registered today (SECU) states a category on every line it parses --
+         378 of 378 recorded lines on the developer's own account, measured
+         2026-08-30 -- so the empty arm is for an adapter this app does not
+         have yet. #}
+      <div class="rec-raw font-mono">{{ card.line.description }}{% if card.line.source_category %} {{ card.line.source_category }}{% endif %}</div>
     </div>
     <div class="rec-amount font-mono{% if card.line.amount < 0 %} rec-out{% endif %}">
       {{ money(card.line.amount) }}
