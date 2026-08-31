@@ -266,6 +266,22 @@ def record_income_from_line(
     # and :func:`~app.services.status_seam.day_is_in_the_future` is the same
     # predicate the screen asks so it renders no tick for such a line.
     reject_future_settle_day(_observed(line))
+    # **The other end of the same clock** (plan step **balance:X-f3c-2b-2b**,
+    # finding **N-383**): the refusal above bounds the line at TODAY, and this
+    # one bounds it at the day the account's books open.  ``mint_uncategorized``
+    # writes and settles, and the settle verb refuses the day only after the
+    # row exists -- which is the ordering this comment's neighbour above
+    # exists because of, one bound over.
+    scope.reject_line_before_books_open(line.posted_on, "this deposit")
+    # **The REFUSALS stay above the READ, and that ordering is the merge's own
+    # decision** (``balance:X-f3c-2b-2b`` into ``bank_import:X-gj-2a``,
+    # 2026-08-31).  Resolving a refusal BELOW the derivation it guards still
+    # refuses, so every case asserting a ``ValidationError`` stays green -- and
+    # what leaks is the work done in between.  Nothing here writes, so this
+    # particular order is not load-bearing TODAY; it is written this way
+    # because the paragraph above states the rule as *every refusal this act
+    # owes fires before anything is written*, and a derivation that later grew
+    # a write would inherit the wrong side of it.
     placement = inflow_placement_for(line.merchant_id, view)
     # **ONE reading of what the owner said, used by the WRITE and by the LOG.**
     # Two expressions of the same rule are two things that can come to

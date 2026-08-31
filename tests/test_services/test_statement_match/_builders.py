@@ -954,3 +954,60 @@ def a_reviewed_token(orm_row, kind, scope=None):
         kind=kind, row_id=orm_row.id, cash_amount=Decimal("0.00"),
         version_id=orm_row.version_id,
     ).token
+
+
+def an_account_whose_books_hide_a_line(db, seed_user, seed_periods):
+    """Return an account whose opening equity already accounts for one line.
+
+    **Built through ``create_account``, not by restating the seeded account.**
+    These route fixtures open their pay calendar at ``seed_periods[0]``, years
+    after the seeded account's own origination assertion -- so restating THAT
+    account's books onto the calendar's first day would move them past an
+    assertion, which the restatement door refuses.  A fixture may not assert
+    against a state no door can produce, which is the objection an adversarial
+    test-quality review raised against exactly this shape.
+
+    An account CREATED with its ``observed_on`` on the calendar's first day
+    opens its books there legally, and that is the developer's own Checking
+    shape: books opening on the pay calendar's own first day, so a line posted
+    that day is inside the calendar and inside the opening equity at once.
+
+    **It lives here because it was BYTE-IDENTICAL in three route modules** --
+    the review queue, the reconcile page and the workbench -- and it belongs
+    beside :func:`a_bank_line` and :func:`an_import`, which it calls.  Same
+    count and same remedy as ``_A_MATCHED_GROUP`` in ``tests/_test_helpers``,
+    found by the same adversarial review one pass later.  ``pylint``'s
+    ``duplicate-code`` never reads ``tests/``, so nothing but a reader was
+    going to find it.
+
+    Args:
+        db: The test ``db`` fixture.
+        seed_user: The seeded user bundle.
+        seed_periods: The seeded pay periods.
+
+    Returns:
+        ``(account, day)`` -- the account and the day both its books and the
+        line fall on.
+    """
+    # pylint: disable=import-outside-toplevel  -- ``account_service`` reaches
+    # back into this package's subject at import time; the three modules that
+    # used to hold their own copy of this fixture deferred it for the same
+    # reason.
+    from app.services import account_service as _accounts
+
+    day = seed_periods[0].start_date
+    account = _accounts.create_account(
+        _accounts.AccountSpec(
+            user_id=seed_user["user"].id,
+            account_type_id=seed_user["account"].account_type_id,
+            name="Books Hide A Line",
+            anchor_balance=Decimal("689.16"),
+            observed_on=day,
+        ),
+    )
+    db.session.flush()
+    a_bank_line(
+        seed_user, an_import(seed_user, account=account), posted_on=day,
+    )
+    db.session.commit()
+    return account, day

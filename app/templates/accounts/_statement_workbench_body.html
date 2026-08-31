@@ -298,6 +298,18 @@
         day for them to match, so they are not on the left.
       </li>
       {% endif %}
+      {# The SECOND bound on the line list (balance:X-f3c-2b-2b).  Disjoint
+         from the one above by construction -- review_set splits the calendar
+         off first -- so the two counts never claim the same line.  Both
+         halves are composed in the service; this prints them, and renders
+         the act as a link because a URL is the one fact a service may not
+         build. #}
+      {% if review.bounds.books %}
+      <li>
+        {{ review.bounds.books.said }} They are not on the left.
+        <a href="{{ url_for('accounts.edit_account', account_id=account.id) }}#books-opening">{{ review.bounds.books.restatement_act }}</a>.
+      </li>
+      {% endif %}
       {% if review.bounds.unpriceable_count %}
       <li>
         {{ review.bounds.unpriceable_count }} row(s) on this account could not be

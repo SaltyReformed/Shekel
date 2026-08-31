@@ -114,9 +114,21 @@ subscription and a ``-$500.00`` transfer out, netting the ``$2,057.42`` that is
 exactly the gap between Checking's ``$689.16`` opening and its ``$2,746.58``
 first assertion) are inside the opening too.  Twelve rows, five accounts.
 
-Review: not required -- no column is dropped, renamed or retyped and no table is
-altered.  It appends rows to an append-only table and creates four functions
-and three triggers.
+Review: Claude Opus 5, 2026-08-31 -- no column is dropped, renamed or retyped
+and no table is altered.  It appends rows to an append-only table and calls
+``apply_opening_infrastructure(arms=(MOVEMENT_ARM,))``, which for that arm set
+creates FIVE functions (``budget.books_hold`` is the fifth) and three
+constraint triggers, and additionally issues guarded DROPs for the arm it does
+NOT install -- two ``DROP TRIGGER IF EXISTS`` on
+``budget.statement_match_members`` and ``budget.bank_statement_lines``, and
+four ``DROP FUNCTION IF EXISTS``.  Those drops are no-ops on any database
+reaching this revision in order, and they are what makes the builder's
+statement TOTAL rather than additive.
+*This line read "not required ... four functions and three triggers" until
+plan step balance:X-f3c-2b-2b made the builder arm-explicit.  It was exactly
+right when written and went stale because a SHARED builder grew underneath it
+-- which is the same decay this revision's own print statement was corrected
+for, and why the count now names the arm rather than the module.*
 
 Revision ID: d3b6f1c8a274
 Revises: c8e5a2f31b47 (RE-PARENTED from a7c41f9d2b60 when recurrence:R17
@@ -129,6 +141,7 @@ from alembic import op
 
 from app.opening_infrastructure import (
     GOVERNING_ORDER_SQL,
+    MOVEMENT_ARM,
     SETTLED_MOVEMENTS_SQL,
     apply_opening_infrastructure,
     remove_opening_infrastructure,
@@ -350,12 +363,21 @@ def upgrade():
             "_ACCOUNTS_TO_RESTATE) and repair by hand before retrying."
         )
 
-    apply_opening_infrastructure(op.execute)
-    print(
-        "X-f3c-2b: books-boundary constraint installed on "
-        "budget.transactions, budget.transaction_entries and "
-        "budget.account_openings"
-    )
+    # **This revision installs the MOVEMENT arm and only it**, which is the
+    # arm it censused and repaired above.  It named no arms at all until plan
+    # step balance:X-f3c-2b-2b, and the builder is imported LIVE from ``app/``
+    # -- so when that step added the matched-line arm, THIS call silently
+    # started installing it too -- from HERE, which is five revisions before
+    # ``d1f6a83c9e47`` runs the census that decides whether the rows already
+    # there can satisfy them.  Measured on a clone stopped at
+    # ``c9f4b1e78d02``: it came up carrying ``ck_matched_line_after_books_open``
+    # and ``ck_line_day_after_books_open`` LIVE.  (That stamp is one revision
+    # before the census, not five; the five is the span from this revision,
+    # where the arm actually went in.)  A constraint ahead of its census is what
+    # finding N-400 is made of, reached from the migration side.  Naming the
+    # arm is what makes this revision install what it declared.
+    apply_opening_infrastructure(op.execute, arms=(MOVEMENT_ARM,))
+    print("X-f3c-2b: books-boundary MOVEMENT arm installed")
 
 
 #: Every opening this migration COULD have written, for the downgrade to report.
@@ -460,8 +482,7 @@ def downgrade():
     """
     remove_opening_infrastructure(op.execute)
     print(
-        "X-f3c-2b: books-boundary constraint removed from "
-        "budget.transactions, budget.transaction_entries and "
-        "budget.account_openings"
+        "X-f3c-2b: books-boundary constraint removed "
+        "(app.opening_infrastructure, every table it covers)"
     )
     _report_restatements_standing(op.get_bind())
