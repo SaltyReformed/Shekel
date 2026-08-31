@@ -816,10 +816,12 @@ class PayCalendar:
                 never a submitted or nullable one, which is
                 :meth:`period_by_id`'s question.
             transaction_id: The ``budget.transactions.id`` being placed, for
-                the message.  Typed to the one table both callers place today
-                rather than taken as free text, so the message has ONE
-                spelling; ``budget.transfers`` carries a ``pay_period_id`` too
-                and would widen this rather than add a second format string.
+                the message.  Typed to the one table EVERY caller places --
+                the PREDICATE, where this cell read "both callers" until plan
+                step ``pay_calendar:C4-a-3`` added two more -- rather than
+                taken as free text, so the message has ONE spelling;
+                ``budget.transfers`` carries a ``pay_period_id`` too and would
+                widen this rather than add a second format string.
 
         Returns:
             The :class:`~._derive.DerivedPeriod` carrying *period_id*.

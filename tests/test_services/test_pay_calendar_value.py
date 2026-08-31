@@ -1748,6 +1748,122 @@ class TestTheDerivedPeriodContract:
         assert span.period_id is None
 
 
+class TestTheContainmentRuleOnOnePeriod:
+    """Pin ``DerivedPeriod.covers``, the one-period span test (**C4-a-3**).
+
+    Ruled at **R-PC31** and landed with plan step C4-a-3 for the three sites
+    that open-coded ``start_date <= day <= end_date``: the purchase-date
+    warning (``entry_service._sums.entry_list_view``), the recurrence engine's
+    base-month scan (``recurrence_engine._plan.compute_due_date``) and this
+    package's own ``_searches.containing_index``.
+
+    **The five point cases below came from
+    ``entry_service.check_purchase_date_in_period``**, which this method
+    replaced and which was DELETED with the ORM read it made: it asked
+    ``transaction.pay_period`` for the STORED ``end_date`` plan step C4-c
+    drops.  They assert exactly what they asserted there -- inside, before,
+    after, on the payday, on the last covered day -- against the DERIVED span
+    rather than the column, which is the whole of the move.
+
+    The class does not stop at those five, because five point assertions on
+    one biweekly shape cannot say the rule holds for the one-day period, the
+    long stretch or the cadence-projected end.  The sweep at the bottom does.
+    """
+
+    def test_a_day_inside_the_period_is_covered(self):
+        """The ordinary answer: a purchase made mid-paycheck is in period."""
+        period = calendar().periods[0]
+
+        assert period.start_date == date(2026, 1, 2)
+        assert period.end_date == date(2026, 1, 15)
+        assert period.covers(date(2026, 1, 5)) is True
+
+    def test_a_day_BEFORE_the_payday_is_not_covered(self):
+        """The lower bound excludes, so the previous paycheck keeps its days."""
+        assert calendar().periods[0].covers(date(2025, 12, 31)) is False
+
+    def test_a_day_AFTER_the_last_covered_day_is_not_covered(self):
+        """The upper bound excludes, so the next paycheck keeps its days."""
+        assert calendar().periods[0].covers(date(2026, 1, 20)) is False
+
+    def test_BOTH_boundary_days_are_covered(self):
+        """Inclusive at both ends -- the payday and the day before the next.
+
+        Writing the rule out twice is how a chained comparison comes to carry
+        ``<`` on one end, so both ends are asserted rather than one.
+        """
+        period = calendar().periods[0]
+
+        assert period.covers(date(2026, 1, 2)) is True
+        assert period.covers(date(2026, 1, 15)) is True
+
+    def test_the_PROJECTED_last_period_answers_on_its_projected_end(self):
+        """The last period's end comes from the cadence, and it still bounds.
+
+        A consumer holding one period cannot tell a fact-derived end from a
+        cadence-projected one, which is why this method does not ask: a
+        purchase is in or out of its own paycheck's span either way.
+        """
+        cal = calendar()
+        last = cal.periods[-1]
+
+        assert last.end_is_projected is True
+        assert last.covers(last.end_date) is True
+        assert last.covers(last.end_date + timedelta(days=1)) is False
+
+    def test_it_does_NOT_ask_whether_the_period_is_SAVED(self):
+        """An unsaved candidate covers its span; the SEARCH still skips it.
+
+        The two questions are different and this pins the difference rather
+        than leaving the search's filter to look like part of the containment
+        rule.  ``period_containing`` answers a period a ``NOT NULL``
+        ``pay_period_id`` can point at, so it filters to the materialised
+        subset first (plan step C2-f2b); ``covers`` is asked OF a period a
+        caller is already holding and answers about its span alone.
+        """
+        cal = calendar(WITH_UNSAVED)
+        candidate = next(p for p in cal.periods if p.period_id is None)
+
+        assert candidate.covers(candidate.start_date) is True
+        assert cal.period_containing(candidate.start_date) is None
+
+    @pytest.mark.parametrize(
+        "name,paydays,cadence", SHAPES, ids=[s[0][:40] for s in SHAPES],
+    )
+    def test_it_equals_the_predicate_it_replaced_on_every_day_of_every_shape(
+        self, name, paydays, cadence,
+    ):
+        """The method and the open-coded pair agree, day by day, everywhere.
+
+        ``TestTheFilingRuleEqualsTheChainItDeletes``' shape, one rule smaller:
+        the expectation is the comparison the three retired sites wrote out,
+        SPELLED HERE, so the two sides come from two places.  That matters
+        because the arm a reader would reach for first cannot work --
+        ``_searches.containing_index`` now DELEGATES to this method, so an
+        assertion that the search and ``covers`` agree has one producer behind
+        both sides and stays green through any mutation of the rule (measured:
+        flipping the upper bound to ``<`` left exactly that arm passing).
+
+        Walked from a fortnight below the opening payday to a fortnight past
+        the horizon, over every shape the payday model can express, so the
+        one-day period and the cadence-projected last end are both in range.
+        """
+        cal = calendar(paydays, cadence)
+        first = min(day for _pid, day in paydays)
+        last = max(period.end_date for period in cal.periods)
+
+        day = first - timedelta(days=14)
+        while day <= last + timedelta(days=14):
+            for period in cal.periods:
+                expected = period.start_date <= day <= period.end_date
+                assert period.covers(day) is expected, (
+                    f"{name}: period {period.period_index} "
+                    f"({period.start_date}..{period.end_date}) answered "
+                    f"{period.covers(day)} for {day}"
+                )
+            day += timedelta(days=1)
+
+
 class TestTheAttributionClamp:
     """Pin the shared BUDGET-attribution rule (plan step **C4-a-2**).
 

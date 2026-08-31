@@ -58,7 +58,6 @@ from ._refusals import removal_refusal
 from ._sums import (
     build_entry_lists_dict,
     build_entry_sums_dict,
-    check_purchase_date_in_period,
     compute_entry_sums,
     compute_remaining,
     entry_list_view,
@@ -69,7 +68,6 @@ __all__ = [
     "EntryDetails",
     "build_entry_lists_dict",
     "build_entry_sums_dict",
-    "check_purchase_date_in_period",
     "compute_entry_sums",
     "compute_remaining",
     "create_entry",
