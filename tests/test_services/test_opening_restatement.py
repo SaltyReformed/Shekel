@@ -575,33 +575,6 @@ class TestTheDaysItRefuses:
             assert outcome is OpeningRestatementOutcome.COMMITTED
             assert account_opening_fact(account.id).opened_on == first
 
-    def test_the_DATABASE_refuses_an_opening_past_an_assertion_too(
-        self, app, db, seed_user, seed_periods,
-    ):  # pylint: disable=unused-argument
-        """``opening_infrastructure`` claims the state is UNSTORABLE; this is that.
-
-        The service refusal above is the sentence a date box gets.  This goes
-        around it -- a direct ``AccountOpening`` INSERT -- because the module's
-        own docstring says the state is unstorable "by any single transaction
-        from any client", and a rule stated only in Python is not.
-        """
-        with app.app_context():
-            account = _cash_account(seed_user, "DatabaseAssertionBound")
-            first = earliest_assertion_day(account.id)
-            db.session.commit()
-
-            db.session.add(AccountOpening(
-                account_id=account.id,
-                opened_on=first + _ONE_DAY,
-                opening_equity=Decimal("1.00"),
-                source_id=ref_cache.account_opening_source_id(
-                    AccountOpeningSourceEnum.USER_DECLARED,
-                ),
-            ))
-            with pytest.raises(InternalError, match=r"reported as a gain"):
-                db.session.commit()
-            db.session.rollback()
-
     def test_it_is_NOT_bounded_by_the_owners_pay_calendar(
         self, app, db, seed_user, seed_periods,
     ):  # pylint: disable=unused-argument

@@ -48,14 +48,23 @@ comparing the governing row under both orderings across all nine accounts gives
 changes.
 
 Review: not required -- this alters no table, no column and no constraint.  It
-replaces one function body through ``CREATE OR REPLACE FUNCTION``, which is
-what :func:`app.opening_infrastructure.apply_opening_infrastructure` is built
-to be idempotent about.
+replaces FUNCTION BODIES through ``CREATE OR REPLACE FUNCTION`` and touches
+nothing else.
+
+**That claim is true because the revision was narrowed to make it true**, which
+a code review asked for on 2026-08-31.  It called
+``apply_opening_infrastructure``, whose trigger half issues
+``DROP TRIGGER IF EXISTS`` plus ``CREATE CONSTRAINT TRIGGER`` on three
+constraint triggers -- the drop-and-recreate shape
+``.claude/rules/database.md`` requires a ``Review:`` line for, restoring them
+identically or not.  It calls
+:func:`app.opening_infrastructure.apply_opening_functions` instead: a revision
+that does not touch a constraint cannot be wrong about whether it touched one.
 """
 
 from alembic import op
 
-from app.opening_infrastructure import apply_opening_infrastructure
+from app.opening_infrastructure import apply_opening_functions
 
 
 # revision identifiers, used by Alembic.
@@ -89,24 +98,34 @@ $$ LANGUAGE sql STABLE
 def upgrade():
     """Swap every books-boundary function body to the in-code definition.
 
-    ``apply_opening_infrastructure`` is idempotent -- ``CREATE OR REPLACE
-    FUNCTION`` for the four functions, a guarded drop plus create for the three
-    triggers -- so this re-applies the whole module rather than reaching in for
-    the one function that changed.  Re-applying the set is what keeps this
-    revision honest if a later edit moves a different part of it: the
-    alternative is a revision that names one function and silently stops
-    tracking the module it came from.
+    All FOUR function bodies, not the two this revision changed, and that is
+    deliberate: re-applying the set is what keeps the revision honest if a
+    later edit moves a different one, where naming two would silently stop
+    tracking the module they came from.  ``CREATE OR REPLACE FUNCTION`` is
+    idempotent, so re-stating an unchanged body costs nothing and asserts
+    nothing false.
+
+    The three constraint TRIGGERS are deliberately not re-applied -- see the
+    module docstring for why that is what makes this revision's own
+    ``Review:`` line true.
     """
-    apply_opening_infrastructure(op.execute)
+    apply_opening_functions(op.execute)
 
 
 def downgrade():
-    """Restore the ``created_at``-led ordering the previous revision installed.
+    """Restore both function bodies the previous revision installed.
 
-    Only the governing-day lookup is reverted, because it is the only thing
-    this revision changed: the two predicates and the three triggers are
-    byte-identical across it, and re-applying them here would be a no-op that
-    reads as though something else moved.
+    ONE body, because this revision changes one: the governing-day lookup's
+    ordering.  The two predicates, the openings dispatcher and the three
+    constraint triggers are byte-identical across it and are deliberately left
+    alone -- re-applying them would be a no-op that reads as though something
+    else moved.
+
+    *A draft of this revision also carried an assertion bound into the
+    openings predicate, and the suite refused it: the state it forbade is one
+    existing rows already hold.  That rule lives at the door instead -- see
+    :mod:`app.opening_infrastructure` for why, and finding N-400 for what
+    making it structural would take.*
 
     No data is touched in either direction -- see the module docstring for the
     production measurement showing both orderings name the same governing row

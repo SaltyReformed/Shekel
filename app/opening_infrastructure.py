@@ -49,23 +49,26 @@ it as a row-level CHECK:
   (``budget.transactions`` and ``budget.transaction_entries``, both of which
   carry ``account_id`` and ``settled_on``);
 * an account's GOVERNING opening may not sit on or after a movement that
-  already exists, nor AFTER a day the owner has asserted a balance for
-  (``budget.account_openings``) -- stated over the rows that survive an event
-  rather than over the row written, so restating forward, raw-updating the
-  governing row and DELETING it (which promotes an older restatement) are one
-  rule rather than three arms.
+  already exists (``budget.account_openings``) -- stated over the rows that
+  survive an event rather than over the row written, so restating forward,
+  raw-updating the governing row and DELETING it (which promotes an older
+  restatement) are one rule rather than three arms.
 
-**The assertion half was added 2026-08-31 and it closes a MONEY defect the
-movement half could not see.**  An account with no settled movement is
-unbounded by the first rule, and that is every investment, retirement and
-property account on production.  Reproduced on the developer's own Roth IRA:
-restating its books forward past six assertions was accepted, moved
-``unrealized_change`` from ``-$4,523.33`` to ``-$27,332.35`` -- ``$22,809.02``
-of investment return that never happened -- and silently discarded the opening
-the owner had just stated, because the earliest assertion RESETS the fold above
-it.  Equality is legal and is the ORDINARY case: ``account_service`` writes an
-account's origination opening and origination assertion for the same day, and
-three of the nine production accounts still sit exactly there.
+**A THIRD rule is enforced at the DOOR and deliberately NOT here**, and the
+reason is worth stating because this module's whole claim is structural: a
+restatement may not move the books past a day the owner has ASSERTED a balance
+for (:func:`app.services.cash_ledger.reject_books_open_after_an_assertion`,
+plan step X-f3c-2b-2a).  It was written as a fourth trigger arm first, and the
+suite refused it -- 12 failures and 22 errors, every one raising out of
+``assert_account_books_hold_its_movements``.  **The state it forbids is
+ROUTINE, and not only in fixtures**: nothing bounds an assertion against its
+account's opening, because ``anchor_service.resolve_observation_day`` bounds
+``observed_on`` at ``earliest_recordable_day`` and at today and never at
+``opened_on`` -- so an owner may back-date an assertion below their own books
+through ``accounts.true_up``.  A constraint refusing what existing rows already
+hold does not enforce an invariant; it breaks every write on the accounts that
+hold it.  Making the STATE illegal needs the assertion door bounded too and the
+existing rows legalised, which is a step and not a clause (finding **N-400**).
 
 Both are cross-table facts, so they live in **deferred constraint triggers**
 validating at COMMIT.  Deferral is not incidental: restating an account's
@@ -285,7 +288,6 @@ RETURNS VOID AS $$
 DECLARE
     v_opened_on DATE;
     v_earliest DATE;
-    v_first_assertion DATE;
 BEGIN
     -- **The predicate is over the account's RESULTING STATE, not over the row
     -- that was written**, and that is what makes one function serve every
@@ -338,28 +340,6 @@ BEGIN
             'dated %, and an opening equity is the closing balance for its '
             'own day, so that money would be counted twice',
             p_account_id, v_opened_on, v_earliest;
-    END IF;
-
-    -- The ASSERTION bound.  An account with no settled movement passes
-    -- everything above, so without this an opening could be restated past
-    -- every balance the owner has ever recorded -- at which point the
-    -- earliest assertion resets the fold above it, the stated opening is read
-    -- by nothing, and the whole gap is reported as a gain on a MODELLED
-    -- account (ruling R-FO).  ``>`` and not ``>=``: an opening EQUAL to the
-    -- earliest assertion is what ``account_service.create_account`` writes for
-    -- every account, so refusing equality would make the factory's own output
-    -- unstorable.
-    SELECT MIN(observed_on) INTO v_first_assertion
-      FROM budget.account_anchor_history
-     WHERE account_id = p_account_id;
-
-    IF v_first_assertion IS NOT NULL AND v_opened_on > v_first_assertion THEN
-        RAISE EXCEPTION
-            'account % cannot open its books on %: a balance is already '
-            'recorded for %, and the fold restarts at a recorded balance -- '
-            'so an opening after it would be ignored and the difference '
-            'reported as a gain',
-            p_account_id, v_opened_on, v_first_assertion;
     END IF;
 END;
 $$ LANGUAGE plpgsql
@@ -524,15 +504,49 @@ def apply_opening_infrastructure(executor: Callable[[str], object]) -> None:
             session.  Errors propagate -- the caller owns the outer
             transaction.
     """
-    executor(_CREATE_OPENED_ON_SQL)
-    executor(_CREATE_MOVEMENT_FUNC_SQL)
+    apply_opening_functions(executor)
     for table in _MOVEMENT_TABLES:
         executor(_drop_trigger_sql(_MOVEMENT_TRIGGER, table))
         executor(_create_movement_trigger_sql(table))
-    executor(_CREATE_OPENING_PREDICATE_SQL)
-    executor(_CREATE_OPENING_FUNC_SQL)
     executor(_drop_trigger_sql(_OPENING_TRIGGER, _OPENINGS_TABLE))
     executor(_CREATE_OPENING_TRIGGER_SQL)
+
+
+def apply_opening_functions(executor: Callable[[str], object]) -> None:
+    """Idempotently materialise the four FUNCTIONS, and no trigger.
+
+    The half of :func:`apply_opening_infrastructure` that is pure
+    ``CREATE OR REPLACE FUNCTION``.  Split out at plan step
+    **balance:X-f3c-2b-2a** so a revision that changes only a function BODY can
+    execute only function bodies.
+
+    **The reason is a review finding rather than tidiness.**  That step's
+    revision (``c9f4b1e78d02``) changes two bodies -- the governing-day lookup
+    and the openings-side predicate -- and nothing else, and its docstring said
+    so: "this alters no table, no column and no constraint".  Calling the whole
+    apply would have made that FALSE, because the trigger half issues
+    ``DROP TRIGGER IF EXISTS`` plus ``CREATE CONSTRAINT TRIGGER`` on three
+    constraint triggers, which is the drop-and-recreate shape
+    ``.claude/rules/database.md`` requires a ``Review:`` line for.  Restating
+    the claim as a caveat was the alternative; removing the act is better,
+    because a revision that does not touch a constraint cannot be wrong about
+    whether it touched one.
+
+    **Order is load-bearing, and it is the caller's contract too.**  The
+    openings PREDICATE is created before the dispatcher that ``PERFORM``s it,
+    because ``check_function_bodies`` validates that reference at
+    ``CREATE FUNCTION`` time; the movement function and the governing-day
+    lookup have no such dependency but are kept in their original positions so
+    a reader diffing this against the pre-split apply sees no reordering.
+
+    Args:
+        executor: Single-argument callable that accepts a SQL string and runs
+            it.  Same contract as :func:`apply_opening_infrastructure`.
+    """
+    executor(_CREATE_OPENED_ON_SQL)
+    executor(_CREATE_MOVEMENT_FUNC_SQL)
+    executor(_CREATE_OPENING_PREDICATE_SQL)
+    executor(_CREATE_OPENING_FUNC_SQL)
 
 
 def remove_opening_infrastructure(executor: Callable[[str], object]) -> None:
