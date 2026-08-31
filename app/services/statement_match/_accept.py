@@ -755,8 +755,12 @@ def record_match(
 
     The order its refusals have to happen in: both sides are checked for
     presence, for the double-count pairing and for what their difference means
-    (:func:`~._variance.reject_unrecordable`), and only then does any settle
-    door run.  The order the MEMBERS move in is :func:`_move_members`'.
+    (:func:`~._variance.reject_unrecordable`); then the EARLIEST of the bank
+    days is checked against the day the account's books open
+    (:meth:`~._scope.ReviewScope.reject_line_before_books_open`, plan step
+    **balance:X-f3c-2b-2b**), which is the one refusal a settle door cannot
+    make for it; and only then does any settle door run.  The order the
+    MEMBERS move in is :func:`_move_members`'.
 
     **A GROUP's difference is a MEMBER this function mints**, not an exception
     to the balance it checks (plan step ``bank_import:X-f6d-4``, ruling
@@ -832,6 +836,25 @@ def record_match(
     # two ends are opposite.
     days = MatchDays.of(lines)
 
+    # **The EARLIEST posting day, against the day this account's books open**
+    # (plan step **balance:X-f3c-2b-2b**, finding **N-383**).  Asked here
+    # because ``posted_first`` is what it needs and this is the first line at
+    # which that exists -- and before ``_move_members``, which is the first
+    # thing in this function that writes.
+    #
+    # **``posted_first`` and never ``posts_on``, and the difference is the
+    # whole defect.**  Every member settles on the LATEST of the bank days, so
+    # a group holding one pre-opening line and one later line settles after
+    # the books open and clears ``reject_movement_before_books_open``
+    # untouched -- while the pre-opening line's money is already inside the
+    # opening equity, and is now inside a settled row as well.  Measured on a
+    # restored production clone 2026-08-31: lines of 2026-03-26 (`-$15.96`)
+    # and 2026-08-17 (`-$64.04`) matched to one `$80.00` envelope were
+    # ACCEPTED against books opening 2026-03-26 at `$689.16`.  A one-line
+    # match refuses today only because ``max`` over one line is that line's
+    # own day, which is an accident of the derivation and not a rule.
+    scope.reject_line_before_books_open(days.posted_first, "this match")
+
     # ONE derivation of what the bank says a single named row is worth, for
     # the whole act -- and **it is what makes the two remedies exclusive**.
     # ``bank_cash_for`` answers a figure exactly where the difference is
@@ -845,8 +868,10 @@ def record_match(
 
     # **The residual's PAY PERIOD is resolved here, before any member moves**,
     # because that lookup can refuse: a line posted past the owner's last SAVED
-    # pay period reaches this door (the review screen splits off only the lines
-    # BEFORE the calendar opens), and a refusal raised after the settle verbs
+    # pay period reaches this door (the review screen splits off only the
+    # lines BEFORE the calendar opens and the ones the books cannot hold,
+    # neither of which is a day PAST the horizon), and a refusal raised
+    # after the settle verbs
     # had run would leave written work behind -- which this module's own
     # promise says it does not, savepoint or no savepoint.  Found by
     # adversarial financial review 2026-08-23.

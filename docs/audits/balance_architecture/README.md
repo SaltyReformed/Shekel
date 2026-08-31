@@ -258,29 +258,18 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
         OPERATOR act that cannot run until the first has deployed -- production is
         still at `a4c6f1d92b73` and has no `budget.account_openings` table at all.
         Carries **N-379**, **N-382**.
-        * [ ] **X-f3c-2b-2a** `feat(accounts): an owner can say when the books opened`
-          -- the DOOR **N-275**, **N-379** and **N-382** each name: an append-only
-          restatement carrying the day, the equity and a `user_declared` provenance
-          through the table's ONE writer, bounded by the movements recorded and by
-          today, and NOT by `earliest_recordable_day` (a rule about assertions,
-          **R-ER**, which would make the books unopenable before the calendar).
-          **One door, two entrances** (**R-IE**): the form on the shared account
-          EDIT page, which every kind reaches, and a link from the balance-history
-          card's opening row -- that card is the opening's only display and serves
-          3 of the 9 accounts, while 4 of the other 6 carry a `migration_derived`
-          figure the fold READS. An amortizing account is refused; nothing reads
-          its row. **Migration `c9f4b1e78d02` rides it, and the reason is a deploy
-          trap**: the governing row is the latest `id`, not the latest
-          `created_at` (which is `transaction_timestamp()`, so two tabs invert it
-          and a restatement silently no-ops) -- and re-applying that shared SQL
-          constant needs a revision, because `migrate_existing_database` runs the
-          chain and nothing else. It moves no figure on all nine accounts.
-        * [ ] **X-f3c-2b-2b** `feat(bank-import): a line the books cannot hold is
-          withheld` -- **N-383**. Three import doors OFFER a line whose day the
-          account's books cannot hold and the submission is then refused; a date box
-          getting a 400 is correct and an OFFER LIST is not. Withheld with a reason
-          naming **X-f3c-2b-2a**'s door. **It follows `bank_import:X-gj-1b`**, which
-          rebuilds the very cards a withheld line renders on. Closes **N-383**.
+        * [x] **X-f3c-2b-2a** `59b485df` -- the DOOR that restates an account's
+          opening: append-only, through the table's ONE writer, bounded by the
+          movements recorded and by today but NOT by `earliest_recordable_day`
+          (**R-ER**), two entrances (**R-IE**). Migration `c9f4b1e78d02` rides it:
+          the governing row is the latest `id`, never `created_at`. **N-275**,
+          **N-379**, **N-382** stay OPEN at **X-f3c-2b-2c**; opened **N-400**.
+        * [x] **X-f3c-2b-2b** `7ef63899` -- a matched bank LINE bounds its account's
+          opening at BOTH tiers (**R-IG**, **R-IH**): four doors refuse a line the
+          books cannot hold, three screens stop OFFERING one, and deferred triggers
+          on `statement_match_members` AND `bank_statement_lines` make the state
+          unstorable. The builders became ARM-EXPLICIT, deleting the migration's
+          90-line frozen body copy. Closed **N-383**; opened **N-407**.
         * [ ] **X-f3c-2b-2c** the account-10 repair, performed through the app's own
           DOORS and never by a migration writing money rows (**R-HJ**). **It is an
           OPERATOR act, so this leaf is a rehearsed runbook and a re-measurement

@@ -636,6 +636,28 @@ def _bank_control(account, calendar) -> "_BankControl | None":
 
     Returns:
         The :class:`_BankControl`, or ``None`` when no control belongs here.
+
+    Note:
+        **There is deliberately NO guard here for an account carrying no
+        ``budget.account_openings`` row**, and it was MEASURED rather than
+        reasoned about.  A draft of plan step balance:X-f3c-2b-2b added one --
+        ``awaiting_review_count`` reaches the RAISING loader
+        (``cash_ledger.account_opening_fact``), so the concern was that a
+        broken invariant would take the app's hottest page down rather than one
+        control on it.  Deleting every opening row for the seeded account and
+        rendering ``/grid`` showed why that guard could never help: the request
+        raises inside ``_build_grid_view`` (through
+        ``balance_at.grid_balance_view`` -> ``cash_ledger.walk_cash_ledger`` ->
+        ``cash_ledger.account_opening_fact``, which is the RAISING loader), and
+        ``index`` does not reach this function until many statements later.
+        Line numbers are deliberately not quoted: the first draft of this note
+        cited two, measured with the deleted guard still in place, and both
+        were three lines stale before it was committed.  The guard was
+        UNREACHABLE for the state it named, while costing a second
+        ``budget.account_openings`` read per cash account on every grid render
+        -- the DRY violation ``awaiting_review_count``'s own docstring names
+        four lines from where the read was added.  ``CLAUDE.md`` rule 13: no
+        error handling for a state that cannot arrive here.
     """
     if account is None or not serves_cash_detail(account):
         return None

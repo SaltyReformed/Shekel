@@ -8,40 +8,58 @@ either side:
 
 * a MOVEMENT may not be dated on or before the day its account's books open --
   :func:`reject_movement_before_books_open`, the sentence a settle-day box gets;
+* a BANK LINE the books cannot hold may not be turned into one, or be named by
+  a match that settles one -- :func:`reject_line_before_books_open`, the
+  sentence the three import doors get (plan step **X-f3c-2b-2b**, finding
+  **N-383**).  It is the movement rule reached from the EVIDENCE rather than
+  from the row, and it is not implied by the movement rule: a match settles
+  every member on the LATEST of its bank days, so a group holding one
+  pre-opening line and one later line clears the movement check entirely.
+  Measured on a production clone 2026-08-31 -- lines of 2026-03-26 and
+  2026-08-17 matched to one `$80.00` envelope, accepted, and the `$15.96`
+  already inside Checking's `$689.16` opening booked a second time;
 * an OPENING may not be restated onto or past a day the account already records
   money moving -- :func:`reject_books_open_on_or_after_movements`, the sentence
   the restatement door gets (plan step **X-f3c-2b-2a**);
+* an OPENING may not be restated onto or past a day the account has MATCHED a
+  bank line on -- :func:`reject_books_open_on_or_after_matched_lines`, the
+  same defect one door over.  A matched line can post well before the row
+  explaining it settles, so the movement bound above calls the whole window
+  between them legal;
 * an OPENING may not be restated past a day the owner has ASSERTED a balance
-  for -- :func:`reject_books_open_after_an_assertion`.  The third question, and
-  the one the first two did not see: an account with no settled movement is
+  for -- :func:`reject_books_open_after_an_assertion`.  The one none of the
+  others saw: an account with no settled movement is
   unbounded by the rule above, which is every investment, retirement and
   property account in production.  Reproduced on the developer's own Roth IRA,
   it fabricated ``$22,809.02`` of investment return and discarded the opening
   the owner had just stated.
 
-**They are two questions about one rule, and they live in one module because
-the alternative already bit this arc.**  Each reads a different table to answer
-the same comparison, so nothing about them can be collapsed into a shared
-function -- which is precisely why they have to be READ together: "two
-statements of one rule that differ silently is the failure this arc names as
-its own root cause" (:mod:`app.opening_infrastructure`).  The movement half
-lived in :mod:`._events` beside the opening RECORD it reads while it was the
-only half; with a second half it belongs beside its twin instead, and
-:mod:`._events` goes back to being what its own docstring says it is -- the
-loaders that build the event stream.
+**They are five questions about one COMPARISON, and the comparison is stated
+once** -- :func:`books_hold`, which every refusal here asks and nothing here
+re-spells.  Each reads a different table to answer it, so the QUERIES cannot be
+collapsed; the test that decides them can, and leaving it open-coded five times
+is how the ``<`` / ``<=`` distinction ruling **R-HG** turns on comes to differ
+between two of them.  That is why they are read together: "two statements of
+one rule that differ silently is the failure this arc names as its own root
+cause" (:mod:`app.opening_infrastructure`).  The movement half lived in
+:mod:`._events` beside the opening RECORD it reads while it was the only half;
+with a second half it belongs beside its twin instead, and :mod:`._events` goes
+back to being what its own docstring says it is -- the loaders that build the
+event stream.
 
-**The DATABASE is the structural half of both, and neither of these is.**
+**The DATABASE is the structural half, and none of these is.**
 :mod:`app.opening_infrastructure` installs deferrable constraint triggers over
-``budget.transactions``, ``budget.transaction_entries`` AND
+``budget.transactions``, ``budget.transaction_entries``,
+``budget.statement_match_members``, ``budget.bank_statement_lines`` AND
 ``budget.account_openings``, so the state is unstorable by any single
 transaction from any client -- a bulk ``UPDATE``, a raw statement, a psql
-session, a writer nobody enumerated.  These two functions exist so an ordinary
+session, a writer nobody enumerated.  These functions exist so an ordinary
 date box gets a sentence instead of a ``psycopg2`` exception at COMMIT: the
 same pairing ``ck_transactions_settle_day_needs_a_record`` has with
 :func:`app.services.status_seam.reject_settle_day_without_a_record`.
 
-**Which is why the ROW SET below is imported rather than re-spelled.**  The
-opening-side predicate has to refuse exactly what the trigger refuses, or a
+**Which is why the two ROW SETS below are imported rather than re-spelled.**
+Each opening-side predicate has to refuse exactly what its trigger refuses, or a
 submission passes here and aborts at COMMIT with a message no surface can
 render -- and the trigger's row set is deliberately WIDER than the balance
 fold's: it counts SOFT-DELETED rows and the Credit / Cancelled statuses, so a
@@ -52,23 +70,69 @@ makes "the service refuses what the database refuses" true by construction
 rather than by two authors agreeing.
 
 Services-boundary discipline (``CLAUDE.md`` Architecture): plain data in, plain
-values out; no Flask symbol, no writes, no clock read.  The three REFUSALS
-raise :class:`~app.exceptions.ValidationError` and do nothing else; the two
-day readers beside them return a date and raise nothing.
+values out; no Flask symbol, no writes, no clock read.  The five REFUSALS
+raise :class:`~app.exceptions.ValidationError` and do nothing else; the three
+day readers and the one predicate beside them return a value and raise nothing.
 """
 
 from __future__ import annotations
 
 from datetime import date
+from typing import TYPE_CHECKING
 
 from sqlalchemy import func, text
 
 from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
-from app.opening_infrastructure import SETTLED_MOVEMENTS_SQL
+from app.opening_infrastructure import (
+    MATCHED_LINE_DAYS_SQL, SETTLED_MOVEMENTS_SQL,
+)
 
 from ._events import account_opening_fact
+
+if TYPE_CHECKING:  # pragma: no cover -- annotation only
+    from ._events import CashOpeningFact
+
+
+def books_hold(opened_on: date, day: date) -> bool:
+    """Return whether books opening on *opened_on* may record money on *day*.
+
+    **THE comparison this module is about, stated once** (ruling **R-HG**).
+    An account's opening equity is the balance at the CLOSE of ``opened_on``,
+    so a day on or before it is ALREADY INSIDE the figure and recording money
+    there counts it twice.  Every refusal in this module asks this and none
+    re-spells it.
+
+    **It is ``>`` and not ``>=``, and that is the whole of R-HG's ruled
+    half.**  The ruling weighed the start-of-day reading -- refuse only a
+    STRICTLY earlier movement -- and rejected it, because
+    ``account_service.create_account`` stores the balance a human typed *as
+    of* a day, which is that day's close, and admitting a same-day movement
+    leaves the harm alive for exactly the rows finding **N-378** measured: on
+    a MODELLED account the correction that heals the double count books to
+    ``unrealized_change``, so a transfer becomes market performance that never
+    unwinds.  Stating it in one function is what stops the two readings
+    drifting apart across its five call sites in this package, two in
+    ``statement_match`` (``_gaps._split_at_books_open`` asks it; ``_reads
+    .awaiting_review_count`` cannot, and open-codes the same ``>`` as a COLUMN
+    EXPRESSION because a SQL filter cannot call a Python predicate -- that
+    exception is stated at the site), and one SQL tier -- and the SQL tier states it once too, as
+    ``budget.books_hold``, which every predicate there asks rather
+    than re-spelling.  It was open-coded in five PL/pgSQL predicates
+    until plan step X-f3c-2b-2b's adversarial design review counted
+    them, three of which that step had just added under a docstring
+    claiming the comparison was stated once.
+
+    Args:
+        opened_on: The day the account's books open.
+        day: The civil day money is claimed to have moved.
+
+    Returns:
+        ``True`` when *day* falls after the books opened, so the movement is
+        outside the opening equity and may be recorded.
+    """
+    return day > opened_on
 
 
 def reject_movement_before_books_open(account_id: int, day: date) -> None:
@@ -145,15 +209,87 @@ def reject_movement_before_books_open(account_id: int, day: date) -> None:
     # entirely.
     with db.session.no_autoflush:
         opening = account_opening_fact(account_id)
-    if day > opening.opened_on:
+    if books_hold(opening.opened_on, day):
         return
     raise ValidationError(
         f"Money cannot have moved on {day.isoformat()}: this account's books "
         f"open on {opening.opened_on.isoformat()} holding "
-        f"${opening.opening_equity}, and that figure is the closing balance "
+        f"${opening.opening_equity:,.2f}, and that figure is the closing balance "
         "for its own day -- so anything that moved by then is already inside "
         "it.  Restate the account's opening to an earlier day if the records "
         "really do start before it."
+    )
+
+
+def reject_line_before_books_open(
+    opening: "CashOpeningFact", posted_on: date, subject: str,
+) -> None:
+    """Refuse an act over a bank line the account's books cannot hold.
+
+    The EVIDENCE side of the boundary (plan step **X-f3c-2b-2b**, finding
+    **N-383**).  A bank line is the bank's record of money moving on the day
+    it POSTED, so a line posted on or before ``opened_on`` is already inside
+    the opening equity -- and an act that turns it into a purchase, into an
+    income row, or into the evidence for settling one, records that money a
+    second time.
+
+    **It is NOT implied by** :func:`reject_movement_before_books_open`, and
+    that gap is the reason this exists rather than a second guard on the same
+    fact.  A match settles every member row on the LATEST of its bank days
+    (:class:`~app.services.statement_match.MatchDays`), so a group holding one
+    pre-opening line and one later line settles AFTER the books open and
+    passes the movement check untouched.  Measured on a restored production
+    clone 2026-08-31: Checking's books open 2026-03-26 holding ``$689.16``,
+    and lines of 2026-03-26 (``-$15.96``) and 2026-08-17 (``-$64.04``) matched
+    to one ``$80.00`` envelope were ACCEPTED, settling it on 2026-08-17 --
+    ``$15.96`` inside the opening equity and inside a settled row at once.
+    The single-line case refuses today only because ``max`` over one line is
+    that line's own day, which is an accident of the derivation rather than a
+    rule anything states.
+
+    **The OPENING is passed in rather than loaded**, which is the opposite of
+    its twin above and is the review pass's own rule: a pass over one account
+    holds what it cannot change (:class:`~app.services.statement_match
+    .ReviewScope`), and re-loading the governing opening here would be the
+    redundant producer call that package treats as a DRY violation rather than
+    a cost.  **What the pass's field buys is SHARING and not a saved read** --
+    the same correction ``ReviewScope.opening`` records against its own first
+    draft, which claimed 378 reads that no design would have made.  What it
+    makes true is that the SCREEN and the DOOR are provably one answer: both
+    read the opening the pass resolved.
+
+    Args:
+        opening: The account's governing
+            :class:`~._events.CashOpeningFact`.  The caller proved ownership
+            when it built the pass this came from; nothing is re-scoped here.
+        posted_on: The day the bank posted the line.  **The posting day and
+            never the transaction day**: a swipe MADE before the books opened
+            and TAKEN after is money that left the account after the opening,
+            so it is recordable, and its purchase's ``purchased_on`` is a
+            budget clock rather than a movement.
+        subject: What is being recorded, named as the owner would name it --
+            "this purchase", "this deposit", "this match".  Taken rather than
+            composed here, for the reason
+            :meth:`~app.services.statement_match.ReviewScope.period_holding`
+            takes one: a refusal an owner reads has to name the act they
+            performed.
+
+    Raises:
+        ValidationError: When the line posted on or before the books opened.
+            A 400 rather than a programming error: it is reachable by an
+            ordinary owner working from a page rendered before the books were
+            restated forward.
+    """
+    if books_hold(opening.opened_on, posted_on):
+        return
+    raise ValidationError(
+        f"Your bank posted this line on {posted_on.isoformat()}, and this "
+        f"account's books open on {opening.opened_on.isoformat()} holding "
+        f"${opening.opening_equity:,.2f} -- an opening equity is the closing "
+        "balance for its own day, so that money is already inside it.  "
+        f"Recording {subject} would count it twice.  Restate the account's "
+        "opening to an earlier day if your records really do start before "
+        "it.  Nothing was changed."
     )
 
 
@@ -239,7 +375,13 @@ def reject_books_open_on_or_after_movements(
     """
     with db.session.no_autoflush:
         earliest = earliest_recorded_movement_day(account_id)
-    if earliest is None or day < earliest:
+    # **The SAME predicate, asked from the other side.**  The movement door is
+    # handed a day and asks where the books open; this door is handed the
+    # books' day and asks whether they would hold the earliest movement the
+    # account records.  Spelling it as ``day < earliest`` was the same test
+    # written a second way, which is the drift :func:`books_hold` exists to
+    # remove.
+    if earliest is None or books_hold(day, earliest):
         return
     raise ValidationError(
         f"These books cannot open on {day.isoformat()}: this account already "
@@ -247,6 +389,103 @@ def reject_books_open_on_or_after_movements(
         "equity is the closing balance for its own day -- so that movement "
         "would be counted twice.  Open the books on a day before it, or "
         "re-date the movement first."
+    )
+
+
+def earliest_matched_line_day(account_id: int) -> "date | None":
+    """Return the first day *account_id* has MATCHED a bank line on, or ``None``.
+
+    ``MIN(posted_on)`` over the bank lines this account's matches name, and it
+    is the SAME row set the database constraint counts -- one SQL statement
+    (:data:`app.opening_infrastructure.MATCHED_LINE_DAYS_SQL`), interpolated
+    here and into ``budget.assert_account_books_hold_its_matched_lines``
+    rather than written twice, exactly as
+    :func:`earliest_recorded_movement_day` is.
+
+    **It is a SECOND bound and not a tightening of the movement one**, and the
+    gap between them is a money defect rather than a margin.  A match settles
+    every member on the LATEST of its bank days, so the earliest line of a
+    multi-day group posts strictly BEFORE the row explaining it settles --
+    which means ``MIN(settled_on)`` can be days or months after
+    ``MIN(posted_on)``, and every day in between is one the movement bound
+    calls legal.  Restating the books into that window puts the earlier line's
+    money inside the opening equity and inside a settled row at once.
+
+    **Raw SQL rather than a two-model join, deliberately**, for the reason its
+    twin gives: the point is to ask the constraint's own question, and the
+    constraint's question exists as a SQL string.  ``duplicate-code`` cannot
+    grade a second spelling written in ORM.
+
+    Args:
+        account_id: The account whose matched lines to bound.
+
+    Returns:
+        The earliest ``posted_on`` over the bank lines this account's matches
+        name, or ``None`` when it has matched none -- which is every account in
+        production today, and is why this bound is latent rather than live.
+    """
+    return db.session.execute(
+        text(
+            f"SELECT MIN(posted_on) FROM ({MATCHED_LINE_DAYS_SQL}) "
+            "AS matched WHERE account_id = :account_id"
+        ),
+        {"account_id": account_id},
+    ).scalar()
+
+
+def reject_books_open_on_or_after_matched_lines(
+    account_id: int, day: date,
+) -> None:
+    """Refuse opening *account_id*'s books on or after a MATCHED bank line.
+
+    The fourth refusal of the boundary (plan step **balance:X-f3c-2b-2b**), and
+    the one the other three could not make.
+    :func:`reject_books_open_on_or_after_movements` bounds a restatement by the
+    account's earliest settled MOVEMENT; a matched bank line can post well
+    before the row that explains it settles, because a match settles every
+    member on the LATEST of its bank days.  The window between the two is
+    accepted by every other bound, and restating into it counts the earlier
+    line's money twice -- once inside the new opening equity and once in the
+    settled row that explains it.
+
+    **It is reachable rather than instantiated, and saying which matters.**
+    Measured 2026-08-31 on a clone of the developer's dev database: account 1's
+    earliest matched line is 2026-03-26 and its earliest movement is the same
+    day, so the window is EMPTY on all nine accounts and production carries no
+    match at all.  What makes it reachable is arithmetic rather than data --
+    a group of lines posted 04-10 and 04-20 on an account with no other
+    activity settles its member on 04-20 and leaves 04-10..04-19 open -- and
+    ``conventions.md`` rule 8 is explicit that a finding costing ``$0.00`` on
+    today's data is a defect waiting for the data to change.
+
+    **The message names UNMATCHING and not re-dating**, which is why this is a
+    separate function from its movement twin rather than a widened row set: a
+    bank line's day is the BANK's and no door in this app may move it, so
+    telling the owner to re-date it would be the *chooser that cannot succeed*
+    shape one sentence over.
+
+    Args:
+        account_id: The account whose books are being restated.  Assumed
+            already scoped to the acting user by the caller, exactly as its
+            three siblings assume it.
+        day: The candidate ``opened_on``.
+
+    Raises:
+        ValidationError: When the account has matched a bank line posted on or
+            before *day*.  A 400: the day arrives from a date box, and the
+            message names both the offending value and the bound it broke.
+    """
+    with db.session.no_autoflush:
+        earliest = earliest_matched_line_day(account_id)
+    if earliest is None or books_hold(day, earliest):
+        return
+    raise ValidationError(
+        f"These books cannot open on {day.isoformat()}: you have matched a "
+        f"bank line your bank posted on {earliest.isoformat()}, and an "
+        "opening equity is the closing balance for its own day -- so that "
+        "money would be counted twice, once in the opening and once in the "
+        "row that explains the line.  Open the books on a day before it, or "
+        "undo that match first."
     )
 
 
@@ -317,7 +556,12 @@ def reject_books_open_after_an_assertion(account_id: int, day: date) -> None:
     """
     with db.session.no_autoflush:
         first = earliest_assertion_day(account_id)
-    if first is None or day <= first:
+    # **The same predicate, and here it bounds the books from ABOVE.**  An
+    # assertion is the level the fold RESETS to, so the books must open on or
+    # before it: this refuses exactly where books opening on *first* would
+    # hold a movement on *day*, which is the ``>`` the paragraph above calls
+    # the ordinary case at equality.
+    if first is None or not books_hold(first, day):
         return
     raise ValidationError(
         f"These books cannot open on {day.isoformat()}: you have already "
