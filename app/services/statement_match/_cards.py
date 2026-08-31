@@ -37,7 +37,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ._panel import AddAct, AddTab, VerbPanel
-from ._sentence import Span, choose, for_accepted, for_parked_never
+from ._sentence import NAMED_ROW_LIMIT, Span, choose, for_accepted
+from ._sentence import for_parked_never
 from ._sentence import for_parked_transfer, for_placement, for_proposal
 from ._verbs import ADD_SHUT_BY_A_PROPOSAL, Verb, VerbOffer, offers_for
 
@@ -267,6 +268,38 @@ class ActCard:
 
     act: "AcceptedGroup"
     sentence: "tuple[Span, ...]"
+
+    @property
+    def rows_not_named(self) -> "tuple[str, ...]":
+        """Return the member rows the SENTENCE could not fit.
+
+        Plan step ``bank_import:X-gj-1c``.  **The settled tabs retire the
+        register (R-HU), so they may not drop what it printed.**  That page
+        listed every member row's label; this card carries a sentence, and
+        :func:`~._sentence.for_accepted` names at most
+        :data:`~._sentence.NAMED_ROW_LIMIT` of them before it says *and N
+        more*.  The count was never silent, but the NAMES were -- so an owner
+        deciding whether to undo could not see which rows the act claims.
+
+        Measured on a restored production clone 2026-08-31, 220 acts on the
+        developer's own account: **217 name one row, 2 name two, and 1 names
+        four** -- so this is non-empty for exactly ONE of them, and the card
+        stays one line for the other 219.  An earlier draft of this module's
+        card claimed *0 of 221 acts have either to say*; that figure is
+        :attr:`~._release.PlannedRemovals.rows`' (removals), and applying it
+        to member rows was measured false by adversarial review.
+
+        Returns:
+            The labels beyond what the sentence names, in the act's own order;
+            ``()`` when it named them all.  **It reads the same constant the
+            sentence does**, so the two cannot disagree about where the cut
+            falls -- which is the whole reason it is here and not a length
+            comparison in Jinja.
+        """
+        labels = tuple(row.label for row in self.act.rows)
+        if len(labels) <= 1:
+            return ()
+        return labels[NAMED_ROW_LIMIT:]
 
 
 @dataclass(frozen=True)

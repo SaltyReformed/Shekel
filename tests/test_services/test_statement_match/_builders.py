@@ -565,7 +565,7 @@ def an_unexplained_outflow(
     )
 
 
-def filed_by(seed_user, line, envelope, *, by_rule):
+def filed_by(seed_user, line, envelope, *, by_rule, scope=None, bars=None):
     """Record one bank *line* as a purchase in *envelope*, and say WHO did it.
 
     **The one fact under test in several places is ``by_rule``** (ruling
@@ -587,17 +587,101 @@ def filed_by(seed_user, line, envelope, *, by_rule):
         envelope: The budget line to file it into.
         by_rule: Whether a STANDING RULE performed the act rather than a
             person ticking it.
+        scope: The pass to file against, or ``None`` to derive one.
+        bars: The creation bars, or ``None`` to derive them.
+
+            **Both exist so a caller staging MANY acts can derive ONCE**, and
+            that is a cost the register's own bound case has already paid for
+            in as many words: at 51 rows a per-row derivation ran the pass 53
+            times and made that the slowest test in the suite, timing it out in
+            CI at the 30 s per-test budget.  A caller staging one line takes
+            the default and reads exactly as before.
+
+            **It is also what the app does.**  A render builds ONE
+            :class:`~app.services.statement_match._scope.ReviewScope` and files
+            every line of a pass against it; a fresh pass per line is a shape
+            no door has, so a case built that way is measuring something the
+            app never does.
 
     Returns:
         The created purchase.
     """
     return statement_match.create_purchase_from_line(
         PurchaseCreation(line_id=line.id, transaction_id=envelope.id),
-        a_scope(seed_user),
+        a_scope(seed_user) if scope is None else scope,
         MintedEnvelopes.none_yet(),
-        a_bars(seed_user),
+        a_bars(seed_user) if bars is None else bars,
         applied_by_rule=by_rule,
     )
+
+
+def filed_acts(seed_user, how_many, *, by_rule):
+    """Record *how_many* bank lines as purchases, each in its OWN envelope.
+
+    The staging both of ruling **R-GX**'s bound cases need (plan step
+    ``bank_import:X-gj-1c``): the settled tabs bound at
+    :data:`~app.services.statement_match.REGISTER_LIMIT`, so a case about the
+    bound has to hold one act more than that, and it is stated once here
+    rather than twice because the two cases differ only in which tier they
+    then read -- the service's page value, or the rendered route.
+
+    **Each act gets an envelope of its own, and that is a MEASUREMENT rather
+    than a style choice.**  ``posting_service.sync_transaction_postings``
+    reconciles a transaction's whole purchase FAMILY on every entry change
+    (ruling **R-FM**), so filing the *k*-th purchase into an envelope that
+    already holds *k-1* of them calls
+    :func:`~app.services._posting_purchases.emit_purchase_deltas` *k* times --
+    quadratic in the number of acts.  Measured 2026-08-31 on this box, 51
+    acts: **1,326 emit calls (51x52/2) and 4.50 s into one envelope, against
+    51 calls and 1.13 s spread across 51**.  CI pins ``-n 12`` on a hosted
+    runner with ``nproc`` far under 12, and that oversubscription multiplied
+    the concentrated shape past ``pytest.ini``'s 30 s per-test budget: four
+    cases timed out at 28.94-29.03 s having taken 4.7 s here.  **The app's
+    quadratic is real and is NOT this fixture's to fix** -- it is finding
+    **N-406**, filed with this measurement -- but an envelope holding 51
+    purchases in one pay period is a shape the app does not produce either:
+    measured on a clone of the developer's own database 2026-08-31, the
+    largest budget line holds **13** and the mean over the 63 rows carrying
+    any is **2.92**.  The fixture was paying for a concentration it never had
+    to stage.
+
+    **Nothing about the bound depends on WHERE the money landed**, which is
+    why spreading it costs no coverage: the settled tabs render one unnamed
+    section whatever the destinations are
+    (:func:`~app.services.statement_match._cards.act_sections`), and both
+    cases assert over counts of acts.
+
+    Args:
+        seed_user: The seeded user bundle.
+        how_many: How many acts to stage.
+        by_rule: Whether a STANDING RULE performed them rather than a person
+            ticking them (ruling **bank_import:R-GT**), which is what decides
+            WHICH settled tab holds them.
+
+    Returns:
+        The created purchases, in the order they were filed.
+    """
+    pots = [
+        an_envelope(seed_user, name=f"Envelope {ordinal}")
+        for ordinal in range(how_many)
+    ]
+    lines = [
+        an_unexplained_outflow(
+            seed_user, merchant=f"Shop {ordinal}", amount="-10.00",
+            sequence=ordinal,
+        )
+        for ordinal in range(how_many)
+    ]
+    db.session.commit()
+    # ONE derivation for all of them, which is what the app does and what
+    # keeps this affordable -- see :func:`filed_by`.
+    scope, bars = a_scope(seed_user), a_bars(seed_user)
+    purchases = [
+        filed_by(seed_user, line, pot, by_rule=by_rule, scope=scope, bars=bars)
+        for pot, line in zip(pots, lines)
+    ]
+    db.session.commit()
+    return purchases
 
 
 def a_later_period(seed_user):

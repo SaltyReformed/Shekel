@@ -442,17 +442,24 @@ def _filing_sentence(filing) -> str:
         # measurement makes false by 60 on the developer's first real import:
         # 80 lines file and ``RECEIPT_LIMIT`` shows 20.  The place every act is
         # listed without a bound is the REGISTER's accepted list -- and only
-        # behind its own *show everything* link, the register itself rendering
-        # the newest 50 (ruling **bank_import:R-GX**) -- so that is where the
+        # behind its own *show everything* link, the tab itself rendering the
+        # newest 50 (ruling **bank_import:R-GX**) -- so the TAB is where the
         # sentence sends an owner who wants all of them.  It said "the review
         # screen" until plan step ``bank_import:X-gf-2`` moved those acts off
-        # it, at which point the sentence named a page listing none of them.
+        # it, at which point the sentence named a page listing none of them;
+        # and it said "the page of what you have already decided" -- the
+        # register -- until ``bank_import:X-gj-1c`` split those acts into two
+        # TABS by who agreed to them (**R-GT**).  The acts this receipt is
+        # about are the ones nobody pressed, so the tab that holds all of them
+        # is *Filed by rules* and the other one holds none.  Twice now the
+        # destination has moved and the sentence has had to move with it,
+        # which is why it names a place rather than describing one.
         parts.append(
             f"  Your standing rules filed {filing.filed_count} of them as "
             f"purchases worth {filing.filed_total:+,.2f}{envelopes}.  The most "
             f"recent are under 'Filed by your rules' below, each with an undo; "
-            f"every one of them is on the page of what you have already "
-            f"decided."
+            f"every one of them is on the Filed by rules tab of the "
+            f"Reconcile screen."
         )
     if filing.withheld:
         parts.append(

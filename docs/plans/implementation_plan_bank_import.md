@@ -114,13 +114,12 @@ what it leaves a LATER step is on that step's own entry.
       Reconcile rebuild the developer LOCKED at Loop A round 4 on 2026-08-29, on rulings
       `bank_import:R-HP`..`R-HX`, stated in `rulings.md`. The assessment, the research, the four
       rounds and the locked direction are `docs/design/bank_import_audit.md`. `X-gi` follows it.
-  - [ ] **X-gj-1** `feat(import): the Reconcile page` -- the DECOMPOSED parent of the page, split
-        three ways 2026-08-29 on the two boundaries this package draws: the SERVICES boundary, and
-        **R-GX**'s -- a line to explain is `_reads`', an applied act is `_accepted_view`'s.
-        **It posts only to doors that exist** (`apply_reviewed`, `release_match`, `state_rules`) and
-        adds no money door. Each leaf ships a WHOLE page: none renders a tab or control a later one
-        completes, which **R-HW** forbids. The balance arc's reconcile PANEL keeps its name, so the
-        module is `statement_match/_reconcile.py` beside `routes/accounts/reconcile.py`.
+  - [x] **X-gj-1** `a43e8e2f` -- the DECOMPOSED parent of the page, split three ways 2026-08-29 on
+        the two boundaries this package draws: the SERVICES boundary, and **R-GX**'s -- a line to
+        explain is `_reads`', an applied act is `_accepted_view`'s. It ticked with its third leaf.
+        **It posted only to doors that exist** (`apply_reviewed`, `release_match`, `state_rules`)
+        and added no money door. Each leaf shipped a WHOLE page: none rendered a tab or control a
+        later one completes, which **R-HW** forbids.
     - [x] **X-gj-1a** `bc851df9` -- the service turning a pass into CARDS: one per line with its
           verb (**R-HP**), what suggested it, the sentence's PARTS, which verbs are OPEN and why a
           shut one is (**R-HW**), the settled act's card one tense over, the tab counts, the chips
@@ -132,11 +131,12 @@ what it leaves a LATER step is on that step's own entry.
           and Apply (**R-FZ(c)**, **R-HD**). The card's always-for-this-merchant checkbox is DELETED
           (`bank_import:R-IB`) and the accept door exempts no shape (`bank_import:R-IA`). Minted
           **X-gk** (`bank_import:R-IC`).
-    - [ ] **X-gj-1c** `feat(import): what has already been decided` -- the two tabs whose cards are
-          ACTS: Explained and Filed by rules, newest first with an act that has stopped holding on
-          top, Undo carrying **R-GY**'s confirm where it destroys a row, and the Explained chip's
-          link; it retires the register as a page (**R-HU**), in both themes and viewports through
-          the visual loop, with its own route test and ownership 404 pairing.
+    - [x] **X-gj-1c** `a43e8e2f` -- the two settled tabs, each act's Undo, and the register RETIRED
+          as a page (**R-HU**): its acts, its bound, its *show the other N* link and its Undo are
+          the tabs'. The Explained CHIP was DELETED rather than re-pointed -- its count is the union
+          of two tabs. Shut **N-389** and **N-403**; opened **N-404**, **N-405**.
+          **`X-gi` must take the review QUEUE with the register**: that page still links to it three
+          times, so deleting one route alone breaks the other's header button.
   - [ ] **X-gj-2** `feat(import): a rule answers an inflow` -- **R-HT(a)**: a deposit signature
         files as an income category, a merchant credit as a NEGATIVE purchase in that merchant's
         envelope; it CREATES, so it auto-applies at import under **R-GH** with `X-ge`'s receipt and
