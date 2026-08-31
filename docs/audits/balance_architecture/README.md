@@ -463,13 +463,12 @@ hides.
   so **D25**'s narrow context is unrepresentable rather than forbidden in prose. Both trees driven
   against the dev database agree on all 63 paychecks, `$170,974.29` of net and every analytics
   month. Opened **N-394**, **N-395**, **N-396**.
-* [ ] **X-bh-2** `refactor(salary): the rhythm runs backward too` -- closes **N-390**. The producers
-  count SAVED paydays plus the forward projection `pay_calendar:R-PC9` rules; below the opening
-  payday they count nothing, so a month or year the record opens INSIDE is counted from the first
-  RECORDED paycheck. **Ruled at `balance:R-IA`**: a stored
-  `budget.pay_schedule.history_opens_on`, asked at registration, bounds the backward rhythm --
-  the app knows the CADENCE and cannot derive when the job began. N-390 carries the figures, the
-  `$502.45` reproduction and the holiday shift no projection models.
+* [x] **X-bh-2** `49fdfb91` -- the rhythm runs BACKWARD too (**R-IA**), bounded by a stored
+  `budget.pay_schedule.history_opens_on` registration and the pay-periods settings section ask for.
+  Closed **N-390**: with his opening stated, the developer's 2026 year-to-date at 2026-05-21 goes
+  from four recorded paydays to the NINE he was really paid. **`NULL` means NOT STATED (`R-IF`)**,
+  so an unasked owner is counted from the record, unchanged. Also closed **N-396** by deleting
+  `earliest_start_in_month`. Opened **N-398**, **N-399**.
 
 ### Phase X -- the posting restructure
 
