@@ -608,6 +608,9 @@ def state_reconcile_merchant_rules(account_id):
     return render(scope, rules=outcome.recorded)
 
 
+# **POST-only deliberately.**  Giving this route a ``GET`` would enrol
+# ``line_id`` in ``test_no_baseline_policy``'s url_map sweep, which grades
+# every ``GET`` rule and demands a row per converter it finds.
 @accounts_bp.route(
     "/accounts/<int:account_id>/statements/reconcile/line/<int:line_id>/match",
     methods=["POST"],

@@ -117,7 +117,6 @@
       </p>
     </noscript>
   </div>
-  {{ ok_control(card, offer.verb.word) }}
 
   {% elif offer.is_add and card.panel.add.records_a_purchase %}
   <p class="small mb-2">
@@ -186,7 +185,6 @@
        written anyway.  The offer is on the RECEIPT now, once per merchant,
        about what the door actually applied. #}
   </div>
-  {{ ok_control(card, offer.verb.word) }}
 
   {% elif offer.is_add and card.panel.add.records_income %}
   <p class="small mb-2">
@@ -205,22 +203,9 @@
     <div class="small">This pay period already holds {{ card.income_already_held.rows | length }} income row(s) totalling {{ money(card.income_already_held.total) }} that no line explains{% for held in card.income_already_held.rows %}{% if loop.first %}: {% else %}, {% endif %}{{ held.label }} {{ money(held.cash_amount) }}{% endfor %}. If this deposit is those, match it against them instead of recording it here.</div>
   </div>
   {% endif %}
-  {{ ok_control(card, offer.verb.word) }}
   {% endif %}
 </section>
 {% endmacro %}
-
-{% macro ok_control(card, word) -%}
-{#- The panel's primary control, NAMED BY THE VERB, which is a label for the
-    card's own OK checkbox rather than a second control: one card, one
-    consent, wherever it is pressed.  Pressing it again un-OKs. -#}
-<div class="rec-pane-foot">
-  <span class="small text-body-secondary">
-    Nothing is written until you press Apply.
-  </span>
-  <label class="btn btn-sm btn-primary" for="ok-{{ card.line.line_id }}">{{ word }}</label>
-</div>
-{%- endmacro %}
 
 {% macro line_card(account, card, categories) %}
 {#- ONE bank line, as one card. -#}
@@ -326,6 +311,74 @@
       <a href="{{ url_for('accounts.statement_register', account_id=account.id) }}">{{ card.panel.answer_door }}</a>
     </p>
     {% endif %}
+
+    {# THE PANEL'S FOOTER: what this writes, Close, and ONE button named by the
+       verb.  The locked direction's own shape, and it is ONE band rather than
+       one per pane.
+
+       WHY IT MOVED HERE.  The footer was rendered inside every OPEN pane, so
+       a card whose MATCH and ADD are both open emitted TWO bands and two
+       copies of the sentence -- measured on a restored production clone
+       2026-08-30: 341 bands over 239 cards, 102 of them doubled, and the
+       collapse took both figures to 239.  The BUTTONS were never duplicates
+       of each other (each named its own pane's verb) and there are still 341
+       of them, one per open verb; what was duplicated was the band and the
+       promise printed on it.  Add the notes band and the Close and an opened
+       card stacked FOUR rules for one row of controls, which is the clutter
+       this rebuild exists to remove.  The developer ruled the collapse on
+       2026-08-30.
+
+       WHICH BUTTON SHOWS IS CSS OVER THE VERB RADIOS, keyed by the verb's own
+       VALUE rather than by position: only OPEN verbs get a button, so their
+       positions depend on the line and an nth-child pairing would point at
+       the wrong one.  The panes' own switcher pairs by position because all
+       four panes are always rendered; this set is not.
+
+       A SHUT VERB GETS NO BUTTON, which is R-HW unchanged -- and a card whose
+       four verbs are ALL shut gets no button and no sentence, so its footer
+       is the Close alone and the whole band is scripted-only.  `takes_ok` is
+       exactly that question, asked in the service.
+
+       CLOSE IS RENDERED HIDDEN AND JAVASCRIPT REVEALS IT, the same rule the
+       page footer's keyboard hints are rendered under: a details element is
+       closed by its own summary with nothing running, so the affordance that
+       WORKS without this file is the summary, and a Close that could not
+       close would be the control-that-cannot-succeed shape R-HW bounds.
+       Bootstrap's `[hidden]{display:none!important}` holds that against the
+       display rules beside it.
+
+       THE LOCKED DIRECTION ALSO SAID PRESSING THE VERB BUTTON CLOSES THE
+       PANEL, and that half is deliberately NOT built.  It was written when
+       that button was a write -- "nothing is written until you press <Verb>,
+       or OK the card and Apply".  In the shipped design it is a label for the
+       card's own OK checkbox, so it TOGGLES: on the 31 of 248 cards whose
+       summary offers no OK button, closing on press would make un-OK cost a
+       reopen.  The same sentence's first half is already not rendered, for
+       the same reason.
+
+       NAME NO ELEMENT IN ANGLE BRACKETS IN A COMMENT HERE.  djlint reads a
+       Jinja comment's raw tags into its own tag stack, so an unbalanced one
+       reports the REAL element it unbalanced as an orphan (H025) -- naming
+       the card, not the comment that broke it.  This file already carries two
+       such mentions and a third fires the gate. #}
+    <div class="rec-panel-foot"{% if not card.takes_ok %} data-rec-scripted hidden{% endif %}>
+      {% if card.takes_ok %}
+      <span class="small text-body-secondary">
+        Nothing is written until you press Apply.
+      </span>
+      {% endif %}
+      <div class="rec-panel-acts">
+        <button class="btn btn-sm btn-outline-secondary" type="button"
+                data-rec-close data-rec-scripted hidden>Close</button>
+        {% for offer in card.panel.offers %}
+        {% if offer.is_open %}
+        <label class="btn btn-sm btn-primary rec-cta"
+               data-verb="{{ offer.verb.value }}"
+               for="ok-{{ card.line.line_id }}">{{ offer.verb.word }}</label>
+        {% endif %}
+        {% endfor %}
+      </div>
+    </div>
   </div>
 </details>
 {% endmacro %}

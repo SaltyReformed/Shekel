@@ -64,6 +64,7 @@ from ._cards import (
     parked_card,
     to_explain_sections,
 )
+from ._last_import import last_import
 from ._reads import review_set
 
 if TYPE_CHECKING:  # pragma: no cover -- annotations only
@@ -72,6 +73,7 @@ if TYPE_CHECKING:  # pragma: no cover -- annotations only
     from app.services.bank_agreement import BankAgreement
 
     from ._bars import ParkedLine
+    from ._last_import import LastImport
     from ._reads import ReviewSet
     from ._scope import ReviewScope
 
@@ -263,16 +265,33 @@ class ReconcilePage:  # pylint: disable=too-many-instance-attributes
     """Everything the Reconcile page renders, for ONE of its five tabs.
 
     Pylint: ``too-many-instance-attributes`` (8/7) -- **eight because the page
-    renders eight distinct things**: the account it is about, which tab is
-    open, the hero, the holding chips, the tab bar, the cards, the sweeps and
-    the footer's disclosure.  Folding any pair would be the speculative
-    nesting ``CLAUDE.md`` rule 13 forbids, and
-    :class:`~._reads.ReviewSet` carries the same disable for the same reason.
+    renders eight distinct things**: which tab is open, the hero, what the
+    last import did, the holding chips, the tab bar, the cards, the sweeps and
+    the footer's disclosure.  Every one of them is read by
+    ``_statement_reconcile_body.html``, so the count is re-derivable rather
+    than asserted; folding any pair would be the speculative nesting
+    ``CLAUDE.md`` rule 13 forbids, and :class:`~._reads.ReviewSet` carries the
+    same disable for the same reason.
+
+    **It carried an ``account_id`` until plan step ``bank_import:X-gj-1b``,
+    and NOTHING read it** -- not a template, not the route, not a test.  Every
+    URL on the page is built from the ``account`` object the route passes
+    beside this one, and the account this page is ABOUT is already
+    :attr:`~._scope.ReviewScope.account_id`, which
+    :func:`reconcile_page` checks the agreement against.  A field written on
+    every render and read on none is the shape this package keeps deleting;
+    it went rather than being re-documented.  Found by adversarial design
+    review 2026-08-30.
 
     Attributes:
-        account_id: The account this page is about.
         tab: Which tab's cards :attr:`sections` holds (:class:`Tab`).
         hero: The four figures that answer *am I done* (:class:`Hero`).
+        last_import: What the newest import on this account did
+            (:class:`~._last_import.LastImport`), or ``None`` for an account
+            nobody has imported into.  **Provenance rather than a hero
+            figure**: the locked direction prints it right of the four
+            numbers, and it answers *is what I am looking at current* rather
+            than *am I done*.
         chips: The holding counts (:class:`HoldingChip`), non-zero only.
         counts: Every tab and its size (:class:`TabCount`), in tab order, so
             the bar is drawn whichever tab is open.
@@ -283,9 +302,9 @@ class ReconcilePage:  # pylint: disable=too-many-instance-attributes
             footer's disclosure.  Empty when it examined everything.
     """
 
-    account_id: int
     tab: Tab
     hero: Hero
+    last_import: "LastImport | None"
     chips: "tuple[HoldingChip, ...]"
     counts: "tuple[TabCount, ...]"
     sections: "tuple[CardSection, ...]"
@@ -587,9 +606,15 @@ def reconcile_page(
 
     sections = _tab_sections(scope, review, tab, holding)
     return ReconcilePage(
-        account_id=scope.account_id,
         tab=tab,
         hero=_hero(agreement, to_explain),
+        # **One row read, and one COUNT where that row exists.**  The
+        # provenance line the locked direction prints beside the four figures
+        # is a fact about the last import rather than about the comparison, so
+        # it is read here and carried whole.  Measured on the clone with
+        # EXPLAIN ANALYZE: 0.039 ms and 0.054 ms, against ``review_set``'s own
+        # 0.136 s on the same account.
+        last_import=last_import(scope.owner_id, scope.account_id),
         chips=_chips(review, transfers, counts.total),
         counts=(
             TabCount(tab=Tab.TO_EXPLAIN, count=to_explain),

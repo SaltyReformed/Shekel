@@ -30,6 +30,17 @@
 
   const LEGEND_KEY = "shekel.reconcile.legend";
 
+  // Everything that only works when THIS FILE RUNS carries `data-rec-scripted`
+  // and is rendered `hidden` by the server, so an affordance that could not
+  // succeed is never printed -- the same rule this package applies to a verb
+  // whose door does not exist.  **One MARKER rather than a list of selectors**:
+  // a list here is a second place the set is written down, and a control added
+  // to the markup but not to the list ships visible and dead.  The set IS the
+  // markup.  Today its members are the footer's keyboard hints and the panel's
+  // Close (a disclosure element is closed by its own summary with nothing
+  // running, so the control that works without this file is the summary).
+  const SCRIPTED_ONLY = "[data-rec-scripted]";
+
   // ── The per-class sweep ────────────────────────────────────────────────
   //
   // PER CLASS and never one "tick all" (R-FZ(c)): filing into a budget line
@@ -199,6 +210,26 @@
     if (target.closest("[data-rec-legend-close]")) {
       showLegend(false);
       rememberLegend(true);
+      return;
+    }
+    // Closing the PANEL is closing the card: the panel is the disclosure's
+    // content, so there is nothing else to collapse.
+    //
+    // **FOCUS MOVES TO THE SUMMARY, and that is not a courtesy.**  The Close
+    // button is `document.activeElement` when a keyboard reaches it, and it
+    // lives INSIDE the element being collapsed -- so once the card closes the
+    // browser drops focus to <body> and the next Tab restarts from the top of
+    // a page this arc measures at 248 cards and 537 KB.  The summary is where
+    // the reader was and is the control that reopens the card.
+    if (target.closest("[data-rec-close]")) {
+      const card = target.closest("[data-rec-card]");
+      if (card) {
+        const summary = card.querySelector("summary");
+        card.open = false;
+        if (summary) {
+          summary.focus();
+        }
+      }
     }
   });
 
@@ -238,8 +269,8 @@
       .querySelectorAll("select[data-destination]")
       .forEach(revealNewEnvelope);
     document.querySelectorAll("[data-rec-form]").forEach(countOk);
-    document.querySelectorAll("[data-rec-keys]").forEach(function (hint) {
-      hint.hidden = false;
+    document.querySelectorAll(SCRIPTED_ONLY).forEach(function (control) {
+      control.hidden = false;
     });
     showLegend(!legendDismissed());
   }

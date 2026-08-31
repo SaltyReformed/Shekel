@@ -295,7 +295,15 @@
    here (plan step bank_import:X-gf-2) -- it used to post to the review
    screen's, which threw the reader onto a different page mid-receipt. #}
 {% if filed_by_rules %}
-<div class="card mt-3">
+{# THE ID IS AN ANCHOR TARGET, and the Reconcile hero's "receipt" link is what
+   names it (plan step bank_import:X-gj-1b).  This card is the receipt ruling
+   R-GH asks for: the acts a standing rule performed, each with its own undo.
+
+   IT IS THE ACCOUNT'S AND IT IS BOUNDED, which the hero's own sentence is
+   not -- that line counts ONE import's lines and this lists the newest
+   `filed_limit` acts of every import.  The header below says the bound, which
+   is what keeps the truncation from being silent (finding N-330's rule). #}
+<div class="card mt-3" id="filed-by-rules">
   <div class="card-header d-flex justify-content-between align-items-center">
     <span>
       <i class="bi bi-signpost-split"></i> Filed by your rules

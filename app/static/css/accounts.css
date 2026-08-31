@@ -778,6 +778,19 @@ a.acct-cell__link:focus-visible {
 
 .rec-figure-wide { flex: 1 1 100%; }
 
+/* The provenance line, right of the four figures (the locked direction).
+   `margin-left: auto` is what pushes it to the far end of the hero row.  It
+   keeps working after the row wraps -- a lone item on its own flex line is
+   still pushed to that line's right end, which is why the narrow-viewport
+   rule below has to take the margin back rather than rely on the wrap. */
+.rec-provenance {
+  margin-left: auto;
+  align-self: flex-end;
+  margin-bottom: 0;
+  text-align: right;
+  color: var(--shekel-text-secondary);
+}
+
 .rec-caption {
   font-size: 0.6875rem;
   letter-spacing: 0.06em;
@@ -1107,21 +1120,49 @@ a.rec-chip:hover { border-color: var(--shekel-accent); }
   color: var(--shekel-text-secondary);
 }
 
-.rec-pane-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  margin-top: 0.75rem;
-  padding-top: 0.5rem;
-  border-top: 1px solid var(--shekel-border-subtle);
-}
 
 .rec-notes {
   margin-top: 0.75rem;
   padding-top: 0.5rem;
   border-top: 1px solid var(--shekel-border-subtle);
   color: var(--shekel-text-secondary);
+}
+
+/* The PANEL's own footer: what this writes, Close, and one button named by
+   the verb.  ONE band per opened card, replacing the one-per-open-pane band
+   that emitted the same control twice on 102 of the developer's 239 cards.
+   Where the whole band is scripted-only -- a card with no act at all -- the
+   server renders it `hidden`, and Bootstrap's `[hidden]{display:none!important}`
+   outranks this rule, so the display here cannot un-hide it. */
+.rec-panel-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--shekel-border-subtle);
+}
+
+.rec-panel-acts {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+/* THE PRIMARY BUTTON FOLLOWS THE CHECKED TAB, keyed by the verb's own value
+   and not by position.  The panes above pair by `nth-child` because all four
+   are always rendered; only OPEN verbs get a button here, so their positions
+   depend on the line and a positional pairing would reveal the wrong one.
+   Written out rather than generated, for the reason the pane switcher gives:
+   there is no fifth verb. */
+.rec-cta { display: none; }
+
+.rec-verb[value="match"]:checked ~ .rec-panel-foot .rec-cta[data-verb="match"],
+.rec-verb[value="add"]:checked ~ .rec-panel-foot .rec-cta[data-verb="add"],
+.rec-verb[value="transfer"]:checked ~ .rec-panel-foot .rec-cta[data-verb="transfer"],
+.rec-verb[value="skip"]:checked ~ .rec-panel-foot .rec-cta[data-verb="skip"] {
+  display: inline-flex;
 }
 
 .rec-empty {
@@ -1174,6 +1215,7 @@ a.rec-chip:hover { border-color: var(--shekel-accent); }
   .rec-sentence { grid-column: 1 / -1; }
   .rec-ok { grid-column: 1 / -1; justify-self: end; }
   .rec-hero { gap: 1.25rem; }
+  .rec-provenance { margin-left: 0; text-align: left; }
   .rec-number { font-size: 1.25rem; }
   .rec-panel { padding: 0.6rem 0.5rem; }
 }

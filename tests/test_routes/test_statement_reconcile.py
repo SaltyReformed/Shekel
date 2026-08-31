@@ -18,7 +18,8 @@ in a response, so moving or renaming a route leaves its IDOR control passing
 and guarding nothing -- measured once on a door that DESTROYS budget rows.
 """
 
-from datetime import date
+import re
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
@@ -46,6 +47,7 @@ from tests.test_services.test_statement_match._builders import (
     an_envelope,
     an_import,
     an_unexplained_outflow,
+    filed_by,
     the_merchant_id,
 )
 
@@ -78,6 +80,35 @@ def _page(auth_client, seed_user, tab=None):
         f"the page did not render: {response.status_code}"
     )
     return response.get_data(as_text=True)
+
+
+def _provenance(page):
+    """Return the hero's provenance line as one plain sentence, or ``None``.
+
+    **Read as a SENTENCE rather than asserted on in fragments**, because the
+    whole of what this line claims is the order and the words between the
+    numbers: *2 lines recorded* and *1 filed by rules* are two figures that
+    only mean anything against each other, and a test matching each number in
+    isolation would pass with them transposed.
+
+    Args:
+        page: The rendered page.
+
+    Returns:
+        The line's text with its tags removed, its ``&middot;`` separators
+        written as ``-`` and its whitespace collapsed; or ``None`` when the
+        page renders no such line at all.
+    """
+    found = re.search(
+        r'<p class="rec-provenance[^"]*">(.*?)</p>', page, re.S,
+    )
+    if found is None:
+        return None
+    return " ".join(
+        re.sub(r"<[^>]+>", " ", found.group(1))
+        .replace("&middot;", "-")
+        .split()
+    )
 
 
 def _choosing(fields, name, value):
@@ -1000,4 +1031,232 @@ class TestAVerbWithNoDoorRendersNoControl:
         # ...and the consent it CAN give, through the tab that has a door.
         assert f'name="ok" value="{line.id}"' in page, (
             "a parked payment must still be group-matchable"
+        )
+
+
+class TestTheHeroSaysWhatTheLastImportDid:
+    """The provenance line the locked direction prints right of the figures.
+
+    *Last import <day> - N lines recorded - N filed by rules - receipt*, so
+    that a routine session reads *import, read the receipt, work the inbox,
+    see the difference reach zero*.  It answers *is what I am looking at
+    current*, which none of the four hero figures does.
+    """
+
+    def test_it_reads_as_the_sentence_the_direction_names(
+        self, auth_client, db, seed_user,
+    ):
+        """One import, two lines recorded, one of them filed by a rule."""
+        statement = an_import(
+            seed_user, line_count=42, recorded_count=2,
+            created_at=datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc),
+        )
+        envelope = an_envelope(seed_user)
+        by_rule = a_bank_line(
+            seed_user, statement, amount="-57.96",
+            posted_on=seed_user["bootstrap_period"].start_date,
+            description="POINT OF SALE DEBIT L340 THING (Amazon)",
+            merchant="Amazon", sequence_in_group=0,
+        )
+        a_bank_line(
+            seed_user, statement, amount="-12.34",
+            posted_on=seed_user["bootstrap_period"].start_date,
+            description="POINT OF SALE DEBIT L340 THING (Walmart)",
+            merchant="Walmart", sequence_in_group=1,
+        )
+        db.session.commit()
+        filed_by(seed_user, by_rule, envelope, by_rule=True)
+        db.session.commit()
+
+        said = _provenance(_page(auth_client, seed_user))
+
+        assert said == (
+            "Last import Aug 24, 2026 - 2 lines recorded - "
+            "1 filed by rules - receipt"
+        ), said
+
+    def test_the_day_is_the_owner_s_and_not_UTC_s(
+        self, auth_client, db, seed_user,
+    ):
+        """An evening import may not be reported as tomorrow's work.
+
+        ``created_at`` is a stored UTC instant and the owner reads Eastern, so
+        an import performed at 21:00 on 2026-08-30 is stored at 01:00 on the
+        31st.  Truncating in the service would have printed the 31st; the
+        conversion is ``local_datetime``'s, which is this project's standing
+        rule for every ``timestamptz`` it renders.
+        """
+        an_import(
+            seed_user, line_count=1, recorded_count=1,
+            created_at=datetime(2026, 8, 31, 1, 0, tzinfo=timezone.utc),
+        )
+        db.session.commit()
+
+        said = _provenance(_page(auth_client, seed_user))
+
+        assert "Aug 30, 2026" in said, said
+        assert "Aug 31, 2026" not in said, said
+
+    def test_an_account_nobody_has_imported_into_prints_NO_line(
+        self, auth_client, db, seed_user,
+    ):
+        """The whole line or none of it.
+
+        *Last import -- 0 lines recorded* over an account that has never been
+        imported into would state an act that never happened, which is the
+        fabricated-figure shape this arc keeps deleting.
+        """
+        page = _page(auth_client, seed_user)
+
+        # TWO predicates, because ``_provenance`` answers ``None`` both for a
+        # page that renders no such line and for a reader that has stopped
+        # matching the markup.  The second is independent of the first.
+        assert "rec-provenance" not in page
+        assert _provenance(page) is None
+
+    def test_the_receipt_LINK_names_an_anchor_the_statements_page_HAS(
+        self, auth_client, db, seed_user,
+    ):
+        """The link and its target are asserted as a PAIR.
+
+        A link to an anchor nothing declares scrolls to the top of the page
+        and looks exactly like one that works -- the same indistinguishability
+        that lets a moved route leave its ownership 404 guarding nothing.  So
+        the case renders BOTH surfaces: the href here, and the ``id`` there.
+        """
+        statement = an_import(
+            seed_user, line_count=1, recorded_count=1,
+            created_at=datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc),
+        )
+        envelope = an_envelope(seed_user)
+        line = a_bank_line(
+            seed_user, statement, amount="-57.96",
+            posted_on=seed_user["bootstrap_period"].start_date,
+            description="POINT OF SALE DEBIT L340 THING (Amazon)",
+            merchant="Amazon", sequence_in_group=0,
+        )
+        db.session.commit()
+        filed_by(seed_user, line, envelope, by_rule=True)
+        db.session.commit()
+        account_id = seed_user["account"].id
+
+        page = _page(auth_client, seed_user)
+        statements = auth_client.get(
+            f"/accounts/{account_id}/statements",
+        ).get_data(as_text=True)
+
+        assert (
+            f'href="/accounts/{account_id}/statements#filed-by-rules"'
+            in page
+        ), "the provenance line does not link to the rule receipt"
+        assert 'id="filed-by-rules"' in statements, (
+            "the statements page declares no such anchor, so the link the "
+            "hero renders lands at the top of the page instead of on the "
+            "receipt it names"
+        )
+
+
+class TestThePanelHasONEFooterAndItCloses:
+    """The panel's footer: what this writes, Close, and one verb-named button.
+
+    **ONE band per opened card, and that is what changed.**  The primary
+    button was rendered inside every OPEN pane, so a card whose MATCH and ADD
+    are both open emitted two footers and two copies of the sentence --
+    measured on a restored production clone 2026-08-30: 341 bands over 239
+    cards, 102 of them doubled.  The developer ruled the collapse the same
+    day.  Which button shows is CSS over the verb radios; that pairing is
+    graded structurally in
+    ``tests/test_arch/test_a_control_rendered_invisible_has_a_rule_that_shows_it``.
+    """
+
+    def test_a_card_with_TWO_open_verbs_still_has_ONE_footer(
+        self, auth_client, db, seed_user,
+    ):
+        """The duplication this collapse removed, asserted over the axis it lived on.
+
+        **The two-open-verb card is staged and then CHECKED for**, because a
+        page of one-verb cards satisfies every count here while proving
+        nothing: the defect only existed where a card had two.
+        """
+        _a_swipe_a_rule_files(seed_user, db)
+
+        page = _page(auth_client, seed_user)
+
+        cards = page.count("data-rec-card")
+        assert cards, "no card rendered"
+        buttons = re.findall(r'class="btn btn-sm btn-primary rec-cta"', page)
+        assert len(buttons) > cards, (
+            "no card offered two verbs, so this case is not exercising the "
+            "shape the collapse was about"
+        )
+        assert page.count('class="rec-panel-foot"') == cards, (
+            f"{page.count('class=\"rec-panel-foot\"')} footers over {cards} "
+            f"cards; the footer is per PANE again"
+        )
+        assert page.count("Nothing is written until you press Apply.") == cards, (
+            "the sentence is rendered more than once per card"
+        )
+
+    def test_a_card_whose_every_verb_is_SHUT_still_closes(
+        self, auth_client, db, seed_user,
+    ):
+        """The state that tells the panel's footer from a pane's.
+
+        A parked card payment on an account with no unexplained row has no
+        open verb at all (:attr:`LineCard.takes_ok` is exactly that question),
+        so it offers no button and no sentence -- and its whole footer is
+        therefore scripted-only.  A Close living in a pane's footer would be
+        missing from the one card whose panel is nothing BUT disclosure.
+        """
+        an_unexplained_outflow(
+            seed_user, merchant="Capital One Credit Card", amount="-793.23",
+            source_category=_CARD_PAYMENT,
+        )
+        db.session.commit()
+
+        page = _page(auth_client, seed_user, "transfers")
+
+        assert "Capital One Credit Card" in page
+        assert "rec-cta" not in page, (
+            "this card was expected to have no open verb; the case no longer "
+            "stages the state it is about"
+        )
+        assert "Nothing is written until you press Apply." not in page, (
+            "a card with no act promises that pressing Apply would write it"
+        )
+        assert page.count("data-rec-close") == 1, (
+            "a card with no act renders no Close, so the control lives in a "
+            "pane's footer rather than in the panel's"
+        )
+        assert '<div class="rec-panel-foot" data-rec-scripted hidden>' in page, (
+            "the whole band is scripted-only on this card and is not marked"
+        )
+
+    def test_every_scripted_only_control_is_rendered_hidden(
+        self, auth_client, db, seed_user,
+    ):
+        """A details element is closed by its own summary with nothing running.
+
+        So Close is a convenience over a control that already works, and it is
+        revealed by ``statement_reconcile.js`` -- the same rule the page
+        footer's keyboard hints are rendered under.  A Close printed with
+        scripting off could not close anything, which is the
+        control-that-cannot-succeed shape ruling **R-HW** bounds.
+
+        Asserted over EVERY marked control rather than over this one, and the
+        set is checked non-empty first: an assertion quantified over nothing
+        is satisfied by a page that renders no control at all.
+        """
+        _a_swipe_a_rule_files(seed_user, db)
+
+        page = _page(auth_client, seed_user)
+
+        marked = re.findall(r'<[^>]*\bdata-rec-scripted\b[^>]*>', page)
+        assert len(marked) >= 2, (
+            f"expected the keyboard hints and at least one Close; found "
+            f"{len(marked)}"
+        )
+        assert all("hidden" in tag for tag in marked), (
+            f"a scripted-only control is not hidden: "
+            f"{[tag for tag in marked if 'hidden' not in tag][:2]}"
         )

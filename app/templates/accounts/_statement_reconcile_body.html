@@ -241,6 +241,40 @@
       <div class="rec-caption">TO EXPLAIN</div>
       <div class="rec-number rec-accent font-mono">{{ page.hero.to_explain }}</div>
     </div>
+    {# PROVENANCE, right of the figures, and it is NOT one of them.  The four
+       numbers answer "am I done"; this answers "is what I am looking at
+       current", which is a fact about the last import the owner performed.
+       The whole line is the service's (ReconcilePage.last_import) -- what a
+       re-import of an overlapping span RECORDED is its own column and not the
+       size of its file, and the two figures beside each other are comparable
+       because both count lines of that same import.
+
+       ABSENT for an account nobody has imported into, which is the same state
+       the hero's own "no day yet" arm is drawn for.
+
+       THE INSTANT IS RENDERED IN THE DISPLAY TIMEZONE HERE, never truncated
+       in the service: an import performed at 21:00 Eastern is stored on the
+       next UTC day, and `local_datetime` is the one place this app converts.
+
+       THE RECEIPT is the statements page's "Filed by your rules" card, which
+       is what ruling R-GH's receipt IS -- every filed act itemised, with the
+       one-click undo.  It is reached by anchor, and the anchor is the card's
+       own id there.  On an account whose rules have never fired that card is
+       absent and the link lands at the top of the statements page, which is
+       where the import history and the upload form are: a page that answers
+       the question either way rather than a control that cannot succeed. #}
+    {% if page.last_import %}
+    <p class="rec-provenance small">
+      Last import
+      <span class="font-mono">{{ page.last_import.at | local_datetime }}</span>
+      &middot;
+      <span class="font-mono">{{ page.last_import.recorded_count }}</span>
+      lines recorded &middot;
+      <span class="font-mono">{{ page.last_import.filed_by_rules }}</span>
+      filed by rules &middot;
+      <a href="{{ url_for('accounts.statements', account_id=account.id, _anchor='filed-by-rules') }}">receipt</a>
+    </p>
+    {% endif %}
   </div>
   <p class="rec-done small">
     {% if page.is_done %}
@@ -374,7 +408,7 @@
       </div>
       {% endif %}
       <div class="rec-footer-end">
-        <span class="rec-keys font-mono" data-rec-keys hidden>
+        <span class="rec-keys font-mono" data-rec-scripted hidden>
           j/k move &middot; Enter OK &middot; o open
         </span>
         <span class="htmx-indicator text-body-secondary small">
