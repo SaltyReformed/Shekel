@@ -9,6 +9,7 @@ is *which* card exists, *which* tab holds it and *what* each tab claims to
 hold -- because those are facts about a real pass over real rows.
 """
 
+import logging
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -37,8 +38,12 @@ from app.services.statement_match._creations import PurchaseCreation
 from app.services.statement_match._release import acts_of
 from app.services.statement_match._scope import no_period_refusal
 
+from .test_reads_lineless import _planted_lineless
+
 from ._builders import (
     a_bank_line,
+    filed_acts,
+    filed_by,
     a_purchase,
     a_bars,
     a_rule,
@@ -55,7 +60,7 @@ from ._builders import (
 _CARD_PAYMENT = "Financial Services/Credit Card Payment"
 
 
-def _page(seed_user, tab, agreement=None):
+def _page(seed_user, tab, agreement=None, limit=REGISTER_LIMIT):
     """Return the Reconcile page for one tab of the seeded account.
 
     Args:
@@ -63,11 +68,15 @@ def _page(seed_user, tab, agreement=None):
         tab: Which :class:`~app.services.statement_match.Tab`.
         agreement: The bank agreement, or ``None`` -- which is the state of an
             account no import has anchored, and the one most cases are in.
+        limit: How many SETTLED acts a settled tab may render, or ``None`` for
+            the whole record.  **It defaults to the SHIPPED bound** rather than
+            to ``None``, so a case that says nothing about it grades the page
+            the route actually renders.
 
     Returns:
         The page.
     """
-    return reconcile_page(a_scope(seed_user), agreement, tab)
+    return reconcile_page(a_scope(seed_user), agreement, tab, limit)
 
 
 def _cards(page):
@@ -831,3 +840,250 @@ class TestTheHeroReportsADayBOTHRecordsCanSpeakFor:
 
         assert page.hero.to_explain == 0
         assert page.is_done is False
+
+
+class TestACaptionCountsOnlyWhatItsTabCanDraw:
+    """Finding **bank_import:N-389**, plan step ``bank_import:X-gj-1c``.
+
+    An act that names no bank line has no day, no amount and no wording, so it
+    is not a card and never was.  The two readers disagreed about it:
+    :func:`~app.services.statement_match._accepted_view.accepted_counts`
+    counted the table, and the fold that builds the cards skipped it in Python
+    -- so one such act made the Explained caption one higher than the tab could
+    deliver.  Measured on a planted act 2026-08-31 before the fix: caption
+    ``1``, rendered ``0``, withheld ``0``.
+
+    :data:`~app.services.statement_match._release.NAMES_A_BANK_LINE` is that
+    invariant stated once, in SQL, and both readers narrow on it.
+
+    **The state needs a code defect to reach**, which is why it is planted
+    through raw SQL: ``record_match`` refuses an empty side at the one writer,
+    ``fk_statement_match_members_line_account`` refuses to remove a line a
+    match names, and migration ``e4a7c0f13b92`` deleted the acts that already
+    held none.  A case over an account with no such act grades nothing here --
+    both numbers are already equal -- so every assertion below stands beside a
+    REAL act, which is what makes the equality mean something.
+    """
+
+    def _one_real_and_one_lineless(self, seed_user, db):
+        """Stage one act a tab can draw, and one it cannot.
+
+        Args:
+            seed_user: The seeded user bundle.
+            db: The session fixture.
+        """
+        envelope = an_envelope(seed_user)
+        line = an_unexplained_outflow(
+            seed_user, merchant="Walmart", amount="-12.34",
+        )
+        db.session.commit()
+        filed_by(seed_user, line, envelope, by_rule=False)
+        db.session.commit()
+        _planted_lineless(db, seed_user)
+
+    def test_the_caption_equals_what_the_tab_delivers(
+        self, app, db, seed_user,
+    ):
+        """FIRING CONTROL: this read ``1`` against ``0 + 0`` before the fix."""
+        self._one_real_and_one_lineless(seed_user, db)
+
+        page = _page(seed_user, Tab.EXPLAINED)
+        rendered = sum(section.count for section in page.sections)
+        withheld = sum(section.withheld for section in page.sections)
+
+        assert rendered == 1, "the REAL act must be drawn, or nothing is graded"
+        assert _counts(page)[Tab.EXPLAINED] == rendered + withheld
+
+    def test_the_counts_exclude_it_and_the_loader_never_yields_it(
+        self, app, db, seed_user,
+    ):
+        """One clause, asked of both readers, over a set holding both kinds."""
+        self._one_real_and_one_lineless(seed_user, db)
+        owner, account = seed_user["user"].id, seed_user["account"].id
+
+        counts = accepted_counts(owner, account)
+
+        assert (counts.total, counts.by_rule, counts.by_hand) == (1, 0, 1)
+        assert len(acts_of(owner, account)) == 1
+        assert len(accepted_register(owner, account).shown) == 1
+
+    def test_reaching_one_is_an_ALARM_and_not_a_silence(
+        self, app, db, seed_user, caplog,
+    ):
+        """Skipping SILENTLY was the original defect (reviews, 2026-08-20).
+
+        Such an act goes on claiming its transactions in ``matched_subjects``,
+        so those rows can never be matched again and no release control exists
+        to free them.  The alarm moved from the fold to the counts read with
+        the clause; what may not happen is that it stops being raised.
+        """
+        self._one_real_and_one_lineless(seed_user, db)
+
+        with caplog.at_level(logging.ERROR):
+            _page(seed_user, Tab.EXPLAINED)
+
+        assert any(
+            record.__dict__.get("event") == "statement_match_lineless"
+            for record in caplog.records
+        )
+
+
+class TestWhichKindOfCARDATabHoldsIsTheTabsOwnFact:
+    """Plan step ``bank_import:X-gj-1c``.
+
+    The body asks :attr:`~app.services.statement_match.Tab
+    .holds_settled_acts` once and renders one of two partials, because the two
+    card kinds carry disjoint controls -- an Undo is a form and may not nest
+    in the Apply form, and a settled tab has nothing to Apply.  A TOTAL table
+    rather than a membership test, so a sixth tab is a failure here and not a
+    bank-line card rendered over acts.
+    """
+
+    def test_every_tab_answers(self, app, db, seed_user):
+        """Driven from the enum: a new member with no entry raises."""
+        assert {tab: tab.holds_settled_acts for tab in Tab} == {
+            Tab.TO_EXPLAIN: False,
+            Tab.EXPLAINED: True,
+            Tab.FILED_BY_RULES: True,
+            Tab.TRANSFERS: False,
+            Tab.SKIPPED: False,
+        }
+
+    def test_it_agrees_with_the_kind_the_sections_actually_hold(
+        self, app, db, seed_user,
+    ):
+        """The predicate and the cards, asked of a page holding both kinds.
+
+        A table can be right about the enum and wrong about the sections; this
+        is what pairs the two, over an account that really has an act and
+        really has a line to explain.
+        """
+        envelope = an_envelope(seed_user)
+        settled = an_unexplained_outflow(
+            seed_user, merchant="Walmart", amount="-12.34",
+        )
+        an_unexplained_outflow(
+            seed_user, merchant="Lowe's", amount="-35.72", sequence=1,
+        )
+        db.session.commit()
+        filed_by(seed_user, settled, envelope, by_rule=False)
+        db.session.commit()
+
+        for tab in (Tab.TO_EXPLAIN, Tab.EXPLAINED):
+            cards = _cards(_page(seed_user, tab))
+
+            assert cards, f"{tab} must hold a card, or this grades nothing"
+            for card in cards:
+                assert hasattr(card, "act") is tab.holds_settled_acts, tab
+                assert hasattr(card, "line") is not tab.holds_settled_acts, tab
+
+
+class TestTheSettledBoundIsLIFTABLE:
+    """Ruling **R-GX**'s bound, and the link the register offered past it.
+
+    Plan step ``bank_import:X-gj-1c`` retires the register as a page
+    (**R-HU**), so the tab that replaces it has to reach every act the
+    register could: on the developer's own account the bound withholds 171 of
+    221, which without a way past it would be 171 acts out of reach rather
+    than merely unlisted.  The arithmetic is
+    ``test_release.TestTheRegisterBoundsWhatItRenders``'s; this grades that
+    the PAGE threads the parameter to the settled tabs and to no others.
+    """
+
+    def test_the_bound_cuts_and_says_so_and_None_lifts_it(
+        self, app, db, seed_user,
+    ):
+        """One act past the boundary, both renders, one account.
+
+        The bounded render must WITHHOLD -- an equal pair of counts would be
+        satisfied by an account that never reached the bound at all.
+        """
+        filed_acts(seed_user, REGISTER_LIMIT + 1, by_rule=False)
+
+        bounded = _page(seed_user, Tab.EXPLAINED)
+        everything = _page(seed_user, Tab.EXPLAINED, limit=None)
+
+        assert sum(one.count for one in bounded.sections) == REGISTER_LIMIT
+        assert sum(one.withheld for one in bounded.sections) == 1
+        assert sum(one.count for one in everything.sections) == (
+            REGISTER_LIMIT + 1
+        )
+        assert sum(one.withheld for one in everything.sections) == 0
+
+    def test_the_caption_is_the_whole_record_at_either_bound(
+        self, app, db, seed_user,
+    ):
+        """A tab bar states what the account HOLDS, not what it drew.
+
+        Lifting the bound may not move the caption, and the caption must equal
+        rendered plus withheld at both -- which is the same equality
+        :class:`TestACaptionCountsOnlyWhatItsTabCanDraw` grades from the other
+        side.
+        """
+        filed_acts(seed_user, REGISTER_LIMIT + 1, by_rule=False)
+
+        for page in (
+            _page(seed_user, Tab.EXPLAINED),
+            _page(seed_user, Tab.EXPLAINED, limit=None),
+        ):
+            rendered = sum(one.count for one in page.sections)
+            withheld = sum(one.withheld for one in page.sections)
+
+            assert _counts(page)[Tab.EXPLAINED] == REGISTER_LIMIT + 1
+            assert rendered + withheld == REGISTER_LIMIT + 1
+
+
+class TestTheChipsNameOnlyATabThatCanRenderThem:
+    """Plan step ``bank_import:X-gj-1c`` deleted the *already explained* chip.
+
+    It carried :attr:`~app.services.statement_match._accepted_view
+    .AcceptedCounts.total` and led to the register, which lists every accepted
+    act.  Once the two settled TABS exist that total is the union of two of
+    them, so the chip would have promised a number neither tab delivers -- the
+    caption-over-a-count defect ``_queue._sweeps_for`` exists to refuse.
+
+    What must hold now is the property the route rests on: every chip names a
+    tab whose count it equals, or names no tab at all.
+    """
+
+    def test_no_chip_counts_settled_acts(self, app, db, seed_user):
+        """Staged so the deleted chip WOULD have rendered."""
+        envelope = an_envelope(seed_user)
+        line = an_unexplained_outflow(
+            seed_user, merchant="Walmart", amount="-12.34",
+        )
+        db.session.commit()
+        filed_by(seed_user, line, envelope, by_rule=False)
+        db.session.commit()
+
+        page = _page(seed_user, Tab.TO_EXPLAIN)
+
+        assert _counts(page)[Tab.EXPLAINED] == 1, (
+            "there must BE a settled act, or the deleted chip is absent for "
+            "the wrong reason"
+        )
+        assert not [chip for chip in page.chips if chip.tab is Tab.EXPLAINED]
+
+    def test_every_chip_equals_the_tab_it_names(self, app, db, seed_user):
+        """The property the route's URL builder rests on, over real chips.
+
+        A parked card payment gives the Transfers chip a member, so this is
+        asked of a chip that exists rather than of an empty tuple.
+        """
+        statement = an_import(seed_user)
+        a_bank_line(
+            seed_user, statement, amount="-793.23",
+            posted_on=seed_user["bootstrap_period"].start_date,
+            description="ACH DEBIT CAPITAL ONE MOBILE PMT",
+            merchant="Capital One Credit Card",
+            source_category=_CARD_PAYMENT,
+        )
+        db.session.commit()
+
+        page = _page(seed_user, Tab.TO_EXPLAIN)
+        counts = _counts(page)
+
+        assert [chip.tab for chip in page.chips] == [Tab.TRANSFERS]
+        for chip in page.chips:
+            if chip.tab is not None:
+                assert chip.count == counts[chip.tab], chip.label

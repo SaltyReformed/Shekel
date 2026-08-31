@@ -384,33 +384,47 @@ class TestTheImportPost:
         toasts = _flash_toasts(page)
 
         assert any(
-            "every one of them is on the page of what you have already "
-            "decided" in message
+            "every one of them is on the Filed by rules tab of the "
+            "Reconcile screen" in message
             for _, message in toasts
         ), toasts
-        assert "on the review screen" not in " ".join(
-            message for _, message in toasts
-        )
+        joined = " ".join(message for _, message in toasts)
+        assert "on the review screen" not in joined
+        # AND NOT THE OTHER SETTLED TAB, which is the half that holds none of
+        # these: `Explained` is the acts a PERSON ticked (**R-GT**), and every
+        # act this receipt is about is one nobody pressed.
+        assert "already decided" not in joined
         # The header button and the standing-rule anchor, which are how an
         # owner reaches those places without reading a flash.
         #
-        # THE TWO LINKS LEAD TO DIFFERENT PAGES SINCE ``bank_import:X-gk``
-        # (ruling **bank_import:R-IC**, developer 2026-08-31), and the split is
-        # this case's own reasoning applied one step further.  The button is
-        # about the ACTS -- accepted matches, which are still the register's.
-        # The anchor is about the standing RULE, and the register renders only
-        # the merchants already answered for: measured on a clone of the
-        # developer's own database, 32 of his 62 merchants were on no surface
-        # at all, so the anchor explaining what a standing rule does pointed at
-        # a page that could not show, or answer for, half the merchants it was
-        # explaining.  That is the same *chooser whose submission can never
-        # succeed* shape this case was written for, which is why the
-        # destination moved rather than the assertion being dropped.
+        # THREE LINKS, THREE DESTINATIONS, and each move was this case's own
+        # reasoning applied once further.
+        #
+        # The ANCHOR is about the standing RULE and led to the register until
+        # ``bank_import:X-gk`` (ruling **R-IC**, 2026-08-31): that page renders
+        # only the merchants already answered for, and measured on a clone of
+        # the developer's own database 32 of his 62 merchants were on no
+        # surface at all -- so a sentence explaining what a standing rule does
+        # pointed at a page that could not show, or answer for, half the
+        # merchants it was explaining.
+        #
+        # The BUTTON is about the acts, and the CAPTION is about the acts a
+        # RULE filed.  Both led to the register until ``bank_import:X-gj-1c``
+        # retired it (**R-HU**), and they now lead to DIFFERENT TABS, because
+        # the Reconcile screen splits accepted acts by who agreed to them
+        # (**R-GT**).  The button is general and opens Explained with the whole
+        # bar one click away; the caption is specifically about acts nobody
+        # pressed, so it names the tab that holds all of them and none of the
+        # others.  Pointing the caption at Explained would send its reader to
+        # the half holding none of what it receipts, which is the same
+        # page-that-cannot-answer shape this case was written for.
         account_id = seed_user["account"].id
-        register = f"/accounts/{account_id}/statements/register"
+        reconcile = f"/accounts/{account_id}/statements/reconcile"
         merchants = f"/accounts/{account_id}/statements/merchants"
-        assert f'href="{register}"' in page
+        assert f'href="{reconcile}?tab=explained"' in page
+        assert f'href="{reconcile}?tab=filed_by_rules"' in page
         assert f'href="{merchants}#merchant-rules"' in page
+        assert f'href="/accounts/{account_id}/statements/register"' not in page
 
     def test_undoing_a_filed_act_LEAVES_THE_OWNER_HERE(
         self, auth_client, db, seed_user,

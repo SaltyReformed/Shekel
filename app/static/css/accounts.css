@@ -757,12 +757,46 @@ a.acct-cell__link:focus-visible {
   background: var(--bs-body-bg);
 }
 
+/* ── The merchant-rule control's new-envelope fields ──────────────────
+   Finding bank_import:N-403, plan step bank_import:X-gj-1c.  The name and the
+   category are PARAMETERS OF ONE OPTION of the answer select, not an answer of
+   their own, and hiding them until that option is chosen is what says so on
+   screen.
+
+   IT IS THE DOCUMENT THAT SAYS IT NOW, and that is the whole fix.  A script
+   (`statement_rules.js`, deleted) was the only thing that could reveal them,
+   so with nothing running an owner could pick "a new envelope", never see the
+   category box, and be refused by the door every time -- on all three surfaces
+   that render the macro.  Measured 2026-08-31 by scraping the merchants page
+   and posting its own bytes: a designed 400, "needs both a name and a
+   category", every press.
+
+   BOTH RULES ARE INSIDE THE @supports, and the ORDER of that matters more than
+   it looks.  A browser that cannot read a select's chosen option from outside
+   it applies NEITHER, so the fields are simply always visible and the answer
+   still lands -- a form that is correct and slightly cluttered.  Hiding them
+   outside the guard and revealing them inside it would leave exactly the old
+   defect in exactly the browsers that cannot fix it.
+
+   The service still refuses a new envelope stated by halves
+   (`_stating._reject_incomplete_new_envelope`), so the rule does not live
+   here; what lives here is only whether the owner can see the boxes. */
+
+@supports selector(select:has(option:checked)) {
+  [data-rule-row] [data-rule-new-field] { display: none; }
+
+  [data-rule-row]:has(select[data-rule] option[value="new"]:checked)
+    [data-rule-new-field] { display: block; }
+}
+
 /* ── The Reconcile page (bank_import:X-gj-1b) ───────────────────────────
    One page on four verbs, locked at Loop A round 4 on 2026-08-29.  Every
    colour here is a token, so both themes are one set of variable values and
-   nothing is hardcoded; amber appears only where money is at risk (the design
-   language's D11), which on this screen is exactly one signal -- a deposit
-   whose pay period already holds income no line explains.
+   nothing is hardcoded; amber is the D11 CAUTION role and every use of it on
+   this screen is inventoried below, beside `.rec-risk-glyph`.  That inventory
+   is the one a reader auditing "what is amber" reads, and it has now been
+   wrong twice -- it said "exactly one signal" over three, and three over four
+   -- so it is a LIST rather than a count.
 
    THE FOUR VERB TABS ARE A RADIO GROUP, and the rules below are what make
    them tabs.  That is not a styling preference: the checked member is
@@ -843,6 +877,17 @@ a.rec-chip:hover { border-color: var(--shekel-accent); }
 .rec-chip-flat { cursor: default; }
 .rec-chip-count { color: var(--shekel-number-ink); font-weight: 500; }
 
+/* THE BAR WRAPS RATHER THAN PUSHING THE PAGE SIDEWAYS.  It held three tabs
+   until plan step bank_import:X-gj-1c added the two settled ones, and five do
+   not fit a phone: measured headless at 360-500 px, the row wanted 519 px and
+   took the whole DOCUMENT with it, leaving Transfers, Skipped and the legend
+   toggle off the right edge with no way to them but scrolling the page
+   sideways.  Wrapping keeps every tab reachable at every width and costs the
+   wide layout nothing, the row being far inside one line there.
+
+   `row-gap` is what stops a wrapped second line touching the first; the
+   bottom border stays under the whole block, which is what makes two rows
+   still read as one bar. */
 /* What the account's OPENING already accounts for (balance:X-f3c-2b-2b).
    Below the chip row rather than inside it: it is a sentence ending in an
    act, not a count, and a chip carrying the same count and day three lines
@@ -854,8 +899,10 @@ a.rec-chip:hover { border-color: var(--shekel-accent); }
 
 .rec-tabs {
   display: flex;
+  flex-wrap: wrap;
   align-items: stretch;
   gap: 0.25rem;
+  row-gap: 0;
   border-bottom: 1px solid var(--shekel-border-subtle);
   margin-bottom: 0.75rem;
 }
@@ -989,13 +1036,13 @@ a.rec-chip:hover { border-color: var(--shekel-accent); }
 .rec-ink-plain { color: var(--shekel-text-secondary); }
 .rec-ink-muted { color: var(--shekel-text-muted); }
 
-/* AMBER ONLY WHERE MONEY IS AT RISK (the design language's D11).  A withheld
-   rule, a declined tier and a parked payment are never amber.
+/* AMBER IS THE CAUTION ROLE (the design language's D11).  A withheld rule, a
+   declined tier and a parked payment are never amber.
 
-   THREE THINGS ON THIS SCREEN ARE, and this comment claimed ONE until plan
-   step bank_import:X-gj-1b -- a count nobody could check against the markup
-   beside it, which is the class this arc has now measured wrong several
-   times:
+   FOUR THINGS ON THIS SCREEN ARE.  This comment claimed ONE until plan step
+   bank_import:X-gj-1b and THREE until X-gj-1c, each time a count nobody could
+   check against the markup beside it -- which is the class this arc has now
+   measured wrong several times, in this very comment, twice:
      1. a deposit whose own pay period already holds income no line explains,
         which is how a paycheck gets counted twice.  It renders TWICE for one
         signal -- `.rec-risk-glyph` on the card and `.rec-risk` in the panel --
@@ -1005,7 +1052,16 @@ a.rec-chip:hover { border-color: var(--shekel-accent); }
      3. a door's refusal, in Bootstrap's own `alert-warning` rather than in
         these tokens -- the match pane's and the offer's.  Named here because
         a reader auditing "what is amber" reads THIS comment, and a signal
-        that borrows another stylesheet's amber is still amber to them. */
+        that borrows another stylesheet's amber is still amber to them;
+     4. an applied act that NO LONGER HOLDS (`.rec-act-drift`, plan step
+        bank_import:X-gj-1c), and its `text-warning-emphasis` rows, which
+        resolve to this same token because the project overrides
+        `--bs-warning-text-emphasis` to it.  It is NOT money at risk: a
+        cascade elsewhere has taken a row the act names, so the record has
+        stopped saying what it said.  It is amber because D11's role is
+        CAUTION rather than money specifically -- the hero's OFF BY is drawn
+        in the same token for the same reason -- and it is the one thing on a
+        settled tab a reader must act on. */
 .rec-risk-glyph { color: var(--shekel-warning); }
 
 .rec-risk {
@@ -1179,6 +1235,50 @@ a.rec-chip:hover { border-color: var(--shekel-accent); }
   padding: 2.5rem 1rem;
   color: var(--shekel-text-muted);
 }
+
+/* ── One card per act already applied ───────────────────────────────── */
+
+/* THE SAME CARD ONE TENSE OVER (plan step bank_import:X-gj-1c, ruling R-HU).
+   It reuses .rec-card and .rec-summary whole, so an act's amount sits in the
+   same fixed track a bank line's does and the two tabs read as one list.  What
+   it adds is the cursor -- an act card does not open, having nothing to
+   disclose -- and the two bands that render only when there is something in
+   them. */
+.rec-act .rec-summary { cursor: default; }
+
+.rec-by-rule {
+  color: var(--shekel-text-muted);
+  font-size: 0.75rem;
+  margin-left: 0.35rem;
+}
+
+/* AN ACT THAT NO LONGER HOLDS.  Amber, because it is the one thing on a
+   settled tab a reader must act on -- and it is not money at risk so much as
+   a record that has stopped saying what it said, which is the same class of
+   caution the hero's OFF BY is drawn in. */
+.rec-act-drift {
+  border-top: 1px solid var(--shekel-border-subtle);
+  padding: 0.5rem 0.75rem;
+  color: var(--shekel-warning);
+}
+
+/* THE MEMBER ROWS THE SENTENCE COULD NOT FIT.  Muted, because it completes a
+   sentence rather than making a second claim -- the card's own line already
+   says how many there are. */
+.rec-act-rows {
+  border-top: 1px solid var(--shekel-border-subtle);
+  padding: 0.4rem 0.75rem;
+  color: var(--shekel-text-muted);
+}
+
+/* WHAT THE UNDO WOULD DESTROY, spanning the card because it is a list and the
+   control column is a fixed narrow track. */
+.rec-act-removes {
+  border-top: 1px solid var(--shekel-border-subtle);
+  padding: 0.5rem 0.75rem;
+}
+
+.rec-more { margin: 0.75rem 0 0; }
 
 /* ── The sticky footer band ─────────────────────────────────────────── */
 

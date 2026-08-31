@@ -45,12 +45,18 @@
        href="{{ url_for('accounts.review_statements', account_id=account.id) }}">
       <i class="bi bi-link-45deg"></i> Review matches
     </a>
-    {# The two records side by side (plan step bank_import:X-f6e-2).  It
-       reports and never gates, so it is an ordinary link rather than a step
-       in a flow. #}
+    {# IT SAYS "EXPLAINED" BECAUSE THAT IS THE TAB IT OPENS (plan step
+       bank_import:X-gj-1c, ruling R-HU).  It read "Already decided" and
+       pointed at the REGISTER, which listed BOTH halves of the accepted set;
+       the Reconcile screen splits them by who agreed to them (R-GT), so no
+       one tab is "already decided" -- an act a standing rule filed is decided
+       and is on the other one.  Keeping the old words over the new
+       destination would be the caption-over-a-count shape that deleted the
+       "already explained" chip in the same step.  The tab bar carries the
+       reader to Filed by rules in one click. #}
     <a class="btn btn-sm btn-outline-secondary"
-       href="{{ url_for('accounts.statement_register', account_id=account.id) }}">
-      <i class="bi bi-check2-square"></i> Already decided
+       href="{{ url_for('accounts.statement_reconcile', account_id=account.id, tab='explained') }}">
+      <i class="bi bi-check2-square"></i> Explained
     </a>
     <a class="btn btn-sm btn-outline-secondary"
        href="{{ url_for('accounts.statement_agreement', account_id=account.id) }}">
@@ -307,8 +313,19 @@
   <div class="card-header d-flex justify-content-between align-items-center">
     <span>
       <i class="bi bi-signpost-split"></i> Filed by your rules
+      {# WHERE ALL OF THEM ARE, and it is a TAB rather than a page since plan
+         step bank_import:X-gj-1c.  It named "the page of what you have already
+         decided", which was the register and listed every accepted act; the
+         Reconcile screen splits those into two tabs by WHO agreed to them
+         (ruling R-GT), and the acts this card receipts are by definition the
+         ones nobody pressed.  Sending their owner to Explained would send them
+         to the half that holds none of them, which is the same
+         page-that-cannot-answer shape this sentence was corrected for once
+         already at X-gf-2. #}
       <span class="text-muted small">-- {{ filed_limit }} most recent, newest
-      first; every one is on the page of what you have already decided</span>
+      first; every one is on Reconcile's
+      <a href="{{ url_for('accounts.statement_reconcile', account_id=account.id, tab='filed_by_rules') }}">Filed
+      by rules</a> tab</span>
     </span>
     <span class="badge text-bg-secondary">{{ filed_by_rules | length }}</span>
   </div>

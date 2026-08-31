@@ -21,6 +21,7 @@ the rows that act created (ruling **R-GG**).  Stating a merchant answer moves
 none and can move none.
 """
 
+import re
 from datetime import timedelta
 
 import pytest
@@ -1417,19 +1418,33 @@ class TestWhatOnlyTheRENDEREDPageCanShow:
         assert "payment to an account you hold" in page
         assert "<em>Never a purchase</em> is the" in page
 
-    def test_the_page_LOADS_the_script_its_new_envelope_arm_needs(
+    def test_the_new_envelope_fields_need_NOTHING_to_run(
         self, auth_client, db, seed_user,
     ):
-        """The reveal is shared by two pages, so each must actually load it.
+        """Finding **bank_import:N-403**, plan step ``bank_import:X-gj-1c``.
 
-        Without it the name and category boxes stay ``d-none`` on this page:
-        an owner switching a row to *a new envelope* sees no inputs, Saves, and
-        is told "a new envelope needs both a name and a category" with nothing
-        on screen to fix.  The file is new at this step and both includes were
-        graded by nothing.
+        **This case graded the SCRIPT TAG until then, and the script was the
+        defect.**  The macro rendered both fields ``d-none`` on a merchant with
+        no rule and ``statement_rules.js`` was the only thing that could
+        un-hide them -- so with nothing running an owner could pick *a new
+        envelope*, never see the category box, and be refused every time.  A
+        case asserting the include was green throughout, because loading the
+        file is not the same claim as the answer being reachable.
+
+        What holds now is that the fields are IN THE DOCUMENT at every answer,
+        with no class hiding them: the stylesheet reads the select's own
+        selected option, and a browser that cannot do that shows them always.
+        Both surfaces that render the macro are asserted, the queue's own
+        control asking the identical question.
         """
         envelope = an_envelope(seed_user)
         an_unexplained_outflow(seed_user)
+        # A SECOND merchant, left unanswered, so the QUEUE really renders the
+        # control: its merchant section asks only about a merchant nobody has
+        # answered for that still carries an unexplained line, and answering
+        # the only one below would leave that half of this case grading an
+        # absent control.
+        an_unexplained_outflow(seed_user, merchant="Walmart", sequence=1)
         db.session.commit()
         auth_client.post(
             _merchants_url(seed_user["account"].id),
@@ -1446,10 +1461,12 @@ class TestWhatOnlyTheRENDEREDPageCanShow:
             _review_url(seed_user["account"].id),
         ).data.decode()
 
-        assert "js/statement_rules.js" in register
-        assert "data-rule-new-field" in register
-        # ...and the queue keeps it too, its own control asking the same thing.
-        assert "js/statement_rules.js" in queue
+        for page in (register, queue):
+            assert "data-rule-new-field" in page
+            assert "js/statement_rules.js" not in page
+            assert not re.search(
+                r'class="[^"]*\bd-none\b[^"]*"[^>]*data-rule-new-field', page,
+            ), "a field container is hidden by a class again"
 
 
 class TestTheFlagIsAPresenceTest:

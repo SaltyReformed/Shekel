@@ -1,11 +1,13 @@
-"""The UNDO's route half, stated once for the two surfaces that render it.
+"""The UNDO's route half, stated once for the three surfaces that render it.
 
 Plan step ``bank_import:X-gf-2``.  Releasing a match is ONE act with one
-refusal story, and it is offered from two places: the register, where every
-accepted act is listed, and the bank-statements page, where the acts a standing
-rule filed at import are receipted (ruling **R-GH**).  What differs between the
-two is only WHERE THE OWNER WAS -- so the target is the parameter and the door
-is written once.
+refusal story, and it is offered from three places: the RECONCILE page's two
+settled tabs, where every applied act is listed (plan step
+``bank_import:X-gj-1c``, ruling **R-HU**); the register, which that step
+retires and ``X-gi`` deletes; and the bank-statements page, where the acts a
+standing rule filed at import are receipted (ruling **R-GH**).  What differs
+between them is only WHERE THE OWNER WAS -- so the target is the parameter and
+the door is written once.
 
 **A door returns the owner to the page they pressed it on**, which is why the
 target is a parameter at all rather than a constant.  Both surfaces used to
@@ -16,7 +18,11 @@ have made the redirect land nowhere near the act.
 
 **The URL is what says which surface**, and nothing on the wire does.  A hidden
 field naming a destination would be a client-chosen redirect and an allowlist
-to keep; two routes over one function make the routing table the closed set.
+to keep; three routes over one function make the routing table the closed set.
+What a caller may add is which VIEW of its own page to come back to
+(``**target_args``), and it hands those over already graded -- the Reconcile
+page's tab is a :class:`~app.services.statement_match.Tab` member or a 404,
+never the string it arrived as.
 
 Route-layer module (leading underscore = route-internal), beside
 :mod:`._statement_doors` and for the same reason: it consumes ``flash`` and
@@ -76,7 +82,7 @@ def _release_report(released) -> "tuple[str, str]":
     )
 
 
-def release_and_return(account, target_endpoint: str):
+def release_and_return(account, target_endpoint: str, **target_args):
     """Undo the submitted match and send the owner back to *target_endpoint*.
 
     **It does NOT put the settle days back**, and both surfaces say so: the
@@ -98,11 +104,21 @@ def release_and_return(account, target_endpoint: str):
         target_endpoint: The endpoint to return to -- the page the control was
             pressed on.  Takes ``account_id``, which every statement surface
             does.
+        **target_args: What else names the VIEW the owner was looking at, for
+            a target that has more than one (plan step ``bank_import:X-gj-1c``).
+            The Reconcile page passes which tab is open and whether the bound
+            on settled acts is lifted; the two older surfaces pass nothing and
+            get the URL they always got.  **Route-supplied and never read off
+            the wire here**: the caller has already graded whatever it took
+            from the request, so nothing a submitter can spell reaches
+            ``url_for`` through this -- which is the property the module
+            docstring's "no client-chosen redirect" rests on, kept rather than
+            widened.
 
     Returns:
         A redirect to that page, carrying the receipt or the refusal.
     """
-    target = url_for(target_endpoint, account_id=account.id)
+    target = url_for(target_endpoint, account_id=account.id, **target_args)
 
     payload = form_payload(request.form, _release_schema)
     errors = _release_schema.validate(payload)

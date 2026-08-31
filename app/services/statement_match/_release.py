@@ -160,6 +160,40 @@ _WHOLE_ACT = (
     ),
 )
 
+#: An accepted act NAMES AT LEAST ONE BANK LINE, as a clause a query can carry.
+#:
+#: **The invariant, stated once where SQL can apply it** (plan step
+#: ``bank_import:X-gj-1c``, finding **bank_import:N-389**).  It was asked in
+#: two languages: :func:`acts_of` handed every act to
+#: :func:`~._accepted_view.accepted_groups`, which skipped a lineless one in
+#: Python, while :func:`~._accepted_view.accepted_counts` counted the table
+#: and skipped nothing.  A caption is derived from the second and a tab from
+#: the first, so one such act made the Reconcile screen's Explained caption
+#: one higher than the tab could draw -- measured on a planted act 2026-08-31:
+#: caption ``1``, rendered ``0``, withheld ``0``.
+#:
+#: **It narrows the LOADER rather than guarding the fold**, which is what
+#: deletes the Python guard instead of adding a second one beside it: an act
+#: with no line has no day (``max()`` over an empty side), no amount and no
+#: wording, so it is not a card and never was -- and a reader that cannot
+#: receive one needs no arm for it.  The three guarantees that make the state
+#: unreachable in the first place are ``record_match``'s refusal at the one
+#: writer, ``fk_statement_match_members_line_account`` no longer cascading,
+#: and migration ``e4a7c0f13b92`` having deleted the acts that already held
+#: none.  This is the fourth and the only one a reader can apply: a foreign
+#: key cannot see an absence.
+#:
+#: **Reaching one is still an ALARM rather than a silence**, and skipping
+#: silently was the original defect (two adversarial reviews, 2026-08-20): the
+#: act goes on claiming its transactions in ``matched_subjects``, so those rows
+#: can never be matched again and no release control exists to free them.
+#: :func:`~._accepted_view.accepted_counts` counts the acts this clause
+#: EXCLUDES in the same aggregate it counts the ones it admits, and logs them
+#: at ERROR -- one query, on the page that reads both numbers.
+NAMES_A_BANK_LINE = StatementMatch.members.any(
+    StatementMatchMember.bank_statement_line_id.isnot(None),
+)
+
 
 @dataclass(frozen=True)
 class PlannedRemoval:
@@ -259,6 +293,27 @@ class PlannedRemovals:
     def moves_money(self) -> bool:
         """Return whether this undo would change what the account records."""
         return bool(self.cash_amount)
+
+    @property
+    def says_anything(self) -> bool:
+        """Return whether this act's undo has anything to disclose.
+
+        Plan step ``bank_import:X-gj-1c``.  **ONE spelling of a predicate that
+        had three.**  :func:`removals_by_match` dropped an act that would
+        neither remove nor refuse, the Reconcile act card asked the same
+        question to decide whether to render its band, and the undo macro
+        branches on the two fields separately -- so a fourth arm added to
+        :attr:`refusal` later would have reached two of the three and read as
+        covered.  The MACRO keeps its own branch, because it chooses BETWEEN
+        the two rather than asking whether either is set.
+
+        Returns:
+            Whether the undo would remove a row or refuse.  ``False`` is the
+            ordinary act -- a match between rows that already existed, which
+            is most of them: 0 of the developer's 221 said anything, measured
+            2026-08-27.
+        """
+        return bool(self.rows) or self.refusal is not None
 
 
 @dataclass(frozen=True)
@@ -784,6 +839,14 @@ def acts_of(
     The ORDER is the panel's (newest first) and costs the other caller nothing,
     where an unordered read would have to be sorted twice.
 
+    **It returns only acts that NAME A BANK LINE** (:data:`NAMES_A_BANK_LINE`,
+    plan step ``bank_import:X-gj-1c``).  That is a narrowing rather than a
+    filter over the result, and it is what makes an act with no day, no amount
+    and no wording unreachable by every reader instead of skipped by one of
+    them; :func:`~._accepted_view.accepted_counts` shares the clause, so a tab
+    caption and the cards under it are one set.  Such an act is still an ALARM
+    -- see that clause for where the ERROR is raised and why it is not silent.
+
     Args:
         owner_id: The user the route proved owns the account.
         account_id: The account whose acts to read.
@@ -801,10 +864,10 @@ def acts_of(
             is work it never uses.
 
     Returns:
-        Its :class:`~app.models.statement_match.StatementMatch` rows, newest
-        first, loaded WHOLE (:data:`_WHOLE_ACT`) -- both relations and the row
-        each of them names, so a caller folding many acts issues no further
-        statement and reaches no subject by id.
+        Its :class:`~app.models.statement_match.StatementMatch` rows that name
+        a bank line, newest first, loaded WHOLE (:data:`_WHOLE_ACT`) -- both
+        relations and the row each of them names, so a caller folding many
+        acts issues no further statement and reaches no subject by id.
     """
     if match_ids is not None and not match_ids:
         return []
@@ -814,6 +877,13 @@ def acts_of(
         .filter(
             StatementMatch.account_id == account_id,
             StatementMatch.user_id == owner_id,
+            # **The invariant, applied where a caption can share it**
+            # (:data:`NAMES_A_BANK_LINE`, plan step ``bank_import:X-gj-1c``).
+            # An act naming no bank line has no day, no amount and no wording,
+            # so no reader of this function can render one; excluding it HERE
+            # is what lets :func:`~._accepted_view.accepted_counts` count the
+            # same set from one clause instead of a second spelling in Python.
+            NAMES_A_BANK_LINE,
         )
     )
     if match_ids is not None:
@@ -881,5 +951,5 @@ def removals_by_match(
     planned = {match.id: planned_removals(match) for match in matches}
     return {
         match_id: removals for match_id, removals in planned.items()
-        if removals.rows or removals.refusal is not None
+        if removals.says_anything
     }

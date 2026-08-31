@@ -14,37 +14,44 @@ every citation of them here names its arc.
 **IT MOVES MONEY, through doors that already exist.**  Apply posts the OK'd
 cards through :func:`~app.services.statement_match.apply_reviewed` -- the same
 door the review queue and the workbench use, with the same savepoint-per-item
-policy (**R-FZ(a)**) and the same receipt -- and the RECEIPT's
-per-merchant standing-rule offer posts through
+policy (**R-FZ(a)**) and the same receipt; UNDO posts through
+:func:`~._statement_release.release_and_return`, the same door the register
+and the import receipt use (plan step ``bank_import:X-gj-1c``); and the
+RECEIPT's per-merchant standing-rule offer posts through
 :func:`~._statement_rules.record_submitted_rules`, which moves none.  **This
 module opens no door of its own**, which is what lets a whole screen ship
 without a migration and without a new money path.
 
-**Four routes, and only ONE of them re-renders without writing.**  The page and
-Apply are the pair; the standing-rule offer's own door writes
-``budget.merchant_rules`` and commits (ruling **bank_import:R-IB**); and the
-MATCH pane re-renders one card's candidate rows and what the ticked ones come
-to, writing nothing.  *(This paragraph said "three routes, and the third is a
-READ" until **bank_import:R-IB** added the rule door, at which point the third
-route in file order was the one that WRITES -- a reader counting routes would
-have mapped the sentence onto the wrong one.)*  It is a POST for the reason
+**Five routes, and only ONE of them re-renders without writing.**  The page and
+Apply are the pair; UNDO is a plain POST-redirect-GET back to the tab it was
+pressed on; the standing-rule offer's own door writes ``budget.merchant_rules``
+and commits (ruling **bank_import:R-IB**); and the MATCH pane re-renders one
+card's candidate rows and what the ticked ones come to, writing nothing.
+*(This paragraph said "three routes, and the third is a READ" until
+**bank_import:R-IB** added the rule door, at which point the third route in
+file order was the one that WRITES -- a reader counting routes would have
+mapped the sentence onto the wrong one.)*  It is a POST for the reason
 :func:`~.statement_workbench.statement_match_totals` is: it carries a list of
 ids and a CSRF token, not because it changes anything.  **The alternative was
 measured and refused**: rendering every card's candidate rows with the page is
 67 rows in 18 cards at the workbench's own 991 bytes a row, ~1.2 MB, which is
 finding **N-374** rebuilt one surface later.
 
-**Which TABS this build serves is stated here** (:data:`_TABS_SERVED`).  The
-two tabs whose cards are ACTS already applied -- Explained and Filed by rules
--- are plan step ``X-gj-1c``'s, and a tab bar offering a tab this build cannot
-render would be the affordance-that-cannot-succeed shape ruling **R-HW**
-bounds.  The service builds all five (:func:`~app.services.statement_match
-.reconcile_page`); this route serves the three it has cards for.
+**It serves every tab the service builds** (plan step ``bank_import:X-gj-1c``).
+The two whose cards are ACTS already applied -- Explained and Filed by rules --
+arrived with that step, and with them the ``_TABS_SERVED`` tuple that had 404'd
+them: a subset constant equal to the whole enum guards nothing.  The two kinds
+of card are two values in the service and two partials here, and an act's Undo
+is a `form`, so an act tab renders OUTSIDE the Apply form rather than inside
+it.
 
 **The old routes stay alive beside this page** until ``bank_import:X-gi``'s
 census deletes them, which is ruling **R-HU**'s own sequencing: every door
 this screen posts to is one that is already tested, and nothing is removed on
-the way in.
+the way in.  What ``X-gj-1c`` did remove is the register's REASON to exist --
+the acts it listed are these two tabs, with the same bound, the same
+*show the other N* link and the same Undo -- so no surface this page controls
+points at it any more.
 
 Services boundary: this module owns the HTTP-shaped concerns -- ownership,
 form parsing, fragment rendering, URLs -- and delegates every read and write
@@ -67,6 +74,7 @@ from app.routes.accounts._statement_doors import (
     submitted_item_count,
     submitted_match,
 )
+from app.routes.accounts._statement_release import release_and_return
 from app.routes.accounts._statement_rules import record_submitted_rules
 from app.schemas.validation.statement_reconcile import (
     reconcile_match_payload,
@@ -79,6 +87,7 @@ from app.schemas.validation.statements import (
 from app.services import balance_at, bank_agreement
 from app.services.category_service import list_active_categories
 from app.services.statement_match import (
+    REGISTER_LIMIT,
     MatchCandidates,
     ReviewScope,
     RuleDoorAccepts,
@@ -111,17 +120,6 @@ _BODY = "accounts/_statement_reconcile_body.html"
 #: to.
 _MATCH_PANE = "accounts/_statement_reconcile_match.html"
 
-#: The tabs THIS build renders cards for, in the order the bar draws them.
-#:
-#: **Explained and Filed by rules are plan step ``X-gj-1c``'s**, whose cards
-#: are ACTS already applied rather than bank lines -- a different card, a
-#: different partial and an Undo door.  Offering their tabs now would be a
-#: control that cannot succeed, which is the shape ruling **R-HW** bounds and
-#: ``balance:R-ET``'s corollary deletes outright.  The service already builds
-#: all five, so ``X-gj-1c`` adds two members here and a partial, and changes
-#: nothing else.
-_TABS_SERVED: "tuple[Tab, ...]" = (Tab.TO_EXPLAIN, Tab.TRANSFERS, Tab.SKIPPED)
-
 #: What a database failure tells the owner.  It names no table -- the
 #: traceback goes to the log -- and it ends the way every refusal in this
 #: package does, which is true here because the route owns the unit of work: a
@@ -151,28 +149,66 @@ def _requested_tab() -> Tab:
     readers would be two places for the answer to differ -- which is a page
     that applies a pass and answers with another tab.
 
+    **Every tab the service builds is served, as of plan step
+    ``bank_import:X-gj-1c``.**  This route carried a ``_TABS_SERVED`` tuple and
+    404'd a tab outside it, because ``X-gj-1b`` shipped the three whose cards
+    are bank lines and the two whose cards are ACTS were not built yet --
+    offering one would have been a control that cannot succeed (**R-HW**).
+    Both are built now, so the tuple guarded nothing and is DELETED rather than
+    widened to hold every member of the enum: a subset constant equal to the
+    whole set is a fence a reader has to check against the enum to trust.
+
     Returns:
         The :class:`~app.services.statement_match.Tab`, defaulting to the
         inbox.
 
     Raises:
-        werkzeug.exceptions.NotFound: When the value names no tab this build
-            serves.  **A 404 rather than a rendered apology**, which is the
-            answer :func:`~.bank_agreement._requested_day` already gives for
-            the same shape: nothing composes this URL by hand, so a value that
-            does not resolve is a tampered or stale request rather than a
-            person mid-edit.
+        werkzeug.exceptions.NotFound: When the value names no tab at all.
+            **A 404 rather than a rendered apology**, which is the answer
+            :func:`~.bank_agreement._requested_day` already gives for the same
+            shape: nothing composes this URL by hand, so a value that does not
+            resolve is a tampered or stale request rather than a person
+            mid-edit.
     """
     asked = request.values.get("tab")
     if asked is None:
         return Tab.TO_EXPLAIN
     try:
-        tab = Tab(asked)
+        return Tab(asked)
     except ValueError:
-        abort(404)
-    if tab not in _TABS_SERVED:
-        abort(404)
-    return tab
+        return abort(404)
+
+
+def _asked_for_everything() -> bool:
+    """Return whether the request asked for the whole settled record.
+
+    Plan step ``bank_import:X-gj-1c``.  **The bound the register offered to
+    lift, carried onto the tab that replaces it** (**R-HU**): the two settled
+    tabs render :data:`~app.services.statement_match.REGISTER_LIMIT` acts and
+    say how many they withheld, and this is what the *show the other N* link
+    asks.  On the developer's own account it reaches 171 of 221 acts, so
+    retiring the register without it would put them out of reach.
+
+    A PRESENCE test and not a value one, exactly as the register's own reader
+    is: the link either carries the flag or it does not, so there is no
+    spelling of it to parse and no value to refuse.  What a crafted request
+    can ask for is the page it would get by following the link the page
+    already renders.
+
+    **Over ``request.args`` and not ``request.values``**, which is the register's
+    own reader and is the narrower of the two.  Nothing submits this in a form
+    BODY: the *show the other N* link carries it in a query string, and the
+    Undo form carries it in its own ACTION's query string -- which is
+    ``request.args`` on a POST as much as on a GET, and is why that form needs
+    no hidden field at all.  Reading ``values`` would let a body flip the bound
+    on a door, which is a widening nothing here asks for.  (:func:`_requested_tab`
+    does read ``values``, and must: the Apply form carries ``tab`` as a real
+    hidden field.)
+
+    Returns:
+        Whether the bound is lifted for this render.
+    """
+    return "all" in request.args
 
 
 def _chip_href(account_id: int, chip) -> "str | None":
@@ -182,12 +218,13 @@ def _chip_href(account_id: int, chip) -> "str | None":
     owns its lines (:attr:`~app.services.statement_match.Tab`), and turning
     that into a URL is the one fact a service is not allowed to build.
 
-    **A chip naming a tab this build does not serve leads to the surface that
-    still holds those acts.**  The *already explained* chip counts the acts
-    ``X-gj-1c`` will put on the Explained tab; until then they are the
-    register's, which is a live page with its own Undo -- so the count leads
-    somewhere useful rather than nowhere, and ``X-gj-1c`` re-points it at the
-    tab.
+    **Every chip that names a tab now leads to it**, which is what plan step
+    ``bank_import:X-gj-1c`` left when it deleted the *already explained* chip
+    and served the last two tabs.  This function carried a third arm sending
+    that chip to the REGISTER, because the tab it named was not built; the
+    chip itself is gone (:func:`~app.services.statement_match._reconcile
+    ._chips` says why -- its count was the union of two tabs), and with every
+    tab served there is no chip left that could name an unrenderable one.
 
     Args:
         account_id: The account this page is about.
@@ -200,14 +237,10 @@ def _chip_href(account_id: int, chip) -> "str | None":
     """
     if chip.tab is None:
         return None
-    if chip.tab in _TABS_SERVED:
-        return url_for(
-            "accounts.statement_reconcile",
-            account_id=account_id, tab=chip.tab.value,
-        )
-    if chip.tab is Tab.EXPLAINED:
-        return url_for("accounts.statement_register", account_id=account_id)
-    return None
+    return url_for(
+        "accounts.statement_reconcile",
+        account_id=account_id, tab=chip.tab.value,
+    )
 
 
 @dataclass(frozen=True)
@@ -291,6 +324,7 @@ def _reconcile_context(account, scope, tab, answer: _Answer) -> dict:
     Returns:
         The template context.
     """
+    show_all = _asked_for_everything()
     page = reconcile_page(
         scope,
         # **The route builds the balance pass**, which is the rule every read
@@ -300,17 +334,21 @@ def _reconcile_context(account, scope, tab, answer: _Answer) -> dict:
             account, balance_at.BalanceContext.build(scope.owner_id),
         ),
         tab,
+        # **The bound, or the whole record** (plan step
+        # ``bank_import:X-gj-1c``).  It reaches only the two settled tabs; the
+        # service says which and the template never asks.
+        None if show_all else REGISTER_LIMIT,
     )
     return {
         "account": account,
         "page": page,
-        # The tab bar, narrowed to what this build serves.  **Narrowed HERE
-        # and not in Jinja**: a template restating a partition is a second
-        # place for it to be wrong, which is the rule this whole package
-        # keeps.
-        "tabs": tuple(
-            count for count in page.counts if count.tab in _TABS_SERVED
-        ),
+        # **The view, so every link on the page can keep it.**  The *show the
+        # other N* link and the Undo form each have to say whether this render
+        # is the unbounded one, which is the discipline the register's own
+        # body keeps for the same flag: without it an Undo pressed while
+        # showing everything answers with the bounded list, and the record
+        # collapses under the owner mid-read.
+        "show_all": show_all,
         "chips": tuple(
             (chip, _chip_href(account.id, chip)) for chip in page.chips
         ),
@@ -399,8 +437,8 @@ def statement_reconcile(account_id):
     Returns:
         The rendered page, or a 404 when the account is not the caller's, is a
         kind that has no bank statement, or the ``tab`` argument names no tab
-        this build serves -- the security response rule's answer for both "not
-        found" and "not yours".
+        AT ALL -- the security response rule's answer for both "not found" and
+        "not yours".  There is no longer a tab this build declines to serve.
     """
     account = load_cash_account_or_404(account_id)
     tab = _requested_tab()
@@ -714,4 +752,54 @@ def statement_reconcile_match(account_id, line_id):
         query=query,
         totals=preview_hand_build(submitted_match(submitted), scope),
         refusal=None,
+    )
+
+
+@accounts_bp.route(
+    "/accounts/<int:account_id>/statements/reconcile/release",
+    methods=["POST"],
+)
+@login_required
+@require_owner
+def release_from_reconcile(account_id):
+    """Undo one applied act and come back to the tab it was pressed on.
+
+    Plan step ``bank_import:X-gj-1c``, rulings **bank_import:R-HU** and
+    **R-GY**.  **IT MOVES MONEY** -- releasing an act removes the rows that act
+    CREATED (**R-GG**) -- and it opens no door of its own: the act, its three
+    refusals and its receipt are
+    :func:`~._statement_release.release_and_return`'s, which the register and
+    the import receipt already post to.  Three surfaces, one door, one
+    derivation of what the press destroys, so the confirmation a card shows
+    cannot promise what the button will not do.
+
+    **A plain POST-redirect-GET where everything else on this page swaps.**
+    That is the subject rather than an inconsistency, and it is the shape the
+    other two surfaces already use: this names ONE act and either does it or
+    refuses it, so a flash carries the whole answer -- where Apply reports
+    per-item outcomes no flash can hold.  It also keeps the Undo a `form`,
+    which is why an act card is not rendered inside the Apply form: a form
+    cannot nest in a form, and a `summary` may not hold one at all.
+
+    **It comes back to the VIEW, not merely to the page.**  Which tab is open
+    and whether the settled bound is lifted are both read here through the
+    page's own two readers, so an undo pressed on Filed by rules while showing
+    every act answers with Filed by rules showing every act.  Redirecting to
+    the bare URL would drop the reader onto the inbox, which is the defect that
+    made ``release_and_return`` take a target at all.
+
+    Args:
+        account_id: The account being reconciled.
+
+    Returns:
+        A redirect back to the tab and view the control was pressed on,
+        carrying the receipt or the refusal.
+    """
+    account = load_cash_account_or_404(account_id)
+    return release_and_return(
+        account, "accounts.statement_reconcile",
+        tab=_requested_tab().value,
+        # ``url_for`` drops a ``None`` argument, so the ordinary render
+        # redirects to the plain URL rather than to one carrying ``all=``.
+        all=1 if _asked_for_everything() else None,
     )

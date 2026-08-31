@@ -75,7 +75,13 @@ Module map:
   its undo.  Its boundary against ``statement_matches`` is the one that step
   exists for -- a QUEUE holds what is still being decided and a REGISTER holds
   what is not, and the two were one 578,523-byte page of which 76% was the
-  register half.
+  register half.  **RETIRED AS A PAGE at ``bank_import:X-gj-1c``** (ruling
+  **R-HU**): its accepted list is the Reconcile screen's two settled tabs and
+  its merchant answers are ``statement_merchants``, so nothing it does is
+  reachable only here.  **It is still LINKED, three times, from the review
+  QUEUE** (``_statement_review_body.html``), which ``X-gi`` retires beside it
+  -- so that census must take the two together or the queue's own header
+  button lands on a deleted route.  The route stays alive until then.
 * :mod:`app.routes.accounts.statement_merchants` -- WHERE YOUR MERCHANTS GO
   (plan step ``bank_import:X-gk``, ruling **bank_import:R-IC**): one row per
   merchant this account has ever seen, carrying its standing answer or *You
@@ -99,7 +105,11 @@ Module map:
   MATCH, ADD, TRANSFER or SKIP, and the inbox is the lines with none yet.
   **It MOVES MONEY through doors that already exist** -- it applies through
   ``apply_reviewed`` like ``statement_matches`` and ``statement_workbench``,
-  and opens none of its own.  The three it replaces stay alive beside it until
+  and releases through ``_statement_release`` like the register and the import
+  receipt (plan step ``bank_import:X-gj-1c``), opening none of its own.  Its
+  two SETTLED tabs came with that step, and with them the register's whole job:
+  the acts it listed, the bound it applied, the link past that bound and the
+  Undo on each.  The three pages it replaces stay alive beside it until
   ``bank_import:X-gi``'s census deletes them, which is ruling **R-HU**'s
   sequencing: nothing is removed on the way in.
 * :mod:`app.routes.accounts.bank_agreement` -- The two records SIDE BY SIDE
