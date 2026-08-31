@@ -48,7 +48,7 @@ from app.services import pay_period_write, pay_schedule_service
 from app.services.pay_calendar import (
     PayCalendar,
     PayCalendarError,
-    calendar_at_cadence,
+    calendar_at_schedule,
     calendar_for,
 )
 from tests._test_helpers import open_calendar_hole, all_periods
@@ -494,6 +494,7 @@ class TestThePartialSetHazardIsRealAndTheDoorIsWhatClosesIt:
                 [(period.id, period.start_date) for period in tail],
                 CADENCE,
                 seed_user["user"].id,
+                history_opens_on=None,
             )
 
             assert [period.period_index for period in tail] == [6, 7, 8, 9]
@@ -515,15 +516,20 @@ class TestThePartialSetHazardIsRealAndTheDoorIsWhatClosesIt:
 
 
 @pytest.mark.usefixtures("seed_periods")
-class TestCalendarAtCadence:
+class TestCalendarAtSchedule:
     """The second loader door, and the equivalence the refactor rests on.
 
-    Plan step **C4** added :func:`calendar_at_cadence` for the rolling top-up,
+    Plan step **C4** added :func:`calendar_at_schedule` for the rolling top-up,
     which holds the owner's ``budget.pay_schedule`` row already and would
     otherwise pay for a second read of it, and REFACTORED
     :func:`calendar_for` to delegate to it.  That refactor is behaviour-
     preserving only if the two answer identically for a resolvable owner, so
     the equivalence is pinned rather than argued.
+
+    **It took a bare cadence and was called ``calendar_at_cadence`` until plan
+    step balance:X-bh-2**, which gave the calendar a second fact off the same
+    row; the parameter is the pair now, so a caller cannot supply one owner's
+    cadence beside another's history bound.
     """
 
     def test_it_answers_exactly_what_calendar_for_answers(
@@ -539,10 +545,10 @@ class TestCalendarAtCadence:
         """
         with app.app_context():
             user_id = seed_user["user"].id
-            resolved = pay_schedule_service.resolve_cadence(user_id)
+            resolved = pay_schedule_service.resolve_schedule(user_id)
 
-            assert resolved == CADENCE
-            assert calendar_at_cadence(user_id, resolved) == calendar_for(user_id)
+            assert resolved.cadence_days == CADENCE
+            assert calendar_at_schedule(user_id, resolved) == calendar_for(user_id)
             assert len(calendar_for(user_id).periods) == PERIOD_COUNT
 
     def test_it_reads_the_paydays_and_NOT_the_schedule_row(
@@ -559,8 +565,14 @@ class TestCalendarAtCadence:
         with app.app_context():
             user_id = seed_user["user"].id
 
-            stored = calendar_at_cadence(user_id, CADENCE)
-            supplied = calendar_at_cadence(user_id, CADENCE + 7)
+            stored = calendar_at_schedule(
+                user_id,
+                pay_schedule_service.ScheduleFacts(CADENCE, None),
+            )
+            supplied = calendar_at_schedule(
+                user_id,
+                pay_schedule_service.ScheduleFacts(CADENCE + 7, None),
+            )
 
             assert supplied != stored
             assert supplied.periods[-1].end_date == (
@@ -587,4 +599,34 @@ class TestCalendarAtCadence:
             user_id = seed_user["user"].id
 
             with pytest.raises(PayCalendarError, match="no cadence"):
-                calendar_at_cadence(user_id, None)
+                calendar_at_schedule(
+                    user_id, pay_schedule_service.ScheduleFacts(None, None),
+                )
+
+    def test_it_carries_the_history_bound_it_is_GIVEN(self, app, seed_user):
+        """The second fact travels too, and it is a fact about the calendar.
+
+        Plan step **balance:X-bh-2**.  The rolling top-up asks this door a
+        question that never reads ``history_opens_on`` -- how many paychecks
+        are still ahead -- so the bound could have been dropped here and no
+        current caller would notice.  Dropping it would make the value LIE:
+        a calendar claiming an unbounded rhythm for an owner who stated one,
+        handed to any producer that does read it, is a wrong figure rather
+        than an error.  ``PayCalendar`` compares on its facts, so two
+        otherwise identical calendars must differ on this one.
+        """
+        with app.app_context():
+            user_id = seed_user["user"].id
+            stated = date(2020, 6, 1)
+
+            bounded = calendar_at_schedule(
+                user_id, pay_schedule_service.ScheduleFacts(CADENCE, stated),
+            )
+            unbounded = calendar_at_schedule(
+                user_id, pay_schedule_service.ScheduleFacts(CADENCE, None),
+            )
+
+            assert bounded.history_opens_on == stated
+            assert unbounded.history_opens_on is None
+            assert bounded != unbounded
+            assert bounded.periods == unbounded.periods

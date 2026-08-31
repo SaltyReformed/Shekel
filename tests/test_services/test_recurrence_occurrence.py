@@ -374,6 +374,7 @@ def _empty_calendar() -> PayCalendar:
     """
     return PayCalendar.from_paydays(
         paydays=(), cadence_days=None, user_id=_USER_ID,
+        history_opens_on=None,
     )
 
 
@@ -1397,6 +1398,7 @@ class TestTheClosingBounds:
             paydays=[(1, date(2026, 1, 1)), (2, date(2026, 1, 15))],
             cadence_days=14,
             user_id=_USER_ID,
+            history_opens_on=None,
         )
         value = resolved_value(
             unit=RecurrenceUnitEnum.MONTH, starts_on=date(2026, 1, 20),
@@ -1831,6 +1833,7 @@ class TestTheScheduleSearches:
             ],
             cadence_days=14,
             user_id=_USER_ID,
+            history_opens_on=None,
         )
 
         day = calendar.opening_bound()

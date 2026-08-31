@@ -400,11 +400,12 @@ class TestTheTopUpCountsOnTheOwnersDay:
             db.session.commit()
 
             # pylint: disable=protected-access
+            facts = pay_schedule_service.ScheduleFacts(cadence_days, None)
             on_process = pay_period_rolling._future_period_count(
-                user_id, cadence_days, date(2026, 7, 31),
+                user_id, facts, date(2026, 7, 31),
             )
             on_owner = pay_period_rolling._future_period_count(
-                user_id, cadence_days, owner_day,
+                user_id, facts, owner_day,
             )
             assert on_owner == on_process + 1, (on_owner, on_process)
 
@@ -487,7 +488,9 @@ class TestTheCountReadsTheDerivedEnd:
             user_id, as_of = self._diverged(db.session, seed_user)
 
             # pylint: disable=protected-access
-            assert pay_period_rolling._future_period_count(user_id, 14, as_of) == 4
+            assert pay_period_rolling._future_period_count(
+                user_id, pay_schedule_service.ScheduleFacts(14, None), as_of,
+            ) == 4
             assert db.session.query(PayPeriod).filter(
                 PayPeriod.user_id == user_id,
                 PayPeriod.end_date >= as_of,
@@ -575,10 +578,13 @@ class TestTheCadenceThreadedIsTheOWNERSStoredOne:
 
             # pylint: disable=protected-access
             assert pay_period_rolling._future_period_count(
-                user_id, self._STORED_CADENCE, self._PROBE_DAY,
+                user_id,
+                pay_schedule_service.ScheduleFacts(self._STORED_CADENCE, None),
+                self._PROBE_DAY,
             ) == 0
             assert pay_period_rolling._future_period_count(
-                user_id, 14, self._PROBE_DAY,
+                user_id, pay_schedule_service.ScheduleFacts(14, None),
+                self._PROBE_DAY,
             ) == 1
 
     def test_the_door_threads_the_STORED_cadence(

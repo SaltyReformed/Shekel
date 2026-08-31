@@ -283,41 +283,6 @@ def period_by_id(
     return None
 
 
-def earliest_start_in_month(
-    periods: "tuple[DerivedPeriod, ...]", year: int, month: int,
-) -> "date | None":
-    """Return the earliest payday of *periods* falling in *year* / *month*.
-
-    **The single "when does this month's first paycheck land" rule**, shared
-    with the recurrence arc's ``PeriodCalendar`` at plan step C2-b1.  It is the
-    one question ``Monthly First`` asks: that pattern fires on each month's
-    FIRST paycheck, so whether a month can honour a rule depends on when its
-    first paycheck arrives.
-
-    A minimum over the periods that exist rather than an index into a walk,
-    because months with no payday are legal -- a cadence longer than a month
-    leaves some empty, and the schedule ends somewhere.
-
-    Args:
-        periods: The owner's periods, in any order.  It takes a minimum rather
-            than a first match, so like :func:`period_by_id` and unlike the two
-            bisects it carries no ordering precondition.
-        year: Calendar year.
-        month: Calendar month, 1-12.
-
-    Returns:
-        The earliest ``start_date`` in that month, or ``None`` when no period
-        opens there.  ``None`` is a real answer, not an error.
-    """
-    starts = [
-        period.start_date for period in periods
-        if period.start_date.year == year and period.start_date.month == month
-    ]
-    if not starts:
-        return None
-    return min(starts)
-
-
 def materialised_periods(
     periods: "tuple[DerivedPeriod, ...]",
 ) -> "tuple[DerivedPeriod, ...]":

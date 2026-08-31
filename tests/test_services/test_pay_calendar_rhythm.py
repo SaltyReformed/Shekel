@@ -24,6 +24,7 @@ from app.services.pay_calendar import (
     PayCalendarError,
     paydays_in_month_through,
     paydays_in_year_before,
+    saved_paydays_in_month_through,
 )
 
 #: A biweekly rhythm anchored on a Friday, three paydays in January 2026
@@ -32,13 +33,26 @@ _JANUARY_OPENING = date(2026, 1, 2)
 _CADENCE = 14
 
 
-def _calendar(count, opening=_JANUARY_OPENING, cadence=_CADENCE, user_id=1):
-    """A calendar of *count* paydays every *cadence* days from *opening*."""
+def _calendar(
+    count, opening=_JANUARY_OPENING, cadence=_CADENCE, user_id=1,
+    history_opens_on=None,
+):
+    """A calendar of *count* paydays every *cadence* days from *opening*.
+
+    *history_opens_on* defaults to ``None`` because that is what the nullable
+    column defaults to, and since ruling **balance:R-IA**'s 2026-08-31
+    amendment that means NOT STATED: an owner nobody has asked, whose rhythm is
+    their RECORD.  So a case that says nothing here gets no backward half at
+    all, and a case about the backward rhythm has to state a floor -- which is
+    the safe direction for a default, because forgetting it cannot silently
+    invent paychecks.
+    """
     return PayCalendar.from_paydays(
         [(index + 1, opening + timedelta(days=cadence * index))
          for index in range(count)],
         cadence,
         user_id=user_id,
+        history_opens_on=history_opens_on,
     )
 
 
@@ -71,13 +85,38 @@ class TestPaydaysInMonthThrough:
             _calendar(26), date(2026, 2, 28),
         ) == (date(2026, 2, 13), date(2026, 2, 27))
 
-    def test_a_month_the_schedule_does_not_reach_is_empty(self):
-        """Before the opening payday there is nothing, which is a real answer.
+    def test_a_month_below_the_record_is_counted_from_the_RHYTHM(self):
+        """Below the opening payday the rhythm continues, and this is X-bh-2.
 
-        The rhythm is not projected BACKWARD yet -- ledger row **N-390**, plan
-        step **balance:X-bh-2** -- so December 2025 answers empty even though
-        the owner was really paid in it.  This case is what will show that
-        step landing.
+        The schedule opens 2026-01-02, so December 2025 holds no recorded
+        payday -- and the owner was really paid in it, twice, on the 5th and
+        the 19th.  Until plan step **balance:X-bh-2** this answered ``()``
+        for everyone, and that empty tuple is what made a 12-per-year
+        deduction land on the wrong paycheck and a year-to-date open at the
+        record's boundary instead of the owner's (ledger row **N-390**).
+
+        The owner has to SAY so: ``history_opens_on`` is what turns the
+        backward half on, and the sibling below is the same calendar for an
+        owner who has said nothing.
+
+        The case is stated on the MONTH question rather than the year one
+        because it is the whole of what changed: one span search answers both,
+        and the month is where a wrong count moves a deduction.
+        """
+        assert paydays_in_month_through(
+            _calendar(26, history_opens_on=date(2025, 1, 1)),
+            date(2025, 12, 31),
+        ) == (date(2025, 12, 5), date(2025, 12, 19))
+
+    def test_an_UNSTATED_history_counts_only_the_RECORD(self):
+        """THE CONTROL, and the default every owner starts at.
+
+        The same calendar and the same month for an owner nobody has asked.
+        ``NULL`` is NOT a claim that they have always been paid this way
+        (ruling **balance:R-IA** as amended 2026-08-31), so nothing is
+        projected below the record and the answer is what it was before this
+        step existed.  Without this case the one above would pass against a
+        producer that ignored the floor entirely.
         """
         assert paydays_in_month_through(
             _calendar(26), date(2025, 12, 31),
@@ -98,7 +137,7 @@ class TestPaydaysInMonthThrough:
 
     def test_an_empty_calendar_holds_no_paydays(self):
         """A companion holds no schedule, and production has one such user."""
-        empty = PayCalendar.from_paydays([], None, user_id=1)
+        empty = PayCalendar.from_paydays([], None, user_id=1, history_opens_on=None)
         assert paydays_in_month_through(empty, date(2026, 1, 31)) == ()
 
 
@@ -208,6 +247,391 @@ class TestTheSeamBetweenSavedAndProjected:
         assert paydays_in_month_through(
             _calendar(3), date(2101, 1, 31),
         ) == ()
+
+
+class TestTheBackwardRhythmAndItsFloor:
+    """Plan step **balance:X-bh-2**, ruling **balance:R-IA**: how far back.
+
+    The forward continuation is bounded by the APPLICATION
+    (``CALENDAR_DATE_MAX``) and the backward one by the OWNER
+    (``budget.pay_schedule.history_opens_on``).  These grade the second bound:
+    that it is read, that it is a FLOOR rather than an anchor, that ``NULL``
+    means the app's own calendar floor, and that the two halves of the rhythm
+    meet without a gap or a repeat.
+    """
+
+    def test_a_stated_floor_drops_the_paydays_below_it(self):
+        """The bound is READ, and dropping it changes the count.
+
+        January 2026's rhythm runs 01-02, 01-16, 01-30 forward and 2025-12-19,
+        12-05, 11-21 ... backward.  An owner who says their paychecks began
+        2025-12-10 is paid once in December, not twice.
+        """
+        assert paydays_in_month_through(
+            _calendar(26, history_opens_on=date(2025, 12, 10)),
+            date(2025, 12, 31),
+        ) == (date(2025, 12, 19),)
+
+    def test_a_floor_ON_the_opening_payday_counts_nothing_below_the_record(self):
+        """The owner whose first payday is the first one they were ever paid.
+
+        ``pay_calendar:R-PC14`` calls that an ordinary state -- the Generate
+        form asks for "your next (or first) payday" -- and it is the state
+        ruling R-IA's rejected alternative could not express: projecting
+        backward with no stored bound fabricates an employment history for
+        them.
+        """
+        assert paydays_in_month_through(
+            _calendar(26, history_opens_on=_JANUARY_OPENING),
+            date(2025, 12, 31),
+        ) == ()
+
+    def test_a_floor_ON_a_rhythm_payday_KEEPS_that_payday(self):
+        """The floor is INCLUSIVE, and this is the arm nothing measured.
+
+        An adversarial review of plan step balance:X-bh-2 mutated
+        ``while day >= lower`` to ``while day > lower`` and the whole suite --
+        817 cases -- stayed green, because every floor case here used a day
+        deliberately OFF the rhythm and the two on-rhythm cases returned early
+        at ``upper < lower`` without reaching the loop.
+
+        It is not an equivalent mutant and it moves money: the owner who types
+        the exact day of their first paycheck -- the natural answer to the
+        question both forms ask -- would have that paycheck silently dropped,
+        shifting every later ordinal in its month down by one.  A 24-per-year
+        deduction would then be TAKEN on a paycheck it should skip.
+
+        2025-12-19 is a real rhythm day of a schedule opening 2026-01-02.
+        """
+        exact = _calendar(26, history_opens_on=date(2025, 12, 19))
+        # (a stated floor ON the rhythm -- the whole subject of the case)
+
+        assert paydays_in_month_through(exact, date(2025, 12, 31)) == (
+            date(2025, 12, 19),
+        )
+        # And the day one cadence below it is excluded, so the bound is a
+        # FLOOR rather than "everything in the month".
+        assert date(2025, 12, 5) not in paydays_in_month_through(
+            exact, date(2025, 12, 31),
+        )
+
+    def test_a_backdated_payday_ON_new_years_day_is_counted(self):
+        """The same boundary where a calendar YEAR opens, which is the costly one.
+
+        A year-to-date span opens on 1 January, so a backdated payday landing
+        exactly there sits on ``lower``.  Dropping it takes a whole paycheck
+        out of the FICA wage base and out of every ``annual_cap`` -- and 1
+        January is precisely where the developer's own rhythm lands (ledger
+        row **N-397**), so this is the arm the residual is measured on.
+        """
+        # A schedule opening 2026-01-15 has 2026-01-01 on its rhythm exactly.
+        calendar = _calendar(
+            26, opening=date(2026, 1, 15), history_opens_on=date(2025, 1, 1),
+        )
+
+        assert (date(2026, 1, 15) - date(2026, 1, 1)).days == _CADENCE
+        assert paydays_in_year_before(calendar, date(2026, 1, 15)) == (
+            date(2026, 1, 1),
+        )
+        assert paydays_in_month_through(calendar, date(2026, 1, 14)) == (
+            date(2026, 1, 1),
+        )
+
+    def test_the_floor_is_not_an_ANCHOR(self):
+        """A floor off the rhythm truncates it; it does not re-phase it.
+
+        2025-11-30 is not a payday of a biweekly rhythm anchored on
+        2026-01-02, and the answer does not pretend it is: the days returned
+        are the rhythm's own, the stated day never appears, and every gap is
+        still one cadence.  Anchoring on the stated day instead would put a
+        short interval at the seam with the recorded half.
+
+        **The floor leaves TWO days below the record deliberately.**  An
+        adversarial review of this step measured the first draft using
+        2025-12-10, which leaves exactly ONE -- so ``zip(walked, walked[1:])``
+        iterated zero times and the gap assertion, the whole point of the
+        case, could never fail.
+        """
+        calendar = _calendar(26, history_opens_on=date(2025, 11, 30))
+        walked = paydays_in_month_through(calendar, date(2025, 12, 31))
+
+        assert walked == (date(2025, 12, 5), date(2025, 12, 19))
+        assert date(2025, 11, 30) not in walked  # the stated day itself
+        assert len(walked) > 1, "the gap assertion below must have a pair"
+        assert all(
+            (later - earlier).days == _CADENCE
+            for earlier, later in zip(walked, walked[1:])
+        )
+
+    def test_a_floor_after_the_opening_payday_is_answered_not_refused(self):
+        """A stated floor above the record leaves no backward rhythm.
+
+        Both write doors refuse this pairing (``set_history_opening`` and
+        registration, through one shared rule), so it arrives only from legacy
+        data or from ``/pay-periods/reset`` rebuilding the schedule from an
+        EARLIER first payday -- which moves the record's opening DOWN past a
+        floor that was legal when it was written, and leaves
+        ``budget.pay_schedule`` untouched.  *An adversarial review of plan step
+        balance:X-bh-2 caught this sentence naming the opposite direction: a
+        reset to a LATER opening cannot produce the state, because the floor
+        was already at or below the old opening and the new one is higher
+        still.*  The producer stays TOTAL for it: an empty backward half is the
+        honest answer, where a refusal would 500 a salary render on a state no
+        owner can see.
+        """
+        assert paydays_in_month_through(
+            _calendar(26, history_opens_on=date(2026, 6, 1)),
+            date(2025, 12, 31),
+        ) == ()
+
+    def test_the_floor_bounds_the_PROJECTION_and_never_the_RECORD(self):
+        """A SAVED payday below a stated floor is still counted.
+
+        The state the case above describes, from the other side.  After a reset
+        to an earlier first payday the record can hold paydays below the stored
+        floor, and those are facts the owner entered -- the bound is a
+        statement about the UNRECORDED past, so it may not delete them.  This
+        is what makes the contradictory pairing degrade to "no backward
+        rhythm" rather than to a schedule with a hole in it.
+        """
+        # January 2026 holds three RECORDED paydays: 01-02, 01-16, 01-30.
+        calendar = _calendar(26, history_opens_on=date(2026, 6, 1))
+
+        assert paydays_in_month_through(calendar, date(2026, 1, 31)) == (
+            date(2026, 1, 2), date(2026, 1, 16), date(2026, 1, 30),
+        )
+
+    def test_a_floor_at_the_apps_own_calendar_reaches_as_far_as_it_can(self):
+        """``CALENDAR_DATE_MIN`` is a BOUND on the column, not a meaning.
+
+        Ruling **balance:R-IA** first had ``NULL`` read as "back to
+        2000-01-01"; the 2026-08-31 amendment made ``NULL`` an absence and left
+        that date as nothing but the window
+        ``ck_pay_schedule_history_opens_range`` admits.  An owner may still
+        state it, and then the rhythm reaches it and stops: 2026-01-02 less 678
+        fortnights lands on 2000-01-07, so January 2000 holds two rhythm days
+        and December 1999 holds none.
+
+        Nobody needs to state it -- the only two readers of this rhythm ask
+        over one calendar month or one calendar year, so it never reaches
+        twelve months down.  The case exists because the column admits the
+        value and the walk must terminate on it.
+        """
+        calendar = _calendar(26, history_opens_on=date(2000, 1, 1))
+
+        assert (date(2026, 1, 2) - date(2000, 1, 7)).days == 678 * _CADENCE
+        assert paydays_in_month_through(calendar, date(2000, 1, 31)) == (
+            date(2000, 1, 7), date(2000, 1, 21),
+        )
+        assert paydays_in_month_through(calendar, date(1999, 12, 31)) == ()
+
+    def test_the_backward_and_saved_halves_meet_with_no_gap_or_repeat(self):
+        """One rhythm in three segments, and the seam is where it could break.
+
+        A year span that opens below the record and closes above it walks the
+        backward continuation, the saved rows and nothing else.  Ascending,
+        distinct, and every gap exactly one cadence: a duplicated seam payday
+        would inflate every ordinal and every year-to-date, and an off-by-one
+        would drop one.
+        """
+        # The calendar below opens 2026-07-03, so a 2026 year-to-date asked at
+        # year end opens BELOW the record (January is backdated), runs through
+        # the seam at 07-03 and closes inside the saved rows.
+        days = paydays_in_year_before(
+            _calendar(
+                26, opening=date(2026, 7, 3),
+                history_opens_on=date(2025, 1, 1),
+            ),
+            date(2026, 12, 31),
+        )
+
+        assert days == tuple(sorted(set(days)))
+        assert days[0] == date(2026, 1, 2)
+        assert date(2026, 7, 3) in days
+        assert all(
+            (later - earlier).days == _CADENCE
+            for earlier, later in zip(days, days[1:])
+        )
+
+    def test_ALL_THREE_segments_answer_one_span(self):
+        """Backward, saved and projected in one question -- the untested path.
+
+        A short record priced late in its year opens the span below the record
+        AND closes it past the horizon, which is the only shape that reaches
+        :func:`~._views.projected_paychecks` with a ``from_day`` BELOW the
+        horizon.  Nothing else in the suite combines the two.
+
+        Three saved paydays from 2026-06-05 reach 2026-07-16, so a 2026
+        year-to-date asked at year end walks all three segments.
+        """
+        calendar = _calendar(
+            3, opening=date(2026, 6, 5), history_opens_on=date(2025, 1, 1),
+        )
+        days = paydays_in_year_before(calendar, date(2026, 12, 31))
+
+        assert days == tuple(sorted(set(days)))
+        assert days[0] == date(2026, 1, 2)          # backdated
+        assert date(2026, 6, 5) in days             # saved
+        assert date(2026, 12, 18) in days           # projected
+        assert all(
+            (later - earlier).days == _CADENCE
+            for earlier, later in zip(days, days[1:])
+        )
+
+    def test_an_IRREGULAR_record_anchors_the_backward_half_on_its_FIRST_payday(
+        self,
+    ):
+        """A saved set need not be an arithmetic progression, and this one is not.
+
+        ``derive_periods`` accepts any distinct sorted payday set -- gaps and
+        off-cadence days are legal -- so the two continuations can be out of
+        phase with each other.  That is correct rather than a defect: neither
+        is ever compared to the other, because the saved rows sit between
+        them.  What must hold is that the BACKWARD half anchors on
+        ``periods[0]`` and not on the last saved payday.
+        """
+        calendar = PayCalendar.from_paydays(
+            [(1, date(2026, 3, 10)), (2, date(2026, 3, 20)),
+             (3, date(2026, 4, 30))],
+            _CADENCE, user_id=1, history_opens_on=date(2025, 1, 1),
+        )
+
+        # Anchored on 03-10: 02-24, 02-10 ... not on 04-30 (which would give
+        # 02-19, 02-05).
+        assert paydays_in_month_through(calendar, date(2026, 2, 28)) == (
+            date(2026, 2, 10), date(2026, 2, 24),
+        )
+
+    def test_the_cadence_extremes_the_schedule_admits(self):
+        """``budget.pay_schedule`` accepts 1..365 and both reach this producer.
+
+        Neither bound had a backward case.  At one day a month holds every
+        day; at 365 a month holds at most one and most hold none, and the
+        walk must terminate at both.
+        """
+        daily = _calendar(
+            3, opening=date(2026, 4, 1), cadence=1,
+            history_opens_on=date(2025, 1, 1),
+        )
+        annual = _calendar(
+            3, opening=date(2026, 4, 1), cadence=365,
+            history_opens_on=date(2020, 1, 1),
+        )
+
+        assert len(paydays_in_month_through(daily, date(2026, 3, 31))) == 31
+        assert paydays_in_month_through(annual, date(2025, 4, 30)) == (
+            date(2025, 4, 1),
+        )
+        assert paydays_in_month_through(annual, date(2025, 5, 31)) == ()
+
+    def test_an_empty_calendar_has_no_rhythm_to_run_backward(self):
+        """No payday means no anchor, so there is nothing to step back from."""
+        empty = PayCalendar.from_paydays(
+            [], None, user_id=1, history_opens_on=date(2020, 1, 1),
+        )
+
+        assert paydays_in_month_through(empty, date(2026, 1, 31)) == ()
+        assert paydays_in_year_before(empty, date(2026, 6, 1)) == ()
+
+
+class TestSavedPaydaysInMonthThrough:
+    """The bounded twin: only the paydays the app HOLDS (**balance:R-IB**).
+
+    The analytics month card reads this one, because everything else on that
+    card folds from saved periods.  **It absorbed the questions
+    ``earliest_start_in_month`` used to answer** when plan step
+    **balance:X-bh-2** deleted that producer as unreached (ledger row
+    **N-396**): its length-1 case IS "when does this month's first paycheck
+    land", over the same set.  *Four of the five moved cleanly and the fifth
+    -- a month holding exactly ONE payday -- was missed, which an adversarial
+    review of the same step caught; it is the first case below.*
+    """
+
+    def test_it_counts_only_what_the_schedule_records(self):
+        """The twin's whole difference, at the one day it shows.
+
+        December 2025 holds two paydays of the owner's rhythm and none of the
+        app's record, and this is the producer that says so.
+        """
+        calendar = _calendar(26, history_opens_on=date(2025, 1, 1))
+
+        assert saved_paydays_in_month_through(calendar, date(2025, 12, 31)) == ()
+        assert paydays_in_month_through(calendar, date(2025, 12, 31)) != ()
+
+    def test_the_first_payday_of_a_month_holding_two(self):
+        """January 2026 opens on the 2nd; February on the 13th."""
+        calendar = _calendar(26)
+
+        assert saved_paydays_in_month_through(
+            calendar, date(2026, 1, 31),
+        )[0] == date(2026, 1, 2)
+        assert saved_paydays_in_month_through(
+            calendar, date(2026, 2, 28),
+        )[0] == date(2026, 2, 13)
+
+    def test_the_only_payday_of_a_month_holding_ONE(self):
+        """The fifth case ``earliest_start_in_month`` used to carry.
+
+        An adversarial review of plan step balance:X-bh-2 found this shape was
+        the one of that producer's five NOT re-homed: the replacement's
+        fixture puts two paydays in every month it reaches, so "a month
+        holding exactly one" was covered by nothing.  At a 21-day cadence from
+        2026-01-05 the paydays are 01-05, 01-26, 02-16 -- February holds one.
+        """
+        calendar = _calendar(3, opening=date(2026, 1, 5), cadence=21)
+
+        assert saved_paydays_in_month_through(
+            calendar, date(2026, 2, 28),
+        ) == (date(2026, 2, 16),)
+
+    def test_a_month_the_schedule_covers_but_opens_no_payday_in(self):
+        """"Which paycheck covers this day" and "does one START here" differ.
+
+        At a 45-day cadence from 2026-01-02 the paydays are 01-02, 02-16 and
+        04-02, so a paycheck COVERS 2026-03-31 while March opens none.
+        """
+        calendar = _calendar(3, cadence=45)
+
+        assert calendar.period_containing(date(2026, 3, 31)) is not None
+        assert saved_paydays_in_month_through(calendar, date(2026, 3, 31)) == ()
+
+    def test_a_month_past_the_horizon_is_empty_and_NOT_projected(self):
+        """The bound this producer exists for (**N-394**).
+
+        Three paydays from 2026-01-02 reach 2026-02-13, so June 2026 is past
+        the record.  Its unbounded twin projects there and this one must not:
+        the month card's income, expenses and balance all fold from saved
+        periods, so a projected payday would appear beside a ``$0.00`` net.
+        """
+        calendar = _calendar(3)
+
+        assert saved_paydays_in_month_through(calendar, date(2026, 6, 30)) == ()
+        assert paydays_in_month_through(calendar, date(2026, 6, 30)) != ()
+
+    def test_both_halves_of_the_month_key_are_read(self):
+        """One careless filter would confuse the same month in another year."""
+        # ``history_opens_on`` is ``None`` because this producer does not read
+        # it: an argument that reads as load-bearing and is not is the same
+        # defect as a control that cannot fire.
+        calendar = PayCalendar.from_paydays(
+            [(30, date(2025, 1, 9)), (31, date(2026, 1, 23))],
+            14, user_id=1, history_opens_on=None,
+        )
+
+        assert saved_paydays_in_month_through(
+            calendar, date(2025, 1, 31),
+        ) == (date(2025, 1, 9),)
+        assert saved_paydays_in_month_through(
+            calendar, date(2026, 1, 31),
+        ) == (date(2026, 1, 23),)
+
+    def test_an_empty_calendar_records_no_paydays(self):
+        """A companion holds no schedule, and production has one such user."""
+        empty = PayCalendar.from_paydays(
+            [], None, user_id=1, history_opens_on=None,
+        )
+
+        assert saved_paydays_in_month_through(empty, date(2026, 1, 31)) == ()
 
 
 class TestTheEngineRefusesAPaydayItsCalendarCannotPlace:

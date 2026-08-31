@@ -1111,7 +1111,7 @@ class TestThirdPaycheckDetection:
         production has one such user.
         """
         with app.app_context():
-            calendar = PayCalendar.from_paydays([], None, user_id=1)
+            calendar = PayCalendar.from_paydays([], None, user_id=1, history_opens_on=None)
             assert self._three_paycheck_months(calendar, 2026) == set()
 
     def test_a_month_is_counted_in_its_own_year(self, app, seed_user, db):

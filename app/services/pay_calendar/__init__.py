@@ -93,7 +93,7 @@ from ._derive import (
     PayCalendarError,
     derive_periods,
 )
-from ._loader import cadence_for, calendar_at_cadence, calendar_for
+from ._loader import cadence_for, calendar_at_schedule, calendar_for
 from ._rhythm import (
     paydays_in_month_through,
     paydays_in_year_before,
@@ -101,7 +101,6 @@ from ._rhythm import (
 )
 from ._searches import (
     containing_period,
-    earliest_start_in_month,
     earliest_started_period,
     final_covered_day,
     latest_started_period,
@@ -121,11 +120,10 @@ __all__ = [
     "PayCalendarError",
     "PeriodWindow",
     "cadence_for",
-    "calendar_at_cadence",
+    "calendar_at_schedule",
     "calendar_for",
     "containing_period",
     "derive_periods",
-    "earliest_start_in_month",
     "earliest_started_period",
     "final_covered_day",
     "latest_started_period",

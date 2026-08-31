@@ -20,6 +20,7 @@ from app.schemas.validation import (
     DeductionCreateSchema,
     FicaConfigSchema,
     InlineTransactionCreateSchema,
+    PayHistorySchema,
     PayPeriodGenerateSchema,
     RaiseCreateSchema,
     SalaryProfileCreateSchema,
@@ -1042,6 +1043,55 @@ class TestPayPeriodGenerateSchema:
                 "num_periods": "10",
             })
         assert "start_date" in exc.value.messages
+
+
+# ── PayHistorySchema ─────────────────────────────────────────────────
+
+
+class TestPayHistorySchema:
+    """Tests for PayHistorySchema (plan step **balance:X-bh-2**).
+
+    The pay-periods settings door onto ``budget.pay_schedule.history_opens_on``.
+    One optional field, and all three of its input shapes matter because the
+    route indexes the loaded payload directly.
+    """
+
+    def test_an_omitted_key_loads_as_None(self):
+        """``load_default=None`` is what keeps an absent key from 500ing.
+
+        An adversarial review of this step deleted that default and the whole
+        suite -- 817 cases -- stayed green, because every route test posts the
+        key, empty or filled.  Without it the payload loads ``{}`` and the
+        route's ``data["history_opens_on"]`` raises ``KeyError``: an unhandled
+        500 on a door an ordinary crafted POST reaches.  ``RegisterSchema``
+        had this exact case; its sibling did not, and the asymmetry was the
+        tell.
+        """
+        assert PayHistorySchema().load({})["history_opens_on"] is None
+
+    def test_an_empty_string_loads_as_None(self):
+        """What a browser submits for the control nobody touched."""
+        assert PayHistorySchema().load(
+            {"history_opens_on": ""},
+        )["history_opens_on"] is None
+
+    def test_a_stated_day_loads_as_a_date(self):
+        """THE CONTROL: the field is read, not merely tolerated."""
+        from datetime import date
+        assert PayHistorySchema().load(
+            {"history_opens_on": "2024-06-03"},
+        )["history_opens_on"] == date(2024, 6, 3)
+
+    def test_a_day_outside_the_apps_calendar_is_refused(self):
+        """The schema refuses what ``ck_pay_schedule_history_opens_range`` would.
+
+        An ``<input type="date">`` accepts a five-digit year, so the CHECK is
+        reachable from an ordinary browser and must never be the thing a user
+        meets.
+        """
+        with pytest.raises(ValidationError) as exc:
+            PayHistorySchema().load({"history_opens_on": "9999-01-01"})
+        assert "history_opens_on" in exc.value.messages
 
 
 # ── CategoryCreateSchema ─────────────────────────────────────────────

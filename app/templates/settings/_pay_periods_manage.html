@@ -154,6 +154,64 @@
   </div>
 </div>
 
+{# --- When these paychecks started ---
+   Plan step balance:X-bh-2 (ruling balance:R-IA).  Its own form rather than a
+   field on the rolling-window card below: that one configures a WRITE (how far
+   ahead to keep generating) and this states a fact about the owner, so saving
+   either must not restate the other's answer.  A cleared box saves NULL, which
+   means NOT STATED: Shekel then counts only the paydays it has recorded, which
+   is what it did before this card existed.  The entered day is a FLOOR on the
+   backward rhythm, never a payday, which is why the wording asks when the
+   paychecks started rather than for one of them.
+   The real upper bound is the owner's first recorded payday, which the service
+   refuses past; ``max`` here is the app's calendar window only. #}
+<div class="card mt-3">
+  <div class="card-body">
+    <h6 class="card-title">
+      <i class="bi bi-clock-history"></i> When your paychecks started
+    </h6>
+    <p class="card-text text-muted small">
+      Tell Shekel when these paychecks began and it will count the ones that
+      came before the first paycheck it has recorded, so your year-to-date pay,
+      tax withholding and deduction limits are right from the start of the
+      year. Until you do, it counts only what it has recorded.
+    </p>
+    <form method="POST" action="{{ url_for('pay_periods.history') }}"
+          class="row g-2 align-items-end">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <div class="col-sm-5">
+        {# The REGISTER form's wording, verbatim.  This card said "First
+           paycheck at this job" for one review pass, which names a specific
+           paycheck -- and the stored value is a FLOOR, never an anchor: the
+           rhythm is stepped back from the first RECORDED payday and the day
+           entered here is not itself treated as a payday.  An owner who read
+           the old label and entered their true first paycheck's date would
+           get a rhythm whose earliest day is within one cadence of it and
+           never that day, with no signal.  Two doors onto one column ask one
+           question. #}
+        <label for="history_opens_on" class="form-label">
+          When did these paychecks start?
+        </label>
+        <input type="date" class="form-control form-control-sm"
+               id="history_opens_on" name="history_opens_on"
+               min="{{ CALENDAR_DATE_MIN }}" max="{{ CALENDAR_DATE_MAX }}"
+               value="{{ pp_schedule.history_opens_on.isoformat() if pp_schedule and pp_schedule.history_opens_on else '' }}">
+      </div>
+      <div class="col-sm-4">
+        {# The blank answer states something, so the sentence says WHAT. #}
+        <div class="form-text mt-0">
+          Blank means Shekel counts only the paychecks it has recorded.
+        </div>
+      </div>
+      <div class="col-sm-3">
+        <button type="submit" class="btn btn-primary btn-sm w-100">
+          <i class="bi bi-save"></i> Save
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
 {# --- Continuous rolling window --- #}
 <div class="card mt-3">
   <div class="card-body">

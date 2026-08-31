@@ -1,7 +1,7 @@
 """The governing opening is the latest ROW, not the earliest transaction
 
 Revision ID: c9f4b1e78d02
-Revises: b8e3d5a06c94
+Revises: a7e3c95d2f18
 Create Date: 2026-08-31 06:40:00.000000
 
 Plan step ``balance:X-f3c-2b-2a``.  Found by that step's adversarial design
@@ -69,7 +69,14 @@ from app.opening_infrastructure import apply_opening_functions
 
 # revision identifiers, used by Alembic.
 revision = "c9f4b1e78d02"
-down_revision = "b8e3d5a06c94"
+# RE-PARENTED at the `origin/dev` merge, not at commit time (plan step
+# balance:X-f3c-2b-2a).  This was authored against `b8e3d5a06c94` while
+# `pay_calendar`'s `a7e3c95d2f18` sat on the same parent, uncommitted and
+# unmerged: a `down_revision` may only name a revision present in the SAME
+# tree, so pointing at it earlier would have broken `flask db upgrade`, the
+# test-template build and CI on this side while the other branch stayed
+# green.  That branch merged as PR #166, so the file resolves now.
+down_revision = "a7e3c95d2f18"
 branch_labels = None
 depends_on = None
 

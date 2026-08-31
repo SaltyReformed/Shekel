@@ -84,6 +84,7 @@ def _biweekly_calendar(user_id: int = 1) -> PayCalendar:
         ],
         cadence_days=14,
         user_id=user_id,
+        history_opens_on=None,
     )
 
 
@@ -461,6 +462,7 @@ class TestObligationsAggregator:
             ],
             cadence_days=7,
             user_id=1,
+            history_opens_on=None,
         )
         assert weekly_calendar.cadence == _Cadence(cadence_days=7)
         assert obligations_aggregator.committed_monthly(

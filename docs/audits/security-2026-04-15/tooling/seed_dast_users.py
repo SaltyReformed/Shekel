@@ -231,6 +231,11 @@ def create_owner(email: str, password: str, display_name: str) -> User:
     timezone its container has.  Cadence and horizon take
     ``RegistrationSpec``'s callers' usual defaults, stated explicitly because
     the spec deliberately carries none.
+
+    ``history_opens_on`` arrived at plan step **balance:X-bh-2** and is
+    ``None`` here, which is the column's own default and means NOT STATED: the
+    engine counts only the paydays this harness records.  A DAST fixture has
+    no employment history to state, and that is precisely what ``None`` says.
     """
     user = register_user(RegistrationSpec(
         email=email,
@@ -239,6 +244,7 @@ def create_owner(email: str, password: str, display_name: str) -> User:
         first_payday=display_today(),
         cadence_days=BaseConfig.DEFAULT_PAY_CADENCE_DAYS,
         num_periods=BaseConfig.DEFAULT_PAY_PERIOD_HORIZON,
+        history_opens_on=None,
     ))
     db.session.commit()
     return user
