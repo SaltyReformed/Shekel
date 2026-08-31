@@ -83,7 +83,7 @@ from app.models.statement_match import StatementMatch
 
 from ._accepted_view import AcceptedGroup, accepted_groups
 from ._batch import BatchOutcome, Consent, ReviewedBatch, apply_reviewed
-from ._creations import PurchaseCreation
+from ._creations import IncomeCreation, PurchaseCreation
 from ._offers import BankLine
 from ._reads import ReviewSet, review_set
 from ._scope import ReviewScope
@@ -162,8 +162,20 @@ class RuleFiling:
 
     @property
     def filed_count(self) -> int:
-        """Return how many lines a rule filed."""
-        return self.outcome.recorded_count
+        """Return how many lines a rule filed, in EITHER direction.
+
+        **Both counts, since plan step ``bank_import:X-gj-2a``.**  It read
+        ``recorded_count`` alone, which is purchases only
+        (:attr:`~._batch.BatchOutcome.deposited_count` is deliberately not
+        folded into it), so a pass that filed nothing but deposits under ruling
+        **R-HT(a)** would have reported filing NOTHING -- with the acts landed,
+        the money moved and the receipt silent about all of it.  That is the
+        under-report a bound-with-no-denominator makes, on the door nobody
+        watches.
+        """
+        return (
+            self.outcome.recorded_count + self.outcome.deposited_count
+        )
 
     @property
     def filed_total(self) -> Decimal:
@@ -172,10 +184,21 @@ class RuleFiling:
         Derived from the acts that LANDED rather than tallied beside them,
         which is the rule :attr:`~._batch.BatchOutcome.moved_nothing` states
         one type over: two fields that must agree are two fields that can come
-        to disagree.  Negative, because every line this door can file is money
-        leaving -- :func:`~._create._load_line` refuses an inflow -- and the
-        receipt says so in the bank's own direction rather than inventing a
-        second convention for the same figure.
+        to disagree.  In the BANK's own direction, so the receipt states the
+        figure without inventing a second convention for it.
+
+        **It is a NET and no longer always negative** (ruling **R-HT(a)**, plan
+        step ``bank_import:X-gj-2a``).  This said *negative, because every line
+        this door can file is money leaving --* :func:`~._create._load_line`
+        *refuses an inflow*, which was true of a door that filed only
+        purchases; it now also files deposits a standing INCOME rule answers
+        for, and those are positive.  ``_load_line`` still refuses an inflow --
+        it is the PURCHASE door's own refusal and unchanged -- so the sentence
+        was accurate about the wrong door once a second one existed.  A
+        one-import pass can therefore come to any sign, including exactly zero
+        on a pass whose filed swipes and filed deposits happen to cancel: a
+        receipt reading the figure must say what it is rather than assume it is
+        spending.
         """
         return sum(
             (item.amount for item in self.outcome.applied),
@@ -301,16 +324,28 @@ def rule_filed_acts(
     return accepted_groups(owner_id, account_id, {row[0] for row in ids})
 
 
-def _has_a_container_rule(owner_id: int, account_id: int) -> bool:
-    """Return whether this account carries any rule that NAMES a container.
+def _has_a_filing_rule(owner_id: int, account_id: int) -> bool:
+    """Return whether this account carries any rule this door could ACT on.
 
     **A pre-check, and it is exact rather than a heuristic**: only
     :attr:`~._rules.RuleAnswer.TEMPLATE` and
     :attr:`~._rules.RuleAnswer.NEW_ENVELOPE` produce a
-    :meth:`~._placement.Placement.creation_for`, so an account with neither
-    files nothing and withholds nothing, whatever its statement holds.  Its
-    answer therefore says the same thing the whole derivation would, for one
-    indexed read.
+    :meth:`~._placement.Placement.creation_for`, and only
+    :attr:`~._rules.RuleAnswer.INCOME_CATEGORY` produces a
+    :meth:`~._placement.InflowPlacement.creation_for` -- so an account with
+    none of the three files nothing and withholds nothing, whatever its
+    statement holds.  Its answer therefore says the same thing the whole
+    derivation would, for one indexed read.
+
+    **The income arm had to be added here as well as downstream, and forgetting
+    it would have been a SILENT no-op** (plan step ``bank_import:X-gj-2a``).
+    This short-circuit returns before the pass is derived at all, so an account
+    whose only rules answer DEPOSITS would have skipped the whole derivation
+    and filed nothing -- with no refusal, no withholding and no receipt line,
+    because a door that returned early has nothing to report.  A test asserting
+    the income arm files would have passed on an account that also held a
+    spending rule and failed on one that did not, which is the shape that hides
+    until a real owner has exactly the second.
 
     **It is a COUNT and not a second read of the rules themselves**, which is
     the distinction that keeps it from being the redundant producer call this
@@ -323,7 +358,8 @@ def _has_a_container_rule(owner_id: int, account_id: int) -> bool:
         account_id: The account being imported into.
 
     Returns:
-        Whether at least one rule on it names a template or a new envelope.
+        Whether at least one rule on it names a template, a new envelope or an
+        income category.
     """
     return db.session.query(
         db.session.query(MerchantRule)
@@ -333,6 +369,7 @@ def _has_a_container_rule(owner_id: int, account_id: int) -> bool:
             db.or_(
                 MerchantRule.template_id.isnot(None),
                 MerchantRule.envelope_name.isnot(None),
+                MerchantRule.income_category_id.isnot(None),
             ),
         )
         .exists()
@@ -386,6 +423,91 @@ def _rule_filings(
             continue
         creations.append(verdict.creation)
     return creations, withheld
+
+
+def _inflow_filings(
+    review: ReviewSet, fresh: "frozenset[int]",
+) -> "tuple[list[IncomeCreation], list[WithheldLine]]":
+    """Split the DEPOSITS a rule answers into what it files and what it holds.
+
+    Ruling **R-HT(a)**, plan step ``bank_import:X-gj-2a``.
+    :func:`_rule_filings`' twin for the other direction, and the three
+    narrowings are the same three ruling **R-GH** states -- restated here
+    against the facts an inflow has rather than shared, because the outflow
+    half reads a :class:`~._placement.Placement` and this reads a
+    :class:`~._placement.InflowPlacement` and they are different types for a
+    reason (one names a container, the other a classification).
+
+    **The DOUBLE-COUNT withholding is this door's whole safety, and it is not
+    the outflow half's rule.**  ``creatable`` is a set defined by subtraction
+    and R-GH withholds where the pass did not finish LOOKING; a deposit's
+    hazard is different and sharper: recording one the books ALREADY HOLD is
+    the only way this door can count money twice.
+    :meth:`~._reads.ReviewSet.income_already_recorded_in` answers exactly that
+    -- does this deposit's own pay period hold unexplained income that could
+    contain it -- and under a human tick the card renders that warning and the
+    person decides.  **There is no person here**, so a rule withholds wherever
+    the card would have warned.
+
+    Measured on the developer's own account 2026-08-31, over the 16 recordable
+    inflows: it is quiet for all five dividends (`$0.12`-`$0.22`) and all three
+    merchant credits (`$11.73`-`$28.29`), and fires for the seven payroll
+    deposits and for the `$200.00` member deposit -- whose period holds a
+    `$2,473.38` and a `$100.00` row, so `$200.00` is not provably outside them.
+    So the withholding costs this step nothing it was built for and holds back
+    exactly the line whose books cannot be shown to be missing it.
+
+    Args:
+        review: What this pass offers, whose recordable inflows carry the
+            placement a stated rule comes to for each.
+        fresh: The ids of the lines this import was the first to record.
+
+    Returns:
+        ``(incomes, withheld)`` in the order the pass lists its lines.
+    """
+    incomes: "list[IncomeCreation]" = []
+    withheld: "list[WithheldLine]" = []
+    for inflow in review.recordable_inflows:
+        if inflow.line.line_id not in fresh:
+            continue
+        placement = inflow.placement
+        # A rule that reaches nothing here is the owner having said nothing,
+        # or *ask me every time*, or a SPENDING answer whose refund arm is
+        # ``bank_import:X-gj-2b``'s -- and only the last of those is this pass
+        # withholding anything, which is why only it carries a reason.
+        if placement is None:
+            continue
+        if placement.unresolved_reason is not None:
+            withheld.append(WithheldLine(
+                line=inflow.line, reason=placement.unresolved_reason,
+            ))
+            continue
+        # **The DOOR's own refusals, asked before the rule's**: a day the
+        # calendar does not reach and a day that has not happened yet are
+        # reasons no answer can lift, and the pass has already composed the
+        # sentence for each.
+        if inflow.withheld is not None:
+            withheld.append(WithheldLine(
+                line=inflow.line, reason=inflow.withheld,
+            ))
+            continue
+        held = review.income_already_recorded_in(inflow.line)
+        if held is not None:
+            withheld.append(WithheldLine(
+                line=inflow.line,
+                reason=(
+                    f"Your rule says this is income, and the pay period it "
+                    f"falls in already holds {held.total} of income no bank "
+                    f"line explains -- so recording it automatically could "
+                    f"count the same money twice.  Check it on the reconcile "
+                    f"screen."
+                ),
+            ))
+            continue
+        creation = placement.creation_for(inflow.line.line_id)
+        if creation is not None:
+            incomes.append(creation)
+    return incomes, withheld
 
 
 def file_new_swipes(scope: ReviewScope, import_id: int) -> RuleFiling:
@@ -462,22 +584,25 @@ def file_new_swipes(scope: ReviewScope, import_id: int) -> RuleFiling:
     # and is the bulk of that figure.  These two cover every import that has
     # nothing to do, which is every re-import the owner performs.
     fresh = _fresh_line_ids(scope.account_id, import_id)
-    if not fresh or not _has_a_container_rule(scope.owner_id, scope.account_id):
+    if not fresh or not _has_a_filing_rule(scope.owner_id, scope.account_id):
         return RuleFiling(outcome=BatchOutcome.nothing(), withheld=())
     review = review_set(scope)
     creations, withheld = _rule_filings(review, fresh)
+    incomes, inflow_withheld = _inflow_filings(review, fresh)
     outcome = apply_reviewed(
         ReviewedBatch(
             matches=(),
             creations=tuple(creations),
-            # **A rule NEVER files a deposit** (ruling **bank_import:R-GW**): a merchant
-            # answer says where that merchant's SPENDING goes, so there is no
-            # answer it could hold that means *record this money coming in*.
-            # Stated as an empty tuple rather than defaulted, for the reason
-            # the empty match tuple above is: ``__post_init__`` refuses either
-            # on a rule-consented batch, and this is where a future arm would
-            # have to decide rather than inherit.
-            incomes=(),
+            # **A rule FILES a deposit since plan step
+            # ``bank_import:X-gj-2a``** (ruling **R-HT(a)**), where this was an
+            # empty tuple whose comment read *a merchant answer says where that
+            # merchant's SPENDING goes, so there is no answer it could hold
+            # that means record this money coming in*.  That was true of a
+            # four-member answer set; R-HT(a) added the member that means
+            # exactly that.  ``__post_init__`` no longer refuses it, and the
+            # MATCH tuple above stays empty because R-HT(b)'s group rule
+            # modifies rows the owner made and so keeps its tick.
+            incomes=tuple(incomes),
             # **A rule is the consent** (**R-GH**), which is what
             # ``ReviewedBatch.__post_init__`` holds the empty match tuple above
             # to: the acts a rule may not perform are exactly the acts that
@@ -486,4 +611,10 @@ def file_new_swipes(scope: ReviewScope, import_id: int) -> RuleFiling:
         ),
         scope,
     )
-    return RuleFiling(outcome=outcome, withheld=tuple(withheld))
+    # **ONE withheld list over both directions, in the order the pass lists
+    # its lines**: the receipt reads down the page and an owner does not think
+    # in directions, so a deposit a rule held back and a swipe a rule held back
+    # are one section rather than two.
+    return RuleFiling(
+        outcome=outcome, withheld=tuple(withheld + inflow_withheld),
+    )

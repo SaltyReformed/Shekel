@@ -55,6 +55,7 @@ from app.services import statement_match
 from app.services.statement_match import (
     Consent,
     IncomeCreation,
+    MatchSubmission,
     ReviewedBatch,
     apply_reviewed,
     record_income_from_line,
@@ -645,23 +646,63 @@ class TestThePassReportsIt:
         assert "money ARRIVING" in outcome.refused[0].reason
 
 
-class TestNoRuleReachesThisDoor:
-    """bank_import:R-GW: a merchant answer says where SPENDING goes."""
+class TestWhichConsentReachesThisDoor:
+    """Which act classes a STANDING RULE may perform here (**R-GH**).
 
-    def test_a_rule_consented_batch_carrying_an_INCOME_is_unconstructible(
+    **This class asserted the opposite until plan step
+    ``bank_import:X-gj-2a``**, under the name ``TestNoRuleReachesThisDoor`` and
+    ruling **bank_import:R-GW**'s reading that *a merchant answer says where
+    SPENDING goes*, so no rule could mean *record this deposit*.  Ruling
+    **R-HT(a)** amended the answer set with a member that says exactly what a
+    deposit from a signature IS, so the boundary moved -- and the boundary that
+    did NOT move is the one still asserted below.
+    """
+
+    def test_a_rule_consented_batch_MAY_carry_an_income(self, app, db, seed_user):
+        """R-HT(a): filing a deposit is an act R-GH consents to once.
+
+        It CREATES a row from a new bank line and modifies nothing the owner
+        made by hand, which is the act class the ruling splits on -- so the
+        batch is constructible where it used to raise.
+        """
+        batch = ReviewedBatch(
+            consent=Consent.STANDING_RULE, matches=(), creations=(),
+            incomes=(IncomeCreation(line_id=1, category_id=2),),
+        )
+
+        assert batch.item_count == 1
+
+    def test_a_rule_consented_batch_carrying_a_MATCH_is_still_unconstructible(
         self, app, db, seed_user,
     ):
-        """Made unrepresentable rather than maintained, like the match arm."""
-        with pytest.raises(ValueError, match="cannot carry an income"):
+        """The boundary R-HT(a) did NOT move, and the reason it did not.
+
+        **R-HT(b)'s group rule names a ROW SET**, which modifies rows the owner
+        made by hand, so it applies only on their OK -- and that is exactly the
+        act reaching ``accept_match``.  Kept unrepresentable rather than
+        maintained, which is what the income arm's removal must not be read as
+        weakening.
+        """
+        with pytest.raises(ValueError, match="cannot carry a match"):
             ReviewedBatch(
-                consent=Consent.STANDING_RULE, matches=(), creations=(),
-                incomes=(IncomeCreation(line_id=1),),
+                consent=Consent.STANDING_RULE,
+                # The submission's CONTENT is irrelevant here: the refusal is
+                # about the act CLASS a rule may consent to, and it fires in
+                # ``__post_init__`` before anything reads the item.
+                matches=(
+                    MatchSubmission(line_ids=frozenset({1}), rows=frozenset()),
+                ),
+                creations=(), incomes=(),
             )
 
-    def test_a_recorded_deposit_is_never_marked_applied_by_a_rule(
+    def test_a_TICKED_deposit_is_never_marked_applied_by_a_rule(
         self, app, db, seed_user,
     ):
-        """R-GT's fact, on the door that can only ever be ticked."""
+        """R-GT's fact: the door records the consent it was GIVEN.
+
+        The default is the one that claims less, so a caller that says nothing
+        records a tick -- and this is the path an owner's own OK takes.
+        """
         line = _a_deposit(seed_user)
 
         recorded = _record(seed_user, line)

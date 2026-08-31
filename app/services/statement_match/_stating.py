@@ -74,8 +74,11 @@ class RuleSubmission:
         template_id: For :attr:`RuleAnswer.TEMPLATE`.
         envelope_name: For :attr:`RuleAnswer.NEW_ENVELOPE`.
         category_id: Likewise.
+        income_category_id: For :attr:`RuleAnswer.INCOME_CATEGORY` -- what a
+            DEPOSIT from this merchant IS (**R-HT(a)**), which is a different
+            question from ``category_id``'s and therefore a different field.
 
-    **The three fields below are read only for the answer that uses them**
+    **The four fields below are read only for the answer that uses them**
     (:func:`_columns_of`), so a submission pairing :attr:`RuleAnswer.NEVER`
     with a ``template_id`` writes a *never a purchase* row rather than a
     template one.  It used to copy all three onto the row unconditionally,
@@ -86,10 +89,26 @@ class RuleSubmission:
     """
 
     merchant_id: int
+    # Pylint: ``duplicate-code`` -- this field block is structurally identical
+    # to :class:`~._rules.StandingRule`'s, and the two are deliberately
+    # separate DOMAIN values rather than one shared shape.  A ``StandingRule``
+    # is a VALIDATED stored answer: ``ck_merchant_rules_one_answer`` guarantees
+    # its fields agree with its answer, and its ``answer`` is DERIVED from
+    # those fields by ``RuleAnswer.of``.  A ``RuleSubmission`` is an
+    # UNVALIDATED wire value: its ``answer`` is STATED, and the fields below
+    # are read only for the answer that uses them, so a submission pairing
+    # ``NEVER`` with a ``template_id`` is legal here and writes a *never a
+    # purchase* row -- which is ``_columns_of``'s whole design.  Merging them
+    # would put "guaranteed consistent" and "may be inconsistent" on one type
+    # and take that guarantee away from the reader that has it.  One-sided:
+    # ``StandingRule``'s block stays un-disabled.
+    # pylint: disable=duplicate-code
     answer: RuleAnswer
     template_id: "int | None" = None
     envelope_name: "str | None" = None
     category_id: "int | None" = None
+    income_category_id: "int | None" = None
+    # pylint: enable=duplicate-code
 
 
 @dataclass(frozen=True)
@@ -131,7 +150,7 @@ def _trimmed(statement: RuleSubmission) -> RuleSubmission:
 
 
 def _columns_of(statement: RuleSubmission) -> "dict[str, object]":
-    """Return the four columns *statement*'s answer comes to.
+    """Return the five columns *statement*'s answer comes to.
 
     **The ONE statement of what each answer stores**, and the inverse of
     :meth:`RuleAnswer.of`.  Both the comparison (:func:`_same_answer`) and the
@@ -151,9 +170,19 @@ def _columns_of(statement: RuleSubmission) -> "dict[str, object]":
             :func:`trimmed <_trimmed>`.
 
     Returns:
-        ``{column: value}`` for all four answer columns, every one of them
+        ``{column: value}`` for all five answer columns, every one of them
         stated -- there is no "leave this as it was", because restating a rule
         replaces the whole answer.
+
+        **Every column is stated on EVERY answer, and that is what makes
+        restating safe across the DIRECTIONS** (plan step
+        ``bank_import:X-gj-2a``).  An owner who answered *deposits from here
+        are Interest income* and then answers *spending from here goes to
+        Groceries* gets ``income_category_id`` written back to ``NULL`` by
+        this mapping -- so the row cannot end up carrying two answers, which
+        ``ck_merchant_rules_one_answer`` would refuse at flush anyway.  A
+        mapping that omitted the column for the answers that do not use it
+        would have turned an ordinary restatement into an IntegrityError.
     """
     answer = statement.answer
     return {
@@ -167,6 +196,10 @@ def _columns_of(statement: RuleSubmission) -> "dict[str, object]":
         "category_id": (
             statement.category_id
             if answer is RuleAnswer.NEW_ENVELOPE else None
+        ),
+        "income_category_id": (
+            statement.income_category_id
+            if answer is RuleAnswer.INCOME_CATEGORY else None
         ),
         "never_a_purchase": answer is RuleAnswer.NEVER,
     }
@@ -341,21 +374,29 @@ def _reject_spending_answer(
 
 
 def _checked_category(
-    statement: RuleSubmission, merchant: str, owner_id: int,
+    category_id: "int | None", merchant: str, owner_id: int,
 ) -> Category:
-    """Return the category the new-envelope answer names, refusing another's.
+    """Return the category an answer names, refusing another owner's.
 
     The IDOR probe every create door in this project performs before a write.
     ``fk_merchant_rules_category_owner`` makes a foreign one unwritable,
     and this is what turns that into a sentence rather than a 500.
 
     Args:
-        statement: What the owner submitted.
+        category_id: The category the answer names.
         merchant: What the merchant it answers for is called, for the refusal.
         owner_id: Whose categories may be reached.
 
     Returns:
         The category.
+
+    **It takes the ID and not the SUBMISSION since plan step
+    ``bank_import:X-gj-2a``**, because two different answers now name a
+    category -- ``category_id`` is the one a *new envelope* is created under
+    and ``income_category_id`` is what a DEPOSIT from this merchant is -- and
+    the check they need is identical.  Reading the field itself would have made
+    this function answer for one of them and a copy of it answer for the other,
+    which is the duplicated money rule this package's own root cause is.
 
     Raises:
         ValidationError: When the id names no ACTIVE category of this owner's.
@@ -367,7 +408,7 @@ def _checked_category(
     category = (
         db.session.query(Category)
         .filter(
-            Category.id == statement.category_id,
+            Category.id == category_id,
             Category.user_id == owner_id,
             Category.is_active.is_(True),
         )
@@ -435,6 +476,18 @@ def _apply_one(
 
     Raises:
         ValidationError: On a template or category this owner may not name.
+        ValueError: When the submitted answer is a
+            :class:`~._rules.RuleAnswer` member this function has no sentence
+            for.  **A programming error rather than a designed refusal**, so it
+            is not a ``ValidationError``: every value that reaches here was
+            built from the same enum by
+            :class:`~app.schemas.validation.merchant_rules.RuleAnswerField`, so
+            no wire value can produce it -- it fires only if a member is added
+            to the enum and not to this chain.  It replaced an unguarded
+            ``else`` meaning *ask me every time* (plan step
+            ``bank_import:X-gj-2a``), which would have RECORDED ruling
+            **R-HT(a)**'s new answer correctly and then described it to the
+            owner as the answer they did not give.
     """
     merchant = answering.names[statement.merchant_id]
     stored = answering.stored
@@ -472,20 +525,49 @@ def _apply_one(
         named = _checked_template(statement, merchant, templates)
         said = f"{merchant} goes in {named}."
     elif statement.answer is RuleAnswer.NEW_ENVELOPE:
-        category = _checked_category(statement, merchant, answering.owner_id)
+        category = _checked_category(
+            statement.category_id, merchant, answering.owner_id,
+        )
         said = (
             f"{merchant} gets a new envelope called "
             f"{statement.envelope_name}, under {category.display_name}."
         )
+    elif statement.answer is RuleAnswer.INCOME_CATEGORY:
+        # **The fifth answer, and the only one about money coming IN**
+        # (ruling **R-HT(a)**).  It goes through the SAME check the
+        # new-envelope arm uses -- the id must name an ACTIVE category of this
+        # owner's -- because the two answers name a category for different
+        # purposes and the check is the same question either way.
+        category = _checked_category(
+            statement.income_category_id, merchant, answering.owner_id,
+        )
+        said = (
+            f"Deposits from {merchant} are income under "
+            f"{category.display_name}."
+        )
     elif statement.answer is RuleAnswer.NEVER:
         said = f"{merchant} is never a purchase."
-    else:
-        # **The fourth answer, and it is a DECISION rather than the absence of
-        # one** (ruling **R-GS**).  It replaced the withdrawal, which deleted
-        # the row: an owner who wants no standing answer for a merchant has
-        # said something, and the screen that asks them to state a rule needs
-        # to know they already answered it.
+    elif statement.answer is RuleAnswer.ALWAYS_ASK:
+        # **A DECISION rather than the absence of one** (ruling **R-GS**).  It
+        # replaced the withdrawal, which deleted the row: an owner who wants no
+        # standing answer for a merchant has said something, and the screen
+        # that asks them to state a rule needs to know they already answered
+        # it.
         said = f"{merchant}: ask me every time."
+    else:
+        # **NAMED rather than reached by falling through**, which is the same
+        # correction plan step ``bank_import:X-gj-2a`` made to
+        # ``_statement_rules._rule_statements``: this chain ended on an
+        # unguarded ``else`` meaning *ask me every time*, so ruling
+        # **R-HT(a)**'s new answer would have been RECORDED correctly by
+        # ``_columns_of`` and then described to the owner as the answer they
+        # did not give.  A receipt that misnames a stored money rule is worse
+        # than one that fails.
+        raise ValueError(
+            f"{statement.answer} is a rule answer this receipt cannot "
+            f"describe; give it an arm rather than letting it take another "
+            f"answer's sentence.",
+        )
     if row is None:
         row = MerchantRule(
             user_id=answering.owner_id, account_id=answering.account_id,

@@ -19,6 +19,7 @@ import pytest
 from app import ref_cache
 from app.enums import SettledDayBasisEnum
 from app.extensions import db
+from app.models.category import Category
 from app.models.statement_match import StatementMatch
 from app.models.transaction import Transaction
 from app.models.transaction_entry import TransactionEntry
@@ -409,12 +410,24 @@ class TestAnActThatWouldTouchAHandMadeRowKeepsItsTick:
                 Decimal("10.89"), Decimal("130.11"),
             ]
 
-    def test_an_INFLOW_is_never_filed(self, app, db, seed_user):
+    def test_an_INFLOW_never_becomes_a_PURCHASE(self, app, db, seed_user):
         """A purchase is an expense, so money coming IN can never be one.
 
-        The refusal is :func:`~._create._load_line`'s and it is reached here
-        through the reader rather than the door: an inflow is not a creatable
-        line at all, so the rule never sees it.
+        **The money property is unchanged by ruling R-HT(a) and is what this
+        still asserts**: a credit from a merchant whose rule names a SPENDING
+        container does not become a purchase in it.  The refusal is
+        :func:`~._create._load_line`'s and it is reached through the reader
+        rather than the door -- an inflow is not a creatable line at all, so
+        the outflow rule never sees it.
+
+        **What R-HT(a) changed is that the pass now SAYS so.**  This case
+        asserted ``withheld == []`` until plan step ``bank_import:X-gj-2a``,
+        which was the pass saying nothing at all about a line the owner's own
+        rule reaches.  Such a credit is a REFUND -- the merchant rule's inverse
+        -- and filing it is ``bank_import:X-gj-2b``'s, so 2a reports it.
+        Reporting rather than silence is the same rule
+        :class:`~._filing.WithheldLine` exists for: *a bound that says nothing
+        about what it dropped reads as a clean sweep*.
         """
         with app.app_context():
             envelope = _groceries(seed_user)
@@ -431,9 +444,15 @@ class TestAnActThatWouldTouchAHandMadeRowKeepsItsTick:
             filing = _file(seed_user, statement)
             db.session.flush()
 
-            assert _story(filing) == {
-                "filed": 1, "withheld": [], "refused": [],
-            }
+            story = _story(filing)
+
+            assert story["filed"] == 1
+            assert story["refused"] == []
+            # The pass NAMES the credit rather than passing over it, and says
+            # what it is: a refund, not income.
+            assert len(story["withheld"]) == 1
+            assert "refund" in story["withheld"][0]
+            # THE MONEY: the `+$42.00` did not become a purchase.
             assert [p.amount for p in _purchases_in(envelope)] == [
                 Decimal("10.89"),
             ]
@@ -1181,3 +1200,302 @@ class TestTheRuleAndTheSweepAgreeAboutWhereMoneyGoes:
                 "filed": 0, "withheld": [], "refused": [],
             }
             assert _purchases_in(envelope) == []
+
+
+class TestAStandingRuleFilesADepositByItself:
+    """Ruling **R-HT(a)**, plan step ``bank_import:X-gj-2a``.
+
+    **The money property in the other direction**: an INCOME answer is consent
+    given once, so a deposit from that signature becomes an income row at
+    import with no press -- the same act class **R-GH** consents to, because it
+    CREATES a row from a new bank line and modifies nothing the owner made by
+    hand.
+
+    Measured on the developer's own account 2026-08-31: five ``Dividend
+    Earned`` deposits worth `$0.79` dissolve under this rule, and they are 5 of
+    the 16 lines his inbox holds.
+    """
+
+    def _deposit(self, seed_user, statement, *, amount="0.15", **kwargs):
+        """Stage one recorded deposit from the ruled signature."""
+        return a_bank_line(
+            seed_user, statement, amount=amount, merchant="Dividend Earned",
+            description="DIVIDEND EARNED (Dividend Earned)", **kwargs,
+        )
+
+    def test_an_income_answer_files_the_deposit_and_moves_the_balance(
+        self, app, db, seed_user,
+    ):
+        """The whole act: the row, its category, its day, and the money.
+
+        **The balance is asserted rather than the row alone**, which is this
+        class's twin's rule: a row written with the wrong sign, the wrong day
+        or a status the walk ignores is a row that exists and changes nothing.
+        """
+        with app.app_context():
+            category = seed_user["categories"]["Salary"]
+            a_rule(
+                seed_user, "Dividend Earned", income_category_id=category.id,
+            )
+            statement = an_import(seed_user)
+            # **PAST the anchor day, exactly as this class's outflow twin
+            # stages it.**  The seeded account asserts `$1,000.00` on the
+            # bootstrap period's first day, and a pre-cutover assertion RESETS
+            # the walk -- so a row settled on that day is absorbed by the
+            # assertion and the balance does not move, which would make this
+            # case fail for a reason that is not about the rule.
+            day = seed_user["bootstrap_period"].start_date + timedelta(days=3)
+            self._deposit(seed_user, statement, amount="0.15", posted_on=day)
+            db.session.flush()
+            before = _balance_on(seed_user, day + timedelta(days=2))
+
+            filing = _file(seed_user, statement)
+            db.session.flush()
+
+            assert _story(filing) == {
+                "filed": 1, "withheld": [], "refused": [],
+            }
+            # POSITIVE, where the outflow twin's is negative: the receipt's
+            # figure is the bank's own direction and this door now nets both.
+            assert filing.filed_total == Decimal("0.15")
+            recorded = (
+                db.session.query(Transaction)
+                .filter(
+                    Transaction.account_id == seed_user["account"].id,
+                    Transaction.category_id == category.id,
+                )
+                .all()
+            )
+            assert len(recorded) == 1
+            assert recorded[0].estimated_amount == Decimal("0.15")
+            assert recorded[0].settled_on == day
+            assert recorded[0].settled_day_basis_id == (
+                ref_cache.settled_day_basis_id(SettledDayBasisEnum.OBSERVED)
+            )
+            # THE MONEY: the deposit is IN the balance, on the bank's own day.
+            assert _balance_on(seed_user, day + timedelta(days=2)) == (
+                before + Decimal("0.15")
+            )
+
+    def test_the_act_records_that_a_RULE_performed_it(
+        self, app, db, seed_user,
+    ):
+        """**R-GT**: the receipt and the Filed-by-rules tab both read this.
+
+        Without it the act lands on the Explained tab as though the owner had
+        ticked it, and ``rule_filed_acts`` -- the receipt's own reader -- finds
+        nothing to show an undo for.
+        """
+        with app.app_context():
+            a_rule(
+                seed_user, "Dividend Earned",
+                income_category_id=seed_user["categories"]["Salary"].id,
+            )
+            statement = an_import(seed_user)
+            self._deposit(
+                seed_user, statement,
+                posted_on=seed_user["bootstrap_period"].start_date,
+            )
+            db.session.flush()
+
+            _file(seed_user, statement)
+            db.session.flush()
+
+            acts = rule_filed_acts(
+                seed_user["user"].id, seed_user["account"].id,
+            )
+            assert len(acts) == 1
+
+    def test_an_UNANSWERED_deposit_is_left_alone_and_is_not_withheld(
+        self, app, db, seed_user,
+    ):
+        """The absence of a rule is not this pass withholding anything.
+
+        A receipt reading *your rules withheld this* about a signature the
+        owner has never answered for is false, and it is the sentence that
+        makes a real withholding unreadable.
+        """
+        with app.app_context():
+            statement = an_import(seed_user)
+            self._deposit(
+                seed_user, statement,
+                posted_on=seed_user["bootstrap_period"].start_date,
+            )
+            db.session.flush()
+
+            filing = _file(seed_user, statement)
+
+            assert _story(filing) == {
+                "filed": 0, "withheld": [], "refused": [],
+            }
+
+    def test_an_ACCOUNT_WITH_ONLY_AN_INCOME_RULE_still_files(
+        self, app, db, seed_user,
+    ):
+        """The pre-check's own case, and it would fail SILENTLY if wrong.
+
+        ``_has_a_filing_rule`` short-circuits before the pass is derived at
+        all, so an account whose only rules answer DEPOSITS would have filed
+        nothing with no refusal, no withholding and nothing on the receipt --
+        a door that returned early has nothing to report.  Staging an account
+        that holds NO container rule is what makes this case grade the
+        short-circuit rather than the arm downstream of it.
+        """
+        with app.app_context():
+            a_rule(
+                seed_user, "Dividend Earned",
+                income_category_id=seed_user["categories"]["Salary"].id,
+            )
+            statement = an_import(seed_user)
+            self._deposit(
+                seed_user, statement,
+                posted_on=seed_user["bootstrap_period"].start_date,
+            )
+            db.session.flush()
+
+            filing = _file(seed_user, statement)
+            db.session.flush()
+
+            assert filing.filed_count == 1
+
+
+class TestARuleWithholdsADepositTheBooksMayAlreadyHold:
+    """The narrowing that makes filing a deposit SAFE (**R-GH**, **R-HT(a)**).
+
+    **Recording a deposit the books already hold is the only way this door can
+    count money twice**, and the outflow half's narrowing does not cover it:
+    that one withholds where the pass did not finish LOOKING, which is a fact
+    about a search.  A deposit's hazard is that its own pay period already
+    holds unexplained income which could BE it.
+
+    Under a human tick the card renders that warning and the person decides.
+    There is no person here, so the rule withholds wherever the card would have
+    warned -- and the sentence says which rows, so the owner can go and look.
+
+    **Measured on the developer's own account 2026-08-31, over all 16
+    recordable inflows**: quiet for the five dividends (`$0.12`-`$0.22`) and
+    the three merchant credits (`$11.73`-`$28.29`), and firing for the seven
+    payroll deposits and the `$200.00` member deposit -- whose period holds a
+    `$2,473.38` row and a `$100.00` row, so `$200.00` is not provably outside
+    them.  So it holds back exactly the line whose books cannot be shown to be
+    missing it, and costs this step nothing it was built for.
+    """
+
+    def test_a_deposit_its_period_may_already_hold_is_WITHHELD(
+        self, app, db, seed_user,
+    ):
+        """The money property: no row is written, and the receipt says why."""
+        with app.app_context():
+            a_rule(
+                seed_user, "Dividend Earned",
+                income_category_id=seed_user["categories"]["Salary"].id,
+            )
+            day = seed_user["bootstrap_period"].start_date + timedelta(days=3)
+            # An unexplained income row of $100.00 in the SAME period, so a
+            # $150.00 deposit is not provably outside it.
+            a_transaction(
+                seed_user, name="Some income", amount="100.00",
+                income=True,
+            )
+            statement = an_import(seed_user)
+            a_bank_line(
+                seed_user, statement, amount="150.00",
+                merchant="Dividend Earned",
+                description="DIVIDEND EARNED (Dividend Earned)",
+                posted_on=day,
+            )
+            db.session.flush()
+            before = _balance_on(seed_user, day + timedelta(days=2))
+
+            filing = _file(seed_user, statement)
+            db.session.flush()
+
+            story = _story(filing)
+            assert story["filed"] == 0
+            assert story["refused"] == []
+            assert len(story["withheld"]) == 1
+            assert "count the same money twice" in story["withheld"][0]
+            # THE MONEY: nothing moved.
+            assert _balance_on(seed_user, day + timedelta(days=2)) == before
+
+    def test_a_deposit_SMALLER_than_every_such_row_is_still_filed(
+        self, app, db, seed_user,
+    ):
+        """The guard is a PROOF, not a threshold, and this is its other side.
+
+        A deposit smaller than the SMALLEST unexplained income row in its
+        period cannot be any subset of them, every one being positive -- so
+        there is nothing for the owner to check and withholding it would be the
+        warn-on-every-row shape this package measures money going through.
+        **This is the case the whole step exists for**: the developer's five
+        dividends sit in periods holding payroll rows worth thousands.
+        """
+        with app.app_context():
+            a_rule(
+                seed_user, "Dividend Earned",
+                income_category_id=seed_user["categories"]["Salary"].id,
+            )
+            day = seed_user["bootstrap_period"].start_date + timedelta(days=3)
+            a_transaction(
+                seed_user, name="Payroll", amount="2473.38",
+                income=True,
+            )
+            statement = an_import(seed_user)
+            a_bank_line(
+                seed_user, statement, amount="0.15",
+                merchant="Dividend Earned",
+                description="DIVIDEND EARNED (Dividend Earned)",
+                posted_on=day,
+            )
+            db.session.flush()
+
+            filing = _file(seed_user, statement)
+            db.session.flush()
+
+            assert _story(filing) == {
+                "filed": 1, "withheld": [], "refused": [],
+            }
+
+    def test_an_ARCHIVED_income_category_is_REPORTED_and_files_nothing(
+        self, app, db, seed_user,
+    ):
+        """A rule naming a retired category is reported, never substituted for.
+
+        Filing into a category the owner has archived would resurrect it
+        silently; falling back to NO category would file the money somewhere
+        they did not name, under a receipt saying their rule ran.  Both are the
+        substitution :mod:`~._placement` refuses, so the answer is a sentence.
+        """
+        with app.app_context():
+            category_id = seed_user["categories"]["Salary"].id
+            a_rule(
+                seed_user, "Dividend Earned", income_category_id=category_id,
+            )
+            # **Re-fetched INSIDE this context, never assigned on the bundle's
+            # own object.**  ``seed_user`` was built in a different app
+            # context, so mutating the instance it holds leaves the change in a
+            # session this context never flushes -- and the case would go on
+            # reading an ACTIVE category while claiming to test an archived
+            # one.  Measured: the first draft did exactly that, and the deposit
+            # was filed.  ``test_directory`` records the same trap.
+            db.session.get(Category, category_id).is_active = False
+            db.session.flush()
+            statement = an_import(seed_user)
+            a_bank_line(
+                seed_user, statement, amount="0.15",
+                merchant="Dividend Earned",
+                description="DIVIDEND EARNED (Dividend Earned)",
+                posted_on=(
+                    seed_user["bootstrap_period"].start_date
+                    + timedelta(days=3)
+                ),
+            )
+            db.session.flush()
+
+            filing = _file(seed_user, statement)
+            db.session.flush()
+
+            story = _story(filing)
+            assert story["filed"] == 0
+            assert len(story["withheld"]) == 1
+            assert "archived" in story["withheld"][0]

@@ -335,10 +335,12 @@ class RuleView:
             and the sentence an unresolvable placement explains itself with.
         active_categories: The categories a new envelope may still be created
             under, and the ones an income answer may still file a deposit into
-            (:func:`active_category_ids`).  **One set for both**, because it is
-            one question -- has the owner retired this category -- and an
-            answer naming a retired one is reported rather than acted on, in
-            either direction.
+            (:func:`active_category_names`).  **One mapping for both**,
+            because it is one question -- has the owner retired this category
+            -- and an answer naming a retired one is reported rather than acted
+            on, in either direction.  It carries the NAMES too, so the card
+            that states an income answer prints the label from the same read
+            that resolved the answer.
         stale_templates: What to call a template a stored rule NAMES that is
             no longer offerable, by id.  **A rendered control must be able to
             show the answer it holds, even a stale one**: without this the
@@ -373,7 +375,7 @@ class RuleView:
 
     rules: "dict[int, StandingRule]"
     template_names: "dict[int, str]"
-    active_categories: "frozenset[int]"
+    active_categories: "dict[int, str]"
     stale_templates: "dict[int, str]"
     stale_categories: "dict[int, str]"
 
@@ -393,7 +395,7 @@ class RuleView:
         """
         rules = rules_for(owner_id, account_id)
         offerable = offerable_templates(account_id)
-        active = active_category_ids(owner_id)
+        active = active_category_names(owner_id)
         return cls(
             rules=rules,
             template_names=offerable,
@@ -449,9 +451,19 @@ class RuleView:
             category_id: The category a stored *new envelope* answer names.
 
         Returns:
-            Its display name, or a phrase.
+            Its display name, or a phrase.  **Active first**, since plan step
+            ``bank_import:X-gj-2a``: this answered only for an ARCHIVED
+            category, which was every category a caller had reason to name
+            while the only readers were the two unresolved-placement sentences.
+            Ruling **R-HT(a)**'s card names a LIVE one, and a reader that fell
+            through to *an archived category* for it would print that phrase on
+            the sentence describing a working rule.
         """
-        return self.stale_categories.get(category_id) or "an archived category"
+        return (
+            self.active_categories.get(category_id)
+            or self.stale_categories.get(category_id)
+            or "an archived category"
+        )
 
 
 def rules_for(
@@ -576,7 +588,7 @@ def offerable_templates(account_id: int) -> "dict[int, str]":
     return {row.id: row.name for row in rows}
 
 
-def active_category_ids(owner_id: int) -> "frozenset[int]":
+def active_category_names(owner_id: int) -> "dict[int, str]":
     """Return the categories a new envelope may still be created under.
 
     **The create door's own clause, asked where the SUGGESTION is made.**
@@ -589,15 +601,29 @@ def active_category_ids(owner_id: int) -> "frozenset[int]":
     state that leaves the row pointing at something the door will refuse, so
     this is the live half.
 
+    **It returns the NAMES as well as the ids since plan step
+    ``bank_import:X-gj-2a``**, and the reason is that a second reader appeared
+    rather than that names are nice to have: ruling **R-HT(a)**'s income answer
+    is stated as a category, so the Reconcile card's sentence has to print what
+    that category is CALLED -- and reading it back in a second query would be
+    the redundant producer call this project treats as a DRY violation, with
+    the sharper risk that the label a card prints could then come from a
+    different instant than the answer it describes.  Membership is unchanged:
+    every existing reader asks ``id in view.active_categories``, which a
+    mapping answers exactly as a set did.
+
     Args:
         owner_id: The user whose categories may be reached.
 
     Returns:
-        Their active category ids.
+        ``{category_id: display name}``, built with
+        :attr:`~app.models.category.Category.display_name` for the reason
+        :func:`_named_categories` builds its own that way: a bare ``item_name``
+        reads as a different category from the one every other control shows.
     """
     rows = (
-        db.session.query(Category.id)
+        db.session.query(Category)
         .filter(Category.user_id == owner_id, Category.is_active.is_(True))
         .all()
     )
-    return frozenset(row[0] for row in rows)
+    return {row.id: row.display_name for row in rows}

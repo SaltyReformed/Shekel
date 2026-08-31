@@ -165,6 +165,10 @@ class ReviewedBatch:
     def __post_init__(self) -> None:
         """Refuse a rule pass carrying a MATCH.
 
+        **It refused an INCOME too until plan step ``bank_import:X-gj-2a``**
+        (ruling **R-HT(a)**); the comment below the match arm records why that
+        sentence went false and why this one did not.
+
         **Ruling R-GH's boundary, made unrepresentable rather than maintained**
         (plan step ``bank_import:X-ge``).  A rule is consent for CREATING a row
         from a new bank swipe; every act that modifies a row the owner made by
@@ -188,11 +192,10 @@ class ReviewedBatch:
 
         Raises:
             ValueError: When a :attr:`Consent.STANDING_RULE` batch names a
-                match or an income.  **A programming error rather than a
-                designed refusal**, so it is not a ``ValidationError``: no wire
-                value reaches this field, the route states it as a literal, and
-                there is no sentence to write for an owner who cannot have
-                caused it.
+                MATCH.  **A programming error rather than a designed refusal**,
+                so it is not a ``ValidationError``: no wire value reaches this
+                field, the route states it as a literal, and there is no
+                sentence to write for an owner who cannot have caused it.
         """
         if self.consent is not Consent.STANDING_RULE:
             return
@@ -202,12 +205,20 @@ class ReviewedBatch:
                 "may not modify a row the owner made by hand (R-GH), so a "
                 "rule-consented batch cannot carry a match."
             )
-        if self.incomes:
-            raise ValueError(
-                "A merchant rule says where that merchant's SPENDING goes "
-                "(R-GI), so no rule can mean 'record this deposit' (bank_import:R-GW), "
-                "and a rule-consented batch cannot carry an income."
-            )
+        # **A rule-consented batch MAY carry an income since plan step
+        # ``bank_import:X-gj-2a``**, where this refused one.  The refusal read
+        # *a merchant rule says where that merchant's SPENDING goes (R-GI), so
+        # no rule can mean "record this deposit" (bank_import:R-GW)* -- true
+        # while the answer set had four members, and ruling **R-HT(a)** added a
+        # fifth that says what a DEPOSIT from a signature IS.  It is the same
+        # act class R-GH consents to: it CREATES a row from a new bank line and
+        # modifies nothing the owner made by hand.
+        #
+        # **The MATCH refusal above is untouched and is the whole boundary
+        # now.** R-HT(b)'s group rule names a ROW SET, which modifies rows the
+        # owner made, so it applies only on their OK -- and that is exactly the
+        # act that reaches ``accept_match``.  So the one arm this may never
+        # grow is the one still refused.
 
     @property
     def item_count(self) -> int:
@@ -725,7 +736,14 @@ def apply_reviewed(batch: ReviewedBatch, scope: ReviewScope) -> BatchOutcome:
         line_ids = (income.line_id,)
         deposited = _run(
             tally, line_ids,
-            lambda i=income: record_income_from_line(i, scope),
+            lambda i=income: record_income_from_line(
+                i, scope,
+                # **The PASS's consent, not the item's** (ruling **R-GT**),
+                # which is the same threading the creation arm above does: the
+                # act records whether a RULE performed it, and only the batch
+                # knows that.
+                applied_by_rule=batch.consent.applied_by_rule,
+            ),
         )
         if deposited is None:
             continue

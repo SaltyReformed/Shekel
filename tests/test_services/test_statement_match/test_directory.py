@@ -240,12 +240,20 @@ class TestWhatARowSays:
         """The totality control, over the enum itself.
 
         **It reads the ENUM rather than a list written here**, which is what
-        makes it fire: a case listing the four members by hand would go on
-        passing when a fifth was added, which is the one failure this class
-        exists to catch.
+        makes it fire: a case listing the members by hand would go on passing
+        when another was added, which is the one failure this class exists to
+        catch.
+
+        **It fired on 2026-08-31** for ruling **R-HT(a)**'s
+        ``INCOME_CATEGORY``, and what it caught was real: ``says_of`` ended on
+        a bare ``return "Ask me every time"``, so the merchants page would have
+        described a stored INCOME rule -- one filing money correctly -- as the
+        answer the owner did not give.  That arm is named now and the
+        fall-through is a raise.
         """
         assert {member.name for member in RuleAnswer} == {
-            "TEMPLATE", "NEW_ENVELOPE", "NEVER", "ALWAYS_ASK",
+            "TEMPLATE", "NEW_ENVELOPE", "INCOME_CATEGORY",
+            "NEVER", "ALWAYS_ASK",
         }, (
             "RuleAnswer gained or lost a member; says_of needs an arm for it "
             "and this class needs a case"

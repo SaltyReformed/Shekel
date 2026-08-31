@@ -449,6 +449,13 @@ class InflowPlacement:
         merchant: The line's merchant, which is the rule's key.
         category_id: The income category the answer names, or ``None`` when
             this pass will not act on it.
+        category: What that category is CALLED, carried beside its id for the
+            reason :attr:`~._rules.StandingRule.merchant` is: the card's
+            sentence prints it, and the read that resolved the answer already
+            had it (:attr:`~._rules.RuleView.active_categories`).  Reading it
+            back separately would be a redundant producer call, and worse, the
+            label a card prints could then come from a different instant than
+            the answer it describes.
         unresolved_reason: One sentence saying why the rule does not reach this
             line, or ``None`` when it does.  **Exactly one of the two is set**,
             which is :attr:`~._bars.ParkedLine.answer_door`'s own idiom: a
@@ -458,6 +465,7 @@ class InflowPlacement:
 
     merchant: str
     category_id: "int | None" = None
+    category: "str | None" = None
     unresolved_reason: "str | None" = None
 
     @property
@@ -577,5 +585,7 @@ def _income_placement(rule: StandingRule, view: RuleView) -> InflowPlacement:
             ),
         )
     return InflowPlacement(
-        merchant=rule.merchant, category_id=rule.income_category_id,
+        merchant=rule.merchant,
+        category_id=rule.income_category_id,
+        category=view.category_label_for(rule.income_category_id),
     )
