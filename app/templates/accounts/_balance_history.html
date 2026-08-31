@@ -55,6 +55,11 @@
      reconcilable  -- whether the ledger / correction columns are shown.
      panel_id      -- the page region's DOM id, which this partial uses only to
                       name its own disclosure target.
+     account_id    -- the account, for the opening row's "Restate" link.  The
+                      restatement DOOR is not here: it is the form on the
+                      shared account edit page (plan step X-f3c-2b-2a), which is
+                      the one surface every account kind reaches, and this card
+                      serves only the cash kinds.
 #}
 {% macro history_row(row, reconcilable) %}
 <tr>
@@ -152,6 +157,17 @@
               recorded {{ history.opening.recorded_on.strftime('%b %-d, %Y') }}
             </div>
             {% endif %}
+            {# THE DOOR, as a LINK rather than an inline editor (plan step
+               X-f3c-2b-2a).  The restatement form lives on the shared account
+               edit page, which is the one surface every account kind reaches;
+               this card serves only the cash kinds, and four of the accounts
+               it does not serve carry a derived opening the fold reads.  One
+               door, two entrances -- and a link rather than an editor keeps
+               this card what its own module says it is, a RECORD and not a
+               write door. #}
+            <div class="fs-xs">
+              <a href="{{ url_for('accounts.edit_account', account_id=history.account_id) }}#books-opening">Restate</a>
+            </div>
           </td>
           <td class="text-end font-mono">{{ money(history.opening.equity) }}</td>
           {% if history.reconcilable %}

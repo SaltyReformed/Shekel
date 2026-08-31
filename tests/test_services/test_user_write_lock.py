@@ -35,6 +35,7 @@ Three properties, because each can hold while another fails:
 
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 
 import pytest
@@ -50,6 +51,7 @@ from app.services import (
     anchor_service,
     cash_ledger,
     loan_posting_service,
+    opening_service,
 )
 from app.utils.dates import display_today
 from app.services.user_write_lock import (
@@ -437,6 +439,123 @@ class TestTheAnchorDoorsTakeTheLockBeforeTheyRead:
                 "serialising after the read serialises nothing"
             )
 
+    def test_the_opening_door_locks_before_reading_the_governing_opening(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """``apply_opening_restatement`` locks before it reads the opening.
+
+        The THIRD compare-then-append on this family (plan step
+        **X-f3c-2b-2a**), and the one whose lock is now load-bearing in
+        writing: ``app.opening_infrastructure`` says the books-boundary
+        triggers take no lock and that what closes the two-transaction race
+        instead is that both DOORS take the owner's.  A mechanism named in a
+        module docstring and enforced by nothing is the shape this whole class
+        was built after.
+        """
+        assert seed_periods_today
+        with app.app_context():
+            account = _checking_account(seed_user)
+            db.session.commit()
+            standing = cash_ledger.account_opening_fact(account.id)
+
+            _result, statements = capture_sql_statements(
+                lambda: opening_service.apply_opening_restatement(
+                    account=account,
+                    opening=opening_service.BooksOpening(
+                        standing.opened_on - timedelta(days=1),
+                        Decimal("1234.00"),
+                    ),
+                ),
+            )
+
+            assert took_advisory_lock(statements), (
+                "the restatement door emitted no advisory lock; two concurrent "
+                "submissions would both read the pre-state and both append, "
+                "and the books-boundary triggers take no lock of their own"
+            )
+            assert any(
+                "account_openings" in text for text, _params in statements
+            ), "the door read no opening row -- the test graded nothing"
+            assert advisory_lock_precedes(statements, "account_openings"), (
+                "the door read the governing opening BEFORE taking the lock; "
+                "serialising after the read serialises nothing"
+            )
+
+    def test_the_opening_door_locks_before_reading_the_MOVEMENTS(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The other read the lock protects, and the one it did not at first.
+
+        The day bound reads ``budget.transactions`` and
+        ``budget.transaction_entries``, which a concurrent settle is WRITING --
+        so an unlocked read lets the restatement pass its own predicate and
+        then abort at COMMIT on the deferred trigger, which is a raw
+        ``psycopg2`` 500 where ``cash_ledger._books`` exists to give a
+        sentence.  Found by adversarial review 2026-08-31, when the lock sat
+        below the bound rather than above it.
+
+        Graded separately from the case above because the two reads are two
+        statements and a lock between them satisfies one and not the other.
+        """
+        assert seed_periods_today
+        with app.app_context():
+            account = _checking_account(seed_user)
+            db.session.commit()
+            standing = cash_ledger.account_opening_fact(account.id)
+
+            _result, statements = capture_sql_statements(
+                lambda: opening_service.apply_opening_restatement(
+                    account=account,
+                    opening=opening_service.BooksOpening(
+                        standing.opened_on - timedelta(days=1),
+                        Decimal("4321.00"),
+                    ),
+                ),
+            )
+
+            assert any(
+                "transaction_entries" in text for text, _params in statements
+            ), "the door read no movement table -- the test graded nothing"
+            assert advisory_lock_precedes(statements, "transaction_entries"), (
+                "the door read the account's movements BEFORE taking the lock; "
+                "a settle committing in that window makes the restatement abort "
+                "at COMMIT instead of being refused with a sentence"
+            )
+
+    def test_the_opening_door_locks_the_OWNER_and_nothing_else(
+        self, app, db, seed_user, seed_periods_today,
+    ):
+        """The key is the owner, so it contends with every other door of theirs.
+
+        Presence and ordering are both satisfied by a lock on the wrong key --
+        ``pg_advisory_xact_lock`` binds both arguments, so every acquisition
+        emits byte-identical SQL and only the parameters say what was locked.
+        A restatement locking the ACCOUNT would serialise against nothing the
+        settle path takes.
+        """
+        assert seed_periods_today
+        with app.app_context():
+            account = _checking_account(seed_user)
+            db.session.commit()
+            standing = cash_ledger.account_opening_fact(account.id)
+
+            _result, statements = capture_sql_statements(
+                lambda: opening_service.apply_opening_restatement(
+                    account=account,
+                    opening=opening_service.BooksOpening(
+                        standing.opened_on - timedelta(days=1),
+                        Decimal("999.00"),
+                    ),
+                ),
+            )
+
+            assert set(advisory_lock_keys(statements)) == {
+                (_USER_WRITE_LOCK_NAMESPACE, seed_user["user"].id),
+            }, (
+                "the restatement locked something other than the owner: "
+                f"{advisory_lock_keys(statements)}"
+            )
+
     def test_loan_true_up_locks_before_reading_the_governing_event(
         self, app, db, seed_user, seed_periods_today,
     ):
@@ -593,6 +712,30 @@ class TestTheAnchorDoorsTakeTheLockBeforeTheyRead:
             ), (
                 "the factory INSERTed no anchor history -- the test graded "
                 "nothing, and the E-19 invariant is broken besides"
+            )
+            # **The OPENING is the same claim one table over** (plan step
+            # X-f3c-2b-2a).  The factory routes its books opening through
+            # ``opening_service.stage_account_opening``, whose own
+            # ``lock_user_writes`` is the FIRST acquisition on this path -- and
+            # it is the only control that can see it, because
+            # ``apply_opening_restatement`` (the other caller) takes a lock of
+            # its own, so deleting the stager's leaves the restatement door's
+            # three cases green.  Measured: with the stager's lock removed this
+            # assertion is the one that fails.
+            assert any(
+                text.strip().upper().startswith(
+                    "INSERT INTO BUDGET.ACCOUNT_OPENINGS",
+                )
+                for text, _params in statements
+            ), (
+                "the factory INSERTed no opening row -- the test graded "
+                "nothing, and the fold has no level to start from besides"
+            )
+            assert advisory_lock_precedes(statements, "account_openings"), (
+                "the books opening was read BEFORE the owner's write lock was "
+                "taken; the writer's own lock is what makes the compare safe "
+                "for every caller rather than for the one door that happens "
+                "to lock above it"
             )
             assert advisory_lock_precedes(
                 statements, "account_anchor_history",

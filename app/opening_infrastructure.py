@@ -17,11 +17,25 @@ a reader to assume more:
 
 * Under READ COMMITTED two CONCURRENT transactions -- one recording a movement,
   one restating the books past it -- each see a snapshot without the other's
-  uncommitted row, so both predicates pass and both commit.  Neither trigger
-  takes a lock.  The window is narrow (a restatement is rare and has no UI door
-  until plan step X-f3c-2b-2) and closing it means ``SELECT ... FOR UPDATE`` on
-  the governing opening, which is the right fix if a door ever makes
-  restatement ordinary.
+  uncommitted row, so both predicates pass.  **Neither trigger takes a lock,
+  and what closes the window instead is that both DOORS take the owner's**
+  (:func:`app.services.user_write_lock.lock_user_writes`), which was true of
+  the movement side before there was a restatement door and is true of
+  :func:`app.services.opening_service.stage_account_opening` by construction.
+  The loser blocks until the winner's transaction ENDS, and a deferred
+  constraint trigger runs at COMMIT -- after that block, on a fresh READ
+  COMMITTED snapshot -- so it sees the winner's committed row and refuses.
+  **Measured 2026-08-31 on a production clone rather than argued**: the settle
+  path emits ``pg_advisory_xact_lock`` at statement 11 of the 13 an ordinary
+  settle runs, inside ``account_posting_service.self_heal_anchor_corrections``,
+  and ``reconcile_service.record_settled_days`` reaches the same lock through
+  ``_post_stamped_purchases`` -> ``posting_service.sync_transaction_postings``.
+  **The residue, stated rather than rounded off:** that self-heal returns
+  BEFORE its lock when the source emitted no posting delta, so a movement whose
+  legs all net to zero races a restatement unserialised.  ``SELECT ... FOR
+  UPDATE`` on the governing opening remains the fix that would not depend on a
+  second door's locking, and it is a fix for that residue rather than for the
+  whole window.
 * ``session_replication_role = replica`` disables constraint triggers outright,
   which is what ``pg_restore --disable-triggers`` sets.  The prod-to-dev clone
   is a documented workflow here, so a restore can land rows this module would
@@ -35,10 +49,23 @@ it as a row-level CHECK:
   (``budget.transactions`` and ``budget.transaction_entries``, both of which
   carry ``account_id`` and ``settled_on``);
 * an account's GOVERNING opening may not sit on or after a movement that
-  already exists (``budget.account_openings``) -- stated over the rows that
-  survive an event rather than over the row written, so restating forward,
-  raw-updating the governing row and DELETING it (which promotes an older
-  restatement) are one rule rather than three arms.
+  already exists, nor AFTER a day the owner has asserted a balance for
+  (``budget.account_openings``) -- stated over the rows that survive an event
+  rather than over the row written, so restating forward, raw-updating the
+  governing row and DELETING it (which promotes an older restatement) are one
+  rule rather than three arms.
+
+**The assertion half was added 2026-08-31 and it closes a MONEY defect the
+movement half could not see.**  An account with no settled movement is
+unbounded by the first rule, and that is every investment, retirement and
+property account on production.  Reproduced on the developer's own Roth IRA:
+restating its books forward past six assertions was accepted, moved
+``unrealized_change`` from ``-$4,523.33`` to ``-$27,332.35`` -- ``$22,809.02``
+of investment return that never happened -- and silently discarded the opening
+the owner had just stated, because the earliest assertion RESETS the fold above
+it.  Equality is legal and is the ORDINARY case: ``account_service`` writes an
+account's origination opening and origination assertion for the same day, and
+three of the nine production accounts still sit exactly there.
 
 Both are cross-table facts, so they live in **deferred constraint triggers**
 validating at COMMIT.  Deferral is not incidental: restating an account's
@@ -169,13 +196,33 @@ SETTLED_MOVEMENTS_SQL = """
 """
 
 #: The RECORDING order that decides which opening record governs (ruling
-#: **R-HE**): the table is append-only and the latest restatement wins, with
-#: ``id`` breaking a same-instant tie.  Public for the same reason as above --
-#: the revision's three window functions must break the tie the same way this
-#: module and ``cash_ledger.account_opening_fact`` do, and the whole migration
-#: chain runs in ONE transaction, so every row it writes shares one ``now()``
-#: and the tie-break carries the entire answer.
-GOVERNING_ORDER_SQL = "created_at DESC, id DESC"
+#: **R-HE**): the table is append-only and the latest restatement wins.  Public
+#: because the revision's three window functions, this module's own
+#: ``budget.account_books_opened_on`` and
+#: ``cash_ledger.governing_account_opening`` must all break it the same way; a
+#: fourth spelling is how two tiers come to disagree about which restatement is
+#: in force.
+#:
+#: **It is ``id`` ALONE, and it was ``created_at DESC, id DESC`` until plan step
+#: X-f3c-2b-2a's adversarial review refuted the reason for the first term.**
+#: That reason -- stated in this module and twice in ``cash_ledger`` -- was that
+#: ``created_at`` is set on INSERT and so is monotone in recording order.  It is
+#: not: :class:`app.models.mixins.CreatedAtMixin` defaults it to
+#: ``db.func.now()``, which in PostgreSQL is ``transaction_timestamp()`` -- the
+#: instant the transaction BEGAN.  ``anchor_service._governing_loan_anchor``
+#: already says so in as many words about the loan twin, and this door never
+#: carried the implication across.  **The failure it produced is a SILENT NO-OP
+#: on the level every balance rests on**: two restatements from two tabs, the
+#: one whose transaction opened EARLIER commits SECOND under the owner's write
+#: lock, and its row sorts below the row it was meant to supersede -- so the
+#: owner is told "Books restated" and nothing moved.
+#:
+#: ``id`` is a sequence value allocated when the INSERT executes, and the write
+#: door holds ``lock_user_writes`` across its compare-and-append, so within an
+#: account the id order IS the order the owner made the statements.  The
+#: migration writes every row in one transaction and at most one per account,
+#: so it is unaffected either way.
+GOVERNING_ORDER_SQL = "id DESC"
 
 
 _CREATE_OPENED_ON_SQL = f"""
@@ -238,6 +285,7 @@ RETURNS VOID AS $$
 DECLARE
     v_opened_on DATE;
     v_earliest DATE;
+    v_first_assertion DATE;
 BEGIN
     -- **The predicate is over the account's RESULTING STATE, not over the row
     -- that was written**, and that is what makes one function serve every
@@ -290,6 +338,28 @@ BEGIN
             'dated %, and an opening equity is the closing balance for its '
             'own day, so that money would be counted twice',
             p_account_id, v_opened_on, v_earliest;
+    END IF;
+
+    -- The ASSERTION bound.  An account with no settled movement passes
+    -- everything above, so without this an opening could be restated past
+    -- every balance the owner has ever recorded -- at which point the
+    -- earliest assertion resets the fold above it, the stated opening is read
+    -- by nothing, and the whole gap is reported as a gain on a MODELLED
+    -- account (ruling R-FO).  ``>`` and not ``>=``: an opening EQUAL to the
+    -- earliest assertion is what ``account_service.create_account`` writes for
+    -- every account, so refusing equality would make the factory's own output
+    -- unstorable.
+    SELECT MIN(observed_on) INTO v_first_assertion
+      FROM budget.account_anchor_history
+     WHERE account_id = p_account_id;
+
+    IF v_first_assertion IS NOT NULL AND v_opened_on > v_first_assertion THEN
+        RAISE EXCEPTION
+            'account % cannot open its books on %: a balance is already '
+            'recorded for %, and the fold restarts at a recorded balance -- '
+            'so an opening after it would be ignored and the difference '
+            'reported as a gain',
+            p_account_id, v_opened_on, v_first_assertion;
     END IF;
 END;
 $$ LANGUAGE plpgsql

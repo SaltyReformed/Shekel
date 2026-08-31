@@ -2187,7 +2187,7 @@ class TestTheSharedFilingDoor:
             # ``resolve_observation_day`` floors an assertion at the calendar's
             # own first day, which is 2026-01-02 here.  Restating the opening is
             # the act that was always meant, and it is a production door
-            # (plan step X-f3c-2b-2).
+            # (plan step X-f3c-2b-2a).
             restate_account_opening(
                 _db.session, account, self._PRE_SCHEDULE_DAY,
             )

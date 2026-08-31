@@ -43,13 +43,13 @@ from app.enums import AccountOpeningSourceEnum, AcctCategoryEnum
 from app.extensions import db
 from app.exceptions import ValidationError
 from app.models.account import Account
-from app.models.account_opening import AccountOpening
 from app.models.pay_period import PayPeriod
 from app.models.ref import AccountType
 from app.services import (
     account_posting_service,
     anchor_service,
     ledger_account_service,
+    opening_service,
 )
 
 
@@ -163,11 +163,25 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
     columns: the stager takes the owner's write lock, applies ruling R-EQ's
     did-this-change compare, and logs the resolved day in the one line both
     doors share.  With one writer those rules cannot be true on one path and
-    absent on the other.  The order is also better than it was, and the
-    improvement is MEASURED rather than argued: the advisory lock used to appear
-    at statement 7, five statements after the assertion INSERT at statement 2;
-    it is now at statement 3 with the INSERT at 5.  **That does not put this
-    path outside finding N-193's class** -- ``INSERT INTO budget.accounts``
+    absent on the other.  **The books OPENING goes through its own single
+    writer for the identical reason since plan step X-f3c-2b-2a**
+    (:func:`app.services.opening_service.stage_account_opening`), which is what
+    lets an owner restate it later without this function becoming that table's
+    second writer.
+
+    The order is also better than it was, and the improvement is MEASURED
+    rather than argued: the advisory lock used to appear at statement 7, five
+    statements after the assertion INSERT at statement 2.  **Re-measured
+    2026-08-31 on a production clone, on both sides of X-f3c-2b-2a, because that
+    step changed which function takes the lock**: it is statement 3 either way
+    -- ``opening_service`` now takes it where ``anchor_service`` used to, and
+    the wire position is unchanged -- while the assertion INSERT moved from 6
+    to 8, the two added statements being the opening door's own governing read
+    and its re-entrant re-acquisition.  *The figure this sentence quoted for
+    that INSERT was 5, and it had decayed silently: it was measured at X-f1e2,
+    before ``budget.account_openings`` existed to be written at all.*  **None
+    of this puts the path outside finding N-193's class** -- ``INSERT INTO
+    budget.accounts``
     still runs first and takes an index lock on ``uq_accounts_user_name``, so
     the advisory lock is not the transaction's FIRST lock.  An adversarial
     review traced the cycles: none exists against N-193's named antagonists
@@ -288,14 +302,33 @@ def create_account(spec: AccountSpec, **extra_columns) -> Account:
     # order is load-bearing: ``account_posting_service`` walks this record to
     # book the ``account_opening`` journal entry, and
     # ``cash_ledger.account_opening_fact`` raises without it.
-    db.session.add(AccountOpening(
-        account_id=account.id,
-        opened_on=observed_on.civil_day,
-        opening_equity=anchor_balance,
-        source_id=ref_cache.account_opening_source_id(
-            AccountOpeningSourceEnum.USER_DECLARED,
+    #
+    # **Through ``opening_service``'s door rather than by constructing the row
+    # here** (plan step X-f3c-2b-2a), and that is ruling **R-ES** applied one
+    # table over: this function was the table's only writer until an owner
+    # could restate the books, and two writers of one append-only table is how
+    # the assertion table came to have a row written with no lock, no
+    # did-this-change compare and no audit line.  The day is NOT re-bounded
+    # there -- it is ``observed_on``'s, already resolved above by the one rule
+    # both assertion doors share, and a second application of a clock-dependent
+    # bound is the defect ruling R-ER deletes.
+    #
+    # The return is deliberately NOT checked, unlike the assertion's below, and
+    # the asymmetry is real: the stager declines only when a governing opening
+    # already matches the submission, and this account was INSERTed four
+    # statements ago -- no row can reference an id that did not exist when the
+    # transaction began.  ``False`` here is unreachable rather than merely
+    # unlikely, and the state it would leave -- an account with no opening --
+    # is the one ``cash_ledger.account_opening_fact`` raises on at the first
+    # READ, loudly, naming this factory.
+    opening_service.stage_account_opening(
+        account=account,
+        opening=opening_service.BooksOpening(
+            opened_on=observed_on.civil_day,
+            equity=anchor_balance,
         ),
-    ))
+        source=AccountOpeningSourceEnum.USER_DECLARED,
+    )
 
     # The origination assertion goes through the ONE write door (ruling R-ES,
     # plan step X-f1e2).  This function constructed the row itself until then,

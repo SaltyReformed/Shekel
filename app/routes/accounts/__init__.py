@@ -44,6 +44,15 @@ Module map:
   beside what its records produced just before each one.  A third subject
   beside ``detail``'s page and ``anchor``'s write door, split for the reason
   ``reconcile`` was.
+* :mod:`app.routes.accounts.opening` -- What the books OPENED with (plan
+  step X-f3c-2b-2a, ruling **R-HG**): the card the shared account edit page
+  renders and the POST that appends a restatement.  A write door for an
+  append-only MONEY fact, split from ``crud`` for the reason ``history`` was
+  split from ``detail`` -- ``crud`` writes plain columns on one row and this
+  goes through a service that takes the owner's write lock and re-bases the
+  posted ledger.  The balance-history card LINKS here rather than editing in
+  place: one door, two entrances, and the second is the only surface every
+  account kind reaches.
 * :mod:`app.routes.accounts.statements` -- What the BANK said (plan step
   ``bank_import:X-f6a-1``, ruling R-FP): the statement import page and its
   write door.  A fourth subject beside ``anchor``'s assertion, ``reconcile``'s
@@ -117,6 +126,7 @@ from app.routes.accounts import reconcile  # noqa: F401, E402
 from app.routes.accounts import history  # noqa: F401, E402
 from app.routes.accounts import anchor  # noqa: F401, E402
 from app.routes.accounts import difference  # noqa: F401, E402
+from app.routes.accounts import opening  # noqa: F401, E402
 from app.routes.accounts import types  # noqa: F401, E402
 from app.routes.accounts import detail  # noqa: F401, E402
 from app.routes.accounts import statements  # noqa: F401, E402

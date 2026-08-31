@@ -11,6 +11,7 @@ question             here                            loan analog
 ===================  ==============================  ==========================
 what is stored?      :mod:`._facts`                  ``loan_loaders``
 what happened, when? :mod:`._events`                 ``loan_ledger._events``
+where do books open? :mod:`._books`                  (no loan analog)
 what IS the amount?  :mod:`._amount_source`          (see below)
 what was it worth?   :mod:`._amounts`                ``loan_ledger._split``
 did the bank show it? :mod:`._clearing`              (no loan analog)
@@ -24,15 +25,20 @@ assertions are the user correcting that derivation.  A cash account's balance is
 what a third party says it is, so *which statement showed this line* is a fact
 the app must be told (ruling **R-FL**) rather than one it can compute.
 
-**The third and fourth rows are two questions, not one split in half** (plan
+**The two AMOUNT rows are two questions, not one split in half** (plan
 step X-au-b, ruling **R-FI**).  :mod:`._amount_source` answers *where does this
 row's amount come from* -- the figure the amount COLUMN holds or would hold,
 by a total dispatch over the five sources a row's amount can have.
 :mod:`._amounts` answers *what is this row worth to checking*, which composes
 that amount with an entered actual, an excluded status and an envelope's
 purchases.  The arrow runs one way: the second consumes the first.  The loan
-side has no analog for the third row because a loan payment's amount has
-exactly one source; a cash row's has five, and four of them are derived.
+side has no analog for :mod:`._amount_source` because a loan payment's amount
+has exactly one source; a cash row's has five, and four of them are derived.
+
+**The books row has no loan analog because a loan has no books to open.**  Its
+origination is ``LoanParams.original_principal``, synthesized rather than
+recorded (``loan_loaders.synthesize_origination_anchor``), so there is no
+stored day for a movement to fall before.
 
 Nothing here answers "what is the balance at T".  That is the
 :mod:`app.services.balance_at` seam's question, and the arrow runs ONE way: the
@@ -130,6 +136,13 @@ from ._clearing import (
     StatementCoverage,
     statement_coverage,
 )
+from ._books import (
+    earliest_assertion_day,
+    earliest_recorded_movement_day,
+    reject_books_open_after_an_assertion,
+    reject_books_open_on_or_after_movements,
+    reject_movement_before_books_open,
+)
 from ._events import (
     CashAnchorFact,
     CashOpeningFact,
@@ -137,7 +150,7 @@ from ._events import (
     account_opening_fact,
     cash_anchor_facts,
     coverage_for,
-    reject_movement_before_books_open,
+    governing_account_opening,
     settled_cash_facts,
 )
 from ._facts import (
@@ -159,6 +172,7 @@ __all__ = [
     "AmountBasis",
     "AmountRule",
     "AnchorPoint",
+    "governing_account_opening",
     "governing_anchor",
     "governing_anchor_on",
     "CashAnchorFact",
@@ -180,6 +194,8 @@ __all__ = [
     "contributions_by_id",
     "credit_entry_sum",
     "dated_deltas",
+    "earliest_assertion_day",
+    "earliest_recorded_movement_day",
     "display_amounts_by_id",
     "income_amount",
     "live_amounts",
@@ -195,6 +211,8 @@ __all__ = [
     "resolve_transaction_amount",
     "resolve_transfer_amount",
     "recorded_amounts_by_id",
+    "reject_books_open_after_an_assertion",
+    "reject_books_open_on_or_after_movements",
     "reject_movement_before_books_open",
     "settled_amounts_by_id",
     "settled_cash_facts",
