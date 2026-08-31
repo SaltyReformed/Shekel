@@ -173,7 +173,6 @@ def _regenerate_salary_transactions(profile):
 
     schedule = GenerationSchedule.for_pass(ctx)
     calendar = ctx.calendar()
-    periods = calendar.saved()
 
     # Update the template's default_amount to the current net pay
     current_period = calendar.period_containing(date.today())
@@ -186,8 +185,7 @@ def _regenerate_salary_transactions(profile):
             current_user.id, profile, current_period.start_date.year,
         )
         pay_breakdown = paycheck_calculator.calculate_paycheck(
-            PayrollBasis(profile, calendar.cadence),
-            current_period, periods, tax_configs,
+            PayrollBasis(profile, calendar), current_period, tax_configs,
             calibration=profile.calibration,
         )
         # Through the amount's one write door (plan step X-au-a).  The profile
@@ -254,20 +252,18 @@ def _compute_total_pre_tax(profile):
     mirroring the original inline behaviour in both handlers.
     """
     # A plain calendar read: this helper recomputes ONE paycheck and
-    # regenerates nothing, so it needs the period window the calculator reads
-    # as ``all_periods`` and none of the rest of a GenerationSchedule.  ONE
-    # derivation answers both questions (pay-calendar plan step C2-f2d-3).
+    # regenerates nothing, so it needs the calendar the engine prices against
+    # and none of the rest of a GenerationSchedule.  ONE derivation answers
+    # both questions (pay-calendar plan step C2-f2d-3).
     calendar = calendar_for(current_user.id)
     current_period = calendar.period_containing(date.today())
     if not current_period:
         return Decimal("0")
-    periods = calendar.saved()
     tax_configs = load_tax_configs_for_year(
         current_user.id, profile, current_period.start_date.year,
     )
     pay_breakdown = paycheck_calculator.calculate_paycheck(
-        PayrollBasis(profile, calendar.cadence),
-        current_period, periods, tax_configs,
+        PayrollBasis(profile, calendar), current_period, tax_configs,
     )
     return pay_breakdown.deductions.total_pre_tax
 

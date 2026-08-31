@@ -170,10 +170,17 @@ def _project_sum(user_id, profile, year, periods):
     subset-restart projections coincide (all figures below the 184,500 SS
     wage base and 200,000 Medicare surtax threshold), so this stays a
     genuinely independent check of the producer's dollar values.
+
+    **Since plan step balance:X-bh-1 there is no "subset restart" to
+    coincide with**: the engine reads the year's paydays off the owner's
+    CALENDAR, which this oracle is now handed too, so both sides carry the
+    same year-to-date context and what stays independent is the period
+    SUBSET each is asked to sum.
     """
     configs = load_tax_configs_for_year(user_id, profile, year)
     breakdowns = paycheck_calculator.project_salary(
-        payroll_basis(profile), periods, configs, calibration=profile.calibration,
+        payroll_basis(profile, periods), periods, configs,
+        calibration=profile.calibration,
     )
     return {
         "gross": sum((b.earnings.gross_biweekly for b in breakdowns), ZERO),

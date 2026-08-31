@@ -7,6 +7,7 @@ infrequent transaction detection, 3rd paycheck month identification,
 and projected month-end balance calculation.
 """
 
+from calendar import monthrange
 from datetime import date
 from decimal import Decimal
 
@@ -14,6 +15,7 @@ from app import ref_cache
 from app.exceptions import BaselineMissingError
 from app.enums import StatusEnum, TxnTypeEnum
 from app.models.pay_period import PayPeriod
+from app.models.salary_profile import SalaryProfile
 from app.models.transaction import Transaction
 from app.models.transaction_template import TransactionTemplate
 from unittest.mock import patch
@@ -26,6 +28,7 @@ from app.services import (
     calendar_service,
     pay_period_write,
     pay_schedule_service,
+    paycheck_calculator,
 )
 from tests._test_helpers import (
     settle_day_columns,
@@ -43,12 +46,19 @@ from tests.oracles.recurrence_baseline import (
 from app.services.balance_at import BalanceContext
 from app.services.balance_at import _context as resolution_context
 from app.services.calendar_infrequency import is_infrequent as _is_infrequent
+from app.services.payroll_basis import PayrollBasis
+from app.services.tax_config_service import load_tax_configs_for_year
 from app.services.calendar_service import (
     CalendarAccountNotResolvableError,
     DailyView,
-    _detect_third_paycheck_months,
 )
-from app.services.pay_calendar import PayCadence, PeriodWindow, calendar_for
+from app.services.pay_calendar import (
+    PayCadence,
+    PayCalendar,
+    calendar_for,
+    paydays_in_month_through,
+    saved_paydays_in_month_through,
+)
 
 #: The cadence ``seed_periods`` builds: 14 days between paydays, 26 a year.
 #: An explicit input to the infrequent badge since plan step R7a-2b, where the
@@ -1052,13 +1062,38 @@ class TestTheBadgeReadsTheOWNERSStoredCadence:
 
 
 class TestThirdPaycheckDetection:
-    """Tests for 3rd paycheck month detection."""
+    """A month's paycheck count, off the ONE producer the engine also reads.
 
-    def test_third_paycheck_detection_26_periods(self, app, seed_user, db):
-        """26 biweekly periods in 2026 produce exactly 2 third-paycheck months."""
+    ``calendar_service._detect_third_paycheck_months`` counted paydays over the
+    window a caller happened to hold, which was a SECOND implementation of the
+    question ``paycheck_calculator`` asks to decide whether a 24-per-year
+    deduction is skipped -- one rule, two scans, two period sets.  Plan step
+    **balance:X-bh-1** deleted it for
+    :func:`~app.services.pay_calendar.paydays_in_month_through`, so these cases
+    grade that producer and the flag the year overview renders from it.
+    """
+
+    @staticmethod
+    def _three_paycheck_months(calendar, year):
+        """The months of *year* holding three or more paydays."""
+        return {
+            month for month in range(1, 13)
+            if len(saved_paydays_in_month_through(
+                calendar,
+                date(year, month, monthrange(year, month)[1]),
+            )) >= 3
+        }
+
+    def test_twenty_six_biweekly_paydays_give_two_third_paycheck_months(
+        self, app, seed_user, db,
+    ):
+        """26 biweekly paydays from 2026-01-02 land three times in two months.
+
+        Hand-computed: Jan 2 / 16 / 30 and Jul 3 / 17 / 31.  Every other 2026
+        month holds exactly two.
+        """
         with app.app_context():
-            from app.services import pay_period_service
-            periods = pay_period_write.record_paydays(
+            pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=26,
@@ -1066,24 +1101,29 @@ class TestThirdPaycheckDetection:
             )
             db.session.commit()
 
-            # The CALENDAR's window, which is what production passes since
-            # plan step C2-f1; an ORM list only worked here by duck typing.
-            window = calendar_for(seed_user["user"].id).saved()
-            result = _detect_third_paycheck_months(window, 2026)
-            assert len(result) == 2
+            calendar = calendar_for(seed_user["user"].id)
+            assert self._three_paycheck_months(calendar, 2026) == {1, 7}
 
-    def test_third_paycheck_empty_periods(self, app):
-        """Empty period list produces empty set."""
-        with app.app_context():
-            result = _detect_third_paycheck_months(PeriodWindow(periods=()), 2026)
-            assert result == set()
+    def test_an_empty_calendar_holds_no_paydays_in_any_month(self, app):
+        """An owner with no payday has no three-paycheck month.
 
-    def test_third_paycheck_only_target_year(self, app, seed_user, db):
-        """Only counts periods with start_date in the target year."""
+        A real answer rather than an error: a companion holds no schedule, and
+        production has one such user.
+        """
         with app.app_context():
-            from app.services import pay_period_service
-            # Generate periods spanning 2025-2026.
-            periods = pay_period_write.record_paydays(
+            calendar = PayCalendar.from_paydays([], None, user_id=1)
+            assert self._three_paycheck_months(calendar, 2026) == set()
+
+    def test_a_month_is_counted_in_its_own_year(self, app, seed_user, db):
+        """January 2025 and January 2026 are counted separately.
+
+        The schedule runs 2025-07-04 through 2027, so both Januaries hold
+        paydays.  Hand-computed from a 14-day rhythm anchored on 2025-07-04:
+        2026 opens Jan 2 / 16 / 30 -- three -- while 2025's own January holds
+        none at all, because the schedule does not reach it.
+        """
+        with app.app_context():
+            pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=date(2025, 7, 4),
                 num_periods=40,
@@ -1091,28 +1131,25 @@ class TestThirdPaycheckDetection:
             )
             db.session.commit()
 
-            result_2026 = _detect_third_paycheck_months(
-                calendar_for(seed_user["user"].id).saved(), 2026,
-            )
-            # Should find 3rd paycheck months only from 2026 start_dates.
-            for m in result_2026:
-                count = sum(
-                    1 for p in periods
-                    if p.start_date.year == 2026 and p.start_date.month == m
-                )
-                assert count >= 3
+            calendar = calendar_for(seed_user["user"].id)
+            assert 1 in self._three_paycheck_months(calendar, 2026)
+            assert saved_paydays_in_month_through(
+                calendar, date(2025, 1, 31),
+            ) == ()
 
-    def test_third_paycheck_correct_months(self, app, seed_user, db):
-        """Verify the specific months that are 3rd paycheck months.
+    def test_the_year_overview_flags_exactly_those_months(
+        self, app, seed_user, db,
+    ):
+        """THE FIRING CONTROL: the rendered flag is the producer's answer.
 
-        26 biweekly periods starting Jan 2, 2026:
-        Jan: Jan 2, Jan 16, Jan 30 -> 3 paychecks
-        Jul: Jul 10, Jul 24, (need to check) -> depends on exact dates
-        Compute by hand: starting Jan 2, every 14 days.
+        Every assertion above would still pass if ``MonthSummary`` were built
+        from the old window scan, so this one drives the real surface and
+        checks the twelve flags against the same producer the paycheck engine
+        reads.  Without it the fold is asserted about a function nothing on a
+        page calls.
         """
         with app.app_context():
-            from app.services import pay_period_service
-            periods = pay_period_write.record_paydays(
+            pay_period_write.record_paydays(
                 user_id=seed_user["user"].id,
                 first_payday=date(2026, 1, 2),
                 num_periods=26,
@@ -1120,18 +1157,136 @@ class TestThirdPaycheckDetection:
             )
             db.session.commit()
 
-            result = _detect_third_paycheck_months(
-                calendar_for(seed_user["user"].id).saved(), 2026,
+            overview = calendar_service.get_year_overview(
+                user_id=seed_user["user"].id, year=2026,
             )
+            flagged = {
+                summary.month for summary in overview.months
+                if summary.is_third_paycheck_month
+            }
+            assert flagged == {1, 7}
 
-            # Verify by counting manually.
-            from collections import Counter
-            month_counts = Counter(
-                p.start_date.month for p in periods
-                if p.start_date.year == 2026
+    def test_the_card_counts_only_paydays_it_can_show_the_money_for(
+        self, app, seed_user, db,
+    ):
+        """The analytics side is BOUNDED to the saved schedule (**balance:R-IB**).
+
+        The shared producer projects the owner's rhythm past the horizon,
+        because the paycheck engine needs a total answer -- a payday it cannot
+        place would take ordinal 0, which silently drops a 12-per-year
+        deduction.  The CARD reads the bounded twin instead, and the reason is
+        measured: everything else on it -- income, expenses, net, month-end
+        balance -- folds from SAVED periods, so a projected payday renders
+        beside a ``$0.00`` net and a balance frozen at the horizon.
+
+        A first cut of this step shipped the unbounded count here.  Measured
+        2026-08-30 on the developer's own data: **29 month cards**, 2028-08
+        through 2030-12, read "3 paychecks, income ``$0.00``, balance
+        ``$9,539.92``".  The bound comes off with ledger row **N-394**, which
+        projects the cash tier so both halves of the card light up together.
+
+        This schedule runs 2026-01-02 to 2026-12-18, so 2027 lies wholly past
+        its horizon and the owner IS really paid in it -- which is exactly the
+        month the two producers answer differently.
+        """
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=seed_user["user"].id,
+                first_payday=date(2026, 1, 2),
+                num_periods=26,
+                cadence_days=14,
             )
-            expected = {m for m, c in month_counts.items() if c >= 3}
-            assert result == expected
+            db.session.commit()
+
+            calendar = calendar_for(seed_user["user"].id)
+
+            # The two producers disagree about January 2027, and that is the
+            # point: one answers what the owner is paid, the other what the
+            # app holds.
+            assert paydays_in_month_through(
+                calendar, date(2027, 1, 31),
+            ) == (date(2027, 1, 1), date(2027, 1, 15), date(2027, 1, 29))
+            assert saved_paydays_in_month_through(
+                calendar, date(2027, 1, 31),
+            ) == ()
+
+            detail = calendar_service.get_month_detail(
+                user_id=seed_user["user"].id, year=2027, month=1,
+            )
+            assert detail.paycheck_days == []
+            assert detail.is_third_paycheck_month is False
+            # The card is bounded because its money is: nothing is recorded
+            # past the horizon for a marker to stand beside.
+            assert detail.total_income == Decimal("0")
+            assert detail.net == Decimal("0")
+
+            overview = calendar_service.get_year_overview(
+                user_id=seed_user["user"].id, year=2027,
+            )
+            assert overview.months[0].is_third_paycheck_month is False
+
+    def test_the_engine_and_the_year_overview_agree_on_a_month(
+        self, app, seed_user, db,
+    ):
+        """The two consumers agree on every month the schedule covers.
+
+        The paycheck engine skips a 24-per-year deduction on a month's third
+        payday; the year overview flags the month.  They were two independent
+        scans over two period sets before plan step **balance:X-bh-1**, and
+        they are now two named SETS over one span search -- the engine's total
+        and the card's bounded (**balance:R-IB**).
+
+        **So this is a real equality and not a tautology**, which an
+        adversarial review of this step is why: while both surfaces called one
+        function the equality could not fail, and the review said so.  They
+        call different functions now, and the schedule below is fully saved,
+        which is exactly the domain where the two must not diverge -- the case
+        above pins where they deliberately do.
+        """
+        with app.app_context():
+            pay_period_write.record_paydays(
+                user_id=seed_user["user"].id,
+                first_payday=date(2026, 1, 2),
+                num_periods=26,
+                cadence_days=14,
+            )
+            db.session.commit()
+
+            user_id = seed_user["user"].id
+            calendar = calendar_for(user_id)
+            profile = SalaryProfile(
+                user_id=user_id,
+                scenario_id=seed_user["scenario"].id,
+                filing_status_id=1,
+                name="Third-paycheck agreement",
+                annual_salary=Decimal("60000.00"),
+                state_code="NC",
+            )
+            db.session.add(profile)
+            db.session.flush()
+
+            configs = load_tax_configs_for_year(user_id, profile, 2026)
+            breakdowns = paycheck_calculator.project_salary(
+                PayrollBasis(profile, calendar),
+                [p for p in calendar.saved() if p.start_date.year == 2026],
+                configs,
+            )
+            engine_months = {
+                period.start_date.month
+                for period, breakdown in zip(
+                    [p for p in calendar.saved() if p.start_date.year == 2026],
+                    breakdowns,
+                )
+                if breakdown.period.is_third_paycheck
+            }
+            overview = calendar_service.get_year_overview(
+                user_id=user_id, year=2026,
+            )
+            flagged = {
+                summary.month for summary in overview.months
+                if summary.is_third_paycheck_month
+            }
+            assert engine_months == flagged == {1, 7}
 
 
 # ── Year Overview Tests ──────────────────────────────────────────────

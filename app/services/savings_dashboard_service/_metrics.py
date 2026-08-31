@@ -228,7 +228,7 @@ def _sum_liquid_balances(account_data: list[AccountProjection]) -> Decimal:
     return total_savings
 
 
-def _get_current_paycheck_breakdown(balance_ctx, all_periods, current_period):
+def _get_current_paycheck_breakdown(balance_ctx, current_period):
     """Compute the canonical paycheck breakdown for the current period.
 
     The single income producer this module uses for any engine-derived
@@ -267,11 +267,13 @@ def _get_current_paycheck_breakdown(balance_ctx, all_periods, current_period):
 
     Args:
         balance_ctx: The read pass.  Its ``user_id`` scopes the profile query
-            and its memoized calendar supplies the cadence.
-        all_periods: The owner's whole saved schedule as a
-            :class:`~app.services.pay_calendar.PeriodWindow` (passed through
-            to the paycheck engine for 3rd-paycheck detection and the
-            FICA SS wage-base cap's cumulative-wage tracking).
+            and its memoized calendar is what the engine prices against -- the
+            cadence it divides by and the payday set its 3rd-paycheck
+            detection and FICA wage-base cumulative are counted over.  That
+            second half arrived here as an ``all_periods`` window until plan
+            step **balance:X-bh-1**, threaded from three call sites in the
+            orchestrator, each of them spelling ``reported_periods()`` for a
+            producer that now reads the same calendar the pass already holds.
         current_period: The current
             :class:`~app.services.pay_calendar.DerivedPeriod`, or ``None``.
 
@@ -300,8 +302,8 @@ def _get_current_paycheck_breakdown(balance_ctx, all_periods, current_period):
         balance_ctx.user_id, profile, current_period.start_date.year,
     )
     return paycheck_calculator.calculate_paycheck(
-        PayrollBasis(profile, balance_ctx.calendar().cadence),
-        current_period, all_periods, tax_configs,
+        PayrollBasis(profile, balance_ctx.calendar()),
+        current_period, tax_configs,
     )
 
 

@@ -196,26 +196,27 @@ def _get_transaction_amount(template, salary_profile, period, calendar):
     :class:`~app.services.pay_calendar.PayCalendar` is built only from a
     complete payday set, and its cadence -- the paycheck count the engine
     divides by -- comes off the same derivation as its periods, so the two
-    cannot be sourced from different reads.  ``calculate_paycheck`` reads the
-    period set for FOUR separate judgements, every one of which needs periods
-    the pass itself is not writing into: THIRD-PAYCHECK detection
-    (``_is_third_paycheck``), the first-paycheck-of-month deductions
-    (``_is_first_paycheck_of_month``), the FICA wage-base cumulative
-    (``_get_cumulative_wages``), and a deduction's ANNUAL CAP
-    (``_cumulative_deduction_before``, whose own docstring names the identical
-    hazard -- a partial context under-counts the cumulative and defers the cap,
-    so the deduction keeps being charged after it should have stopped).  The
-    LAST of them was missing from an earlier draft of this paragraph and an
-    adversarial review added it.  ``period_population`` hands the engines only
-    the NEWLY created periods, so a schedule extend used to answer all of them
-    from a 1-3 period sample.
+    cannot be sourced from different reads.  **Since plan step
+    balance:X-bh-1 that calendar is what the engine itself takes**, on the
+    :class:`~app.services.payroll_basis.PayrollBasis`, so this function no
+    longer hands it a window at all and there is no argument left here for a
+    caller to narrow.  ``calculate_paycheck`` counts paydays for FOUR separate
+    judgements, every one of which needs paydays the pass itself is not writing
+    into: THIRD-PAYCHECK detection, the first-paycheck-of-month deductions, the
+    FICA wage-base cumulative and a deduction's ANNUAL CAP (a partial context
+    under-counted the cumulative and DEFERRED the cap, so the deduction kept
+    being charged after it should have stopped).  The LAST of them was missing
+    from an earlier draft of this paragraph and an adversarial review added it.
+    ``period_population`` hands the engines only the NEWLY created periods, so
+    a schedule extend used to answer all of them from a 1-3 period sample.
 
     **A FIFTH judgement read the period set until plan step balance:X-aw and no
     longer does**: the per-period GROSS, which distributed a rounding residue
     across whichever rows existed (finding **N-239**).  It is now the salary
     over the cadence and nothing else
-    (:func:`~app.services.payroll_basis.gross_per_paycheck`).  The four above
-    are still horizon-dependent and are ledger row **N-390**.
+    (:func:`~app.services.payroll_basis.gross_per_paycheck`).  What remains of
+    ledger row **N-390** is what the calendar can answer BELOW its opening
+    payday, which is plan step **balance:X-bh-2**.
 
     Measured 2026-08-08 on a streamed clone of production: transaction 2756,
     pay period 2028-06-29 -- the THIRD paycheck of June 2028 -- was generated
@@ -273,8 +274,7 @@ def _get_transaction_amount(template, salary_profile, period, calendar):
         calibration = getattr(salary_profile, "calibration", None)
 
         breakdown = paycheck_calculator.calculate_paycheck(
-            PayrollBasis(salary_profile, calendar.cadence),
-            period, calendar.saved(), tax_configs,
+            PayrollBasis(salary_profile, calendar), period, tax_configs,
             calibration=calibration,
         )
         return breakdown.earnings.net_pay

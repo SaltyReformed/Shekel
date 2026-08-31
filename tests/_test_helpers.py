@@ -6028,8 +6028,8 @@ def cadence_payload(
     return payload
 
 
-def payroll_basis(profile, cadence_days=14):
-    """Return the :class:`PayrollBasis` for *profile* at *cadence_days*.
+def payroll_basis(profile, periods, cadence_days=14):
+    """Return the :class:`PayrollBasis` for *profile* over *periods*.
 
     **The ONE test-side door onto the paycheck engine's owner input**, added at
     plan step **R-F16** when ``salary.salary_profiles.pay_periods_per_year``
@@ -6048,8 +6048,33 @@ def payroll_basis(profile, cadence_days=14):
     care states its cadence and gets the count that follows -- 7 gives 52, 15
     gives 24, 365 gives 1.
 
+    **It takes the owner's PERIODS since plan step balance:X-bh-1**, because
+    the basis now carries the whole
+    :class:`~app.services.pay_calendar.PayCalendar` rather than a bare cadence:
+    the engine's four calendar judgements -- third-paycheck detection, the
+    first-paycheck-of-month deduction cadence, the FICA wage-base cumulative
+    and a deduction's annual cap -- count paydays off it, where they used to
+    read an ``all_periods`` argument a caller supplied beside the basis.  A
+    case passes here exactly what it used to pass there.
+
+    **It is REQUIRED and has no default, which an adversarial review of this
+    step is why.**  A defaulted empty *periods* builds a paydayless calendar
+    that still answers the paycheck COUNT from *cadence_days*, so a case
+    reading only a gross goes on passing -- while every month and year count
+    over it is ZERO, which INVERTS two arms: a 12-per-year deduction stops
+    applying where the old empty ``all_periods`` list made it apply
+    vacuously, and a 24-per-year one starts applying on a third paycheck.
+    Five oracles were measured still taking the default, agreeing with their
+    producers only because no fixture behind them carries a deduction or
+    reaches the wage base.  An argument a caller can silently omit is the
+    same defect this step removed from the engine, one layer up.
+
     Args:
         profile: The ``SalaryProfile`` (or a duck-typed stand-in) to price.
+        periods: The owner's WHOLE schedule as
+            :class:`~app.services.pay_calendar.DerivedPeriod` values, in any
+            order.  Only their paydays are read; the calendar re-derives every
+            end and ordinal, so a case may hand over the same values it prices.
         cadence_days: Days between the owner's paydays, 1..365.
 
     Returns:
@@ -6057,16 +6082,16 @@ def payroll_basis(profile, cadence_days=14):
 
     Raises:
         PayCalendarError: *cadence_days* falls outside 1..365, which is what
-            ``ck_pay_schedule_cadence_range`` refuses in the database.
+            ``ck_pay_schedule_cadence_range`` refuses in the database, or two
+            of *periods* share a payday.
     """
-    from app.services.pay_calendar import (  # pylint: disable=import-outside-toplevel
-        PayCadence,
-    )
     from app.services.payroll_basis import (  # pylint: disable=import-outside-toplevel
         PayrollBasis,
     )
 
-    return PayrollBasis(profile, PayCadence(cadence_days=cadence_days))
+    return PayrollBasis(profile, derived_calendar(
+        [period.start_date for period in periods], cadence_days=cadence_days,
+    ))
 
 
 def derived_calendar(paydays, cadence_days=14, user_id=1):
