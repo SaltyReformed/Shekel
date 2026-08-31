@@ -1,9 +1,26 @@
 """What this pass did NOT look at, and why it cannot conclude about a line.
 
-Plan step ``bank_import:X-gf-3a``.  Two values with one subject -- the LIMITS
+Plan step ``bank_import:X-gf-3a``.  Values with one subject -- the LIMITS
 of one pass over one account -- split out of :mod:`._reads` so that the module
 which answers *what does the review screen show* is not also the module that
 answers *what did this pass fail to look at*.
+
+**The two DAY bounds APPLY here too since plan step balance:X-f3c-2b-2b.**
+``_reads`` held the two functions that shorten a pass's line list -- at the pay
+calendar's first day and at the account's books opening -- while this module
+held the values reporting what they removed, so the rule and its disclosure sat
+in different modules and only :func:`bounded_lines` states their ORDER.  That
+order is load-bearing: the two bounds overlap heavily on real data, and
+applying each to the whole set would count 130 of the developer's own lines
+under both.
+
+**The TIMING was forced by a line cap, and saying so is the honest version.**
+``_reads`` stood at 973 of pylint's 1,000 lines before that step and the books
+split is 26 more, so the two could not both stay.  Colocating a bound's value
+with the function that produces it is defensible on its own and is why the move
+went this way rather than some other -- but it is not why it happened now, and
+a docstring that gave only the good reason would be the decaying premise this
+arc keeps finding.
 
 **The split is what makes the rule verdict possible at all.**
 :mod:`._verdict` has to ask why the pass would not conclude about a line, and
@@ -24,9 +41,137 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
+from typing import TYPE_CHECKING
+
+from app.services.cash_ledger import books_hold
 
 from ._offers import BankLine
 from ._pairing import DAY_WINDOW
+
+if TYPE_CHECKING:  # pragma: no cover -- annotations only
+    # The two day bounds take the ORM rows :func:`~._reads._unmatched_lines`
+    # loads, and this module performs no query on them: it reads ``id`` and
+    # ``posted_on`` and returns the same objects.  A type-checking import
+    # keeps that promise HONEST rather than true by construction: it stops this
+    # module naming the mapper, which is not the same as stopping it emitting
+    # SQL.  ``_split_at_books_open`` reads ``line.posted_on`` and ``line.id``
+    # off live ORM instances, and on an EXPIRED instance either access would
+    # emit a SELECT -- so the promise rests on the caller handing over loaded
+    # rows, which :func:`~._reads._unmatched_lines` does.
+    from app.models.statement_import import BankStatementLine
+    from app.services.cash_ledger import CashOpeningFact
+
+
+@dataclass(frozen=True)
+class BooksBound:
+    """The lines an account's OPENING EQUITY already accounts for.
+
+    Plan step **balance:X-f3c-2b-2b**, finding **N-383**, ruling
+    **balance:R-HG**.  An opening equity is the balance at the CLOSE of the day
+    the books open, so every dollar the bank moved on or before that day is
+    inside the one figure.  Such a line is not work and never becomes work:
+    matching it settles a row for money the opening already holds, and
+    recording it as new spending or new income does the same.
+    :func:`._split_at_books_open` therefore takes it out of the pass
+    entirely, exactly as :func:`._split_at_calendar_open` takes out a
+    line older than the pay calendar, and this is what the screen says instead.
+
+    **A value rather than four more fields on** :class:`ReviewBounds`, and the
+    reason is the one that value's own docstring gives for existing: these four
+    facts are one subject and must travel together, because a count without the
+    day and the figure it is bounded by cannot be acted on.  It also keeps
+    :class:`ReviewBounds` at pylint's attribute ceiling rather than buying a
+    disable for a grouping the data already has.
+
+    **``None`` on the bound, never a zero-count instance.**  A chip renders
+    only when its count is non-zero (:class:`~._reconcile.HoldingChip`), and an
+    instance meaning *nothing was held back* is one truth test away from a
+    panel announcing that this pass withheld no lines -- the *nothing to see
+    here* row the reconcile rebuild removed.
+
+    Attributes:
+        opened_on: The day this account's books open.
+        opening_equity: What they open holding, which is the figure those
+            lines are already inside.  Carried because the sentence is not
+            actionable without it: *4 lines are already counted* invites the
+            owner to check WHICH figure counted them.
+        count: How many recorded lines this pass held back for that reason.
+            Always at least one where this value exists.
+        last_day: The latest day any of them posted.  Bounded above by
+            :attr:`opened_on` by construction, and equal to it in the ordinary
+            case -- the developer's own Checking opens on the pay calendar's
+            own first day, so the four lines held back all post on 2026-03-26.
+    """
+
+    opened_on: date
+    opening_equity: Decimal
+    count: int
+    last_day: date
+
+    @property
+    def said(self) -> str:
+        """Return the sentence the screen prints for this bound.
+
+        Composed here rather than in Jinja, which is this package's standing
+        rule (:attr:`~._bars.ParkedLine.reason`): a template restating a
+        partition is a second place for it to be wrong, and three surfaces
+        render this one -- the reconcile page's holding chip, the workbench's
+        pick-list caveat and the review body's bounds panel.
+
+        **It states the BOUND and stops there**, and the ACT is
+        :attr:`restatement_act` beside it -- the exact pairing
+        :attr:`~._bars.ParkedLine.reason` has with
+        :attr:`~._bars.ParkedLine.answer_door`, and for its reason: a surface
+        that can build a URL renders the act as a link, and one that cannot
+        prints it, so the two have to be separable.  Neither names a POSITION
+        on any page, which is the coupling ruling **bank_import:R-HC** found in
+        eight owner-visible sentences at once.
+
+        **The money carries a thousands separator and the days read the way
+        the books-opening card writes them**, which is not decoration: this
+        sentence and that card describe the SAME opening two clicks apart, and
+        a ``$12345.67`` here against a ``$12,345.67`` there reads as two
+        different figures.  Named by adversarial money review 2026-08-31.
+
+        Returns:
+            The sentence, with no *nothing was changed* clause: nothing was
+            pressed, so there was nothing to change.
+        """
+        return (
+            f"{self.count} line(s) up to "
+            f"{self.last_day.strftime('%b %-d, %Y')} are already inside this "
+            "account's opening balance of "
+            f"${self.opening_equity:,.2f}.  Its books open "
+            f"{self.opened_on.strftime('%b %-d, %Y')}, and an opening equity "
+            "is the closing balance for its own day, so the money those "
+            "lines moved is already counted."
+        )
+
+    @property
+    def restatement_act(self) -> str:
+        """Return the act that would release these lines.
+
+        Split from :attr:`said` so a surface holding a URL can render it as a
+        link and one that cannot can print it, without either restating the
+        other's half (:attr:`~._bars.ParkedLine.answer_door`'s shape).
+
+        **It is UNCONDITIONAL, where its precedent is not**, and the
+        difference is the point that value makes: ``answer_door`` returns
+        ``None`` where changing the answer would change nothing, which is 9 of
+        9 parked lines on real data.  Restating an opening always would --
+        every line this bound holds is held by that one day, so the act is
+        never the *chooser that cannot succeed* shape.
+
+        Returns:
+            The sentence naming the act, hedged on the owner's own records
+            because the app cannot know whether the opening or the statement
+            is the wrong one.
+        """
+        return (
+            "Restate this account's opening if your records really do start "
+            "before then"
+        )
 
 
 @dataclass(frozen=True)
@@ -45,8 +190,20 @@ class ReviewBounds:
             nothing can ever match: there are no rows to match them to.  A
             COUNT and a last day rather than the rows themselves -- they are
             not work, they are the statement being older than the budget.
-            Measured at 130 of 361 on the developer's own export.
+            Measured at 130 of the developer's own 378 recorded lines.
         before_calendar_last_day: The latest of those days, or ``None``.
+        books: The lines this account's OPENING EQUITY already accounts for
+            (:class:`BooksBound`), or ``None`` where it held none back.  The
+            SECOND bound on the same list and a different fact from the first:
+            the pay calendar is the owner's, and the books opening is this
+            ACCOUNT's, so the two remedies are *extend your pay schedule* and
+            *restate this account's opening*.  **Disjoint by construction** --
+            :func:`bounded_lines` splits the calendar off first and this
+            off what remains -- so the two counts never claim the same line
+            and can be read as a sum.  Measured on a restored production clone
+            2026-08-31: Checking's 378 lines split 130 before the calendar and
+            4 more inside the calendar the books cannot hold, because its
+            books open on the calendar's own first day.
         crowded_days: Days the GROUP search refused to look at, as it
             reports them (:attr:`~._propose.ProposedMatches.crowded_days`).
         unpriceable_count: How many of the account's rows the amount model
@@ -63,8 +220,9 @@ class ReviewBounds:
             other remedy was to clamp the purchase day to the earlier of the
             two, which decides which day the app believes when the bank
             contradicts itself, and ruling **R-FW** refused exactly that
-            substitution one clock over.  0 of the developer's own 361
-            recorded lines are this shape; the OFX adapter's own measurement
+            substitution one clock over.  0 of the developer's own 378
+            recorded lines are this shape (re-measured 2026-08-31; the
+            figure read 361, one export behind); the OFX adapter's own measurement
             found 2 of 361, so a second source makes it live.
 
     **The near tier's bound is NOT here, and that is plan step
@@ -84,17 +242,21 @@ class ReviewBounds:
     crowded_days: "tuple[date, ...]"
     unpriceable_count: int
     impossible_day_count: int = 0
+    books: "BooksBound | None" = None
 
     @property
     def any_limit(self) -> bool:
         """Return whether this pass left anything unexamined.
 
         The one question the QUEUE's template asks, answered here rather than
-        as four ``or``-ed truth tests in a Jinja condition -- where a fifth
-        limit added later would silently not appear.
+        as five ``or``-ed truth tests in a Jinja condition -- where a sixth
+        limit added later would silently not appear.  ``X-f3c-2b-2b`` added
+        the fifth and this is the property that made that one edit rather than
+        an edit per template.
         """
         return bool(
             self.before_calendar_count
+            or self.books is not None
             or self.crowded_days
             or self.unpriceable_count
             or self.impossible_day_count
@@ -109,18 +271,23 @@ class ReviewBounds:
         that are each SHORTER than the fact they are captioned as: so it owes
         the same *no silent caps* sentence :attr:`any_limit` owes the queue.
 
-        **Two of the four limits, and the partition is decided HERE rather
-        than by the template picking two** -- which would be this package's own
-        *a template restating a partition is a second place for it to be
-        wrong* stated a sixth time.  Each of the four was traced to the list it
+        **Three of the five limits, and the partition is decided HERE rather
+        than by the template picking three** -- which would be this package's
+        own *a template restating a partition is a second place for it to be
+        wrong* stated a sixth time.  Each of the five was traced to the list it
         does or does not bound:
 
         * :attr:`before_calendar_count` bounds the LINE list.
-          ``_reads._split_at_calendar_open`` removes those lines before
+          ``_split_at_calendar_open`` removes those lines before
           ``unmatched`` is derived, so 130 of the developer's own 378 are
           absent from it (re-counted 2026-08-28; a first version of this line
           said 361, which is one export behind what
           :mod:`._leftovers` and the review body both already say).
+        * :attr:`books` bounds the LINE list too, and for the same structural
+          reason: ``_split_at_books_open`` removes those lines from the
+          same list one split later, so a workbench that named only the
+          calendar bound would caption a list shorter than it claims (4 more
+          lines on the developer's own Checking).
         * :attr:`unpriceable_count` bounds the ROW list.
           :class:`~._offers.Candidates` keeps unpriceable ids OUT of ``rows``,
           so they never reach ``unmatched_rows`` either.
@@ -136,7 +303,172 @@ class ReviewBounds:
           on, which is the same argument plan step ``bank_import:X-f6d-3``
           made when it moved the near tier's bound out of the panel.
         """
-        return bool(self.before_calendar_count or self.unpriceable_count)
+        return bool(
+            self.before_calendar_count
+            or self.books is not None
+            or self.unpriceable_count
+        )
+
+
+def _split_at_calendar_open(
+    recorded: "list[BankStatementLine]", opens: "date | None",
+) -> "tuple[list[BankStatementLine], list[BankStatementLine]]":
+    """Split the account's unmatched lines at the owner's first payday.
+
+    Args:
+        recorded: Every recorded line no match explains.
+        opens: The first day the pay calendar covers, or ``None`` for an owner
+            with no periods at all -- in which case nothing is BEFORE, because
+            "before the calendar" is not a fact about a calendar that does not
+            exist, and the lines are reported as unexplained rather than as
+            out of reach.
+
+    Returns:
+        ``(before, inside)``.  A line before the first payday can never be
+        matched -- there are no rows before that day for it to match -- so it
+        is COUNTED on :class:`ReviewBounds` rather than listed as work.
+    """
+    before = [
+        line for line in recorded
+        if opens is not None and line.posted_on < opens
+    ]
+    before_ids = {line.id for line in before}
+    return before, [line for line in recorded if line.id not in before_ids]
+
+
+def _split_at_books_open(
+    inside: "list[BankStatementLine]", opening: CashOpeningFact,
+) -> "tuple[BooksBound | None, list[BankStatementLine]]":
+    """Split the calendar's lines at the day the account's books open.
+
+    Plan step **balance:X-f3c-2b-2b**, finding **N-383**, ruling
+    **balance:R-HG**.  :func:`_split_at_calendar_open`'s twin one fact over: an
+    opening equity is the balance at the CLOSE of ``opened_on``, so a line
+    posted on or before it is ALREADY INSIDE that figure and nothing this
+    screen offers can be done with it.  Matching it settles a row for money the
+    opening already holds; recording it as spending or income does the same.
+
+    **It runs AFTER the calendar split and over what that leaves**, which is
+    what makes the two bounds disjoint and their counts a sum.  On the
+    developer's own Checking the books open on the pay calendar's own first day
+    (2026-03-26), so every line the calendar excludes the books would exclude
+    too -- reporting both over the whole set would have counted 130 lines
+    twice and told him 134 were inside an opening balance that accounts for 4.
+
+    **The bound is what the SCREEN says, and the split is what stops the
+    OFFER.**  Removing the line here is what makes the fix structural rather
+    than a control-by-control refusal: the proposer never sees it, so the app
+    stops PROPOSING acts it would refuse; ``creatable`` and
+    ``recordable_inflows`` never hold it, so no create or record control is
+    rendered; ``file_new_swipes`` reads this same pass, so the door that moves
+    money with no press cannot reach it either.  Measured before the split, on
+    a restored production clone: of the four lines Checking's books cannot
+    hold, two were offered controls with no withholding at all and the other
+    two were PROPOSED matches inside the one-click sweep.
+
+    **The predicate is** :func:`~app.services.cash_ledger.books_hold`, asked of
+    the posting day -- not re-spelled here, and not asked of the transaction
+    day.  A swipe MADE before the books opened and TAKEN after is money that
+    left the account after the opening, so it is recordable; its purchase's
+    ``purchased_on`` is a budget clock and never a movement.
+
+    Args:
+        inside: The unmatched lines the pay calendar covers, in the order
+            :func:`_unmatched_lines` gives -- ascending by posted day.
+        opening: The account's governing
+            :class:`~app.services.cash_ledger.CashOpeningFact`, off the pass
+            (:attr:`~._scope.ReviewScope.opening`), so the screen and the
+            doors judge every line against ONE opening.
+
+    Returns:
+        ``(bound, remaining)``.  The bound is ``None`` where the books hold
+        every line, which is the state that needs no disclosure at all.
+    """
+    held = [
+        line for line in inside
+        if not books_hold(opening.opened_on, line.posted_on)
+    ]
+    if not held:
+        return None, inside
+    held_ids = {line.id for line in held}
+    bound = BooksBound(
+        opened_on=opening.opened_on,
+        opening_equity=opening.opening_equity,
+        count=len(held),
+        last_day=max(line.posted_on for line in held),
+    )
+    return bound, [line for line in inside if line.id not in held_ids]
+
+
+@dataclass(frozen=True)
+class BoundedLines:
+    """One pass's working line list, and what the two DAY bounds held back.
+
+    Plan step **balance:X-f3c-2b-2b**.  :func:`bounded_lines`' answer, as a
+    value rather than a three-tuple for the reason
+    :class:`~._offers.MatchDays` is one: the three are derived together and a
+    caller unpacking them in the wrong order gets a plausible-looking pass over
+    the lines it was supposed to exclude.
+
+    Attributes:
+        inside: The lines this pass may offer acts on, in the order they were
+            given -- ascending by posted day.
+        before_calendar: The lines older than the owner's first payday.  The
+            LINES rather than a count, because the caller states both the count
+            and their latest day and deriving one of those here would leave the
+            other to be derived twice.
+        books: What this account's opening equity already accounts for
+            (:class:`BooksBound`), or ``None`` where it accounts for none.
+            Already a summary rather than the lines, because unlike the bound
+            above it carries facts about the ACCOUNT -- the opening day and
+            figure -- that no list of lines holds.
+    """
+
+    inside: "list[BankStatementLine]"
+    before_calendar: "list[BankStatementLine]"
+    books: "BooksBound | None"
+
+
+def bounded_lines(
+    recorded: "list[BankStatementLine]",
+    opens: "date | None",
+    opening: "CashOpeningFact",
+) -> BoundedLines:
+    """Narrow a pass's recorded lines to the ones it may offer acts on.
+
+    Plan step **balance:X-f3c-2b-2b**.  **The ORDER of the two bounds is what
+    this function is for**, and it is not cosmetic: the calendar bound is
+    applied first and the books bound to what it leaves, so the two counts are
+    DISJOINT and can be read as a sum.
+
+    **They overlap heavily on real data.**  Measured on a restored production
+    clone 2026-08-31: Checking carries 378 recorded lines, 130 posted before
+    the pay calendar's first day and 134 posted on or before the day its books
+    open -- because its books open ON the calendar's own first day.  Applying
+    each bound to the whole set would report 264 lines held back out of 378 and
+    tell the owner that 134 of them are inside an opening balance that accounts
+    for 4.  In sequence it is 130 and 4, which is the truth and adds up.
+
+    **Sequence rather than subtraction**, so a reader cannot get it wrong: the
+    alternative is two independent predicates and a comment saying the second
+    count must exclude the first, which is the kind of instruction that
+    survives exactly as long as nobody edits it.
+
+    Args:
+        recorded: Every recorded line no accepted match explains, ascending by
+            posted day (:func:`~._reads._unmatched_lines`).
+        opens: The first day the owner's pay calendar covers, or ``None`` for
+            an owner with no periods at all.
+        opening: The account's governing
+            :class:`~app.services.cash_ledger.CashOpeningFact`, off the pass
+            (:attr:`~._scope.ReviewScope.opening`).
+
+    Returns:
+        The :class:`BoundedLines`.
+    """
+    before, inside = _split_at_calendar_open(recorded, opens)
+    books, inside = _split_at_books_open(inside, opening)
+    return BoundedLines(inside=inside, before_calendar=before, books=books)
 
 
 def search_gap(

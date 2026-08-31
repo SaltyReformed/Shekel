@@ -68,6 +68,7 @@ from tests.test_routes._statement_forms import (
 )
 from tests.test_services.test_statement_match._builders import (
     a_bank_line,
+    an_account_whose_books_hide_a_line,
     a_rule,
     an_envelope,
     an_unexplained_outflow,
@@ -3421,3 +3422,40 @@ class TestTheQueueDoesNotRenderTheTool:
         assert "Rows you recorded that no line explains" in page
         assert f'name="line_ids" value="{line.id}"' in page
         assert "Ghost Payment" in page
+
+
+
+
+class TestTheBooksBoundIsRENDERED:
+    """The owner-visible half of ``balance:X-f3c-2b-2b``, on this surface.
+
+    **This class exists because the whole of it was invisible to the suite.**
+    An adversarial test-quality review disabled the three ``{% if %}`` blocks
+    that render the bound across the three surfaces and measured the FULL
+    suite still green at 12,206 -- every assertion was against the service
+    value, and none against a page.  The anchor especially exists ONLY in
+    Jinja: a URL is the one fact the service may not build, so nothing below
+    the template can grade it.
+    """
+
+    def test_the_page_states_the_bound_and_links_the_restatement_door(
+        self, app, auth_client, db, seed_user, seed_periods,
+    ):  # pylint: disable=unused-argument
+        """FIRING CONTROL for the rendering, the figure and the href."""
+        account, day = an_account_whose_books_hide_a_line(
+            db, seed_user, seed_periods,
+        )
+
+        body = auth_client.get(_review_url(account.id)).data.decode()
+
+        # **No apostrophes in any of these.**  Jinja escapes ``'`` to
+        # ``&#39;``, so asserting the service's own sentence verbatim can
+        # never match a rendered page -- a control that fails for the wrong
+        # reason is not a control.  The existing pay-calendar precedent in
+        # this suite avoids them for the same reason.
+        assert "already inside this account" in body
+        assert "opening balance of" in body
+        assert "$689.16" in body
+        assert day.strftime("%b %-d, %Y") in body
+        assert f"/accounts/{account.id}/edit#books-opening" in body
+        assert "Restate this account" in body

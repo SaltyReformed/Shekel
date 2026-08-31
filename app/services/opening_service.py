@@ -209,21 +209,31 @@ def _reject_future_opening(opened_on: date) -> None:
 
 
 def _reject_restatement_day(account_id: int, opened_on: date) -> None:
-    """Apply both of a RESTATEMENT's day rules, in the order that reads best.
+    """Apply all FOUR of a RESTATEMENT's day rules, in the order that reads best.
 
-    The future rule first and the two record rules after it, because a day that
-    has not happened is wrong about itself before it is wrong about the
+    The future rule first and the three record rules after it, because a day
+    that has not happened is wrong about itself before it is wrong about the
     records: telling an owner who typed next year that "this account already
     records money moving on 2026-03-27" answers a question they did not ask.
 
-    **The ASSERTION rule is third and it was missing until a code review found
-    what that cost** (2026-08-31).  The movement rule bounds an opening against
-    recorded cash, and an account with no settled movement -- every investment,
-    retirement and property account in production -- had no bound at all below
-    today.  Reproduced on the developer's Roth IRA: ``$22,809.02`` of
-    investment return fabricated, and the stated opening silently discarded.
+    **The ASSERTION rule was missing until a code review found what that cost**
+    (2026-08-31).  The movement rule bounds an opening against recorded cash,
+    and an account with no settled movement -- every investment, retirement and
+    property account in production -- had no bound at all below today.
+    Reproduced on the developer's Roth IRA: ``$22,809.02`` of investment return
+    fabricated, and the stated opening silently discarded.
 
-    Stated as one function rather than two calls at the door so the ORDER is a
+    **The MATCHED-LINE rule was missing for a sharper reason** (plan step
+    **balance:X-f3c-2b-2b**): it is a gap INSIDE the movement rule rather than
+    beside it.  A match settles every member on the LATEST of its bank days, so
+    the earliest line of a multi-day group posts strictly before the row
+    explaining it settles -- and every day in between passes the movement bound
+    while putting that line's money inside the new opening equity and inside a
+    settled row at once.  It is reachable rather than instantiated: measured
+    2026-08-31, account 1's earliest matched line and earliest movement are the
+    same day, and production holds no match at all.
+
+    Stated as one function rather than four calls at the door so the ORDER is a
     property of the rule set rather than of whichever caller ran first -- the
     shape :func:`app.services.anchor_service.resolve_observation_day` gives the
     assertion door's two bounds.
@@ -235,11 +245,23 @@ def _reject_restatement_day(account_id: int, opened_on: date) -> None:
 
     Raises:
         ValidationError: When the day is in the future, on or after a day the
-            account already records money moving, or after a day it has
-            asserted a balance for.
+            account already records money moving, on or after a day it has
+            matched a bank line on, or after a day it has asserted a balance
+            for.
     """
     _reject_future_opening(opened_on)
     cash_ledger.reject_books_open_on_or_after_movements(account_id, opened_on)
+    # **The MATCHED-LINE bound, and it is not implied by the movement one
+    # above** (plan step **balance:X-f3c-2b-2b**).  A match settles every
+    # member on the LATEST of its bank days, so a group's earliest line posts
+    # strictly before the row explaining it settles -- and every day in that
+    # window passes the movement bound while putting the line's money inside
+    # both the new opening equity and a settled row.  Asked second because the
+    # repairs differ in cost: a movement is the owner's own record and can be
+    # re-dated, while undoing a match discards work.
+    cash_ledger.reject_books_open_on_or_after_matched_lines(
+        account_id, opened_on,
+    )
     cash_ledger.reject_books_open_after_an_assertion(account_id, opened_on)
 
 

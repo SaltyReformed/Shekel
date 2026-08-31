@@ -13,6 +13,7 @@ end of this step, applying that same statement end to end against ONE of these:
 rule for what this holds:
 
 * the owner's pay CALENDAR -- nothing here writes a payday;
+* the account's governing OPENING -- nothing here restates one;
 * every row the account could offer, PRICED (:class:`~._offers.Candidates`);
 * every budget line a bank line could become a purchase against.
 
@@ -53,7 +54,13 @@ from datetime import date
 
 from app.exceptions import ValidationError
 from app.services import pay_calendar
-from app.services.cash_ledger import AmountBasis, baseline_amount_basis
+from app.services.cash_ledger import (
+    AmountBasis,
+    CashOpeningFact,
+    account_opening_fact,
+    baseline_amount_basis,
+    reject_line_before_books_open,
+)
 
 from ._candidates import candidates_for, destinations_for
 from ._creations import PurchaseDestination
@@ -153,6 +160,20 @@ class ReviewScope:
             no act this package performs writes a salary profile, a payday, a
             loan parameter or an escrow line.  It holds no per-row answer, so
             :func:`~._candidates.repriced` still re-reads every row it values.
+        opening: The account's governing
+            :class:`~app.services.cash_ledger.CashOpeningFact` -- the day its
+            books open and the equity they open holding (plan step
+            **balance:X-f3c-2b-2b**).  **On the scope by its own rule**: no
+            act this package performs writes ``budget.account_openings``.
+            **What it buys is SHARING rather than a saved read**, and a
+            first draft of this line said 378 reads, which nothing would
+            have made: :func:`~._gaps._split_at_books_open` takes the
+            opening as a parameter and would hoist one read whatever this
+            field did.  What the field buys is that the split and every
+            door read the SAME one, which makes the SCREEN and the DOORS
+            provably one answer about which lines the books can hold:
+            :func:`~._reads.review_set` splits on it and
+            :meth:`reject_line_before_books_open` refuses on it, off one read.
         candidates: Every row the account could offer, priced
             (:func:`~._candidates.candidates_for`), before any claim is
             narrowed out.
@@ -165,6 +186,7 @@ class ReviewScope:
     account_id: int
     calendar: "pay_calendar.PayCalendar"
     basis: AmountBasis
+    opening: CashOpeningFact
     candidates: Candidates
     destinations: "tuple[PurchaseDestination, ...]"
 
@@ -217,7 +239,7 @@ class ReviewScope:
             ``period_containing``'s two answers reach here**: a day before the
             owner's first payday, and one past the generated horizon.  The
             review screen splits off only the FIRST
-            (:func:`~._reads._split_at_calendar_open`), so a line posted past
+            (:func:`~._gaps._split_at_calendar_open`), so a line posted past
             the last saved period reaches a caller -- which is why callers
             resolve this BEFORE they write anything.
         """
@@ -227,6 +249,45 @@ class ReviewScope:
                 f"{no_period_refusal(day, subject)}  Nothing was changed."
             )
         return period.period_id
+
+    def reject_line_before_books_open(
+        self, posted_on: "date", subject: str,
+    ) -> None:
+        """Refuse an act over a line this account's books cannot hold.
+
+        **This pass's spelling of the boundary**
+        (:func:`app.services.cash_ledger.reject_line_before_books_open`, plan
+        step **balance:X-f3c-2b-2b**, finding **N-383**), bound to the opening
+        this pass resolved -- the same relationship
+        :meth:`~._reads.ReviewSet.search_gap_for` has with
+        :func:`~._gaps.search_gap`.
+
+        **It is a method for the reason** :meth:`period_holding` **is one**:
+        the opening it must use is THIS pass's, and a door loading a second
+        one could judge a line against an opening the screen never saw.  Under
+        READ COMMITTED that is a real difference and not a theoretical one --
+        both the GET that offers a line and the POST that records it are their
+        own snapshots, and a restatement can commit between them.
+
+        **Every door asks it, and the review screen has ALREADY split such a
+        line out** (:func:`~._gaps._split_at_books_open`), so nothing this
+        pass offers can reach it.  It is live rather than defensive all the
+        same: a page rendered before a restatement moved the books forward
+        posts line ids the current books no longer hold, and an act naming a
+        line the screen never showed is exactly what a form door must refuse
+        by name rather than let abort at COMMIT.
+
+        Args:
+            posted_on: The day the bank posted the line.
+            subject: What is being recorded, named as the owner would name it
+                -- "this purchase", "this deposit", "this match".
+
+        Raises:
+            ValidationError: When the line posted on or before the day this
+                account's books open.  A 400, for the reason
+                :meth:`period_holding`'s is.
+        """
+        reject_line_before_books_open(self.opening, posted_on, subject)
 
     @classmethod
     def build(cls, owner_id: int, account_id: int) -> "ReviewScope":
@@ -258,6 +319,15 @@ class ReviewScope:
                 from a scenario's salary profiles and a scenario's loans and
                 there is no honest figure to publish when nobody can say
                 which.
+            RuntimeError: From
+                :func:`~app.services.cash_ledger.account_opening_fact`, when
+                the account carries no ``budget.account_openings`` row at all
+                -- a broken invariant rather than an empty state, and one this
+                pass inherits rather than softens.  Every account gets one at
+                creation and migration ``a7c41f9d2b60`` backfilled the rest;
+                answering "then every line is recordable" would offer acts on
+                money whose level nothing states, which is the fabrication
+                that loader exists to refuse.
         """
         calendar = pay_calendar.calendar_for(owner_id)
         # ONE basis for the pass (plan step X-au-j, finding **N-309**).  The
@@ -278,6 +348,11 @@ class ReviewScope:
             account_id=account_id,
             calendar=calendar,
             basis=basis,
+            # ONE read of the governing opening for the whole pass (plan step
+            # **balance:X-f3c-2b-2b**).  The screen splits its lines on it and
+            # every door refuses on it, so the two cannot disagree about which
+            # lines the books hold.
+            opening=account_opening_fact(account_id),
             candidates=candidates_for(account_id, calendar, basis),
             destinations=tuple(destinations_for(owner_id, account_id)),
         )

@@ -70,7 +70,7 @@ from alembic.config import Config
 from app import create_app, ref_cache
 from app.audit_infrastructure import apply_audit_infrastructure
 from app.extensions import db
-from app.opening_infrastructure import apply_opening_infrastructure
+from app.opening_infrastructure import ALL_ARMS, apply_opening_infrastructure
 from app.append_only_infrastructure import (
     apply_append_only_infrastructure,
 )
@@ -170,8 +170,12 @@ def init_fresh_database(app):
     print("Posting infrastructure ready.")
 
     print("Materialising books-boundary constraint (opening equity)...")
+    # ``ALL_ARMS``: the fresh-database path materialises HEAD and never runs
+    # the migration chain, so it wants whatever arms the module currently has.
+    # A MIGRATION names its arms literally instead -- see that constant.
     apply_opening_infrastructure(
-        lambda sql: db.session.execute(db.text(sql))
+        lambda sql: db.session.execute(db.text(sql)),
+        arms=ALL_ARMS,
     )
     db.session.commit()
     print("Books-boundary constraint ready.")
