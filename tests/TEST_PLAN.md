@@ -132,21 +132,20 @@ deductions, 3rd-paycheck detection, inflation, cumulative wages, and projections
 | BE       | Inactive deduction skipped                                     |
 | BE       | Deduction with annual_cap (not yet enforced -- verify behavior) |
 
-#### `_is_third_paycheck()` -- 3rd Paycheck Detection
+#### `_month_ordinal()` -- where a payday sits in its month
 
-| Category | Tests Needed                                 |
-| -------- | -------------------------------------------- |
-| HP       | Month with exactly 2 paychecks → False       |
-| HP       | Month with 3 paychecks → True for 3rd period |
-| BE       | First period of month → False                |
-| BE       | January 1st start date edge case             |
+Both month-position judgements read this one number since plan step
+`balance:X-bh-1`; `_is_third_paycheck()` and `_is_first_paycheck_of_month()`
+were separate scans of a caller-supplied period list and are gone.
 
-#### `_is_first_paycheck_of_month()`
-
-| Category | Tests Needed                                 |
-| -------- | -------------------------------------------- |
-| HP       | First period starting in a month → True      |
-| HP       | Second period starting in same month → False |
+| Category | Tests Needed                                    |
+| -------- | ----------------------------------------------- |
+| HP       | Month with exactly 2 paychecks → second is 2    |
+| HP       | Month with 3 paychecks → third is 3             |
+| BE       | First payday of a month → 1                     |
+| BE       | A neighbouring month's paydays are not counted  |
+| BE       | A payday past the schedule horizon is projected |
+| BE       | A payday below the opening payday is not (N-390)|
 
 #### Inflation Adjustment
 

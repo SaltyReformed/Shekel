@@ -527,15 +527,26 @@ class TestThePredictionIsTheGenerationCall:
 
 
 class TestThePaycheckSeesTheWholeSchedule:
-    """D25: ``all_periods`` is the owner's schedule, not the pass's window."""
+    """D25: the engine counts paydays off the OWNER's calendar, not a window.
+
+    The defect was an ``all_periods`` argument beside the basis, which every
+    window, year slice and one-period sample satisfied.  Plan step
+    **balance:X-bh-1** deleted that argument: the engine reads
+    ``basis.calendar``, and a
+    :class:`~app.services.pay_calendar.PayCalendar` is constructible only from
+    a COMPLETE payday set.  So the narrow read these cases guard against is no
+    longer something a caller of the generation seam can express -- reaching it
+    now means building a SECOND calendar holding one payday, which is a
+    different owner's schedule rather than a narrowed view of this one.
+    """
 
     def _salary_template(self, seed_user):
         """Create a salary profile whose deduction skips the 3rd paycheck.
 
         ``deductions_per_year=24`` is the cadence
-        ``paycheck_calculator._deduction_applies_in_period`` skips on a month's
-        third payday -- the exact judgement the truncated ``all_periods``
-        got wrong on production.
+        ``paycheck_calculator._deduction_applies_at`` skips on a month's third
+        payday -- the exact judgement the truncated period set got wrong on
+        production.
 
         Args:
             seed_user: The ``seed_user`` fixture dict.
@@ -625,18 +636,29 @@ class TestThePaycheckSeesTheWholeSchedule:
                 load_tax_configs_for_year,
             )
             configs = load_tax_configs_for_year(profile.user_id, profile, 2026)
-            # The engine takes DERIVED periods (pay-calendar plan step
-            # C2-f2d-3), and this case's whole point is the difference between
-            # the WHOLE schedule and a one-period window -- so both are taken
-            # off the same calendar and only the SLICE differs.
+            # Pylint: ``import-outside-toplevel`` -- see above.
+            from app.services.payroll_basis import (  # pylint: disable=import-outside-toplevel
+                PayrollBasis,
+            )
+            # The engine takes a DERIVED calendar (pay-calendar plan step
+            # C2-f2d-3 and plan step balance:X-bh-1), and this case's whole
+            # point is the difference between the OWNER's calendar and one
+            # built over a single payday.
             calendar = schedule.calendar
-            derived = calendar.saved()
             derived_period = calendar.period_by_id(period.id)
+            # The WHOLE schedule is what the seam itself hands the engine:
+            # ``schedule.calendar`` IS ``ctx.calendar()``, built by
+            # ``calendar_for`` from every saved payday, and there is no
+            # argument beside it for a caller to narrow.  The windowed read
+            # below is reachable only by building a SECOND calendar over one
+            # payday -- which is what plan step balance:X-bh-1 turned this
+            # defect into: not a shorter argument, a different schedule.
             whole_break = paycheck_calculator.calculate_paycheck(
-                payroll_basis(profile), derived_period, derived, configs,
+                PayrollBasis(profile, calendar), derived_period, configs,
             )
             windowed_break = paycheck_calculator.calculate_paycheck(
-                payroll_basis(profile), derived_period, [derived_period], configs,
+                payroll_basis(profile, [derived_period]), derived_period,
+                configs,
             )
             whole = whole_break.earnings.net_pay
             windowed = windowed_break.earnings.net_pay

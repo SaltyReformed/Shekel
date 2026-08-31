@@ -371,7 +371,8 @@ class TestLiveIncomeThroughBalanceResolver:
                 user_id, profile, period.start_date.year,
             )
             breakdowns = paycheck_calculator.project_salary(
-                payroll_basis(profile), _derived(user_id), tax_configs,
+                payroll_basis(profile, _derived(user_id)), _derived(user_id),
+                tax_configs,
                 calibration=profile.calibration,
             )
             expected_net = {
@@ -714,7 +715,8 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
             net_2027_rate = {
                 bd.period.period_id: bd.earnings.net_pay
                 for bd in paycheck_calculator.project_salary(
-                    payroll_basis(profile), _derived(user_id),
+                    payroll_basis(profile, _derived(user_id)),
+                    _derived(user_id),
                     load_tax_configs(user_id, profile, tax_year=2027),
                     calibration=profile.calibration,
                 )
@@ -722,7 +724,8 @@ class TestLiveProjectedNetUsesPerYearTaxConfigs:
             net_2026_rate = {
                 bd.period.period_id: bd.earnings.net_pay
                 for bd in paycheck_calculator.project_salary(
-                    payroll_basis(profile), _derived(user_id),
+                    payroll_basis(profile, _derived(user_id)),
+                    _derived(user_id),
                     load_tax_configs(user_id, profile, tax_year=2026),
                     calibration=profile.calibration,
                 )
@@ -853,12 +856,13 @@ class TestTheProjectionDoesNotMoveWhenTheCalendarYearTURNS:
             derived_2027 = next(
                 p for p in derived if p.start_date.year == 2027
             )
+            basis = payroll_basis(profile, derived)
             resolved = paycheck_calculator.calculate_paycheck(
-                payroll_basis(profile), derived_2027, derived,
+                basis, derived_2027,
                 load_tax_configs_for_year(user_id, profile, 2027),
             )
             unresolved = paycheck_calculator.calculate_paycheck(
-                payroll_basis(profile), derived_2027, derived,
+                basis, derived_2027,
                 load_tax_configs(user_id, profile, 2027),
             )
 

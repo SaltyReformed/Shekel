@@ -74,7 +74,7 @@ from app.services import (
     paycheck_calculator,
     tax_calculator,
 )
-from app.services.pay_calendar import PayCadence, PayCalendar
+from app.services.pay_calendar import PayCalendar
 from app.services.payroll_basis import PayrollBasis
 from app.services.projection_inputs import (
     load_active_accounts_with_types,
@@ -89,6 +89,7 @@ from app.services.tax_liability_service import (
 from app.services.tax_withholding_service import (
     WithholdingComponents,
     compute_withholding_to_date,
+    year_paydays,
 )
 
 ZERO = Decimal("0")
@@ -385,22 +386,21 @@ def compute_tax_report(user_id: int, year: int, today: date) -> TaxReport | None
     # year's periods are a filter of it, and its cadence is the paycheck count
     # every projection below divides by (plan step R-F16).
     calendar = balance_ctx.calendar()
-    # **Asked only when it can be ANSWERED.**  ``PayCalendar.cadence`` REFUSES
-    # an owner who has never stated one, and such an owner has no paydays at
-    # all -- so they also have no periods to project, which is the all-modelled
-    # zero report this function's own contract promises "no crash" for.
-    # Resolving it unconditionally would 500 that page for exactly the state it
-    # documents surviving; the ``None`` never reaches a `PayrollBasis`, because
-    # the only arm that builds one runs when a period must be projected.
-    cadence = calendar.cadence if calendar.cadence_days is not None else None
-    periods = _load_year_periods(calendar, year)
+    # **Asked only when it can be ANSWERED, and the guard that used to say so
+    # is gone** (plan step balance:X-bh-1).  ``PayCalendar.cadence`` REFUSES an
+    # owner who has never stated one, and such an owner has no paydays at all
+    # -- so they also have no periods to project, which is the all-modelled
+    # zero report this function's own contract promises "no crash" for.  A
+    # conditional ``calendar.cadence if calendar.cadence_days is not None``
+    # stood here to keep that refusal off the page; the basis now carries the
+    # CALENDAR and resolves the cadence on read, so the refusal fires only
+    # where the number is actually needed and there is nothing left to guard.
+    periods = year_paydays(calendar, year)
     configs = load_tax_configs_for_year(user_id, primary, year)
 
-    withholding = _aggregate_withholding(
-        user_id, year, profiles, periods, cadence,
-    )
+    withholding = _aggregate_withholding(user_id, year, profiles, calendar)
     modeled_pretax = _aggregate_modeled_pretax(
-        user_id, year, profiles, periods, cadence,
+        user_id, year, profiles, periods, calendar,
     )
 
     liability = compute_annual_liability(
@@ -430,46 +430,11 @@ def compute_tax_report(user_id: int, year: int, today: date) -> TaxReport | None
 # ── Data loading (year-end orchestrator precedent) ────────────────
 
 
-def _load_year_periods(calendar: PayCalendar, year: int) -> tuple:
-    """Return the user's pay periods whose payday falls in *year*.
-
-    The saved periods whose ``start_date`` is in the calendar year, in payday
-    order, off the owner's DERIVED calendar (pay-calendar plan step
-    **C2-f2d-3**) rather than out of a SQL ``ORDER BY period_index`` -- the
-    stored ordinal is one of the two columns plan step **C4** drops, and the
-    derived order is the payday order by construction.
-
-    **It takes the calendar rather than deriving one** (plan step R-F16).  The
-    producer already holds a :class:`BalanceContext`, which memoizes exactly
-    this derivation for the whole pass, so a ``calendar_for`` here was the
-    owner's 62 paydays read and derived a second time in one render -- and the
-    cadence the withholding projection now needs would have been a THIRD read.
-    One derivation answers both.
-
-    Args:
-        calendar: The owner's pay calendar, from the pass that already holds
-            one (``balance_ctx.calendar()``).
-        year: The calendar/tax year to scope periods to.
-
-    Returns:
-        The year's :class:`~app.services.pay_calendar.DerivedPeriod` values as
-        a tuple (possibly empty).  A tuple rather than a
-        :class:`~app.services.pay_calendar.PeriodWindow`: a year slice is a
-        FILTER of the calendar, and the window type is produced only by the
-        calendar's own four views (see that class).
-    """
-    return tuple(
-        period for period in calendar.saved()
-        if period.start_date.year == year
-    )
-
-
 # ── Withholding + pre-tax aggregation (single-filer sum) ──────────
 
 
 def _aggregate_withholding(
-    user_id: int, year: int, profiles: list, periods: list,
-    cadence: PayCadence,
+    user_id: int, year: int, profiles: list, calendar: PayCalendar,
 ) -> WithholdingSummary:
     """Sum withholding-to-date across the active profiles (one filer).
 
@@ -484,11 +449,10 @@ def _aggregate_withholding(
         user_id: The owning user (per-user tax configs).
         year: The tax year.
         profiles: The active salary profiles.
-        periods: The year's pay periods (passed to each profile's hybrid).
-        cadence: The owner's pay cadence -- the paycheck count each profile's
-            projection divides its annual salary by (plan step R-F16) --
-            or ``None`` for an owner who has never stated one, who therefore
-            has no period for a projection to price.
+        calendar: The owner's pay calendar -- the paycheck count each
+            profile's projection divides its annual salary by, and the payday
+            set its year-cumulative state is counted over (plan steps R-F16
+            and balance:X-bh-1).
 
     Returns:
         The summed :class:`WithholdingSummary`.
@@ -500,9 +464,7 @@ def _aggregate_withholding(
     has_checkpoint = False
 
     for profile in profiles:
-        wtd = compute_withholding_to_date(
-            user_id, profile, year, periods, cadence,
-        )
+        wtd = compute_withholding_to_date(user_id, profile, year, calendar)
         totals.append(wtd.total)
         measures.append(wtd.measured)
         models.append(wtd.projected)
@@ -522,7 +484,7 @@ def _aggregate_withholding(
 
 def _aggregate_modeled_pretax(
     user_id: int, year: int, profiles: list, periods: list,
-    cadence: PayCadence,
+    calendar: PayCalendar,
 ) -> Decimal:
     """Sum the FULL-year modeled pre-tax across the active profiles.
 
@@ -538,9 +500,11 @@ def _aggregate_modeled_pretax(
         year: The tax year (single-year config set).
         profiles: The active salary profiles.
         periods: The year's pay periods.
-        cadence: The owner's pay cadence -- the paycheck count the projection
-            divides each annual salary by (plan step R-F16).  Never ``None``
-            here: the guard above returns before this loop when there are no
+        calendar: The owner's pay calendar -- the paycheck count the
+            projection divides each annual salary by, and the payday set the
+            engine's month and year context is counted over (plan steps R-F16
+            and balance:X-bh-1).  Its cadence is resolvable whenever this loop
+            runs at all: the guard above returns before it when there are no
             periods, and an owner with a period always resolves a cadence.
 
     Returns:
@@ -553,7 +517,7 @@ def _aggregate_modeled_pretax(
     for profile in profiles:
         tax_configs = load_tax_configs_for_year(user_id, profile, year)
         breakdowns = paycheck_calculator.project_salary(
-            PayrollBasis(profile, cadence), periods, tax_configs,
+            PayrollBasis(profile, calendar), periods, tax_configs,
             calibration=profile.calibration,
         )
         total += sum(

@@ -458,18 +458,18 @@ hides.
   N-391 records that a `$0.04` error in any of the twelve hand-entered deductions reproduces the
   same net, so the step opens with an operator re-reading one stub.
 * [x] **X-aw** `078077db` -- a paycheck's gross is a RATE (**R-HW**), so **N-239** died by construction. Closed its horizon half; opened **N-390** and **N-391**. Record in `archive/four_shipped_steps_2026-08-30.md`.
-* [ ] **X-bh** `refactor(salary): the engine asks the calendar, not a list` -- closes **N-390**.
-  Four judgements still read the period LIST `calculate_paycheck` is handed: third-paycheck
-  detection, the first-paycheck-of-month deduction cadence, the FICA wage-base cumulative and a
-  deduction's annual cap. `X-aw` removed the fifth (the gross), which is why they are now visible as
-  a set. Measured 2026-08-30: the year-to-date wage total for 2026-05-21 reads `$14,103.84` from the
-  63 saved rows against `$35,259.62` from a complete 2026, because the schedule opens 2026-03-26 and
-  the app holds no row for a paycheck before it. `$0.00` on today's data -- this owner reaches
-  neither the SS wage base nor any `annual_cap` -- and the third-paycheck arm cost `$502.45` on one
-  row when the recurrence arc measured it (**D25**). **It OPENS with a ruling** rather than a fix:
-  the engine should take the `PayCalendar`, which can project past the horizon, but the 2026-08-10
-  rule says there is no paycheck BEFORE the first payday, and a year-to-date total that starts
-  mid-year is exactly the case that needs an answer.
+* [x] **X-bh-1** `b955d0c8` -- the engine reads the owner's CALENDAR: `PayrollBasis` carries it,
+  `all_periods` is deleted, and the four judgements become two producers (`pay_calendar._rhythm`),
+  so **D25**'s narrow context is unrepresentable rather than forbidden in prose. Both trees driven
+  against the dev database agree on all 63 paychecks, `$170,974.29` of net and every analytics
+  month. Opened **N-394**, **N-395**, **N-396**.
+* [ ] **X-bh-2** `refactor(salary): the rhythm runs backward too` -- closes **N-390**. The producers
+  count SAVED paydays plus the forward projection `pay_calendar:R-PC9` rules; below the opening
+  payday they count nothing, so a month or year the record opens INSIDE is counted from the first
+  RECORDED paycheck. **Ruled at `balance:R-IA`**: a stored
+  `budget.pay_schedule.history_opens_on`, asked at registration, bounds the backward rhythm --
+  the app knows the CADENCE and cannot derive when the job began. N-390 carries the figures, the
+  `$502.45` reproduction and the holiday shift no projection models.
 
 ### Phase X -- the posting restructure
 

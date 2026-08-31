@@ -29,7 +29,12 @@ from app.services.calendar_infrequency import (
     badge_cadence,
     is_infrequent,
 )
-from app.services.pay_calendar import DerivedPeriod, PayCadence, PeriodWindow
+from app.services.pay_calendar import (
+    DerivedPeriod,
+    PayCadence,
+    PeriodWindow,
+    saved_paydays_in_month_through,
+)
 from app.services.balance_at import BalanceContext
 from app.utils.balance_predicates import (
     balance_contributing_clause,
@@ -733,13 +738,19 @@ def _build_month_summary(month: int, ctx: _MonthBuildContext) -> MonthSummary:
     end_balance = _compute_month_end_balance(
         ctx.account, ctx.year, month, ctx.balance_ctx,
     )
-    third_paycheck_months = _detect_third_paycheck_months(ctx.periods, ctx.year)
-
-    paycheck_days = sorted({
-        p.start_date.day
-        for p in ctx.periods
-        if p.start_date.year == ctx.year and p.start_date.month == month
-    })
+    # ONE read of "which paydays does this month hold", answering both the
+    # markers and the three-paycheck flag (plan step **balance:X-bh-1**): two
+    # scans of ``ctx.periods`` before it, the second of which
+    # (``_detect_third_paycheck_months``) rebuilt a whole-year set per card AND
+    # was a second implementation of what ``paycheck_calculator`` asks to
+    # decide a 24-per-year deduction's cadence.  The SAVED half, because this
+    # card's money is -- ruling **balance:R-IB** and ledger row **N-394** carry
+    # why, and ``saved_paydays_in_month_through`` states it beside its twin.
+    month_paydays = saved_paydays_in_month_through(
+        ctx.balance_ctx.calendar(),
+        date(ctx.year, month, calendar.monthrange(ctx.year, month)[1]),
+    )
+    paycheck_days = sorted({payday.day for payday in month_paydays})
 
     daily = (
         _compute_daily_view(ctx, month, day_totals)
@@ -753,7 +764,7 @@ def _build_month_summary(month: int, ctx: _MonthBuildContext) -> MonthSummary:
         total_expenses=total_expenses,
         net=total_income - total_expenses,
         projected_end_balance=end_balance,
-        is_third_paycheck_month=month in third_paycheck_months,
+        is_third_paycheck_month=len(month_paydays) >= 3,
         day_entries=day_entries,
         day_totals=day_totals,
         day_overflow=day_overflow,
@@ -941,22 +952,6 @@ def _get_display_day(
     if landing.month == target_month and landing.year == target_year:
         return landing.day
     return None
-
-
-def _detect_third_paycheck_months(
-    periods: PeriodWindow,
-    year: int,
-) -> set[int]:
-    """Identify months with 3+ pay period start_dates in the given year.
-
-    Standard biweekly pay produces exactly 2 such months per year.
-    """
-    month_counts: dict[int, int] = defaultdict(int)
-    for p in periods:
-        if p.start_date.year == year:
-            month_counts[p.start_date.month] += 1
-
-    return {m for m, count in month_counts.items() if count >= 3}
 
 
 def _compute_month_end_balance(
