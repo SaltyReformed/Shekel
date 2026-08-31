@@ -329,9 +329,11 @@ class AccountOpeningSourceEnum(enum.Enum):
     ``ref_cache`` and compared by ID.
     """
 
-    # The figure a human stated: ``account_service.create_account`` writing an
-    # account's declared opening balance, which IS its opening equity because a
-    # just-created account has no records for the assertion to already contain.
+    # The figure a human stated: an account's declared opening balance at
+    # creation -- which IS its opening equity, because a just-created account
+    # has no records for the assertion to already contain -- or an owner
+    # correcting that figure later (plan step X-f3c-2b-2a).  Both reach
+    # ``opening_service.stage_account_opening``, the table's ONE writer.
     USER_DECLARED = "user_declared"
     # The figure the X-f3c-2a migration computed for an account that already
     # existed, from the posted ledger's own ``account_opening`` entry.  It

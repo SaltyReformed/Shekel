@@ -170,7 +170,7 @@ def _opened_at(account, at, books_open_on=None):
     assertion is append-only, so what a fixture has instead is the pair a
     production owner has: say what the balance was on a day
     (``reassert_balance_on``), and say when the books opened
-    (``restate_account_opening`` -- the door plan step X-f3c-2b-2 builds).
+    (``restate_account_opening`` -- the door plan step X-f3c-2b-2a builds).
 
     **The default moves the books BACKWARD ONLY, and the first draft of this
     helper did not.**  It restated them to the day before *at* unconditionally,

@@ -17,9 +17,9 @@ migration head are MEASUREMENTS, named by their command rather than copied.
 
 | | | detail |
 |---|---|---|
-| **just landed** | **X-f3c-2b-1 -- a movement cannot predate the books it is in** (`2cf2ac0a`). An opening equity is the CLOSING balance for its own day (**R-HG**), the same rule an assertion's `observed_on` states, so nothing may be dated on or before `opened_on`. Refused at `settle_day.record_settle_day` (the ONE ORM writer) and at the bulk `reconcile_service.record_settled_days`, and made UNSTORABLE in both directions by deferrable constraint triggers over `budget.transactions`, `budget.transaction_entries` and `budget.account_openings`. **12 rows over five accounts, not the 8 over four N-378 counted**: Checking's four 2026-03-27 rows net the `$2,057.42` between its `$689.16` opening and its `$2,746.58` first assertion. It MOVES TWO BALANCE SHEETS -- reproducing the deploy's own `backfill_all_account_anchor_postings` on a production clone, `verify_statement_baseline` gains `Fidelity Money Market Savings -- Opening` at `$4,879.26` on 2026-04-08 and 2026-04-22, tie-out closing both sides. **The first draft called it money-neutral on two harnesses that CANNOT SEE the axis**: the fold seeds at the equity as a scalar, so no `opened_on` change can move either, and the positive control varied the equity instead of the day (adversarial review, 2026-08-28) | Section 5, X-f3c-2b-1 |
-| **in flight** | Nothing. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app`. What to pick up next is `../../plans/steps.md`'s first row | Section 5 |
-| **what changed the plan** | **A DATA REPAIR IS PERFORMED THROUGH THE APP'S OWN DOORS, NEVER BY A MIGRATION WRITING MONEY ROWS** (developer, 2026-08-28, **R-HJ**), so the account-10 repair left `X-f3c-2b-1` and rides `X-f3c-2b-2`'s door. Two of the three questions a migration would have forced are already answered by the doors' own code, which is the evidence: a question that exists only because you are writing raw SQL says you are writing it in the wrong place. With it, **R-HK** merges accounts 2 and 10 -- one real Fidelity account, two app rows, `$5,363.56` of it double-counted on the balance sheet (**N-384**) -- which opens the books 2026-03-26 at `$5,350.21` -- the bank's own close for the calendar's first day, replayed to ZERO mismatches over the export's 17 stated days -- rather than R-HH's 2026-04-08; **R-HL** / **R-HM** settle where the dividends' income lands and how the accrual window clears the last one, and **R-HN** rules that a downgrade of an append-only append deletes nothing. **X-f3c's ORDER was reversed and it decomposed into five leaves** (2026-08-27, **balance:R-GW**): the residual is RECORDED before the reset is DELETED, measured by `tests/manual/measure_cutover_against_bank.py` and reported SPLIT by whether a day carries an assertion, because pooled a same-day assertion cancels the gap to the cent (**N-337**) | Section 4, balance:R-GW / R-HJ |
+| **just landed** | **X-f3c-2b-2a -- an owner can say when the books opened.** The DOOR findings **N-275**, **N-379** and **N-382** each name: an append-only restatement of an account's opening equity, carrying the day, the figure and a `user_declared` provenance, through the table's ONE writer (`opening_service.stage_account_opening`, which the origination reaches too -- ruling **R-ES** applied one table over). Bounded by the movements the account records and by today, and NOT by `earliest_recordable_day`. **One door, two entrances** (**R-IE**): the shared account edit page, which every kind reaches, and a link from the balance-history card's opening row. Driven end to end on a production clone: the opening's journal entry re-keys to the new day, the old key reverses to zero, the trial balance closes at `$0.00`, and a repeat submission writes nothing. Five planted defects were run against the new cases; four fired exactly the cases named and the fifth did not, because the planted second writer had forgotten its import and was a `NameError` rather than a writer | Section 5, X-f3c-2b-2a |
+| **in flight** | **X-f3c-2b-2b** (the withheld bank line, **N-383**) and **X-f3c-2b-2c** (the account-10 repair), the two leaves **R-ID** cut away from the door. The second is an OPERATOR act and cannot run until the door has DEPLOYED. Read branch state from `git branch -vv` and the deployed revision from `docker inspect shekel-prod-app`; what to pick up next is `../../plans/steps.md`'s first row | Section 5, X-f3c-2b-2 |
+| **what changed the plan** | **`X-f3c-2b-2` DECOMPOSED into three** (developer, 2026-08-31, **R-ID**): the door, the bank line an import may not offer against it, and the repair. The cut is not tidiness -- the withheld line renders on the reconcile cards `bank_import:X-gj-1b` is rebuilding right now, and the repair is an owner act against a production that has no `budget.account_openings` table yet. **R-IE** then placed the door: the opening is displayed on ONE card serving three of the nine accounts, while four of the other six carry a `migration_derived` figure the fold READS, so the form went where every kind can reach it. Standing since 2026-08-28: **R-HJ**, a data repair goes through the app's own DOORS and never through a migration writing money rows, with **R-HK**..**R-HN** settling the repair's figures | Section 4, balance:R-ID / R-HJ |
 | **blocked on you** | **One OPERATOR act gates the money-moving leaves: import the account's own statement history.** Production holds 0 statement imports, 0 bank lines and 0 matches, while the SECU exports the shipped adapter reads sit on disk covering 2026-01-02 to 2026-07-19 -- and X-f3c's correctness is measurable only against them (**N-368**). Everything else this arc owes is a `developer-decision` / `operator` row in `ledger.md`; what to do next is `../../plans/steps.md`'s first row, never this section | ledger.md, N-368 |
 | **complementary arcs** | TWO, neither part of this arc and neither pausing it: the recurrence redesign (block 9) and the pay calendar (block 10). **The pay calendar's `C2` IS this arc's `X-l`**, and also recurrence `R-F12` -- one commit under three names, so whoever builds it must satisfy all three specifications | `implementation_plan_recurrence_redesign.md`, `implementation_plan_pay_calendar.md` |
 | **the live lesson** | **A comparison against an outside record can be confounded by the very mechanism under test, and the pooled number reads as the strongest evidence.** X-f3c's order was measured against the developer's own bank file, and the headline -- today's code equals the bank on 17 of 75 days where the cutover-as-specified equals it on 0 -- is dominated by the 46 days carrying an assertion, which is exactly where the RESET forces the answer. This arc had already ruled that metric misleading one screen over (`bank_agreement` scores the RESIDUE for this reason, **N-337**, 11 of 35 real disagreements reading as exact agreement). Splitting it is what makes it evidence: on the 29 days no assertion touches, `$529.48` against `$1,956.64`. The conclusion survived; the pooled figure was not what established it | Section 4, R-GW |
@@ -248,58 +248,58 @@ X-aj1 leaving `transfer_service.py` at 987 of 1000, is **N-152**'s own row.
     **R-GX** and **R-GY**, the two rulings its first draft owed). Carries **N-172**, **N-174**.
     * [x] **X-f3c-1** `2dad8512` -- the assertion RESET left the kind-blind walk (**R-J**) for `balance_at._assertions`, so `walk_cash_ledger` yields FACTS and each fold applies the policy its own kind needs. Byte-identical.
     * [x] **X-f3c-2a** `2aa2296d` -- opening equity is a RECORDED fact (**R-GX**, **R-HE**): an append-only `budget.account_openings` read by BOTH the fold and the posted ledger, seeded at the derived value. `is_opening` decides no figure and R-I's compensator is gone.
-    * [ ] **X-f3c-2b** the DECOMPOSED parent of the books boundary (**R-HG**), split 2026-08-28 and
-      re-cut the same day (**R-HJ**): the invariant is one commit, and the DOOR -- with the
-      account-10 repair it is the only honest route for -- is the other. Carries **N-379**.
-      * [x] **X-f3c-2b-1** `2cf2ac0a` -- no movement may be dated on or before its account's
-        `opened_on` (**R-HG**); **account 10 now opens 2026-04-05**, which `X-f3c-2b-2` restates
-        FROM. Closed **N-378**. Record in `archive/two_shipped_steps_2026-08-30.md`.
-      * [ ] **X-f3c-2b-2** `feat(accounts): an owner can say when the books opened` -- the DOOR
-        **N-275**, **N-379** and **N-382** each name, NOT bounded by `earliest_recordable_day` (that
-        floor is a rule about assertions, **R-ER**, and it would make the books unopenable before
-        the calendar), plus the withheld bank line **N-383** records. **It then carries the
-        account-10 repair, because a repair is performed through the app's own DOORS and never by a
-        migration writing money rows** (**R-HJ**): the two questions a migration would have forced
-        -- delete or reverse the phantom's journal entry, and whether a leg move re-dates its
-        postings -- are already answered by `transfer_service.delete_transfer` and
-        `_update._reconcile_postings_after_update`, so they exist only in the raw-SQL spelling.
-        Accounts 2 and 10 are ONE real Fidelity account whose history CONSOLIDATES onto 10
-        (**R-HK**), which opens the books **2026-03-26 at `$5,350.21`** -- the bank's own close
-        for the pay calendar's first day. Under **R-HG** every bank line dated on or before
-        `opened_on` is inside the equity, so the six lines to 03-26 are ABSORBED and **no
-        transfer endpoint has to move**, which matters because no door moves one:
-        `TransferUpdateSchema` carries neither endpoint and the template door RETAINS a
-        reattributed row holding a settlement record. Replayed against the export rather than
-        argued: **zero mismatches on all 17 days it states a balance**, and a `$0.00` correction
-        at all FOUR typed balances plus R-HM's new one. Transfer 1 becomes a plain `$500`
-        Checking EXPENSE dated 03-27 -- its arrival leg would double-count money the opening now
-        holds, while Checking's own leg must survive (it nets into the `$2,057.42` reconciling
-        Checking's opening to its first assertion, whose own repair is **N-275**). That brings
-        the `$5,363.56` the archived record still carries on the balance sheet to nothing
-        (**N-384**). **THAT DISPOSAL IS TWO DOOR ACTS AND NOT A DELETION**,
-        traced rather than assumed: `archive_helpers.account_has_ledger_postings` is
-        EXISTENCE-based and account 2 holds four immutable journal entries, so the
-        hard-delete guard archives instead and always will -- correctly, since a
-        CASCADE would delete only that account's own legs and strand the paired ones
-        as unbalanced single-leg entries. What zeroes the record is restating its
-        opening to `$0.00` through this step's own door and asserting `$0.00` on
-        `observed_on` 2026-04-06, which SUPERSEDES the `$5,363.56` assertion of that
-        same day rather than conflicting with it -- `balance_at/_assertions` orders on
-        `(observed_on, created_at, id)` and states that the LAST of a day's assertions
-        is that day's closing balance. **Restating the opening alone is not enough and
-        that is measured**: with the arrival leg gone and the opening at `$0.00`,
-        the 2026-04-06 assertion still says `$5,363.56`, so
-        `sync_account_anchor_postings` books a `$5,363.56` true-up and the asset
-        returns. This step verifies the posted-ledger side follows both acts.
-        The five dividends take their own `Income: Interest & Dividends` category
-        (**R-HL**), and 07-31's `$14.39` is recorded behind a 2026-07-31 assertion at `$3,673.90`
-        that moves the accrual window past it (**R-HM**). Closes **N-383**.
+    * [ ] **X-f3c-2b** the DECOMPOSED parent of the books boundary (**R-HG**), split 2026-08-28,
+      re-cut the same day (**R-HJ**) and again 2026-08-31 (**R-ID**): the invariant is one commit,
+      and the DOOR -- with the repair it is the only honest route for -- is its own three.
+      * [x] **X-f3c-2b-1** `2cf2ac0a` -- no movement may be dated on or before its account's `opened_on` (**R-HG**). Closed **N-378**. Record in `archive/two_shipped_steps_2026-08-30.md`.
+      * [ ] **X-f3c-2b-2** the DECOMPOSED parent of the DOOR, split 2026-08-31
+        (**R-ID**): the door is one commit, the bank line an import may not offer
+        against it is the next, and the account-10 repair the door exists FOR is an
+        OPERATOR act that cannot run until the first has deployed -- production is
+        still at `a4c6f1d92b73` and has no `budget.account_openings` table at all.
+        Carries **N-379**, **N-382**.
+        * [ ] **X-f3c-2b-2a** `feat(accounts): an owner can say when the books opened`
+          -- the DOOR **N-275**, **N-379** and **N-382** each name: an append-only
+          restatement carrying the day, the equity and a `user_declared` provenance
+          through the table's ONE writer, bounded by the movements recorded and by
+          today, and NOT by `earliest_recordable_day` (a rule about assertions,
+          **R-ER**, which would make the books unopenable before the calendar).
+          **One door, two entrances** (**R-IE**): the form on the shared account
+          EDIT page, which every kind reaches, and a link from the balance-history
+          card's opening row -- that card is the opening's only display and serves
+          3 of the 9 accounts, while 4 of the other 6 carry a `migration_derived`
+          figure the fold READS. An amortizing account is refused; nothing reads
+          its row. **Migration `c9f4b1e78d02` rides it, and the reason is a deploy
+          trap**: the governing row is the latest `id`, not the latest
+          `created_at` (which is `transaction_timestamp()`, so two tabs invert it
+          and a restatement silently no-ops) -- and re-applying that shared SQL
+          constant needs a revision, because `migrate_existing_database` runs the
+          chain and nothing else. It moves no figure on all nine accounts.
+        * [ ] **X-f3c-2b-2b** `feat(bank-import): a line the books cannot hold is
+          withheld` -- **N-383**. Three import doors OFFER a line whose day the
+          account's books cannot hold and the submission is then refused; a date box
+          getting a 400 is correct and an OFFER LIST is not. Withheld with a reason
+          naming **X-f3c-2b-2a**'s door. **It follows `bank_import:X-gj-1b`**, which
+          rebuilds the very cards a withheld line renders on. Closes **N-383**.
+        * [ ] **X-f3c-2b-2c** the account-10 repair, performed through the app's own
+          DOORS and never by a migration writing money rows (**R-HJ**). **It is an
+          OPERATOR act, so this leaf is a rehearsed runbook and a re-measurement
+          rather than a code change**, and it cannot run before **X-f3c-2b-2a** has
+          DEPLOYED. **MOVES MONEY.** Its four acts, their figures and their ORDER are
+          ruled and stated ONCE in `../../plans/rulings.md` at **R-HJ**..**R-HM**
+          -- it restates account 10 from the **2026-04-05** `X-f3c-2b-1` left it on
+          to 2026-03-26 at `$5,350.21`; what the disposal of account 2 costs, and
+          why it is two door acts rather than a deletion, is **N-384**'s row.
+          Neither is restated here (`conventions.md` rule 16). What this adds is
+          the one fact neither holds, traced 2026-08-31: **transfer 1 is
+          template-linked** (`transfer_template_id = 1`), so only a SOFT delete is
+          reachable for it too -- the same limitation **N-386** already accepts for
+          transfer 102, now known to bind on both. The post-state must replay to
+          ZERO mismatches on the export's 17 stated days.
     * [x] **X-f3c-2c** `930f06fc` -- an assertion is append-only at the DATABASE tier (**R-HY**, **R-HZ**); closed **N-287**, opened **N-392** and **N-393**. Both leaves and what a later step must obey: `archive/x_f3c_2c_as_built_2026-08-30.md`.
       * [x] **X-f3c-2c-1** `930f06fc` -- a fixture PLACES an assertion and never edits one. Record in `archive/x_f3c_2c_as_built_2026-08-30.md`.
       * [x] **X-f3c-2c-2** `930f06fc` -- `budget.refuse_append_only_change` on all three tables, `passive_deletes="all"` beside it. Record in `archive/x_f3c_2c_as_built_2026-08-30.md`.
-    * [x] **X-f3c-2d** `249f66a7` -- the append-only refusal gets the THREE arms its questions
-      need (**R-IC**): a TRUNCATE that emptied a table unrefused and UNRECORDED, and a recreate of a
-      deleted account's id, are refused. Record in `archive/two_shipped_steps_2026-08-30.md`.
+    * [x] **X-f3c-2d** `249f66a7` -- the append-only refusal gets the THREE arms its questions need (**balance:R-IC**). Record in `archive/two_shipped_steps_2026-08-30.md`.
     * [ ] **X-f3c-3** `feat(cash): the app says what it cannot explain` -- the account's
       OUTSTANDING DIFFERENCE (`latest asserted - (opening equity + SUM(postings))`, ONE figure per
       account and not a per-assertion correction) derived off the fold and displayed beside whether
@@ -830,7 +830,7 @@ hides.
   answering for both, and the recurrence engine already reads that flag as an owner HOLD
   (`_recurrence_common.owner_hold_on` -> `BLOCK_DELETED`). What the step owes is the
   second statement, and the arm that keeps a restore from resurrecting the first. Met
-  live by `balance:X-f3c-2b-2`'s account-10 repair, which accepts the soft delete under
+  live by `balance:X-f3c-2b-2c`'s account-10 repair, which accepts the soft delete under
   **R-HJ** rather than waiting for this.
 * [ ] **X-bf** `test(harness): a template says which revisions it was built from` -- closes
   **N-385**, whose row carries the measurement. **`alembic_version` records which revision is

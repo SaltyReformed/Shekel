@@ -49,6 +49,7 @@ from app.routes._commit_helpers import (
 )
 from app.routes._redirect_target import RedirectTarget
 from app.routes.accounts._bp import accounts_bp
+from app.routes.accounts.opening import books_opening_context
 from app.services import (
     account_posting_service,
     account_service,
@@ -284,7 +285,20 @@ def create_account():
 @login_required
 @require_owner
 def edit_account(account_id):
-    """Display the account edit form."""
+    """Display the account edit form.
+
+    **It carries the books-opening card since plan step X-f3c-2b-2a**, built by
+    :func:`app.routes.accounts.opening.books_opening_context`.  This page is the
+    one surface EVERY account kind reaches (the cockpit card's kebab -> Edit),
+    which is why the restatement door lives here rather than only on the cash
+    detail page whose balance-history card is the opening's sole display --
+    that page serves three of the developer's nine accounts, and four of the
+    other six carry a ``migration_derived`` opening the balance fold reads.
+
+    The context is ``None`` for an AMORTIZING account and the template renders
+    nothing then: a loan's opening is its original principal, so a card here
+    would be a dead-end affordance.
+    """
     account = get_or_404(Account, account_id)
     if account is None:
         abort(404)
@@ -293,6 +307,7 @@ def edit_account(account_id):
         "accounts/form.html",
         account=account,
         account_types=_visible_account_types(current_user.id),
+        books_opening=books_opening_context(account),
     )
 
 

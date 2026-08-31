@@ -114,13 +114,39 @@ is not a state this app may enter silently.
 difference is which clock orders it.  ``is_opening`` inferred a TYPE from
 position in a list ordered by ``observed_on`` -- a business date the owner may
 back-date -- so an ordinary user action changed the inference.  This orders by
-``created_at``, the recording instant, which no door lets a user move; it is
-the same rule ``cash_ledger.governing_anchor_on`` already applies to
-assertions, and it is monotone by construction.
+``id``, the sequence value the INSERT allocates, which no door lets a user
+move.
 
-Reads: :func:`app.services.cash_ledger.account_opening_fact`.  Writes:
-``account_service.create_account`` (``user_declared``) and migration
-``a7c41f9d2b60`` (``migration_derived``).
+**It ordered by ``created_at`` first until plan step X-f3c-2b-2a, on a reason
+that was false.**  ``created_at`` comes from :class:`CreatedAtMixin`'s
+``db.func.now()``, which PostgreSQL evaluates at TRANSACTION START -- so two
+restatements made in two tabs can carry instants in the opposite order to their
+commits, and the later statement then sorts BELOW the one it supersedes.  See
+:data:`app.opening_infrastructure.GOVERNING_ORDER_SQL` for the worked failure
+and why ``id`` alone is monotone under the write door's lock.
+
+Reads: :func:`app.services.cash_ledger.account_opening_fact`, and its
+non-raising twin :func:`app.services.cash_ledger.governing_account_opening` for
+the write door.  **Writes: ONE function in ``app/``**,
+:func:`app.services.opening_service.stage_account_opening` -- reached by
+``account_service.create_account`` for the origination and by
+``opening_service.apply_opening_restatement`` for an owner correcting the
+figure, both ``user_declared``.  That single-writer shape is ruling **R-ES**
+applied to this table (plan step X-f3c-2b-2a): the owner's write lock, the
+did-this-change compare and the audit line are properties of the TABLE rather
+than of whichever event did the INSERT.
+
+**TWO migrations also write here, and the first statement of this census named
+only one** (adversarial review, 2026-08-31).  ``a7c41f9d2b60`` seeds every
+pre-existing account at the derived figure (``migration_derived``), and
+``d3b6f1c8a274``'s ``_restate`` appends a row per account whose books had to
+move back to reach its earliest recorded movement.  Both are frozen history
+rather than live writers -- ruling **R-HY** already forbids a migration
+rewriting one of these rows -- but a census that claims completeness and misses
+a writer is the shape this project has paid for before, so both are named.
+``tests/_test_helpers.restate_account_opening`` is a THIRD, deliberately
+outside the door: it exists so a fixture can open books before the pay calendar
+begins, which no service bound permits.
 """
 
 from app.extensions import db

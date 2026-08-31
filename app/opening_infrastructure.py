@@ -17,11 +17,25 @@ a reader to assume more:
 
 * Under READ COMMITTED two CONCURRENT transactions -- one recording a movement,
   one restating the books past it -- each see a snapshot without the other's
-  uncommitted row, so both predicates pass and both commit.  Neither trigger
-  takes a lock.  The window is narrow (a restatement is rare and has no UI door
-  until plan step X-f3c-2b-2) and closing it means ``SELECT ... FOR UPDATE`` on
-  the governing opening, which is the right fix if a door ever makes
-  restatement ordinary.
+  uncommitted row, so both predicates pass.  **Neither trigger takes a lock,
+  and what closes the window instead is that both DOORS take the owner's**
+  (:func:`app.services.user_write_lock.lock_user_writes`), which was true of
+  the movement side before there was a restatement door and is true of
+  :func:`app.services.opening_service.stage_account_opening` by construction.
+  The loser blocks until the winner's transaction ENDS, and a deferred
+  constraint trigger runs at COMMIT -- after that block, on a fresh READ
+  COMMITTED snapshot -- so it sees the winner's committed row and refuses.
+  **Measured 2026-08-31 on a production clone rather than argued**: the settle
+  path emits ``pg_advisory_xact_lock`` at statement 11 of the 13 an ordinary
+  settle runs, inside ``account_posting_service.self_heal_anchor_corrections``,
+  and ``reconcile_service.record_settled_days`` reaches the same lock through
+  ``_post_stamped_purchases`` -> ``posting_service.sync_transaction_postings``.
+  **The residue, stated rather than rounded off:** that self-heal returns
+  BEFORE its lock when the source emitted no posting delta, so a movement whose
+  legs all net to zero races a restatement unserialised.  ``SELECT ... FOR
+  UPDATE`` on the governing opening remains the fix that would not depend on a
+  second door's locking, and it is a fix for that residue rather than for the
+  whole window.
 * ``session_replication_role = replica`` disables constraint triggers outright,
   which is what ``pg_restore --disable-triggers`` sets.  The prod-to-dev clone
   is a documented workflow here, so a restore can land rows this module would
@@ -39,6 +53,22 @@ it as a row-level CHECK:
   survive an event rather than over the row written, so restating forward,
   raw-updating the governing row and DELETING it (which promotes an older
   restatement) are one rule rather than three arms.
+
+**A THIRD rule is enforced at the DOOR and deliberately NOT here**, and the
+reason is worth stating because this module's whole claim is structural: a
+restatement may not move the books past a day the owner has ASSERTED a balance
+for (:func:`app.services.cash_ledger.reject_books_open_after_an_assertion`,
+plan step X-f3c-2b-2a).  It was written as a fourth trigger arm first, and the
+suite refused it -- 12 failures and 22 errors, every one raising out of
+``assert_account_books_hold_its_movements``.  **The state it forbids is
+ROUTINE, and not only in fixtures**: nothing bounds an assertion against its
+account's opening, because ``anchor_service.resolve_observation_day`` bounds
+``observed_on`` at ``earliest_recordable_day`` and at today and never at
+``opened_on`` -- so an owner may back-date an assertion below their own books
+through ``accounts.true_up``.  A constraint refusing what existing rows already
+hold does not enforce an invariant; it breaks every write on the accounts that
+hold it.  Making the STATE illegal needs the assertion door bounded too and the
+existing rows legalised, which is a step and not a clause (finding **N-400**).
 
 Both are cross-table facts, so they live in **deferred constraint triggers**
 validating at COMMIT.  Deferral is not incidental: restating an account's
@@ -169,13 +199,33 @@ SETTLED_MOVEMENTS_SQL = """
 """
 
 #: The RECORDING order that decides which opening record governs (ruling
-#: **R-HE**): the table is append-only and the latest restatement wins, with
-#: ``id`` breaking a same-instant tie.  Public for the same reason as above --
-#: the revision's three window functions must break the tie the same way this
-#: module and ``cash_ledger.account_opening_fact`` do, and the whole migration
-#: chain runs in ONE transaction, so every row it writes shares one ``now()``
-#: and the tie-break carries the entire answer.
-GOVERNING_ORDER_SQL = "created_at DESC, id DESC"
+#: **R-HE**): the table is append-only and the latest restatement wins.  Public
+#: because the revision's three window functions, this module's own
+#: ``budget.account_books_opened_on`` and
+#: ``cash_ledger.governing_account_opening`` must all break it the same way; a
+#: fourth spelling is how two tiers come to disagree about which restatement is
+#: in force.
+#:
+#: **It is ``id`` ALONE, and it was ``created_at DESC, id DESC`` until plan step
+#: X-f3c-2b-2a's adversarial review refuted the reason for the first term.**
+#: That reason -- stated in this module and twice in ``cash_ledger`` -- was that
+#: ``created_at`` is set on INSERT and so is monotone in recording order.  It is
+#: not: :class:`app.models.mixins.CreatedAtMixin` defaults it to
+#: ``db.func.now()``, which in PostgreSQL is ``transaction_timestamp()`` -- the
+#: instant the transaction BEGAN.  ``anchor_service._governing_loan_anchor``
+#: already says so in as many words about the loan twin, and this door never
+#: carried the implication across.  **The failure it produced is a SILENT NO-OP
+#: on the level every balance rests on**: two restatements from two tabs, the
+#: one whose transaction opened EARLIER commits SECOND under the owner's write
+#: lock, and its row sorts below the row it was meant to supersede -- so the
+#: owner is told "Books restated" and nothing moved.
+#:
+#: ``id`` is a sequence value allocated when the INSERT executes, and the write
+#: door holds ``lock_user_writes`` across its compare-and-append, so within an
+#: account the id order IS the order the owner made the statements.  The
+#: migration writes every row in one transaction and at most one per account,
+#: so it is unaffected either way.
+GOVERNING_ORDER_SQL = "id DESC"
 
 
 _CREATE_OPENED_ON_SQL = f"""
@@ -454,15 +504,49 @@ def apply_opening_infrastructure(executor: Callable[[str], object]) -> None:
             session.  Errors propagate -- the caller owns the outer
             transaction.
     """
-    executor(_CREATE_OPENED_ON_SQL)
-    executor(_CREATE_MOVEMENT_FUNC_SQL)
+    apply_opening_functions(executor)
     for table in _MOVEMENT_TABLES:
         executor(_drop_trigger_sql(_MOVEMENT_TRIGGER, table))
         executor(_create_movement_trigger_sql(table))
-    executor(_CREATE_OPENING_PREDICATE_SQL)
-    executor(_CREATE_OPENING_FUNC_SQL)
     executor(_drop_trigger_sql(_OPENING_TRIGGER, _OPENINGS_TABLE))
     executor(_CREATE_OPENING_TRIGGER_SQL)
+
+
+def apply_opening_functions(executor: Callable[[str], object]) -> None:
+    """Idempotently materialise the four FUNCTIONS, and no trigger.
+
+    The half of :func:`apply_opening_infrastructure` that is pure
+    ``CREATE OR REPLACE FUNCTION``.  Split out at plan step
+    **balance:X-f3c-2b-2a** so a revision that changes only a function BODY can
+    execute only function bodies.
+
+    **The reason is a review finding rather than tidiness.**  That step's
+    revision (``c9f4b1e78d02``) changes two bodies -- the governing-day lookup
+    and the openings-side predicate -- and nothing else, and its docstring said
+    so: "this alters no table, no column and no constraint".  Calling the whole
+    apply would have made that FALSE, because the trigger half issues
+    ``DROP TRIGGER IF EXISTS`` plus ``CREATE CONSTRAINT TRIGGER`` on three
+    constraint triggers, which is the drop-and-recreate shape
+    ``.claude/rules/database.md`` requires a ``Review:`` line for.  Restating
+    the claim as a caveat was the alternative; removing the act is better,
+    because a revision that does not touch a constraint cannot be wrong about
+    whether it touched one.
+
+    **Order is load-bearing, and it is the caller's contract too.**  The
+    openings PREDICATE is created before the dispatcher that ``PERFORM``s it,
+    because ``check_function_bodies`` validates that reference at
+    ``CREATE FUNCTION`` time; the movement function and the governing-day
+    lookup have no such dependency but are kept in their original positions so
+    a reader diffing this against the pre-split apply sees no reordering.
+
+    Args:
+        executor: Single-argument callable that accepts a SQL string and runs
+            it.  Same contract as :func:`apply_opening_infrastructure`.
+    """
+    executor(_CREATE_OPENED_ON_SQL)
+    executor(_CREATE_MOVEMENT_FUNC_SQL)
+    executor(_CREATE_OPENING_PREDICATE_SQL)
+    executor(_CREATE_OPENING_FUNC_SQL)
 
 
 def remove_opening_infrastructure(executor: Callable[[str], object]) -> None:

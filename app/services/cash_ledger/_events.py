@@ -88,7 +88,6 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
-from app.exceptions import ValidationError
 from app.extensions import db
 from app.models.account import AccountAnchorHistory
 from app.models.account_opening import AccountOpening
@@ -426,64 +425,61 @@ class CashSourceFact:
     delta: Decimal
 
 
-def account_opening_fact(account_id: int) -> CashOpeningFact:
-    """Return *account_id*'s GOVERNING opening-equity record.
+def governing_account_opening(account_id: int) -> CashOpeningFact | None:
+    """Return *account_id*'s governing opening record, or ``None`` for no row.
 
-    The level a cash fold starts from (plan step **X-f3c-2a**).  The table is
-    append-only, so an account may carry several rows -- each a restatement of
-    what its books opened with -- and the one with the greatest
-    ``(created_at, id)`` governs.
+    **The WRITE door's question**, and the non-raising twin of
+    :func:`account_opening_fact` exactly as
+    :func:`~._facts.governing_anchor_on` is :func:`~._facts.resolve_anchor`'s
+    (plan step **X-f3c-2b-2a**).  Before appending a restatement, the door has
+    to know what already stands so it can decline a submission that changes
+    nothing (ruling **R-EQ**'s rule, one table over) -- and
+    ``account_service.create_account`` reaches the same writer with an account
+    that by construction carries none.  "This account has no opening yet" is an
+    honest answer to a writer where it is a broken invariant to a reader, which
+    is why the two policies are two functions over ONE query rather than one
+    function with a flag.
 
-    **The order is the RECORDING instant, and that is what makes it safe.**
-    The positional read this step deletes (``is_opening = index == 0``) ordered
-    by ``observed_on``, a business date any owner may back-date, so an ordinary
-    act silently re-elected the opening.  ``created_at`` is set by the database
-    on INSERT and no door lets a user move it, so "the latest restatement" is
-    monotone by construction.  ``id`` breaks a same-instant tie, exactly as
-    :func:`~._facts._governing_row` breaks one for an assertion, and for the
-    same reason: without it the plan decides which of two rows is authoritative.
+    **The order is ``id`` DESC alone, and the term it LOST is the interesting
+    half.**  The positional read plan step X-f3c-2a deleted
+    (``is_opening = index == 0``) ordered by ``observed_on``, a business date
+    any owner may back-date, so an ordinary act silently re-elected the
+    opening.  Its replacement led on ``created_at``, justified as "set by the
+    database on INSERT and therefore monotone in recording order" -- **which is
+    false, and plan step X-f3c-2b-2a's review measured what it cost.**
+    :class:`app.models.mixins.CreatedAtMixin` defaults the column to
+    ``db.func.now()``, and PostgreSQL's ``now()`` is ``transaction_timestamp()``
+    -- the instant the transaction BEGAN.  Two restatements from two tabs can
+    therefore commit in the opposite order to their instants, and the second
+    one's row sorts BELOW the row it was meant to supersede: the owner is told
+    "Books restated" and nothing moves.
+    :func:`app.services.anchor_service._governing_loan_anchor` already stated
+    the ``now()`` fact for the loan twin; this door never carried it across.
 
-    **It RAISES on an account with no row, and that is reachable only through a
-    broken invariant.**  Every account gets one at creation
-    (``account_service.create_account``) and migration ``a7c41f9d2b60``
-    backfilled every account that predated the table -- including the two
-    amortizing loans, because ``balance_at.balance_at`` falls through to this
-    fold for an amortizing account carrying no ``LoanParams``.  Answering a
-    missing row with ``Decimal("0.00")`` was the alternative and it is exactly
-    the fabrication this step exists to delete: it would silently move every
-    balance on the account to a level nothing recorded.  The same fail-loud
-    placement :func:`~._facts.resolve_anchor` documents for the assertion half.
+    ``id`` is a sequence value allocated when the INSERT executes, and
+    :func:`app.services.opening_service.stage_account_opening` holds
+    ``lock_user_writes`` across its compare-and-append, so within one account
+    the id order IS the order the owner made the statements.  The SQL tier
+    orders identically from one stated constant
+    (:data:`app.opening_infrastructure.GOVERNING_ORDER_SQL`), so the Python
+    reader and the database constraint cannot disagree about which restatement
+    is in force.
 
     Args:
         account_id: The account whose opening to load.
 
     Returns:
-        The account's governing :class:`CashOpeningFact`.
-
-    Raises:
-        RuntimeError: When the account carries no ``AccountOpening`` row --
-            a broken invariant, not an empty state.
+        The governing :class:`CashOpeningFact`, or ``None`` when the account
+        carries no ``budget.account_openings`` row at all.
     """
     row = (
         db.session.query(AccountOpening)
         .filter_by(account_id=account_id)
-        .order_by(
-            AccountOpening.created_at.desc(),
-            AccountOpening.id.desc(),
-        )
+        .order_by(AccountOpening.id.desc())
         .first()
     )
     if row is None:
-        raise RuntimeError(
-            f"account_opening_fact: account id={account_id} has zero "
-            "AccountOpening rows.  Every account carries one -- "
-            "account_service.create_account writes it and migration "
-            "a7c41f9d2b60 backfilled every account that predated the table -- "
-            "so investigate any code path that constructed the Account row "
-            "without routing through the canonical factory.  A balance cannot "
-            "be folded without the level it starts from, and answering 0.00 "
-            "would move every figure on this account silently."
-        )
+        return None
     return CashOpeningFact(
         opening_id=row.id,
         account_id=account_id,
@@ -498,97 +494,50 @@ def account_opening_fact(account_id: int) -> CashOpeningFact:
     )
 
 
-def reject_movement_before_books_open(account_id: int, day: date) -> None:
-    """Refuse a cash movement dated on or before *account_id*'s opening day.
+def account_opening_fact(account_id: int) -> CashOpeningFact:
+    """Return *account_id*'s GOVERNING opening-equity record.
 
-    **The one statement of the boundary between an account's OPENING and its
-    RECORDS** (plan step X-f3c-2b, finding **N-378**).  An account's opening
-    equity is what it held at the CLOSE of
-    :attr:`CashOpeningFact.opened_on` -- the same rule
-    :attr:`CashAnchorFact.observed_on` states for an assertion (ruling
-    R-DH (a)) -- so a movement dated on or before that day is ALREADY INSIDE
-    the figure, and recording it counts the money twice.
+    The level a cash fold starts from (plan step **X-f3c-2a**).  The table is
+    append-only, so an account may carry several rows -- each a restatement of
+    what its books opened with -- and the one with the greatest
+    ``(created_at, id)`` governs.  Which row that is comes from
+    :func:`governing_account_opening`; this adds the READER's policy for an
+    account that carries none, and nothing else.
 
-    **What the double count costs, and why the balance healing is not a
-    defence.**  The fold seeds at the opening equity and
-    :func:`~._walk.dated_deltas` emits every source at its own day, so between
-    the movement's day and the next assertion the running total carries it a
-    second time.  The next assertion RESETS to what the owner declared, so the
-    rendered balance heals -- but the correction that heals it is booked to the
-    general ledger, and on a MODELLED account (ruling **R-FO**) its counter leg
-    is ``unrealized_change``, not ``anchor_equity``.  A transfer therefore
-    becomes market performance that never unwinds.  Measured on a fixture: a
-    Roth declared ``$1,000.00`` with a ``$1,000.00`` pre-opening transfer
-    reports ``$850.00`` of unrealized change against a real ``$150.00``.
-
-    **It is stated here because this module owns the opening record**, and
-    asked by the TWO writers of a settle day -- the ORM one
-    (:func:`app.services.settle_day.record_settle_day`, which every door for
-    both ``budget.transactions`` and ``budget.transaction_entries`` goes
-    through) and the bulk one
-    (``reconcile_service.record_settled_days``, a ``query.update()`` with no
-    ORM instance to hand that function).  Two callers, one predicate.
-
-    **Its structural backstop is the database, not this function.**  Migration
-    ``d3b6f1c8a274`` adds a deferrable constraint trigger over both movement
-    tables AND over ``budget.account_openings``, so the state is unstorable
-    from any client -- a bulk ``UPDATE``, a raw statement, a restatement that
-    moves an opening FORWARD past a movement that already exists.  This
-    function exists so an ordinary date box gets a sentence instead of a
-    ``psycopg2`` exception at COMMIT: the same pairing
-    ``ck_transactions_settle_day_needs_a_record`` has with
-    :func:`app.services.status_seam.reject_settle_day_without_a_record`.
-
-    **The CALLER owns the ownership scoping, and the message is why that
-    matters.**  The refusal names the account's opening equity so a date box
-    can render it verbatim, and this function applies no ``user_id`` filter of
-    its own.  Every caller today reaches it behind an ownership check -- the
-    routes resolve the row by owner before any settle door is entered -- so
-    the figure only ever reaches the owner.  A future caller that took an
-    account id straight from a request would turn this message into a balance
-    oracle.
+    **It RAISES on an account with no row, and that is reachable only through a
+    broken invariant.**  Every account gets one at creation
+    (``account_service.create_account``) and migration ``a7c41f9d2b60``
+    backfilled every account that predated the table -- including the two
+    amortizing loans, because ``balance_at.balance_at`` falls through to this
+    fold for an amortizing account carrying no ``LoanParams``.  Answering a
+    missing row with ``Decimal("0.00")`` was the alternative and it is exactly
+    the fabrication that step exists to delete: it would silently move every
+    balance on the account to a level nothing recorded.  The same fail-loud
+    placement :func:`~._facts.resolve_anchor` documents for the assertion half.
 
     Args:
-        account_id: The account the movement belongs to.  Assumed already
-            scoped to the acting user by the caller.
-        day: The civil day the movement's cash moved.
+        account_id: The account whose opening to load.
+
+    Returns:
+        The account's governing :class:`CashOpeningFact`.
 
     Raises:
-        ValidationError: When *day* is on or before the account's opening day.
-            A 400 rather than a programming error: the day arrives from a date
-            box, and the message names both the offending value and the bound
-            it broke so a surface can render it verbatim.
-        RuntimeError: When the account carries no opening record, propagated
-            from :func:`account_opening_fact` -- a broken invariant, and
-            deliberately not softened here into "then anything is allowed".
+        RuntimeError: When the account carries no ``AccountOpening`` row --
+            a broken invariant, not an empty state.
     """
-    # **Under ``no_autoflush``, and that is a defect this step's own suite
-    # caught rather than a precaution.**  This is the only READ on a write
-    # path, and SQLAlchemy autoflushes pending mutations before a query: the
-    # caller has already assigned part of the row it is midway through writing
-    # -- ``apply_status_change`` sets ``status_id`` before it reaches
-    # :func:`app.services.settle_day.record_settle_day` -- so the flush lands a
-    # half-written row against constraints that describe the finished one.
-    # Measured: a row already carrying a settle day and no settlement record,
-    # which is the LEGACY shape ``ck_transactions_settle_day_needs_a_record``
-    # exists to let an owner repair, failed with a raw ``CheckViolation``
-    # raised "as a result of Query-invoked autoflush".  Suppressing the flush
-    # cannot hide a pending opening from this read: every writer of
-    # ``budget.account_openings`` flushes -- ``account_service.create_account``
-    # before it stages the origination assertion, and the migration through
-    # ``op.execute`` -- so there is no unflushed opening for a settle to race.
-    with db.session.no_autoflush:
-        opening = account_opening_fact(account_id)
-    if day > opening.opened_on:
-        return
-    raise ValidationError(
-        f"Money cannot have moved on {day.isoformat()}: this account's books "
-        f"open on {opening.opened_on.isoformat()} holding "
-        f"${opening.opening_equity}, and that figure is the closing balance "
-        "for its own day -- so anything that moved by then is already inside "
-        "it.  Restate the account's opening to an earlier day if the records "
-        "really do start before it."
-    )
+    fact = governing_account_opening(account_id)
+    if fact is None:
+        raise RuntimeError(
+            f"account_opening_fact: account id={account_id} has zero "
+            "AccountOpening rows.  Every account carries one -- "
+            "account_service.create_account writes it and migration "
+            "a7c41f9d2b60 backfilled every account that predated the table -- "
+            "so investigate any code path that constructed the Account row "
+            "without routing through the canonical factory.  A balance cannot "
+            "be folded without the level it starts from, and answering 0.00 "
+            "would move every figure on this account silently."
+        )
+    return fact
 
 
 def cash_anchor_facts(account_id: int) -> list[CashAnchorFact]:
