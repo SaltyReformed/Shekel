@@ -552,8 +552,12 @@ def merchant_label(merchant: "str | None", description: str) -> str:
 
 
 @dataclass(frozen=True)
-class BankLine:
+class BankLine:  # pylint: disable=too-many-instance-attributes
     """One recorded statement line, as a proposal needs to show it.
+
+    Pylint: ``too-many-instance-attributes`` (8/7) -- eight because the
+    subject is one ROW and eight of its columns are read, which is
+    :class:`CandidateRow`'s argument above.
 
     Attributes:
         line_id: The ``budget.bank_statement_lines`` row.
@@ -582,6 +586,13 @@ class BankLine:
             :attr:`description`** (plan step ``bank_import:X-f6a-3d``): a
             reader that derived it would have to be total, which on a source
             with no merchant field means every line keying one rule.
+        source_category: What the BANK filed this line under, verbatim, or
+            ``None`` where the source states none.  **Provenance the screen
+            prints and NOTHING may branch on**: the one decision this package
+            makes on a bank's category is :mod:`._vocabulary`'s, asked in SQL
+            against that adapter's own vocabulary (**bank_import:R-GJ**), and
+            a second reader comparing this text would be the ref-name
+            comparison forbidden everywhere else.
     """
 
     line_id: int
@@ -591,6 +602,7 @@ class BankLine:
     transaction_on: "date | None" = None
     merchant_id: "int | None" = None
     merchant: "str | None" = None
+    source_category: "str | None" = None
 
     @property
     def merchant_label(self) -> str:

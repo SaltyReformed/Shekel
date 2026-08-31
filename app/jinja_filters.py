@@ -28,7 +28,12 @@ from decimal import Decimal
 from flask import Flask
 
 from app.services.salary_cockpit_service import clean_raise_label
-from app.services.statement_match import CandidateRow, as_reviewed
+from app.services.statement_match import (
+    CandidateRow,
+    MatchProposal,
+    as_reviewed,
+    spell_figure,
+)
 from app.utils.dates import month_name, to_display_tz
 
 # Months in a year -- named so the year conversion is not a bare literal.
@@ -186,6 +191,43 @@ def reviewed_token(row: CandidateRow) -> str:
     return as_reviewed(row).token
 
 
+def stated_difference(proposal: MatchProposal) -> str:
+    """Render the difference a proposal states, as the form value it submits.
+
+    Plan step ``bank_import:X-gj-1b``.  The SECOND wire transform here, and it
+    is here for :func:`reviewed_token`'s reason one grain up: the accept door
+    exempts no shape since the developer's ruling of 2026-08-30, so every
+    match states the difference it was reviewed against, and this string is
+    read back by
+    :class:`~app.schemas.validation.statements.ReviewedFigureField` on the
+    next request.  ``reviewed_token`` carries the state of one ROW; this
+    carries the SUM over them, which is the one figure no per-row guard can
+    see being wrong (finding **N-336**).
+
+    **A filter rather than a property on the proposal**, which is where a
+    first version put it.  ``MatchProposal`` already publishes
+    :attr:`~app.services.statement_match.MatchProposal.difference` as the
+    ``Decimal`` every reader wants; what a template needs is its WIRE
+    SPELLING, and that is a fact about the form rather than about the
+    proposal -- the same boundary that keeps ``as_reviewed`` in the service
+    and its token here.  The module's own line ceiling is what surfaced it:
+    adding this there put ``_offers`` at 1,014 lines, which is finding
+    **balance:N-365** asking the question the answer to which was that the
+    code was in the wrong module.
+
+    No arithmetic and no decision: the service subtracts, this hands the
+    result to the form.
+
+    Args:
+        proposal: The :class:`~app.services.statement_match.MatchProposal` a
+            card is rendering.
+
+    Returns:
+        Its plain decimal spelling, ``"0.00"`` for the exact and group tiers.
+    """
+    return spell_figure(proposal.difference)
+
+
 def register_template_filters(app: Flask) -> None:
     """Register every presentation filter on the given Flask app.
 
@@ -203,3 +245,4 @@ def register_template_filters(app: Flask) -> None:
     app.add_template_filter(month_name, "month_name")
     app.add_template_filter(raise_label, "raise_label")
     app.add_template_filter(reviewed_token, "reviewed_token")
+    app.add_template_filter(stated_difference, "stated_difference")

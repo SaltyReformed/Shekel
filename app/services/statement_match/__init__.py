@@ -154,6 +154,7 @@ from ._candidates import (
 from ._create import create_purchase_from_line
 from ._creations import (
     NEW_ENVELOPE,
+    RECORD_AS_INCOME,
     CreatedPurchase,
     IncomeCreation,
     NewEnvelope,
@@ -173,11 +174,18 @@ from ._offers import (
     corrected_purchase_day,
     merchant_label,
 )
+from ._offered_rules import (
+    OfferedAnswer,
+    RuleDoorAccepts,
+    RuleOffer,
+    rules_worth_offering,
+)
 from ._submission import (
     MatchSubmission,
     ReviewedRow,
     as_reviewed,
     parse_figure,
+    spell_figure,
 )
 from ._near import NEAR_MISS_BOUND
 from ._pairing import DAY_WINDOW
@@ -208,6 +216,8 @@ from ._rules import (
 from ._stating import (
     RuleSubmission,
     StatedRules,
+    rule_creating,
+    rule_naming,
     state_rules,
 )
 from ._gaps import ReviewBounds
@@ -231,6 +241,8 @@ from ._register import (
     register_set,
 )
 from ._scope import ReviewScope
+from ._panel import AddAct, AddTab, MatchCandidates, VerbPanel
+from ._verbs import Verb, VerbOffer
 from ._reconcile import Tab, reconcile_page
 from ._filing import (
     RECEIPT_LIMIT,
@@ -243,6 +255,7 @@ from ._filing import (
 __all__ = [
     "NEW_ENVELOPE",
     "RECEIPT_LIMIT",
+    "RECORD_AS_INCOME",
     "REGISTER_LIMIT",
     "AcceptedGroup",
     "AcceptedRegister",
@@ -301,7 +314,16 @@ __all__ = [
     "ReviewedRow",
     "StatementRegister",
     "Tab",
+    "AddAct",
+    "AddTab",
+    "MatchCandidates",
+    "VerbPanel",
+    "Verb",
+    "VerbOffer",
     "RowKind",
+    "OfferedAnswer",
+    "RuleDoorAccepts",
+    "RuleOffer",
     "StatedRules",
     "WithheldLine",
     "accept_match",
@@ -313,6 +335,8 @@ __all__ = [
     "awaiting_review_count",
     "candidates_for",
     "corrected_purchase_day",
+    "rules_worth_offering",
+    "spell_figure",
     "create_purchase_from_line",
     "record_income_from_line",
     "destinations_for",
@@ -329,6 +353,8 @@ __all__ = [
     "register_set",
     "review_set",
     "rule_filed_acts",
+    "rule_creating",
+    "rule_naming",
     "state_rules",
     "unmatched_destinations",
 ]

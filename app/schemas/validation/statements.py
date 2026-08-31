@@ -105,7 +105,7 @@ _MAX_MATCH_MEMBERS: int = 100
 #: import may carry ``_secu_csv.MAX_LINES`` = 20,000 lines, so an account can
 #: in principle offer more acts than this; the owner is told to apply the pass
 #: in two rather than having half of what they ticked dropped without a word.
-_MAX_BATCH_ITEMS: int = 500
+MAX_BATCH_ITEMS: int = 500
 
 #: The prefix a submitted match item carries.  Its INDEX is the rendered
 #: position of the proposal it came from, so the ids of the item the owner
@@ -325,10 +325,20 @@ class StatementMatchSchema(BaseSchema):
         ReviewedRowField(), required=False, load_default=list,
         validate=validate.Length(max=_MAX_MATCH_MEMBERS),
     )
-    #: The DIFFERENCE the SERVER showed for a hand-built group, which the
-    #: owner agreed to record (plan step ``bank_import:X-f6d-4``, ruling
-    #: **R-FN**).  Absent on every proposal the app itself offers, so
-    #: ``load_default=None``.
+    #: The DIFFERENCE this match states it was REVIEWED against (plan step
+    #: ``bank_import:X-f6d-4``, ruling **R-FN**).
+    #:
+    #: **It used to be absent on every proposal the app itself offers**, and
+    #: plan step ``bank_import:X-gj-1b`` inverted that: the accept door
+    #: exempts no shape now, so a proposal card renders this as a HIDDEN input
+    #: carrying :func:`app.jinja_filters.stated_difference` and every ticked
+    #: item submits one.  ``load_default=None`` remains, because absence is
+    #: still a real thing a body can say and the DOOR is where it is answered
+    #: -- refused where a difference would be written, permitted where none
+    #: would be
+    #: (``app.services.statement_match._variance._reject_unaccepted_difference``).
+    #: A ``required=True`` here would turn a scriptless owner's balanced
+    #: hand-built group into a 400 over the whole pass.
     #:
     #: **Read through the service's own strict reader, exactly as
     #: :class:`ReviewedRowField` beside it is.**  A first version declared it
@@ -507,7 +517,7 @@ class StatementBatchSchema(Schema):
     does not declare, on the one payload that carries every act in a pass.
 
     **The ceiling is on the SUM and is stated ONCE**
-    (:data:`_MAX_BATCH_ITEMS`), because the screen's own offer set is bounded
+    (:data:`MAX_BATCH_ITEMS`), because the screen's own offer set is bounded
     by what an import may carry and a crafted submission is bounded by nothing.
     A per-list ``Length`` beside it was a second statement of one rule and the
     WRONG one: two lists with their own ceilings admit twice the work either
@@ -551,7 +561,7 @@ class StatementBatchSchema(Schema):
 
         Raises:
             ValidationError: When the pass names more than
-                :data:`_MAX_BATCH_ITEMS` acts in total.
+                :data:`MAX_BATCH_ITEMS` acts in total.
         """
         total = (
             len(data.get("matches", ()))
@@ -561,10 +571,10 @@ class StatementBatchSchema(Schema):
             # ceiling would admit half again as much work as the bound says.
             + len(data.get("incomes", ()))
         )
-        if total > _MAX_BATCH_ITEMS:
+        if total > MAX_BATCH_ITEMS:
             raise ValidationError(
                 f"That is {total:,} things to apply at once, and this page "
-                f"applies at most {_MAX_BATCH_ITEMS:,} in one pass.  Untick "
+                f"applies at most {MAX_BATCH_ITEMS:,} in one pass.  Untick "
                 f"some and apply them in two goes -- nothing was changed.",
                 field_name="matches",
             )
@@ -586,13 +596,16 @@ class StatementBatchSchema(Schema):
 #: select beside it.
 _INCOME_PREFIX = "record_income-"
 
-#: What a submitted destination carries, keyed by its BANK LINE's id.  Keyed
+#: What a submitted destination carries, keyed by its BANK LINE's id.  **Read
+#: by TWO surfaces' readers** -- the review queue's here and the Reconcile
+#: page's in :mod:`.statement_reconcile` -- so it is stated once rather than
+#: spelled twice, which is this package's own root cause 1.  Keyed
 #: that way rather than by a rendered position because a destination names one
 #: LINE, and paired arrays would depend on the browser submitting several lists
 #: of equal length -- which a crafted body need not do.
-_DESTINATION_PREFIX = "destination-"
-_ENVELOPE_NAME_PREFIX = "envelope_name-"
-_CATEGORY_PREFIX = "category_id-"
+DESTINATION_PREFIX = "destination-"
+ENVELOPE_NAME_PREFIX = "envelope_name-"
+CATEGORY_PREFIX = "category_id-"
 
 
 def _match_items(form) -> list:
@@ -632,11 +645,18 @@ def _match_items(form) -> list:
 
         **An EMPTY consent is untouched, not malformed**, which is this
         module's own founding principle: a browser submits every control it
-        renders, so an untouched one must be recognisable as untouched.  The
-        panel renders the box with ``value=""`` and ``disabled`` in lockstep,
-        so a browser cannot send one -- but a body that does would otherwise
-        400 the WHOLE pass over a field nobody filled in.  Found by
-        adversarial security review 2026-08-23.
+        renders, so an untouched one must be recognisable as untouched.  A
+        body carrying one would otherwise 400 the WHOLE pass over a field
+        nobody filled in.  Found by adversarial security review 2026-08-23.
+
+        **The surfaces no longer render this field one way.**  Until plan step
+        ``bank_import:X-gj-1b`` every one of them rendered the box ``value=""``
+        and ``disabled`` in lockstep, so a browser could not send an empty
+        one.  That is now true only of the arm where nothing is ticked: a
+        proposal card carries the figure as a HIDDEN input, and a panel whose
+        sides agree carries ``"0.00"`` the same way.  The emptiness rule holds
+        for the same reason it always did -- it is about what a body may say,
+        not about which control said it.
     """
     getlist = form.getlist
     items = []
@@ -676,19 +696,19 @@ def _creation_items(form) -> list:
         strings: the schema is what reads them.
     """
     keys = [
-        field[len(_DESTINATION_PREFIX):] for field in form.keys()
-        if field.startswith(_DESTINATION_PREFIX)
+        field[len(DESTINATION_PREFIX):] for field in form.keys()
+        if field.startswith(DESTINATION_PREFIX)
     ]
     items = []
     for key in sorted(keys, key=order_token_key):
-        destination = form[f"{_DESTINATION_PREFIX}{key}"]
+        destination = form[f"{DESTINATION_PREFIX}{key}"]
         if destination == LEAVE_ALONE:
             continue
         items.append({
             "line_id": key,
             "destination": destination,
-            "envelope_name": form.get(f"{_ENVELOPE_NAME_PREFIX}{key}", ""),
-            "category_id": form.get(f"{_CATEGORY_PREFIX}{key}", ""),
+            "envelope_name": form.get(f"{ENVELOPE_NAME_PREFIX}{key}", ""),
+            "category_id": form.get(f"{CATEGORY_PREFIX}{key}", ""),
         })
     return items
 
@@ -766,10 +786,13 @@ def hand_match_payload(form) -> dict:
         consent box carried one.  **Omitted rather than sent as ``None``** when
         it did not, so the schema's own ``load_default`` is the one statement
         of what absence means -- and an EMPTY consent is untouched rather than
-        malformed, which is :func:`_match_items`' own founding principle: the
-        panel renders that box ``value=""`` and ``disabled`` in lockstep, so a
-        browser cannot send one, but a body that does must not 400 the act over
-        a field nobody filled in.
+        malformed, which is :func:`_match_items`' own founding principle: a
+        body carrying an empty one must not 400 the act over a field nobody
+        filled in.  This surface still renders the box ``value=""`` and
+        ``disabled`` in lockstep when there is nothing ticked; since plan step
+        ``bank_import:X-gj-1b`` it renders a HIDDEN ``"0.00"`` where the two
+        sides agree, because the door checks the figure a match says it was
+        reviewed against whether or not there is anything to permit.
     """
     item = {
         "line_ids": form.getlist("line_ids"),

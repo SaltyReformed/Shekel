@@ -48,7 +48,21 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.extensions import db
 from app.exceptions import ValidationError
 from app.routes._commit_helpers import DbErrorContext, handle_db_error
-from app.services.statement_match import ReviewScope
+from app.utils.log_events import (
+    BUSINESS,
+    EVT_STATEMENT_BATCH_APPLIED,
+    log_event,
+)
+from app.services.statement_match import (
+    NEW_ENVELOPE,
+    Consent,
+    IncomeCreation,
+    MatchSubmission,
+    NewEnvelope,
+    PurchaseCreation,
+    ReviewedBatch,
+    ReviewScope,
+)
 
 
 @dataclass(frozen=True)
@@ -305,6 +319,158 @@ def run_statement_fragment_door(
         return ctx.render(ctx.scope, error=ctx.db_error_message)
     on_applied(result)
     return ctx.render(ctx.reread(), outcome=result)
+
+
+def submitted_match(submitted) -> MatchSubmission:
+    """Return one loaded match payload as the value the door applies.
+
+    **One construction for every surface that submits a match**, which is the
+    same rule the schema beside it keeps: a hand-built group, a ticked
+    proposal and a Reconcile card's MATCH tab are the SAME act reaching the
+    same door (``_accept.record_match``), so a second construction would be a
+    second place for a member to be dropped on the way to it.  It moved here
+    at plan step ``bank_import:X-gj-1b``, when the Reconcile page became the
+    third caller.
+
+    **Nothing here names an owner or an account.**  Whose match this is, is
+    the scope's -- one statement, made where the route proved it -- so no
+    member can be priced against one account and written against another.
+
+    Args:
+        submitted: What
+            :class:`~app.schemas.validation.statements.StatementMatchSchema`
+            loaded, or one item of what
+            :class:`~app.schemas.validation.statements.StatementBatchSchema`
+            loaded -- the two are the same shape, because the nested schema IS
+            that schema.
+
+    Returns:
+        The :class:`~app.services.statement_match.MatchSubmission`.
+    """
+    return MatchSubmission(
+        line_ids=frozenset(submitted["line_ids"]),
+        rows=frozenset(submitted["rows"]),
+        accepted_difference=submitted["residual"],
+    )
+
+
+def submitted_item_count(submitted) -> int:
+    """Return how many ACTS one loaded pass carries.
+
+    **Every kind, counted once** (ruling **bank_import:R-GW**).  A count that
+    named two of the three would make the audit trail disagree with
+    ``applied_count`` for any pass holding a deposit, and it was written that
+    way once.  Stated here because both surfaces that apply a pass log it, and
+    pylint's cross-file ``duplicate-code`` reported the second copy the moment
+    the Reconcile page became one.
+
+    Args:
+        submitted: What
+            :class:`~app.schemas.validation.statements.StatementBatchSchema`
+            loaded.
+
+    Returns:
+        The item count.
+    """
+    return (
+        len(submitted["matches"])
+        + len(submitted["creations"])
+        + len(submitted["incomes"])
+    )
+
+
+def log_pass_applied(
+    logger: logging.Logger, message: str, *,
+    account_id: int, item_count: int, outcome,
+) -> None:
+    """Log what an applied statement pass did, AFTER the commit.
+
+    **ONE event for every door that applies a
+    :class:`~app.services.statement_match.BatchOutcome`**, which is the rule
+    :func:`outcome_counts` states and which this now makes structural rather
+    than remembered: an audit trail whose FIELDS depend on which door wrote
+    the row cannot be queried across the three, and the reviewed pass, the
+    hand-built match and the Reconcile page are three ways of performing one
+    act.
+
+    Args:
+        logger: The calling module's logger, so the row is attributed to the
+            door the owner pressed.
+        message: What that door was doing, in one sentence.
+        account_id: The account.
+        item_count: How many acts the pass carried
+            (:func:`submitted_item_count`, or ``1`` for a door that applies
+            exactly one).
+        outcome: The :class:`~app.services.statement_match.BatchOutcome` the
+            door applied.
+    """
+    log_event(
+        logger, logging.INFO, EVT_STATEMENT_BATCH_APPLIED, BUSINESS,
+        message,
+        user_id=current_user.id,
+        account_id=account_id,
+        item_count=item_count,
+        **outcome_counts(outcome),
+    )
+
+
+def submitted_batch(submitted) -> ReviewedBatch:
+    """Return one loaded pass as the batch the service applies.
+
+    **One construction for every surface that applies a whole pass**, which is
+    the rule :func:`submitted_match` beside it keeps and which pylint's
+    cross-file ``duplicate-code`` reported the moment the Reconcile page
+    became the second such surface: two doors differing only in the FORM they
+    were read from build the identical value, and a second copy is a second
+    place for a kind of act to be dropped on the way to the door.  It has been
+    caught once already at one tier up -- the audit event's own list of money
+    effects was missing two entries from the day it was written.
+
+    **Nothing here names an owner or an account.**  Whose pass this is, is the
+    scope's -- one statement, made where the route proved it -- so no item can
+    be priced against one account and written against another.
+
+    **The consent is a LITERAL and never a wire value** (ruling
+    **bank_import:R-GH**): a person read a screen and pressed Apply.  It is a
+    fact about the DOOR rather than about the payload, and the only other
+    consent belongs to an import filing under a standing rule.
+
+    Args:
+        submitted: What
+            :class:`~app.schemas.validation.statements.StatementBatchSchema`
+            loaded.
+
+    Returns:
+        The :class:`~app.services.statement_match.ReviewedBatch`.
+    """
+    return ReviewedBatch(
+        consent=Consent.TICKED,
+        matches=tuple(submitted_match(item) for item in submitted["matches"]),
+        creations=tuple(
+            PurchaseCreation(
+                line_id=item["line_id"],
+                transaction_id=(
+                    None if item["destination"] == NEW_ENVELOPE
+                    else item["destination"]
+                ),
+                new_envelope=(
+                    NewEnvelope(
+                        name=item["envelope_name"],
+                        category_id=item["category_id"],
+                    )
+                    if item["destination"] == NEW_ENVELOPE else None
+                ),
+            )
+            for item in submitted["creations"]
+        ),
+        # **Every kind of act a pass can carry** (ruling
+        # **bank_import:R-GW**).  A construction naming two of three kinds
+        # would silently drop every deposit the owner ticked.
+        incomes=tuple(
+            IncomeCreation(line_id=item["line_id"])
+            for item in submitted["incomes"]
+        ),
+    )
 
 
 def outcome_counts(outcome) -> dict:

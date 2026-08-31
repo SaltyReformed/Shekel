@@ -1164,6 +1164,54 @@ class TestTheHandlerItself:
         assert events
         assert events[0].context_user_id == baseline_less_owner["user_id"]
 
+    @pytest.mark.parametrize("door,payload", [
+        ("/accounts/{checking}/statements/reconcile", {"tab": "to_explain"}),
+        ("/accounts/{checking}/statements/reconcile/merchants",
+         {"tab": "to_explain"}),
+        ("/accounts/{checking}/statements/reconcile/line/1/match", {}),
+    ])
+    def test_a_reconcile_door_answers_rather_than_falling_silent(
+        self, app, owner_client, baseline_less_owner, door, payload,
+    ):
+        """The Reconcile page's three POSTs, which the sweep cannot reach.
+
+        **All three are outside the GET sweep by construction** (ruling
+        **R-CB**): they are POSTs, and the sweep grades ``"GET" in
+        rule.methods``.  So the only thing standing between them and the
+        silent 204 is this case.
+
+        **The failure to look for is the SILENCE, not the 500.**  Every one of
+        these is driven by htmx, and htmx swaps only 2xx -- so a 204 here is a
+        button that does nothing, forever and without a word, which is exactly
+        what ``POST /debt-strategy/calculate`` did before X-v2 measured it.
+        The status is asserted as 200 AND the body as the repair card, because
+        204 satisfies "not a 5xx" on its own.
+
+        The raise comes from ``ReviewScope.build``.  Every door proves the
+        account first (``load_cash_account_or_404``) and the two ``/reconcile``
+        POSTs read their tab before it, either of which can 404 -- what
+        matters here is that the MATCH pane builds the scope BEFORE it looks
+        the line up, which is why its case may name a line the world does not
+        hold.  If that order ever inverted this would fail loudly with a 404
+        rather than passing for a new reason.
+        """
+        resp = owner_client.post(
+            door.format(**{"checking": baseline_less_owner["checking"]}),
+            data=payload,
+            headers={"HX-Request": "true"},
+        )
+
+        assert resp.status_code == 200, (
+            f"{door} answered {resp.status_code}; htmx swaps only 2xx, and a "
+            f"204 in particular is a press that reports nothing at all"
+        )
+        body = resp.data.decode()
+        assert "Setup Incomplete" in body, (
+            f"{door} answered with a body that says neither what happened "
+            f"nor why: {body[:200]!r}"
+        )
+        assert "/create-baseline" in body
+
     def test_a_transfer_create_refuses_instead_of_reporting_success(
         self, app, owner_client, db, baseline_less_owner,
     ):

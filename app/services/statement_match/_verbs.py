@@ -127,8 +127,10 @@ TRANSFER_WAITS = (
 #: Why SKIP cannot be pressed yet.  Nothing records a skipped line's
 #: disposition, so the honest statement is that the line would come back.
 SKIP_WAITS = (
-    "Skipping is not recorded yet, so a line you skipped here would be back "
-    "on this list the next time you opened it."
+    "Skip is for a line that explains nothing you budget for -- a duplicate "
+    "your bank later reversed, or a figure that is not money you spent.  It "
+    "is not recorded yet, so a line you skipped here would be back on this "
+    "list the next time you opened it."
 )
 
 #: Why ADD is shut for a line this pass has PROPOSED a match for.  The pass
@@ -175,6 +177,31 @@ class VerbOffer:
             ``True`` when nothing is being waited for.
         """
         return self.waiting_for is None
+
+    @property
+    def is_match(self) -> bool:
+        """Return whether this offer is the MATCH verb.
+
+        **A predicate rather than a value for a template to compare**, which
+        is the rule :attr:`~._panel.AddTab.records_a_purchase` states three
+        lines from where the Reconcile card was spelling ``offer.verb.value ==
+        'match'`` anyway.  A screen comparing an enum's own string is one
+        rename away from silently rendering nothing, and this project's
+        reference-table rule (``CLAUDE.md``: *ids for logic, strings for
+        display only*) is the same lesson on the tables that have one.
+        """
+        return self.verb is Verb.MATCH
+
+    @property
+    def is_add(self) -> bool:
+        """Return whether this offer is the ADD verb.
+
+        See :attr:`is_match`.  The two do NOT partition
+        :class:`Verb` -- TRANSFER and SKIP have no door in this build -- so a
+        template renders one arm each with no ``else``, and a verb neither
+        predicate claims renders its explanation instead of a control.
+        """
+        return self.verb is Verb.ADD
 
 
 def offers_for(

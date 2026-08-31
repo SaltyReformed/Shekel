@@ -54,7 +54,7 @@ from app.exceptions import ValidationError
 from ._candidates import matched_subjects
 from ._resolve import load_lines, resolve_rows
 from ._scope import ReviewScope
-from ._submission import MatchSubmission
+from ._submission import MatchSubmission, spell_figure
 from ._sides import MatchSides
 from ._variance import bank_cash_for, reject_unrecordable
 
@@ -84,11 +84,21 @@ class HandTotals:
         app: What the ticked rows come to, on the same convention.
         difference: What the bank moved that those rows do not account for.
         remedy: One of the module constants, saying what Apply would do.
-        consent: The figure the consent box carries, as the plain decimal
-            string the door will compare -- or ``None`` where no consent is
-            wanted.  **A STRING and not a Decimal**, because it is a wire
-            value: rendering a ``Decimal`` through Jinja would let the
-            template's own repr decide what the owner submits.
+        consent: The figure this panel submits as the difference it was
+            reviewed against, as the plain decimal string the door will
+            compare -- or ``None`` where there is no act to review at all
+            (nothing ticked, or a selection this door has already refused).
+            **A STRING and not a Decimal**, because it is a wire value:
+            rendering a ``Decimal`` through Jinja would let the template's own
+            repr decide what the owner submits.
+
+            **It is set for an AGREEING match too**, as ``"0.00"``, since plan
+            step ``bank_import:X-gj-1b`` deleted the consent gate's exempt
+            shape: the field is what says *this is the figure I was shown*,
+            and a match that skipped it would be one the door cannot check.
+            :attr:`remedy` is what decides whether the surface renders it as a
+            hidden field or as the tick box -- the figure is the same fact
+            either way.
         refusal: Why Apply would refuse, in the door's own sentence, or
             ``None``.
     """
@@ -99,6 +109,28 @@ class HandTotals:
     remedy: str
     consent: "str | None" = None
     refusal: "str | None" = None
+
+    @property
+    def needs_consent(self) -> bool:
+        """Return whether the owner has something here to AGREE to.
+
+        Plan step ``bank_import:X-gj-1b``.  **The control's question, answered
+        here rather than by a template comparing** :attr:`remedy`, because the
+        two are not the same question and reading one for the other is how a
+        money control comes to render in a state nobody designed: every panel
+        that states an act submits :attr:`consent`, and only some of them are
+        asking permission for it.
+
+        Returns:
+            ``True`` where this panel states an act whose difference is
+            non-zero -- the tick box, carrying the sentence that says what
+            would be written.  ``False`` both where the sides agree, which is
+            the same figure as a hidden field because there is nothing to
+            permit, and where there is no act at all (nothing ticked, or a
+            selection already refused), which submits no figure and renders
+            none.
+        """
+        return self.consent is not None and bool(self.difference)
 
     @classmethod
     def untouched(cls) -> "HandTotals":
@@ -178,18 +210,37 @@ def preview_hand_build(
             remedy=NOTHING_TICKED,
         )
     try:
-        # **Asked with the difference as the accepted figure**, which is the
+        # **Asked with the difference as the reviewed figure**, which is the
         # question the panel is for: *if you consented to this, what would
         # happen?*  Every refusal that is about the ROWS or the PAIR fires
         # here, so the screen names it beside the checkboxes.
-        reject_unrecordable(rows, sides, sides.difference or None)
+        #
+        # It read ``sides.difference or None`` until plan step
+        # ``bank_import:X-gj-1b``, and the two spell the same behaviour: the
+        # gate returns early on a zero difference whether it is told ``None``
+        # or ``Decimal("0.00")``.  The straight value is passed because it
+        # states the question this preview is asking -- *against THIS figure*
+        # -- where the ``or None`` spelled a zero difference as *nothing was
+        # reviewed*, which is not what the panel means and is not what it
+        # renders.  (An earlier draft of this comment claimed the ``or None``
+        # would now make the preview refuse every agreeing match.  It would
+        # not; the claim was written against a version of the gate that did
+        # require a figure at zero, and was not revisited when that changed.)
+        reject_unrecordable(rows, sides, sides.difference)
     except ValidationError as exc:
         return HandTotals.refused(str(exc), sides)
 
+    # **The figure travels whether or not there is anything to agree to**, and
+    # that is the developer's ruling of 2026-08-30: every match states the
+    # difference it was reviewed against, and a match whose sides agree was
+    # reviewed against a difference of nothing.  What differs between the two
+    # arms below is only the CONTROL -- a zero difference is a hidden field,
+    # because there is nothing for an owner to consent to, and a non-zero one
+    # is the tick box that says what would be written.
     if not sides.difference:
         return HandTotals(
             bank=sides.bank, app=sides.app, difference=sides.difference,
-            remedy=AGREES,
+            remedy=AGREES, consent=spell_figure(sides.difference),
         )
     return HandTotals(
         bank=sides.bank,
@@ -202,5 +253,5 @@ def preview_hand_build(
             CORRECTS_THE_ROW if bank_cash_for(sides, rows) is not None
             else RECORDS_A_DIFFERENCE
         ),
-        consent=f"{sides.difference:f}",
+        consent=spell_figure(sides.difference),
     )

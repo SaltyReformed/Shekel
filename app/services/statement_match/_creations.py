@@ -160,6 +160,26 @@ def envelope_answer_key(
 #: this package's own root cause 1.
 NEW_ENVELOPE: str = "new"
 
+#: What that same control submits for the RECORD-AS-INCOME arm, and the ONE
+#: definition of it.  Plan step ``bank_import:X-gj-1b``, ruling
+#: **bank_import:R-GW**.
+#:
+#: **A NAMED arm rather than an absence**, which is plan step X-f6a-3c-2's own
+#: correction applied to the second ADD door: the Reconcile card's ADD tab
+#: submits one field naming which of four things the owner meant -- leave it
+#: alone, an existing envelope, a new one, or an income row filed against no
+#: container at all -- and an arm read from a MISSING field is the shape that
+#: made the existing-envelope arm unreachable from a browser once already.
+#:
+#: **It is not a destination and never reaches**
+#: :class:`~app.schemas.validation.statements.StatementPurchaseSchema`:
+#: ``reconcile_payload`` routes it to the income list, whose door
+#: (:func:`~._income.record_income_from_line`) refuses any line that is not
+#: money ARRIVING.  So a crafted body that swapped this value onto an outflow
+#: is refused as that ITEM, with the door's own sentence, and the rest of the
+#: pass still lands.
+RECORD_AS_INCOME: str = "income"
+
 
 @dataclass(frozen=True)
 class NewEnvelope:

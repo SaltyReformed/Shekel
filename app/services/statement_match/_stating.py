@@ -39,6 +39,7 @@ from app.utils.log_events import (
     log_event,
 )
 
+from ._creations import NewEnvelope, PurchaseDestination
 from ._rules import RuleAnswer, account_merchants, offerable_templates
 from ._vocabulary import account_payment_merchants
 
@@ -502,6 +503,89 @@ def _apply_one(
     for column, value in _columns_of(statement).items():
         setattr(row, column, value)
     return said
+
+
+def rule_naming(
+    merchant_id: int, destination: PurchaseDestination,
+) -> RuleSubmission:
+    """Return the standing rule that names *destination*, for *merchant_id*.
+
+    Plan step ``bank_import:X-gj-1b``.  **The INVERSE of**
+    :attr:`~._placement.Placement.select_value`, and the one statement of it:
+    the Reconcile card's ADD tab offers *always, for this merchant* beside the
+    destination the owner just chose, so something has to say which of ruling
+    **R-GI**'s answers that destination IS.
+
+    **It is TOTAL over the destinations a line can be filed into, and that is
+    a property of the two resolvers rather than a convenience.**  Every
+    destination either carries a template or does not, and each arm resolves
+    back to the very row it was read from:
+
+    * a TEMPLATE-generated row is named by :attr:`RuleAnswer.TEMPLATE`, which
+      :func:`~._placement._template_placement` resolves to that template's row
+      in whatever period the line falls in -- which is the identity across
+      periods ruling **R-GA** says a rule needs;
+    * a row NO template generated is named by :attr:`RuleAnswer.NEW_ENVELOPE`
+      carrying that row's own name and category, which
+      :func:`~._placement._new_envelope_placement` resolves to *an envelope of
+      that name and category that no template generated* -- this row -- and
+      creates one only where the period holds none.  That is not a
+      substitution: those rows are what such a rule creates, so the answer and
+      the row are the same fact read from two ends.  Measured 2026-08-30 on
+      the developer's own account: 223 of his 256 offerable destinations carry
+      a template and 33 do not, and every one of the 33 was minted by a
+      new-envelope answer.
+
+    So there is no refusal arm here, and a card need not withhold the control
+    for some destinations and offer it for others -- which is the shape this
+    package refuses to render.
+
+    Args:
+        merchant_id: The merchant the rule answers for.
+        destination: The budget line the owner chose
+            (:class:`~._creations.PurchaseDestination`).
+
+    Returns:
+        The :class:`RuleSubmission`.  It is not recorded here:
+        :func:`state_rules` is the door, and it re-derives everything it
+        checks.
+    """
+    if destination.template_id is not None:
+        return RuleSubmission(
+            merchant_id=merchant_id,
+            answer=RuleAnswer.TEMPLATE,
+            template_id=destination.template_id,
+        )
+    return RuleSubmission(
+        merchant_id=merchant_id,
+        answer=RuleAnswer.NEW_ENVELOPE,
+        envelope_name=destination.name,
+        category_id=destination.category_id,
+    )
+
+
+def rule_creating(merchant_id: int, envelope: NewEnvelope) -> RuleSubmission:
+    """Return the standing rule that creates *envelope*, for *merchant_id*.
+
+    Plan step ``bank_import:X-gj-1b``.  The other half of
+    :func:`rule_naming`, for the arm where the owner picked *a new envelope*
+    rather than one this period already holds -- the same answer, stated from
+    what they typed rather than from a row.
+
+    Args:
+        merchant_id: The merchant the rule answers for.
+        envelope: What the owner asked to create
+            (:class:`~._creations.NewEnvelope`).
+
+    Returns:
+        The :class:`RuleSubmission`.
+    """
+    return RuleSubmission(
+        merchant_id=merchant_id,
+        answer=RuleAnswer.NEW_ENVELOPE,
+        envelope_name=envelope.name,
+        category_id=envelope.category_id,
+    )
 
 
 def state_rules(

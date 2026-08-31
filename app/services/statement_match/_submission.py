@@ -87,6 +87,62 @@ _TOKEN_FIELDS: int = 4
 _FIGURE = re.compile(r"^-?(?:0|[1-9][0-9]{0,11})(?:\.[0-9]{1,6})?$")
 
 
+def spell_figure(value: Decimal) -> str:
+    """Return *value* as this screen's wire format spells a money figure.
+
+    **The INVERSE of :func:`parse_figure`, and it lives beside it for that
+    function's own reason.**  The same figure is submitted in two shapes --
+    inside a row's reviewed token, and as the difference a match states it was
+    reviewed against -- and reading them through two READERS was measured on
+    2026-08-23 to have let three spellings past one gate that the other
+    refused.  Writing them through two WRITERS is the same defect with the
+    sides swapped, and a codec whose halves sit in two modules is the drift
+    this package names as its own root cause; a first version of plan step
+    ``bank_import:X-gj-1b`` put this in :mod:`._sides` and made
+    :mod:`._submission` import it back.
+
+    Three callers spell a figure FOR THE WIRE and all three come through here:
+    this module's own reviewed row token, :attr:`~._preview.HandTotals
+    .consent`, and -- new at ``bank_import:X-gj-1b`` --
+    :func:`app.jinja_filters.stated_difference`, the difference a tier's
+    proposal states on the card that offers it.
+
+    **One other site spells a figure with ``:f`` and is deliberately NOT
+    here**: :meth:`~._panel.MatchCandidates.matching` builds the text an
+    owner's typed search is compared against.  That is a SEARCH predicate and
+    not a submitted value -- nothing reads it back -- so routing it through
+    this function would couple a display decision to a wire format and make a
+    change to either answerable only by reading both.  The census is
+    ``grep -rn ':f}"' app/``, which returns exactly those two lines.
+
+    **``:f`` and never ``str()``.**  ``Decimal.__str__`` emits scientific
+    notation for a small enough exponent (``Decimal("1E-7")`` is ``"1E-7"``)
+    and :data:`_FIGURE` admits no ``E``, so the door would refuse a body this
+    app had emitted.
+
+    **Its precondition is TWO decimal places, and it is the caller's.**  ``:f``
+    fixes the notation and not the precision: :data:`_FIGURE` admits one to six
+    places, so a figure carrying seven would be spelled faithfully and then
+    refused by :func:`parse_figure` -- measured 2026-08-30, where
+    ``Decimal("1E-7")`` and ``Decimal("0E-8")`` are the only two of fifteen
+    probe values that do not round-trip.  Every figure that reaches here is
+    quantized to cents by :meth:`~._sides.MatchSides.of`'s ``round_money`` and
+    descends from ``Numeric(12, 2)``, so the state is unreachable and carries
+    no guard -- an arm for it would be error handling for an impossible
+    scenario.  It is written down because "the notation is safe" and "the
+    round trip is total" are different claims and this docstring used to imply
+    the second.
+
+    Args:
+        value: The figure, as this package derived it, quantized to cents.
+
+    Returns:
+        Its plain decimal spelling, which :func:`parse_figure` reads back to an
+        equal ``Decimal``.
+    """
+    return f"{value:f}"
+
+
 def parse_figure(raw: str) -> Decimal:
     """Return *raw* as a money figure, or refuse the spelling.
 
@@ -200,7 +256,7 @@ class ReviewedRow:
         return _SEPARATOR.join((
             self.kind.value,
             str(self.row_id),
-            f"{self.cash_amount:f}",
+            spell_figure(self.cash_amount),
             str(self.version_id),
         ))
 

@@ -73,15 +73,28 @@
     </div>
     {% endif %}
 
+    {# THE FIGURE ALWAYS TRAVELS; ONLY THE CONTROL DIFFERS.  Since plan step
+       bank_import:X-gj-1b the accept door exempts no shape: a match states the
+       difference it was reviewed against and the door refuses when its own
+       arithmetic disagrees.  `needs_consent` decides which of three controls
+       says so -- asked of the SERVICE, because "is there something here to
+       agree to" is a money question and a template comparing `remedy` for it
+       would be a second statement of the rule `bank_cash_for` owns.
+
+       Three states, and the middle one is what the ruling added:
+         * a difference to permit  -- the tick box, carrying the figure;
+         * sides that AGREE       -- a hidden field, because 0.00 is what the
+           door will check and there is nothing to permit;
+         * no act yet, or one already refused -- the box DISABLED and
+           carrying nothing, which is the shape that shipped and is what says
+           an act will be asked for once both sides are ticked.
+       The value is the SERVER's own string in every arm: the door re-derives
+       the difference, so this is a precondition rather than a payload, which
+       is the distinction MatchSubmission draws for every figure it carries. #}
+    {% if totals.needs_consent %}
     <div class="form-check mt-2 mb-0">
-      {# The value is the SERVER's own string.  The door re-derives the
-         difference and refuses the act if the two disagree, so this box is a
-         precondition rather than a payload -- the same distinction
-         MatchSubmission draws for every figure it carries. #}
       <input class="form-check-input" type="checkbox"
-             id="hand-residual" name="residual"
-             value="{{ totals.consent or '' }}"
-             {% if not totals.consent %}disabled{% endif %}>
+             id="hand-residual" name="residual" value="{{ totals.consent }}">
       <label class="form-check-label small" for="hand-residual">
         {% if totals.remedy == 'records' %}
         Record the {{ money(totals.difference) }} difference as a row with no
@@ -89,21 +102,50 @@
         {% elif totals.remedy == 'corrects' %}
         Write your bank's {{ money(totals.bank) }} to the row you ticked, in
         place of the {{ money(totals.app) }} your records hold.
-        {% elif totals.remedy == 'agrees' %}
-        These add up. Nothing is left over.
-        {% elif totals.remedy == 'refused' %}
+        {% endif %}
+      </label>
+    </div>
+    {% elif totals.consent is not none %}
+    {# NOTHING TO PERMIT, so no box -- but the figure still travels, so that
+       "a match states the difference it was reviewed against" holds with no
+       exception and the absence of this field means exactly one thing.  At
+       zero it is INERT and that is said rather than dressed up: the door's
+       gate returns early on a zero difference whether it is told 0.00 or told
+       nothing, and a row that moved under the page is already refused, by
+       name, before this figure is read (`_resolve._reject_moved_since_review`
+       runs first).  What it buys is one rule instead of two. #}
+    <input type="hidden" name="residual" value="{{ totals.consent }}">
+    <p class="small text-body-secondary mt-2 mb-0">
+      These add up. Nothing is left over.
+    </p>
+    {% else %}
+    <div class="form-check mt-2 mb-0">
+      <input class="form-check-input" type="checkbox"
+             id="hand-residual" name="residual" value="" disabled>
+      <label class="form-check-label small" for="hand-residual">
+        {% if totals.remedy == 'refused' %}
         There is nothing to accept while the sentence above stands.
         {% else %}
         {# Also the JAVASCRIPT-OFF wording, because this is what the server
            renders into the page and nothing ever replaces it there.  It says
-           what the door does, which is the only thing true in that world. #}
-        Tick lines on the left and rows on the right. One line against one row
-        may <strong>disagree</strong>: your bank's figure is written to that
-        row. Several rows must come to the <strong>same total</strong>, and if
-        they do not, nothing is changed and the difference is named at the top
-        of this page.
+           what the door does, which is the only thing true in that world --
+           and plan step bank_import:X-gj-1b changed what that is.  It used to
+           promise that one line against one row "may disagree: your bank's
+           figure is written to that row", which WAS true with no script,
+           because the consent gate exempted exactly that shape.  It exempts
+           none now, so a disagreeing group cannot be accepted from a page
+           that never told the owner the figure.  Saying so is the point: the
+           sentence that stayed would have sent a scriptless owner to press
+           Apply against a refusal, pointing at a box they cannot tick. #}
+        Tick lines on the left and rows on the right. If they come to the
+        <strong>same total</strong>, Apply records the match. If they
+        <strong>disagree</strong>, this page has to show you the difference
+        and you have to agree to it before anything is written -- and working
+        it out needs JavaScript. Without it nothing is changed, and the
+        difference is named at the top of this page.
         {% endif %}
       </label>
     </div>
+    {% endif %}
   </div>
 </div>

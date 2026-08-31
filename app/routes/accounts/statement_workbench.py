@@ -67,9 +67,10 @@ from app.routes.accounts._bp import accounts_bp
 from app.routes.accounts._cash_page import load_cash_account_or_404
 from app.routes.accounts._statement_doors import (
     fragment_door,
-    outcome_counts,
+    log_pass_applied,
     refusal_sentence,
     run_statement_fragment_door,
+    submitted_match,
 )
 from app.schemas.validation.statements import (
     StatementMatchSchema,
@@ -87,11 +88,6 @@ from app.services.statement_match import (
 )
 from app.utils.auth_helpers import require_owner
 from app.utils.error_fragments import designed_error
-from app.utils.log_events import (
-    BUSINESS,
-    EVT_STATEMENT_BATCH_APPLIED,
-    log_event,
-)
 
 _logger = logging.getLogger(__name__)
 
@@ -296,28 +292,6 @@ def statement_workbench(account_id):
     )
 
 
-def _submitted_match(submitted) -> MatchSubmission:
-    """Return the loaded payload as the one match the service records.
-
-    **Nothing here names an owner or an account.**  Whose group this is, is the
-    scope's -- one statement, made where the route proved it -- so no member
-    can be priced against one account and written against another.
-
-    Args:
-        submitted: What
-            :class:`~app.schemas.validation.statements.StatementMatchSchema`
-            loaded.
-
-    Returns:
-        The :class:`~app.services.statement_match.MatchSubmission`.
-    """
-    return MatchSubmission(
-        line_ids=frozenset(submitted["line_ids"]),
-        rows=frozenset(submitted["rows"]),
-        accepted_difference=submitted["residual"],
-    )
-
-
 @accounts_bp.route(
     "/accounts/<int:account_id>/statements/match", methods=["POST"],
 )
@@ -374,13 +348,9 @@ def apply_hand_match(account_id):
             outcome: The :class:`~app.services.statement_match.BatchOutcome`
                 the door applied.
         """
-        log_event(
-            _logger, logging.INFO, EVT_STATEMENT_BATCH_APPLIED, BUSINESS,
-            "A hand-built statement match was recorded.",
-            user_id=current_user.id,
-            account_id=account_id,
-            item_count=1,
-            **outcome_counts(outcome),
+        log_pass_applied(
+            _logger, "A hand-built statement match was recorded.",
+            account_id=account_id, item_count=1, outcome=outcome,
         )
 
     return run_statement_fragment_door(
@@ -397,7 +367,7 @@ def apply_hand_match(account_id):
                 # it, and the only other consent belongs to an import filing
                 # under a standing rule.
                 consent=Consent.TICKED,
-                matches=(_submitted_match(submitted),),
+                matches=(submitted_match(submitted),),
                 creations=(),
                 incomes=(),
             ),
@@ -463,5 +433,5 @@ def statement_match_totals(account_id):
     # would put a line in the audit trail for every checkbox on the page.
     return render_template(
         _HAND_TOTALS,
-        totals=preview_hand_build(_submitted_match(submitted), scope),
+        totals=preview_hand_build(submitted_match(submitted), scope),
     )
