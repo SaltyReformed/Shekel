@@ -219,6 +219,27 @@ class RowsNeverShown:
 
 
 @dataclass(frozen=True)
+class CardSubject:
+    """One bank line the Reconcile page renders a card for, and what claims it.
+
+    Plan step ``bank_import:X-gj-1b``.  **Two fields and not two lookups**,
+    because a caller that asked for the line and then asked separately whether
+    a proposal claims it could get half an answer: the line resolved and the
+    proposal missed, which is the state that renders a proposed card's rows as
+    ordinary candidates and lets an untick look like a hand-built group.
+
+    Attributes:
+        line: The :class:`~._offers.BankLine` the card is about.
+        proposal: The :class:`~._offers.MatchProposal` whose acceptance this
+            card offers, or ``None`` for a line no tier paired -- an outflow
+            the create door would take, a deposit, or a parked payment.
+    """
+
+    line: "BankLine"
+    proposal: "MatchProposal | None"
+
+
+@dataclass(frozen=True)
 class ReviewSet:  # pylint: disable=too-many-instance-attributes
     """Everything the review screen needs, in one value.
 
@@ -344,6 +365,47 @@ class ReviewSet:  # pylint: disable=too-many-instance-attributes
     merchants: MerchantSection
     bounds: ReviewBounds
     declined_lines: "dict[int, str]" = field(default_factory=dict)
+
+    def card_subject(self, line_id: int) -> "CardSubject | None":
+        """Return the line this pass renders a card for, and what claims it.
+
+        Plan step ``bank_import:X-gj-1b``.  **The Reconcile page's own
+        membership question, asked of the pass that drew the cards.**  A route
+        serving one card's fragment has to answer *is this line one I rendered
+        a card for* -- and answering it with :attr:`unmatched` alone is wrong
+        by construction, because :func:`_unexplained` takes every proposal's
+        line OUT of that list before it exists.  Measured 2026-08-30 on a
+        restored production clone: **137 of the 137** cards the developer's
+        account proposes resolve to nothing in :attr:`unmatched`, so every one
+        of their MATCH panes answered 404 and its spinner never resolved.
+
+        **It is a membership test and never a second ownership check**, which
+        is the distinction :func:`~app.routes.accounts.statement_workbench
+        ._preselected` states: the pass is already scoped to one owner's one
+        account, so a line it does not hold has no card here whatever the
+        reason.  What the measurement above shows is the hazard in that --
+        a 404 from the URL map, a 404 from ownership and a 404 from asking the
+        WRONG SET are indistinguishable to everything except a reader
+        ([[feedback_a_moved_door_disarms_its_ownership_control]] one surface
+        over) -- so the set lives here beside the two lists it is the union
+        of, rather than being spelled again by each caller.
+
+        Args:
+            line_id: The bank line the card is about, already an ``int``.
+
+        Returns:
+            Its :class:`CardSubject`, or ``None`` where this pass renders no
+            card for that line -- someone else's line, one another match has
+            already claimed, or one outside the pay calendar.
+        """
+        for line in self.unmatched:
+            if line.line_id == line_id:
+                return CardSubject(line=line, proposal=None)
+        for proposal in self.proposals:
+            for line in proposal.lines:
+                if line.line_id == line_id:
+                    return CardSubject(line=line, proposal=proposal)
+        return None
 
     @property
     def explained_by_a_proposal(self) -> "ProposedAlready":
@@ -723,6 +785,7 @@ def _as_bank_line(row: BankStatementLine) -> BankLine:
         transaction_on=row.transaction_on,
         merchant_id=row.merchant_id,
         merchant=row.merchant_name,
+        source_category=row.source_category,
     )
 
 

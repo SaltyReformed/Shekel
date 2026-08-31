@@ -43,20 +43,20 @@ side: both were unblocked and they shared no file.
 pairing two inside one arc, check that neither names a module the other deletes. A row marked
 **MOVES MONEY** takes its own PR either way, so it is never the second lane.
 
-**The rank is a DECISION, not a derivation.** 63 of these steps are legal to start right now, so the
+**The rank is a DECISION, not a derivation.** 64 of these steps are legal to start right now, so the
 dependency graph alone cannot say which comes next; the sequence below follows each arc's own stated
 sequencing -- the balance README's ten blocks, and each plan's section 0.
 **The `starts` column is DERIVED from the blocker keys beside it and the gate reconciles the two**,
 so a rank can never contradict a real dependency and a stale `NOW` cannot survive a commit.
 
-**196 steps, 138 open.** The dependency graph holds 88 edges over 71 rows.
+**197 steps, 138 open.** The dependency graph holds 88 edges over 71 rows.
 
 ## The order
 
 | arc | id | also | what this step does | order | commit | starts |
 | --- | --- | --- | --- | --- | --- | --- |
-| bank_import | X-gj-1b | -- | Build the RECONCILE PAGE and the three tabs whose cards are BANK LINES (**R-HR**, **R-HS**, **R-HW**, **R-HX**): the route pair, the hero, the holding chips, the legend, the tab bar, the card and its opened four-tab panel, and the sticky footer's per-class sweeps and Apply (**R-FZ(c)**, **R-HD**), in both themes and both viewports. | #1 | -- | NOW / bank_import:X-gj-1a (shipped) |
-| bank_import | X-gj-1c | -- | Build the two tabs whose cards are ACTS already applied (**R-HU**, **R-GY**): Explained and Filed by rules, newest first with an act that has stopped holding at the top, Undo on the card, and the Explained chip's link, retiring the register as a page. | #2 | -- | after #1 / bank_import:X-gj-1b |
+| bank_import | X-gk | -- | Build the MERCHANTS surface the audit's fix column names: one row per merchant this account has seen, carrying its standing answer or *I have not said*, edited on click through the door the receipt's offer and the register already post to, so that the question three partial surfaces share today has one durable home. | #1 | -- | NOW / bank_import:X-gj-1b (shipped) |
+| bank_import | X-gj-1c | -- | Build the two tabs whose cards are ACTS already applied (**R-HU**, **R-GY**): Explained and Filed by rules, newest first with an act that has stopped holding at the top, Undo on the card, and the Explained chip's link, retiring the register as a page. | #2 | -- | NOW / bank_import:X-gj-1b (shipped) |
 | bank_import | X-gj-2 | -- | Let a standing rule answer an INFLOW (**R-HT(a)**): a deposit signature files as an income category and a merchant credit as a NEGATIVE purchase in that merchant's envelope, auto-applied at import because it creates; **MOVES MONEY, OWN PR**. | #3 | -- | NOW / bank_import:X-ge (shipped) |
 | bank_import | X-gj-3 | -- | Let a standing rule name a ROW SET (**R-HT(b)**): a payroll signature pre-builds the group match with its residue's destination, applied only on the owner's OK because it modifies rows; **MOVES MONEY, OWN PR**. | #4 | -- | after #2 / bank_import:X-gj-1 |
 | bank_import | X-gj-4 | -- | Record a SKIPPED line's disposition, which lights the SKIP verb the opened panel renders shut and fills the Skipped tab the page already draws for a standing *never a purchase* answer (**R-HQ**), opening with a fork -- a column on the line or a disposition table -- decided at the gate before a migration is written. | #5 | -- | after #2 / bank_import:X-gj-1 |
@@ -219,6 +219,7 @@ so a rank can never contradict a real dependency and a stale `NOW` cannot surviv
 | bank_import | X-f6 | -- | The DECOMPOSED parent of the statement importer, whose first leaf moved AHEAD of the cutover because what the cutover needed was clearing facts rather than an import surface. Carries **N-173**. | container | -- | ticks with #111 |
 | bank_import | X-gj-1 | -- | The DECOMPOSED parent of the Reconcile PAGE, split three ways along the services boundary on 2026-08-29 because one leaf measured ~3,500 lines over a service, a route pair, six templates, CSS, JS and two test modules: the view model, the page over it, then the opened card. | container | -- | ticks with #2 |
 | bank_import | X-gj-1a | -- | Derive the RECONCILE VIEW MODEL in the service (**R-HP**, **R-HQ**, **R-HR**, **R-HW**): one card per bank line carrying its verb, whether a rule, a tier or nothing suggested it, the sentence's parts, and which of the four verbs are OPEN with the reason a shut one is shut, plus the settled act's card, the five tab counts, the holding chips and `bank_agreement`'s headline day. | SHIPPED | `bc851df9` | NOW |
+| bank_import | X-gj-1b | -- | Build the RECONCILE PAGE and the three tabs whose cards are BANK LINES (**R-HR**, **R-HS**, **R-HW**, **R-HX**): the route pair, the hero with the last import's provenance, the holding chips, the legend, the tab bar, the card and its opened four-tab panel on ONE footer, and the sticky footer's per-class sweeps and Apply (**R-FZ(c)**, **R-HD**), in both themes and both viewports. | SHIPPED | `cfcfcac9` | NOW |
 | bank_import | X-gj | -- | The DECOMPOSED parent of the Reconcile screen rebuild the developer locked at Loop A round 4 on 2026-08-29 (**R-HP**..**R-HV**), which replaces review, register and workbench with one page on four verbs; it ticks with the last of its four leaves. | container | -- | ticks with #5 |
 | recurrence | R16 | -- | The DECOMPOSED parent of the ESTIMATED tier's summing, split into FOUR leaves 2026-08-26 (**R-R36**) when a trace found the forward fold charging one month of interest per payment RECORD, so no cadence could be honoured until the accrual stopped riding on the payment. Carries **D47**, **D48**. | container | -- | ticks with #100 |
 | recurrence | R16-b | -- | The DECOMPOSED parent of the ESTIMATED tier's summing, split into TWO leaves 2026-08-27 (**R-R37**) when the developer refused to have the sum IGNORE a closing bound an owner had entered: the walk the sum needs stops truncating on its own evidence, while the sum itself now waits for `end_date` to hold one fact. Carries **D47**, **D48**, **D53**. | container | -- | ticks with #98 |
