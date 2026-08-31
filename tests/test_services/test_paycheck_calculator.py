@@ -4207,8 +4207,11 @@ class TestTheGrossContractIsDocumented:
 
     @pytest.mark.parametrize("registry,ident", [
         ("rulings.md", "| balance | R-HW |"),
-        ("ledger.md", "| balance | N-390 "),
+        ("rulings.md", "| balance | R-IA |"),
+        ("rulings.md", "| balance | R-IF |"),
         ("ledger.md", "| balance | N-391 "),
+        ("ledger.md", "| balance | N-398 "),
+        ("ledger.md", "| balance | N-399 "),
     ])
     def test_the_plan_identifiers_this_step_cites_actually_exist(
         self, registry, ident,
@@ -4228,9 +4231,24 @@ class TestTheGrossContractIsDocumented:
         `tools/plan_gate/_rulings.py:135-141` says why the general arm cannot
         exist**: "an arc document may name no ruling id that has no
         `rulings.md` row" would fire on 88 live citations today, because an
-        archived ruling's text stays in its archive. Scoped to three live ids
-        it is decidable, and it is the difference between grading the citation
-        and grading the ruling.
+        archived ruling's text stays in its archive. Scoped to a handful of
+        live ids it is decidable, and it is the difference between grading the
+        citation and grading the ruling.
+
+        **`N-390` LEFT this list at plan step balance:X-bh-2, which closed
+        it**, and the removal is the arm working rather than being weakened. A
+        closed finding leaves `ledger.md` by design -- `ledger.md`'s own
+        preamble says a row leaves when its fix SHIPS -- so pinning a closed id
+        here would assert the opposite of the convention and fail forever. What
+        replaces it is what that step LEFT live: `N-398`, `N-399` and the
+        ruling pair `R-IA` / `R-IF`, all four cited from `app/` today.
+
+        *It caught a real defect on the way out.* X-bh-2 committed its code and
+        its plan documents separately, and the full suite ran against the
+        documents in their PRE-change state -- so both commits were green alone
+        and the pair was red. This case is the only thing in the corpus that
+        would have said so, and it says it about the SECOND commit, which is
+        the one no code-side gate looks at.
         """
         path = (
             pathlib.Path(__file__).resolve().parents[2] / "docs/plans" / registry
