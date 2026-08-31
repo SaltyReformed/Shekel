@@ -307,6 +307,11 @@ def compute_due_date(rule, period):
     # carries the same defect: at a cadence where the firing month is neither
     # endpoint the row is dated in the wrong month entirely (plan ledger row
     # D18).  Plan step R5 owns it, with the due-date model it rewrites.
+    #
+    # The containment test is the PERIOD's own rule since pay-calendar plan
+    # step C4-a-3 (``DerivedPeriod.covers``, ruling R-PC31); it was
+    # ``period.start_date <= target <= period.end_date`` open-coded here, one
+    # of the three sites that spelled it out.
     base_year = period.start_date.year
     base_month = period.start_date.month
 
@@ -314,7 +319,7 @@ def compute_due_date(rule, period):
         last_day = cal.monthrange(dt.year, dt.month)[1]
         target_day = min(dom, last_day)
         target = date(dt.year, dt.month, target_day)
-        if period.start_date <= target <= period.end_date:
+        if period.covers(target):
             base_year = dt.year
             base_month = dt.month
             break

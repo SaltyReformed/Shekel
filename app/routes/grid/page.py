@@ -323,13 +323,17 @@ def _load_grid_transactions(account, balance_ctx, all_periods):
 class _GridRowData(NamedTuple):
     """Row-render values produced by :func:`_build_grid_row_data`.
 
-    The six fields are the grid's per-render "row contract": they are
+    The four fields are the grid's per-render "row contract": they are
     produced together and spliced together into the ``grid/grid.html``
     render context, so carrying them as a :class:`typing.NamedTuple`
-    (rather than a six-tuple unpacked into six parallel locals) keeps
+    (rather than a four-tuple unpacked into four parallel locals) keeps
     both :func:`index` and :func:`_build_plan_view` under pylint's
     ``R0914`` local-count threshold and names each value at the call
     site.
+
+    **The two ENTRY maps left at pay-calendar plan step C4-a-3** for
+    :func:`_build_entry_maps`, which :func:`index` alone calls; the whole
+    argument for the move is stated there rather than four times over.
 
     Attributes:
         income_row_keys: Ordered income-section row keys for the row
@@ -339,11 +343,6 @@ class _GridRowData(NamedTuple):
         matched_by_row_period: ``(category_id, template_id, txn_name,
             period_id) -> matched transactions`` index read by the cell
             template.
-        entry_sums: Pre-computed tracked-progress map (``{txn_id ->
-            sums}``) for the cell template's "spent / budget" display.
-        entry_lists: Pre-rendered inline mobile entries list per
-            envelope card (``{txn_id -> list data}``), computed
-            server-side to avoid per-card HTMX fan-out.
         due_captions: ``{txn_id -> the due date to caption, or None}``
             for the cell template's "Due:" line
             (:func:`~app.services.grid_view_service.due_captions_by_id`,
@@ -355,15 +354,11 @@ class _GridRowData(NamedTuple):
     income_row_keys: list[RowKey]
     expense_row_keys: list[RowKey]
     matched_by_row_period: dict[tuple[int, int | None, str, int], list[Transaction]]
-    entry_sums: dict[int, dict]
-    entry_lists: dict[int, dict]
     due_captions: dict[int, "date | None"]
 
 
-def _build_grid_row_data(
-    transactions, periods, show_all, all_categories, budgets,
-):
-    """Build row keys, the (row_key, period) match index, and entry sums.
+def _build_grid_row_data(transactions, periods, show_all, all_categories):
+    """Build row keys, the (row_key, period) match index, and the due captions.
 
     Row keys + the (row_key, period) -> matched-transactions dict are
     produced by the pure :mod:`app.services.grid_view_service`.  The
@@ -381,10 +376,12 @@ def _build_grid_row_data(
     it contributes $0 to every visible-period subtotal and its cells
     were never going to render.
 
+    **It builds no ENTRY maps** since pay-calendar plan step C4-a-3, and
+    :class:`_GridRowData` carries why: this runs twice per render and only one
+    of the two runs draws a purchase list.
+
     Returns a :class:`_GridRowData` carrying ``income_row_keys``,
-    ``expense_row_keys``, ``matched_by_row_period``, ``entry_sums``,
-    ``entry_lists`` and ``due_captions``.  ``entry_sums`` is the pre-computed
-    tracked-progress map for the cell template's "spent / budget" display.
+    ``expense_row_keys``, ``matched_by_row_period`` and ``due_captions``.
     """
     if show_all:
         row_source_txns = transactions
@@ -405,15 +402,6 @@ def _build_grid_row_data(
         income_row_keys, expense_row_keys, periods, transactions,
     )
 
-    entry_sums = build_entry_sums_dict(transactions, budgets)
-    # Pre-render context for the inline mobile entries list on envelope
-    # cards.  Computed here (server-side) rather than via per-card HTMX
-    # ``hx-trigger="load"`` fan-out to keep one grid page load from
-    # blowing past the ``RATELIMIT_DEFAULT`` ceiling of "30 per minute"
-    # on the entries endpoint -- with 6 visible periods and ~10 envelope
-    # templates each, the lazy-load shape generated ~60 parallel GETs
-    # and the over-limit cards stuck on the loading spinner forever.
-    entry_lists = build_entry_lists_dict(transactions, budgets)
     # The caption map is built over exactly the rows that get a CELL -- the
     # values of the match index -- rather than over ``transactions``, which
     # carries rows outside the visible window.  That is what makes the payday
@@ -428,13 +416,88 @@ def _build_grid_row_data(
         income_row_keys=income_row_keys,
         expense_row_keys=expense_row_keys,
         matched_by_row_period=matched_by_row_period,
-        entry_sums=entry_sums,
-        entry_lists=entry_lists,
         due_captions=due_captions,
     )
 
 
-def _build_plan_view(ctx, all_transactions, grid_view, all_categories, budgets):
+class _GridEntryMaps(NamedTuple):
+    """What the grid's ENVELOPE cards render their purchase lists from.
+
+    Attributes:
+        entry_sums: ``{txn_id -> sums}``, the cell template's
+            "spent / budget" progress aggregate.
+        entry_lists: ``{txn_id -> entry_list_view}``, the inline mobile
+            entries list per envelope card, rendered server-side to avoid
+            per-card HTMX fan-out.
+    """
+
+    entry_sums: dict[int, dict]
+    entry_lists: dict[int, dict]
+
+
+def _build_entry_maps(transactions, budgets, all_periods) -> _GridEntryMaps:
+    """Build the two ENVELOPE maps, and the paycheck spans one of them needs.
+
+    **They were built inside :func:`_build_grid_row_data` until pay-calendar
+    plan step C4-a-3**, which is the whole of that step's five-argument fork.
+    That helper runs TWICE per render and :func:`_build_plan_view` DISCARDS
+    both maps it returns -- it publishes six ``plan_*`` keys and neither is
+    one of them, while its own docstring had claimed since the tab was built
+    that no entry data was computed for it.  So the fork's answer was a
+    DELETION rather than a move (ruling **R-PC35**): nothing gained an
+    argument, ``_GridRowData`` lost two fields, and that helper and
+    ``_build_plan_view`` each lost ``budgets``.
+
+    **It is a FUNCTION rather than two calls written into**
+    :func:`index`'s ``render_template`` **arguments**, and an adversarial
+    review of this step measured why (2026-08-31): naming those two results
+    as locals there takes :func:`index` to ``R0914`` at 16/15, so leaving
+    them inline would have been load-bearing rather than stylistic -- a
+    quieter way past a ceiling than the scoped disable this step refused,
+    because a disable is greppable and an inlined producer call is not.  One
+    named value costs one local, which is what ``period_spans`` cost before
+    it moved in here beside its only consumer.
+
+    Args:
+        transactions: Every row the page loaded -- NOT the visible-window
+            slice.  The mobile card macro indexes these maps by ``txn.id``
+            for any row it draws, and narrowing them to the rendered window
+            is a behaviour question this leaf does not open (R-PC35's own
+            rejected list).
+        budgets: The page's ONE ``{transaction_id: amount}`` map.
+        all_periods: The window *transactions* was LOADED by --
+            ``ctx.all_periods``, the same value :func:`_load_grid_transactions`
+            scopes its ``pay_period_id IN (...)`` with, read one field by both
+            so the span map below cannot cover fewer paychecks than the rows
+            it is handed.  Passing the visible slice instead would be a
+            ``KeyError`` on a live render, which is why the two reads sit in
+            one function rather than being resolved apart.
+
+    Returns:
+        The :class:`_GridEntryMaps` for this render.
+    """
+    return _GridEntryMaps(
+        entry_sums=build_entry_sums_dict(transactions, budgets),
+        # Pre-render context for the inline mobile entries list on envelope
+        # cards.  Computed server-side rather than via per-card HTMX
+        # ``hx-trigger="load"`` fan-out to keep one grid page load from
+        # blowing past the ``RATELIMIT_DEFAULT`` ceiling of "30 per minute"
+        # on the entries endpoint -- with 6 visible periods and ~10 envelope
+        # templates each, the lazy-load shape generated ~60 parallel GETs
+        # and the over-limit cards stuck on the loading spinner forever.
+        #
+        # The SPANS the out-of-period purchase warning is judged against
+        # (plan step C4-a-3), keyed the way a row names its paycheck.  They
+        # are DERIVED, where the warning read the stored ``end_date`` plan
+        # step C4-c drops.
+        entry_lists=build_entry_lists_dict(
+            transactions, budgets,
+            {period.period_id: period for period in all_periods},
+        ),
+    )
+
+
+def _build_plan_view(ctx, all_transactions, grid_view, all_categories):
     """Build the read-only "Plan" tab context window.
 
     The Plan tab on the mobile grid answers "what does the next half-
@@ -444,11 +507,15 @@ def _build_plan_view(ctx, all_transactions, grid_view, all_categories, budgets):
     slice anchored at ``current_period`` and walking forward far enough to
     cover :data:`PLAN_WINDOW_MONTHS` months of the OWNER's paychecks.
 
-    No entry sums or entry lists are computed -- Plan renders future
-    periods read-only and envelope entries are by design a current /
-    past concept.  The interactive helper :func:`_build_grid_row_data`
-    still produces those values for the rest of the page; we discard
-    them here.
+    **No entry sums or entry lists are computed, and that sentence became
+    TRUE at pay-calendar plan step C4-a-3** -- Plan renders future periods
+    read-only and envelope entries are by design a current / past concept.
+    It stood here while :func:`_build_grid_row_data` built both maps over
+    every loaded row on this call as well, and returned them into a
+    ``row_data`` this function drops on the floor: the claim described the
+    OUTPUT and the work was done anyway.  Both builds now live at
+    :func:`index`, the one caller that renders them, which is also why this
+    function no longer takes the ``budgets`` map it only ever forwarded.
 
     Args:
         ctx: The :class:`_GridContext` for this request.  Supplies
@@ -469,11 +536,6 @@ def _build_plan_view(ctx, all_transactions, grid_view, all_categories, budgets):
         all_categories: User's full category set (active + archived).
             Forwarded to the row-key builder so archived-category
             transactions still render.
-        budgets: The page's ONE ``{transaction_id: amount}`` map, threaded in
-            rather than rebuilt: this helper runs a second time for the Plan
-            window over the SAME rows, and a second map would be a second
-            pricing pass over rows the first already priced (the shape of
-            findings **N-268** / **N-269**).
 
     Returns:
         Dict with six ``plan_*`` keys ready to splice into the
@@ -520,7 +582,7 @@ def _build_plan_view(ctx, all_transactions, grid_view, all_categories, budgets):
     )
 
     row_data = _build_grid_row_data(
-        all_transactions, plan_periods, False, all_categories, budgets,
+        all_transactions, plan_periods, False, all_categories,
     )
 
     return {
@@ -594,8 +656,15 @@ def index():
     controlled by query params or user settings.  Orchestrates
     :func:`_resolve_grid_context` (period range + early returns),
     :func:`_load_grid_transactions`, :func:`_build_grid_balances`,
-    :func:`_build_grid_subtotals`, and :func:`_build_grid_row_data`,
-    then dispatches to ``grid/grid.html``.
+    :func:`_build_grid_subtotals`, :func:`_build_grid_row_data` and
+    :func:`_build_entry_maps`, then dispatches to ``grid/grid.html``.
+
+    *Two of those names resolve to nothing and have since before this
+    function was decomposed*: ``_build_grid_balances`` and
+    ``_build_grid_subtotals`` exist nowhere in ``app/``.  Recorded rather
+    than repaired here (``CLAUDE.md`` rule 6) by the adversarial review of
+    plan step ``pay_calendar:C4-a-3``, 2026-08-31, which is the step that
+    added the last name in the list.
     """
     user_id = current_user.id
 
@@ -679,15 +748,29 @@ def index():
     show_all = request.args.get("show_all", type=int) == 1
 
     row_data = _build_grid_row_data(
-        all_transactions, ctx.periods, show_all, all_categories, budgets,
+        all_transactions, ctx.periods, show_all, all_categories,
     )
 
     # Build the parallel context for the mobile "Plan" tab.  Decoupled
     # from ctx.periods so a `?periods=1&offset=N` URL (driven by the
     # This Period arrow nav) does not starve Plan of forward visibility.
     plan_view = _build_plan_view(
-        ctx, all_transactions, grid_view, all_categories, budgets,
+        ctx, all_transactions, grid_view, all_categories,
     )
+
+    # The envelope cards' two maps (pay-calendar plan step C4-a-3).  It takes
+    # ``ctx.all_periods`` -- the SAME field ``_load_grid_transactions`` scoped
+    # its ``pay_period_id IN (...)`` with, eleven lines up -- so the paycheck
+    # spans it derives cannot cover fewer rows than it is handed.
+    #
+    # **That is also what keeps balance finding N-358 out of THIS lookup**, and
+    # it says nothing about the rest of the page: the spans and the rows are
+    # cut from one window, so there is no second read for a concurrent payday
+    # write to land between, which is the argument ``require_period``'s own
+    # docstring makes for a precondition carried by the QUERY.  The rolling
+    # top-up above commits BEFORE ``_resolve_grid_context`` opens the pass that
+    # window comes from, which is what makes it hold the paydays just appended.
+    entry_maps = _build_entry_maps(all_transactions, budgets, ctx.all_periods)
 
     return render_template(
         "grid/grid.html",
@@ -759,8 +842,8 @@ def index():
         today=display_today(),
         all_periods=ctx.all_periods,
         low_balance_threshold=_resolve_low_balance_threshold(),
-        entry_sums=row_data.entry_sums,
-        entry_lists=row_data.entry_lists,
+        entry_sums=entry_maps.entry_sums,
+        entry_lists=entry_maps.entry_lists,
         matched_by_row_period=row_data.matched_by_row_period,
         due_captions=row_data.due_captions,
         **plan_view,

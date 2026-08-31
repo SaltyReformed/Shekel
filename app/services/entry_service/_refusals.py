@@ -44,8 +44,8 @@ from app.utils.dates import display_today
 #:   the purchase between this account's outflow and its CC Payback sibling.
 #:   COST-BEARING;
 #: * ``purchased_on`` -- ``Transaction.entries``' ordering, the out-of-period
-#:   WARNING (:func:`._sums.check_purchase_date_in_period`), the reconcile
-#:   panel's sort and its two OFFER predicates
+#:   WARNING (:func:`._sums.entry_list_view`), the reconcile panel's sort and
+#:   its two OFFER predicates
 #:   (``reconcile_service._rows.lands_on_or_before``,
 #:   ``_purchases._outstanding_scope``), the matcher's ``expected_on``, three
 #:   template fields.  **No valuation reads it.**  ``_outstanding_scope`` does

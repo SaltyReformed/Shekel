@@ -11,7 +11,8 @@ what reached `main` is a MEASUREMENT (`git log --oneline origin/main..dev`).
 section 3 named were two stale and two moved, and five more were named by no step at all, which row
 **P70**'s query-position census structurally could not see. The leaves ARE that census: five take
 the readers off the columns one PACKAGE at a time, one makes an owner's recorded cadence a foreign
-key, and the last drops the columns. **`C4-a-1` and `C4-a-2` have SHIPPED; `C4-a-3` is next.**
+key, and the last drops the columns.
+**`C4-a-1`, `C4-a-2` and `C4-a-3` have SHIPPED; `C4-a-4` is next.**
 
 **`C10`-`C12` came OUT of `C2-f3`** on 2026-08-19 for gating C4 on work it does not depend on: the
 salary package's clock (**P49**, which `C2-f3a` wrongly closed), the layer predicate (**P56**) and
@@ -271,11 +272,16 @@ untouched; each survivor is an `AttributeError` or a `ProgrammingError` the day 
 
 **RE-CENSUSED 2026-08-28 at `C4-a-2`, and the earlier census was blind to a SHAPE**: it saw
 `PayPeriod.end_date` in query position and `<row>.pay_period.end_date`, but not a read through a
-LOCAL bound from `.pay_period`, which is how two of the survivors are written. Widened, `app/` holds
+LOCAL bound from `.pay_period`, which is how two of the survivors are written. Widened, `app/` held
 FOUR Python reads and one Jinja read, each already named by the leaf that owns it below -- so this
 is a correction to those line numbers, not a second list. `_candidates` is `:941` and the conflict
 chooser `:196`; `resolve_cadence` reads `last.end_date` off a ROW rather than in query position,
 which is why `_block_headings` was the last query-position read of that column.
+**`C4-a-3` took one of the four**, the purchase-date warning, leaving THREE Python reads and the one
+Jinja read: `_candidates` (`C4-a-4`), the conflict chooser and the popover (`C4-a-5`), and
+`resolve_cadence` (`C4-b`). The count is restated rather than left to be recounted, because a number
+written in prose is what two branches can each decrement to the same string with nothing reconciling
+them.
 
 - [x] **C4-a-1 -- the balance seam's attribution clamp.** `8962e073` + `2895f693`. Closed **P38**.
       *Its specification here described a build `balance:X-i4` had already made impossible -- five
@@ -283,16 +289,16 @@ which is why `_block_headings` was the last query-position read of that column.
       signature at all. The commits are the record.*
 - [x] **C4-a-2 -- the reconcile panel, and the clamp moves onto the value.** `82bd762c`. Both reads
       gone; `utils.dates.attribution_date` DELETED for `DerivedPeriod.attribution_day` (**R-PC31**).
-      `DerivedPeriod.covers` did NOT land with it -- the step order gives it to `C4-a-3`.
+      `DerivedPeriod.covers` did NOT land with it -- the step order gave it to `C4-a-3`.
       **What a later leaf must obey**: all three arms of that panel now scope ownership by the
       calendar's own saved period ids, because the first build's "the refusal is unreachable"
       argument was measured FALSE (`/grid` appends a payday AND populates it in one transaction).
-- [ ] **C4-a-3 -- the purchase-date warning.** `entry_service/_sums` (`:344-345`) plus four route
-      call sites, and the containment test becomes `DerivedPeriod.covers`, which also retires the
-      open-coded pair at `recurrence_engine/_plan.py:317` and `pay_calendar/_searches.py:77`. This
-      leaf owes its own decision: `grid/page._build_grid_row_data` is already at pylint's
-      five-argument ceiling, so the calendar needs either a rationale-carrying disable or the
-      `entry_lists` build hoisted into its two callers.
+- [x] **C4-a-3 -- the purchase-date warning, and `DerivedPeriod.covers` lands.** `a0fb14ba`.
+      `check_purchase_date_in_period` DELETED; `entry_list_view` stopped taking a transaction and
+      `build_entry_lists_dict` takes a `{period_id: DerivedPeriod}` map (**R-PC34**). `$0.00` on
+      LIVE PRODUCTION 2026-08-31, control fired. **What a later leaf must obey**: the five-argument
+      fork was answered by DELETION (**R-PC35**), so `_build_grid_row_data` builds no entry map and
+      `_build_entry_maps` is the one place that does.
 - [ ] **C4-a-4 -- the merchant-destination picker.** `statement_match/_candidates.destinations_for`
       (`:923-924`) is the one relationship read left in that package, and `_scope` is its only
       caller. `transaction_candidate` in the same module already resolves through

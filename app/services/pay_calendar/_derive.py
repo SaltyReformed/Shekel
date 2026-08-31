@@ -166,6 +166,63 @@ class DerivedPeriod:
     end_date: date
     end_is_projected: bool
 
+    def covers(self, day: date) -> bool:
+        """Return whether *day* falls inside this period's span.
+
+        **The single CONTAINMENT rule for one period**, ruled at **R-PC31**
+        and landing at plan step C4-a-3, which retired the sites that
+        open-coded ``start_date <= day <= end_date``.  Both bounds are
+        INCLUSIVE -- a period covers its payday and it covers the day before
+        the next one -- and writing that twice is how a chained comparison
+        comes to be spelled once with ``<`` on one end.
+
+        **WHO asks it is a PREDICATE and not a list**, which is this package's
+        own hard-won convention rather than a style choice: ``grep -rn
+        "\\.covers(" app/`` with the definition struck out.  Three at C4-a-3 --
+        the purchase-date warning
+        (``entry_service._sums.entry_list_view``), the recurrence engine's
+        base-month scan (``recurrence_engine._plan.compute_due_date``) and
+        this package's own :func:`~._searches.containing_index` -- and a
+        FOURTH is already ranked: ``balance:X-x1`` names this method in its
+        own sentence, so a closed list here would go stale the day that step
+        ships.  :meth:`~._calendar.PayCalendar.period_by_id`'s docstring is an
+        essay on that exact failure, having claimed zero, five, seven and
+        eleven callers in turn; writing the grep instead of the names is what
+        that essay concludes.  *An adversarial review of this step found the
+        closed list, 2026-08-31.*
+
+        **A different ``covers`` exists and is NOT this one**:
+        ``cash_ledger._amounts.ReconciledThrough.covers`` asks whether a
+        statement's coverage reaches an event day -- one-sided, and TOTAL over
+        ``None`` by design.  This one is two-sided and raises on ``None``,
+        because a period always has both bounds.
+
+        **It is the predicate the SEARCHES already run**, said once rather
+        than a second implementation beside them.
+        :func:`~._searches.containing_index` bisects to the last period
+        opening on or before *day* and then asks this; that lower bound is
+        already established there, so the first comparison below is redundant
+        AT THAT ONE CALL SITE and is paid anyway, because a containment rule
+        with a branch missing from one caller is the shape ledger row **P6**
+        counted six of.
+
+        **What it does NOT ask is whether the end is a FACT or a
+        PROJECTION.**  The last period of a calendar carries
+        :attr:`end_is_projected`, and its span moves when the owner's stored
+        cadence moves; a caller that must distinguish "covered by a paycheck
+        that has been banked" from "covered by one the cadence implies" reads
+        that flag, exactly as it would to interpret :attr:`end_date` itself.
+        No caller today does: a purchase is in or out of its own paycheck's
+        span whichever way that span was derived.
+
+        Args:
+            day: The calendar day to place.
+
+        Returns:
+            ``True`` when ``start_date <= day <= end_date``.
+        """
+        return self.start_date <= day <= self.end_date
+
     def attribution_day(self, preferred: "date | None") -> date:
         """Return the day an item filed in THIS period is budgeted to.
 

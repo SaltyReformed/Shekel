@@ -37,6 +37,7 @@ from app.services.entry_service import (
     build_entry_lists_dict,
     build_entry_sums_dict,
 )
+from app.services.pay_calendar import calendar_for
 from app.utils.auth_helpers import get_accessible_transaction
 from app.utils.dates import display_today
 from app.utils.db_errors import is_unique_violation
@@ -137,6 +138,16 @@ def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
     (the data owner) so the companion path resolves the linked owner's
     categories, not the companion's own (empty) set.
 
+    **It derives that owner's pay calendar since pay-calendar plan step
+    C4-a-3**, which is one indexed read of ``budget.pay_periods`` and one of
+    ``budget.pay_schedule`` more than this fragment used to cost.  The entry
+    list's out-of-period warning needs the paycheck's SPAN, and the span is a
+    derivation over the owner's paydays rather than the ``end_date`` column
+    plan step **C4-c** drops -- so a single-row surface that holds no window
+    has to derive rather than read.  Deriving is the only honest option left:
+    a targeted "what is the next payday after this one" query here would be a
+    second implementation of the rule this arc exists to state once.
+
     Args:
         txn: The Transaction just settled, with ``entries`` and
             ``template`` accessible.
@@ -180,6 +191,38 @@ def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
         return render_transaction_cell(txn)
     amounts = fragment_amounts(txn)
     budgets = amounts.budgets
+    # The paycheck this row is FILED in, DERIVED (pay-calendar plan step
+    # C4-a-3): the entry-list builder judged its out-of-period warning against
+    # ``txn.pay_period.end_date`` until then, a stored column plan step C4-c
+    # drops.  The owner is the one resolved above -- the DATA owner, so the
+    # companion path reads the linked owner's schedule -- and ``require_period``
+    # rather than ``period_by_id`` because the id comes off a stored row with a
+    # NOT NULL, ``ON DELETE CASCADE`` foreign key, so a ``None`` here would be
+    # an inconsistent picture rather than an answer.
+    #
+    # **Only a row that TRACKS PURCHASES needs it**, on the same predicate
+    # ``build_entry_lists_dict`` already filters by: a plain bill draws no
+    # purchase list, so deriving its owner's whole calendar would be two
+    # queries for a value nothing reads.  Found by adversarial review,
+    # 2026-08-31.
+    #
+    # **The READ ORDER, stated here because ``require_period`` requires every
+    # caller to state its own**: the ROW is read first (the ownership door
+    # above), the paydays second.  So this is exposed to a concurrent
+    # DESTRUCTIVE pay-period door -- reset, regenerate or truncate -- landing
+    # between the two under ``READ COMMITTED``: the identity-mapped
+    # ``txn.pay_period`` still answers while the fresh payday read no longer
+    # holds the id.  That is balance finding **N-358**, and this is a
+    # render-after-commit path, which is the half of it that has no snapshot.
+    # `balance:X-i5` is the remedy; `C4-a-2`'s -- scope the query by the
+    # calendar's own ids -- is unavailable here, because the row arrives from
+    # ``get_accessible_transaction`` and reordering that door is not this
+    # leaf's to do.
+    period = (
+        calendar_for(owner_id).require_period(txn.pay_period_id, txn.id)
+        if txn.tracks_purchases
+        else None
+    )
     return render_template(
         "grid/_mobile_card_single.html",
         rk=row_keys[0],
@@ -188,7 +231,14 @@ def _render_mobile_card(txn, *, card_prefix, can_edit, error=None):
         settled=amounts.settled,
         retained=amounts.retained,
         entry_sums=build_entry_sums_dict([txn], budgets),
-        entry_lists=build_entry_lists_dict([txn], budgets),
+        # The span map is EMPTY for a row that draws no purchase list, and
+        # the builder's own ``tracks_purchases`` filter runs before it
+        # indexes -- so the two agree by reading one predicate rather than
+        # by a comment saying they do.
+        entry_lists=build_entry_lists_dict(
+            [txn], budgets,
+            {} if period is None else {period.period_id: period},
+        ),
         can_edit=can_edit,
         id_prefix=card_prefix,
         # The USER's civil day, never the process's.  This reaches

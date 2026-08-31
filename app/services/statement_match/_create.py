@@ -462,8 +462,9 @@ def create_purchase_from_line(
     # ``purchased_on`` is the budget clock and its container's period is
     # what the app budgets against, so placing the row by the posting day
     # would file already-spent money against the wrong paycheck -- and
-    # would raise ``check_purchase_date_in_period``'s out-of-period
-    # warning on a row this door had just built.
+    # would raise the entry list's out-of-period warning
+    # (``entry_service.entry_list_view``, which asks
+    # ``DerivedPeriod.covers``) on a row this door had just built.
     pay_period_id = scope.period_holding(made_on, "this purchase")
     envelope, created = resolve_destination(
         creation, pay_period_id, scope, matched, minted,
