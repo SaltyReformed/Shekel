@@ -137,10 +137,14 @@ from ._clearing import (
     statement_coverage,
 )
 from ._books import (
+    books_hold,
     earliest_assertion_day,
+    earliest_matched_line_day,
     earliest_recorded_movement_day,
     reject_books_open_after_an_assertion,
+    reject_books_open_on_or_after_matched_lines,
     reject_books_open_on_or_after_movements,
+    reject_line_before_books_open,
     reject_movement_before_books_open,
 )
 from ._events import (
@@ -184,6 +188,7 @@ __all__ = [
     "StatementCoverage",
     "amount_basis",
     "baseline_amount_basis",
+    "books_hold",
     "amount_rule",
     "amounts_by_id",
     "account_opening_fact",
@@ -195,6 +200,7 @@ __all__ = [
     "credit_entry_sum",
     "dated_deltas",
     "earliest_assertion_day",
+    "earliest_matched_line_day",
     "earliest_recorded_movement_day",
     "display_amounts_by_id",
     "income_amount",
@@ -212,7 +218,9 @@ __all__ = [
     "resolve_transfer_amount",
     "recorded_amounts_by_id",
     "reject_books_open_after_an_assertion",
+    "reject_books_open_on_or_after_matched_lines",
     "reject_books_open_on_or_after_movements",
+    "reject_line_before_books_open",
     "reject_movement_before_books_open",
     "settled_amounts_by_id",
     "settled_cash_facts",

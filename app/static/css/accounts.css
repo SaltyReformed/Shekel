@@ -888,6 +888,15 @@ a.rec-chip:hover { border-color: var(--shekel-accent); }
    `row-gap` is what stops a wrapped second line touching the first; the
    bottom border stays under the whole block, which is what makes two rows
    still read as one bar. */
+/* What the account's OPENING already accounts for (balance:X-f3c-2b-2b).
+   Below the chip row rather than inside it: it is a sentence ending in an
+   act, not a count, and a chip carrying the same count and day three lines
+   above it was the duplication this replaced. */
+.rec-books-bound {
+  margin-bottom: 0.75rem;
+  max-width: 68ch;
+}
+
 .rec-tabs {
   display: flex;
   flex-wrap: wrap;

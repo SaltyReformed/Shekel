@@ -499,10 +499,11 @@ def account_opening_fact(account_id: int) -> CashOpeningFact:
 
     The level a cash fold starts from (plan step **X-f3c-2a**).  The table is
     append-only, so an account may carry several rows -- each a restatement of
-    what its books opened with -- and the one with the greatest
-    ``(created_at, id)`` governs.  Which row that is comes from
-    :func:`governing_account_opening`; this adds the READER's policy for an
-    account that carries none, and nothing else.
+    what its books opened with -- and the one with the greatest ``id`` governs.
+    Which row that is comes from :func:`governing_account_opening`, whose
+    docstring states why the order lost its ``created_at`` term at plan step
+    **X-f3c-2b-2a**; this adds the READER's policy for an account that carries
+    none, and nothing else.
 
     **It RAISES on an account with no row, and that is reachable only through a
     broken invariant.**  Every account gets one at creation

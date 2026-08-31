@@ -314,6 +314,20 @@
   </div>
   {% endif %}
 
+  {# What the account's OPENING already accounts for (balance:X-f3c-2b-2b).
+     NOT a holding chip: it WAS one, and the sentence under it repeated the
+     chip's own count, day and link three lines later -- the clutter this
+     rebuild removed, found by adversarial design review 2026-08-31.  Both
+     halves are composed in the SERVICE; the anchor is the one fact a service
+     may not build, and it is the same URL the review body and the workbench
+     render for the same value. #}
+  {% if page.books_bound %}
+  <p class="rec-books-bound small text-body-secondary">
+    {{ page.books_bound.said }}
+    <a href="{{ url_for('accounts.edit_account', account_id=account.id) }}#books-opening">{{ page.books_bound.restatement_act }}</a>.
+  </p>
+  {% endif %}
+
   {# ── The tab bar ───────────────────────────────────────────────────── #}
   {# EVERY TAB, since plan step X-gj-1c.  The route narrowed this to the three
      it had cards for while Explained and Filed by rules were unbuilt -- a tab

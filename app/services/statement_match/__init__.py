@@ -229,7 +229,7 @@ from ._stating import (
     rule_naming,
     state_rules,
 )
-from ._gaps import ReviewBounds
+from ._gaps import BooksBound, ReviewBounds
 from ._reads import (
     ReviewSet,
     RowsNeverShown,
@@ -322,6 +322,7 @@ __all__ = [
     "QueueGroup",
     "QueueRow",
     "QueueSweep",
+    "BooksBound",
     "ReviewBounds",
     "ReviewScope",
     "ReviewSet",

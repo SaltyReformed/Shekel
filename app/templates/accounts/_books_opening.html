@@ -39,15 +39,19 @@
      equity            -- Decimal: what they currently open holding.
      declared          -- bool: True when a human stated that figure, False
                           when the X-f3c-2a migration derived it.
-     opened_on_max     -- date: the latest day the service will accept, which
-                          is the owner's today or the day before the account's
-                          earliest recorded movement, whichever is earlier.
-     earliest_movement -- date or None: that movement's day, for the help text,
-                          so the owner is told why the box stops where it does.
-     earliest_assertion -- date or None: the first day the owner recorded a
-                          balance, which is the OTHER ceiling -- an opening
-                          after it would be ignored by the fold and the gap
-                          reported as a gain.
+     ceiling           -- OpeningCeiling: the latest day the service will
+                          accept (``.day``) and the sentence naming the bound
+                          that sets it (``.said``).  FOUR bounds feed it -- the
+                          owner's today, the account's earliest recorded
+                          movement, its earliest MATCHED bank line and its
+                          earliest asserted balance -- and which one binds is
+                          decided where the ``min`` is taken, never here.  This
+                          card picked between two of them itself until plan
+                          step balance:X-f3c-2b-2b, in an order that was not
+                          the ``min``'s: an account asserted in January and
+                          first settled in June was told the June movement was
+                          stopping it while the box's own max came from
+                          January.
 #}
 <div class="card mt-4" id="books-opening">
   <div class="card-header d-flex justify-content-between align-items-center gap-2">
@@ -86,28 +90,15 @@
           <input type="date" id="opened_on" name="opened_on"
                  class="form-control" required
                  value="{{ books_opening.opened_on.isoformat() }}"
-                 max="{{ books_opening.opened_on_max.isoformat() }}"
+                 max="{{ books_opening.ceiling.day.isoformat() }}"
                  aria-describedby="opened-on-help">
-          {# BOTH bounds in words, because an owner refused by a ceiling they
-             cannot see reads it as the form being broken.  The assertion bound
-             was added 2026-08-31 after a code review reproduced the ceiling
-             offering TODAY on every account with no settled movement -- which
-             is every investment, retirement and property account here -- and
-             a restatement past an assertion fabricating $22,809.02 of return
-             on the developer's own Roth IRA. #}
+          {# The BINDING bound in words, composed in the route where the
+             ``min`` is taken.  An owner refused by a ceiling they cannot see
+             reads it as the form being broken -- and a card that chose which
+             bound to name would be choosing in a different order from the
+             one that set the box's own max, which is what this replaced. #}
           <div id="opened-on-help" class="form-text">
-            {% if books_opening.earliest_movement %}
-            This account already records money moving on
-            {{ books_opening.earliest_movement.strftime('%b %-d, %Y') }}, so the
-            books have to open before that day.
-            {% elif books_opening.earliest_assertion %}
-            You have already recorded a balance for this account on
-            {{ books_opening.earliest_assertion.strftime('%b %-d, %Y') }}, so the
-            books have to open on or before that day -- the app folds forward
-            from the balances you record.
-            {% else %}
-            This account records nothing yet, so any past day will do.
-            {% endif %}
+            {{ books_opening.ceiling.said }}
           </div>
         </div>
 

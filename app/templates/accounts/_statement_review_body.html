@@ -912,6 +912,18 @@
         day for them to match, so they are not listed above.
       </li>
       {% endif %}
+      {# The SECOND bound on the line list (balance:X-f3c-2b-2b, finding
+         N-383).  An opening equity is the closing balance for its own day, so
+         a line posted on or before it is already inside that figure and no
+         act on this page can be performed with it.  Disjoint from the calendar
+         bound above by construction: review_set splits the calendar off first
+         and this off what remains. #}
+      {% if review.bounds.books %}
+      <li>
+        {{ review.bounds.books.said }} They are not listed above.
+        <a href="{{ url_for('accounts.edit_account', account_id=account.id) }}#books-opening">{{ review.bounds.books.restatement_act }}</a>.
+      </li>
+      {% endif %}
       {% if review.bounds.crowded_days %}
       <li>
         {{ review.bounds.crowded_days | length }} day(s) hold too many rows to search
