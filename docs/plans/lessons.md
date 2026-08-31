@@ -1,22 +1,18 @@
 # Process lessons
 
-**One copy of what this project has already paid to learn, shared by every arc.** They lived in the
-balance README's section 8, which is why three of the four arc documents did not have them -- the
-same denormalization `conventions.md` exists to remove, on the one artifact whose whole value is
-being read before the mistake is repeated.
+**One copy of what this project has already paid to learn, shared by every arc.**
 
 **One line each, and the line is the LANDMINE, not the story.** A lesson earns its place by having
-COST something -- a rebuild, a wrong figure in production, a review round -- and it names the step
-or finding that paid, so a reader can go and check. The narrative of what went wrong stays in that
-commit: this file only works if it is read straight through, and prose is what stops that happening.
+COST something -- a rebuild, a wrong figure, a review round -- and it names the step or finding that
+paid. The narrative stays in that commit: this file only works if it is read straight through, and
+prose is what stops that happening. An append-only file nobody finishes reading loses its lessons as
+completely as deleting them would.
 
 **A lesson MECHANIZED into a gate is RETIRED from here**, its line moving to that gate's own
-rationale, where a reader meets it at the moment it fires. An append-only file nobody finishes
-reading loses its lessons just as completely as deleting them would.
+rationale, where a reader meets it at the moment it fires.
 
-What this file must never become is a place to record STATE -- what shipped, what is next, what
-production runs. That is `steps.md`'s, and a sentence about it here would be a second answer beside
-no reconciler.
+**Never record STATE here** -- what shipped, what is next, what production runs. That is
+`steps.md`'s, and a sentence about it here would be a second answer beside no reconciler.
 
 ## The rule itself
 
@@ -117,15 +113,14 @@ no reconciler.
 - **WHEN A CHANGE MAKES THE CORRECT FIGURE EQUAL THE OLD DEFECT'S FIGURE, THE FIXTURE MUST MOVE.**
   X-f3b made a part-spent envelope `posted + reserved`, which for an under-budget row is exactly the
   estimate F-002 printed, so the `$500` assertion stopped telling them apart (fixture: OVERSPEND).
-- **`hasattr` on a dataclass is not a test**, and neither is `is not None` after `isinstance`.
-- **A list returned for its COUNT must have its count asserted.**
+- **An assertion that cannot fail is not a test**: `hasattr` on a dataclass, `is not None` after
+  `isinstance`, and a list returned for its COUNT whose count is never asserted.
 - **CONVERTING A SURFACE TO "RAISE" BLINDS EVERY TEST WHOSE FIXTURE CANNOT REACH IT.**
 - **A SUITE THAT PASSES ON 353 DAYS A YEAR IS NOT A GATE**, and the day it fails it will look like
   your change.
 - **Ask what a test's failure would have COST before deleting it, and write the answer down.**
-- **THE STATE A GUARD DEFENDS AND THE STATE THE APP IS IN CAN BE OPPOSITES.**
-- **A guard written against the wrong failure mode can still be a good guard** -- write the reason
-  beside it.
+- **THE STATE A GUARD DEFENDS AND THE STATE THE APP IS IN CAN BE OPPOSITES**, and one written
+  against the wrong failure mode can still be a good guard -- write the reason beside it.
 - **A skip is safer to state than a fire**, when the operation being guarded is the one under test.
 - **A GATE OVER A MAPPING NEEDS BOTH ARMS, OR IT CATCHES A RENAME AND MISSES AN ADDITION**, and its
   docstring will claim otherwise -- read what a gate asserts, not what it says it asserts (R7c-c).
@@ -142,21 +137,21 @@ no reconciler.
 - **A GATE MUST BE EXERCISED AGAINST THE ARTIFACT IT GRADES**, never only synthetically: row
   **P52**'s `grep` canary is line-based against a call site that WRAPS, so "the gate passes" has
   always meant "nothing matched".
-- **An ORACLE that states a different rule than the engine lets both be wrong together.**
-- **AN AGREEMENT ORACLE CANNOT SEE A PRODUCER THAT READS THE VALUE IT IS REPLACING.** The control
-  that sees it is INVARIANCE -- perturb the input the new rule must not be reading and require the
-  answer not to move (X-au-b scored 997 of 997 replaced by `return txn.estimated_amount`).
-- **A SERIES MINED OUT OF A COLUMN CANNOT INDEPENDENTLY GRADE A READER OF THAT SERIES.** Ask where
-  the oracle's expected value came from, not just whether it differs from the code under test
+- **AN ORACLE IS WORTH ONLY ITS INDEPENDENCE FROM WHAT IT GRADES**, and there are three ways to lose
+  it: STATING a different rule than the engine, which lets both be wrong together; AGREEING with a
+  producer that READS the value being replaced (X-au-b scored 997 of 997 by
+  `return txn.estimated_amount`); and MINING the expected series out of the column under test
   (X-au-a backfilled the price history FROM the rows X-au-b's 452 agreements then re-attested).
+  **INVARIANCE is the control that sees all three** -- perturb the input the new rule must not be
+  reading and require the answer not to move. Ask where the expected value came FROM, not just
+  whether it differs from the code under test.
 - **A BASELINE IS ONLY A BASELINE AGAINST THE DATABASE IT WAS TAKEN FROM**, and widening an
   instrument is a shape change needing the same normalization the code does.
-- **Scan with an AST, not a regex -- and an AST census is a grep with better manners unless it
-  FOLLOWS THE DATA.** A census and a gate can be blind the same way, and then they confirm each
-  other.
-- **A static guard that greps for a NAME cannot tell code from prose.**
+- **A CENSUS'S METHOD BOUNDS WHAT IT CAN FIND.** Scan with an AST, not a regex; an AST census is a
+  grep with better manners unless it FOLLOWS THE DATA; one that greps for a NAME cannot tell code
+  from prose; and COUNT THE CALL GRAPH, NOT THE CALL SITES -- one finding said four spellings, the
+  tree held 18. A census and a gate can be blind the same way, and then they confirm each other.
 - **A CENSUS THAT IS NOT COMMITTED IS AN UNCITED CLAIM.**
-- **COUNT THE CALL GRAPH, NOT THE CALL SITES.** One finding said four spellings; the tree held 18.
 - **A COUNT IN A DOCSTRING IS A CLAIM, AND THIS ARC KEEPS WRITING IT WRONG.**
 - **BEFORE READING A CLEAN DIFF, CHECK THE FIGURE THE STEP IS ABOUT IS NOT NULL IN IT.** C2-f2c's
   harness was byte-identical over 39,939 lines while `retirement_marker_index` (**P48**) was `None`
